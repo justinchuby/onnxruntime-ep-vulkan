@@ -646,6 +646,39 @@ def tolerance_for_output(arr: np.ndarray) -> tuple[dict, str]:
     )
 
 
+def format_spacing(x, dtype) -> np.ndarray:
+    """`|spacing(x)|` in `dtype`, repaired at the top of the finite range.
+
+    THE DEFECT THIS EXISTS FOR, FOUND 2026-08-04 BY A SWEEP THAT WAS TESTING SOMETHING ELSE
+    =======================================================================================
+    `np.spacing` looks *upward*. At the largest finite value of a format the next value is
+    infinity, so `np.spacing(float16(65504)) == inf` -- and every ULP residual computed
+    against it is `|a-b| / inf == 0`.  Measured: a **504-unit** error at 65504 reads
+    **0.0 ULP on both bases**.
+
+    That is the first observable this project has found that fails in the **acquitting**
+    direction.  §8.9.22's max-ULP and §8.9.24's ULP-at-scale both made sound residuals look
+    wrong; this one makes a wrong residual look sound, which is strictly worse because
+    nobody goes looking after a clean number.  It changes no verdict -- criterion 10's
+    predicate is `np.allclose` and has never read a ULP -- but it would have reported an
+    fp16 tensor saturating at its maximum as bit-perfect.
+
+    The repair is to use the spacing the *format* has there, which is the gap to the
+    previous representable value: at 65504 that is 32, and `2**-10 * 65504 = 63.97`, so the
+    §8.9.24 bound `ulp(b) <= |b| * 2**-10` still holds -- it was numpy's answer that was
+    outside the format, not the algebra.
+    """
+    a = np.asarray(x, dtype=dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        s = np.abs(np.spacing(a)).astype(np.float64)
+    bad = ~np.isfinite(s)
+    if np.any(bad):
+        prev = np.nextafter(a, np.asarray(-np.inf, dtype=dtype))
+        down = np.abs(a.astype(np.float64) - prev.astype(np.float64))
+        s = np.where(bad, down, s)
+    return s
+
+
 def ulp_residual(vk: np.ndarray, cpu: np.ndarray) -> tuple[np.ndarray, str]:
     """Residual expressed in **ULPs of the stored dtype**, elementwise.
 
@@ -701,12 +734,14 @@ def ulp_residual(vk: np.ndarray, cpu: np.ndarray) -> tuple[np.ndarray, str]:
     dt = vk.dtype
     # np.spacing is signed (spacing(-1) < 0) and is what defines "one ULP at this
     # magnitude"; its floor in the denormal region is why this unit survives near zero.
-    spacing = np.abs(np.spacing(cpu.astype(dt))).astype(np.float64)
+    spacing = format_spacing(cpu, dt)
     diff = np.abs(vk.astype(np.float64) - cpu.astype(np.float64))
     return diff / spacing, (
         f"ULP of {dt} at the CPU oracle's value; spacing floors at "
         f"{float(np.abs(np.spacing(dt.type(0.0)))):.3g} in the denormal region, so a "
-        "near-zero element cannot inflate the count the way it inflates relative error"
+        "near-zero element cannot inflate the count the way it inflates relative error; "
+        "and it is taken DOWNWARD at the top of the finite range, where np.spacing "
+        "overflows to inf and would report every residual as 0"
     )
 
 
@@ -774,7 +809,7 @@ def ulp_at_scale_residual(vk: np.ndarray, cpu: np.ndarray) -> tuple[np.ndarray, 
             "tensor's scale' is undefined; residual reported as 0 rather than measured "
             "against the denormal floor"
         )
-    spacing = abs(float(np.spacing(dt.type(scale))))
+    spacing = float(format_spacing(scale, dt))
     diff = np.abs(vk.astype(np.float64) - b)
     return diff / spacing, (
         f"ULP of {dt} at the reference tensor's own scale {scale:.6g} (one ULP = "
@@ -955,7 +990,7 @@ def ulp_distribution(vk: np.ndarray, cpu: np.ndarray) -> dict:
     scale = float(np.abs(b).max()) if b.size else 0.0
     floating = bool(np.issubdtype(vk.dtype, np.floating))
     spacing_at_scale = (
-        abs(float(np.spacing(vk.dtype.type(scale)))) if floating and scale > 0 else 0.0
+        float(format_spacing(scale, vk.dtype)) if floating and scale > 0 else 0.0
     )
     # A cancellation element: the reference has collapsed towards zero while the tensor's
     # scale has not.  Relative to THIS tensor's scale -- not to an exact zero, and not to
@@ -1018,6 +1053,161 @@ def ulp_distribution(vk: np.ndarray, cpu: np.ndarray) -> dict:
         "ulp_basis_verdict": verdict,
         "ulp_basis": basis,
         "ulp_at_scale_basis": at_scale_basis,
+    }
+
+
+# ==========================================================================================
+# §8.9.24(3) -- THE COMPANION OBLIGATION ON EVERY ULP-AT-SCALE FIGURE
+# ==========================================================================================
+#
+# THE RULING (docs/DESIGN.md §8.9.24 ruling (3), Morpheus 2026-08-04), and it corrects me:
+#
+#   "Any per-output census that reports a residual in `ULP-at-scale` also reports, on the
+#    same row, (a) the allowance `atol + rtol*|b|` expressed in the *same* unit, and (b)
+#    the failing set's residual on the element basis.  `failing_residual_within_one_ulp_
+#    at_scale` may not appear without `atol_in_ulps_at_scale`'s companion
+#    `allowance_in_ulps_at_scale`."   Owner: Trinity, in the comparator that already
+#    carries `verdict_predicate` -- which is this file.
+#
+# WHAT WENT WRONG, AND WHY THIS IS THE REMEDY RATHER THAN A WITHDRAWAL
+# ====================================================================
+# I reported `atol_in_ulps_at_scale = 0.128` on the logits and argued from it that
+# criterion 10's tolerance demanded finer than fp16 can express.  Two defects in one
+# figure, and they compound:
+#
+#   * `atol` is ONE TERM of `atol + rtol*|b|`.  Quoting it as "the tolerance" is sound
+#     only where `|b|` is small -- and where `|b|` is small the spacing is small too,
+#     which is the opposite of the case I was arguing.  The full allowance at the logits'
+#     own scale is 33.628 ULP-at-scale, not 0.128: a factor of 263.  On `present.31.key`
+#     and `present.31.value` the factors are 116 and 506.
+#   * `ULP-at-scale` divides by the spacing at the TENSOR MAXIMUM.  `np.allclose`
+#     evaluates PER ELEMENT.  A residual at a reference of 0.011 judged against the step
+#     at 5.77 is a numerator and a denominator taken at two different points -- §8.9.22's
+#     defect with the sign reversed, and the same instrument now carries both directions
+#     of it on the record.
+#
+# The corollary is what these keys exist to make unmissable: for normal fp16,
+# `ulp(b) <= |b| * 2**-10`, so `allowance/ulp(b) >= rtol * 2**10 = 20.48` INDEPENDENT of
+# magnitude.  A failing element did not fail by a sub-step amount.  It exceeded an
+# allowance that was already at least twenty representable steps wide at its own scale.
+#
+# So the statistic is FENCED, not withdrawn: `ULP-at-scale` remains the right answer to
+# "is this residual large relative to the tensor", which is how a reader decides whether a
+# divergence could change a token.  What it may not do is stand alone beside a pass/fail
+# predicate it does not participate in.  Once the allowance is on the row in the same
+# unit, the argument I made cannot be made from that row again -- 33.628 does not read as
+# "finer than the format can express".
+#
+# A convention would be obeyed until someone was in a hurry.
+# `assert_ulp_at_scale_row_is_complete` RAISES, and every producer builds the companions
+# in the same statement as the figure they companion, so the two cannot drift apart.
+ULP_AT_SCALE_COMPANIONS: dict[str, tuple[str, ...]] = {
+    "failing_residual_within_one_ulp_at_scale": (
+        "allowance_in_ulps_at_scale_min",
+        "allowance_in_ulps_at_scale_median",
+        "failing_ulp_element_basis_max",
+    ),
+    "failing_max_ulp_at_scale": (
+        "allowance_in_ulps_at_scale_min",
+        "failing_ulp_element_basis_max",
+    ),
+    "atol_in_ulps_at_scale": (
+        "allowance_in_ulps_at_scale_min",
+        "allowance_in_ulps_at_scale_median",
+        "allowance_in_ulps_at_scale_max",
+    ),
+    "max_ulp_at_scale_diff": (
+        "allowance_in_ulps_at_scale_min",
+        "max_ulp_diff",
+    ),
+}
+
+
+class UlpAtScaleCompanionError(AssertionError):
+    """A ULP-at-scale figure was published without the allowance in the same unit."""
+
+
+def assert_ulp_at_scale_row_is_complete(row: dict, where: str = "row") -> None:
+    """§8.9.24(3), as a refusal rather than as a convention.
+
+    A row carrying a `ULP-at-scale` residual without the allowance in the same unit is an
+    invitation to divide a residual by a tolerance *term* that is not the tolerance. That
+    is the exact argument §8.9.24 refuted, and it was made from a row this function now
+    rejects.
+    """
+    missing: list[str] = []
+    for key, companions in ULP_AT_SCALE_COMPANIONS.items():
+        if row.get(key) is None:
+            continue
+        missing += [c for c in companions if row.get(c) is None]
+    if missing:
+        raise UlpAtScaleCompanionError(
+            f"{where}: docs/DESIGN.md §8.9.24(3) -- a ULP-at-scale residual is published "
+            f"without {sorted(set(missing))}. The predicate's allowance is "
+            "`atol + rtol*|b|`, not `atol`; a row that omits it lets a reader quote one "
+            "term of a two-term sum as the tolerance, which is exactly how the refuted "
+            "unsatisfiability finding was produced."
+        )
+
+
+def allowance_in_ulps_at_scale(
+    b_abs: np.ndarray, tol: dict, one_ulp_at_scale: float, *, over: str = "the failing set"
+) -> dict:
+    """The predicate's WHOLE allowance, in the unit the residual beside it is quoted in.
+
+    `atol + rtol*|b|` evaluated at each element's own reference and divided by one ULP at
+    the *tensor's* scale -- the same denominator `max_ulp_at_scale_diff` and
+    `failing_max_ulp_at_scale` use, so the two numbers are directly comparable and a
+    reader sees the margin instead of inferring it from one term.
+    """
+    if not one_ulp_at_scale or not np.size(b_abs):
+        return {
+            "allowance_in_ulps_at_scale_min": None,
+            "allowance_in_ulps_at_scale_median": None,
+            "allowance_in_ulps_at_scale_max": None,
+            "allowance_in_ulps_at_scale_basis": (
+                "no finite nonzero tensor scale, or an empty set; one ULP-at-scale is "
+                "undefined and the allowance is reported as absent rather than as 0"
+            ),
+        }
+    allow = (tol["atol"] + tol["rtol"] * np.asarray(b_abs, dtype=np.float64)) / one_ulp_at_scale
+    return {
+        "allowance_in_ulps_at_scale_min": float(allow.min()),
+        "allowance_in_ulps_at_scale_median": float(np.median(allow)),
+        "allowance_in_ulps_at_scale_max": float(allow.max()),
+        "allowance_in_ulps_at_scale_basis": (
+            f"(atol={tol['atol']!r} + rtol={tol['rtol']!r}*|b|) / one_ulp_at_scale="
+            f"{one_ulp_at_scale:.6g}, evaluated at each element's own reference over "
+            f"{over}. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one "
+            "term of it and must never be quoted as the tolerance "
+            "(docs/DESIGN.md §8.9.24(1))."
+        ),
+    }
+
+
+def ulp_element_basis_stats(
+    diff: np.ndarray, b: np.ndarray, *, prefix: str, dtype=None
+) -> dict:
+    """§8.9.24(3)(b): a residual set scored at the granularity the predicate evaluates at.
+
+    `spacing` is taken at each element's own reference, never at the tensor maximum, and
+    in the **stored** dtype -- `b` arrives promoted to float64 for the subtraction, and
+    counting float64 ULPs on an fp16 tensor would report numbers ~2**42 too large.
+    """
+    d = np.asarray(diff, dtype=np.float64)
+    ref = np.asarray(b)
+    dt = np.dtype(dtype) if dtype is not None else ref.dtype
+    if not d.size or not np.issubdtype(dt, np.floating):
+        return {f"{prefix}_max": None, f"{prefix}_median": None, f"{prefix}_min": None}
+    sp = format_spacing(ref, dt)
+    u = d / np.where(sp == 0, np.inf, sp)
+    u = u[np.isfinite(u)]
+    if not u.size:
+        return {f"{prefix}_max": None, f"{prefix}_median": None, f"{prefix}_min": None}
+    return {
+        f"{prefix}_max": float(u.max()),
+        f"{prefix}_median": float(np.median(u)),
+        f"{prefix}_min": float(u.min()),
     }
 
 
@@ -1178,6 +1368,29 @@ def compare_all_outputs_to_cpu(
                 "max_ulp_at_scale_diff": dist["max_ulp_at_scale"],
                 "median_ulp_at_scale_diff": dist["median_ulp_at_scale"],
                 "p99_ulp_at_scale_diff": dist["p99_ulp_at_scale"],
+                # §8.9.24(3), 2026-08-04 (Trinity, owner).  ADDITIVE: no number above
+                # moves.  A ULP-at-scale residual may not stand beside the verdict
+                # without the predicate's WHOLE allowance in the same unit, because
+                # `atol` alone is one term of `atol + rtol*|b|` and reading it as the
+                # tolerance is the refuted unsatisfiability argument.  Evaluated over the
+                # whole tensor here (there may be no failing set on a passing output);
+                # `probe_criterion10_rescore` reports it over the failing set as well.
+                # `assert_ulp_at_scale_row_is_complete` below makes this a refusal.
+                **allowance_in_ulps_at_scale(
+                    np.abs(b), tol, dist["one_ulp_at_scale"], over="every element"
+                ),
+                # §8.9.24(3)(b): the residual at the predicate's own granularity.
+                **ulp_element_basis_stats(
+                    abs_diff, b, prefix="ulp_element_basis", dtype=v.dtype
+                ),
+                "satisfiability_bound_element_basis": tol["rtol"] * 1024.0,
+                "satisfiability_bound_note": (
+                    "ulp(b) <= |b|*2**-10 for every normal fp16 b, so "
+                    "allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing "
+                    "element exceeded an allowance at least this many representable steps "
+                    "wide AT ITS OWN SCALE -- it did not fail by a sub-step amount "
+                    "(docs/DESIGN.md §8.9.24(1))"
+                ),
                 # ADDED 2026-08-03 (Trinity), under docs/DESIGN.md §8.9.22 ruling (1).
                 # The ruled logits observable: the residual on a DECLARED domain plus the
                 # population excluded from it, reported together and never one alone.
@@ -1247,6 +1460,9 @@ def compare_all_outputs_to_cpu(
                 "tolerance_justification": why,
             }
         )
+        # §8.9.24(3) is enforced HERE, on the entry as it is finally shaped, rather than
+        # trusted to the constructor above: it is the row a reader quotes from.
+        assert_ulp_at_scale_row_is_complete(entry, where=f"per_output[{i}]")
         facts["oracle_outputs_compared"] += 1
         if within:
             facts["oracle_outputs_within_tolerance"] += 1

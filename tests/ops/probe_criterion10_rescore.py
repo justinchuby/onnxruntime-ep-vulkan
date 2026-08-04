@@ -60,11 +60,29 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _RESULTS_DIR = _REPO_ROOT / "bench" / "results"
 
 
+# -- §8.9.24(3): the companion obligation, enforced by code rather than by memory --------
+#
+# Implemented in `_models.py` beside the comparator that carries `verdict_predicate`, and
+# imported here, because a second implementation of "the allowance in ULPs-at-scale" is a
+# second answer nobody could reconcile -- the exact failure `ulp_distribution` was
+# extracted to prevent.
+from _models import (  # noqa: E402
+    ULP_AT_SCALE_COMPANIONS,  # noqa: F401  (re-exported: the lane asserts against it)
+    UlpAtScaleCompanionError,  # noqa: F401
+    allowance_in_ulps_at_scale,
+    assert_ulp_at_scale_row_is_complete,
+)
+
+
 def failing_element_census(vk: np.ndarray, cpu: np.ndarray, tol: dict) -> dict:
     """Enumerate the elements that fail `np.allclose`, and say where they sit.
 
     Returns counts and magnitudes only -- never a proposed tolerance. The last line of
     this docstring is load-bearing: **this function must not grow a recommendation.**
+
+    Every `ULP-at-scale` figure here is accompanied by the allowance in the same unit and
+    by the failing set on the element basis (§8.9.24(3)); the row is checked before it is
+    returned, so the obligation cannot be discharged by remembering it.
     """
     a = vk.astype(np.float64)
     b = cpu.astype(np.float64)
@@ -93,6 +111,11 @@ def failing_element_census(vk: np.ndarray, cpu: np.ndarray, tol: dict) -> dict:
 
     br = np.abs(b[bad])
     dr = diff[bad]
+    # (b) of §8.9.24(3): the failing set on the ELEMENT basis -- the granularity the
+    # predicate actually evaluates at.  `spacing` is taken at each failing element's own
+    # reference, not at the tensor maximum.
+    elem_spacing = m.format_spacing(b[bad], vk.dtype)
+    elem_ulps = dr / np.where(elem_spacing == 0, np.inf, elem_spacing)
     out.update(
         {
             "tensor_scale": scale,
@@ -111,17 +134,73 @@ def failing_element_census(vk: np.ndarray, cpu: np.ndarray, tol: dict) -> dict:
             # Is the residual itself within one representable step of the output format at
             # the tensor's scale?  A residual of one ULP-at-scale is the smallest nonzero
             # difference the format can express there.  REPORTED, not acted on.
+            #
+            # §8.9.24(1) CORRECTS THE READING OF THIS NUMBER AND THE CORRECTION IS HERE
+            # BECAUSE THIS IS WHERE IT WAS MISREAD.  "Within one ULP-at-scale" does NOT
+            # mean "fails by less than one representable step".  The step it is measured
+            # against is the step at the TENSOR MAXIMUM, which on layer 31's key is ~500x
+            # the magnitude of the elements that actually failed.  On the element basis --
+            # `failing_ulp_element_basis_*` below -- those same elements fail by more than
+            # twenty representable fp16 steps at their own magnitudes.
             "failing_residual_within_one_ulp_at_scale": (
                 int(np.count_nonzero(dr <= one_ulp_at_scale)) if one_ulp_at_scale else 0
+            ),
+            "failing_residual_within_one_ulp_at_scale_caveat": (
+                "the step here is the step at the TENSOR MAXIMUM, not at the failing "
+                "element; read failing_ulp_element_basis_* for the predicate's own "
+                "granularity (docs/DESIGN.md §8.9.24(1))"
             ),
             "failing_max_ulp_at_scale": (
                 float((dr / one_ulp_at_scale).max()) if one_ulp_at_scale else None
             ),
+            # ONE TERM OF A TWO-TERM SUM.  Kept because it has been quoted, and it is now
+            # impossible to quote without the whole allowance beside it.
             "atol_in_ulps_at_scale": (
                 float(tol["atol"] / one_ulp_at_scale) if one_ulp_at_scale else None
             ),
+            "atol_in_ulps_at_scale_caveat": (
+                "atol is ONE TERM of the predicate's allowance `atol + rtol*|b|`; this "
+                "figure is not the tolerance and quoting it as such is the refuted "
+                "unsatisfiability argument (docs/DESIGN.md §8.9.24(1))"
+            ),
+            "failing_ulp_element_basis_max": float(np.max(elem_ulps[np.isfinite(elem_ulps)]))
+            if np.any(np.isfinite(elem_ulps))
+            else None,
+            "failing_ulp_element_basis_median": float(
+                np.median(elem_ulps[np.isfinite(elem_ulps)])
+            )
+            if np.any(np.isfinite(elem_ulps))
+            else None,
+            "failing_ulp_element_basis_min": float(np.min(elem_ulps[np.isfinite(elem_ulps)]))
+            if np.any(np.isfinite(elem_ulps))
+            else None,
+            "failing_ulp_element_basis_note": (
+                "|a-b| / spacing(b) at each FAILING element's own reference -- the "
+                "granularity np.allclose evaluates at (§8.9.24(3)(b))"
+            ),
+            # §8.9.24's satisfiability bound, recomputed on THIS tensor rather than
+            # quoted.  `allowance/ulp(b) >= rtol*2**10 = 20.48` for every normal b, so a
+            # failing element has exceeded an allowance at least 20.48 element-ULPs wide.
+            "allowance_in_ulps_element_basis_min": (
+                float(
+                    np.min(
+                        (tol["atol"] + tol["rtol"] * br)
+                        / np.where(elem_spacing == 0, np.inf, elem_spacing)
+                    )
+                )
+                if br.size
+                else None
+            ),
+            "satisfiability_bound_element_basis": tol["rtol"] * 1024.0,
+            "satisfiability_bound_note": (
+                "ulp(b) <= |b|*2**-10 for normal fp16, so allowance/ulp(b) >= rtol*2**10 "
+                "independent of magnitude; a failing element exceeded an allowance at "
+                "least this many representable steps wide (docs/DESIGN.md §8.9.24(1))"
+            ),
         }
     )
+    out.update(allowance_in_ulps_at_scale(br, tol, one_ulp_at_scale))
+    assert_ulp_at_scale_row_is_complete(out, where="failing_element_census")
     return out
 
 
@@ -156,11 +235,26 @@ def rescore(vk_out: list[np.ndarray], cpu_out: list[np.ndarray], names: list[str
                 ),
                 "median_ulp_diff": e.get("median_ulp_diff"),
                 "max_ulp_at_scale_diff": e.get("max_ulp_at_scale_diff"),
+                # §8.9.24(3): carried through from the comparator so this row is complete
+                # in its own right. A reader quoting `max_ulp_at_scale_diff` off this
+                # record now has the whole allowance in the same unit on the same line.
+                "allowance_in_ulps_at_scale_min": e.get("allowance_in_ulps_at_scale_min"),
+                "allowance_in_ulps_at_scale_median": e.get("allowance_in_ulps_at_scale_median"),
+                "allowance_in_ulps_at_scale_max": e.get("allowance_in_ulps_at_scale_max"),
+                "allowance_in_ulps_at_scale_basis": e.get("allowance_in_ulps_at_scale_basis"),
+                "ulp_element_basis_max": e.get("ulp_element_basis_max"),
+                "ulp_element_basis_median": e.get("ulp_element_basis_median"),
+                "satisfiability_bound_element_basis": e.get("satisfiability_bound_element_basis"),
+                "satisfiability_bound_note": e.get("satisfiability_bound_note"),
+                "max_ulp_diff": e.get("max_ulp_diff"),
                 "max_abs_diff": e.get("max_abs_diff"),
                 "ulp_cancellation_elements": e.get("ulp_cancellation_elements"),
                 "ulp_basis_verdict": e.get("ulp_basis_verdict"),
                 "failing_element_census": census,
             }
+        )
+        assert_ulp_at_scale_row_is_complete(
+            per_output[-1], where=f"rescore per_output[{i}] ({names[i] if i < len(names) else i})"
         )
 
     ruled_moved = [p["index"] for p in per_output if not p["ruled_equals_element_basis"]]
@@ -214,7 +308,43 @@ def _selftest() -> int:
     # (c) and it must not invent failures
     c3 = failing_element_census(cpu2, cpu2, tol)
     assert c3["failing_elements"] == 0, c3
-    print("SELFTEST PASS: 3 arms, the two mechanisms are distinguished")
+
+    # (d) §8.9.24(3): the companion check must be able to REFUSE.  A check never shown to
+    #     fire is indistinguishable from one that cannot -- round 34's lesson, applied to
+    #     the remedy for round 37's error.
+    incomplete = dict(c)
+    incomplete.pop("allowance_in_ulps_at_scale_min")
+    try:
+        assert_ulp_at_scale_row_is_complete(incomplete, where="selftest")
+    except UlpAtScaleCompanionError as exc:
+        assert "allowance_in_ulps_at_scale_min" in str(exc), exc
+    else:  # pragma: no cover - this branch is the failure
+        raise AssertionError(
+            "the §8.9.24(3) companion check passed a row missing the allowance; it cannot "
+            "go red and therefore witnesses nothing"
+        )
+    assert_ulp_at_scale_row_is_complete(c, where="selftest(complete row)")
+
+    # (e) THE INVERSION, on a specimen built to have layer 31's shape.  A tensor whose
+    #     scale is ~500x the magnitude of its failing elements reads "every failure within
+    #     one ULP-at-scale" while the SAME failures are more than twenty representable
+    #     steps wide at their own magnitudes.  This is the reading §8.9.24(1) corrected,
+    #     asserted rather than described.
+    cpu4 = np.full(64, 5.75, dtype=np.float16)
+    cpu4[:4] = np.float16(0.011)
+    vk4 = cpu4.copy()
+    vk4[:4] = (cpu4[:4].astype(np.float32) + 0.0025).astype(np.float16)
+    c4 = failing_element_census(vk4, cpu4, tol)
+    assert c4["failing_elements"] == 4, c4
+    assert c4["failing_residual_within_one_ulp_at_scale"] == 4, c4
+    assert c4["failing_max_ulp_at_scale"] <= 1.0, c4
+    assert c4["failing_ulp_element_basis_min"] > 20.0, c4
+    assert c4["allowance_in_ulps_at_scale_min"] > 0.1, c4
+    assert c4["allowance_in_ulps_element_basis_min"] >= c4["satisfiability_bound_element_basis"], c4
+
+    print("SELFTEST PASS: 5 arms, the two mechanisms are distinguished, the §8.9.24(3) "
+          "companion check goes red on an incomplete row, and the element basis inverts "
+          "the at-scale reading on a layer-31-shaped specimen")
     return 0
 
 

@@ -50,6 +50,11 @@ dist/
 # Bench: transient Vulkan device-probe scratch dirs
 bench/vkfacts-*/
 
+# Bench: probe taps and per-arm counters. These are large .npy dumps of intermediate
+# activations rewritten by every probe run; the findings that depend on them live in the
+# committed bench/results/*.json records, which carry the numbers rather than the arrays.
+bench/scratch/
+
 # Test: local pytest capture files
 tests/_run_*.txt
 

@@ -40,10 +40,20 @@
  "outputs_within_tolerance": 62,
  "per_output": [
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.0078125, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 33.628,
+   "allowance_in_ulps_at_scale_median": 7.488,
+   "allowance_in_ulps_at_scale_min": 0.1283955078125,
    "dtype": "float16",
    "failing_element_census": {
+    "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.0078125, evaluated at each element's own reference over the failing set. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+    "allowance_in_ulps_at_scale_max": 6.968,
+    "allowance_in_ulps_at_scale_median": 1.5230000000000001,
+    "allowance_in_ulps_at_scale_min": 0.1283955078125,
+    "allowance_in_ulps_element_basis_min": 21.012,
     "atol": 0.001,
     "atol_in_ulps_at_scale": 0.128,
+    "atol_in_ulps_at_scale_caveat": "atol is ONE TERM of the predicate's allowance `atol + rtol*|b|`; this figure is not the tolerance and quoting it as such is the refuted unsatisfiability argument (docs/DESIGN.md \u00a78.9.24(1))",
     "failing_abs_diff_max": 0.0625,
     "failing_below_one_ulp_at_scale": 35,
     "failing_elements": 5932,
@@ -53,9 +63,16 @@
     "failing_ref_median": 0.544921875,
     "failing_ref_min": 0.0001544952392578125,
     "failing_residual_within_one_ulp_at_scale": 42,
+    "failing_residual_within_one_ulp_at_scale_caveat": "the step here is the step at the TENSOR MAXIMUM, not at the failing element; read failing_ulp_element_basis_* for the predicate's own granularity (docs/DESIGN.md \u00a78.9.24(1))",
+    "failing_ulp_element_basis_max": 242090.0,
+    "failing_ulp_element_basis_median": 61.0,
+    "failing_ulp_element_basis_min": 21.5,
+    "failing_ulp_element_basis_note": "|a-b| / spacing(b) at each FAILING element's own reference -- the granularity np.allclose evaluates at (\u00a78.9.24(3)(b))",
     "failing_with_subnormal_reference": 0,
     "one_ulp_at_scale": 0.0078125,
     "rtol": 0.02,
+    "satisfiability_bound_element_basis": 20.48,
+    "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for normal fp16, so allowance/ulp(b) >= rtol*2**10 independent of magnitude; a failing element exceeded an allowance at least this many representable steps wide (docs/DESIGN.md \u00a78.9.24(1))",
     "smallest_normal": 6.103515625e-05,
     "tensor_scale": 13.0859375,
     "total_elements": 32064
@@ -63,6 +80,7 @@
    "index": 0,
    "max_abs_diff": 0.0625,
    "max_ulp_at_scale_diff": 8.0,
+   "max_ulp_diff": 242090.0,
    "max_ulp_diff_element_basis": 242090.0,
    "max_ulp_normal_domain": 242090.0,
    "median_ulp_diff": 12.0,
@@ -73,6 +91,8 @@
    "p99_ulp_normal_domain": 573.0,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 242090 ULP on the normal domain (32064 elements); subnormal references 0 (0.0000% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     1,
@@ -82,10 +102,16 @@
    "subnormal_reference_fraction": 0.0,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 35,
+   "ulp_element_basis_max": 242090.0,
+   "ulp_element_basis_median": 12.0,
    "verdict": "OUTSIDE_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 27.516000000000002,
+   "allowance_in_ulps_at_scale_median": 2.550375,
+   "allowance_in_ulps_at_scale_min": 0.25670312500000003,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -98,6 +124,7 @@
    "index": 1,
    "max_abs_diff": 0.00048828125,
    "max_ulp_at_scale_diff": 0.125,
+   "max_ulp_diff": 1.0,
    "max_ulp_diff_element_basis": 1.0,
    "max_ulp_normal_domain": 1.0,
    "median_ulp_diff": 0.0,
@@ -108,6 +135,8 @@
    "p99_ulp_normal_domain": 0.0,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 1 ULP on the normal domain (3072 elements); subnormal references 0 (0.0000% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -118,10 +147,16 @@
    "subnormal_reference_fraction": 0.0,
    "ulp_basis_verdict": "BASES_AGREE",
    "ulp_cancellation_elements": 17,
+   "ulp_element_basis_max": 1.0,
+   "ulp_element_basis_median": 0.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00012207, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 43.332,
+   "allowance_in_ulps_at_scale_median": 9.453875,
+   "allowance_in_ulps_at_scale_min": 8.192341796875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -134,6 +169,7 @@
    "index": 2,
    "max_abs_diff": 1.52587890625e-05,
    "max_ulp_at_scale_diff": 0.125,
+   "max_ulp_diff": 7.0,
    "max_ulp_diff_element_basis": 7.0,
    "max_ulp_normal_domain": 7.0,
    "median_ulp_diff": 0.0,
@@ -144,6 +180,8 @@
    "p99_ulp_normal_domain": 1.0,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 7 ULP on the normal domain (3054 elements); subnormal references 18 (0.5859% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -154,10 +192,16 @@
    "subnormal_reference_fraction": 0.005859375,
    "ulp_basis_verdict": "BASES_AGREE",
    "ulp_cancellation_elements": 37,
+   "ulp_element_basis_max": 7.0,
+   "ulp_element_basis_median": 0.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 41.056000000000004,
+   "allowance_in_ulps_at_scale_median": 5.583500000000001,
+   "allowance_in_ulps_at_scale_min": 0.259994140625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -170,6 +214,7 @@
    "index": 3,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 207.0,
    "max_ulp_diff_element_basis": 207.0,
    "max_ulp_normal_domain": 207.0,
    "median_ulp_diff": 0.0,
@@ -180,6 +225,8 @@
    "p99_ulp_normal_domain": 3.0,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 207 ULP on the normal domain (3072 elements); subnormal references 0 (0.0000% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -190,10 +237,16 @@
    "subnormal_reference_fraction": 0.0,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 4,
+   "ulp_element_basis_max": 207.0,
+   "ulp_element_basis_median": 0.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000244141, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 42.995999999999995,
+   "allowance_in_ulps_at_scale_median": 5.979125,
+   "allowance_in_ulps_at_scale_min": 4.096087890625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -206,6 +259,7 @@
    "index": 4,
    "max_abs_diff": 0.0001220703125,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 265.0,
    "max_ulp_diff_element_basis": 265.0,
    "max_ulp_normal_domain": 252.0,
    "median_ulp_diff": 1.0,
@@ -216,6 +270,8 @@
    "p99_ulp_normal_domain": 28.68000000000029,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 252 ULP on the normal domain (3067 elements); subnormal references 5 (0.1628% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -226,10 +282,16 @@
    "subnormal_reference_fraction": 0.0016276041666666667,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 31,
+   "ulp_element_basis_max": 265.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.0078125, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 24.228,
+   "allowance_in_ulps_at_scale_median": 3.0017500000000004,
+   "allowance_in_ulps_at_scale_min": 0.12902294921875002,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -242,6 +304,7 @@
    "index": 5,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 2672.0,
    "max_ulp_diff_element_basis": 2672.0,
    "max_ulp_normal_domain": 2672.0,
    "median_ulp_diff": 0.0,
@@ -252,6 +315,8 @@
    "p99_ulp_normal_domain": 9.289999999999964,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 2672 ULP on the normal domain (3072 elements); subnormal references 0 (0.0000% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -262,10 +327,16 @@
    "subnormal_reference_fraction": 0.0,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 10,
+   "ulp_element_basis_max": 2672.0,
+   "ulp_element_basis_median": 0.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 23.776,
+   "allowance_in_ulps_at_scale_median": 0.5044375,
+   "allowance_in_ulps_at_scale_min": 0.2560482177734375,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -278,6 +349,7 @@
    "index": 6,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1068.0,
    "max_ulp_diff_element_basis": 1068.0,
    "max_ulp_normal_domain": 1068.0,
    "median_ulp_diff": 1.0,
@@ -288,6 +360,8 @@
    "p99_ulp_normal_domain": 70.0,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 1068 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -298,10 +372,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 143,
+   "ulp_element_basis_max": 1068.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 33.664,
+   "allowance_in_ulps_at_scale_median": 2.1361875,
+   "allowance_in_ulps_at_scale_min": 1.02406103515625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -314,6 +394,7 @@
    "index": 7,
    "max_abs_diff": 0.001953125,
    "max_ulp_at_scale_diff": 2.0,
+   "max_ulp_diff": 1012.0,
    "max_ulp_diff_element_basis": 1012.0,
    "max_ulp_normal_domain": 793.0,
    "median_ulp_diff": 1.0,
@@ -324,6 +405,8 @@
    "p99_ulp_normal_domain": 62.649999999999636,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 793 ULP on the normal domain (3068 elements); subnormal references 4 (0.1302% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -334,10 +417,16 @@
    "subnormal_reference_fraction": 0.0013020833333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 46,
+   "ulp_element_basis_max": 1012.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00012207, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 43.892,
+   "allowance_in_ulps_at_scale_median": 8.74121875,
+   "allowance_in_ulps_at_scale_min": 8.192078125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -350,6 +439,7 @@
    "index": 8,
    "max_abs_diff": 6.103515625e-05,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 183.0,
    "max_ulp_diff_element_basis": 183.0,
    "max_ulp_normal_domain": 151.0,
    "median_ulp_diff": 1.0,
@@ -360,6 +450,8 @@
    "p99_ulp_normal_domain": 46.65000000000009,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 151 ULP on the normal domain (3036 elements); subnormal references 36 (1.1719% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -370,10 +462,16 @@
    "subnormal_reference_fraction": 0.01171875,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 67,
+   "ulp_element_basis_max": 183.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 37.864000000000004,
+   "allowance_in_ulps_at_scale_median": 1.9252500000000001,
+   "allowance_in_ulps_at_scale_min": 1.02487158203125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -386,6 +484,7 @@
    "index": 9,
    "max_abs_diff": 0.001953125,
    "max_ulp_at_scale_diff": 2.0,
+   "max_ulp_diff": 838.0,
    "max_ulp_diff_element_basis": 838.0,
    "max_ulp_normal_domain": 838.0,
    "median_ulp_diff": 1.0,
@@ -396,6 +495,8 @@
    "p99_ulp_normal_domain": 67.30999999999995,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 838 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -406,10 +507,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 50,
+   "ulp_element_basis_max": 838.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000244141, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 36.836,
+   "allowance_in_ulps_at_scale_median": 4.5063125,
+   "allowance_in_ulps_at_scale_min": 4.0963369140625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -422,6 +529,7 @@
    "index": 10,
    "max_abs_diff": 6.103515625e-05,
    "max_ulp_at_scale_diff": 0.25,
+   "max_ulp_diff": 180.0,
    "max_ulp_diff_element_basis": 180.0,
    "max_ulp_normal_domain": 180.0,
    "median_ulp_diff": 1.0,
@@ -432,6 +540,8 @@
    "p99_ulp_normal_domain": 47.36000000000013,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 180 ULP on the normal domain (3065 elements); subnormal references 7 (0.2279% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -442,10 +552,16 @@
    "subnormal_reference_fraction": 0.0022786458333333335,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 72,
+   "ulp_element_basis_max": 180.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00195312, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 22.812,
+   "allowance_in_ulps_at_scale_median": 0.91575,
+   "allowance_in_ulps_at_scale_min": 0.512123291015625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -458,6 +574,7 @@
    "index": 11,
    "max_abs_diff": 0.001953125,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1476.0,
    "max_ulp_diff_element_basis": 1476.0,
    "max_ulp_normal_domain": 1476.0,
    "median_ulp_diff": 1.0,
@@ -468,6 +585,8 @@
    "p99_ulp_normal_domain": 51.61999999999989,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 1476 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -478,10 +597,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 106,
+   "ulp_element_basis_max": 1476.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000488281, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 23.607999999999997,
+   "allowance_in_ulps_at_scale_median": 2.2713593750000003,
+   "allowance_in_ulps_at_scale_min": 2.0484370117187503,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -494,6 +619,7 @@
    "index": 12,
    "max_abs_diff": 0.0001220703125,
    "max_ulp_at_scale_diff": 0.25,
+   "max_ulp_diff": 181.0,
    "max_ulp_diff_element_basis": 181.0,
    "max_ulp_normal_domain": 169.0,
    "median_ulp_diff": 1.0,
@@ -504,6 +630,8 @@
    "p99_ulp_normal_domain": 42.50999999999976,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 169 ULP on the normal domain (3050 elements); subnormal references 22 (0.7161% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -514,10 +642,16 @@
    "subnormal_reference_fraction": 0.007161458333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 166,
+   "ulp_element_basis_max": 181.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00195312, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 28.972,
+   "allowance_in_ulps_at_scale_median": 0.9979375,
+   "allowance_in_ulps_at_scale_min": 0.512294189453125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -530,6 +664,7 @@
    "index": 13,
    "max_abs_diff": 0.001953125,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1136.0,
    "max_ulp_diff_element_basis": 1136.0,
    "max_ulp_normal_domain": 525.0,
    "median_ulp_diff": 1.0,
@@ -540,6 +675,8 @@
    "p99_ulp_normal_domain": 65.64999999999964,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 525 ULP on the normal domain (3068 elements); subnormal references 4 (0.1302% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -550,10 +687,16 @@
    "subnormal_reference_fraction": 0.0013020833333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 98,
+   "ulp_element_basis_max": 1136.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000488281, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 27.108000000000004,
+   "allowance_in_ulps_at_scale_median": 2.321828125,
+   "allowance_in_ulps_at_scale_min": 2.04830029296875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -566,6 +709,7 @@
    "index": 14,
    "max_abs_diff": 0.0001220703125,
    "max_ulp_at_scale_diff": 0.25,
+   "max_ulp_diff": 326.0,
    "max_ulp_diff_element_basis": 326.0,
    "max_ulp_normal_domain": 195.0,
    "median_ulp_diff": 1.0,
@@ -576,6 +720,8 @@
    "p99_ulp_normal_domain": 49.0,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 195 ULP on the normal domain (3055 elements); subnormal references 17 (0.5534% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -586,10 +732,16 @@
    "subnormal_reference_fraction": 0.005533854166666667,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 121,
+   "ulp_element_basis_max": 326.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00195312, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 37.392,
+   "allowance_in_ulps_at_scale_median": 1.01340625,
+   "allowance_in_ulps_at_scale_min": 0.512001220703125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -602,6 +754,7 @@
    "index": 15,
    "max_abs_diff": 0.001953125,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1684.0,
    "max_ulp_diff_element_basis": 1684.0,
    "max_ulp_normal_domain": 1684.0,
    "median_ulp_diff": 1.0,
@@ -612,6 +765,8 @@
    "p99_ulp_normal_domain": 121.88000000000147,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 1684 ULP on the normal domain (3069 elements); subnormal references 3 (0.0977% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -622,10 +777,16 @@
    "subnormal_reference_fraction": 0.0009765625,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 99,
+   "ulp_element_basis_max": 1684.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000488281, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 38.988,
+   "allowance_in_ulps_at_scale_median": 2.39925,
+   "allowance_in_ulps_at_scale_min": 2.0481171875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -638,6 +799,7 @@
    "index": 16,
    "max_abs_diff": 0.000244140625,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 289.0,
    "max_ulp_diff_element_basis": 289.0,
    "max_ulp_normal_domain": 289.0,
    "median_ulp_diff": 1.0,
@@ -648,6 +810,8 @@
    "p99_ulp_normal_domain": 48.0,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 289 ULP on the normal domain (3064 elements); subnormal references 8 (0.2604% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -658,10 +822,16 @@
    "subnormal_reference_fraction": 0.0026041666666666665,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 91,
+   "ulp_element_basis_max": 289.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00195312, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 38.152,
+   "allowance_in_ulps_at_scale_median": 1.0187187500000001,
+   "allowance_in_ulps_at_scale_min": 0.512390625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -674,6 +844,7 @@
    "index": 17,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 2.0,
+   "max_ulp_diff": 1183.0,
    "max_ulp_diff_element_basis": 1183.0,
    "max_ulp_normal_domain": 1183.0,
    "median_ulp_diff": 1.0,
@@ -684,6 +855,8 @@
    "p99_ulp_normal_domain": 50.0,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 1183 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -694,10 +867,16 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 67,
+   "ulp_element_basis_max": 1183.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000488281, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 29.628,
+   "allowance_in_ulps_at_scale_median": 2.44175,
+   "allowance_in_ulps_at_scale_min": 2.0482490234375,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -710,6 +889,7 @@
    "index": 18,
    "max_abs_diff": 0.000244140625,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 310.0,
    "max_ulp_diff_element_basis": 310.0,
    "max_ulp_normal_domain": 310.0,
    "median_ulp_diff": 1.0,
@@ -720,6 +900,8 @@
    "p99_ulp_normal_domain": 62.38000000000011,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 310 ULP on the normal domain (3063 elements); subnormal references 9 (0.2930% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -730,10 +912,16 @@
    "subnormal_reference_fraction": 0.0029296875,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 85,
+   "ulp_element_basis_max": 310.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00195312, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 40.072,
+   "allowance_in_ulps_at_scale_median": 1.0426250000000001,
+   "allowance_in_ulps_at_scale_min": 0.512059814453125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -746,6 +934,7 @@
    "index": 19,
    "max_abs_diff": 0.001953125,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 626.0,
    "max_ulp_diff_element_basis": 626.0,
    "max_ulp_normal_domain": 626.0,
    "median_ulp_diff": 1.0,
@@ -756,6 +945,8 @@
    "p99_ulp_normal_domain": 39.309999999999945,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 626 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -766,10 +957,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 66,
+   "ulp_element_basis_max": 626.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 26.764000000000003,
+   "allowance_in_ulps_at_scale_median": 1.254234375,
+   "allowance_in_ulps_at_scale_min": 1.0240390625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -782,6 +979,7 @@
    "index": 20,
    "max_abs_diff": 0.000244140625,
    "max_ulp_at_scale_diff": 0.25,
+   "max_ulp_diff": 423.0,
    "max_ulp_diff_element_basis": 423.0,
    "max_ulp_normal_domain": 423.0,
    "median_ulp_diff": 1.0,
@@ -792,6 +990,8 @@
    "p99_ulp_normal_domain": 55.40000000000009,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 423 ULP on the normal domain (3061 elements); subnormal references 11 (0.3581% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -802,10 +1002,16 @@
    "subnormal_reference_fraction": 0.0035807291666666665,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 142,
+   "ulp_element_basis_max": 423.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 24.496000000000002,
+   "allowance_in_ulps_at_scale_median": 0.539046875,
+   "allowance_in_ulps_at_scale_min": 0.2562764892578125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -818,6 +1024,7 @@
    "index": 21,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 2167.75,
    "max_ulp_diff_element_basis": 2167.75,
    "max_ulp_normal_domain": 2167.75,
    "median_ulp_diff": 1.0,
@@ -828,6 +1035,8 @@
    "p99_ulp_normal_domain": 105.60000000000036,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 2167.75 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -838,10 +1047,16 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 139,
+   "ulp_element_basis_max": 2167.75,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 24.004,
+   "allowance_in_ulps_at_scale_median": 1.285640625,
+   "allowance_in_ulps_at_scale_min": 1.0240537109375,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -854,6 +1069,7 @@
    "index": 22,
    "max_abs_diff": 0.00048828125,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 805.0,
    "max_ulp_diff_element_basis": 805.0,
    "max_ulp_normal_domain": 450.0,
    "median_ulp_diff": 1.0,
@@ -864,6 +1080,8 @@
    "p99_ulp_normal_domain": 58.38000000000011,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 450 ULP on the normal domain (3063 elements); subnormal references 9 (0.2930% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -874,10 +1092,16 @@
    "subnormal_reference_fraction": 0.0029296875,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 132,
+   "ulp_element_basis_max": 805.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 38.516,
+   "allowance_in_ulps_at_scale_median": 0.51975,
+   "allowance_in_ulps_at_scale_min": 0.25608087158203124,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -890,6 +1114,7 @@
    "index": 23,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 2711.0,
    "max_ulp_diff_element_basis": 2711.0,
    "max_ulp_normal_domain": 1101.0,
    "median_ulp_diff": 1.0,
@@ -900,6 +1125,8 @@
    "p99_ulp_normal_domain": 102.50000000000091,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 1101 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -910,10 +1137,16 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 144,
+   "ulp_element_basis_max": 2711.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 22.344,
+   "allowance_in_ulps_at_scale_median": 1.30009375,
+   "allowance_in_ulps_at_scale_min": 1.0241171875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -926,6 +1159,7 @@
    "index": 24,
    "max_abs_diff": 0.00048828125,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 576.0,
    "max_ulp_diff_element_basis": 576.0,
    "max_ulp_normal_domain": 576.0,
    "median_ulp_diff": 1.0,
@@ -936,6 +1170,8 @@
    "p99_ulp_normal_domain": 40.409999999999854,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 576 ULP on the normal domain (3060 elements); subnormal references 12 (0.3906% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -946,10 +1182,16 @@
    "subnormal_reference_fraction": 0.00390625,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 127,
+   "ulp_element_basis_max": 576.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 22.016000000000002,
+   "allowance_in_ulps_at_scale_median": 0.5176406250000001,
+   "allowance_in_ulps_at_scale_min": 0.25616815185546876,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -962,6 +1204,7 @@
    "index": 25,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1069.0,
    "max_ulp_diff_element_basis": 1069.0,
    "max_ulp_normal_domain": 733.0,
    "median_ulp_diff": 1.0,
@@ -972,6 +1215,8 @@
    "p99_ulp_normal_domain": 58.0,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 733 ULP on the normal domain (3069 elements); subnormal references 3 (0.0977% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -982,10 +1227,16 @@
    "subnormal_reference_fraction": 0.0009765625,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 135,
+   "ulp_element_basis_max": 1069.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 27.344,
+   "allowance_in_ulps_at_scale_median": 1.32978125,
+   "allowance_in_ulps_at_scale_min": 1.02405615234375,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -998,6 +1249,7 @@
    "index": 26,
    "max_abs_diff": 0.00048828125,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 421.0,
    "max_ulp_diff_element_basis": 421.0,
    "max_ulp_normal_domain": 362.0,
    "median_ulp_diff": 1.0,
@@ -1008,6 +1260,8 @@
    "p99_ulp_normal_domain": 50.38000000000011,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 362 ULP on the normal domain (3063 elements); subnormal references 9 (0.2930% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1018,10 +1272,16 @@
    "subnormal_reference_fraction": 0.0029296875,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 110,
+   "ulp_element_basis_max": 421.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 25.376,
+   "allowance_in_ulps_at_scale_median": 0.523890625,
+   "allowance_in_ulps_at_scale_min": 0.25629541015625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1034,6 +1294,7 @@
    "index": 27,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 2691.0,
    "max_ulp_diff_element_basis": 2691.0,
    "max_ulp_normal_domain": 2691.0,
    "median_ulp_diff": 1.0,
@@ -1044,6 +1305,8 @@
    "p99_ulp_normal_domain": 125.90000000000055,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 2691 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1054,10 +1317,16 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 154,
+   "ulp_element_basis_max": 2691.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000488281, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 41.408,
+   "allowance_in_ulps_at_scale_median": 2.738,
+   "allowance_in_ulps_at_scale_min": 2.04851513671875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1070,6 +1339,7 @@
    "index": 28,
    "max_abs_diff": 0.00048828125,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 459.0,
    "max_ulp_diff_element_basis": 459.0,
    "max_ulp_normal_domain": 459.0,
    "median_ulp_diff": 1.0,
@@ -1080,6 +1350,8 @@
    "p99_ulp_normal_domain": 47.08000000000038,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 459 ULP on the normal domain (3065 elements); subnormal references 7 (0.2279% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1090,10 +1362,16 @@
    "subnormal_reference_fraction": 0.0022786458333333335,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 47,
+   "ulp_element_basis_max": 459.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 24.736,
+   "allowance_in_ulps_at_scale_median": 0.54240625,
+   "allowance_in_ulps_at_scale_min": 0.25602288818359376,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1106,6 +1384,7 @@
    "index": 29,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1386.0,
    "max_ulp_diff_element_basis": 1386.0,
    "max_ulp_normal_domain": 792.0,
    "median_ulp_diff": 1.0,
@@ -1116,6 +1395,8 @@
    "p99_ulp_normal_domain": 75.61999999999989,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 792 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1126,10 +1407,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 124,
+   "ulp_element_basis_max": 1386.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 25.124000000000002,
+   "allowance_in_ulps_at_scale_median": 1.4443125,
+   "allowance_in_ulps_at_scale_min": 1.024113525390625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1142,6 +1429,7 @@
    "index": 30,
    "max_abs_diff": 0.00048828125,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 526.0,
    "max_ulp_diff_element_basis": 526.0,
    "max_ulp_normal_domain": 526.0,
    "median_ulp_diff": 1.0,
@@ -1152,6 +1440,8 @@
    "p99_ulp_normal_domain": 57.08000000000038,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 526 ULP on the normal domain (3065 elements); subnormal references 7 (0.2279% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1162,10 +1452,16 @@
    "subnormal_reference_fraction": 0.0022786458333333335,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 91,
+   "ulp_element_basis_max": 526.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 28.256,
+   "allowance_in_ulps_at_scale_median": 0.5646718749999999,
+   "allowance_in_ulps_at_scale_min": 0.2563350830078125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1178,6 +1474,7 @@
    "index": 31,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 517.0,
    "max_ulp_diff_element_basis": 517.0,
    "max_ulp_normal_domain": 517.0,
    "median_ulp_diff": 0.0,
@@ -1188,6 +1485,8 @@
    "p99_ulp_normal_domain": 35.57999999999993,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 517 ULP on the normal domain (3072 elements); subnormal references 0 (0.0000% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1198,10 +1497,16 @@
    "subnormal_reference_fraction": 0.0,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 123,
+   "ulp_element_basis_max": 517.0,
+   "ulp_element_basis_median": 0.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 35.464,
+   "allowance_in_ulps_at_scale_median": 1.46603125,
+   "allowance_in_ulps_at_scale_min": 1.02414404296875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1214,6 +1519,7 @@
    "index": 32,
    "max_abs_diff": 0.000244140625,
    "max_ulp_at_scale_diff": 0.25,
+   "max_ulp_diff": 466.0,
    "max_ulp_diff_element_basis": 466.0,
    "max_ulp_normal_domain": 201.0,
    "median_ulp_diff": 1.0,
@@ -1224,6 +1530,8 @@
    "p99_ulp_normal_domain": 39.0,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 201 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1234,10 +1542,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 64,
+   "ulp_element_basis_max": 466.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.0078125, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 35.408,
+   "allowance_in_ulps_at_scale_median": 0.27714062500000003,
+   "allowance_in_ulps_at_scale_min": 0.1280437927246094,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1250,6 +1564,7 @@
    "index": 33,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 768.0,
    "max_ulp_diff_element_basis": 768.0,
    "max_ulp_normal_domain": 768.0,
    "median_ulp_diff": 1.0,
@@ -1260,6 +1575,8 @@
    "p99_ulp_normal_domain": 67.30999999999995,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 768 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1270,10 +1587,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 230,
+   "ulp_element_basis_max": 768.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 36.984,
+   "allowance_in_ulps_at_scale_median": 1.4343125,
+   "allowance_in_ulps_at_scale_min": 1.024040283203125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1286,6 +1609,7 @@
    "index": 34,
    "max_abs_diff": 0.0009765625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 529.0,
    "max_ulp_diff_element_basis": 529.0,
    "max_ulp_normal_domain": 529.0,
    "median_ulp_diff": 1.0,
@@ -1296,6 +1620,8 @@
    "p99_ulp_normal_domain": 55.309999999999945,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 529 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1306,10 +1632,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 87,
+   "ulp_element_basis_max": 529.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 29.716,
+   "allowance_in_ulps_at_scale_median": 0.540375,
+   "allowance_in_ulps_at_scale_min": 0.25611199951171876,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1322,6 +1654,7 @@
    "index": 35,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1458.0,
    "max_ulp_diff_element_basis": 1458.0,
    "max_ulp_normal_domain": 1384.0,
    "median_ulp_diff": 2.0,
@@ -1332,6 +1665,8 @@
    "p99_ulp_normal_domain": 120.0,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 1384 ULP on the normal domain (3068 elements); subnormal references 4 (0.1302% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1342,10 +1677,16 @@
    "subnormal_reference_fraction": 0.0013020833333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 133,
+   "ulp_element_basis_max": 1458.0,
+   "ulp_element_basis_median": 2.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 29.824,
+   "allowance_in_ulps_at_scale_median": 1.4694687499999999,
+   "allowance_in_ulps_at_scale_min": 1.024224609375,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1358,6 +1699,7 @@
    "index": 36,
    "max_abs_diff": 0.0009765625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 347.0,
    "max_ulp_diff_element_basis": 347.0,
    "max_ulp_normal_domain": 347.0,
    "median_ulp_diff": 1.0,
@@ -1368,6 +1710,8 @@
    "p99_ulp_normal_domain": 55.340000000000146,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 347 ULP on the normal domain (3067 elements); subnormal references 5 (0.1628% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1378,10 +1722,16 @@
    "subnormal_reference_fraction": 0.0016276041666666667,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 81,
+   "ulp_element_basis_max": 347.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 28.916,
+   "allowance_in_ulps_at_scale_median": 0.56615625,
+   "allowance_in_ulps_at_scale_min": 0.25605279541015624,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1394,6 +1744,7 @@
    "index": 37,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1879.0,
    "max_ulp_diff_element_basis": 1879.0,
    "max_ulp_normal_domain": 1879.0,
    "median_ulp_diff": 1.0,
@@ -1404,6 +1755,8 @@
    "p99_ulp_normal_domain": 93.54999999999973,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 1879 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1414,10 +1767,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 129,
+   "ulp_element_basis_max": 1879.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 27.044,
+   "allowance_in_ulps_at_scale_median": 1.545875,
+   "allowance_in_ulps_at_scale_min": 1.024185546875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1430,6 +1789,7 @@
    "index": 38,
    "max_abs_diff": 0.00048828125,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 622.0,
    "max_ulp_diff_element_basis": 622.0,
    "max_ulp_normal_domain": 284.0,
    "median_ulp_diff": 1.0,
@@ -1440,6 +1800,8 @@
    "p99_ulp_normal_domain": 51.0,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 284 ULP on the normal domain (3065 elements); subnormal references 7 (0.2279% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1450,10 +1812,16 @@
    "subnormal_reference_fraction": 0.0022786458333333335,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 70,
+   "ulp_element_basis_max": 622.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 26.096,
+   "allowance_in_ulps_at_scale_median": 0.5425625000000001,
+   "allowance_in_ulps_at_scale_min": 0.2563341674804688,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1466,6 +1834,7 @@
    "index": 39,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 6171.0,
    "max_ulp_diff_element_basis": 6171.0,
    "max_ulp_normal_domain": 6171.0,
    "median_ulp_diff": 1.0,
@@ -1476,6 +1845,8 @@
    "p99_ulp_normal_domain": 133.57999999999993,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 6171 ULP on the normal domain (3072 elements); subnormal references 0 (0.0000% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1486,10 +1857,16 @@
    "subnormal_reference_fraction": 0.0,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 128,
+   "ulp_element_basis_max": 6171.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 26.544,
+   "allowance_in_ulps_at_scale_median": 1.5043125000000002,
+   "allowance_in_ulps_at_scale_min": 1.024125732421875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1502,6 +1879,7 @@
    "index": 40,
    "max_abs_diff": 0.000244140625,
    "max_ulp_at_scale_diff": 0.25,
+   "max_ulp_diff": 1081.0,
    "max_ulp_diff_element_basis": 1081.0,
    "max_ulp_normal_domain": 1081.0,
    "median_ulp_diff": 1.0,
@@ -1512,6 +1890,8 @@
    "p99_ulp_normal_domain": 57.0,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 1081 ULP on the normal domain (3067 elements); subnormal references 5 (0.1628% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1522,10 +1902,16 @@
    "subnormal_reference_fraction": 0.0016276041666666667,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 64,
+   "ulp_element_basis_max": 1081.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 27.976,
+   "allowance_in_ulps_at_scale_median": 0.5556875,
+   "allowance_in_ulps_at_scale_min": 0.256260009765625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1538,6 +1924,7 @@
    "index": 41,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 2544.0,
    "max_ulp_diff_element_basis": 2544.0,
    "max_ulp_normal_domain": 2544.0,
    "median_ulp_diff": 1.0,
@@ -1548,6 +1935,8 @@
    "p99_ulp_normal_domain": 123.55000000000064,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 2544 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1558,10 +1947,16 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 137,
+   "ulp_element_basis_max": 2544.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00195312, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 22.692,
+   "allowance_in_ulps_at_scale_median": 0.738875,
+   "allowance_in_ulps_at_scale_min": 0.5120927734375,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1574,6 +1969,7 @@
    "index": 42,
    "max_abs_diff": 0.000244140625,
    "max_ulp_at_scale_diff": 0.125,
+   "max_ulp_diff": 998.0,
    "max_ulp_diff_element_basis": 998.0,
    "max_ulp_normal_domain": 523.0,
    "median_ulp_diff": 1.0,
@@ -1584,6 +1980,8 @@
    "p99_ulp_normal_domain": 71.0,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 523 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1594,10 +1992,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 162,
+   "ulp_element_basis_max": 998.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 29.716,
+   "allowance_in_ulps_at_scale_median": 0.559984375,
+   "allowance_in_ulps_at_scale_min": 0.256059814453125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1610,6 +2014,7 @@
    "index": 43,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 2292.0,
    "max_ulp_diff_element_basis": 2292.0,
    "max_ulp_normal_domain": 747.0,
    "median_ulp_diff": 1.0,
@@ -1620,6 +2025,8 @@
    "p99_ulp_normal_domain": 91.30000000000018,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 747 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1630,10 +2037,16 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 124,
+   "ulp_element_basis_max": 2292.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 28.364,
+   "allowance_in_ulps_at_scale_median": 1.5277500000000002,
+   "allowance_in_ulps_at_scale_min": 1.02409765625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1646,6 +2059,7 @@
    "index": 44,
    "max_abs_diff": 0.000244140625,
    "max_ulp_at_scale_diff": 0.25,
+   "max_ulp_diff": 1569.0,
    "max_ulp_diff_element_basis": 1569.0,
    "max_ulp_normal_domain": 381.0,
    "median_ulp_diff": 1.0,
@@ -1656,6 +2070,8 @@
    "p99_ulp_normal_domain": 62.0,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 381 ULP on the normal domain (3066 elements); subnormal references 6 (0.1953% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1666,10 +2082,16 @@
    "subnormal_reference_fraction": 0.001953125,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 72,
+   "ulp_element_basis_max": 1569.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 25.836000000000002,
+   "allowance_in_ulps_at_scale_median": 0.554984375,
+   "allowance_in_ulps_at_scale_min": 0.2563790283203125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1682,6 +2104,7 @@
    "index": 45,
    "max_abs_diff": 0.001953125,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 719.0,
    "max_ulp_diff_element_basis": 719.0,
    "max_ulp_normal_domain": 719.0,
    "median_ulp_diff": 1.0,
@@ -1692,6 +2115,8 @@
    "p99_ulp_normal_domain": 80.86999999999989,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 719 ULP on the normal domain (3072 elements); subnormal references 0 (0.0000% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1702,10 +2127,16 @@
    "subnormal_reference_fraction": 0.0,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 102,
+   "ulp_element_basis_max": 719.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 24.544,
+   "allowance_in_ulps_at_scale_median": 1.5038437500000001,
+   "allowance_in_ulps_at_scale_min": 1.02470068359375,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1718,6 +2149,7 @@
    "index": 46,
    "max_abs_diff": 0.00048828125,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 1361.0,
    "max_ulp_diff_element_basis": 1361.0,
    "max_ulp_normal_domain": 1361.0,
    "median_ulp_diff": 1.0,
@@ -1728,6 +2160,8 @@
    "p99_ulp_normal_domain": 99.4099999999994,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 1361 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1738,10 +2172,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 75,
+   "ulp_element_basis_max": 1361.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 25.796,
+   "allowance_in_ulps_at_scale_median": 0.555765625,
+   "allowance_in_ulps_at_scale_min": 0.25603509521484374,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1754,6 +2194,7 @@
    "index": 47,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1330.0,
    "max_ulp_diff_element_basis": 1330.0,
    "max_ulp_normal_domain": 570.0,
    "median_ulp_diff": 1.0,
@@ -1764,6 +2205,8 @@
    "p99_ulp_normal_domain": 73.32999999999993,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 570 ULP on the normal domain (3068 elements); subnormal references 4 (0.1302% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1774,10 +2217,16 @@
    "subnormal_reference_fraction": 0.0013020833333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 120,
+   "ulp_element_basis_max": 1330.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 25.244,
+   "allowance_in_ulps_at_scale_median": 1.52634375,
+   "allowance_in_ulps_at_scale_min": 1.0240830078125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1790,6 +2239,7 @@
    "index": 48,
    "max_abs_diff": 0.00048828125,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 792.0,
    "max_ulp_diff_element_basis": 792.0,
    "max_ulp_normal_domain": 792.0,
    "median_ulp_diff": 1.0,
@@ -1800,6 +2250,8 @@
    "p99_ulp_normal_domain": 87.38000000000011,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 792 ULP on the normal domain (3063 elements); subnormal references 9 (0.2930% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1810,10 +2262,16 @@
    "subnormal_reference_fraction": 0.0029296875,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 76,
+   "ulp_element_basis_max": 792.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 28.936,
+   "allowance_in_ulps_at_scale_median": 0.55896875,
+   "allowance_in_ulps_at_scale_min": 0.25611199951171876,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1826,6 +2284,7 @@
    "index": 49,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1960.0,
    "max_ulp_diff_element_basis": 1960.0,
    "max_ulp_normal_domain": 1960.0,
    "median_ulp_diff": 2.0,
@@ -1836,6 +2295,8 @@
    "p99_ulp_normal_domain": 119.30000000000018,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 1960 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1846,10 +2307,16 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 130,
+   "ulp_element_basis_max": 1960.0,
+   "ulp_element_basis_median": 2.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 32.504,
+   "allowance_in_ulps_at_scale_median": 1.5668125,
+   "allowance_in_ulps_at_scale_min": 1.02402685546875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1862,6 +2329,7 @@
    "index": 50,
    "max_abs_diff": 0.0009765625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 948.0,
    "max_ulp_diff_element_basis": 948.0,
    "max_ulp_normal_domain": 948.0,
    "median_ulp_diff": 2.0,
@@ -1872,6 +2340,8 @@
    "p99_ulp_normal_domain": 113.15000000000009,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 948 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1882,10 +2352,16 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 75,
+   "ulp_element_basis_max": 948.0,
+   "ulp_element_basis_median": 2.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 26.156000000000002,
+   "allowance_in_ulps_at_scale_median": 0.58678125,
+   "allowance_in_ulps_at_scale_min": 0.25619287109375,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1898,6 +2374,7 @@
    "index": 51,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1109.0,
    "max_ulp_diff_element_basis": 1109.0,
    "max_ulp_normal_domain": 998.5,
    "median_ulp_diff": 1.0,
@@ -1908,6 +2385,8 @@
    "p99_ulp_normal_domain": 109.61999999999989,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 998.5 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1918,10 +2397,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 121,
+   "ulp_element_basis_max": 1109.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 36.944,
+   "allowance_in_ulps_at_scale_median": 1.595875,
+   "allowance_in_ulps_at_scale_min": 1.0244016113281251,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1934,6 +2419,7 @@
    "index": 52,
    "max_abs_diff": 0.0009765625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1143.0,
    "max_ulp_diff_element_basis": 1143.0,
    "max_ulp_normal_domain": 652.5,
    "median_ulp_diff": 1.0,
@@ -1944,6 +2430,8 @@
    "p99_ulp_normal_domain": 86.32000000000016,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 652.5 ULP on the normal domain (3069 elements); subnormal references 3 (0.0977% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1954,10 +2442,16 @@
    "subnormal_reference_fraction": 0.0009765625,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 54,
+   "ulp_element_basis_max": 1143.0,
+   "ulp_element_basis_median": 1.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 27.976,
+   "allowance_in_ulps_at_scale_median": 0.5719375,
+   "allowance_in_ulps_at_scale_min": 0.25632562255859376,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -1970,6 +2464,7 @@
    "index": 53,
    "max_abs_diff": 0.0078125,
    "max_ulp_at_scale_diff": 2.0,
+   "max_ulp_diff": 2447.0,
    "max_ulp_diff_element_basis": 2447.0,
    "max_ulp_normal_domain": 2447.0,
    "median_ulp_diff": 2.0,
@@ -1980,6 +2475,8 @@
    "p99_ulp_normal_domain": 112.02999999999975,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 2447 ULP on the normal domain (3072 elements); subnormal references 0 (0.0000% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -1990,10 +2487,16 @@
    "subnormal_reference_fraction": 0.0,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 126,
+   "ulp_element_basis_max": 2447.0,
+   "ulp_element_basis_median": 2.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 31.164,
+   "allowance_in_ulps_at_scale_median": 1.6243125,
+   "allowance_in_ulps_at_scale_min": 1.025033935546875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -2006,6 +2509,7 @@
    "index": 54,
    "max_abs_diff": 0.00048828125,
    "max_ulp_at_scale_diff": 0.5,
+   "max_ulp_diff": 796.0,
    "max_ulp_diff_element_basis": 796.0,
    "max_ulp_normal_domain": 796.0,
    "median_ulp_diff": 2.0,
@@ -2016,6 +2520,8 @@
    "p99_ulp_normal_domain": 67.30000000000018,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 796 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -2026,10 +2532,16 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 47,
+   "ulp_element_basis_max": 796.0,
+   "ulp_element_basis_median": 2.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 27.396,
+   "allowance_in_ulps_at_scale_median": 0.58584375,
+   "allowance_in_ulps_at_scale_min": 0.25630792236328126,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -2042,6 +2554,7 @@
    "index": 55,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1311.0,
    "max_ulp_diff_element_basis": 1311.0,
    "max_ulp_normal_domain": 1311.0,
    "median_ulp_diff": 2.0,
@@ -2052,6 +2565,8 @@
    "p99_ulp_normal_domain": 94.0,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 1311 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -2062,10 +2577,16 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 114,
+   "ulp_element_basis_max": 1311.0,
+   "ulp_element_basis_median": 2.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 25.964000000000002,
+   "allowance_in_ulps_at_scale_median": 1.643375,
+   "allowance_in_ulps_at_scale_min": 1.024572509765625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -2078,6 +2599,7 @@
    "index": 56,
    "max_abs_diff": 0.0009765625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1624.0,
    "max_ulp_diff_element_basis": 1624.0,
    "max_ulp_normal_domain": 1624.0,
    "median_ulp_diff": 2.0,
@@ -2088,6 +2610,8 @@
    "p99_ulp_normal_domain": 143.47999999999956,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 1624 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -2098,10 +2622,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 66,
+   "ulp_element_basis_max": 1624.0,
+   "ulp_element_basis_median": 2.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 34.016,
+   "allowance_in_ulps_at_scale_median": 0.59475,
+   "allowance_in_ulps_at_scale_min": 0.2561910400390625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -2114,6 +2644,7 @@
    "index": 57,
    "max_abs_diff": 0.0078125,
    "max_ulp_at_scale_diff": 2.0,
+   "max_ulp_diff": 4324.0,
    "max_ulp_diff_element_basis": 4324.0,
    "max_ulp_normal_domain": 2196.0,
    "median_ulp_diff": 2.0,
@@ -2124,6 +2655,8 @@
    "p99_ulp_normal_domain": 102.4099999999994,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 2196 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -2134,10 +2667,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 95,
+   "ulp_element_basis_max": 4324.0,
+   "ulp_element_basis_median": 2.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.000976562, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 35.504000000000005,
+   "allowance_in_ulps_at_scale_median": 1.75275,
+   "allowance_in_ulps_at_scale_min": 1.024489501953125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -2150,6 +2689,7 @@
    "index": 58,
    "max_abs_diff": 0.0009765625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 1410.0,
    "max_ulp_diff_element_basis": 1410.0,
    "max_ulp_normal_domain": 816.0,
    "median_ulp_diff": 2.0,
@@ -2160,6 +2700,8 @@
    "p99_ulp_normal_domain": 93.92999999999984,
    "ruled_equals_element_basis": false,
    "ruled_observable_report": "max 816 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -2170,10 +2712,16 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 52,
+   "ulp_element_basis_max": 1410.0,
+   "ulp_element_basis_median": 2.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 35.236000000000004,
+   "allowance_in_ulps_at_scale_median": 0.5972500000000001,
+   "allowance_in_ulps_at_scale_min": 0.2568544921875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -2186,6 +2734,7 @@
    "index": 59,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 849.0,
    "max_ulp_diff_element_basis": 849.0,
    "max_ulp_normal_domain": 849.0,
    "median_ulp_diff": 2.0,
@@ -2196,6 +2745,8 @@
    "p99_ulp_normal_domain": 187.44999999999982,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 849 ULP on the normal domain (3072 elements); subnormal references 0 (0.0000% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -2206,10 +2757,16 @@
    "subnormal_reference_fraction": 0.0,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 122,
+   "ulp_element_basis_max": 849.0,
+   "ulp_element_basis_median": 2.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00195312, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 24.572000000000003,
+   "allowance_in_ulps_at_scale_median": 0.9457500000000001,
+   "allowance_in_ulps_at_scale_min": 0.51202197265625,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -2222,6 +2779,7 @@
    "index": 60,
    "max_abs_diff": 0.001953125,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 998.5,
    "max_ulp_diff_element_basis": 998.5,
    "max_ulp_normal_domain": 998.5,
    "median_ulp_diff": 2.0,
@@ -2232,6 +2790,8 @@
    "p99_ulp_normal_domain": 99.0,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 998.5 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -2242,10 +2802,16 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 64,
+   "ulp_element_basis_max": 998.5,
+   "ulp_element_basis_median": 2.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 31.476000000000003,
+   "allowance_in_ulps_at_scale_median": 0.9175625000000001,
+   "allowance_in_ulps_at_scale_min": 0.2566951904296875,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -2258,6 +2824,7 @@
    "index": 61,
    "max_abs_diff": 0.0078125,
    "max_ulp_at_scale_diff": 2.0,
+   "max_ulp_diff": 2440.0,
    "max_ulp_diff_element_basis": 2440.0,
    "max_ulp_normal_domain": 2440.0,
    "median_ulp_diff": 3.0,
@@ -2268,6 +2835,8 @@
    "p99_ulp_normal_domain": 160.57999999999993,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 2440 ULP on the normal domain (3072 elements); subnormal references 0 (0.0000% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -2278,10 +2847,16 @@
    "subnormal_reference_fraction": 0.0,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 55,
+   "ulp_element_basis_max": 2440.0,
+   "ulp_element_basis_median": 3.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00195312, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 30.792,
+   "allowance_in_ulps_at_scale_median": 1.4673125,
+   "allowance_in_ulps_at_scale_min": 0.5121953125,
    "dtype": "float16",
    "failing_element_census": {
     "atol": 0.001,
@@ -2294,6 +2869,7 @@
    "index": 62,
    "max_abs_diff": 0.00390625,
    "max_ulp_at_scale_diff": 2.0,
+   "max_ulp_diff": 9350.0,
    "max_ulp_diff_element_basis": 9350.0,
    "max_ulp_normal_domain": 9350.0,
    "median_ulp_diff": 3.0,
@@ -2304,6 +2880,8 @@
    "p99_ulp_normal_domain": 139.8000000000011,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 9350 ULP on the normal domain (3071 elements); subnormal references 1 (0.0326% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -2314,14 +2892,26 @@
    "subnormal_reference_fraction": 0.0003255208333333333,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 35,
+   "ulp_element_basis_max": 9350.0,
+   "ulp_element_basis_median": 3.0,
    "verdict": "WITHIN_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 29.796,
+   "allowance_in_ulps_at_scale_median": 1.134125,
+   "allowance_in_ulps_at_scale_min": 0.2565413818359375,
    "dtype": "float16",
    "failing_element_census": {
+    "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over the failing set. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+    "allowance_in_ulps_at_scale_max": 0.50771875,
+    "allowance_in_ulps_at_scale_median": 0.359671875,
+    "allowance_in_ulps_at_scale_min": 0.263451171875,
+    "allowance_in_ulps_element_basis_min": 58.548,
     "atol": 0.001,
     "atol_in_ulps_at_scale": 0.256,
+    "atol_in_ulps_at_scale_caveat": "atol is ONE TERM of the predicate's allowance `atol + rtol*|b|`; this figure is not the tolerance and quoting it as such is the refuted unsatisfiability argument (docs/DESIGN.md \u00a78.9.24(1))",
     "failing_abs_diff_max": 0.002410888671875,
     "failing_below_one_ulp_at_scale": 4,
     "failing_elements": 19,
@@ -2331,9 +2921,16 @@
     "failing_ref_median": 0.0202484130859375,
     "failing_ref_min": 0.0014553070068359375,
     "failing_residual_within_one_ulp_at_scale": 19,
+    "failing_residual_within_one_ulp_at_scale_caveat": "the step here is the step at the TENSOR MAXIMUM, not at the failing element; read failing_ulp_element_basis_* for the predicate's own granularity (docs/DESIGN.md \u00a78.9.24(1))",
+    "failing_ulp_element_basis_max": 1199.0,
+    "failing_ulp_element_basis_median": 139.0,
+    "failing_ulp_element_basis_min": 65.0,
+    "failing_ulp_element_basis_note": "|a-b| / spacing(b) at each FAILING element's own reference -- the granularity np.allclose evaluates at (\u00a78.9.24(3)(b))",
     "failing_with_subnormal_reference": 0,
     "one_ulp_at_scale": 0.00390625,
     "rtol": 0.02,
+    "satisfiability_bound_element_basis": 20.48,
+    "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for normal fp16, so allowance/ulp(b) >= rtol*2**10 independent of magnitude; a failing element exceeded an allowance at least this many representable steps wide (docs/DESIGN.md \u00a78.9.24(1))",
     "smallest_normal": 6.103515625e-05,
     "tensor_scale": 5.76953125,
     "total_elements": 3072
@@ -2341,6 +2938,7 @@
    "index": 63,
    "max_abs_diff": 0.005859375,
    "max_ulp_at_scale_diff": 1.5,
+   "max_ulp_diff": 2761.0,
    "max_ulp_diff_element_basis": 2761.0,
    "max_ulp_normal_domain": 2761.0,
    "median_ulp_diff": 4.0,
@@ -2351,6 +2949,8 @@
    "p99_ulp_normal_domain": 225.0,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 2761 ULP on the normal domain (3072 elements); subnormal references 0 (0.0000% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -2361,14 +2961,26 @@
    "subnormal_reference_fraction": 0.0,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 42,
+   "ulp_element_basis_max": 2761.0,
+   "ulp_element_basis_median": 4.0,
    "verdict": "OUTSIDE_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   },
   {
+   "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.015625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+   "allowance_in_ulps_at_scale_max": 32.404,
+   "allowance_in_ulps_at_scale_median": 0.230875,
+   "allowance_in_ulps_at_scale_min": 0.06400007629394532,
    "dtype": "float16",
    "failing_element_census": {
+    "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.015625, evaluated at each element's own reference over the failing set. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+    "allowance_in_ulps_at_scale_max": 0.1142734375,
+    "allowance_in_ulps_at_scale_median": 0.0725205078125,
+    "allowance_in_ulps_at_scale_min": 0.06684912109375,
+    "allowance_in_ulps_element_basis_min": 58.508,
     "atol": 0.001,
     "atol_in_ulps_at_scale": 0.064,
+    "atol_in_ulps_at_scale_caveat": "atol is ONE TERM of the predicate's allowance `atol + rtol*|b|`; this figure is not the tolerance and quoting it as such is the refuted unsatisfiability argument (docs/DESIGN.md \u00a78.9.24(1))",
     "failing_abs_diff_max": 0.001800537109375,
     "failing_below_one_ulp_at_scale": 2,
     "failing_elements": 3,
@@ -2378,9 +2990,16 @@
     "failing_ref_median": 0.006656646728515625,
     "failing_ref_min": 0.0022258758544921875,
     "failing_residual_within_one_ulp_at_scale": 3,
+    "failing_residual_within_one_ulp_at_scale_caveat": "the step here is the step at the TENSOR MAXIMUM, not at the failing element; read failing_ulp_element_basis_* for the predicate's own granularity (docs/DESIGN.md \u00a78.9.24(1))",
+    "failing_ulp_element_basis_max": 594.0,
+    "failing_ulp_element_basis_median": 325.0,
+    "failing_ulp_element_basis_min": 59.0,
+    "failing_ulp_element_basis_note": "|a-b| / spacing(b) at each FAILING element's own reference -- the granularity np.allclose evaluates at (\u00a78.9.24(3)(b))",
     "failing_with_subnormal_reference": 0,
     "one_ulp_at_scale": 0.015625,
     "rtol": 0.02,
+    "satisfiability_bound_element_basis": 20.48,
+    "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for normal fp16, so allowance/ulp(b) >= rtol*2**10 independent of magnitude; a failing element exceeded an allowance at least this many representable steps wide (docs/DESIGN.md \u00a78.9.24(1))",
     "smallest_normal": 6.103515625e-05,
     "tensor_scale": 25.265625,
     "total_elements": 3072
@@ -2388,6 +3007,7 @@
    "index": 64,
    "max_abs_diff": 0.015625,
    "max_ulp_at_scale_diff": 1.0,
+   "max_ulp_diff": 11119.0,
    "max_ulp_diff_element_basis": 11119.0,
    "max_ulp_normal_domain": 11119.0,
    "median_ulp_diff": 4.0,
@@ -2398,6 +3018,8 @@
    "p99_ulp_normal_domain": 234.85999999999967,
    "ruled_equals_element_basis": true,
    "ruled_observable_report": "max 11119 ULP on the normal domain (3070 elements); subnormal references 2 (0.0651% of tensor), published not dropped",
+   "satisfiability_bound_element_basis": 20.48,
+   "satisfiability_bound_note": "ulp(b) <= |b|*2**-10 for every normal fp16 b, so allowance/ulp(b) >= rtol*2**10 independent of magnitude. A failing element exceeded an allowance at least this many representable steps wide AT ITS OWN SCALE -- it did not fail by a sub-step amount (docs/DESIGN.md \u00a78.9.24(1))",
    "shape": [
     1,
     32,
@@ -2408,6 +3030,8 @@
    "subnormal_reference_fraction": 0.0006510416666666666,
    "ulp_basis_verdict": "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN",
    "ulp_cancellation_elements": 200,
+   "ulp_element_basis_max": 11119.0,
+   "ulp_element_basis_median": 4.0,
    "verdict": "OUTSIDE_TOLERANCE",
    "verdict_predicate": "np.allclose(rtol=0.02, atol=0.001, equal_nan=True); no ULP statistic on any basis participates"
   }

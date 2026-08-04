@@ -24,8 +24,12 @@ from __future__ import annotations
 
 import json
 import pathlib
+import sys
 
 import pytest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _models as m  # noqa: E402
 
 _RESULTS = pathlib.Path(__file__).resolve().parents[2] / "bench" / "results"
 _DEVICES = ("0", "1")
@@ -104,16 +108,30 @@ def test_the_ruled_statistic_did_not_move_the_failing_outputs(dev: str) -> None:
 
 @pytest.mark.parametrize("dev", _DEVICES)
 def test_the_two_failure_mechanisms_are_distinguished(dev: str) -> None:
-    """The finding this re-score produced, pinned.
+    """The re-score's readings, pinned -- AND the reading of them that §8.9.24 refuted.
 
-    The three failures are **not one phenomenon**:
+    What the at-scale statistic says is still true of the at-scale statistic: the logits
+    fail on ~19% of elements with residuals several steps wide at the tensor's scale, while
+    layer 31's key and value fail on a handful of elements whose residual is at or below
+    ONE step *of the tensor maximum*. Those numbers are not withdrawn.
 
-    * the logits fail on 18-19% of elements with residuals up to 8 ULP at the tensor's
-      own scale -- a real residual, several representable steps wide;
-    * layer 31's key and value fail on a handful of elements whose residual is **at or
-      below one representable step** of fp16 at the tensor's scale.
+    What I concluded from them was wrong, and §8.9.24 needed no run to show it. I wrote
+    that 63 and 64 "fail within one representable step" and therefore that the gate was
+    unsatisfiable. Two errors, compounding:
 
-    Reported. Not acted on: `atol` is untouched, and a tolerance is Morpheus's to rule.
+    * I quoted `atol` alone. `np.allclose` tests ``|a-b| <= atol + rtol*|b|`` -- a two-term
+      sum, and I quoted one term of it.
+    * I divided by the spacing at the TENSOR MAXIMUM while the predicate evaluates PER
+      ELEMENT. The step I called "one representable step" was borrowed from a value
+      roughly 500x larger than the elements that were failing.
+
+    On the element basis, at each failing element's own magnitude, they do not fail within
+    one step -- they fail by hundreds of steps against an allowance of tens. This test
+    asserts BOTH readings on the same row, because the fence in §8.9.24(3) exists precisely
+    so that the at-scale figure can never again appear without the arithmetic that bounds it.
+
+    Reported. Not acted on: `atol` and `rtol` are untouched, and §8.9.24(4) forbids a
+    motion outright. THE MOVER IS NOT THE MEASURER.
     """
     rec = _record(dev)
     logits = rec["per_output"][0]["failing_element_census"]
@@ -124,9 +142,68 @@ def test_the_two_failure_mechanisms_are_distinguished(dev: str) -> None:
     for i in (63, 64):
         c = rec["per_output"][i]["failing_element_census"]
         assert c["failing_elements"] < 50, c
+
+        # (a) the at-scale reading, unchanged and still true OF THE AT-SCALE UNIT
         assert c["failing_max_ulp_at_scale"] <= 1.0, c
-        # every failing element's residual is within one representable step
         assert c["failing_residual_within_one_ulp_at_scale"] == c["failing_elements"], c
+
+        # (b) the reading that refutes the conclusion I drew from (a). On the element
+        #     basis the same residuals are hundreds of steps wide.
+        assert c["failing_ulp_element_basis_max"] > 20.0, (
+            f"output {i}: the element-basis residual no longer exceeds the general bound; "
+            f"the §8.9.24 inversion is no longer demonstrated by this artifact -- {c}"
+        )
+        assert c["failing_ulp_element_basis_max"] > c["allowance_in_ulps_element_basis_min"], (
+            f"output {i} would now be INSIDE its allowance on the element basis, which "
+            f"would mean the gate no longer fails it -- a result, not a test to repair"
+        )
+
+        # (c) and the allowance is never the sub-step quantity the refuted finding used
+        assert c["allowance_in_ulps_element_basis_min"] >= c[
+            "satisfiability_bound_element_basis"
+        ], c
+
+
+@pytest.mark.parametrize("dev", _DEVICES)
+def test_the_general_bound_holds_on_every_row(dev: str) -> None:
+    """`allowance/ulp(b) >= rtol*2**10 = 20.48`, independent of magnitude.
+
+    For normal fp16, ``ulp(b) <= |b| * 2**-10``, so the `rtol` term alone buys at least
+    `rtol * 1024` representable steps at ANY magnitude -- minimum 20.48 attained at
+    |b| = 32768, and subnormals get >= 16,777 steps from `atol` alone. There is no
+    magnitude at which this predicate is unsatisfiable within one step, which is why the
+    finding needed no run to refute.
+
+    Asserting it here rather than only in the unit lane means the claim is checked against
+    real measured tensors, not only against a swept range.
+    """
+    rec = _record(dev)
+    for i in (0, 63, 64):
+        c = rec["per_output"][i]["failing_element_census"]
+        assert c["satisfiability_bound_element_basis"] == pytest.approx(0.02 * 1024)
+        assert c["allowance_in_ulps_element_basis_min"] >= 20.48
+
+
+@pytest.mark.parametrize("dev", _DEVICES)
+def test_every_at_scale_figure_carries_its_companions(dev: str) -> None:
+    """§8.9.24(3): ULP-at-scale is fenced, not withdrawn, and I am the owner of the fence.
+
+    A row may report a residual in ULP-at-scale only if it also reports the allowance in
+    the same unit and the failing set on the element basis. Both halves of the refuted
+    finding are then visible on the row that would make it, so the next instance is caught
+    where it is written rather than three rounds later.
+
+    `assert_ulp_at_scale_row_is_complete` RAISES; a warning would be read past.
+    """
+    rec = _record(dev)
+    for p in rec["per_output"]:
+        m.assert_ulp_at_scale_row_is_complete(
+            p, where=f"dev{dev} per_output[{p['index']}]"
+        )
+        if "failing_element_census" in p:
+            m.assert_ulp_at_scale_row_is_complete(
+                p["failing_element_census"], where=f"dev{dev} census[{p['index']}]"
+            )
 
 
 @pytest.mark.parametrize("dev", _DEVICES)
