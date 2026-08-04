@@ -253,6 +253,64 @@ def scan_text(path: Path, text: str) -> dict[str, list[str]]:
     return hits
 
 
+def json_embedded_text(doc: object) -> str:
+    """Every string VALUE in a JSON artifact, joined, so a captured log inside one is read.
+
+    MEASURED BLINDNESS, 2026-08-04, and the reason this exists
+    ----------------------------------------------------------
+
+    A probe that captures a worker's stderr and stores it under a key such as
+    ``stderr_tail`` produces a JSON artifact whose device-loss witness is *inside a JSON
+    string*.  ORT's C++ sink writes UTF-16LE, so that captured text arrives NUL-separated,
+    and ``json.dumps`` escapes each NUL as the six literal characters ``\\u0000``.  The
+    file's raw text therefore contains ``V\\u0000K\\u0000_\\u0000E...`` and **never** the
+    substring ``VK_ERROR_DEVICE_LOST``.
+
+    ``searchable_text`` cannot help: it normalises real NUL bytes, and inside a JSON source
+    file there are none — the NULs only exist after the string is decoded.  So the check
+    scanned the raw file, matched nothing, and reported PASS.
+
+    Demonstrated rather than argued.  Take the committed incident record
+    ``bench/results/phi35_kv_chain-ctx4096-BOTH-dev0.json``, delete the Python traceback
+    from ``stderr_tail`` and keep only ORT's own wide-encoded line — the exact artifact a
+    run produces when ORT falls back and the process exits 0, which is the original ctx-512
+    incident this whole file was written for — and this check returned::
+
+        DEVICE-LOSS: PASS — 1 artifact(s) read; nothing found for: device_lost_reported, ...
+
+    The committed record is red today only because the *Python traceback* in the same field
+    happens to be plain ASCII.  The check was reading the accident, not the witness.
+
+    THE SHAPE THIS IS AN INSTANCE OF
+    --------------------------------
+
+    Switch read ``alloc_device failed`` in a stderr, stopped, and missed
+    ``vkQueueSubmit failed: The logical device has been lost`` further down the same
+    capture.  Three losses are now on record where the reports named one.  A reader that
+    stops at the first form it can read misses the second, and an instrument that reads one
+    encoding of a capture is that reader wearing a badge.
+
+    Scanning decoded values *in addition to* the raw text, rather than instead of it, so
+    nothing that was previously visible becomes invisible: a JSON file's own keys and its
+    non-string structure stay in the raw scan, and the two scans are de-duplicated by the
+    caller.
+    """
+    out: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, str):
+            out.append(node)
+        elif isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(doc)
+    return "\n".join(out)
+
+
 #: Fields an artifact may use to declare what it expected to observe. A structural rule
 #: needs the producer to state its expectation; where none is stated the rule reports
 #: UNOBSERVABLE for that artifact rather than assuming the run was whole.
@@ -519,6 +577,7 @@ def main(argv=None) -> int:
     structural_decidable = 0
     declared_rejections = 0
     unreadable: list[str] = []
+    embedded_scanned = 0
     for path in files:
         named = path.resolve() in explicit
         try:
@@ -526,6 +585,7 @@ def main(argv=None) -> int:
         except Exception as exc:  # noqa: BLE001
             unreadable.append(f"{path}: {exc}")
             continue
+        searchable = searchable_text(raw)
         if path.suffix.lower() in JSON_SUFFIXES:
             try:
                 doc = json.loads(raw)
@@ -539,15 +599,29 @@ def main(argv=None) -> int:
                     findings.setdefault("observation_ended_early", []).extend(
                         f"{path}: {f}" for f in found
                     )
-        hits = scan_text(path, searchable_text(raw))
+                # A captured log stored inside a JSON string is not visible in the file's
+                # raw text once its NULs are `\u0000` escapes. Scan the decoded values too.
+                # See `json_embedded_text` — this blindness was measured, not supposed.
+                embedded = searchable_text(json_embedded_text(doc))
+                if embedded.strip():
+                    embedded_scanned += 1
+                    searchable = searchable + "\n" + embedded
+        hits = scan_text(path, searchable)
         if named:
-            samples.append((path, searchable_text(raw)))
+            samples.append((path, searchable))
         for condition, lines in hits.items():
             if not lines:
                 continue
             if condition in TIER_NAMED_RUN_ONLY and not named:
                 continue
-            findings.setdefault(condition, []).extend(f"{path}: {ln}" for ln in lines)
+            # De-duplicated: a line present in both the raw text and the decoded values of
+            # the same file is one finding, not two.
+            seen = findings.setdefault(condition, [])
+            for ln in lines:
+                entry = f"{path}: {ln}"
+                if entry not in seen:
+                    seen.append(entry)
+    findings = {k: v for k, v in findings.items() if v}
 
     if not args.no_marker_cross_check:
         missed = marker_cross_check(samples)
@@ -595,6 +669,12 @@ def main(argv=None) -> int:
         f"  structural rule decidable on {structural_decidable} artifact(s): the rest "
         "declare no expected count, so truncation is UNOBSERVABLE there rather than "
         "absent (R12)."
+    )
+    print(
+        f"  {embedded_scanned} JSON artifact(s) carried a captured log inside a string "
+        "value and were scanned decoded as well as raw. A wide-encoded (UTF-16LE) capture "
+        "stored in JSON has its NULs escaped as `\\u0000`, so it is INVISIBLE in the raw "
+        "file text — measured 2026-08-04, see json_embedded_text."
     )
     if skipped:
         print(f"  declined {len(skipped)}: " + "; ".join(skipped[:8]))

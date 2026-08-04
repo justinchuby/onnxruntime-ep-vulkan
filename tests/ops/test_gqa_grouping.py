@@ -260,12 +260,17 @@ def test_grouping_is_not_what_makes_a_configuration_fail(require_vulkan) -> None
 
     ``divergent`` is symmetric, and this project has read it asymmetrically before.  The
     same applies to a decline: if a G=4 arm declines, the matched G=1 arm must be run
-    before the finding is attributed to grouping.  On this box the arena is refused on the
-    Intel iGPU -- at G=1 and at G=4 identically -- which is a coverage gap and emphatically
-    not a grouping result.
+    before the finding is attributed to grouping.  On this box the arena was refused on the
+    Intel iGPU -- at G=1 and at G=4 identically -- which was recorded as a coverage gap and
+    emphatically not a grouping result.
 
-    Only pairs whose lane is live in this process are checked, so this test never reports
-    a difference that is really an environment difference.
+    That refusal is now explained and closed: it was not a device property at all.  With
+    ``ONNXRUNTIME_EP_VULKAN_DEVICE`` unset, ORT keys its allocator to the device index the
+    *factory* advertised while the session honours ``ep.device_index``; the two output
+    binds the arena aliases are then declined and the EP refuses correctly.  Pin the env
+    var before the EP library is registered and the same arm AGREEs on the same Iris Xe.
+    See ``test_arena_refusal_frame.py`` for the paired, one-arm-per-process reading.  The
+    symmetry check below is unchanged -- it was right for a reason that outlived the gap.
     """
     arena = _ARENA_ENV_LIVE
     pairs = (

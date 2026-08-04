@@ -1,0 +1,29 @@
+
+DEVICE-LOSS-GATE: detection power at 3 repetition(s)
+  rate        P(at least one loss seen)   P(NONE seen | hazard is real)
+    0.1250                      0.3301   0.6699
+    0.0500                      0.1426   0.8574
+    0.0250                      0.0731   0.9269
+    0.0100                      0.0297   0.9703
+  The right-hand column is the uncomfortable number: it is the probability that
+  this gate returns PASS while the hazard is exactly as real as it was before.
+  A PASS rules out the rates whose right-hand column is small. It rules out
+  nothing about the rates whose right-hand column is not.
+  rep   0  ok       exit=0 dispatches=2840 compute=8/0f losses=0 619.6s 
+  rep   1  ok       exit=0 dispatches=2840 compute=8/0f losses=0 727.4s 
+  rep   2  ok       exit=0 dispatches=2840 compute=8/0f losses=0 556.7s 
+
+DEVICE-LOSS-GATE: 3/3 non-vacuous, 24 Compute() call(s) observed, 0 device loss(es).
+  record: bench\results\device_loss_gate_armB_budget.json
+
+DEVICE-LOSS-GATE: detection power at 3 repetition(s)
+  rate        P(at least one loss seen)   P(NONE seen | hazard is real)
+    0.1250                      0.3301   0.6699
+    0.0500                      0.1426   0.8574
+    0.0250                      0.0731   0.9269
+    0.0100                      0.0297   0.9703
+  The right-hand column is the uncomfortable number: it is the probability that
+  this gate returns PASS while the hazard is exactly as real as it was before.
+  A PASS rules out the rates whose right-hand column is small. It rules out
+  nothing about the rates whose right-hand column is not.
+DEVICE-LOSS-GATE: PASS — no loss in 3 non-vacuous repetition(s). This is not a fix and must not be quoted as one; read the power table above for what a PASS at this repetition count does and does not rule out.

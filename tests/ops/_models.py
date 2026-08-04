@@ -791,6 +791,139 @@ def ulp_at_scale_residual(vk: np.ndarray, cpu: np.ndarray) -> tuple[np.ndarray, 
 ULP_BASIS_DISAGREEMENT_RATIO = 100.0
 
 
+# The two keys §8.9.22 requires be reported together and never one without the other.
+# `ulp_normal_domain_report` refuses to build unless both are present, which is the only
+# mechanism that makes "two numbers, never one" a property of the code rather than of the
+# author's memory.
+ULP_NORMAL_DOMAIN_KEYS = (
+    "max_ulp_normal_domain",
+    "subnormal_reference_fraction",
+)
+
+
+def ulp_normal_domain(vk: np.ndarray, cpu: np.ndarray) -> dict:
+    """§8.9.22's replacement observable: the residual **on a declared domain**, plus the
+    population that was excluded from it.
+
+    THE RULING (docs/DESIGN.md §8.9.22, Morpheus 2026-08-03)
+    =======================================================
+    *"A relative measure is undefined where its denominator is degenerate, and a ``max``
+    taken over a set containing degenerate denominators is a measurement of the degeneracy
+    rather than of the subject. The unit is not at fault; the statistic is."*
+
+    A ULP is ``|a-b| / spacing(b)``.  ``np.spacing`` collapses by ~3 orders of magnitude
+    once ``|b|`` falls below the smallest **normal** of the dtype, so a max-ULP over the
+    whole tensor is attained, by construction, at the references carrying the least
+    information.  On Switch's worst tensor that was **18,765 references, 0.45%**.
+
+    WHAT THIS RETURNS, AND WHY IT IS TWO THINGS
+    ===========================================
+    1. the residual over references at or above ``finfo(dtype).tiny`` -- the domain on
+       which the unit is defined; and
+    2. the **count and fraction** of references below it, as a separately named quantity.
+
+    Nothing is excluded silently.  That is the difference between *declaring* a domain and
+    *narrowing* one, and it is the whole of ruling (1).  ``ulp_normal_domain_report``
+    below will raise rather than format one without the other.
+
+    WHERE THIS FAILS, STATED BEFORE ANYONE ELSE FINDS IT
+    ====================================================
+    An element whose reference is subnormal and whose value is **genuinely wrong** leaves
+    this statistic entirely.  The element-basis max would have shown a six-figure number
+    there.  Three things stop that from being an admission, and they are asserted in
+    ``tests/ops/test_ulp_normal_domain.py`` rather than promised here:
+
+    * ``max_ulp_diff`` (element basis) is **still recorded**, unchanged.  Nothing is
+      removed; these keys are additive.
+    * the subnormal population is **published**, so an excluded element is visible as a
+      count rather than as an absence.
+    * criterion 10's pass/fail predicate is ``np.allclose(rtol, atol)`` and has **never**
+      consumed either ULP basis, so no statistic here can admit anything the criterion
+      previously caught.  A domain declaration on a *reported* number cannot loosen a gate
+      that does not read it.
+
+    An empty normal domain is ``ERROR(instrument=empty_normal_domain)``, never 0: a
+    statistic over no elements is an instrument state, not a measurement of zero error.
+    """
+    if not np.issubdtype(vk.dtype, np.floating):
+        d = np.abs(vk.astype(np.int64) - cpu.astype(np.int64)).astype(np.float64)
+        return {
+            "smallest_normal": 0.0,
+            "normal_domain_elements": int(d.size),
+            "subnormal_reference_elements": 0,
+            "subnormal_reference_fraction": 0.0,
+            "median_ulp_normal_domain": float(np.median(d)) if d.size else 0.0,
+            "p99_ulp_normal_domain": float(np.percentile(d, 99)) if d.size else 0.0,
+            "max_ulp_normal_domain": float(d.max()) if d.size else 0.0,
+            "normal_domain_verdict": "NOT_APPLICABLE(integral dtype: 1 ULP = 1 everywhere)",
+            "normal_domain_declared": f"all {d.size} elements; {vk.dtype} has no subnormals",
+        }
+
+    tiny = float(np.finfo(vk.dtype).tiny)
+    ulps, _ = ulp_residual(vk, cpu)
+    b = cpu.astype(np.float64)
+    normal = np.isfinite(ulps) & (np.abs(b) >= tiny)
+    sub = int(np.count_nonzero(np.abs(b) < tiny))
+    total = int(b.size)
+    kept = ulps[normal]
+
+    out = {
+        "smallest_normal": tiny,
+        "normal_domain_elements": int(kept.size),
+        "subnormal_reference_elements": sub,
+        "subnormal_reference_fraction": (sub / total) if total else 0.0,
+        "normal_domain_declared": (
+            f"references with |cpu| >= {tiny:.6g} (smallest normal of {vk.dtype}); "
+            f"{kept.size} of {total} elements. The remaining {sub} "
+            f"({(sub / total * 100 if total else 0.0):.4f}%) are PUBLISHED, not dropped: "
+            "the ULP unit is undefined there because np.spacing collapses ~3 orders of "
+            "magnitude below the smallest normal (docs/DESIGN.md §8.9.22)"
+        ),
+    }
+    if kept.size == 0:
+        out.update(
+            {
+                "median_ulp_normal_domain": None,
+                "p99_ulp_normal_domain": None,
+                "max_ulp_normal_domain": None,
+                "normal_domain_verdict": "ERROR(instrument=empty_normal_domain)",
+            }
+        )
+        return out
+    out.update(
+        {
+            "median_ulp_normal_domain": float(np.median(kept)),
+            "p99_ulp_normal_domain": float(np.percentile(kept, 99)),
+            "max_ulp_normal_domain": float(kept.max()),
+            "normal_domain_verdict": "MEASURED",
+        }
+    )
+    return out
+
+
+def ulp_normal_domain_report(d: dict) -> str:
+    """Format the ruled observable as **two numbers**, or refuse.
+
+    §8.9.22 ruling (1) says the replacement "must report two things and never one number".
+    A convention would be obeyed until someone was in a hurry; this raises.
+    """
+    missing = [k for k in ULP_NORMAL_DOMAIN_KEYS if k not in d]
+    if missing:
+        raise _verdict.InstrumentError(
+            f"§8.9.22 requires the residual and the subnormal population together; "
+            f"this record is missing {missing}. Reporting one without the other is the "
+            "silent exclusion the ruling forbids."
+        )
+    resid = d["max_ulp_normal_domain"]
+    resid_s = "UNMEASURED(empty domain)" if resid is None else f"{resid:g}"
+    return (
+        f"max {resid_s} ULP on the normal domain "
+        f"({d.get('normal_domain_elements', '?')} elements); "
+        f"subnormal references {d['subnormal_reference_elements']} "
+        f"({d['subnormal_reference_fraction'] * 100:.4f}% of tensor), published not dropped"
+    )
+
+
 def ulp_distribution(vk: np.ndarray, cpu: np.ndarray) -> dict:
     """The one implementation of "the ULP distribution of this output pair".
 
@@ -832,14 +965,12 @@ def ulp_distribution(vk: np.ndarray, cpu: np.ndarray) -> dict:
     if floating and b.size and spacing_at_scale > 0:
         cancellation = int(np.count_nonzero(np.abs(b) < spacing_at_scale))
         exact_zero_reference = int(np.count_nonzero((b == 0.0) & (a != 0.0)))
-        subnormal_reference = int(
-            np.count_nonzero(np.abs(b) < float(np.finfo(vk.dtype).tiny))
-        )
     else:
-        cancellation = exact_zero_reference = subnormal_reference = 0
+        cancellation = exact_zero_reference = 0
 
     max_ulp = float(finite.max()) if finite.size else 0.0
     max_at_scale = float(finite_s.max()) if finite_s.size else 0.0
+    nd = ulp_normal_domain(vk, cpu)
     ratio = (max_ulp / max_at_scale) if max_at_scale > 0 else (
         float("inf") if max_ulp > 0 else 1.0
     )
@@ -859,6 +990,18 @@ def ulp_distribution(vk: np.ndarray, cpu: np.ndarray) -> dict:
     return {
         "tensor_scale": scale,
         "one_ulp_at_scale": spacing_at_scale,
+        # §8.9.22 RULING (1), 2026-08-03.  The ruled observable: the residual on the
+        # declared normal domain, and the subnormal population beside it.  Additive --
+        # every key that existed before this line still carries the number it carried.
+        "median_ulp_normal_domain": nd["median_ulp_normal_domain"],
+        "p99_ulp_normal_domain": nd["p99_ulp_normal_domain"],
+        "max_ulp_normal_domain": nd["max_ulp_normal_domain"],
+        "normal_domain_elements": nd["normal_domain_elements"],
+        "subnormal_reference_fraction": nd["subnormal_reference_fraction"],
+        "normal_domain_verdict": nd["normal_domain_verdict"],
+        "normal_domain_declared": nd["normal_domain_declared"],
+        "smallest_normal": nd["smallest_normal"],
+        "ruled_observable_report": ulp_normal_domain_report(nd),
         "median_ulp": float(np.median(finite)) if finite.size else 0.0,
         "p99_ulp": float(np.percentile(finite, 99)) if finite.size else 0.0,
         "max_ulp": max_ulp,
@@ -868,7 +1011,9 @@ def ulp_distribution(vk: np.ndarray, cpu: np.ndarray) -> dict:
         "max_abs": float(np.abs(a - b).max()) if a.size else 0.0,
         "cancellation_elements": cancellation,
         "exact_zero_reference_elements": exact_zero_reference,
-        "subnormal_reference_elements": subnormal_reference,
+        # One implementation: taken from ulp_normal_domain so the count that is PUBLISHED
+        # and the count that DEFINES the domain can never drift apart.
+        "subnormal_reference_elements": nd["subnormal_reference_elements"],
         "ulp_basis_ratio": ratio,
         "ulp_basis_verdict": verdict,
         "ulp_basis": basis,
@@ -937,6 +1082,11 @@ def compare_all_outputs_to_cpu(
         "oracle_worst_ulp_output_index": None,
         "oracle_max_ulp_at_scale_diff_over_all_outputs": 0.0,
         "oracle_worst_ulp_at_scale_output_index": None,
+        # §8.9.22 ruling (1): the ruled residual and the excluded population, together.
+        "oracle_max_ulp_normal_domain_over_all_outputs": 0.0,
+        "oracle_worst_ulp_normal_domain_output_index": None,
+        "oracle_subnormal_reference_elements_total": 0,
+        "oracle_outputs_with_empty_normal_domain": [],
         # Outputs where the two ULP bases contradict each other and the cancellation
         # counter does not account for it.  Non-empty means an instrument is blind, not
         # that the kernel is wrong -- and it must not be read as either a pass or a fail.
@@ -951,6 +1101,7 @@ def compare_all_outputs_to_cpu(
     worst = -1.0
     worst_ulp = -1.0
     worst_ulp_at_scale = -1.0
+    worst_ulp_normal = -1.0
     for i, (v, c) in enumerate(zip(vk_out, cpu_out)):
         entry: dict = {"index": i, "shape": list(v.shape), "dtype": str(v.dtype)}
 
@@ -1003,6 +1154,15 @@ def compare_all_outputs_to_cpu(
         entry.update(
             {
                 "status": "WITHIN_TOLERANCE" if within else "OUTSIDE_TOLERANCE",
+                # What actually decided `status`, spelled out beside it.  Criterion 10's
+                # pass/fail predicate has never consumed either ULP basis; the ULP numbers
+                # are REPORTED, not gated.  Written down because a reader re-scoring this
+                # criterion under §8.9.22 will otherwise assume the ruled statistic can
+                # flip a verdict, and it cannot.
+                "verdict_predicate": (
+                    f"np.allclose(rtol={tol['rtol']!r}, atol={tol['atol']!r}, "
+                    "equal_nan=True); no ULP statistic on any basis participates"
+                ),
                 "max_abs_diff": max_abs,
                 "max_ulp_diff": max_ulp,
                 "median_ulp_diff": median_ulp,
@@ -1018,6 +1178,21 @@ def compare_all_outputs_to_cpu(
                 "max_ulp_at_scale_diff": dist["max_ulp_at_scale"],
                 "median_ulp_at_scale_diff": dist["median_ulp_at_scale"],
                 "p99_ulp_at_scale_diff": dist["p99_ulp_at_scale"],
+                # ADDED 2026-08-03 (Trinity), under docs/DESIGN.md §8.9.22 ruling (1).
+                # The ruled logits observable: the residual on a DECLARED domain plus the
+                # population excluded from it, reported together and never one alone.
+                # `ruled_observable_report` is built by a constructor that raises if
+                # either half is absent, so "two numbers, never one" is enforced by the
+                # code rather than remembered by the author.
+                "median_ulp_normal_domain": dist["median_ulp_normal_domain"],
+                "p99_ulp_normal_domain": dist["p99_ulp_normal_domain"],
+                "max_ulp_normal_domain": dist["max_ulp_normal_domain"],
+                "normal_domain_elements": dist["normal_domain_elements"],
+                "subnormal_reference_elements": dist["subnormal_reference_elements"],
+                "subnormal_reference_fraction": dist["subnormal_reference_fraction"],
+                "normal_domain_verdict": dist["normal_domain_verdict"],
+                "normal_domain_declared": dist["normal_domain_declared"],
+                "ruled_observable_report": dist["ruled_observable_report"],
                 "one_ulp_at_scale": dist["one_ulp_at_scale"],
                 "tensor_scale": dist["tensor_scale"],
                 "ulp_at_scale_basis": dist["ulp_at_scale_basis"],
@@ -1086,6 +1261,14 @@ def compare_all_outputs_to_cpu(
         if dist["max_ulp_at_scale"] > worst_ulp_at_scale:
             worst_ulp_at_scale = dist["max_ulp_at_scale"]
             facts["oracle_worst_ulp_at_scale_output_index"] = i
+        facts["oracle_subnormal_reference_elements_total"] += dist[
+            "subnormal_reference_elements"
+        ]
+        if dist["max_ulp_normal_domain"] is None:
+            facts["oracle_outputs_with_empty_normal_domain"].append(i)
+        elif dist["max_ulp_normal_domain"] > worst_ulp_normal:
+            worst_ulp_normal = dist["max_ulp_normal_domain"]
+            facts["oracle_worst_ulp_normal_domain_output_index"] = i
         if dist["ulp_basis_verdict"].startswith("ERROR("):
             facts["oracle_instrument_errors"].append(
                 {"index": i, "name": entry.get("name"), "verdict": dist["ulp_basis_verdict"],
@@ -1097,6 +1280,7 @@ def compare_all_outputs_to_cpu(
     facts["oracle_max_abs_diff_over_all_outputs"] = max(worst, 0.0)
     facts["oracle_max_ulp_diff_over_all_outputs"] = max(worst_ulp, 0.0)
     facts["oracle_max_ulp_at_scale_diff_over_all_outputs"] = max(worst_ulp_at_scale, 0.0)
+    facts["oracle_max_ulp_normal_domain_over_all_outputs"] = max(worst_ulp_normal, 0.0)
 
     if facts["oracle_failing_indices"]:
         return COMPARISON_DISAGREE, facts
