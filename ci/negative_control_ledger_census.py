@@ -335,6 +335,49 @@ def main() -> int:
             f"exit={r.returncode}",
         )
 
+        # THE ARM FOR THE THIRD FRAMING DEFECT OF THE SESSION, AND THE ONE THAT SHIPPED.
+        #
+        # The walk used `--all`. Minutes after a teammate pushed an in-progress branch the
+        # live screen reported 28 VANISHED proofs "first proven in 18ddece" — a commit on
+        # `squad/mouse` that is not an ancestor of HEAD. It was convicting this branch for
+        # not containing somebody else's unmerged draft, and the sentence it printed
+        # ("committed to this ledger and no longer in it") was simply false.
+        #
+        # Two arms, because the fix must not cost the screen its reason for existing:
+        # a sibling branch's proofs are NOT the denominator, and a proof dropped inside a
+        # merge still is — both merge parents are reachable from HEAD.
+        repo = _plant_repo(tmp / "13", [["a", "b"]])
+        _git(["checkout", "-q", "-b", "sibling"], repo)
+        (repo / "evidence" / "proof_ledger.jsonl").write_text(
+            "".join(_entry(k) for k in ["a", "b", "z"]),
+            encoding="utf-8",
+        )
+        _git(["add", "-A"], repo)
+        _git(["commit", "-q", "-m", "sibling proves z, never merged"], repo)
+        _git(["checkout", "-q", "main"], repo)
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "an UNMERGED sibling branch's proofs are not this branch's denominator",
+            r.returncode == 0 and "0 VANISHED" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        _git(["merge", "-q", "--no-commit", "--no-ff", "sibling"], repo)
+        (repo / "evidence" / "proof_ledger.jsonl").write_text(
+            "".join(_entry(k) for k in ["a", "b"]),
+            encoding="utf-8",
+        )
+        _git(["add", "-A"], repo)
+        _git(["commit", "-q", "-m", "merge sibling, resolving z away"], repo)
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "but a proof dropped INSIDE a merge is still convicted after the scope fix",
+            r.returncode == 1 and "proof_vanished" in r.stdout and "\n  - z\n" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
     kinds = {}
     for kind, *_ in RESULTS:
         kinds[kind] = kinds.get(kind, 0) + 1

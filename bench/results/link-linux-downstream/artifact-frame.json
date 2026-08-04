@@ -16,10 +16,11 @@
     "session19-device-steps.txt": "cb10d3409640fdd861b1ede483802a2e1bffded7aa7970d3764afb194412c523",
     "verdict-linux.json": "b19806d86c6647b830c443dddaa24ac9a921796d86affa43f2603c936bb94c82"
   },
-  "note": "Linux device lane, session 19, taken after the source_digest re-witness. libonnxruntime_vulkan_ep.so sha256 727d0f41a6a31291f5ce54f264f420d1f8e06b501e39b62b7ae051c59f98ae30 (the .so lives outside the repo at CARGO_TARGET_DIR, so its digest is recorded here rather than compared).",
+  "note": "Linux device lane, session 19, taken after the 115-entry source_digest re-witness. Build: libonnxruntime_vulkan_ep.so release, sha256 727d0f41a6a31291f5ce54f264f420d1f8e06b501e39b62b7ae051c59f98ae30, built inside WSL at CARGO_TARGET_DIR=/home/justinchu/link-linux-target. WITNESSES: 9 failed / 676 passed / 50 skipped / 3 xfailed, criterion-10 gate MATCH with VulkanExecutionProvider=1 and 2 dispatches, epctl --check-counters PASS, ledger-portability PASS, ledger_entries 121 / ledger_faults 0 / unproven_declines 0. DOES NOT WITNESS the corrected RAI-012 decline message: on the repaired tree there are zero declines left to carry any message. That reading was taken mid-session against the post-fix pre-repair tree (42 declines, all corrected, 0 old-message) and is recorded in numbers in .squad/decisions/inbox/link-artifact-frames-and-the-reverted-witness.md, not as a file.",
   "platform": "WSL Ubuntu / llvmpipe (LLVM 20.1.2, 256 bits) / shaderc 2023.8-1build1",
-  "produced_at_commit": "3365221746a8c621f10de7d33061a77e692bc63b",
-  "produced_with_uncommitted_changes_in_dir": true,
+  "produced_at_commit": "ce154e7576afacfc4bf8fcb99672b15be1d73e1b",
+  "produced_with_uncommitted_changes_in_dir": false,
+  "produced_with_uncommitted_changes_in_subject": false,
   "schema": 1,
   "subject_path": "",
   "subject_paths": [

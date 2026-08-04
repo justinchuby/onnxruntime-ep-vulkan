@@ -43,11 +43,11 @@ conflict resolution, by the same hand. It would have been deleted alongside the 
 entries and the census would have balanced.
 
 So `N` is derived from **git history**: the union of every `key` that has ever appeared in
-any revision of the ledger reachable from the repository's refs. History is append-only in
+any revision of the ledger reachable from HEAD (see DEFAULT_SCOPE). History is append-only in
 the sense that matters here — a merge commit adds to it and cannot subtract from it. The
 denominator is therefore held somewhere the failure mode cannot reach.
 
-`--simplify` is deliberately NOT used when listing revisions (`git rev-list --all`), because
+`--simplify` is deliberately NOT used when listing revisions (`git rev-list --full-history HEAD`), because
 history simplification is precisely what hid `26fd93f` from the file's own log.
 
 RETIREMENT
@@ -89,6 +89,27 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 LEDGER_REL = "evidence/proof_ledger.jsonl"
+
+# WAS `--all`, AND `--all` WAS WRONG — found on 2026-08-04 by running this screen twice.
+#
+# The first run of the session was green. The second, minutes after a teammate pushed an
+# in-progress branch, reported 28 VANISHED proofs "first proven in 18ddece" — a commit on
+# `squad/mouse` that is not an ancestor of anything I have. The screen was convicting my
+# branch for not containing somebody else's unmerged work, and the sentence it printed
+# ("committed to this ledger and no longer in it") was false: they were never in this line
+# of history at all.
+#
+# `HEAD` is the right denominator and loses nothing the screen exists for. The failure it
+# was built to catch is a proof dropped inside a merge conflict resolution, and BOTH merge
+# parents are reachable from HEAD, so `--full-history` still sees the side the deletion
+# came from. What `--all` added was only refs that were never merged — which is not history,
+# it is other people's drafts.
+#
+# This is the third time in one session that a framing choice, not a value test, was the
+# defect: a symmetric value comparison convicted my own repair; an unresolvable boundary
+# made every comparison vacuous; and now too WIDE a scope convicted a branch for a proof it
+# never had. `--full-history` stays: that one is load-bearing and is separately asserted.
+DEFAULT_SCOPE = "HEAD"
 RETIRED = REPO / "evidence" / "proof_retired.json"
 RETIRED_FIELDS = ("owner", "date", "reason")
 FRAME_WITNESSES = ("source_digest", "toolchain")
@@ -186,7 +207,7 @@ def witness_transitions(
     "which value is right" — it is "did the writer say they were moving it", which has an
     answer in the repository and needs no build and no platform.
     """
-    scope = [upto] if upto else ["--all"]
+    scope = [upto] if upto else [DEFAULT_SCOPE]
     revs = _git(
         ["rev-list", "--full-history", "--topo-order", *scope, "--", LEDGER_REL], repo
     ).stdout.split()
@@ -334,7 +355,7 @@ def accidental(doc: dict) -> list[dict]:
 def ever_proven(repo: Path, upto: str | None = None) -> dict[str, str]:
     """key -> the EARLIEST revision that carried it.
 
-    `git rev-list --all --full-history` and not `--simplify-merges`/`--follow`: the removal
+    `git rev-list --full-history HEAD` and not `--simplify-merges`/`--follow`: the removal
     this screen exists for was invisible to a simplified log, so a simplified log cannot be
     the input.
 
@@ -356,7 +377,7 @@ def ever_proven(repo: Path, upto: str | None = None) -> dict[str, str]:
 
     `rev-list` is reverse-chronological, so the walk is reversed to make "first", first.
     """
-    scope = [upto] if upto else ["--all"]
+    scope = [upto] if upto else [DEFAULT_SCOPE]
     revs = _git(["rev-list", "--full-history", *scope, "--", LEDGER_REL], repo).stdout.split()
     seen: dict[str, str] = {}
     for rev in reversed(revs):
@@ -640,3 +661,5 @@ if __name__ == "__main__":
             "is UNOBSERVABLE, not PASS and not FAIL."
         )
         sys.exit(2)
+
+

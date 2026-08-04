@@ -593,3 +593,20 @@ decline message, because on the repaired tree there are zero declines left to
 carry it. The reading that did witness it (42 declines, all corrected, 0
 old-message) was taken mid-session and overwritten by the second run; it is
 recorded in numbers in the decision, not as a file.
+
+POSTSCRIPT, same session. Ran check_ledger_census.py a second time hours after
+the first and it went from PASS to 28 VANISHED / 102 undeclared moves on an
+unchanged tree -- because Mouse had pushed 18ddece to squad/mouse in between and
+the walk was scoped --all. It was convicting my branch for not containing
+somebody else's unmerged draft, and the sentence it printed ("committed to this
+ledger and no longer in it") was false. DEFAULT_SCOPE is now HEAD; both merge
+parents are reachable from HEAD so a proof dropped inside a merge is still
+convicted, and there are now two planted arms holding both halves.
+negative_control_ledger_census.py 23/23 (2 LIVE, 6 REPLAYED, 15 PLANTED).
+
+Four framing errors in one session and not one of them was a wrong value test.
+Symmetric comparison; unresolvable boundary; ancestry mistaken for frame
+boundary; scope too wide. A screen with a right question and a wrong scope
+reports confidently about the wrong population, and the only reason I caught the
+fourth is that I happened to run it twice while a teammate was working. That is
+not a method.
