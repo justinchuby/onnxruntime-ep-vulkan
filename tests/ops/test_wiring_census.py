@@ -1968,8 +1968,17 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
                 # A cargo compile is scaffolding the census needs but does not judge, so a
                 # stall here is ERROR(instrument) and not a finding about the lint.  Note
                 # cargo emits a line per crate, so a build that is merely crawling under
-                # load keeps beating and never reaches this budget.
+                # load keeps beating and never reaches this budget — but a COLD build of
+                # one large crate emits `Compiling onnxruntime-ep-vulkan` and then nothing
+                # at all while rustc works, and that silence did reach this budget
+                # (measured: 12015 units, isolated, nothing else running).  `progress_paths`
+                # gives the guard a second beat source for exactly that case: what the
+                # child has written.  A wedged cargo writes nothing and is caught as before.
+                # Depth matters and is measured, not chosen: at depth 1 this witness beat
+                # 4098 times and the census STILL stalled, because a compiling rustc
+                # touches only `target/debug/incremental/<hash>/s-*-working/`.
                 kind=KIND_TOOLCHAIN,
+                progress_paths=[_CARGO_MANIFEST.parent / "target" / "debug"],
                 env=_cargo_env(),
             )
         except Stalled as exc:
