@@ -99,7 +99,7 @@ crate::op_table! {
     // The window opens at 1 because `Gather` has existed since opset 1 and its semantics have not
     // changed across 1/11/13 — the revisions widened the index dtype and clarified negative
     // indices, both of which this row handles explicitly.
-    "Gather",   Ai,     1 ..= OPSET_ANY,  FLOAT,  kernel!(None),  gather, templates::gather,  Ready;
+    "Gather",   Ai,     1 ..= OPSET_ANY,  FLOAT,  kernel!(Standalone, "gather"),  gather, templates::gather,  Ready;
 }
 
 #[cfg(test)]

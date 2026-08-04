@@ -138,8 +138,23 @@ FP16_ANY = {"rtol": 1e-3, "atol": 1e-3}
 # The pinned numbers are **exactly `gen_proof_ledger.py`'s own defaults** (`--rtol 1e-3
 # --atol 1e-5`), and that is the point: the ledger admitted these forms under those tolerances,
 # so a conformance suite that used anything looser would be claiming more than the proof does.
-# rtol has 5.4x headroom over the measurement and atol has 1.75x. Re-run the probe before
-# quoting these on AMD or lavapipe — the clause above says per vendor, and this is one vendor.
+# rtol has 5.4x headroom over the measurement and atol has 1.75x.
+#
+# SECOND VENDOR (2026-08-04, `Intel(R) Iris(R) Xe Graphics`, same probe, artifact
+# `bench/results/conv_tolerance_derivation_intel_r__iris_r__xe_graphics.json`): worst
+# **max_rel = 1.858e-4**, worst **max_abs = 5.722e-6** — not merely within tolerance of the
+# NVIDIA run but identical in every printed digit, case by case. The device was read back off
+# the run (`running_device_names`), not assumed from the selector: `ONNXRUNTIME_EP_VULKAN_DEVICE=0`
+# opens the *discrete* part on this box, because that variable indexes the best-first sorted
+# capables list and not `vkEnumeratePhysicalDevices` order. `=Intel` is what pins the integrated
+# part.
+#
+# WHY IT TRANSFERRED, AND WHEN IT WILL STOP. `conv_f32.comp` accumulates serially per output
+# element in a fixed order, and IEEE-754 fp32 add/multiply are exactly specified, so two
+# conformant devices running the same sequence must produce the same bits. What is being measured
+# here is *our order vs ORT CPU's*, which is not a vendor property at all. **A tiled, subgroup,
+# or workgroup-shared-partial-sum `Conv` makes the order device-dependent and expires this
+# measurement.** Re-run the probe then, and on AMD or lavapipe before quoting these there.
 FP32_CONV = {"rtol": 1e-3, "atol": 1e-5}
 
 # ---------------------------------------------------------------------------

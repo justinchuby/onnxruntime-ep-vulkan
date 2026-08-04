@@ -2359,20 +2359,34 @@ def _write_ledger_witness(name: str, arms: list[dict], note: str) -> Path:
     return path
 
 
-def _dynamic_mul_f32(path: Path) -> Path:
-    """`mul_f32` with symbolic extents.
+def _dynamic_acosh_f32(path: Path) -> Path:
+    """`acosh_f32` with symbolic extents — control 2's runtime-extent arm.
 
-    Same op, same dtype, same optional-input set, same node count.  The only component of
-    the proof key that changes is the shape class (`static` -> `runtime-extent`), which is
-    a *path* distinction and must therefore be a different key.
+    Same op, same dtype, same optional-input set, same node count as the static arm.  The only
+    component of the proof key that changes is the shape class (`static` -> `runtime-extent`),
+    which is a *path* distinction and must therefore be a different key.
+
+    IT WAS `Mul`, AND `Mul` DISARMED IT (2026-08-04, Mouse).  BERT-SQuAD-12 contains `Mul` on
+    f32 with symbolic extents, so covering that model required proving
+    `Mul/f32,f32>f32/.../runtime-extent/n2` — the exact form this arm relied on being *absent*.
+    The two readings converged and this test went red, which is the behaviour `_static_abs_f16`
+    predicts in its own docstring: a control disarmed by a real proof fails loudly rather than
+    passing quietly.
+
+    The repair is the same one taken on 2026-08-02 when a proof run disarmed the planted
+    control: move the control rather than leave a form a real model needs permanently
+    unclaimable.  `Acosh` is proven on f32/static, appears in **none** of the three models
+    censused so far (Phi-3.5, MobileNetV2-12, BERT-SQuAD-12), and is not a shape a transformer
+    or a CNN mints — so it is the cheapest form to keep unproven.  If a future round proves
+    `Acosh/f32/runtime-extent`, this test goes red again and the control moves again; that is
+    the mechanism working, not a maintenance burden.
     """
     import onnx_ir as ir  # noqa: PLC0415
 
     a = ir.Value(name="a", type=ir.TensorType(DT.FLOAT), shape=ir.Shape(["M", "N"]))
-    b = ir.Value(name="b", type=ir.TensorType(DT.FLOAT), shape=ir.Shape(["M", "N"]))
     out = ir.Value(name="out", type=ir.TensorType(DT.FLOAT), shape=ir.Shape(["M", "N"]))
-    node = ir.node("Mul", [a, b], outputs=[out])
-    graph = ir.Graph([a, b], [out], nodes=[node], name="dyn_mul", opset_imports={"": 21})
+    node = ir.node("Acosh", [a], outputs=[out])
+    graph = ir.Graph([a], [out], nodes=[node], name="dyn_acosh", opset_imports={"": 21})
     path.write_bytes(ir.to_proto(ir.Model(graph, ir_version=10)).SerializeToString())
     return path
 
@@ -2411,7 +2425,7 @@ def test_ledger_hits_moves_with_its_input(require_vulkan, tmp_path) -> None:
     Control 1 (dtype): `abs_f32` is in the ledger, the same graph on f16 is not.  Same op,
     same shape, same graph; only the dtype component of the key differs.
 
-    Control 2 (shape class): the same `Mul` on f32 with symbolic extents.  Same op, same
+    Control 2 (shape class): the same `Acosh` on f32 with symbolic extents.  Same op, same
     dtype, same optional inputs; only the shape-class component differs.  This is the
     control that matters most for the derived-from-enumeration hypothesis, because the
     *enumeration is identical in both arms* — one node, one lookup, one claimable op — and
@@ -2425,11 +2439,11 @@ def test_ledger_hits_moves_with_its_input(require_vulkan, tmp_path) -> None:
     unproven = _ledger_arm(
         "ledger_dtype_unproven", model=_static_abs_f16(tmp_path / "abs_f16_unproven.onnx")
     )
-    # Control 2 needs its own static arm: the runtime-extent arm below is `Mul`, and a
+    # Control 2 needs its own static arm: the runtime-extent arm below is `Acosh`, and a
     # shape-class control whose two arms are different ops would not be a shape-class control.
-    mul_static = _ledger_arm("ledger_shape_static", model=_EVIDENCE_CASES / "mul_f32.onnx")
+    mul_static = _ledger_arm("ledger_shape_static", model=_EVIDENCE_CASES / "acosh_f32.onnx")
     dynamic = _ledger_arm(
-        "ledger_shape_runtime", model=_dynamic_mul_f32(tmp_path / "dyn_mul_f32.onnx")
+        "ledger_shape_runtime", model=_dynamic_acosh_f32(tmp_path / "dyn_acosh_f32.onnx")
     )
     witness = _write_ledger_witness(
         "ledger-arms",

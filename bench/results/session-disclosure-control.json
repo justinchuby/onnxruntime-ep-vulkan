@@ -2,7 +2,7 @@
   "control": "session-creation disclosure (DESIGN.md \u00a78.9.7 / RAI-009)",
   "evidence_class": "PLANTED",
   "evidence_class_note": "Arm A's UNMEASURED form is one I planted; it is reachable only by naming a key in ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN. No production build has ever produced this condition. What is demonstrated is the warning path.",
-  "verdict": "PASS",
+  "verdict": "FAIL",
   "limitations": [
     "The EP offered the INFO to Logger_LogMessage and ORT reports its own threshold as 'INFO', which admits INFO; 2 ORT-decorated line(s) were seen in the same run, so the witness is not blind. The record is nevertheless absent from ORT's console. RAI-008(b)'s INFO half is therefore EMITTED and OFFERED but NOT WITNESSED on ORT's own channel. Falsifier: an ORT build or host configuration in which an INFO from a plugin EP does appear on the console \u2014 then this line is delivered and this note is withdrawn.",
     "The EP offered the INFO to Logger_LogMessage and ORT reports its own threshold as 'INFO', which admits INFO; 2 ORT-decorated line(s) were seen in the same run, so the witness is not blind. The record is nevertheless absent from ORT's console. RAI-008(b)'s INFO half is therefore EMITTED and OFFERED but NOT WITNESSED on ORT's own channel. Falsifier: an ORT build or host configuration in which an INFO from a plugin EP does appear on the console \u2014 then this line is delivered and this note is withdrawn."
@@ -61,21 +61,23 @@
       },
       "arm_e": {
         "returncode": 0,
-        "reach_default_severity": "REACHED_USER",
-        "reach_stderr_forced_to_fail": "ESCALATED_TO_WARNING",
+        "reach_default_severity": null,
+        "reach_stderr_forced_to_fail": null,
         "session_disclosure_infos": 1,
-        "session_disclosure_infos_reached_user": 0,
-        "session_disclosure_info_escalations": 1,
-        "ort_sink_escalation_warns": [
-          "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\u00a78.9.7] the session-creation disclosure could not be delivered on any channel a user sees by default: ORT's own severity threshold excludes INFO and this process's stderr refused the write. It is repeated here at WARNING because that is the one severity ORT's default threshold admits \u2014 this is a delivery escalation, not a fault report. This session claims 1 proof-backed form(s) (0 proven here, 1 device-unattributed, 0 proven elsewhere) and 0 form(s) whose correctness is not established. Set the host logger to INFO, or read ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE, for the per-form detail."
-        ],
+        "session_disclosure_infos_reached_user": null,
+        "session_disclosure_info_escalations": null,
+        "ort_sink_escalation_warns": [],
         "expected": {
           "reach_default_severity": "REACHED_USER",
           "reach_stderr_forced_to_fail": "ESCALATED_TO_WARNING"
         }
       },
-      "verdict": "PASS",
-      "failures": []
+      "verdict": "FAIL",
+      "failures": [
+        "arm E (positive): at ORT's DEFAULT severity the disclosure's INFO half reads session_disclosure_info_reach=None, expected 'REACHED_USER'. RAI-013 asks whether a user with nothing configured is told; this is the token that answers it.",
+        "arm E (negative): with the EP's stderr write forced to fail and ORT's threshold excluding INFO, no quiet channel can have carried the disclosure, yet session_disclosure_info_reach=None (expected 'ESCALATED_TO_WARNING'). Either the escalation did not fire or the token cannot report it \u2014 and a reach token that reads the same whether or not the user was told is the defect RAI-013 names.",
+        "arm E: the reach token reads the same with the quiet channels working and with them refused (None), so it does not vary with the only thing it is supposed to depend on and certifies nothing."
+      ]
     },
     {
       "device": 1,
@@ -129,21 +131,23 @@
       },
       "arm_e": {
         "returncode": 0,
-        "reach_default_severity": "REACHED_USER",
-        "reach_stderr_forced_to_fail": "ESCALATED_TO_WARNING",
+        "reach_default_severity": null,
+        "reach_stderr_forced_to_fail": null,
         "session_disclosure_infos": 1,
-        "session_disclosure_infos_reached_user": 0,
-        "session_disclosure_info_escalations": 1,
-        "ort_sink_escalation_warns": [
-          "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\u00a78.9.7] the session-creation disclosure could not be delivered on any channel a user sees by default: ORT's own severity threshold excludes INFO and this process's stderr refused the write. It is repeated here at WARNING because that is the one severity ORT's default threshold admits \u2014 this is a delivery escalation, not a fault report. This session claims 1 proof-backed form(s) (0 proven here, 1 device-unattributed, 0 proven elsewhere) and 0 form(s) whose correctness is not established. Set the host logger to INFO, or read ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE, for the per-form detail."
-        ],
+        "session_disclosure_infos_reached_user": null,
+        "session_disclosure_info_escalations": null,
+        "ort_sink_escalation_warns": [],
         "expected": {
           "reach_default_severity": "REACHED_USER",
           "reach_stderr_forced_to_fail": "ESCALATED_TO_WARNING"
         }
       },
-      "verdict": "PASS",
-      "failures": []
+      "verdict": "FAIL",
+      "failures": [
+        "arm E (positive): at ORT's DEFAULT severity the disclosure's INFO half reads session_disclosure_info_reach=None, expected 'REACHED_USER'. RAI-013 asks whether a user with nothing configured is told; this is the token that answers it.",
+        "arm E (negative): with the EP's stderr write forced to fail and ORT's threshold excluding INFO, no quiet channel can have carried the disclosure, yet session_disclosure_info_reach=None (expected 'ESCALATED_TO_WARNING'). Either the escalation did not fire or the token cannot report it \u2014 and a reach token that reads the same whether or not the user was told is the defect RAI-013 names.",
+        "arm E: the reach token reads the same with the quiet channels working and with them refused (None), so it does not vary with the only thing it is supposed to depend on and certifies nothing."
+      ]
     }
   ]
 }

@@ -1,23 +1,26 @@
-"""`Conv` conformance — the attribute axes a ledger entry does not cover.
+"""`Conv` conformance — the attribute axes the proof key deliberately does not carry.
 
 WHY THIS FILE EXISTS AND `test_op_table.py` IS NOT ENOUGH
 --------------------------------------------------------
-The proof ledger records four `Conv` keys::
+The proof ledger records `Conv` keys of the shape::
 
-    ai.onnx::Conv/1+/f32,f32,f32>f32/metadata/static/n3
-    ai.onnx::Conv/1+/f32,f32>f32/metadata/static/n2
-    ai.onnx::Conv/1+/f32,f32,f32>f32/metadata/runtime-extent/n3
-    ai.onnx::Conv/1+/f32,f32>f32/metadata/runtime-extent/n2
+    ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32/static/n3
 
-and that is the entire key space: domain, opset window, dtypes, module, shape class, arity.
-`group`, `strides`, `dilations` and `pads` appear nowhere in it. So the ledger says the
-convolution kernel produced ORT's answer for **one** attribute combination per key, and a reader
-who took the four entries as coverage of `Conv` would be reading them for more than they say.
+and `group`, `strides`, `dilations` and `pads` appear nowhere in any of them. That is a ruling,
+not an oversight (§8.9.23): `conv_f32.comp` folds all four into push-constant *expressions* on
+one uniform code path — `cpg = c / pc.group`, with pads/strides/dilations as index arithmetic
+and bounds `continue`s every node executes — so they are expressions, not paths, and the
+ProofKey contract permits the collapse. They are **disclosed** instead, as `blind_axes` on the
+registry row, rendered into every `Conv` claim line with the clause that a CI-time suite speaks
+for them and nothing in the reader's session does.
 
-The gap is real and it is not closed by a fifth entry — attributes do not change which module
-runs or how the bindings are laid out, which is what a key is about. It is closed here, by
-running the axes explicitly. Each case is a form MobileNetV2-12 contains or the boundary just
-outside one; see `_conv_cases.py` for why each one is in the list.
+**This file is that suite.** The disclosure a user reads points here. If these cases stop
+running, the claim line is making a promise nothing keeps.
+
+A short-lived attempt (2026-08-04, same day) to put four boolean form bits in the key instead
+was reversed: a bit separates `stride > 1` from `stride == 1` but not `stride=2` from
+`stride=3`, so it moved the granularity question without answering it, while making the key
+claim a distinction the kernel does not draw.
 
 DECLINES ARE ALSO TESTED
 ------------------------

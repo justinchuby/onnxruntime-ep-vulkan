@@ -171,6 +171,33 @@ pub struct Kernel {
     /// holds are meaningless for every other template, and a single field would have made every
     /// row's stem lookup ask which kind it was.
     pub pair_stems: Option<&'static [[&'static str; DTYPE_COUNT]; DTYPE_COUNT]>,
+    /// Stems of the **hand-written** modules this row's `translate` dispatches, indexed by
+    /// [`dtype_index`], for rows that have no generated template family.
+    ///
+    /// # Why this exists
+    ///
+    /// `Template::None` was read by everything as *"this row has no shader"*, and
+    /// [`Kernel::stem`] answered `None` on that basis, which made `registry::variant_key` render
+    /// the key's variant component as the literal `metadata`. That was true for a shape op
+    /// handled on the host and false for every row here: `Conv` records `"shaders":["conv_f32"]`
+    /// in its own ledger entries while keying its variant as *"this row has no shader"*.
+    ///
+    /// Two things followed, and Morpheus found both (§8.9.23):
+    ///
+    /// * the variant component was **constant across every future form of the op**, so a second
+    ///   `Conv` variant would have shared a key component with the first — invisible while there
+    ///   is only one;
+    /// * `registry::form_is_provable` **short-circuited**, because `metadata` names no module and
+    ///   the predicate under-claims on unknown stems. So `Conv` read *provable* in a build with
+    ///   no SPIR-V at all — the exact positive control that predicate was built to have.
+    ///
+    /// The module is chosen in `translate`, where the key does not look. This field is how the
+    /// row declares it where the key **does** look, without inventing a template family for a
+    /// hand-written `.comp` that `build.rs` already compiles from `shaders/glsl` directly.
+    ///
+    /// `Template::None` therefore means *"no generated variant family"*, not *"no module"*. A row
+    /// with neither a template nor this field is genuinely metadata-only.
+    pub module_stems: Option<&'static [&'static str; DTYPE_COUNT]>,
 }
 
 impl Kernel {
@@ -180,16 +207,22 @@ impl Kernel {
         op: "",
         stems: [""; DTYPE_COUNT],
         pair_stems: None,
+        module_stems: None,
     };
 
     /// The SPIR-V module stem for this op at this dtype.
     ///
-    /// Returns `None` for [`Template::None`], and `None` for a pair-keyed template, which has no
-    /// answer to this question — ask [`Kernel::pair_stem`] instead. Returning the source-dtype
-    /// row's first entry would have been a plausible-looking wrong answer.
+    /// Returns `None` for a pair-keyed template, which has no answer to this question — ask
+    /// [`Kernel::pair_stem`] instead. Returning the source-dtype row's first entry would have
+    /// been a plausible-looking wrong answer. Returns `None` for a row that is genuinely
+    /// metadata-only; a `Template::None` row that declares [`Kernel::module_stems`] answers with
+    /// the hand-written module its `translate` dispatches.
     pub fn stem(&self, d: DType) -> Option<&'static str> {
-        if self.template == Template::None || self.template.is_pair_keyed() {
+        if self.template.is_pair_keyed() {
             return None;
+        }
+        if self.template == Template::None {
+            return self.module_stems.map(|s| s[dtype_index(d)]);
         }
         Some(self.stems[dtype_index(d)])
     }
@@ -281,16 +314,49 @@ macro_rules! pair_stems {
     };
 }
 
+/// Build the `[&'static str; DTYPE_COUNT]` stem array for a **hand-written** module family.
+///
+/// One `.comp` per dtype, named `<prefix>_<dtype>` — the convention every hand-written kernel in
+/// `shaders/glsl` already follows (`conv_f32.comp`, `gather_f16.comp`,
+/// `skip_simplified_layer_norm_f32.comp`). Order must match [`stems!`]'s; the same test asserts it.
+///
+/// Only the dtypes in the row's `caps` are ever dispatched, so an entry naming a `.comp` that does
+/// not exist is unreachable — and it is exactly what [`crate::registry`]'s provability predicate
+/// must read as *not loadable* rather than as *unknown*.
+#[macro_export]
+macro_rules! module_stems {
+    ($prefix:literal) => {
+        [
+            ::core::concat!($prefix, "_f32"),
+            ::core::concat!($prefix, "_f16"),
+            ::core::concat!($prefix, "_i64"),
+            ::core::concat!($prefix, "_i32"),
+            ::core::concat!($prefix, "_u8"),
+            ::core::concat!($prefix, "_bool"),
+        ]
+    };
+}
+
 /// Declare the [`Kernel`] for a registry row.
 ///
 /// ```ignore
 /// kernel!(EwBinary, "add")   // -> ew_binary_add_f32, ew_binary_add_f16, ...
-/// kernel!(None)              // metadata-only row
+/// kernel!(Standalone, "conv")// -> hand-written conv_f32.comp, conv_f16.comp, ...
+/// kernel!(None)              // metadata-only row: no module at all
 /// ```
 #[macro_export]
 macro_rules! kernel {
     (None) => {
         $crate::ops::common::variants::Kernel::NONE
+    };
+    (Standalone, $prefix:literal) => {
+        $crate::ops::common::variants::Kernel {
+            template: $crate::ops::common::variants::Template::None,
+            op: $prefix,
+            stems: [""; $crate::ops::common::dtype::DTYPE_COUNT],
+            pair_stems: None,
+            module_stems: ::core::option::Option::Some(&$crate::module_stems!($prefix)),
+        }
     };
     (EwUnary, $op:literal) => {
         $crate::ops::common::variants::Kernel {
@@ -298,6 +364,7 @@ macro_rules! kernel {
             op: $op,
             stems: $crate::stems!("ew_unary", $op),
             pair_stems: None,
+            module_stems: None,
         }
     };
     (EwBinary, $op:literal) => {
@@ -306,6 +373,7 @@ macro_rules! kernel {
             op: $op,
             stems: $crate::stems!("ew_binary", $op),
             pair_stems: None,
+            module_stems: None,
         }
     };
     (EwSelect, $op:literal) => {
@@ -314,6 +382,7 @@ macro_rules! kernel {
             op: $op,
             stems: $crate::stems!("ew_select", $op),
             pair_stems: None,
+            module_stems: None,
         }
     };
     (QGemv, $op:literal) => {
@@ -322,6 +391,7 @@ macro_rules! kernel {
             op: $op,
             stems: $crate::stems!("q_gemv", $op),
             pair_stems: None,
+            module_stems: None,
         }
     };
     (EwCast, $op:literal) => {
@@ -333,6 +403,7 @@ macro_rules! kernel {
             // future reader who prints it sees something true.
             stems: $crate::stems!("ew_cast", "x"),
             pair_stems: ::core::option::Option::Some(&$crate::pair_stems!("ew_cast")),
+            module_stems: None,
         }
     };
 }
@@ -501,6 +572,50 @@ fn declared_capabilities_impl(spv: &[u8]) -> Vec<u32> {
 /// a placeholder from a refusal.
 pub fn variant_is_generated(stem: &str) -> bool {
     crate::engine::shaders::SHADER_MODULES.iter().any(|(name, _)| *name == stem)
+}
+
+/// Does **the registry** name a module under this stem?
+///
+/// The distinction from [`variant_is_generated`] is the whole point: `variant_is_generated` asks
+/// the *build output*, so it answers `false` in a build that produced no SPIR-V — and a caller
+/// that reads `false` as "unknown stem, assume the best" then under-claims in exactly the build
+/// where it should refuse. This asks the *registry*, which is checked-in source and answers the
+/// same in every build.
+///
+/// So the pair separates three states a single boolean was collapsing:
+///
+/// | declared | generated | meaning |
+/// |---|---|---|
+/// | yes | yes | a real module; loadability is the remaining question |
+/// | yes | no  | **the build is missing a module a row dispatches** — a shaderless build |
+/// | no  | —   | not a module name at all (`metadata`, a malformed key) — nothing is known |
+///
+/// Derived from the registry rather than listed, and computed once: it runs on the claim path.
+pub fn variant_is_declared(stem: &str) -> bool {
+    static DECLARED: std::sync::OnceLock<std::collections::BTreeSet<&'static str>> =
+        std::sync::OnceLock::new();
+    DECLARED
+        .get_or_init(|| {
+            let mut set = std::collections::BTreeSet::new();
+            for spec in crate::registry::all_specs() {
+                for d in spec.caps.iter() {
+                    if let Some(s) = spec.kernel.stem(d) {
+                        if !s.is_empty() {
+                            set.insert(s);
+                        }
+                    }
+                    if spec.kernel.template.is_pair_keyed() {
+                        for dst in spec.caps.iter() {
+                            if let Some(s) = spec.kernel.pair_stem(d, dst) {
+                                set.insert(s);
+                            }
+                        }
+                    }
+                }
+            }
+            set
+        })
+        .contains(stem)
 }
 
 /// `false` for an unknown stem: a variant the build did not generate is not loadable either.

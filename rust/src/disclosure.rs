@@ -168,6 +168,31 @@ pub fn evidence_for(key: &ProofKey) -> FormEvidence {
     FormEvidence::Unmeasured
 }
 
+/// The blind-axes caveat for one op, or the empty string when the row declares none.
+///
+/// §8.9.23. Two clauses, and the second is the one Rai's 🟡 was about:
+///
+/// 1. **what the key does not distinguish** — these axes are push constants in one uniform code
+///    path, so one proof covers every value of them *by construction*, not by luck;
+/// 2. **who speaks for them** — a CI-time suite, and **nothing in the reader's own session**.
+///
+/// Without (2) the line reads as though the session had witnessed the breadth. It had not, and it
+/// cannot: the session ran the values its graph contained.
+fn blind_axes_clause(op_type: &str) -> String {
+    let axes = registry::blind_axes_for(op_type);
+    if axes.is_empty() {
+        return String::new();
+    }
+    // No terminal period: these clauses are spliced into a joined list that its group message
+    // then continues with a sentence of its own. A period here renders as `does.. The proofs`.
+    format!(
+        " BLIND{{{}}}: the proof key does not distinguish these attributes — they are push \
+         constants read by one uniform code path, so one proof covers every value of them by \
+         construction. A CI-time suite varies them; nothing in this session does",
+        axes.join(",")
+    )
+}
+
 /// One distinct form this session is about to claim.
 #[derive(Clone, Debug)]
 pub struct ClaimedForm {
@@ -211,6 +236,13 @@ pub struct Disclosure {
     pub divergent: usize,
     /// Distinct claimed forms whose evidence could not be read because the ledger is faulted.
     pub ledger_faulted: usize,
+    /// Distinct claimed forms whose row declares [`registry::OpSpec::blind_axes`], and whose
+    /// disclosure line therefore carries the §8.9.23 breadth caveat.
+    ///
+    /// Counted so a test can assert the caveat was rendered without scraping a log line — the
+    /// same reason every other field here exists. A caveat that is only observable by reading
+    /// text is a caveat whose disappearance nothing detects.
+    pub blind_axes_disclosed: usize,
     /// Whether a WARN was emitted at all.
     pub warned: bool,
     /// Whether that WARN reached ORT's own logger. `false` with `warned == true` means the WARN
@@ -265,12 +297,26 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
     let mut unproven_lines: Vec<String> = Vec::new();
 
     for form in forms {
+        // The blind-axes clause is appended to whichever line this form produces, whatever its
+        // evidence state. Attaching it after the match rather than inside eight `format!`s is not
+        // only shorter: a caveat that has to be remembered at eight call sites is a caveat that
+        // will be missing from one of them, and the one it goes missing from will be the branch
+        // nobody reads until it matters.
+        let before = (
+            proven_lines.len(),
+            unattributed_lines.len(),
+            unproven_lines.len(),
+        );
+        let blind = blind_axes_clause(&form.op_type);
+        if !blind.is_empty() {
+            d.blind_axes_disclosed += 1;
+        }
         let Some(key) = &form.key else {
             // No proof key was produced for this claim. That is not evidence of correctness and
             // must not be counted as proven; it is unmeasured by this instrument's own admission.
             d.unmeasured += 1;
             unproven_lines.push(format!(
-                "{} x{} [UNMEASURED: the claim gate produced no proof key for this form]",
+                "{} x{} [UNMEASURED: the claim gate produced no proof key for this form]{blind}",
                 form.op_type, form.nodes
             ));
             continue;
@@ -400,6 +446,18 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
                      correctness is unknown rather than absent",
                     form.op_type, form.nodes, key.0
                 ));
+            }
+        }
+        if !blind.is_empty() {
+            for (vec, len) in [
+                (&mut proven_lines, before.0),
+                (&mut unattributed_lines, before.1),
+                (&mut unproven_lines, before.2),
+            ] {
+                if vec.len() > len {
+                    let last = vec.last_mut().expect("just pushed");
+                    last.push_str(&blind);
+                }
             }
         }
     }
@@ -764,10 +822,93 @@ mod tests {
             .clone()
     }
 
+    // ── §8.9.23 blind-axes disclosure ────────────────────────────────────────────────────────
+
+    /// A row that declares blind axes must say so on its claim line, **both clauses**.
+    ///
+    /// Rai's 🟡 was not that the caveat was wrong — it was written down plainly in `form.rs` and
+    /// in `OP_COVERAGE.md` — but that *the session-time line a user reads did not carry it*. So
+    /// the assertion is on the rendered line and on the counter, not on the registry field: a
+    /// field that is read by nothing discloses nothing.
+    #[test]
+    fn a_row_with_blind_axes_renders_both_clauses() {
+        let clause = blind_axes_clause("ai.onnx::Conv");
+        assert!(!clause.is_empty(), "Conv declares blind axes; the clause must not be empty");
+        assert_eq!(
+            clause,
+            blind_axes_clause("Conv"),
+            "the default domain has two spellings and the disclosure reaches here with the bare \
+             one; a caveat that depends on which is used is a caveat that goes missing in the \
+             live path"
+        );
+        for axis in ["group", "strides", "dilations", "pads"] {
+            assert!(
+                clause.contains(axis),
+                "§8.9.23 names `{axis}` as blind and the disclosure does not: {clause}"
+            );
+        }
+        assert!(
+            clause.contains("does not distinguish"),
+            "clause 1 — what the key is silent about — is missing: {clause}"
+        );
+        assert!(
+            clause.contains("nothing in this session does"),
+            "clause 2 — that no session-time evidence speaks for these axes — is the half Rai's \
+             finding was about, and it is missing: {clause}"
+        );
+    }
+
+    /// Negative polarity: a row that declares no blind axes must not acquire a caveat.
+    ///
+    /// Without this arm the test above passes for a clause that is appended unconditionally, which
+    /// would make the caveat noise rather than information.
+    #[test]
+    fn a_row_without_blind_axes_renders_nothing() {
+        assert_eq!(blind_axes_clause("ai.onnx::Add"), "");
+        assert_eq!(blind_axes_clause("Add"), "");
+        assert_eq!(blind_axes_clause("no.such::Op"), "");
+    }
+
+    /// The caveat reaches the line, in every evidence state, and is counted.
+    #[test]
+    fn the_blind_axes_caveat_travels_with_the_claim_line() {
+        let _g = test_lock();
+        counters::reset();
+        // An UNMEASURED `Conv` form: the evidence state that produces a WARN line rather than an
+        // INFO one. The caveat has to be on both, and the branches are separate `format!`s, so a
+        // caveat attached per-branch is one that goes missing from whichever branch was written
+        // last.
+        let key = ProofKey::parse(
+            "ai.onnx::Conv/1+/f32,f32>f32/conv_f32#base/static/unmeasured-blind-control",
+        );
+        assert_eq!(
+            evidence_for(&key),
+            FormEvidence::Unmeasured,
+            "ERROR(instrument): this key is proven, so the arm below tests the wrong branch"
+        );
+        let d = disclose_claimed_forms(&[ClaimedForm {
+            op_type: "ai.onnx::Conv".to_string(),
+            key: Some(key),
+            nodes: 7,
+        }]);
+        assert_eq!(d.blind_axes_disclosed, 1, "the caveat was not counted: {d:?}");
+
+        // And a form with no key at all — the `continue` branch, which skips the code that
+        // appends the caveat to every other line and therefore has to carry it itself.
+        let d2 = disclose_claimed_forms(&[ClaimedForm {
+            op_type: "ai.onnx::Conv".to_string(),
+            key: None,
+            nodes: 1,
+        }]);
+        assert_eq!(
+            d2.blind_axes_disclosed, 1,
+            "a claim with no proof key still claims; its breadth caveat is not optional: {d2:?}"
+        );
+    }
+
     /// Positive polarity: a claimed form with no proof must warn.
     #[test]
-    fn an_unmeasured_claimed_form_warns() {
-        let _g = test_lock();
+    fn an_unmeasured_claimed_form_warns() {        let _g = test_lock();
         counters::reset();
         let key = ProofKey::parse(
             "test.planted::NeverProven/1+/f16>f16/no_such_kernel/static/unmeasured-control",

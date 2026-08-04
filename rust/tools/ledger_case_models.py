@@ -417,15 +417,26 @@ def _conv(
     graph carries, and the claim predicate refuses a symbolic weight extent, so a case whose
     weights arrived as an input would be proving a form no model contains.
 
-    The **four** cases built from this are the cross product of {bias, no bias} x {static,
-    runtime-extent}, which is exactly the key space: arity and `shape_class` are key components
-    and nothing else about a `Conv` is. In particular `group`, `strides`, `dilations` and `pads`
-    are **not** key components, so a ledger entry says nothing about them — that gap is covered
-    by conformance tests in `tests/ops`, not by a fifth entry here, and saying so is the point of
-    this paragraph.
+    The **four** cases built from this at the default attribute set are the cross product of
+    {bias, no bias} x {static, runtime-extent}, and that is the entire `Conv` key space.
 
-    MobileNetV2's own form is `bias=True, dynamic=True`: all 52 of its convolutions carry a bias
-    and a symbolic batch extent.
+    `group`, `strides`, `dilations` and `pads` are **not** key components. They were briefly
+    rendered into the key as boolean form bits on 2026-08-04; §8.9.23 reversed that, because
+    `conv_f32.comp` folds all four into push-constant *expressions* on one uniform code path
+    (`cpg = c / pc.group`; pads/strides/dilations are index arithmetic and bounds `continue`s
+    that every node executes). They are expressions, not paths, so the ProofKey contract —
+    "equal keys are dispatched by the same code with the same descriptor layout" — permits the
+    collapse. They are disclosed instead, as `blind_axes` on the registry row, rendered into
+    every claim line.
+
+    The attribute-varying cases below are therefore **not** distinct keys. They are the CI-time
+    suite that speaks for the blind axes: the disclosure says a suite checked these axes and
+    nothing in the reader's session did, and these cases (with `tests/ops/test_conv.py`) are
+    that suite. Several of them now mint a key another case already minted; that is expected and
+    is what the collapse means.
+
+    MobileNetV2's own shape is `bias=True, dynamic=True`: all 52 of its convolutions carry a
+    bias and a symbolic batch extent.
     """
     h, w = hw
     kh, kw = kernel
@@ -455,6 +466,78 @@ def _conv(
         dilations=list(dilations), pads=list(pads), group=group,
     )
     graph = helper.make_graph([node], "conv_graph", [x], [y], initializer=inits)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _global_average_pool(elem: int, *, dynamic: bool = False, hw=(7, 7), c: int = 6) -> onnx.ModelProto:
+    """A one-node `GlobalAveragePool` over `[N, C, H, W]`.
+
+    `hw=(7, 7)` is MobileNetV2's own spatial window; the op has no attributes at all, so the
+    only key components it varies in are `shape_class` and dtype, and two cases are the whole
+    space.
+    """
+    h, w = hw
+    lead = _DYN if dynamic else 2
+    x = helper.make_tensor_value_info("X", elem, [lead, c, h, w])
+    y = helper.make_tensor_value_info("Y", elem, [lead, c, 1, 1])
+    node = helper.make_node("GlobalAveragePool", ["X"], ["Y"], name="gap0")
+    graph = helper.make_graph([node], "gap_graph", [x], [y])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 21)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _gemm(
+    elem: int,
+    *,
+    bias: bool = True,
+    dynamic: bool = False,
+    trans_a: int = 0,
+    trans_b: int = 0,
+    m: int = 3,
+    k: int = 5,
+    n: int = 4,
+    alpha: float = 1.0,
+    beta: float = 1.0,
+    c_shape=None,
+    opset: int = 21,
+) -> onnx.ModelProto:
+    """A one-node `Gemm` with `B` (and `C`) as initializers.
+
+    `transA`, `transB`, `alpha` and `beta` are all **blind axes**, not key components. A
+    transpose in `gemm_f32.comp` is a ternary on a push constant selecting an index expression —
+    one pipeline, one descriptor layout — and `alpha`/`beta` are scalar multiplies. So the four
+    transpose combinations mint the *same* key at a given arity and shape_class, and the cases
+    below are a CI-time suite over those axes rather than four separate proofs. (§8.9.23 names
+    only `Conv`'s four axes; extending it to `Gemm`'s transposes is Mouse's own reading of the
+    same argument and is reversible by Morpheus.)
+
+    MobileNetV2's own head is `transB=1, bias=True, dynamic=True` with `C` of rank 1.
+    """
+    np_dt = np.float16 if elem == TensorProto.FLOAT16 else np.float32
+    rng = np.random.default_rng(0x6E33)
+    lead = _DYN if dynamic else m
+    a_shape = [k, lead] if trans_a else [lead, k]
+    b_shape = [n, k] if trans_b else [k, n]
+
+    inits = [onnx.numpy_helper.from_array(rng.standard_normal(b_shape).astype(np_dt), name="B")]
+    names = ["A", "B"]
+    if bias:
+        cs = list(c_shape) if c_shape is not None else [n]
+        inits.append(onnx.numpy_helper.from_array(rng.standard_normal(cs).astype(np_dt), name="C"))
+        names.append("C")
+
+    a = helper.make_tensor_value_info("A", elem, a_shape)
+    y = helper.make_tensor_value_info("Y", elem, [lead, n])
+    node = helper.make_node(
+        "Gemm", names, ["Y"], name="gemm0",
+        alpha=alpha, beta=beta, transA=trans_a, transB=trans_b,
+    )
+    graph = helper.make_graph([node], "gemm_graph", [a], [y], initializer=inits)
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
     model.ir_version = 10
     onnx.checker.check_model(model)
@@ -686,12 +769,98 @@ BUILDERS.update({
     # `Add` nodes decline `[unproven]` on exactly this key.
     "add_f32_dyn": lambda: _binary_dyn("Add", TensorProto.FLOAT),
 
-    # `Conv`: the cross product of {bias, no bias} x {static, runtime-extent}, which is the whole
-    # key space for this module. `bias=True, dynamic=True` is MobileNetV2's own form.
+    # `Conv`: the key space is {bias, no bias} x {static, runtime-extent}. `group`, `strides`,
+    # `dilations` and `pads` are push-constant expressions on one code path, so they are
+    # `blind_axes` on the registry row and not key components (§8.9.23 reversed the form bits
+    # that briefly made them visible to the key). The four entries below are the arity x
+    # shape_class cross product and are the whole `Conv` ledger.
     "conv_f32": lambda: _conv(TensorProto.FLOAT),
     "conv_f32_nobias": lambda: _conv(TensorProto.FLOAT, bias=False),
     "conv_f32_dyn": lambda: _conv(TensorProto.FLOAT, dynamic=True),
     "conv_f32_nobias_dyn": lambda: _conv(TensorProto.FLOAT, bias=False, dynamic=True),
+
+    # The four attribute shapes MobileNetV2 actually contains, counted off its graph on
+    # 2026-08-04:
+    #   dense 1x1 unpadded       x34
+    #   strided + padded         x1
+    #   grouped + padded         x13   (3x3 depthwise)
+    #   grouped + strided+padded x4
+    # These are **not** four keys — they all collapse onto `conv_f32` at
+    # `bias=True, dynamic=True`. They are kept as the CI-time suite the `blind_axes` disclosure
+    # points at: the claim line says a suite checked group/strides/dilations/pads and the
+    # reader's session did not, and this is that suite. Running them costs a proof attempt each
+    # and buys a differential measurement on the arithmetic the key cannot see.
+    "conv_f32_base_dyn": lambda: _conv(
+        TensorProto.FLOAT, dynamic=True, kernel=(1, 1), pads=(0, 0, 0, 0)
+    ),
+    "conv_f32_strided_dyn": lambda: _conv(
+        TensorProto.FLOAT, dynamic=True, strides=(2, 2), pads=(0, 1, 0, 1)
+    ),
+    "conv_f32_grouped_dyn": lambda: _conv(
+        TensorProto.FLOAT, dynamic=True, group=4, c=4, m=4, pads=(1, 1, 1, 1)
+    ),
+    "conv_f32_grouped_strided_dyn": lambda: _conv(
+        TensorProto.FLOAT, dynamic=True, group=4, c=4, m=4, strides=(2, 2), pads=(0, 1, 0, 1)
+    ),
+    # `dilations` is the one blind axis no censused model sets. It is exercised anyway, because
+    # an unexercised axis is an axis nobody has checked — the same argument the negative
+    # controls in this repo are built on. It mints no key of its own.
+    "conv_f32_dilated": lambda: _conv(
+        TensorProto.FLOAT, dilations=(2, 2), pads=(0, 0, 0, 0), hw=(10, 12)
+    ),
+
+    # The same four attribute shapes at `static` shape_class. `shape_class` *is* a key
+    # component, so these are a genuinely different key from the `_dyn` ones above — but again
+    # one key for all four, not four. They were added when `probe_conv_tolerance.py` refused to
+    # run against the short-lived form suffix; they are kept as suite coverage.
+    "conv_f32_base": lambda: _conv(
+        TensorProto.FLOAT, kernel=(1, 1), pads=(0, 0, 0, 0)
+    ),
+    "conv_f32_strided": lambda: _conv(
+        TensorProto.FLOAT, strides=(2, 2), pads=(0, 1, 0, 1)
+    ),
+    "conv_f32_grouped": lambda: _conv(
+        TensorProto.FLOAT, group=4, c=4, m=4, pads=(1, 1, 1, 1)
+    ),
+    "conv_f32_grouped_strided": lambda: _conv(
+        TensorProto.FLOAT, group=4, c=4, m=4, strides=(2, 2), pads=(0, 1, 0, 1)
+    ),
+
+    # `GlobalAveragePool` has no attributes, so `shape_class` is the only axis it varies in and
+    # these two cases are its entire key space at f32.
+    "global_average_pool_f32": lambda: _global_average_pool(TensorProto.FLOAT),
+    "global_average_pool_f32_dyn": lambda: _global_average_pool(TensorProto.FLOAT, dynamic=True),
+
+    # `Gemm`: the key space is arity (C present) x shape_class. `transA`/`transB`/`alpha`/`beta`
+    # are blind axes, not key components, so the transpose cases below collapse onto the same
+    # key as `gemm_f32` and exist as the CI-time suite the disclosure points at.
+    "gemm_f32": lambda: _gemm(TensorProto.FLOAT, alpha=0.75, beta=1.5),
+    "gemm_f32_nobias": lambda: _gemm(TensorProto.FLOAT, bias=False),
+    "gemm_f32_transa": lambda: _gemm(TensorProto.FLOAT, trans_a=1),
+    "gemm_f32_transb": lambda: _gemm(TensorProto.FLOAT, trans_b=1),
+    "gemm_f32_transab": lambda: _gemm(TensorProto.FLOAT, trans_a=1, trans_b=1),
+    # The bias-less transposed forms are separate keys: `inputs` is a key component, so a
+    # 3-input proof does not cover the 2-input node. A conformance test skipped rather than
+    # ran until these existed — the gap was found by a test declining to be vacuous.
+    "gemm_f32_transa_nobias": lambda: _gemm(TensorProto.FLOAT, trans_a=1, bias=False),
+    "gemm_f32_transb_nobias": lambda: _gemm(TensorProto.FLOAT, trans_b=1, bias=False),
+    "gemm_f32_transab_nobias": lambda: _gemm(
+        TensorProto.FLOAT, trans_a=1, trans_b=1, bias=False
+    ),
+    # MobileNetV2's own head form, and the one a transformer's output projection wears.
+    "gemm_f32_transb_dyn": lambda: _gemm(TensorProto.FLOAT, trans_b=1, dynamic=True),
+    # BERT-SQuAD-12's three `Gemm` nodes are `transB=0` over a symbolic sequence length — a
+    # different form from MobileNetV2's on both the form bit and `shape_class`, which is the
+    # census answering the question the form mechanism was added to ask.
+    "gemm_f32_dyn": lambda: _gemm(TensorProto.FLOAT, dynamic=True),
+
+    # Proof-only forms found by the BERT-SQuAD-12 census on 2026-08-04. No kernel is written for
+    # any of these: the variants already exist and ship live, and only the `runtime-extent`
+    # proof at f32 was missing. `dtype` and `shape_class` are key components, so the f16 twins
+    # and the static f32 entries that already exist cover none of them.
+    "mul_f32_dyn": lambda: _binary_dyn("Mul", TensorProto.FLOAT),
+    "sub_f32_dyn": lambda: _binary_dyn("Sub", TensorProto.FLOAT),
+    "gather_f32_dyn": lambda: _gather_dyn(TensorProto.FLOAT),
 
     "clip_f32": lambda: _clip(TensorProto.FLOAT),
     # The runtime-extent twin. MobileNetV2's 35 `Clip` nodes decline `[unproven]` against

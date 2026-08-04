@@ -260,7 +260,15 @@ crate::op_table! {
     //
     // The window opens at 1: `Conv` has existed since opset 1 and its revisions (11) clarified
     // `auto_pad` and negative-pad behaviour, both of which this row declines explicitly.
-    "Conv",   Ai,     1 ..= OPSET_ANY,  F32,  kernel!(None),  conv,   translate,        Ready;
+    //
+    // `blind_axes` is §8.9.23's ruling, and it is the *third* answer to the breadth question:
+    // `group`, `strides`, `dilations` and `pads` are push constants read by one uniform code path,
+    // so they are expressions and not paths and the key that omits them is true — but a reader of
+    // the session's "proven" line cannot see that, so the row says it out loud. `transposed` and
+    // the four bits `form.rs` keys on are deliberately absent from this list: those *are* in the
+    // key.
+    "Conv",   Ai,     1 ..= OPSET_ANY,  F32,  kernel!(Standalone, "conv"),  conv,   translate,        Ready,
+        blind_axes: &["group", "strides", "dilations", "pads", "kernel_shape"];
 }
 
 /// Translate a 2-D convolution into one dispatch.
