@@ -222,12 +222,26 @@ crate::op_table! {
 
 /// Translate into one dispatch: one invocation per output element.
 pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
-    let a = node.inputs.first().and_then(|t| t.desc.as_ref()).ok_or_else(|| {
-        EpError::Unsupported(format!("`{}` input 0 has no shape at compile time", node.op_type))
-    })?;
-    let b = node.inputs.get(1).and_then(|t| t.desc.as_ref()).ok_or_else(|| {
-        EpError::Unsupported(format!("`{}` input 1 has no shape at compile time", node.op_type))
-    })?;
+    let a = node
+        .inputs
+        .first()
+        .and_then(|t| t.desc.as_ref())
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input 0 has no shape at compile time",
+                node.op_type
+            ))
+        })?;
+    let b = node
+        .inputs
+        .get(1)
+        .and_then(|t| t.desc.as_ref())
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input 1 has no shape at compile time",
+                node.op_type
+            ))
+        })?;
     if a.shape.len() != 2 || b.shape.len() != 2 {
         return Err(EpError::Unsupported(format!(
             "`{}` was claimed with ranks {} / {}; this kernel is rank 2",
@@ -274,9 +288,13 @@ pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     let has_c = node.inputs.len() >= 3 && !node.inputs[2].name.is_empty();
     let bc = if has_c {
         let c = node.inputs[2].desc.as_ref().ok_or_else(|| {
-            EpError::Unsupported(format!("`{}` input 2 has no shape at compile time", node.op_type))
+            EpError::Unsupported(format!(
+                "`{}` input 2 has no shape at compile time",
+                node.op_type
+            ))
         })?;
-        c_broadcast(&c.shape, m, n).map_err(|why| EpError::Unsupported(format!("`{}` {why}", node.op_type)))?
+        c_broadcast(&c.shape, m, n)
+            .map_err(|why| EpError::Unsupported(format!("`{}` {why}", node.op_type)))?
     } else {
         CBroadcast { rows: 1, cols: 1 }
     };
@@ -286,7 +304,11 @@ pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     // An absent `C` binds `A`, the same inert-placeholder rule `conv` uses for an omitted bias:
     // `has_c` is zero so the read is predicated away, and the binding still exists because the
     // module declares it.
-    let c_buf = if has_c { ctx.resolve(&node.inputs[2])? } else { a_buf };
+    let c_buf = if has_c {
+        ctx.resolve(&node.inputs[2])?
+    } else {
+        a_buf
+    };
 
     if node.outputs.len() != 1 {
         return Err(EpError::Internal(format!(
@@ -298,7 +320,10 @@ pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     let out_buf = ctx.bind_output(&node.outputs[0], TensorDesc::new(DType::F32, vec![m, n]))?;
 
     let total = u32::try_from(m * n).map_err(|_| {
-        EpError::Unsupported(format!("`{}` output element count overflows u32", node.op_type))
+        EpError::Unsupported(format!(
+            "`{}` output element count overflows u32",
+            node.op_type
+        ))
     })?;
 
     let mut push = Vec::with_capacity(10 * 4);
@@ -314,7 +339,10 @@ pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
         i64::from(total),
     ] {
         let v = u32::try_from(v).map_err(|_| {
-            EpError::Unsupported(format!("`{}` parameter {v} does not fit a u32", node.op_type))
+            EpError::Unsupported(format!(
+                "`{}` parameter {v} does not fit a u32",
+                node.op_type
+            ))
         })?;
         push.extend_from_slice(&v.to_le_bytes());
     }
@@ -323,7 +351,9 @@ pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     push.extend_from_slice(&alpha.to_le_bytes());
     push.extend_from_slice(&beta.to_le_bytes());
 
-    let groups = total.div_ceil(GEMM_LOCAL_SIZE).clamp(1, GEMM_MAX_WORKGROUPS);
+    let groups = total
+        .div_ceil(GEMM_LOCAL_SIZE)
+        .clamp(1, GEMM_MAX_WORKGROUPS);
     ctx.dispatch(KernelRequest {
         shader: "gemm_f32",
         spec_constants: vec![GEMM_LOCAL_SIZE],
@@ -341,7 +371,10 @@ mod tests {
 
     #[test]
     fn the_row_is_ready_and_points_at_this_handler() {
-        let row = OPS.iter().find(|s| s.op_type == "Gemm").expect("Gemm must be registered");
+        let row = OPS
+            .iter()
+            .find(|s| s.op_type == "Gemm")
+            .expect("Gemm must be registered");
         assert_eq!(row.status, OpStatus::Ready);
         assert!(std::ptr::fn_addr_eq(
             row.translate,
@@ -380,20 +413,35 @@ mod tests {
         assert_eq!((kb, n), (1280, 1000));
         assert_eq!(
             c_broadcast(&[1000], m, n).unwrap(),
-            CBroadcast { rows: 1, cols: 1000 }
+            CBroadcast {
+                rows: 1,
+                cols: 1000
+            }
         );
     }
 
     #[test]
     fn a_scalar_c_broadcasts_over_everything() {
-        assert_eq!(c_broadcast(&[], 4, 5).unwrap(), CBroadcast { rows: 1, cols: 1 });
+        assert_eq!(
+            c_broadcast(&[], 4, 5).unwrap(),
+            CBroadcast { rows: 1, cols: 1 }
+        );
     }
 
     #[test]
     fn a_full_rank_two_c_is_taken_as_written() {
-        assert_eq!(c_broadcast(&[4, 5], 4, 5).unwrap(), CBroadcast { rows: 4, cols: 5 });
-        assert_eq!(c_broadcast(&[1, 5], 4, 5).unwrap(), CBroadcast { rows: 1, cols: 5 });
-        assert_eq!(c_broadcast(&[4, 1], 4, 5).unwrap(), CBroadcast { rows: 4, cols: 1 });
+        assert_eq!(
+            c_broadcast(&[4, 5], 4, 5).unwrap(),
+            CBroadcast { rows: 4, cols: 5 }
+        );
+        assert_eq!(
+            c_broadcast(&[1, 5], 4, 5).unwrap(),
+            CBroadcast { rows: 1, cols: 5 }
+        );
+        assert_eq!(
+            c_broadcast(&[4, 1], 4, 5).unwrap(),
+            CBroadcast { rows: 4, cols: 1 }
+        );
     }
 
     /// A `C` that does not broadcast is refused, not reinterpreted. A rank-1 `[M]` is the

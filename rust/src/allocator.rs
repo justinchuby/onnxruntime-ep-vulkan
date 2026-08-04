@@ -1746,7 +1746,11 @@ pub mod tally {
         // R12 obligation 2 — every artifact that presents these numbers names WHICH DEVICE EACH
         // SIDE IS ON, not merely that the sides differ. `SPLIT-DEVICE` is the detection; this is
         // the description, and without it a selector-1 number reads exactly like a selector-0 one.
-        format!(" FRAME: {}{}", frame_sides_sentence(), authoritative_audit_body(t))
+        format!(
+            " FRAME: {}{}",
+            frame_sides_sentence(),
+            authoritative_audit_body(t)
+        )
     }
 
     fn authoritative_audit_body(t: &Tally) -> String {
@@ -3198,7 +3202,10 @@ mod tests {
         r.staging_ptr(mirrored).expect("staging");
         r.free(mirrored);
         let t = tally::snapshot();
-        assert_eq!(t.device_residency_evaluations, 1, "the screen must have run");
+        assert_eq!(
+            t.device_residency_evaluations, 1,
+            "the screen must have run"
+        );
         assert_eq!(
             t.device_authoritative_spans, 0,
             "a span whose bytes were readable through host staging is a mirror"
@@ -3613,7 +3620,11 @@ mod tests {
 
         let t = tally::snapshot();
         assert_eq!(
-            (t.device_attach_attempts, t.device_attach_failures, t.device_attach_unavailable),
+            (
+                t.device_attach_attempts,
+                t.device_attach_failures,
+                t.device_attach_unavailable
+            ),
             (0, 0, 0),
             "the flag-off state: nothing was attempted, so nothing can have failed"
         );

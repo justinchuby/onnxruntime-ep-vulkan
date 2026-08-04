@@ -211,7 +211,9 @@ impl TransferModel {
     /// verdict does not change".
     pub fn with_env_overrides(self) -> TransferModel {
         let m = TransferModel {
-            fixed_ns: env_f64(ENV_FIXED_NS).filter(|v| *v >= 0.0).unwrap_or(self.fixed_ns),
+            fixed_ns: env_f64(ENV_FIXED_NS)
+                .filter(|v| *v >= 0.0)
+                .unwrap_or(self.fixed_ns),
             bytes_per_ns: env_f64(ENV_BYTES_PER_NS)
                 .filter(|v| *v > 0.0)
                 .unwrap_or(self.bytes_per_ns),
@@ -662,7 +664,11 @@ impl GateOutcome {
 /// * `evaluate` is called exactly `islands.len()` times, unconditionally.
 /// * The effective verdict differs from the evaluated verdict **only** for
 ///   [`GateOutcome::SoleIslandOverride`], which can only occur when `islands.len() == 1`.
-pub fn gate_islands(islands: &[Island], model: &TransferModel, policy: &Policy) -> Vec<GateOutcome> {
+pub fn gate_islands(
+    islands: &[Island],
+    model: &TransferModel,
+    policy: &Policy,
+) -> Vec<GateOutcome> {
     let sole = islands.len() == 1;
     islands
         .iter()
@@ -1278,7 +1284,11 @@ mod tests {
             &PLAUSIBLE_FIXED_NS,
         );
         for r in rows.iter().filter(|r| r.fixed_ns <= 1_000_000.0) {
-            assert!(r.economics_claims, "should claim at fixed_ns={}", r.fixed_ns);
+            assert!(
+                r.economics_claims,
+                "should claim at fixed_ns={}",
+                r.fixed_ns
+            );
         }
         // Solve for the flip: compute = margin·(2·fixed + bytes/bps).
         let bytes_term = (island.boundary_bytes() as f64) / TransferModel::DISCRETE.bytes_per_ns;
@@ -1301,7 +1311,8 @@ mod tests {
     /// original defect stays on the record rather than being quietly replaced by the smaller
     /// number that succeeded it.
     #[test]
-    fn the_internal_edges_counted_estimate_disagreed_with_the_measured_boundary_by_five_orders_of_magnitude() {
+    fn the_internal_edges_counted_estimate_disagreed_with_the_measured_boundary_by_five_orders_of_magnitude()
+     {
         let estimated = Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED.boundary_bytes();
         let measured = Island::MEASURED_PHI35_DEV0_REAL_BYTES.boundary_bytes();
         assert_eq!(measured, 856_720);

@@ -194,10 +194,7 @@ impl SelectorFacts for NodeDesc {
 /// Resolve `op_type`'s selector into specialisation constant [`SPEC_SLOT`].
 ///
 /// Ops with no table entry resolve to `0`, so this is safe to call unconditionally.
-pub fn resolve<F: SelectorFacts + ?Sized>(
-    op_type: &str,
-    facts: &F,
-) -> Result<u32, SelectorError> {
+pub fn resolve<F: SelectorFacts + ?Sized>(op_type: &str, facts: &F) -> Result<u32, SelectorError> {
     let Some(source) = source_for(op_type) else {
         return Ok(0);
     };
@@ -298,7 +295,11 @@ mod tests {
         assert_eq!(
             resolve(
                 "IsInf",
-                &node("IsInf", &[("detect_positive", AttrValue::Float(1.0))], &["x"])
+                &node(
+                    "IsInf",
+                    &[("detect_positive", AttrValue::Float(1.0))],
+                    &["x"]
+                )
             ),
             Err(SelectorError::NotAnInt {
                 attr: "detect_positive"
@@ -308,7 +309,10 @@ mod tests {
 
     #[test]
     fn clip_reads_its_selector_from_input_presence() {
-        assert_eq!(resolve("Clip", &node("Clip", &[], &["x", "lo", "hi"])), Ok(0b11));
+        assert_eq!(
+            resolve("Clip", &node("Clip", &[], &["x", "lo", "hi"])),
+            Ok(0b11)
+        );
         assert_eq!(resolve("Clip", &node("Clip", &[], &["x", "lo"])), Ok(0b01));
     }
 
@@ -316,7 +320,10 @@ mod tests {
     /// optional input as an empty name, and a length-only check would read this as "min present".
     #[test]
     fn clip_with_an_omitted_interior_bound_sets_only_the_max_bit() {
-        assert_eq!(resolve("Clip", &node("Clip", &[], &["x", "", "hi"])), Ok(0b10));
+        assert_eq!(
+            resolve("Clip", &node("Clip", &[], &["x", "", "hi"])),
+            Ok(0b10)
+        );
     }
 
     /// A `Clip` with neither bound is the identity — and it is **claimed**, not refused.

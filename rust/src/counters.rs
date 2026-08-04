@@ -1430,7 +1430,10 @@ pub fn specialisation_delta_forms() -> Option<Vec<String>> {
 /// The forms claimed on an entry that records no specialisation, deduplicated.
 /// `None` = poisoned lock; see [`unproven_decline_forms`].
 pub fn specialisation_unrecorded_forms() -> Option<Vec<String>> {
-    SPECIALISATION_UNRECORDED_FORMS.lock().ok().map(|v| v.clone())
+    SPECIALISATION_UNRECORDED_FORMS
+        .lock()
+        .ok()
+        .map(|v| v.clone())
 }
 
 /// The unattributable-device disclosure rows recorded so far, deduplicated, first-seen order.
@@ -1463,7 +1466,10 @@ fn forms_json(rows: Option<Vec<String>>) -> String {
     let Some(rows) = rows else {
         return "\"INSTRUMENT-ERROR\"".to_string();
     };
-    let body: Vec<String> = rows.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    let body: Vec<String> = rows
+        .iter()
+        .map(|k| format!("\"{}\"", json_escape(k)))
+        .collect();
     format!("[{}]", body.join(", "))
 }
 
@@ -2120,10 +2126,7 @@ pub fn specialisation_digest_for(stems: &[&str]) -> SpecObservation {
             of: sorted.len(),
         };
     }
-    SpecObservation::Full(format!(
-        "{:016x}",
-        crate::registry::fnv1a64(&input)
-    ))
+    SpecObservation::Full(format!("{:016x}", crate::registry::fnv1a64(&input)))
 }
 
 /// The specialisation digest over the stems this run dispatched — the counters-artifact form.
@@ -3000,9 +3003,13 @@ mod tests {
         let at = current
             .iter()
             .position(|(n, _)| *n == "device_losses")
-            .expect("device_losses is in the struct") + 1;
+            .expect("device_losses is in the struct")
+            + 1;
         let mut mutated = current.clone();
-        for (i, name) in ["inserted_a", "inserted_b", "inserted_c"].iter().enumerate() {
+        for (i, name) in ["inserted_a", "inserted_b", "inserted_c"]
+            .iter()
+            .enumerate()
+        {
             mutated.insert(at + i, (name, 8));
         }
         let mutated_hash = hash_of(&mutated);
@@ -3121,7 +3128,11 @@ mod tests {
         // silently, which is worse, because then the artifact lies without saying so.
         weights::on_device_alloc(4096);
         let (allocs, frees, in_use, high_water, ..) = weights::snapshot();
-        assert_eq!((allocs, frees), (1, 1), "call counts are unaffected by clamping");
+        assert_eq!(
+            (allocs, frees),
+            (1, 1),
+            "call counts are unaffected by clamping"
+        );
         assert_eq!(in_use, 4096, "in-use must resume from the clamped zero");
         assert!(high_water >= 4096, "high-water must see the clamped total");
 
@@ -4371,7 +4382,9 @@ mod tests {
         );
         assert_eq!(
             unprovable_decline_forms(),
-            Some(vec!["ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1".to_string()]),
+            Some(vec![
+                "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1".to_string()
+            ]),
             "deduplicated, and a strict subset of the backlog"
         );
         let json = snapshot().to_json();
