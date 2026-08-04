@@ -1,0 +1,112 @@
+// Conv (f32) — ONNX `Conv`, 2-D, direct convolution. Owner: Mouse.
+//
+// WHY A DIRECT CONVOLUTION AND NOT IM2COL+GEMM
+// --------------------------------------------
+// `OP_COVERAGE.md` §7.1.3 argues that a 1x1 convolution "lowers to reshape + GEMM, not to a real
+// convolution kernel", and that is true and is a *performance* argument. This EP has no GEMM
+// kernel to lower to, and a claim that is correct and slow is worth more than a claim that does
+// not exist: the first question a CNN asks this EP is whether `Conv` is claimed at all, and until
+// 2026-08-03 the answer for every one of MobileNetV2's 52 `Conv` nodes was `[not-registered]`.
+// The loop below is the honest general case. Tiling, im2col and a 1x1 fast path are all
+// specialisations of it, and each of them is a separate measured change with this as its oracle.
+//
+// THE MAPPING
+// -----------
+//   X : [N, C, H, W]                 (input)
+//   W : [M, C/group, KH, KW]         (weights; M is the output channel count)
+//   B : [M]                          (bias, optional)
+//   Y : [N, M, OH, OW]
+//
+//   OH = floor((H + pad_h_begin + pad_h_end - ((KH - 1) * dil_h + 1)) / stride_h) + 1     (and OW likewise)
+//
+// Grouped convolution is the general form and depthwise is the case `group == C`, so nothing
+// here special-cases it: output channel `m` belongs to group `g = m / (M / group)` and reads
+// input channels `[g * C/group, (g+1) * C/group)`. That one line is why MobileNetV2's 17
+// depthwise layers cost no extra kernel.
+//
+// Only the *begin* pads appear below. The end pads change `OH`/`OW`, which the translate handler
+// computes; they do not change where a given output element reads from. A read that falls outside
+// the input contributes zero, which is what ONNX's implicit zero padding means — it is a skipped
+// accumulation, not a clamped read, and the distinction matters at the border.
+//
+// The accumulator is `float` for an f32 kernel: it is the same precision the CPU reference
+// accumulates in, and a wider accumulator would make the comparison a test of two different
+// algorithms.
+//
+// Grid-stride loop so the workgroup count stays well under any device's
+// maxComputeWorkGroupCount[0] rather than scaling with the tensor.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    uint n;             // batch
+    uint c;             // input channels
+    uint h;             // input height
+    uint w;             // input width
+    uint m;             // output channels
+    uint kh;            // kernel height
+    uint kw;            // kernel width
+    uint oh;            // output height
+    uint ow;            // output width
+    uint pad_h;         // begin pad, height
+    uint pad_w;         // begin pad, width
+    uint stride_h;
+    uint stride_w;
+    uint dil_h;
+    uint dil_w;
+    uint group;
+    uint has_bias;      // 0 or 1
+    uint total;         // n * m * oh * ow (output element count)
+} pc;
+
+layout(set = 0, binding = 0) readonly  buffer X    { float data[]; } u_x;
+layout(set = 0, binding = 1) readonly  buffer Wt   { float data[]; } u_w;
+layout(set = 0, binding = 2) readonly  buffer Bias { float data[]; } u_b;
+layout(set = 0, binding = 3) writeonly buffer Y    { float data[]; } u_y;
+
+void main() {
+    uint stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+    uint cpg = pc.c / pc.group;          // input channels per group
+    uint mpg = pc.m / pc.group;          // output channels per group
+
+    for (uint o = gl_GlobalInvocationID.x; o < pc.total; o += stride) {
+        uint ox = o % pc.ow;
+        uint oy = (o / pc.ow) % pc.oh;
+        uint oc = (o / (pc.ow * pc.oh)) % pc.m;
+        uint bn = o / (pc.ow * pc.oh * pc.m);
+
+        uint g  = oc / mpg;
+        uint c0 = g * cpg;
+
+        // `has_bias` is a push constant rather than a specialisation constant on purpose: the
+        // bias binding is always declared (bound to the weights when absent, the same inert
+        // placeholder `ew_clip` uses), so a bias-less node costs one predicated read, not a
+        // second pipeline. It is still a distinct proof key, because arity is a key component.
+        float acc = (pc.has_bias != 0u) ? u_b.data[oc] : 0.0;
+
+        for (uint ic = 0u; ic < cpg; ++ic) {
+            uint x_base = ((bn * pc.c) + c0 + ic) * pc.h;
+            uint w_base = ((oc * cpg) + ic) * pc.kh;
+            for (uint ky = 0u; ky < pc.kh; ++ky) {
+                // Signed, because a begin pad makes the first rows negative and unsigned
+                // arithmetic would wrap them to enormous in-range-looking indices.
+                int iy = int(oy * pc.stride_h) - int(pc.pad_h) + int(ky * pc.dil_h);
+                if (iy < 0 || iy >= int(pc.h)) {
+                    continue;
+                }
+                for (uint kx = 0u; kx < pc.kw; ++kx) {
+                    int ix = int(ox * pc.stride_w) - int(pc.pad_w) + int(kx * pc.dil_w);
+                    if (ix < 0 || ix >= int(pc.w)) {
+                        continue;
+                    }
+                    acc += u_x.data[(x_base + uint(iy)) * pc.w + uint(ix)]
+                         * u_w.data[(w_base + ky) * pc.kw + kx];
+                }
+            }
+        }
+        u_y.data[o] = acc;
+    }
+}

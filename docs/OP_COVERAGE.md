@@ -5828,6 +5828,127 @@ more to the schedule than any single template.
 
 ---
 
+## 13.9. The vision lane: `Conv`, and what one model class costs (2026-08-03, Mouse)
+
+### 13.9.1 The measurement that made this section necessary
+
+Two LLMs were this project's entire evidence base. Neither contains a convolution, so **no
+instrument the project had could see the gap** — §4.21's census reports 293/374 and 355/366 and
+both are true and both are about transformers.
+
+MobileNetV2-12 (`bench/results/model_provenance.json` records the URL and sha256), censused with
+`rust/tools/probe_model_op_census.py` against a real EP session:
+
+```
+=== mobilenetv2: 105 nodes, opsets {'ai.onnx': 12}
+    claimed 0 / declined 104 / no-decision 1
+    Conv               52  {'not-registered': 52}
+    Clip               35  {'unproven': 35}
+    Add                10  {'unproven': 10}
+    Shape/Gather/Unsqueeze/Concat/GlobalAveragePool/Reshape/Gemm  1 each
+```
+
+**Zero.** Not thin coverage — the registry contained none of `Conv`, `Gemm`, `MatMul`, `Softmax`,
+`Transpose`, `Concat`, `Slice`, `Split`, `Reshape`, `Reduce*`, `LayerNormalization` or any pooling
+op. No non-LLM model could run at all. That is the concrete content of the "llama.cpp ships 164
+Vulkan shaders, we ship 12" ratio, measured on a graph instead of counted on a shelf.
+
+And **45 of the 104 declines were `[unproven]` on ops shipped live** — `Clip` and `Add` at the
+`runtime-extent` shape class, a form no LLM evidence case had ever produced at f32. That is
+§8.10's pattern one level out: pointing the census at a new model *class* finds forms already
+backed by a compiled variant and never proven. Their cost is a proof run, not a shader.
+
+### 13.9.2 Why `Conv` and not `Reshape`
+
+`Reshape` had 24 declining nodes on gpt-oss-20b and opens the shape family as a template — the
+better-looking pick on a count. Reading the graph neighbourhood instead of the count:
+**all 24 are `Add -> Reshape -> QMoE`**, and `QMoE` is staged. Claiming `Reshape` moves the island
+boundary by one node and unblocks nothing.
+
+This also re-tested the `Reshape` decline recorded at `26fd93f`, whose stated falsifier was "the
+census shows no model contains one". **That falsifier has since fired** — 24 `Reshape` nodes now
+exist. The conclusion survived anyway, for a reason the original ruling did not name: the
+consumer is still declined. Both halves are recorded because a ruling that outlives its own
+falsifier deserves the new reason written down, not a quiet reprieve.
+
+### 13.9.3 What `conv_f32.comp` claims, and the four declines by name
+
+A direct 2-D convolution, f32, one shader. **Grouped is the general case**, so depthwise
+(`group == C`) — 17 of MobileNetV2's 52 convolutions — costs no second kernel. Only the *begin*
+pads appear in the index arithmetic; the end pads change `OH`/`OW`, which the translate handler
+computes. An out-of-range tap is a **skipped accumulation, not a clamped read**, which is what
+ONNX's implicit zero padding means and what distinguishes a correct border from a plausible one.
+
+Declined, each for a stated reason:
+
+| decline | code | why |
+|---|---|---|
+| f16 | `[dtype]` | packed-`uint` half I/O addresses two elements per 32-bit word; a convolution reads single scattered elements. Needs `conv_f16.comp`, not a wider `caps`. |
+| rank != 4 | `[rank]` | 1-D and 3-D convolution are different index arithmetic, not a longer loop. |
+| `auto_pad != NOTSET` | `[attribute]` | `SAME_*` derives the pads from an *output* extent, which is not a fact about the node when the pipeline is built. ORT's optimizers rewrite most producers to explicit pads. |
+| symbolic `C`/`H`/`W` | `[dynamic-shape]` | the padding arithmetic is not linear in `H`/`W`, so the output extent cannot be recovered from a ratio at Compute time the way a flat element count can. **Batch may be symbolic** — and on every real vision graph it is. A lift condition, not a permanent decline. |
+
+### 13.9.4 The four keys are the whole key space — and the space the key omits
+
+```
+ai.onnx::Conv/1+/f32,f32,f32>f32/metadata/static/n3
+ai.onnx::Conv/1+/f32,f32>f32/metadata/static/n2
+ai.onnx::Conv/1+/f32,f32,f32>f32/metadata/runtime-extent/n3     <- MobileNetV2's own form
+ai.onnx::Conv/1+/f32,f32>f32/metadata/runtime-extent/n2
+```
+
+That is `{bias, no bias} x {static, runtime-extent}` closed completely: arity and `shape_class`
+are key components and **nothing else about a `Conv` is**.
+
+`group`, `strides`, `dilations` and `pads` therefore appear in no key. Four entries say nothing
+about whether a stride-2 asymmetric-pad depthwise convolution is right. That is not a defect in
+the key — a key is about which module runs and how bindings are laid out — but it is a gap in
+what a proof covers, and the honest response is to name the uncovered axis rather than let four
+entries read as coverage of `Conv`. It is closed by `tests/ops/test_conv.py` (twelve attribute
+cases plus two exact structural assertions a tolerance check cannot make: a one-hot depthwise
+convolution must be a **bit-exact** channel copy, and all-ones input with `pads=1` must give
+`4/6/9` taps at corner/edge/centre where a clamping kernel would give `9` everywhere).
+
+### 13.9.5 The first derived tolerance
+
+`tests/ops/_models.py` has reserved the accumulating ops since M0: *"tolerance is
+accumulation-order-dependent and MUST be derived from test data per vendor ... Do not guess; do
+not copy from fp32 elementwise."* `Conv` is the first accumulating op to land, so it is the first
+one that clause binds.
+
+`tests/ops/probe_conv_tolerance.py` measures it. RTX 4060 Laptop, twelve cases: worst
+`max_rel = 1.858e-4`, `max_abs = 5.722e-6` (`bench/results/conv_tolerance_derivation.json`). ORT's
+CPU EP lowers `Conv` to im2col + Eigen GEMM; the residual is accumulation order, not disagreement.
+`FP32_CONV` is pinned at `rtol 1e-3 / atol 1e-5` — **exactly `gen_proof_ledger.py`'s defaults**, so
+the conformance gate is precisely as strict as the proof gate and cannot be quoted as looser.
+Re-derive before quoting it on AMD or lavapipe; the clause says per vendor and this is one vendor.
+
+> The probe's **first** run printed `0.000e+00` for all twelve cases. ORT had answered `Unknown
+> Provider Type: VulkanExecutionProvider`, fallen back to CPU, and compared the CPU against
+> itself. It now registers the EP and refuses to print a number for any case the EP did not
+> claim. A perfect residual from an instrument that observed nothing is `ERROR(instrument)`, and
+> it very nearly became a pinned constant.
+
+### 13.9.6 The delta
+
+| | before | after |
+|---|---|---|
+| registry rows / kernel-carrying | 91 / 73 | 92 / 74 |
+| ledger entries | 115 | 121 |
+| **MobileNetV2-12** | **0 / 105** | **97 / 105** |
+| gpt-oss-20b | 293 / 374 | 293 / 374 |
+| Phi-3.5-mini | 355 / 366 | 355 / 366 |
+
+**What it unblocks: one new model class.** MobileNetV2's remaining 7 declines are a single
+`Shape -> Gather -> Unsqueeze -> Concat -> Reshape` classifier tail plus `GlobalAveragePool` and
+`Gemm` — one contiguous non-backbone island, not seven scattered holes. `GlobalAveragePool` and
+`Gemm` are the next two ops by this criterion, and they are also the two that a `Reduce`/GEMM
+template would serve beyond this one graph.
+
+The two LLMs are unchanged in both directions. That is the point: coverage, not a trade.
+
+---
+
 ## 14. In-house ONNX crates — evaluation (2026-07-29)
 
 Justin directed us to *参考* — reference — his own Rust/Python ONNX projects rather than build graph

@@ -285,6 +285,130 @@ def _record_attempt(model_path, keys, verdict, detail, device, ort_build, tolera
         )
 
 
+RETIRED = REPO / "evidence" / "retired_proof_keys.json"
+
+
+def _attempt_matched_keys(path: pathlib.Path | None = None) -> tuple[set[str], str]:
+    """Every key that has ever been recorded MATCH by a proof run, from the attempt log.
+
+    Returns `(keys, error)`. A missing or unreadable log is `error`, never an empty set: a
+    check that cannot see its subject must say so rather than answer about something else
+    (§8.9.21), and an empty set here would silently make the loss invariant below unfailable.
+
+    The default resolves `ATTEMPTS` **at call time**, not at definition time, so a probe can
+    point the invariant at a different pair of artifacts. A default argument bound at import
+    would have silently read today's log while claiming to replay a historical one.
+    """
+    path = path if path is not None else ATTEMPTS
+    if not path.is_file():
+        return set(), (
+            f"{path} does not exist, so there is no independent record of what has been "
+            f"proven and the loss invariant cannot be evaluated"
+        )
+    keys: set[str] = set()
+    try:
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            rec = json.loads(raw)
+            if rec.get("verdict") != "MATCH":
+                continue
+            for k in rec.get("keys") or []:
+                keys.add(k)
+    except (OSError, ValueError) as exc:
+        return set(), f"cannot read {path}: {exc}"
+    return keys, ""
+
+
+def _retired_keys(path: pathlib.Path | None = None) -> tuple[dict[str, str], str]:
+    """Keys deliberately withdrawn from the ledger, each with a reason. Absent file = none."""
+    path = path if path is not None else RETIRED
+    if not path.is_file():
+        return {}, ""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        out: dict[str, str] = {}
+        for row in doc.get("retired") or []:
+            key = row.get("key", "")
+            reason = row.get("reason", "")
+            if not key or not reason:
+                return {}, (
+                    f"{path} holds a retirement with no key or no reason; a withdrawal nobody "
+                    f"has to justify is a blanket exemption"
+                )
+            out[key] = reason
+        return out, ""
+    except (OSError, ValueError) as exc:
+        return {}, f"cannot read {path}: {exc}"
+
+
+def check_no_proof_went_missing(ledger_keys: set[str]) -> tuple[list[str], list[str], str]:
+    """Did an entry that was once proven leave the ledger? Returns (failures, notes, error).
+
+    WHY THIS EXISTS, AND WHY IT IS NOT WHAT `--check` ALREADY DID
+    ------------------------------------------------------------
+    Every other question in `check_ledger` is of the form *does each entry that is here agree
+    with something?* — the header, the artifact, the build's SPIR-V. Not one of them can be
+    asked about an entry that is **not** here. `write_ledger`'s shrinking guard covers writes
+    by this tool; it cannot see a `git merge`.
+
+    On 2026-08-03 a merge deleted three proofs from `proof_ledger.jsonl`. `--check` said PASS
+    on the result — correctly, by its own lights, because 103 entries that all agree with the
+    build is exactly what it is asked to establish. The only instrument that noticed was the op
+    suite, three steps downstream, and history simplification hid the removal from the file's
+    own log.
+
+    The cheap invariant is that a *second, append-only* artifact already records what has been
+    proven: `evidence/proof_attempts.jsonl`. It is written on every run, MATCH or not, it is
+    never rewritten, and a merge unions it rather than resolving it. So
+    ``{keys ever MATCHed} - {keys in the ledger} - {keys explicitly retired}`` must be empty,
+    and a merge that drops an entry cannot also make the record of its proof disappear.
+
+    Replayed against the two files as they stood at `eb84364`, this names exactly the three
+    `Cast` keys that incident lost, and it is silent on the current tree. See
+    `rust/tools/probe_ledger_loss.py`.
+
+    Retirement is deliberate and costs a reason: a key legitimately leaves the ledger when the
+    *form* stops existing (an op de-registered, a key component renamed). Writing the key and
+    the reason into `evidence/retired_proof_keys.json` is the difference between a withdrawal
+    and a loss. A retirement for a key that is still in the ledger is itself a failure — a
+    stale exemption is an exemption nobody is checking.
+    """
+    matched, err = _attempt_matched_keys()
+    if err:
+        return [], [], err
+    retired, rerr = _retired_keys()
+    if rerr:
+        return [], [], rerr
+
+    failures: list[str] = []
+    missing = sorted(matched - ledger_keys - set(retired))
+    for k in missing:
+        failures.append(
+            f"key {k} was recorded MATCH in {ATTEMPTS.name} and is NOT in the ledger. A proof "
+            f"was lost — by a merge, a hand edit, or a rebuild — and no other check in this "
+            f"file can see an entry that is absent. Re-prove it (--reprove/--append), or "
+            f"retire it by name and reason in {RETIRED.name}"
+        )
+    for k in sorted(set(retired) & ledger_keys):
+        failures.append(
+            f"key {k} is listed retired in {RETIRED.name} and is present in the ledger; a "
+            f"retirement nobody removes is an exemption nobody is checking"
+        )
+    notes = []
+    if retired:
+        notes.append(
+            f"{len(retired)} key(s) are deliberately retired and exempt from the loss "
+            f"invariant: " + ", ".join(sorted(retired))
+        )
+    notes.append(
+        f"loss invariant: {len(matched)} key(s) ever MATCHed in {ATTEMPTS.name}, "
+        f"{len(ledger_keys)} in the ledger, {len(missing)} missing, {len(retired)} retired"
+    )
+    return failures, notes, ""
+
+
 def _planted_control_key() -> str:
     """The key the ledger must never contain.
 
@@ -1041,6 +1165,18 @@ def check_ledger(
                 f"entry {key} carries spec_digest={spec_field!r}, which is a state and not a "
                 f"digest; the run could not form one and the entry should not have been written"
             )
+    # ---------------------------------------------------------------- the loss half
+    #
+    # Everything above asks whether each entry that is present is sound. Nothing above can be
+    # asked about an entry that is **absent**, and on 2026-08-03 a merge deleted three and this
+    # function printed PASS. `check_no_proof_went_missing` is the only question here whose
+    # subject is the empty space in the file.
+    loss_failures, loss_notes, loss_err = check_no_proof_went_missing(seen)
+    if loss_err:
+        print(f"ERROR(instrument): the loss invariant could not be evaluated — {loss_err}")
+        return 3
+    failures.extend(loss_failures)
+
     if failures:
         print(f"FAIL(condition=LEDGER_INVALID): {path}")
         for f in failures:
@@ -1067,11 +1203,13 @@ def check_ledger(
             "  NOTE: no artifact was compared. This says the file agrees with itself and says "
             "NOTHING about the shaders in any build. Do not quote it as merge evidence."
         )
+        _print_notes(loss_notes)
         _print_spec_note(spec_unrecorded, len(lines) - 1)
         return 0
 
     stale = check_baked_vs_disk(path, lib)
     subject_failures, notes = check_against_build(path, lib)
+    notes = list(loss_notes) + notes
     build_failures = list(subject_failures)
     if stale and expect_rebuild:
         # Immediately after a generation run the two copies differ *by construction* — that is
