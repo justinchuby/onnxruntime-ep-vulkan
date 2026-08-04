@@ -4403,7 +4403,10 @@ mod tests {
             );
             if mintable { yes += 1 } else { no += 1 }
         }
-        assert!(yes > 0 && no > 0, "a report with one reachable answer screens nothing: {text}");
+        assert!(
+            yes > 0 && no > 0,
+            "a report with one reachable answer screens nothing: {text}"
+        );
     }
 
     /// The report is stable across calls and carries no state of its own.
