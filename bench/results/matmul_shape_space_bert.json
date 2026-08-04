@@ -1,0 +1,1050 @@
+{
+  "model": ".scratch-models\\bertsquad-12.onnx",
+  "op": "MatMul",
+  "total": 98,
+  "shape_classes": {
+    "rank_a=? rank_b=2 rank_out=? a_sym=None b_sym=dd b_init=True a_init=False": 73,
+    "rank_a=? rank_b=? rank_out=? a_sym=None b_sym=None b_init=False a_init=False": 24,
+    "rank_a=? rank_b=2 rank_out=? a_sym=None b_sym=dd b_init=False a_init=False": 1
+  },
+  "distinct_b_shapes": [
+    [
+      "[768, 768]",
+      48
+    ],
+    [
+      "None",
+      24
+    ],
+    [
+      "[768, 3072]",
+      12
+    ],
+    [
+      "[3072, 768]",
+      12
+    ],
+    [
+      "[2, 768]",
+      1
+    ],
+    [
+      "[768, 2]",
+      1
+    ]
+  ],
+  "distinct_a_shapes": [
+    [
+      "None",
+      98
+    ]
+  ],
+  "nodes": [
+    {
+      "node": "bert/embeddings/MatMul",
+      "a": null,
+      "b": [
+        2,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_0/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_0/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_0/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_0/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_0/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_0/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_0/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_0/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_1/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_1/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_1/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_1/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_1/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_1/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_1/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_1/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_2/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_2/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_2/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_2/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_2/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_2/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_2/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_2/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_3/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_3/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_3/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_3/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_3/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_3/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_3/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_3/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_4/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_4/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_4/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_4/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_4/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_4/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_4/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_4/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_5/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_5/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_5/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_5/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_5/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_5/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_5/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_5/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_6/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_6/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_6/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_6/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_6/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_6/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_6/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_6/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_7/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_7/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_7/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_7/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_7/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_7/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_7/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_7/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_8/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_8/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_8/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_8/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_8/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_8/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_8/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_8/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_9/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_9/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_9/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_9/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_9/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_9/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_9/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_9/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_10/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_10/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_10/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_10/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_10/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_10/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_10/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_10/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_11/attention/self/value/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_11/attention/self/query/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_11/attention/self/key/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_11/attention/self/MatMul",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_11/attention/self/MatMul_1",
+      "a": null,
+      "b": null,
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    },
+    {
+      "node": "bert/encoder/layer_11/attention/output/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_11/intermediate/dense/MatMul",
+      "a": null,
+      "b": [
+        768,
+        3072
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "bert/encoder/layer_11/output/dense/MatMul",
+      "a": null,
+      "b": [
+        3072,
+        768
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": true
+    },
+    {
+      "node": "MatMul",
+      "a": null,
+      "b": [
+        768,
+        2
+      ],
+      "out": null,
+      "a_is_initializer": false,
+      "b_is_initializer": false
+    }
+  ]
+}

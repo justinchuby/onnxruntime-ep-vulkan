@@ -1,0 +1,274 @@
+{
+  "model": ".scratch-models\\bertsquad-12.onnx",
+  "claim_log": "bench\\results\\_claim_log_bert_shapes.jsonl",
+  "min_nodes": 2,
+  "anchors": [
+    "Attention",
+    "Conv",
+    "Gemm",
+    "GroupQueryAttention",
+    "MatMul",
+    "MatMulNBits"
+  ],
+  "baseline": {
+    "retained_nodes": 473,
+    "retained_islands": 29
+  },
+  "singles": [
+    {
+      "op": "Reshape",
+      "graph_count": 59,
+      "retained_nodes": 640,
+      "retained_islands": 66,
+      "delta_nodes": 167
+    },
+    {
+      "op": "MatMul",
+      "graph_count": 95,
+      "retained_nodes": 608,
+      "retained_islands": 34,
+      "delta_nodes": 135
+    },
+    {
+      "op": "Concat",
+      "graph_count": 9,
+      "retained_nodes": 583,
+      "retained_islands": 84,
+      "delta_nodes": 110
+    },
+    {
+      "op": "Unsqueeze",
+      "graph_count": 7,
+      "retained_nodes": 531,
+      "retained_islands": 32,
+      "delta_nodes": 58
+    },
+    {
+      "op": "ReduceMean",
+      "graph_count": 50,
+      "retained_nodes": 523,
+      "retained_islands": 29,
+      "delta_nodes": 50
+    },
+    {
+      "op": "Transpose",
+      "graph_count": 49,
+      "retained_nodes": 497,
+      "retained_islands": 41,
+      "delta_nodes": 24
+    },
+    {
+      "op": "Softmax",
+      "graph_count": 12,
+      "retained_nodes": 485,
+      "retained_islands": 29,
+      "delta_nodes": 12
+    },
+    {
+      "op": "Shape",
+      "graph_count": 5,
+      "retained_nodes": 483,
+      "retained_islands": 33,
+      "delta_nodes": 10
+    },
+    {
+      "op": "Slice",
+      "graph_count": 5,
+      "retained_nodes": 483,
+      "retained_islands": 34,
+      "delta_nodes": 10
+    },
+    {
+      "op": "Squeeze",
+      "graph_count": 7,
+      "retained_nodes": 481,
+      "retained_islands": 32,
+      "delta_nodes": 8
+    },
+    {
+      "op": "ConstantOfShape",
+      "graph_count": 1,
+      "retained_nodes": 475,
+      "retained_islands": 29,
+      "delta_nodes": 2
+    },
+    {
+      "op": "Split",
+      "graph_count": 1,
+      "retained_nodes": 473,
+      "retained_islands": 29,
+      "delta_nodes": 0
+    },
+    {
+      "op": "OneHot",
+      "graph_count": 1,
+      "retained_nodes": 473,
+      "retained_islands": 29,
+      "delta_nodes": 0
+    }
+  ],
+  "cumulative": [
+    {
+      "added": [
+        "Reshape"
+      ],
+      "retained_nodes": 640,
+      "retained_islands": 66,
+      "delta_nodes": 167
+    },
+    {
+      "added": [
+        "MatMul",
+        "Reshape"
+      ],
+      "retained_nodes": 738,
+      "retained_islands": 17,
+      "delta_nodes": 265
+    },
+    {
+      "added": [
+        "Concat",
+        "MatMul",
+        "Reshape"
+      ],
+      "retained_nodes": 794,
+      "retained_islands": 18,
+      "delta_nodes": 321
+    },
+    {
+      "added": [
+        "Concat",
+        "MatMul",
+        "Reshape",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 988,
+      "retained_islands": 16,
+      "delta_nodes": 515
+    },
+    {
+      "added": [
+        "Concat",
+        "MatMul",
+        "ReduceMean",
+        "Reshape",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 1038,
+      "retained_islands": 16,
+      "delta_nodes": 565
+    },
+    {
+      "added": [
+        "Concat",
+        "MatMul",
+        "ReduceMean",
+        "Reshape",
+        "Transpose",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 1100,
+      "retained_islands": 3,
+      "delta_nodes": 627
+    },
+    {
+      "added": [
+        "Concat",
+        "MatMul",
+        "ReduceMean",
+        "Reshape",
+        "Softmax",
+        "Transpose",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 1112,
+      "retained_islands": 3,
+      "delta_nodes": 639
+    },
+    {
+      "added": [
+        "Concat",
+        "MatMul",
+        "ReduceMean",
+        "Reshape",
+        "Shape",
+        "Softmax",
+        "Transpose",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 1122,
+      "retained_islands": 4,
+      "delta_nodes": 649
+    },
+    {
+      "added": [
+        "Concat",
+        "MatMul",
+        "ReduceMean",
+        "Reshape",
+        "Shape",
+        "Slice",
+        "Softmax",
+        "Transpose",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 1128,
+      "retained_islands": 4,
+      "delta_nodes": 655
+    },
+    {
+      "added": [
+        "Concat",
+        "MatMul",
+        "ReduceMean",
+        "Reshape",
+        "Shape",
+        "Slice",
+        "Softmax",
+        "Squeeze",
+        "Transpose",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 1133,
+      "retained_islands": 3,
+      "delta_nodes": 660
+    },
+    {
+      "added": [
+        "Concat",
+        "ConstantOfShape",
+        "MatMul",
+        "ReduceMean",
+        "Reshape",
+        "Shape",
+        "Slice",
+        "Softmax",
+        "Squeeze",
+        "Transpose",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 1134,
+      "retained_islands": 3,
+      "delta_nodes": 661
+    },
+    {
+      "added": [
+        "Concat",
+        "ConstantOfShape",
+        "MatMul",
+        "ReduceMean",
+        "Reshape",
+        "Shape",
+        "Slice",
+        "Softmax",
+        "Split",
+        "Squeeze",
+        "Transpose",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 1137,
+      "retained_islands": 3,
+      "delta_nodes": 664
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-//! Dense linear algebra — `Gemm`, the classifier head and the transformer feed-forward layer.
+//! Dense linear algebra — `Gemm` and `MatMul`, the classifier head and the transformer body.
 //!
 //! # Why this module exists
 //!
@@ -10,6 +10,35 @@
 //!   the row was already written into the partitioner's cost model before any kernel existed.
 //! * The registry had no `Gemm` at all, which is why every non-LLM model this project has looked
 //!   at ends on the CPU regardless of how much of its body the EP claims.
+//! * BERT-SQuAD-12, 2026-08-04: `MatMul` ×95 is the largest unregistered op on any censused
+//!   graph, and every attention projection and feed-forward layer in the model is one.
+//!
+//! # `MatMul` and `Gemm` are one module and two rows
+//!
+//! `MatMul` dispatches `gemm_f32`. A rank-N `A` against a rank-2 `B` is `[M, K] × [K, N]` with
+//! `M` the product of `A`'s leading axes, and because a row-major buffer does not change when
+//! leading axes are merged, that collapse copies nothing. With `alpha=1`, `beta=0`, `has_c=0` and
+//! both transposes clear, `gemm_f32` computes ONNX `MatMul` exactly. Writing a second module
+//! would have added a variant component that distinguishes nothing, which is what §8.9.23 ruled
+//! against and what `form.rs` was deleted for. The two rows carry two proof keys over one module.
+//!
+//! # What `MatMul` shares with `MatMulNBits`, and what it does not
+//!
+//! A reader will assume more sharing than there is, so, plainly. They share the *name* and the
+//! inner-product-over-`K` idea. They share nothing else:
+//!
+//! * **Operand format.** `MatMulNBits` reads `B` **block-quantised to 4 bits**, packed two values
+//!   per byte with a per-block `scales` tensor and an optional `zero_points` tensor. `MatMul`'s
+//!   `B` is dense f32, one value per word. The dequantisation is most of `q_gemv.comp`.
+//! * **Shape regime.** `q_gemv.comp` is a **GEMV** — it is written for `M = 1`, the single-token
+//!   decode step of an autoregressive LLM, and parallelises over `N` with a per-row reduction.
+//!   BERT's `MatMul` has `M` in the thousands and parallelises over `M × N`. A GEMV kernel run at
+//!   `M = 3072` would serialise the whole model.
+//! * **Provenance.** `MatMulNBits` is a `com.microsoft` contrib op with its own schema, its own
+//!   `accuracy_level` attribute and its own opset line. `MatMul` is `ai.onnx` opset 1.
+//!
+//! There is no shared module, no shared key and no shared claim predicate, and `MatMulNBits`
+//! existing says nothing about whether `MatMul` is claimable on any model.
 //!
 //! # What is claimed, and what is declined by name
 //!
@@ -21,7 +50,20 @@
 //! * **`B` with a symbolic extent** — `B` is an initializer on every graph we have censused, and
 //!   the inner-product length is the loop bound.
 //! * **rank != 2** — ONNX `Gemm` is rank 2 by schema; a rank-3 "batched Gemm" is `MatMul`, which
-//!   is a different row this module does not yet carry.
+//!   is the other row in this module.
+//!
+//! For `MatMul`, claimed: f32 `A` of rank >= 2 against a **fully static rank-2** `B`, with `A`'s
+//! leading extents allowed to be symbolic under the runtime-extent rule. Declined by name:
+//!
+//! * **a rank-1 operand** — ONNX promotes it and then removes the axis again from the output, so
+//!   the output rank differs from what this row's output-shape rule produces.
+//! * **a rank >= 3 `B`** — the leading axes broadcast against `A`'s, which is batch indexing on
+//!   *both* operands. That is a different traversal, not a different push constant, and it needs
+//!   its own module and its own key. **Measured: 24 of BERT's 95 `MatMul` nodes are this form**
+//!   (the attention `QKᵀ` and `AV` products), so it is a real gap and not a hypothetical one.
+//! * **a symbolic `K` or `N`** — the inner-product length and the output row stride are the
+//!   kernel's loop bound and its indexing arithmetic.
+//! * **f16** — the same packed-`uint` argument as `Gemm`.
 //! * **a `C` whose extents are symbolic** — the broadcast rule needs to know which of `C`'s axes
 //!   are 1, and an axis whose extent is unknown could be either.
 //!
@@ -206,6 +248,135 @@ fn gemm(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     Ok(())
 }
 
+/// Collapse `A`'s leading axes into the GEMM's `M`, or say why this `MatMul` is not that shape.
+///
+/// ONNX `MatMul` is NumPy `matmul`: it admits rank 1 on either side (with promotion rules that
+/// differ per side), and rank >= 3 on *both* sides with the leading axes broadcast against each
+/// other. This function implements exactly one of those cases — `A` of rank >= 2 against a rank-2
+/// `B` — and returns `Err` for the rest, by name, so the decline sentence says which.
+///
+/// The case it implements is the one that reduces to a plain `[M, K] x [K, N]` product **with no
+/// change to the memory layout at all**: a row-major `[d0, d1, ..., K]` buffer is already a
+/// row-major `[d0*d1*..., K]` buffer, so the collapse is an index reinterpretation and not a copy.
+/// That is what makes it the same kernel as `Gemm` rather than a kernel that resembles it.
+pub(crate) fn matmul_2d_extents(a: &[i64], b: &[i64]) -> Result<(i64, i64, i64), String> {
+    if b.len() != 2 {
+        return Err(format!(
+            "input 1 (B) has rank {}; this row implements `A` of rank >= 2 against a rank-2 `B`. \
+             A rank-1 `B` is ONNX's vector-promotion form and a rank >= 3 `B` broadcasts its \
+             leading axes against `A`'s, which is batch indexing on both operands — a different \
+             traversal, not a different push constant",
+            b.len()
+        ));
+    }
+    if a.len() < 2 {
+        return Err(format!(
+            "input 0 (A) has rank {}; ONNX promotes a rank-1 `A` to `[1, K]` and then *removes* \
+             the axis again from the output, so the output rank differs from what this row's \
+             output-shape rule produces",
+            a.len()
+        ));
+    }
+    let k = a[a.len() - 1];
+    if k != b[0] {
+        return Err(format!(
+            "input 0 (A) contributes K={k} and input 1 (B) contributes K={}",
+            b[0]
+        ));
+    }
+    // The leading axes multiply into `M`. `checked_mul` rather than a plain product: the extents
+    // are `i64` off the graph and a bogus one must decline rather than wrap into a small,
+    // plausible-looking row count that would dispatch a fraction of the work and return a buffer
+    // that is mostly whatever was there before.
+    let mut m: i64 = 1;
+    for &d in &a[..a.len() - 1] {
+        if d < 0 {
+            return Err(format!(
+                "input 0 (A) has a symbolic leading extent ({a:?}); the collapsed row count is \
+                 their product and a product with an unknown factor is unknown"
+            ));
+        }
+        m = match m.checked_mul(d) {
+            Some(v) => v,
+            None => return Err(format!("input 0 (A) leading extents {a:?} overflow i64")),
+        };
+    }
+    Ok((m, k, b[1]))
+}
+
+/// `MatMul` — claim f32 `A` of rank >= 2 against a fully-static rank-2 `B`.
+fn matmul(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    let a = claim::input_edge(view, spec, 0)?;
+    claim::check_dtype(spec, &a, "input 0 (A)")?;
+    claim::check_shape(spec, &a, "input 0 (A)")?;
+    let b = claim::input_edge(view, spec, 1)?;
+    claim::check_dtype(spec, &b, "input 1 (B)")?;
+    claim::check_shape(spec, &b, "input 1 (B)")?;
+
+    require!(
+        view.num_inputs() == 2,
+        Arity,
+        "`{}` has {} inputs; it takes exactly A and B",
+        spec.op_type,
+        view.num_inputs()
+    );
+
+    // ORT reports `rank 0` for a genuine scalar **and** for a tensor whose rank shape inference
+    // never established; `GetDimensionsCount` cannot tell them apart and `EdgeType` faithfully
+    // records both as `Some([])`. For `MatMul` the ambiguity resolves itself: ONNX `MatMul` has
+    // no rank-0 form on either operand, so a rank-0 reading here is *provably* an unresolved
+    // rank rather than a scalar, and the decline says so rather than reporting `[rank]` as if the
+    // graph had asked for something impossible.
+    //
+    // Measured on BERT-SQuAD-12, 2026-08-04: 94 of its 95 `MatMul` nodes read rank 0 for `A` at
+    // `GetCapability`, because the TF converter emits `Reshape` targets computed from `Shape` and
+    // neither ORT's nor `onnx`'s inference resolves those before partitioning.
+    let a_shape = a.shape.as_deref().unwrap_or(&[]);
+    let b_shape = b.shape.as_deref().unwrap_or(&[]);
+    require!(
+        !a_shape.is_empty(),
+        UnknownRank,
+        "`{}` input 0 (A) reads as rank 0, and ONNX `MatMul` has no rank-0 operand; ORT reports \
+         rank 0 both for a scalar and for a tensor whose rank shape inference never established, \
+         so this is the second. No runtime-extent handling recovers a rank",
+        spec.op_type
+    );
+    require!(
+        !b_shape.is_empty(),
+        UnknownRank,
+        "`{}` input 1 (B) reads as rank 0, and ONNX `MatMul` has no rank-0 operand; see input 0",
+        spec.op_type
+    );
+    require!(
+        b_shape.len() == 2 && b_shape[0] > 0 && b_shape[1] > 0,
+        DynamicShape,
+        "`{}` input 1 (B) is {b_shape:?}; this row needs a fully-static rank-2 `B` because the \
+         inner-product length is the kernel's loop bound",
+        spec.op_type
+    );
+
+    if let Err(why) = matmul_2d_extents(a_shape, b_shape) {
+        // `A`'s leading extents are allowed to be symbolic *at the gate* — that is the
+        // runtime-extent case §8.8 is about and the engine's dynamic-dispatch path re-runs
+        // `translate` at `Compute` with the concrete shapes. Everything else is a real decline.
+        let leading_symbolic =
+            a_shape.len() >= 2 && a_shape[..a_shape.len() - 1].iter().any(|&d| d < 0);
+        if !(leading_symbolic && claim::runtime_extents_ok()) {
+            crate::deny!(Shape, "`{}` {why}", spec.op_type);
+        }
+        // Even under runtime extents, `K` is a loop bound and must be checkable now.
+        require!(
+            a_shape[a_shape.len() - 1] == b_shape[0],
+            Shape,
+            "`{}` input 0 (A) contributes K={} and input 1 (B) contributes K={}",
+            spec.op_type,
+            a_shape[a_shape.len() - 1],
+            b_shape[0]
+        );
+    }
+    Ok(())
+}
+
 crate::op_table! {
     //  op      domain  opsets            caps  kernel          claim   translate   status
     //
@@ -213,11 +384,115 @@ crate::op_table! {
     // broadcasting opt-in, and opset 7 removed it in favour of the unidirectional rule this
     // module implements. A row that opened at 1 would claim a node whose `broadcast=0` means
     // "C must already be [M, N]" and read it under the opposite rule.
-    // `alpha` and `beta` are push constants in `gemm_f32.comp` — expressions, not paths, by the
-    // same §8.9.23 argument that rules `Conv`'s four. `transA`/`transB` are **not** here: they are
-    // in the key, under `form.rs`, because they change which index the loop reads.
+    // `alpha`, `beta`, `transA` and `transB` are all push constants in `gemm_f32.comp` —
+    // expressions, not paths, by the same §8.9.23 argument that rules `Conv`'s four — so they are
+    // `blind_axes` and not key components. (`form.rs` asserted the opposite for the transposes
+    // and was deleted; see the test at the foot of this file.)
     "Gemm",   Ai,     7 ..= OPSET_ANY, F32,  kernel!(Standalone, "gemm"),  gemm,   translate,  Ready,
         blind_axes: &["alpha", "beta", "transA", "transB"];
+
+    // `MatMul` dispatches **`gemm_f32`**, the same module `Gemm` does, and that is the design
+    // rather than an economy.
+    //
+    // A row-major `[d0, d1, ..., K]` buffer *is* a row-major `[d0*d1*..., K]` buffer, so a
+    // rank-N `A` against a rank-2 `B` reduces to `[M, K] x [K, N]` by reinterpreting indices and
+    // copying nothing. Set `alpha=1`, `beta=0`, `has_c=0`, `transA=transB=0` and `gemm_f32`
+    // computes ONNX `MatMul` exactly — the same pipeline emitting the same instructions.
+    //
+    // A separate `matmul_f32.comp` would have been a **variant component that distinguishes
+    // nothing**, which is the error §8.9.23 ruled against on `Conv` and which `form.rs` was
+    // deleted for committing. What differs between the two ops is the *claim* — output rank,
+    // operand arity, the absence of `C` and of the transposes — and that difference lives in a
+    // separate registry row with a separate proof key, which is where a difference in what is
+    // claimed belongs. The keys read `.../MatMul/.../gemm_f32/...` and `.../Gemm/.../gemm_f32/...`
+    // and are two distinct strings over one module, which the `<prefix>_<dtype>` variant scheme
+    // already handles.
+    //
+    // Opset window opens at 1: `MatMul` has carried the NumPy `matmul` semantics unchanged since
+    // opset 1 (opsets 9 and 13 only widened the type constraint, which the `caps` set answers).
+    // There is no `broadcast`-attribute era to exclude, unlike `Gemm`.
+    //
+    // No `blind_axes`: `MatMul` has no attributes at all, so there is nothing for the key to be
+    // silent about. That is worth stating rather than leaving as an empty field — a reader who
+    // has just read `Gemm`'s four will otherwise assume an omission.
+    "MatMul", Ai,     1 ..= OPSET_ANY, F32,  kernel!(Standalone, "gemm"),  matmul, translate_matmul, Ready;
+}
+
+/// Translate `MatMul` into the `Gemm` dispatch it is.
+///
+/// Reads the shapes off [`NodeDesc`] rather than trusting the claim: on BERT-SQuAD-12 the claim
+/// gate sees rank 0 for `A` on 94 of 95 nodes and `Compile`/`Compute` see the real shape, so the
+/// gate is deliberately the weaker of the two readings and this is the one that must be strict.
+pub fn translate_matmul(
+    _spec: &OpSpec,
+    node: &NodeDesc,
+    ctx: &mut dyn DispatchContext,
+) -> EpResult<()> {
+    let a = node.inputs.first().and_then(|t| t.desc.as_ref()).ok_or_else(|| {
+        EpError::Unsupported(format!("`{}` input 0 has no shape at compile time", node.op_type))
+    })?;
+    let b = node.inputs.get(1).and_then(|t| t.desc.as_ref()).ok_or_else(|| {
+        EpError::Unsupported(format!("`{}` input 1 has no shape at compile time", node.op_type))
+    })?;
+    if a.dtype != DType::F32 || b.dtype != DType::F32 {
+        return Err(EpError::Unsupported(format!(
+            "`{}` inputs are {:?}/{:?}; gemm_f32 reads one element per word",
+            node.op_type, a.dtype, b.dtype
+        )));
+    }
+    let (m, k, n) = matmul_2d_extents(&a.shape, &b.shape)
+        .map_err(|why| EpError::Unsupported(format!("`{}` {why}", node.op_type)))?;
+    if m <= 0 || n <= 0 || k <= 0 {
+        return Err(EpError::Unsupported(format!(
+            "`{}` computes a {m}x{n} product over K={k}; nothing to dispatch",
+            node.op_type
+        )));
+    }
+    if node.outputs.len() != 1 {
+        return Err(EpError::Internal(format!(
+            "`{}` was claimed as single-output but has {}",
+            node.op_type,
+            node.outputs.len()
+        )));
+    }
+
+    let a_buf = ctx.resolve(&node.inputs[0])?;
+    let b_buf = ctx.resolve(&node.inputs[1])?;
+    // ONNX keeps `A`'s leading axes in the output: `[d0, ..., dn-1, K] x [K, N]` is
+    // `[d0, ..., dn-1, N]`. The *kernel* sees `[M, N]`; the *tensor* must not, or every consumer
+    // downstream reads the wrong rank. This is the one place the collapse is not free.
+    let mut out_shape: Vec<i64> = a.shape[..a.shape.len() - 1].to_vec();
+    out_shape.push(n);
+    let out_buf = ctx.bind_output(&node.outputs[0], TensorDesc::new(DType::F32, out_shape))?;
+
+    let total = u32::try_from(m * n).map_err(|_| {
+        EpError::Unsupported(format!("`{}` output element count overflows u32", node.op_type))
+    })?;
+
+    let mut push = Vec::with_capacity(11 * 4);
+    // `has_c = 0`, so the `C` read is predicated away and `beta` is never applied; `beta` is set
+    // to 0.0 anyway so that a future reader of a captured push-constant block cannot mistake a
+    // live `beta` for a dormant one.
+    for v in [m, n, k, 0, 0, 0, 1, 1, i64::from(total)] {
+        let v = u32::try_from(v).map_err(|_| {
+            EpError::Unsupported(format!("`{}` parameter {v} does not fit a u32", node.op_type))
+        })?;
+        push.extend_from_slice(&v.to_le_bytes());
+    }
+    push.extend_from_slice(&1.0f32.to_le_bytes());
+    push.extend_from_slice(&0.0f32.to_le_bytes());
+
+    // `C` is absent, so its binding takes `A` as the inert placeholder — the same rule `Gemm`
+    // and `Conv` use for an omitted optional input. The module declares four bindings whether or
+    // not the fourth is read.
+    let groups = total.div_ceil(GEMM_LOCAL_SIZE).clamp(1, GEMM_MAX_WORKGROUPS);
+    ctx.dispatch(KernelRequest {
+        shader: "gemm_f32",
+        spec_constants: vec![GEMM_LOCAL_SIZE],
+        push_constants: push,
+        bindings: vec![a_buf, b_buf, a_buf, out_buf],
+        workgroups: [groups, 1, 1],
+    })
 }
 
 /// Translate into one dispatch: one invocation per output element.
@@ -439,5 +714,142 @@ mod tests {
     #[test]
     fn gemm_is_a_partition_anchor() {
         assert!(crate::ops::partition::is_anchor("Gemm"));
+        assert!(crate::ops::partition::is_anchor("MatMul"));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // MatMul
+    // ---------------------------------------------------------------------------------------
+
+    #[test]
+    fn the_matmul_row_is_ready_and_points_at_its_own_handler() {
+        let row = OPS.iter().find(|s| s.op_type == "MatMul").expect("MatMul must be registered");
+        assert_eq!(row.status, OpStatus::Ready);
+        assert!(std::ptr::fn_addr_eq(
+            row.translate,
+            translate_matmul as crate::registry::TranslateHandler
+        ));
+        // The two rows must NOT share a translate handler: `Gemm`'s reads `transA`/`alpha` and
+        // computes a rank-2 output, and `MatMul` has neither and does not.
+        let gemm = OPS.iter().find(|s| s.op_type == "Gemm").unwrap();
+        assert!(!std::ptr::fn_addr_eq(row.translate, gemm.translate));
+    }
+
+    /// One module, two rows. This is the §8.9.23 design and the test that pins it: if someone
+    /// later adds a `matmul_f32.comp`, this fails and they have to argue for the second module.
+    #[test]
+    fn matmul_and_gemm_dispatch_the_same_module_under_different_keys() {
+        let mm = OPS.iter().find(|s| s.op_type == "MatMul").unwrap();
+        let gemm = OPS.iter().find(|s| s.op_type == "Gemm").unwrap();
+        assert_eq!(
+            format!("{:?}", mm.kernel),
+            format!("{:?}", gemm.kernel),
+            "MatMul must dispatch gemm_f32; a second module would be a variant component that \
+             distinguishes nothing"
+        );
+        assert_ne!(mm.op_type, gemm.op_type, "the keys differ in component 1");
+    }
+
+    /// `MatMul` has no attributes, so it has nothing to be blind about. Asserted rather than
+    /// left implicit: a reader coming from `Gemm`'s four blind axes will otherwise read the empty
+    /// set as an oversight.
+    #[test]
+    fn matmul_declares_no_blind_axes_because_it_has_no_attributes() {
+        let row = OPS.iter().find(|s| s.op_type == "MatMul").unwrap();
+        assert!(row.blind_axes.is_empty());
+        let gemm = OPS.iter().find(|s| s.op_type == "Gemm").unwrap();
+        assert_eq!(gemm.blind_axes.len(), 4, "the comparison must discriminate");
+    }
+
+    /// The opset windows differ and the reason is a real semantic break in `Gemm`, not a habit.
+    #[test]
+    fn matmul_opens_at_opset_one_and_gemm_does_not() {
+        let mm = OPS.iter().find(|s| s.op_type == "MatMul").unwrap();
+        assert_eq!(mm.min_opset, 1);
+        assert_eq!(OPS.iter().find(|s| s.op_type == "Gemm").unwrap().min_opset, 7);
+    }
+
+    /// BERT-SQuAD-12's own shapes: the attention projections and the feed-forward layers.
+    #[test]
+    fn the_bert_projection_and_feed_forward_shapes_collapse_to_a_two_d_product() {
+        // `[batch*seq, 768] x [768, 768]` — the Q/K/V and output projections, 45 of 95.
+        assert_eq!(matmul_2d_extents(&[256, 768], &[768, 768]).unwrap(), (256, 768, 768));
+        // Rank 3, which is what the graph carries before the encoder's Reshape.
+        assert_eq!(matmul_2d_extents(&[1, 256, 768], &[768, 768]).unwrap(), (256, 768, 768));
+        // The feed-forward pair, 12 each.
+        assert_eq!(matmul_2d_extents(&[256, 768], &[768, 3072]).unwrap(), (256, 768, 3072));
+        assert_eq!(matmul_2d_extents(&[256, 3072], &[3072, 768]).unwrap(), (256, 3072, 768));
+        // The SQuAD head, 1 each.
+        assert_eq!(matmul_2d_extents(&[256, 768], &[768, 2]).unwrap(), (256, 768, 2));
+    }
+
+    /// The 24 batched attention products are declined **by name**, and the sentence says why it
+    /// is a traversal difference rather than a parameter difference.
+    #[test]
+    fn a_batched_b_is_declined_and_the_reason_names_the_traversal() {
+        let err = matmul_2d_extents(&[1, 12, 256, 64], &[1, 12, 64, 256]).unwrap_err();
+        assert!(err.contains("rank 4"), "{err}");
+        assert!(err.contains("batch indexing on both operands"), "{err}");
+    }
+
+    /// ONNX promotes a rank-1 operand and then removes the axis from the output again. Getting
+    /// that wrong produces a right-sized buffer under a wrong rank, which every consumer then
+    /// misreads — the plausible-wrong-answer failure the charter is about.
+    #[test]
+    fn a_rank_one_operand_is_declined_on_the_output_rank_not_on_the_arithmetic() {
+        let err = matmul_2d_extents(&[768], &[768, 768]).unwrap_err();
+        assert!(err.contains("rank 1"), "{err}");
+        assert!(err.contains("removes"), "{err}");
+        let err = matmul_2d_extents(&[256, 768], &[768]).unwrap_err();
+        assert!(err.contains("vector-promotion"), "{err}");
+    }
+
+    #[test]
+    fn a_mismatched_inner_length_is_declined() {
+        let err = matmul_2d_extents(&[256, 768], &[512, 768]).unwrap_err();
+        assert!(err.contains("K=768") && err.contains("K=512"), "{err}");
+    }
+
+    /// A symbolic leading extent cannot be multiplied into `M`. It is a *decline from this
+    /// function*, which is not the same as a decline from the claim gate: the predicate lets it
+    /// through under the runtime-extent rule precisely so the engine's dynamic-dispatch path can
+    /// call this again at `Compute` with the concrete number. The two readings must not be
+    /// collapsed, so this asserts the strict one.
+    #[test]
+    fn a_symbolic_leading_extent_is_not_multiplied_into_m() {
+        let err = matmul_2d_extents(&[-1, 768], &[768, 768]).unwrap_err();
+        assert!(err.contains("symbolic leading extent"), "{err}");
+        // And the last axis is `K`, never a leading axis, so a symbolic `K` is a *different*
+        // decline — it fails the equality against `B` rather than the product.
+        let err = matmul_2d_extents(&[256, -1], &[768, 768]).unwrap_err();
+        assert!(err.contains("K=-1"), "{err}");
+    }
+
+    /// The collapse must not wrap. An extent product that overflows would otherwise become a
+    /// small, plausible row count and dispatch a fraction of the work over a buffer that keeps
+    /// whatever was in it — silently wrong, which is the failure mode this module exists to avoid.
+    #[test]
+    fn an_overflowing_leading_product_declines_rather_than_wrapping() {
+        let err = matmul_2d_extents(&[i64::MAX, 3, 768], &[768, 768]).unwrap_err();
+        assert!(err.contains("overflow"), "{err}");
+    }
+
+    /// The output keeps `A`'s leading axes; only the kernel sees `[M, N]`.
+    #[test]
+    fn the_output_rank_follows_a_not_the_collapsed_product() {
+        let a = [2i64, 3, 256, 768];
+        let (m, _k, n) = matmul_2d_extents(&a, &[768, 512]).unwrap();
+        assert_eq!(m, 2 * 3 * 256);
+        let mut out: Vec<i64> = a[..a.len() - 1].to_vec();
+        out.push(n);
+        assert_eq!(out, vec![2, 3, 256, 512]);
+        assert_eq!(out.iter().product::<i64>(), m * n);
+    }
+
+    #[test]
+    fn matmul_declines_f16_for_the_same_reason_gemm_does() {
+        let row = OPS.iter().find(|s| s.op_type == "MatMul").unwrap();
+        assert!(row.caps.contains(DType::F32));
+        assert!(!row.caps.contains(DType::F16));
     }
 }

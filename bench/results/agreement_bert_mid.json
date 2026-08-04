@@ -1,0 +1,43 @@
+{
+  "model": ".scratch-models\\bertsquad-12.onnx",
+  "providers": [
+    "VulkanExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "outputs": [
+    {
+      "name": "unstack:1",
+      "shape": [
+        1,
+        256
+      ],
+      "dtype": "float32",
+      "max_abs": 3.337860107421875e-06,
+      "max_rel": 8.314162260853516e-07,
+      "all_zero_vk": false,
+      "verdict": "AGREE"
+    },
+    {
+      "name": "unstack:0",
+      "shape": [
+        1,
+        256
+      ],
+      "dtype": "float32",
+      "max_abs": 3.5762786865234375e-06,
+      "max_rel": 1.0983428349751605e-06,
+      "all_zero_vk": false,
+      "verdict": "AGREE"
+    },
+    {
+      "name": "unique_ids:0",
+      "shape": [
+        1
+      ],
+      "dtype": "int64",
+      "verdict": "EXACT"
+    }
+  ],
+  "worst_max_rel": 1.0983428349751605e-06,
+  "verdict": "AGREE"
+}

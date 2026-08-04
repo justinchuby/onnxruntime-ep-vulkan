@@ -38,6 +38,8 @@
 //! | `predicate_ok_runtime_extents` | bool | the row's predicate accepts it if extents arrive at `Compute` |
 //! | `proof_key` | string \| null | the §8.9 proof key for this node; `null` when the op has no registry row at all |
 //! | `ledger_hit` | bool           | whether the proof ledger held an entry under that key |
+//! | `input_shapes` | array \| null | per-input shape **as ORT reported it**; a negative entry is symbolic, an entry is `null` when ORT gave no shape |
+//! | `output_shapes` | array \| null | the same, per output |
 //!
 //! # `proof_key` is what makes the ledger bootstrappable
 //!
@@ -113,6 +115,17 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use crate::registry::{DeclineCode, DeclineReason};
+
+/// The shape reading ORT gave for one node, as `(inputs, outputs)`.
+///
+/// Three states are distinct and all three occur: `None` means the caller took no reading at all
+/// (logging was off on the collecting path); `Some` with a `None` element means ORT reported no
+/// type for that edge; `Some` with a `Some` element carries the dims, where a negative dim is
+/// symbolic. An *empty* dim list is the ambiguous case — see the module docs on unknown rank.
+type EdgeReading<'a> = Option<(
+    &'a [Option<crate::registry::EdgeType>],
+    &'a [Option<crate::registry::EdgeType>],
+)>;
 
 /// The environment variable that turns the record on, by naming the file to append to.
 pub const CLAIM_LOG_ENV: &str = "ONNXRUNTIME_EP_VULKAN_CLAIM_LOG";
@@ -208,6 +221,44 @@ fn json_str_array<'a>(items: impl Iterator<Item = &'a str>) -> String {
     format!("[{}]", body.join(","))
 }
 
+/// Render the edge shapes **as ORT reported them to us**.
+///
+/// # Why this is in the record and not derived by the reader
+///
+/// It was derived by the reader, once, and the reader was wrong. Sizing the `MatMul` claim
+/// predicate needed BERT-SQuAD-12's `MatMul` shape space, and `rust/tools/probe_matmul_shape_space.py`
+/// read it off `onnx.shape_inference`, which on that model resolves a shape for only **384 of
+/// 1165** value infos and **none** of the 98 `MatMul` edges. Read that way, `MatMul` is entirely
+/// unclaimable on BERT. The EP's own `shape_class` — already in this record — said **94 of 95
+/// static**, because ORT's inference runs the constant-folding and data propagation that the
+/// standalone pass does not. The two readings disagreed about whether a kernel was worth writing
+/// at all.
+///
+/// `shape_class` was enough to catch the disagreement and not enough to resolve it: a class is
+/// not a rank and not an extent, and a kernel is sized on extents. So the extents go in the
+/// record, from the same `NodeView` the predicate is about to be asked about, and the census
+/// stops having a second implementation of shape inference to be wrong in.
+///
+/// Three states are distinguished, because collapsing them is how "unknown" becomes "fine":
+/// `null` for an edge ORT reported no `OrtValueInfo` for (an omitted optional input), `null` for
+/// a shape inference produced nothing for, and a list for a shape it did — in which a **negative**
+/// entry is symbolic, matching [`EdgeType`](crate::registry::EdgeType)'s own convention.
+///
+/// Costs nothing when the log is off: the caller only builds the vectors under `enabled()`.
+fn json_shapes(edges: &[Option<crate::registry::EdgeType>]) -> String {
+    let body: Vec<String> = edges
+        .iter()
+        .map(|e| match e.as_ref().and_then(|e| e.shape.as_ref()) {
+            None => "null".to_string(),
+            Some(dims) => {
+                let ds: Vec<String> = dims.iter().map(i64::to_string).collect();
+                format!("[{}]", ds.join(","))
+            }
+        })
+        .collect();
+    format!("[{}]", body.join(","))
+}
+
 /// Render one full-audit record.
 ///
 /// Extends [`line`] rather than replacing it: `code` and `reason` keep first-match semantics so
@@ -218,6 +269,7 @@ pub(crate) fn audit_line(
     node: &str,
     opset: i32,
     audit: &crate::registry::ClaimAudit,
+    edges: EdgeReading<'_>,
 ) -> String {
     let base = line(
         qualified,
@@ -233,10 +285,14 @@ pub(crate) fn audit_line(
     );
     let reasons = json_str_array(audit.failures.iter().map(std::convert::AsRef::as_ref));
     let unevaluated = json_str_array(audit.unevaluated.iter().copied());
+    let (inputs, outputs) = match edges {
+        Some((i, o)) => (json_shapes(i), json_shapes(o)),
+        None => ("null".to_string(), "null".to_string()),
+    };
     format!(
         "{},\"codes\":{},\"reasons\":{},\"unevaluated\":{},\"shape_class\":\"{}\",\
          \"predicate_ok\":{},\"predicate_ok_runtime_extents\":{},\"proof_key\":{},\
-         \"ledger_hit\":{}}}",
+         \"ledger_hit\":{},\"input_shapes\":{},\"output_shapes\":{}}}",
         base.trim_end_matches('}'),
         codes,
         reasons,
@@ -249,6 +305,8 @@ pub(crate) fn audit_line(
             None => "null".to_string(),
         },
         audit.ledger_hit,
+        inputs,
+        outputs,
     )
 }
 
@@ -263,11 +321,17 @@ pub fn record(qualified: &str, node: &str, opset: i32, outcome: Result<(), &Decl
 }
 
 /// Append one full-audit decision to the record, if the record is enabled.
-pub fn record_audit(qualified: &str, node: &str, opset: i32, audit: &crate::registry::ClaimAudit) {
+pub fn record_audit(
+    qualified: &str,
+    node: &str,
+    opset: i32,
+    audit: &crate::registry::ClaimAudit,
+    edges: EdgeReading<'_>,
+) {
     let Some(want) = path() else {
         return;
     };
-    record_to(want, &audit_line(qualified, node, opset, audit));
+    record_to(want, &audit_line(qualified, node, opset, audit, edges));
 }
 
 /// Append one already-rendered line to `want`, reopening the sink if the path has changed.
@@ -337,7 +401,7 @@ mod tests {
             "n0",
             1,
             &a,
-        );
+        None,);
         assert!(l.contains(r#""code":"staged""#), "{l}");
         assert!(l.contains(r#""claimed":false"#), "{l}");
     }
@@ -358,7 +422,7 @@ mod tests {
             "n0",
             1,
             &a,
-        );
+        None,);
         assert!(l.contains(r#""codes":["staged","dynamic-shape"]"#), "{l}");
         assert!(l.contains(r#""shape_class":"extents-symbolic""#), "{l}");
         assert!(l.contains(r#""predicate_ok":false"#), "{l}");
@@ -368,16 +432,75 @@ mod tests {
     #[test]
     fn a_claimed_node_records_an_empty_failure_set() {
         let a = audit(Vec::new(), ShapeClass::Static);
-        let l = audit_line("Add", "n0", 14, &a);
+        let l = audit_line("Add", "n0", 14, &a, None);
         assert!(l.contains(r#""claimed":true"#), "{l}");
         assert!(l.contains(r#""code":null"#), "{l}");
         assert!(l.contains(r#""codes":[]"#), "{l}");
         assert!(l.contains(r#""shape_class":"static""#), "{l}");
     }
 
+    /// The record carries the shapes **ORT** reported, because the census read them elsewhere and
+    /// got a different answer.
+    ///
+    /// On BERT-SQuAD-12 a standalone `onnx.shape_inference` pass resolves no shape at all for any
+    /// of the 98 `MatMul` edges, while ORT resolves 94 of 95 as fully static. A census that sizes
+    /// a kernel from the first reading declines to write a kernel the second reading says is
+    /// worth writing. Recording the EP's own reading is what removes the second implementation.
     #[test]
-    fn an_unregistered_op_records_what_could_not_be_evaluated() {
-        // Without a row there is no opset window, no schema, no status and no predicate. Saying
+    fn the_record_carries_the_shapes_ort_reported_and_distinguishes_absent_from_unknown() {
+        use crate::engine::DType;
+        use crate::registry::EdgeType;
+
+        let a = audit(Vec::new(), ShapeClass::ExtentsSymbolic);
+        let inputs = vec![
+            // A fully static edge.
+            Some(EdgeType {
+                dtype: Some(DType::F32),
+                shape: Some(vec![256, 768]),
+            }),
+            // A symbolic leading extent, which the record spells as a negative, matching
+            // `EdgeType`'s own convention rather than inventing a second one.
+            Some(EdgeType {
+                dtype: Some(DType::F32),
+                shape: Some(vec![-1, 768]),
+            }),
+            // Present, typed, but shape inference produced nothing.
+            Some(EdgeType {
+                dtype: Some(DType::F32),
+                shape: None,
+            }),
+            // An omitted optional input: ORT reported no `OrtValueInfo` at all.
+            None,
+        ];
+        let outputs = vec![Some(EdgeType {
+            dtype: Some(DType::F32),
+            shape: Some(vec![256, 768]),
+        })];
+        let l = audit_line("MatMul", "n0", 9, &a, Some((&inputs, &outputs)));
+        assert!(
+            l.contains(r#""input_shapes":[[256,768],[-1,768],null,null]"#),
+            "{l}"
+        );
+        assert!(l.contains(r#""output_shapes":[[256,768]]"#), "{l}");
+    }
+
+    /// A caller with no edges to offer must render `null`, not `[]`.
+    ///
+    /// `[]` is a claim that the node has no inputs. `null` is the absence of a reading. A census
+    /// that cannot tell those apart would count every unrecorded node as a zero-input node.
+    #[test]
+    fn no_edge_reading_renders_null_rather_than_an_empty_list() {
+        let a = audit(Vec::new(), ShapeClass::Static);
+        let l = audit_line("Add", "n0", 14, &a, None);
+        assert!(l.contains(r#""input_shapes":null"#), "{l}");
+        assert!(l.contains(r#""output_shapes":null"#), "{l}");
+        let empty: Vec<Option<crate::registry::EdgeType>> = Vec::new();
+        let l2 = audit_line("Add", "n0", 14, &a, Some((&empty, &empty)));
+        assert!(l2.contains(r#""input_shapes":[]"#), "{l2}");
+    }
+
+    #[test]
+    fn an_unregistered_op_records_what_could_not_be_evaluated() {        // Without a row there is no opset window, no schema, no status and no predicate. Saying
         // so is the difference between "these checks passed" and "these checks never ran", which
         // is the same distinction R8 is about, one level down.
         let mut a = audit(
@@ -385,7 +508,7 @@ mod tests {
             ShapeClass::Static,
         );
         a.unevaluated = vec!["opset", "contrib-schema", "status", "predicate"];
-        let l = audit_line("Gather", "n0", 13, &a);
+        let l = audit_line("Gather", "n0", 13, &a, None);
         assert!(
             l.contains(r#""unevaluated":["opset","contrib-schema","status","predicate"]"#),
             "{l}"
@@ -401,7 +524,7 @@ mod tests {
             )],
             ShapeClass::ExtentsSymbolic,
         );
-        let l = audit_line("Mul", "node\"with\"quotes", 14, &a);
+        let l = audit_line("Mul", "node\"with\"quotes", 14, &a, None);
         assert!(!l.contains('\n'), "a record must never span lines: {l}");
         assert_eq!(l.matches("{\"op\"").count(), 1);
         assert!(l.starts_with('{') && l.ends_with('}'), "{l}");

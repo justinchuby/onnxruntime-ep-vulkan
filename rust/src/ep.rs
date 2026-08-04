@@ -1839,6 +1839,15 @@ unsafe fn compile_impl(
                 // store a DynKernelRecipe so that dispatch_ort can re-run the handler at Compute
                 // time with the concrete shapes ORT supplies.
                 let is_dynamic = node_desc.inputs.iter().any(|r| r.desc.is_none());
+                log::debug!(
+                    "Compile: op '{}' in subgraph {i} input shapes {:?}",
+                    node_desc.op_type,
+                    node_desc
+                        .inputs
+                        .iter()
+                        .map(|r| r.desc.as_ref().map(|d| d.shape.clone()))
+                        .collect::<Vec<_>>()
+                );
                 if is_dynamic {
                     log::debug!(
                         "Compile: op '{}' in subgraph {i} has symbolic-extent inputs — \

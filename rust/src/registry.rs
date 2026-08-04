@@ -3464,11 +3464,17 @@ pub fn claim_decision_audited(view: &NodeView<'_>) -> ClaimAudit {
     let logging = crate::ops::claim_log::enabled();
     let audit = claim_audit(view, logging);
     if logging {
+        // The edge types are collected here rather than inside the audit because they are for the
+        // record only: nothing in the claim decision reads them, and widening `ClaimAudit` would
+        // put an allocation on the hot path for a field only the census consumes.
+        let inputs = view.input_types();
+        let outputs = view.output_types();
         crate::ops::claim_log::record_audit(
             &view.qualified_name(),
             &view.name(),
             view.since_version(),
             &audit,
+            Some((&inputs, &outputs)),
         );
     }
     audit

@@ -544,6 +544,44 @@ def _gemm(
     return model
 
 
+def _matmul(
+    elem: int,
+    *,
+    dynamic: bool = False,
+    lead=(3,),
+    k: int = 5,
+    n: int = 4,
+    opset: int = 21,
+) -> onnx.ModelProto:
+    """A one-node `MatMul` with `B` an initializer, `A` of rank `len(lead) + 1`.
+
+    `MatMul` has **no attributes at all**, so it has no blind axes and no attribute-varying CI
+    suite the way `Gemm` does. Its whole key space at f32 is `shape_class` x the rank of `A` --
+    and the rank is *not* a key component either, because a row-major `[d0, ..., K]` buffer is a
+    row-major `[prod(d), K]` buffer and `ops::matmul::matmul_2d_extents` collapses it before any
+    index is computed. One dispatch, one set of instructions, whatever `A`'s rank. So the rank
+    cases below are a CI-time suite over a *collapse*, not separate proofs, and the two
+    `shape_class` values are the key space.
+
+    The dispatched module is `gemm_f32` -- the same one `Gemm` uses, with `alpha=1`, `beta=0` and
+    `has_c=0`. The keys still differ because op type is key component 1.
+    """
+    np_dt = np.float16 if elem == TensorProto.FLOAT16 else np.float32
+    rng = np.random.default_rng(0x4D4D)
+    lead = list(lead)
+    a_shape = ([_DYN] + lead[1:] if dynamic else lead) + [k]
+    b = rng.standard_normal([k, n]).astype(np_dt)
+    inits = [onnx.numpy_helper.from_array(b, name="B")]
+    a = helper.make_tensor_value_info("A", elem, a_shape)
+    y = helper.make_tensor_value_info("Y", elem, a_shape[:-1] + [n])
+    node = helper.make_node("MatMul", ["A", "B"], ["Y"], name="matmul0")
+    graph = helper.make_graph([node], "matmul_graph", [a], [y], initializer=inits)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
 def _gather_dyn(elem: int) -> onnx.ModelProto:
     data = helper.make_tensor_value_info("data", elem, [_DYN, 8])
     idx = helper.make_tensor_value_info("indices", TensorProto.INT64, [2])
@@ -853,6 +891,21 @@ BUILDERS.update({
     # different form from MobileNetV2's on both the form bit and `shape_class`, which is the
     # census answering the question the form mechanism was added to ask.
     "gemm_f32_dyn": lambda: _gemm(TensorProto.FLOAT, dynamic=True),
+
+    # `MatMul` (2026-08-04). Two keys at f32 -- `static` and `runtime-extent` -- because that is
+    # the only key component it varies in: no attributes, therefore no blind axes; and `A`'s rank
+    # is collapsed into `M` before any index is computed, so a rank-3 `A` and a rank-2 `A` mint
+    # the same key and emit the same instructions. The rank cases below are the CI-time suite
+    # over that collapse, and they deliberately mint keys that already exist.
+    #
+    # BERT's own shapes are `[seq, 768] x [768, 768]` and `[seq, 768] x [768, 3072]`; `k`/`n`
+    # here are small because the *form* is what is being proven and a 768-long inner product
+    # proves nothing the 5-long one does not.
+    "matmul_f32": lambda: _matmul(TensorProto.FLOAT),
+    "matmul_f32_dyn": lambda: _matmul(TensorProto.FLOAT, dynamic=True),
+    "matmul_f32_rank3": lambda: _matmul(TensorProto.FLOAT, lead=(2, 3)),
+    "matmul_f32_rank4": lambda: _matmul(TensorProto.FLOAT, lead=(2, 3, 4)),
+    "matmul_f32_rank3_dyn": lambda: _matmul(TensorProto.FLOAT, lead=(2, 3), dynamic=True),
 
     # Proof-only forms found by the BERT-SQuAD-12 census on 2026-08-04. No kernel is written for
     # any of these: the variants already exist and ship live, and only the `runtime-extent`
