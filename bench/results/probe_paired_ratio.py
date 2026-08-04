@@ -429,7 +429,8 @@ def main() -> int:
                     "and if so what is the decode ratio for Phi-3.5",
         "frame": {
             "model": ONNX_FILE.name,
-            "lane": "shipping host-KV lane (sess.run, KV round trip paid every step)",
+            "lane": "arm A: shipping host-KV lane (sess.run, KV round trip paid every step). "
+                    "Arm B is named in reference.arm_b and is NOT this lane.",
             "phase_of_inference": "decode only (one token per step); no prefill is measured",
             "context": f"past_len {SEED_PAST}..{SEED_PAST + args.steps - 1}",
             "ort_version": ort.__version__,
