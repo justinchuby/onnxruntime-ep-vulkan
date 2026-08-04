@@ -143,7 +143,11 @@ def main() -> int:
 
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = gpl.check_ledger(mutated, lib)
+        # `expect_rebuild=True` because a synthetic ledger differs from the one baked into the
+        # artifact **by construction** — that is what writing the file means, and it is the same
+        # allowance a fresh generation run gets. Without it the baked-vs-disk failure fires and
+        # arm 2b would be measuring that check instead of this one.
+        rc = gpl.check_ledger(mutated, lib, expect_rebuild=True)
     out = buf.getvalue()
     # Every other check has to pass on this file, or the red is the mutation's and not the arm's.
     other_reds = [
