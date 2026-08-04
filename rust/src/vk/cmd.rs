@@ -201,6 +201,58 @@ impl Drop for CommandRecorder<'_> {
 // Queue submission helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// One mutex per `VkQueue`, held across `vkQueueSubmit` and nothing else.
+///
+/// # Why this exists (Vulkan 1.3, "Implicit Externally Synchronized Parameters")
+///
+/// `vkQueueSubmit` lists its `queue` parameter as externally synchronized: **host access to
+/// `queue` must be externally synchronized.** Nothing in this EP provided that. One `VkDevice`
+/// per physical device per EP instance (§6.5) means one compute queue shared by every session in
+/// the process, and ORT permits — indeed expects — concurrent `Run` calls on distinct sessions.
+/// Two sessions inferring on two threads therefore called `vkQueueSubmit` on one `VkQueue`
+/// concurrently, which is undefined behaviour, not a race with a benign outcome.
+///
+/// Measured before this lock existed (`bench/results/device_memory_concurrency-BEFORE.json`,
+/// two Phi-3.5 sessions, `max_concurrent_depth = 2`, 8,520 dispatches): nothing was corrupted on
+/// this driver. **That is not evidence the code was correct** — an implementation is free to
+/// corrupt, and "it worked on my GPU" is precisely the evidence this charter refuses.
+///
+/// # Why the lock does not cover the fence wait
+///
+/// `vkWaitForFences` is not externally synchronized on the queue, and holding the lock across it
+/// would serialize *execution* rather than *submission* — turning a correctness fix into a
+/// throughput regression for no spec reason. Each submission carries its own fence
+/// ([`create_and_submit`]), so waiters do not contend.
+///
+/// # Why a map rather than a field on `Device`
+///
+/// The queue handle is the thing the spec scopes synchronization to, and the same `VkQueue` is
+/// reachable through `Device`, through `HostDeviceMemory`'s `ProviderCtx`, and through the
+/// dispatch path. Keying on the handle means every route through `vkQueueSubmit` takes the same
+/// lock by construction, rather than by every owner remembering to hold theirs.
+static QUEUE_LOCKS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<u64, &'static std::sync::Mutex<()>>>,
+> = std::sync::OnceLock::new();
+
+/// The submit lock for `queue`, created on first use.
+///
+/// Leaks one `Mutex<()>` per distinct `VkQueue` ever seen. Bounded by the number of devices this
+/// process opens (one or two on every box this has run on), and deliberately `'static`: a queue
+/// lock must outlive the `Device` that produced the handle, because teardown ordering is exactly
+/// when a stale lock would be reached.
+fn queue_lock(queue: vk::Queue) -> &'static std::sync::Mutex<()> {
+    use vk::Handle;
+    let map = QUEUE_LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let key = queue.as_raw();
+    // `PoisonError` is recovered from rather than propagated: a panic while holding a submit lock
+    // must not turn every later submission in the process into a different failure than the one
+    // that actually happened.
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .entry(key)
+        .or_insert_with(|| Box::leak(Box::new(std::sync::Mutex::new(()))))
+}
+
 /// Create a fence, submit `cmd` to `queue` under it, and return the fence.
 ///
 /// On failure the fence is destroyed (if it was created) and `None` is returned.
@@ -213,6 +265,11 @@ impl Drop for CommandRecorder<'_> {
 /// - `ash_device` must be the logical device that owns `queue` and `cmd`.
 /// - `cmd` must be in the executable state (returned by [`CommandRecorder::finish`]).
 /// - No other work may be in-flight on `queue` (v0 single-queue constraint).
+///
+/// Host access to `queue` does **not** have to be externally synchronized by the caller: this
+/// function takes the queue's submit lock itself (see [`queue_lock`]). The v0 in-flight
+/// constraint above is about *this EP's* one-submission-per-subgraph model, not about the
+/// spec's external-synchronization rule, and the two were conflated until 2026-08-03.
 pub(crate) unsafe fn create_and_submit(
     ash_device: &ash::Device,
     queue: vk::Queue,
@@ -230,7 +287,20 @@ pub(crate) unsafe fn create_and_submit(
         }
     };
     let submit_info = [vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd))];
-    // SAFETY: queue is valid; cmd is executable.
+    // The spec's external-synchronization requirement on `queue`, honoured. Scoped to the submit
+    // call alone — see `queue_lock`. `try_lock` first so that contention is *countable*: without
+    // an observable, a correct lock and no lock at all produce identical evidence.
+    let lock = queue_lock(queue);
+    let _submit_guard = match lock.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::WouldBlock) => {
+            crate::counters::record_queue_submit_contention();
+            lock.lock().unwrap_or_else(|e| e.into_inner())
+        }
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+    };
+    // SAFETY: queue is valid; cmd is executable; host access to `queue` is externally
+    // synchronized by `_submit_guard`, which is live for the duration of this call.
     if let Err(e) = unsafe { ash_device.queue_submit(queue, &submit_info, fence) } {
         log::error!("vkQueueSubmit failed: {e}");
         // SAFETY: fence was created by us; nothing was submitted to it.
@@ -286,6 +356,9 @@ pub(crate) fn device_was_lost() -> bool {
 /// - `ash_device` must be the logical device that owns `queue` and `cmd`.
 /// - `cmd` must be in the executable state (returned by [`CommandRecorder::finish`]).
 /// - No other work may be in-flight on `queue` when this is called (v0 single-queue constraint).
+///
+/// As with [`create_and_submit`], the caller does not need to externally synchronize host access
+/// to `queue`; the submit lock is taken inside.
 pub(crate) unsafe fn submit_and_wait(
     ash_device: &ash::Device,
     queue: vk::Queue,
@@ -320,6 +393,58 @@ mod tests {
         // This is intentional for v0: the command pool lives on one thread.
         let _ = std::mem::size_of::<CommandPool>();
         let _ = std::mem::size_of::<vk::CommandBuffer>();
+    }
+
+    /// The submit lock is **per queue**, and it is the same lock for the same handle.
+    ///
+    /// No device is needed: the property under test is the keying, and keying is what would
+    /// silently fail — a lock created per call site, or per `Device`, would still compile, still
+    /// serialize *something*, and still leave two threads inside one `vkQueueSubmit`.
+    #[test]
+    fn queue_locks_are_per_queue_and_stable() {
+        use vk::Handle;
+        let q1 = vk::Queue::from_raw(0xabc1);
+        let q2 = vk::Queue::from_raw(0xabc2);
+        let a = queue_lock(q1);
+        let b = queue_lock(q1);
+        let c = queue_lock(q2);
+        assert!(std::ptr::eq(a, b), "the same VkQueue must map to the same lock");
+        assert!(
+            !std::ptr::eq(a, c),
+            "two distinct VkQueues must not share a lock — serializing across devices would be a \
+             throughput bug wearing a correctness fix's name"
+        );
+    }
+
+    /// The lock actually excludes, and the exclusion is **countable**.
+    ///
+    /// A lock with no observable is unfalsifiable: on a driver that tolerates concurrent
+    /// `vkQueueSubmit`, taking the lock and not taking it produce identical outputs. This test
+    /// drives the same `try_lock`-then-count path `create_and_submit` uses and asserts the
+    /// counter moved, so the counter itself has a demonstrated positive state.
+    #[test]
+    fn queue_lock_excludes_and_counts_contention() {
+        use vk::Handle;
+        let q = vk::Queue::from_raw(0xdeadbeef);
+        let lock = queue_lock(q);
+        let before = crate::counters::queue_submit_contentions();
+        let held = lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Second acquirer, on this thread, through the exact branch the submit path takes.
+        match lock.try_lock() {
+            Ok(_) => panic!("the lock did not exclude a second acquirer"),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                crate::counters::record_queue_submit_contention();
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                panic!("unexpected poison in a fresh lock")
+            }
+        }
+        drop(held);
+        assert_eq!(
+            crate::counters::queue_submit_contentions(),
+            before + 1,
+            "contention must be counted, or the serialization has no falsifier"
+        );
     }
 
     #[test]

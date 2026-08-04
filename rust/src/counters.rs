@@ -1017,6 +1017,21 @@ static SESSION_DISCLOSURE_STDERR_FAILURES: AtomicU64 = AtomicU64::new(0);
 static ORT_SINK_SEVERITY_SAMPLED: AtomicU64 = AtomicU64::new(0);
 /// Compute failures produced by the fault-injection control rather than suffered.
 static COMPUTE_FAILURES_INJECTED: AtomicU64 = AtomicU64::new(0);
+/// `vkQueueSubmit` calls that found another thread already inside the queue's submit lock.
+///
+/// JSON-only, no `abi_version` bump, per the standing precedent above: the C struct is published
+/// and consumed by `epctl`, `probe_allocator.py` and `test_phi35.py`, and a mid-struct insertion
+/// has silently mis-read every field past it three times in this project.
+///
+/// It exists because the lock it counts is otherwise **unfalsifiable**. Vulkan requires host
+/// access to a `VkQueue` to be externally synchronized (§ "Implicit Externally Synchronized
+/// Parameters"; `vkQueueSubmit`'s `queue` is on that list). A driver that happens not to corrupt
+/// anything when two threads submit concurrently produces exactly the same observations as a
+/// correctly serialized one — so "the lock is working" would rest on reading the source. This
+/// counter is the positive state: a run with two sessions inferring on two threads must report a
+/// non-zero value, and a run that reports zero either was not concurrent or is not taking the
+/// lock. Zero on a single-threaded run is the expected reading and says nothing.
+static QUEUE_SUBMIT_CONTENTIONS: AtomicU64 = AtomicU64::new(0);
 
 /// `Relaxed` is correct here and the reasoning is worth stating rather than assuming.
 ///
@@ -1614,6 +1629,21 @@ pub fn record_broken_commitment(delivered_to_ort_sink: bool) {
 /// read as a real one, in either direction.
 pub fn record_injected_compute_failure() {
     COMPUTE_FAILURES_INJECTED.fetch_add(1, ORD);
+}
+
+/// Record that a `vkQueueSubmit` had to wait for another thread already inside the queue's lock.
+///
+/// See [`QUEUE_SUBMIT_CONTENTIONS`] for why this counter is the only falsifier the serialization
+/// has: correct serialization and no serialization at all are indistinguishable in the outputs on
+/// a driver that tolerates the violation.
+pub(crate) fn record_queue_submit_contention() {
+    QUEUE_SUBMIT_CONTENTIONS.fetch_add(1, ORD);
+}
+
+/// How many `vkQueueSubmit` calls have had to wait for the queue lock in this process.
+#[cfg(test)]
+pub(crate) fn queue_submit_contentions() -> u64 {
+    QUEUE_SUBMIT_CONTENTIONS.load(ORD)
 }
 
 /// One §8.9.7 session-creation disclosure, as recorded.
@@ -2344,6 +2374,7 @@ pub fn reset() {
     SESSION_DISCLOSURE_STDERR_FAILURES.store(0, ORD);
     ORT_SINK_SEVERITY_SAMPLED.store(0, ORD);
     COMPUTE_FAILURES_INJECTED.store(0, ORD);
+    QUEUE_SUBMIT_CONTENTIONS.store(0, ORD);
     LEDGER_LOOKUPS.store(0, ORD);
     LEDGER_HITS.store(0, ORD);
     LEDGER_KEY_ABSENT.store(0, ORD);
@@ -2421,6 +2452,7 @@ impl VulkanEpCounters {
              \"broken_commitment_warns_to_ort_sink\": {},\n  \
              \"broken_commitment_warn_channel\": \"{}\",\n  \
              \"compute_failures_injected\": {},\n  \
+             \"queue_submit_contentions\": {},\n  \
              \"fault_injection\": \"{}\",\n  \
              \"proven_key_lookups\": {},\n  \
              \"ledger_hits\": {},\n  \
@@ -2503,6 +2535,7 @@ impl VulkanEpCounters {
             BROKEN_COMMITMENT_WARNS_TO_ORT.load(ORD),
             broken_commitment_channel(),
             COMPUTE_FAILURES_INJECTED.load(ORD),
+            QUEUE_SUBMIT_CONTENTIONS.load(ORD),
             if crate::ep::fault_injection_active() {
                 "ACTIVE"
             } else {

@@ -1,0 +1,27 @@
+{
+  "device_memory_env": null,
+  "kv_arena_env": null,
+  "bind_outputs_env": null,
+  "ep_lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+  "points": [
+    {
+      "arm": "phi",
+      "past_len": 512,
+      "iters": 25,
+      "exit": 0,
+      "device_lost_in_text": false,
+      "worker_text_bytes": 8030,
+      "worker_text_replacement_chars": 2,
+      "device_losses_counter": 0,
+      "compute_calls": 25,
+      "compute_failures": 0,
+      "dispatches_executed": 8875,
+      "claimed_nodes": 355,
+      "events": {
+        "state": "UNDETERMINED",
+        "counts": {}
+      }
+    }
+  ],
+  "trivial_arms": 0
+}

@@ -1,0 +1,34 @@
+[concurrency] ship_serial ...
+[concurrency] ship_threads ...
+[concurrency] res_serial ...
+[concurrency] res_threads ...
+
+==============================================================================
+GATE 3: CONCURRENT SESSIONS UNDER THE RESIDENT LANE
+==============================================================================
+  oracle: ship_serial, 260 digests (2 sessions x 2 steps x 65 outputs)
+  ship_threads exit=0  depth=2  mismatched=130/260  argmax_agrees=True  crossed=0  errors=0
+  res_serial   exit=0  depth=1  mismatched=0/260  argmax_agrees=True  crossed=0  errors=0
+  res_threads  exit=0  depth=2  mismatched=0/260  argmax_agrees=True  crossed=0  errors=0
+
+  counters (lane -> value):
+    compute_calls                      ship_serial=4  ship_threads=3  res_serial=4  res_threads=4
+    compute_failures                   ship_serial=0  ship_threads=1  res_serial=0  res_threads=0
+    device_losses                      ship_serial=0  ship_threads=0  res_serial=0  res_threads=0
+    dispatches_executed                ship_serial=1420  ship_threads=710  res_serial=1420  res_threads=1420
+    broken_commitments                 ship_serial=0  ship_threads=1  res_serial=0  res_threads=0
+    outputs_device_bound               ship_serial=0  ship_threads=0  res_serial=260  res_threads=260
+    outputs_bind_declined              ship_serial=260  ship_threads=130  res_serial=0  res_threads=0
+    alloc_allocations                  ship_serial=0  ship_threads=0  res_serial=1296  res_threads=1296
+    alloc_frees                        ship_serial=0  ship_threads=0  res_serial=390  res_threads=390
+    alloc_failed_lookups               ship_serial=0  ship_threads=0  res_serial=0  res_threads=0
+    alloc_frees_after_release          ship_serial=0  ship_threads=0  res_serial=0  res_threads=0
+    alloc_live_at_release_spans        ship_serial=0  ship_threads=0  res_serial=0  res_threads=0
+    alloc_device_frame                 ship_serial=OFF  ship_threads=OFF  res_serial=SHARED  res_threads=SHARED
+    alloc_device_frames_declared       ship_serial=0  ship_threads=0  res_serial=1  res_threads=1
+    session_staging_readback_bytes     ship_serial=8907264  ship_threads=4453632  res_serial=0  res_threads=0
+
+  VERDICT: CONCURRENCY_SEPARATES
+  DISCRIMINATOR: only the SHIPPING lane breaks under threads — unexpected; the resident path is the safer one under concurrency
+
+  record: C:\Users\justinchu\dev\ep-vulkan-switch\bench\results\device_memory_concurrency-prefix.json

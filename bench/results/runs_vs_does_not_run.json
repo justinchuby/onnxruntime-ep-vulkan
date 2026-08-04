@@ -1,0 +1,575 @@
+{
+  "artifact": "runs_vs_does_not_run",
+  "built_at": "2026-08-04T08:39:07+00:00",
+  "built_by": "switch",
+  "for": "niobe -- a performance statement that needs no clock",
+  "statement": "At long context the shipping configuration and the device-resident configuration do not merely differ in speed: they differ in whether the workload executes on the EP at all. Every field below is read from the cited record at build time; none is written into this tool.",
+  "classes": {
+    "COMPLETED_ON_EP": "worker exited 0 and executed a positive number of EP dispatches",
+    "COMPLETED_WITHOUT_EP": "worker exited 0 having executed zero EP dispatches -- ORT silently rebuilt the graph on CPU; this is NOT a fast run",
+    "DID_NOT_COMPLETE": "worker exited non-zero or produced no counters"
+  },
+  "refusals": [
+    "lanes are only paired within a single probe invocation",
+    "exit code 0 is never on its own read as evidence the EP ran",
+    "a missing counters file classifies as DID_NOT_COMPLETE, never as absent"
+  ],
+  "sources_read": [
+    {
+      "file": "kv_arena_chain-A8192-LIVE.json",
+      "sha256": "a5075d1271bfe104a6f27796e0b88d2932b625be8c3a12baa5aabb7ac01bf72b",
+      "probe": "kv_arena_chain",
+      "record_verdict": "ARENA_RAN_WHERE_GROWING_COULD_NOT(no bitwise reference this size)",
+      "lanes": [
+        {
+          "lane": "grow",
+          "context_tokens": 8189,
+          "completed": false,
+          "ep_dispatches": null,
+          "compute_failures": null,
+          "device_losses": null,
+          "alloc_device_frame": null,
+          "outputs_device_bound": null,
+          "alloc_high_water_bytes": null,
+          "device_name": null,
+          "slope_bytes_per_past_token": null,
+          "why": [
+            "worker exit code 1"
+          ],
+          "classification": "DID_NOT_COMPLETE"
+        },
+        {
+          "lane": "arena",
+          "context_tokens": 8189,
+          "completed": true,
+          "ep_dispatches": 1065,
+          "compute_failures": 0,
+          "device_losses": 0,
+          "alloc_device_frame": "SHARED",
+          "outputs_device_bound": null,
+          "alloc_high_water_bytes": 5512528520,
+          "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "slope_bytes_per_past_token": 32064.0,
+          "why": [],
+          "classification": "COMPLETED_ON_EP"
+        }
+      ]
+    },
+    {
+      "file": "kv_arena_chain-A8192.json",
+      "sha256": "a5075d1271bfe104a6f27796e0b88d2932b625be8c3a12baa5aabb7ac01bf72b",
+      "probe": "kv_arena_chain",
+      "record_verdict": "ARENA_RAN_WHERE_GROWING_COULD_NOT(no bitwise reference this size)",
+      "lanes": [
+        {
+          "lane": "grow",
+          "context_tokens": 8189,
+          "completed": false,
+          "ep_dispatches": null,
+          "compute_failures": null,
+          "device_losses": null,
+          "alloc_device_frame": null,
+          "outputs_device_bound": null,
+          "alloc_high_water_bytes": null,
+          "device_name": null,
+          "slope_bytes_per_past_token": null,
+          "why": [
+            "worker exit code 1"
+          ],
+          "classification": "DID_NOT_COMPLETE"
+        },
+        {
+          "lane": "arena",
+          "context_tokens": 8189,
+          "completed": true,
+          "ep_dispatches": 1065,
+          "compute_failures": 0,
+          "device_losses": 0,
+          "alloc_device_frame": "SHARED",
+          "outputs_device_bound": null,
+          "alloc_high_water_bytes": 5512528520,
+          "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "slope_bytes_per_past_token": 32064.0,
+          "why": [],
+          "classification": "COMPLETED_ON_EP"
+        }
+      ]
+    },
+    {
+      "file": "phi35_kv_chain-ctx4096-BOTH-dev0.json",
+      "sha256": "0cf729f4de9411cf8945264c0d70b898a8d6b1b2856ea93e445c44864fa82abf",
+      "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+      "record_verdict": "ERROR(instrument)",
+      "lanes": [
+        {
+          "lane": "host",
+          "context_tokens": 4096,
+          "completed": true,
+          "ep_dispatches": 0,
+          "compute_failures": 1,
+          "device_losses": 0,
+          "alloc_device_frame": "OFF",
+          "outputs_device_bound": 0,
+          "alloc_high_water_bytes": null,
+          "alloc_device_upload_bytes": 0,
+          "session_staging_readback_bytes": 0,
+          "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "why": [
+            "exited cleanly with zero EP dispatches (silent CPU fallback)"
+          ],
+          "classification": "COMPLETED_WITHOUT_EP"
+        },
+        {
+          "lane": "resident",
+          "context_tokens": 4096,
+          "completed": false,
+          "ep_dispatches": null,
+          "compute_failures": null,
+          "device_losses": null,
+          "alloc_device_frame": null,
+          "outputs_device_bound": null,
+          "alloc_high_water_bytes": null,
+          "alloc_device_upload_bytes": null,
+          "session_staging_readback_bytes": null,
+          "device_name": null,
+          "why": [
+            "worker exit code 1"
+          ],
+          "classification": "DID_NOT_COMPLETE"
+        }
+      ]
+    },
+    {
+      "file": "phi35_kv_chain-ctx4096-BOTH-retry1.json",
+      "sha256": "430e81c9bb9baee0e4e5f8bfa7aca1387fb7ecd73b3055dd6413870572430ad8",
+      "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+      "record_verdict": "ERROR(instrument)",
+      "lanes": [
+        {
+          "lane": "host",
+          "context_tokens": 4096,
+          "completed": true,
+          "ep_dispatches": 0,
+          "compute_failures": 1,
+          "device_losses": 0,
+          "alloc_device_frame": "OFF",
+          "outputs_device_bound": 0,
+          "alloc_high_water_bytes": null,
+          "alloc_device_upload_bytes": 0,
+          "session_staging_readback_bytes": 0,
+          "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "why": [
+            "exited cleanly with zero EP dispatches (silent CPU fallback)"
+          ],
+          "classification": "COMPLETED_WITHOUT_EP"
+        },
+        {
+          "lane": "resident",
+          "context_tokens": 4096,
+          "completed": true,
+          "ep_dispatches": 710,
+          "compute_failures": 0,
+          "device_losses": 0,
+          "alloc_device_frame": "SHARED",
+          "outputs_device_bound": 130,
+          "alloc_high_water_bytes": null,
+          "alloc_device_upload_bytes": 3901851664,
+          "session_staging_readback_bytes": 0,
+          "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "why": [],
+          "classification": "COMPLETED_ON_EP"
+        }
+      ]
+    },
+    {
+      "file": "phi35_kv_chain-ctx4096-BOTH-retry2.json",
+      "sha256": "430e81c9bb9baee0e4e5f8bfa7aca1387fb7ecd73b3055dd6413870572430ad8",
+      "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+      "record_verdict": "ERROR(instrument)",
+      "lanes": [
+        {
+          "lane": "host",
+          "context_tokens": 4096,
+          "completed": true,
+          "ep_dispatches": 0,
+          "compute_failures": 1,
+          "device_losses": 0,
+          "alloc_device_frame": "OFF",
+          "outputs_device_bound": 0,
+          "alloc_high_water_bytes": null,
+          "alloc_device_upload_bytes": 0,
+          "session_staging_readback_bytes": 0,
+          "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "why": [
+            "exited cleanly with zero EP dispatches (silent CPU fallback)"
+          ],
+          "classification": "COMPLETED_WITHOUT_EP"
+        },
+        {
+          "lane": "resident",
+          "context_tokens": 4096,
+          "completed": true,
+          "ep_dispatches": 710,
+          "compute_failures": 0,
+          "device_losses": 0,
+          "alloc_device_frame": "SHARED",
+          "outputs_device_bound": 130,
+          "alloc_high_water_bytes": null,
+          "alloc_device_upload_bytes": 3901851664,
+          "session_staging_readback_bytes": 0,
+          "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "why": [],
+          "classification": "COMPLETED_ON_EP"
+        }
+      ]
+    },
+    {
+      "file": "phi35_kv_chain-ctx4096-BOTH-retry3.json",
+      "sha256": "430e81c9bb9baee0e4e5f8bfa7aca1387fb7ecd73b3055dd6413870572430ad8",
+      "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+      "record_verdict": "ERROR(instrument)",
+      "lanes": [
+        {
+          "lane": "host",
+          "context_tokens": 4096,
+          "completed": true,
+          "ep_dispatches": 0,
+          "compute_failures": 1,
+          "device_losses": 0,
+          "alloc_device_frame": "OFF",
+          "outputs_device_bound": 0,
+          "alloc_high_water_bytes": null,
+          "alloc_device_upload_bytes": 0,
+          "session_staging_readback_bytes": 0,
+          "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "why": [
+            "exited cleanly with zero EP dispatches (silent CPU fallback)"
+          ],
+          "classification": "COMPLETED_WITHOUT_EP"
+        },
+        {
+          "lane": "resident",
+          "context_tokens": 4096,
+          "completed": true,
+          "ep_dispatches": 710,
+          "compute_failures": 0,
+          "device_losses": 0,
+          "alloc_device_frame": "SHARED",
+          "outputs_device_bound": 130,
+          "alloc_high_water_bytes": null,
+          "alloc_device_upload_bytes": 3901851664,
+          "session_staging_readback_bytes": 0,
+          "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "why": [],
+          "classification": "COMPLETED_ON_EP"
+        }
+      ]
+    },
+    {
+      "file": "phi35_kv_chain-ctx4096-BOTH-retry4.json",
+      "sha256": "430e81c9bb9baee0e4e5f8bfa7aca1387fb7ecd73b3055dd6413870572430ad8",
+      "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+      "record_verdict": "ERROR(instrument)",
+      "lanes": [
+        {
+          "lane": "host",
+          "context_tokens": 4096,
+          "completed": true,
+          "ep_dispatches": 0,
+          "compute_failures": 1,
+          "device_losses": 0,
+          "alloc_device_frame": "OFF",
+          "outputs_device_bound": 0,
+          "alloc_high_water_bytes": null,
+          "alloc_device_upload_bytes": 0,
+          "session_staging_readback_bytes": 0,
+          "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "why": [
+            "exited cleanly with zero EP dispatches (silent CPU fallback)"
+          ],
+          "classification": "COMPLETED_WITHOUT_EP"
+        },
+        {
+          "lane": "resident",
+          "context_tokens": 4096,
+          "completed": true,
+          "ep_dispatches": 710,
+          "compute_failures": 0,
+          "device_losses": 0,
+          "alloc_device_frame": "SHARED",
+          "outputs_device_bound": 130,
+          "alloc_high_water_bytes": null,
+          "alloc_device_upload_bytes": 3901851664,
+          "session_staging_readback_bytes": 0,
+          "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "why": [],
+          "classification": "COMPLETED_ON_EP"
+        }
+      ]
+    }
+  ],
+  "unreadable_sources": [],
+  "claims": [
+    {
+      "provenance": "MEASUREMENT",
+      "context_tokens": 8189,
+      "favours": "DEVICE_RESIDENT",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "ran": {
+        "lane": "arena",
+        "classification": "COMPLETED_ON_EP",
+        "ep_dispatches": 1065,
+        "alloc_high_water_bytes": 5512528520,
+        "alloc_device_frame": "SHARED",
+        "device_losses": 0
+      },
+      "did_not_run": {
+        "lane": "grow",
+        "classification": "DID_NOT_COMPLETE",
+        "ep_dispatches": null,
+        "compute_failures": null,
+        "why": [
+          "worker exit code 1"
+        ]
+      },
+      "cited_from": {
+        "file": "kv_arena_chain-A8192-LIVE.json",
+        "sha256": "a5075d1271bfe104a6f27796e0b88d2932b625be8c3a12baa5aabb7ac01bf72b",
+        "probe": "kv_arena_chain",
+        "record_verdict": "ARENA_RAN_WHERE_GROWING_COULD_NOT(no bitwise reference this size)"
+      }
+    },
+    {
+      "provenance": "MEASUREMENT",
+      "context_tokens": 8189,
+      "favours": "DEVICE_RESIDENT",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "ran": {
+        "lane": "arena",
+        "classification": "COMPLETED_ON_EP",
+        "ep_dispatches": 1065,
+        "alloc_high_water_bytes": 5512528520,
+        "alloc_device_frame": "SHARED",
+        "device_losses": 0
+      },
+      "did_not_run": {
+        "lane": "grow",
+        "classification": "DID_NOT_COMPLETE",
+        "ep_dispatches": null,
+        "compute_failures": null,
+        "why": [
+          "worker exit code 1"
+        ]
+      },
+      "cited_from": {
+        "file": "kv_arena_chain-A8192.json",
+        "sha256": "a5075d1271bfe104a6f27796e0b88d2932b625be8c3a12baa5aabb7ac01bf72b",
+        "probe": "kv_arena_chain",
+        "record_verdict": "ARENA_RAN_WHERE_GROWING_COULD_NOT(no bitwise reference this size)"
+      }
+    },
+    {
+      "provenance": "MEASUREMENT",
+      "context_tokens": 4096,
+      "favours": "SHIPPING",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "ran": {
+        "lane": "host",
+        "classification": "COMPLETED_WITHOUT_EP",
+        "ep_dispatches": 0,
+        "alloc_high_water_bytes": null,
+        "alloc_device_frame": "OFF",
+        "device_losses": 0
+      },
+      "did_not_run": {
+        "lane": "resident",
+        "classification": "DID_NOT_COMPLETE",
+        "ep_dispatches": null,
+        "compute_failures": null,
+        "why": [
+          "worker exit code 1"
+        ]
+      },
+      "cited_from": {
+        "file": "phi35_kv_chain-ctx4096-BOTH-dev0.json",
+        "sha256": "0cf729f4de9411cf8945264c0d70b898a8d6b1b2856ea93e445c44864fa82abf",
+        "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+        "record_verdict": "ERROR(instrument)"
+      }
+    },
+    {
+      "provenance": "MEASUREMENT",
+      "context_tokens": 4096,
+      "favours": "DEVICE_RESIDENT",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "ran": {
+        "lane": "resident",
+        "classification": "COMPLETED_ON_EP",
+        "ep_dispatches": 710,
+        "alloc_high_water_bytes": null,
+        "alloc_device_frame": "SHARED",
+        "device_losses": 0
+      },
+      "did_not_run": {
+        "lane": "host",
+        "classification": "COMPLETED_WITHOUT_EP",
+        "ep_dispatches": 0,
+        "compute_failures": 1,
+        "why": [
+          "exited cleanly with zero EP dispatches (silent CPU fallback)"
+        ]
+      },
+      "cited_from": {
+        "file": "phi35_kv_chain-ctx4096-BOTH-retry1.json",
+        "sha256": "430e81c9bb9baee0e4e5f8bfa7aca1387fb7ecd73b3055dd6413870572430ad8",
+        "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+        "record_verdict": "ERROR(instrument)"
+      }
+    },
+    {
+      "provenance": "MEASUREMENT",
+      "context_tokens": 4096,
+      "favours": "DEVICE_RESIDENT",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "ran": {
+        "lane": "resident",
+        "classification": "COMPLETED_ON_EP",
+        "ep_dispatches": 710,
+        "alloc_high_water_bytes": null,
+        "alloc_device_frame": "SHARED",
+        "device_losses": 0
+      },
+      "did_not_run": {
+        "lane": "host",
+        "classification": "COMPLETED_WITHOUT_EP",
+        "ep_dispatches": 0,
+        "compute_failures": 1,
+        "why": [
+          "exited cleanly with zero EP dispatches (silent CPU fallback)"
+        ]
+      },
+      "cited_from": {
+        "file": "phi35_kv_chain-ctx4096-BOTH-retry2.json",
+        "sha256": "430e81c9bb9baee0e4e5f8bfa7aca1387fb7ecd73b3055dd6413870572430ad8",
+        "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+        "record_verdict": "ERROR(instrument)"
+      }
+    },
+    {
+      "provenance": "MEASUREMENT",
+      "context_tokens": 4096,
+      "favours": "DEVICE_RESIDENT",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "ran": {
+        "lane": "resident",
+        "classification": "COMPLETED_ON_EP",
+        "ep_dispatches": 710,
+        "alloc_high_water_bytes": null,
+        "alloc_device_frame": "SHARED",
+        "device_losses": 0
+      },
+      "did_not_run": {
+        "lane": "host",
+        "classification": "COMPLETED_WITHOUT_EP",
+        "ep_dispatches": 0,
+        "compute_failures": 1,
+        "why": [
+          "exited cleanly with zero EP dispatches (silent CPU fallback)"
+        ]
+      },
+      "cited_from": {
+        "file": "phi35_kv_chain-ctx4096-BOTH-retry3.json",
+        "sha256": "430e81c9bb9baee0e4e5f8bfa7aca1387fb7ecd73b3055dd6413870572430ad8",
+        "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+        "record_verdict": "ERROR(instrument)"
+      }
+    },
+    {
+      "provenance": "MEASUREMENT",
+      "context_tokens": 4096,
+      "favours": "DEVICE_RESIDENT",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "ran": {
+        "lane": "resident",
+        "classification": "COMPLETED_ON_EP",
+        "ep_dispatches": 710,
+        "alloc_high_water_bytes": null,
+        "alloc_device_frame": "SHARED",
+        "device_losses": 0
+      },
+      "did_not_run": {
+        "lane": "host",
+        "classification": "COMPLETED_WITHOUT_EP",
+        "ep_dispatches": 0,
+        "compute_failures": 1,
+        "why": [
+          "exited cleanly with zero EP dispatches (silent CPU fallback)"
+        ]
+      },
+      "cited_from": {
+        "file": "phi35_kv_chain-ctx4096-BOTH-retry4.json",
+        "sha256": "430e81c9bb9baee0e4e5f8bfa7aca1387fb7ecd73b3055dd6413870572430ad8",
+        "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+        "record_verdict": "ERROR(instrument)"
+      }
+    }
+  ],
+  "claim_count": 7,
+  "by_context": [
+    {
+      "context_tokens": 4096,
+      "pairs_favouring_device_resident": 4,
+      "pairs_favouring_shipping": 1,
+      "records": [
+        "phi35_kv_chain-ctx4096-BOTH-dev0.json",
+        "phi35_kv_chain-ctx4096-BOTH-retry1.json",
+        "phi35_kv_chain-ctx4096-BOTH-retry2.json",
+        "phi35_kv_chain-ctx4096-BOTH-retry3.json",
+        "phi35_kv_chain-ctx4096-BOTH-retry4.json"
+      ],
+      "ruling": "SPLIT(4 pair(s) favour device-resident, 1 favour shipping)",
+      "citable": false
+    },
+    {
+      "context_tokens": 8189,
+      "pairs_favouring_device_resident": 2,
+      "pairs_favouring_shipping": 0,
+      "records": [
+        "kv_arena_chain-A8192-LIVE.json",
+        "kv_arena_chain-A8192.json"
+      ],
+      "ruling": "DEVICE_RESIDENT_RAN_WHERE_SHIPPING_DID_NOT (2/2 pairs agree)",
+      "citable": true
+    }
+  ],
+  "single_lane_census": {
+    "ctx4096/DEVICE_RESIDENT": {
+      "observations": 3,
+      "completed_on_ep": 3,
+      "device_losses": 0,
+      "files": [
+        "phi35_kv_chain-ctx4096-resident-retry1.json",
+        "phi35_kv_chain-ctx4096-resident-retry2.json",
+        "phi35_kv_chain-ctx4096-resident-retry3.json"
+      ],
+      "completed_on_ep_rate": "3/3"
+    }
+  },
+  "citable_by_context": [
+    {
+      "context_tokens": 8189,
+      "pairs_favouring_device_resident": 2,
+      "pairs_favouring_shipping": 0,
+      "records": [
+        "kv_arena_chain-A8192-LIVE.json",
+        "kv_arena_chain-A8192.json"
+      ],
+      "ruling": "DEVICE_RESIDENT_RAN_WHERE_SHIPPING_DID_NOT (2/2 pairs agree)",
+      "citable": true
+    }
+  ],
+  "verdict": "4096:SPLIT(4 pair(s) favour device-resident, 1 favour shipping) | 8189:DEVICE_RESIDENT_RAN_WHERE_SHIPPING_DID_NOT (2/2 pairs agree)",
+  "what_niobe_may_cite": [
+    "at context 8189: DEVICE_RESIDENT_RAN_WHERE_SHIPPING_DID_NOT (2/2 pairs agree)"
+  ]
+}

@@ -71,3 +71,9 @@ bench/results/claim_log_attribution.jsonl
 # Mouse: models fetched for op-census work. Large, and reproducible from the URL recorded in
 # bench/results/model_provenance.json — an artifact belongs in the repo, a 14 MB blob does not.
 .scratch-models/
+
+# Raw tensor dumps from probes: regenerable, and one kv.npz reached 2.8 GB.
+# They are inputs to a verdict, not the verdict; the JSON records are the evidence.
+bench/results/**/*.npy
+bench/results/**/*.npz
+

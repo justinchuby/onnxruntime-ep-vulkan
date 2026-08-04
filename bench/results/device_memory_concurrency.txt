@@ -1,0 +1,35 @@
+[concurrency] ship_serial ...
+[concurrency] res_serial ...
+[concurrency] res_threads ...
+
+==============================================================================
+GATE 3: CONCURRENT SESSIONS UNDER THE RESIDENT LANE
+==============================================================================
+  oracle: ship_serial, 260 digests (2 sessions x 2 steps x 65 outputs)
+  res_serial   exit=0  depth=1  mismatched=0/260  argmax_agrees=True  crossed=0  errors=0
+  res_threads  exit=3  depth=2  mismatched=0/260  argmax_agrees=False  crossed=0  errors=2
+      RAISED: session 0: Fail: [ONNXRuntimeError] : 1 : FAIL : VulkanExecutionProvider: copy 12/65 failed: the device-memory copy did not complete — the queue submission failed
+      RAISED: session 1: Fail: [ONNXRuntimeError] : 1 : FAIL : VulkanExecutionProvider: copy 0/65 failed: the device-memory copy did not complete — the queue submission failed
+
+  counters (lane -> value):
+    compute_calls                      ship_serial=4  res_serial=4  res_threads=3
+    compute_failures                   ship_serial=0  res_serial=0  res_threads=0
+    device_losses                      ship_serial=0  res_serial=0  res_threads=0
+    dispatches_executed                ship_serial=1420  res_serial=1420  res_threads=1065
+    broken_commitments                 ship_serial=0  res_serial=0  res_threads=0
+    outputs_device_bound               ship_serial=0  res_serial=260  res_threads=195
+    outputs_bind_declined              ship_serial=260  res_serial=0  res_threads=0
+    alloc_allocations                  ship_serial=0  res_serial=1296  res_threads=1231
+    alloc_frees                        ship_serial=0  res_serial=390  res_threads=325
+    alloc_failed_lookups               ship_serial=0  res_serial=0  res_threads=0
+    alloc_frees_after_release          ship_serial=0  res_serial=0  res_threads=0
+    alloc_live_at_release_spans        ship_serial=0  res_serial=0  res_threads=0
+    alloc_device_frame                 ship_serial=OFF  res_serial=SHARED  res_threads=SHARED
+    alloc_device_frames_declared       ship_serial=0  res_serial=1  res_threads=1
+    session_staging_readback_bytes     ship_serial=8907264  res_serial=0  res_threads=0
+
+  VERDICT: CONCURRENCY_SEPARATES
+    FINDING: unequal work: res_threads dispatches_executed=1065 vs res_serial 1420
+    FINDING: span leak in res_threads: alloc_allocations=1231 alloc_frees=325
+
+  record: C:\Users\justinchu\dev\ep-vulkan-switch\bench\results\device_memory_concurrency.json
