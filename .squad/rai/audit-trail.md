@@ -139,6 +139,197 @@ underlying mechanism myself, independently, live.
 
 ---
 
+## Audit Entry — 2026-08-04T08:30:00-07:00
+
+**Review type:** Recall via coordinator — rule on Tank's `tank-rai-013-arm-e-submitted-not-credited.md`
+(does his arm E add or change the RAI-013 discharge); judge whether `check_device_loss.py`'s
+UTF-16LE-in-JSON blindness is its own RAI finding; assess the `heapBudget` non-fix for RAI relevance;
+confirm Morpheus's §8.9.23 blind-axes mechanism satisfies my open `Conv` 🟡; rule whether the `Conv`
+`metadata` key-sentinel defect is an RAI matter.
+**Merged `main` first:** working tree was already at `9b16f4f` (fast-forwarded from `090638a` via
+`squad/trinity`); confirmed clean before review. Read-only this pass — no repo writes outside
+`.squad/rai/` and `.squad/decisions/inbox/`, committed on `squad/rai` only.
+**Verification performed, not just read:** `cargo test --lib` → 553 passed / 0 failed / 4 ignored
+(matches the coordinator's stated baseline, reproduced independently). Reproduced Tank's device-loss
+mutation myself, from the real committed record rather than his prepared file: extracted
+`lanes.resident.stderr_tail` from `phi35_kv_chain-ctx4096-BOTH-dev0.json` (Tank worktree,
+`5353886`), sliced off the ASCII traceback, kept only the UTF-16LE ORT line, and ran both the
+pre-fix (`d8fce9f`) and post-fix `check_device_loss.py` against it. Also ran
+`ci/negative_control_device_loss.py` live (20/20 arms fired) and confirmed the signature record
+(`phi35_kv_chain-ctx4096-BOTH-dev0.json`, unmodified) still reads `FAIL(condition=device_lost_reported)`
+post-fix. Read `evidence/proof_ledger.jsonl` directly for the four `Conv` entries. Confirmed
+`registry.rs`/`disclosure.rs` on fresh `main` do **not** yet contain `blind_axes` — Morpheus's
+§8.9.23 mechanism is ruled but not implemented.
+
+### Item 1 — Tank's RAI-013 arm E submission: 🟢 CONVERGENT, does not reopen or move the tally
+
+Tank's submission states two readings and asks me to choose: (a) discharged to the boundary of what
+a process can witness about itself, or (b) requires an out-of-process witness, which would make
+RAI-013 a packaging/documentation item rather than a code item.
+
+**(a) is correct, and I already ruled it — his arm E did not change my answer, it corroborated it
+independently.** My 2026-08-04T03:00:00 ruling discharged RAI-013 on my own probe
+(`probe_disclosure_reachability.py`, both devices, both polarities: default arm reaches the console
+via a direct stderr write bypassing ORT's threshold; escalation arm shows the mechanism does not
+evaporate when the quiet channel is removed) and separately named the exact bound Tank's arm E
+restates: *`REACHED_USER` can only ever mean "the write succeeded," never "a human read it," and no
+elaboration of the check can move that boundary because the elaboration runs on the same side of it.*
+Morpheus's §8.9.23(5) has since given this bound a name — **THE SELF-WITNESS BOUND** — and filed it
+as a general form with two live arms in this repo (the canary token's guaranteed-antecedent arm, and
+this disclosure-reach arm). Tank's arm E is a third independent instance of the same measurement,
+run from his own harness rather than mine, and it agrees with both. Three independent instruments
+converging on the same boundary is good corroboration; it is not a new fact, and RAI-013 is not
+reopened by it.
+
+**Reading (b) is not available as an alternative ruling** — not because it is wrong in the abstract,
+but because I already answered the question it depends on: I named the residual a **bound**, not a
+gap, and ruled that "the correct disposition is disclosure, not repair." A bound that cannot be
+closed from inside the process is not the kind of thing an out-of-process witness "closes" either —
+the honest move is the one already landed, naming the limit in `DESIGN.md` §0.2 (`REACHED_USER` →
+one-line caveat, or per §8.9.23(5), retitle the token itself to `WRITE_SUCCEEDED`). I adopt
+Morpheus's retitle recommendation as the cleaner remedy: it removes the misreading at the source
+instead of requiring a reader to have found the caveat first. **Owner: whoever owns `disclosure.rs`
+(Tank, per his own repair — non-blocking, doc/token-naming only).**
+
+**On the refusal pattern itself: correct again, and I want it on the record as a standing precedent
+rather than three isolated good calls.** RAI-008(a) (CI-plant repair does not close a criterion whose
+other defect is untouched), RAI-013's original repair (an honest self-report is not the same as a
+user having been told), and now this: three times Tank has built or measured something real and
+explicitly declined to move a tally that belonged to someone else's ruling. The standard I am
+applying is the same each time — **a repair, however well-verified, closes the criterion it was
+aimed at only when the criterion's own falsifier is what was measured, and the person who built the
+repair is the wrong person to make that call about their own work.** Tank has now internalized that
+distinction well enough to pre-empt it three times without being told. That is worth naming as
+exemplary process, not just as three correct non-claims.
+
+### Item 2 — `check_device_loss.py` blind to UTF-16LE-in-JSON: new finding, **RAI-014**, 🟢 VERIFIED FIXED (would have been 🔴 live)
+
+**Independently reproduced, not taken on Tank's word.** I built my own mutation from the real,
+unmodified `phi35_kv_chain-ctx4096-BOTH-dev0.json` (not his prepared `wide_only.json`): extracted the
+nested `lanes.resident.stderr_tail`, cut it at the ASCII `Traceback` boundary, kept only ORT's own
+UTF-16LE line. Pre-fix `check_device_loss.py` (`d8fce9f`) on that input: **`PASS`, exit 0.** Post-fix
+on the same input: **`FAIL(condition=device_lost_reported)`, exit 1.** The unmodified signature
+record still reads `FAIL` after the fix (no regression on the case that was never blind).
+`ci/negative_control_device_loss.py` run live: 20/20 arms fired, including the one PLANTED arm for
+this exact defect and the REPLAYED arm built from the real record — the distinction the control's
+own provenance line insists on (PLANTED proves the rule fires on a built input; REPLAYED evidences
+the rule's event happened in reality) and both classes are present for this defect specifically.
+
+**Ruling this its own RAI finding, not folded into RAI-012, because the shape is different.**
+RAI-012 was a decline message that named the wrong *subject* while still declining (fail-safe
+preserved, honesty defect). This is a scanner whose entire purpose is detecting a hazard **reporting
+that the hazard did not occur, when it did** — a false negative on a safety-relevant instrument, not
+a misattributed true positive. That is the sharper failure mode of the two, and it is squarely
+`policy.md`'s Deceptive Patterns category applied to an internal instrument rather than a
+user-facing string: a clean bill of health is itself an ungrounded claim when the scanner never
+looked at the byte sequence carrying the fault.
+
+**Severity, both tenses.** As shipped and now fixed: 🟢, credited, verified by mutation (not
+assertion) and pinned by a replayed arm so it cannot silently regress. **Had it not been caught:**
+this would have been a 🔴-grade instrument defect, on the reasoning I apply to RAI-008/009 — a device
+loss that reads green is not a cosmetic diagnostic issue, it is the CI gate for the entire
+`DEVICE_MEMORY` flip reporting a hazard as absent, and everything measured downstream of a
+misread-clean incident (the "30-consecutive-clean" figure Tank himself withdrew this same round) is
+built on it. **The reason this stays 🟢 rather than opening a new 🔴:** it was found, measured, fixed,
+and verified before shipping to any judgment that depended on it — Tank's own withdrawal of the
+30-clean claim in the same commit is the proof that no downstream claim was built on the blind
+window. Credit for that sequencing is explicit and belongs to him.
+
+**Named as a recurring project shape, per the coordinator's framing, and I agree it is one:** this is
+the same family as RAI-012 (a channel that appears to carry evidence and does not) and as my RAI-012
+ruling's own note that ORT's UTF-16LE-into-a-supposedly-plain-text sink is not a one-off — three
+distinct defects in this project now trace to the same root cause (a wide-encoded ORT string meeting
+a narrow-encoding-assuming reader): the original `normalise_log_text` NUL-stripping gap, the
+JSON-embedded variant Tank just closed, and Switch's earlier "stopped at the first error, missed the
+second" reader defect layered on top of the same file. **Recommendation, non-blocking:** since this
+is now a three-time-recurring shape rather than a one-off, it is worth a standing rule in
+`policy.md` or `DESIGN.md` rather than a per-instance fix: *any scanner or reader that treats a
+captured process log as a plain-text search target must be run once against a UTF-16LE-in-JSON
+fixture before being trusted*, which is exactly the rule Tank already wrote by hand
+(*"an instrument that has never been shown a positive it does not catch has not been
+characterised"*) — I am only asking that it graduate from his own decision record to policy so the
+next instrument author inherits it without having to rediscover it.
+
+### Item 3 — `heapBudget` non-fix: 🟢 out of RAI scope, credited as engineering discipline
+
+No claim reached a user — Tank explicitly did not ship the change, so there is no user-facing
+artifact for RAI to review. My charter is explicit that I am "not general QA" and do not own
+performance/architecture calls. Noting only, without a finding number, because the coordinator asked
+me to judge it: the reasoning Tank applied (*measure the instrument before building on it; arm B's
+identical `alloc_high_water_bytes` to the byte is a null manipulation, not a negative result*) is the
+same self-witness discipline as items 1 and 2 above, applied prospectively instead of after an
+incident. This is worth naming as good practice in `.squad/agents/tank/history.md` if it is not
+already there, but it is not an RAI item and I am not opening one.
+
+### Item 4 — Morpheus's §8.9.23 blind-axes mechanism: 🟢 satisfies my open `Conv` 🟡, not yet implemented
+
+Confirmed on fresh `main` (`9b16f4f`): `registry.rs` and `disclosure.rs` do not yet define
+`blind_axes` — the mechanism is ruled, not shipped. As ruled in §8.9.23(2), it is the right remedy:
+a `blind_axes: &'static [&'static str]` field on `registry::OpSpec`, rendered into the disclosure
+line for any row that declares one, with the explicit clause that those axes are spoken for by a
+**CI-time** suite and by nothing that ran in the reader's session. That second clause is the part I
+was most concerned would be dropped — a caveat that says "not covered" without saying "and nothing
+in *this* session covers it either" just relocates the false impression — and Morpheus's ruling
+states it explicitly. **This satisfies my 🟡 as designed.** It remains open only as an implementation
+item, owner Mouse, not as an unresolved RAI question. I will re-check the rendered disclosure line
+once it lands.
+
+### Item 5 — `Conv`'s `metadata` key-sentinel reads "no shader" while a shader exists: yes, this is an RAI matter, not only a correctness one — new finding, **RAI-015**, 🟡 Advisory, named 🔴 trigger
+
+**Confirmed live**, not taken on Morpheus's word: all four `Conv` entries in
+`evidence/proof_ledger.jsonl` render `.../metadata/...` in the key while carrying
+`"shaders":["conv_f32"]` with a real `shader_digest` in the same JSON object. `registry::variant_key`
+documents `metadata` to mean "this row has no shader"; `registry::form_is_provable` short-circuits on
+that sentinel without ever consulting the kernel table. The subject and the key disagree, in the
+committed ledger, today.
+
+**Why this is RAI's subject and not only Morpheus's.** My charter's Deceptive Patterns category
+covers "ungrounded factual claims presented as authoritative" — and `form_is_provable` is exactly a
+factual-claim mechanism: it is the gate that decides whether the session-time disclosure line may
+say a form is proven. A key that asserts "no shader exists here" while a shader digest sits in the
+same record is not a claim a user reads directly, but it is the **premise** underneath a claim a user
+does read (`disclose_claimed_forms`'s `Proven` line). Morpheus's own framing — "the subject knows the
+shader; the key denies it exists" — is precisely the shape RAI-008/009 named for silent wrong output,
+one layer up the stack: a mechanism that answers a correctness question without consulting the thing
+that would answer it correctly. That it is caught today only because `conv_f32` is the sole variant
+(so the wrong answer happens to be harmless) does not change what the mechanism currently asserts.
+
+**Severity: 🟡, not 🔴, and the trigger for 🔴 is the one Morpheus already named — I am adopting it as
+an RAI trigger too, not just an engineering one.** It is 🟡 today because no live claim is currently
+false in its *effect* (one shader, one truth, the wrong reasoning path happens to land on the right
+answer). It becomes 🔴 — a live deceptive claim, not a latent one — **the moment a second `Conv`
+kernel variant exists and the ledger has not been repaired first**, because at that point
+`form_is_provable` would certify a specific, wrong shader as proven without ever having looked at it,
+and a user reading "Conv proven" would be reading a claim about code that was never consulted. That
+is RAI-008's exact silent-wrong-claim shape, arrived at through the proof ledger's own key rather
+than through a kernel's own output.
+
+**Disposition: adopting Morpheus's repair, not adding a parallel one.** §8.9.23(3)'s remedy — the
+variant component must be named by the code that dispatches (`translate` names `conv_f32`; the key
+must name what `translate` names), not by a kernel table the row never populates — is the correct
+fix and closes this from the RAI side as well as the correctness side once it lands. **Owner: Mouse,
+before a second `Conv` variant is registered** (same deadline Morpheus already set; I am not adding a
+different one). I will re-check the ledger's `Conv` keys once the repair lands and downgrade this to
+🟢 on confirmation that `metadata` no longer appears where a shader is recorded.
+
+### Summary
+
+- 🔴 Critical: 0 (RAI-008/009 remain the standing 🔴s from prior rounds, unchanged this pass — not
+  re-reviewed this session, out of scope for this recall)
+- 🟡 Advisory: 1 new (**RAI-015** — `Conv` key/shader mismatch, 🔴 trigger = second `Conv` variant
+  registered before repair)
+- 🟢 Green: 3 (**RAI-014** verified fixed and independently reproduced; Tank's arm E submission —
+  convergent, correctly not self-credited, RAI-013 stays closed as previously discharged; Morpheus's
+  §8.9.23 blind-axes mechanism satisfies my open `Conv` 🟡, pending implementation)
+- Out of scope, noted without a finding number: `heapBudget` non-fix (no user-facing claim shipped;
+  engineering discipline, not RAI)
+- Falsifiers: RAI-015 is falsified upward (🔴) by a second `Conv` variant landing before Mouse's
+  repair; falsified closed (🟢) by the repair landing first. RAI-014 would reopen only if a future
+  scan format (base64, gzip, or another envelope Tank's own residual names) is shown to hide a real
+  device loss the same way, unmutated-and-verified.
+
+---
+
 ## Audit Entry — 2026-07-28T19:16:08-07:00
 
 **Review type:** On-demand — IP/licence compliance (OQ-M6) + first RAI pass
