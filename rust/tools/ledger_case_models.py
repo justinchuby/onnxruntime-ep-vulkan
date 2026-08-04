@@ -373,6 +373,94 @@ def _matmulnbits_typed(
     return model
 
 
+def _clip_dyn(elem: int, opset: int = 21) -> onnx.ModelProto:
+    """`Clip` with both bounds over a **symbolic** extent.
+
+    `shape_class` is a key component, so `clip_f32`'s static entry is not a proof of this form —
+    and this is the form that matters: all 35 of MobileNetV2's `Clip` nodes decline `[unproven]`
+    with `.../ew_select_clip_f32/runtime-extent/min+max`, because a vision graph's batch extent
+    is symbolic and its static twin was the only thing ever proven.
+    """
+    x = helper.make_tensor_value_info("X", elem, [_DYN, 8])
+    y = helper.make_tensor_value_info("Y", elem, [_DYN, 8])
+    np_dt = np.float16 if elem == TensorProto.FLOAT16 else np.float32
+    inits = [
+        onnx.numpy_helper.from_array(np.array(-0.5, dtype=np_dt), name="lo"),
+        onnx.numpy_helper.from_array(np.array(0.5, dtype=np_dt), name="hi"),
+    ]
+    node = helper.make_node("Clip", ["X", "lo", "hi"], ["Y"], name="clip0")
+    graph = helper.make_graph([node], "clip_dyn_graph", [x], [y], initializer=inits)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _conv(
+    elem: int,
+    *,
+    bias: bool = True,
+    dynamic: bool = False,
+    group: int = 1,
+    c: int = 4,
+    m: int = 6,
+    kernel=(3, 3),
+    strides=(1, 1),
+    dilations=(1, 1),
+    pads=(1, 1, 1, 1),
+    hw=(8, 10),
+    opset: int = 21,
+) -> onnx.ModelProto:
+    """A one-node 2-D `Conv` with its weights (and bias) as initializers.
+
+    Weights are initializers and not graph inputs on purpose: that is what every real vision
+    graph carries, and the claim predicate refuses a symbolic weight extent, so a case whose
+    weights arrived as an input would be proving a form no model contains.
+
+    The **four** cases built from this are the cross product of {bias, no bias} x {static,
+    runtime-extent}, which is exactly the key space: arity and `shape_class` are key components
+    and nothing else about a `Conv` is. In particular `group`, `strides`, `dilations` and `pads`
+    are **not** key components, so a ledger entry says nothing about them — that gap is covered
+    by conformance tests in `tests/ops`, not by a fifth entry here, and saying so is the point of
+    this paragraph.
+
+    MobileNetV2's own form is `bias=True, dynamic=True`: all 52 of its convolutions carry a bias
+    and a symbolic batch extent.
+    """
+    h, w = hw
+    kh, kw = kernel
+    lead = _DYN if dynamic else 2
+    np_dt = np.float16 if elem == TensorProto.FLOAT16 else np.float32
+    rng = np.random.default_rng(0xC0FFEE)
+    inits = [
+        onnx.numpy_helper.from_array(
+            rng.standard_normal((m, c // group, kh, kw)).astype(np_dt), name="W"
+        )
+    ]
+    names = ["X", "W"]
+    if bias:
+        inits.append(onnx.numpy_helper.from_array(rng.standard_normal(m).astype(np_dt), name="B"))
+        names.append("B")
+
+    def _out(extent, pad_b, pad_e, dil, k, stride):
+        return (extent + pad_b + pad_e - ((k - 1) * dil + 1)) // stride + 1
+
+    oh = _out(h, pads[0], pads[2], dilations[0], kh, strides[0])
+    ow = _out(w, pads[1], pads[3], dilations[1], kw, strides[1])
+    x = helper.make_tensor_value_info("X", elem, [lead, c, h, w])
+    y = helper.make_tensor_value_info("Y", elem, [lead, m, oh, ow])
+    node = helper.make_node(
+        "Conv", names, ["Y"], name="conv0",
+        kernel_shape=list(kernel), strides=list(strides),
+        dilations=list(dilations), pads=list(pads), group=group,
+    )
+    graph = helper.make_graph([node], "conv_graph", [x], [y], initializer=inits)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
 def _gather_dyn(elem: int) -> onnx.ModelProto:
     data = helper.make_tensor_value_info("data", elem, [_DYN, 8])
     idx = helper.make_tensor_value_info("indices", TensorProto.INT64, [2])
@@ -593,8 +681,24 @@ BUILDERS.update({
     "log_f32_dyn": lambda: _unary_dyn("Log", TensorProto.FLOAT),
     "sigmoid_f32_dyn": lambda: _unary_dyn("Sigmoid", TensorProto.FLOAT),
     "tanh_f32_dyn": lambda: _unary_dyn("Tanh", TensorProto.FLOAT),
+    # `Add` at f32 over a symbolic extent. `add_f16_dyn` was proven for the LLM lane and this is
+    # its f32 twin — dtype is a key component, so it was never covered. MobileNetV2's 10 residual
+    # `Add` nodes decline `[unproven]` on exactly this key.
+    "add_f32_dyn": lambda: _binary_dyn("Add", TensorProto.FLOAT),
+
+    # `Conv`: the cross product of {bias, no bias} x {static, runtime-extent}, which is the whole
+    # key space for this module. `bias=True, dynamic=True` is MobileNetV2's own form.
+    "conv_f32": lambda: _conv(TensorProto.FLOAT),
+    "conv_f32_nobias": lambda: _conv(TensorProto.FLOAT, bias=False),
+    "conv_f32_dyn": lambda: _conv(TensorProto.FLOAT, dynamic=True),
+    "conv_f32_nobias_dyn": lambda: _conv(TensorProto.FLOAT, bias=False, dynamic=True),
 
     "clip_f32": lambda: _clip(TensorProto.FLOAT),
+    # The runtime-extent twin. MobileNetV2's 35 `Clip` nodes decline `[unproven]` against
+    # `.../runtime-extent/min+max`, which the static entry above does not cover — `shape_class`
+    # is a key component. No kernel is written for this: the variant already exists, only the
+    # proof was missing.
+    "clip_f32_dyn": lambda: _clip_dyn(TensorProto.FLOAT),
     # The three other populated-input sets. Each is a distinct proof key and a distinct compiled
     # body; see `_clip`'s docstring for why `max`-only is the load-bearing one.
     "clip_f32_min_only": lambda: _clip(TensorProto.FLOAT, bounds="min"),

@@ -416,3 +416,126 @@ The 103 older entries remain `SPEC-UNRECORDED`. And the `UNKNOWN` toolchain caus
 
 📌 Team update (2026-08-03T19:55:00-07:00): the deleted-proof incident — Tank found three proofs a merge deleted (proven at 26fd93f, absent from main; the removal happened inside merge commit eb84364 and history simplification hid it from the file's own log), re-proved, ledger 103→106. The deleting merge was the coordinator's, and the op suite was the only instrument that saw it — a git log-visible loss that no ledger check, census, or CI lane flagged on its own. Bears on your ledger-mechanics work: a merge can silently remove entries the same way --reprove and mid-struct insertions have silently corrupted state before. — decided by Scribe, from Tank's finding
 📌 Team update (2026-08-03T19:55:00-07:00): Switch's refutation — "Phi-3.5 has never been a valid proof subject." Withholding one form and withholding nine from the graph produce the identical refusal (Shape, ReduceSum, If have no Vulkan handler), so no re-proof run on Phi-3.5 alone can distinguish a broken form from a form the model never reaches. Bears on your gpt-oss-20b second-model work and any future ledger claim that cites Phi-3.5 as the exercised subject. — decided by Switch
+---
+
+## §8.11 — the first non-LLM model, `Conv`, and an invariant for proofs that go missing (2026-08-03)
+
+**Round brief:** coverage. Derive state from artifacts, state the criterion before selecting, use
+templates, prove everything through the normal path, report the delta as a measurement. The
+thesis under test: *the apparatus should make the next twenty kernels far cheaper than the first
+twelve.*
+
+### The state, derived from artifacts
+`epctl --dump-capabilities --json` -> **91 rows / 73 kernel-carrying (46 live + 27 ready) / 18
+staged**. Morpheus's 91/71/20 is the same file two rows earlier; two moved staged -> live. My own
+count of this figure had been wrong three times on the record, so I stopped quoting and started
+dumping.
+
+### The census that no instrument could have produced
+Two LLMs were the whole evidence base and **neither contains a convolution**. I fetched
+MobileNetV2-12 (provenance + sha256 in `bench/results/model_provenance.json`) and censused it:
+**0 / 105 claimed.** Zero. `Conv` x52 `[not-registered]`, and no `Gemm`, `MatMul`, `Softmax`,
+`Transpose`, `Concat`, `Slice`, `Reduce*`, or pooling anywhere in the registry. **No non-LLM model
+could run at all.** That is the 164-vs-12 shader ratio measured on a graph rather than counted.
+
+45 of the 104 declines were `[unproven]` on ops we ship **live** — `Clip` and `Add` at
+`runtime-extent`, forms no LLM case had ever produced at f32. §8.10's pattern one level out:
+point the census at a new model *class* and it finds compiled variants nobody had proven.
+
+### The criterion, and the op it rejected
+Stated first: *nodes in a real shipped model that decline today and would claim after the change,
+weighted by whether it unblocks a model class rather than completing a taxonomy, divided by
+kernel cost; proof-only forms rank above new kernels.*
+
+`Reshape` had 24 real declining nodes and opens the shape-family template — better on the count.
+**All 24 are `Add -> Reshape -> QMoE`**, and QMoE is staged, so claiming it moves the island
+boundary one node and unblocks nothing. That also re-tested my own `26fd93f` ruling, whose stated
+falsifier was "no model contains one" — **the falsifier fired** (24 now exist) and the conclusion
+survived for a reason the ruling never named. Recorded both halves.
+
+### What I built and what it cost
+One shader (`conv_f32.comp`, grouped as the general case so depthwise is free), one `op_table!`
+row, four named declines. **It compiled on the first attempt** — the only build error in the whole
+op was a missing `#[derive(Debug)]` on a struct a test called `.unwrap_err()` on.
+
+Six proofs, all through the normal path, no flag disabled, stock `--rtol 1e-3 --atol 1e-5`:
+the full `{bias, no bias} x {static, runtime-extent}` cross product for `Conv` (which is the
+*entire* key space — arity and `shape_class` are the only components a `Conv` varies in), plus
+`add_f32_dyn` and `clip_f32_dyn`. Ledger **115 -> 121**, `--check` PASS,
+`6 identical + 115 SOURCE-COSMETIC + 0` everything else.
+
+### The tolerance clause finally binding on something
+`_models.py` has reserved the accumulating ops since M0: *derive per vendor, do not guess, do not
+copy from fp32 elementwise*. `Conv` is the first accumulating op to land. `probe_conv_tolerance.py`
+measured worst `max_rel 1.858e-4 / max_abs 5.722e-6` over twelve cases on the 4060, and `FP32_CONV`
+is pinned at `rtol 1e-3 / atol 1e-5` — **exactly the ledger's own defaults**, so the conformance
+gate cannot be quoted as looser than the proof gate.
+
+**The probe's first run printed `0.000e+00` twelve times.** ORT had said `Unknown Provider Type:
+VulkanExecutionProvider`, fallen back, and compared the CPU against itself. I nearly pinned a
+tolerance to a number produced by an instrument that observed nothing. It now registers the EP and
+refuses to print for any case the EP did not claim.
+
+### The invariant, built before any op
+A merge deleted three proofs and `--check` said PASS, because it asks whether every entry agrees
+with the build and never whether one went *missing*. New check:
+
+    {keys ever MATCHed in proof_attempts.jsonl} - {ledger keys} - {retired keys} == empty
+
+It works only because `proof_attempts.jsonl` is append-only and merges **union** it: the two files
+fail differently, which is the sole reason one can check the other. Falsified 6/6 by
+`probe_ledger_loss.py`, whose third arm **replays the real `eb84364` incident from git** and names
+exactly the three lost `Cast` keys.
+
+That arm is also what caught a bug in my own instrument: `def f(path=ATTEMPTS)` binds at *import*
+time, so the probe's patching did nothing and the function read today's files while claiming to
+replay history. **2/6 on the first run.** A Python default argument is a snapshot; an instrument
+whose inputs are snapshots cannot be pointed at history.
+
+### The delta
+| | before | after |
+|---|---|---|
+| registry rows / kernel-carrying | 91 / 73 | 92 / 74 |
+| ledger entries | 115 | 121 |
+| **MobileNetV2-12** | **0 / 105** | **97 / 105** |
+| gpt-oss-20b | 293 / 374 | 293 / 374 |
+| Phi-3.5-mini | 355 / 366 | 355 / 366 |
+| `tests/ops` | 3 failed / 655 passed | 3 failed / 672 passed |
+| `cargo test --lib` | 545 | 551 |
+
+**What it unblocks: one new model class.** The remaining 7 are a single
+`Shape->Gather->Unsqueeze->Concat->Reshape` classifier tail plus `GlobalAveragePool` and `Gemm` —
+one contiguous island, not seven holes. Those two are the next picks by the same criterion.
+
+### On the thesis
+It holds, with an amendment. The kernel was cheap. The expensive parts were **choosing** the op
+(which needed a third model that did not exist in the cache), deriving a tolerance the file forbade
+guessing, and testing the attribute axes a proof key does not carry. Two of those three are
+one-time costs for the *category* of accumulating spatial ops. **The cost moved from the kernel to
+the selection** — and selection is a census, an instrument the project already owns.
+
+### What my verification established, and what it did not
+**Established:** on this Windows box, debug build, RTX 4060 Laptop GPU — `cargo test --lib`
+**551 passed / 0 failed / 4 ignored**; clippy `--all-targets -D warnings` clean; `counters_abi.py
+--check` PASS with `ONNXRUNTIME_VULKAN_EP_LIB` **set**; `gen_proof_ledger.py --check` PASS, 121
+entries, digest `56c90131c5952a0d`, arithmetic **121 = 6 identical + 115 SOURCE-COSMETIC + 0 + 0 +
+0 + 0**, loss invariant **0 missing / 0 retired**; `probe_ledger_loss.py` **6/6**;
+`probe_phi35_claim_reading.py` unchanged at `claimed_nodes 355 / unproven_declines 5 /
+islands_offered 1`; `tests/ops` **3 failed / 672 passed** with the same three declared reds
+(`test_criterion10`, `test_census_baseline_has_no_drift` — bench-only drift, not mine —,
+`test_kv_device_residency`); MobileNetV2 **0/105 -> 97/105** from two censuses of the same file
+against two builds.
+
+**Did not:** anything about **f16 convolution** — `Conv` declines it and no f16 vision graph has
+been censused, so the packed-`uint` argument for a second module is reasoned, not measured.
+Anything about **`auto_pad`** beyond that we decline it; I did not verify ORT's optimizers actually
+rewrite it to explicit pads on producers other than this one. Anything about **any vendor but
+NVIDIA** — the pinned `FP32_CONV` is one GPU's accumulation order and `_models.py` says per vendor.
+Anything about **performance**: `conv_f32.comp` is a direct convolution with no tiling and no 1x1
+fast path, and I took no timings, by instruction. Anything about **release builds or Linux**.
+And the four `Conv` ledger entries establish **nothing** about `group`, `strides`, `dilations` or
+`pads` — those are not key components; `tests/ops/test_conv.py` is the only thing that speaks for
+them, on twelve combinations, which is not the space.
+
+**Untouched, as instructed:** `shaderInt64`. It still blocks 5 of Phi-3.5's 8 declines and 4 of
+gpt-oss's, and none of the ops I added needed it.

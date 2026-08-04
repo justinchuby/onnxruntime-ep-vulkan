@@ -64,6 +64,9 @@ pub mod norm;
 /// Indexing — `Gather` and the ops that read a tensor through another tensor's values.
 pub mod indexing;
 
+/// Convolution — `Conv`, the spatial-window op the CNN model class rests on.
+pub mod conv;
+
 /// Weight-only quantization: `MatMulNBits` and the block-quantized dequant path.
 pub mod quant;
 

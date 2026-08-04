@@ -1,0 +1,12 @@
+{
+  "models": [
+    {
+      "url": "https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-12.onnx",
+      "name": "mobilenetv2-12",
+      "fetched": "2026-08-03",
+      "why": "the first non-LLM proof subject this project has had; two LLMs cannot see a Conv",
+      "sha256": "c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5",
+      "bytes": 13964571
+    }
+  ]
+}

@@ -124,6 +124,24 @@ FP32_ACTIVATION = {"rtol": 1e-5, "atol": 1e-5}
 FP32_EXACT = {"rtol": 0, "atol": 0}
 FP16_ANY = {"rtol": 1e-3, "atol": 1e-3}
 
+# `Conv` — the first *accumulating* op to land, so the first one the "Reductions, GEMM, MatMul"
+# clause at the top of this file applies to. That clause says: derive it from test data, do not
+# guess, and do not copy from fp32 elementwise. This was derived.
+#
+# DERIVATION (2026-08-03, NVIDIA GeForce RTX 4060 Laptop GPU, `tests/ops/probe_conv_tolerance.py`,
+# artifact `bench/results/conv_tolerance_derivation.json`): across the twelve cases in
+# `_conv_cases.py`, worst observed **max_rel = 1.858e-4** (case `batch3`) and **max_abs =
+# 5.722e-6** (same case). ORT's CPU EP lowers `Conv` to im2col + Eigen GEMM and accumulates in a
+# different order from `conv_f32.comp`'s per-output serial loop; the residual is that order, not
+# a disagreement about the answer.
+#
+# The pinned numbers are **exactly `gen_proof_ledger.py`'s own defaults** (`--rtol 1e-3
+# --atol 1e-5`), and that is the point: the ledger admitted these forms under those tolerances,
+# so a conformance suite that used anything looser would be claiming more than the proof does.
+# rtol has 5.4x headroom over the measurement and atol has 1.75x. Re-run the probe before
+# quoting these on AMD or lavapipe — the clause above says per vendor, and this is one vendor.
+FP32_CONV = {"rtol": 1e-3, "atol": 1e-5}
+
 # ---------------------------------------------------------------------------
 # Shape inference helpers (DESIGN.md §8.6 — coverage work, not harness polish)
 # ---------------------------------------------------------------------------

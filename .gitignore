@@ -67,3 +67,7 @@ bench/results/ci-lane/
 bench/results/link-gate/
 gate_chain_fp32_profile_*.json
 bench/results/claim_log_attribution.jsonl
+
+# Mouse: models fetched for op-census work. Large, and reproducible from the URL recorded in
+# bench/results/model_provenance.json — an artifact belongs in the repo, a 14 MB blob does not.
+.scratch-models/
