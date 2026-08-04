@@ -322,3 +322,5 @@ per-item cost could rise every round without anyone seeing it.
 - `.squad/fact-checker/devils-advocate-rigour-ratio.md` — Task 3
 - `.squad/fact-checker/audit-trail.md` — three entries appended
 - `.squad/decisions/inbox/fact-checker-derived-rule-register.md`, `-coordinator-claim-audit.md`, `-rigour-ratio-premortem.md` (main worktree)
+
+📌 Team update (2026-08-03T19:55:00-07:00): Trinity found "nobody has run it" was itself an unchecked claim — 	est_gqa.py had G=4 all along. You (Fact Checker) wrote the Nq/Nkv caveat repeatedly in audits without checking whether the suite already answered it. Worth folding into future audits of repeatedly-requoted caveats: a caveat that is never re-verified against the artifact is the same shape as the pre-formed-number defect named in this round's coordinator audit. — decided by Trinity

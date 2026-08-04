@@ -52,254 +52,24 @@
 
 ---
 
-## 2026-08-02 — Switch's round: a destructive success, a witness, a staleness the digest cannot see, and an ABI eight bytes off
+### [SUMMARY] 2026-08-02 (Switch's round through §8.9.18): four ABI-mirror insertions, GEMV kernel identity, `PROVEN-ELSEWHERE` proposed-withdrawn-replaced, and the layout guard going compile-time
 
-Commit `4d47362` on `squad/mouse`. DLL `5F3977CB2260737E` before, `74FA8018ABDAFE36` after.
+- **Switch's round:** `--reprove` had been silently shrinking the ledger while printing `PASS` — fixed, `write_ledger()` now refuses any shrink and names the dropped keys. `NO-SUBJECT-WITNESS` was already reachable via three existing guards; both shapes planted in the lane with healthy controls. Stale input cache ruled out for all 95 entries (`compute_calls` now recorded and enforced at 1). **The real find:** `a52024f` inserted `device_losses` mid-struct without bumping `COUNTERS_ABI_VERSION`; three ctypes mirrors silently read every field below it eight bytes off (`dispatches_executed` read `device_losses`, always a plausible 0). ABI bumped to 4, mirrors repaired, lane changed to `struct_size` equality (not `>=`) since an append and an insertion are indistinguishable to a `>=` reader. Filed but not fixed: three hand-maintained ctypes mirrors of one C ABI is the standing defect.
+- **§8.9.16, second evidence list:** `Add-i32`/`Mul-i32` declined via a hand-written `EXERCISED` list consulted *inside* the claim predicate, before any proof key existed — unfixable by proof by construction, a gate satisfiable only by hand. Deleted; replaced with `only_loadable_variants` derived from SPIR-V capability requirements (`Int64`/`shaderInt64`). Op suite 11 red → 6 red, ledger 95 → 97.
+- **Session 28, GEMV kernel identity:** `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED` selected a kernel with no artifact recording whether it fired. Added JSON-only `pipeline_variants`/`gemv_packed_spec_constant`, recorded from the effective (not requested) shader/spec pair. Falsifier 5/5 both devices. **Found while validating:** `898a2ba` repeated the exact same mid-struct-insertion defect a third time (three fields this time), caught by the same equality guard — not Mouse's diff. Built `counters_abi.py` (derives the mirror from `counters.rs` directly) but did not wire it into the three call sites, routing the work to Trinity instead — judged in the next session to have been the wrong call.
+- **"The mirrors are gone" session:** self-corrected the previous routing decision — "a generator that co-exists with the thing it replaces is a fourth mirror." Deleted all three ctypes mirrors for real; layout discipline is now a compile-time `const _` assertion via a FNV-1a hash over `name:offset:size` registered in `COUNTERS_LAYOUT_REGISTRY`, verified by replaying the exact `898a2ba` insertion and getting `error[E0080]`. Also found the build error additionally required `E0063` (missing-field) fixes in five places — appends were already compiler-checked; only the version *numbering* wasn't. `PROVEN-ELSEWHERE` observed in both polarities on real hardware (`device0`=ALL-PROVEN, `device1`=PROVEN-ELSEWHERE-PRESENT, 355 claims, per-form `proved-on`/`running-on` disclosure).
+- **`PROVEN-ELSEWHERE` withdrawn, then replaced:** Fact Checker's audit found model-level ULP evidence cannot promote unexercised per-form keys — the premise the implementation rested on. Replaced with a four-state `device_state` classifier (`PROVEN`/`DEVICE-UNATTRIBUTED`/`PROVEN-ON-ANOTHER-DEVICE`/`UNPROVEN`) keyed on the device *name* read off the run, not the selector ordinal — validated by the very run that would have produced a false-positive match had it been keyed on the ordinal (`DEVICE=0` opened a different physical GPU than expected). `parse_ledger` was found faulting all 103 proofs on one stale entry; split into whole-file vs per-entry fault tracking.
+- **§8.9.18 alignment:** Morpheus upheld the refutation and withdrew his own promotion paragraph — `PROVEN-ELSEWHERE` keeps disclosure, loses promotion. The layout guard fired correctly on a pure rename (`device_mismatch_*` → `proven_elsewhere_*`, identical offsets/sizes) because the hash covers name too, demonstrating the mechanism working on a case that wasn't about layout. Fault-scope boundary corrected per Morpheus's rule (scope is set by what you cannot locate, not by severity) — unparseable lines moved back to whole-file faults.
+- 📌 Team update (2026-08-02T02:03:46-07:00, from Scribe): Morpheus's R12 fourth generalisation — for a test result, the frame is the binary that ran it — drawn partly from two of Mouse's self-caught near-misses this session (a shared-worktree build linking a sibling's in-flight file; `Copy-Item` preserving `LastWriteTime` letting cargo silently re-run a mutated binary after a restore).
+- 📌 Team update (2026-08-02T14:42:30-07:00, from Switch/Mouse): the re-proof-path fix above (`shader_digest`, `--reprove`, `STALE-SHADER`/`NO-SUBJECT-WITNESS`) landed in response to Switch's finding that the ledger could not be invalidated by changing its own subject; all 74 entries re-proved under the new scheme.
 
-**1. `--reprove` shrank the ledger and printed `PASS`** — second time this file learned the same lesson, this time via the flag added to fix the first instance. `write_ledger()` now refuses a shrink, names the dropped keys, writes nothing, and skips `--check` on refusal (asking it would answer PASS about the stale file). `--rebuild` is the deliberate override.
-
-**2. `NO-SUBJECT-WITNESS` was already reachable** via three existing guards (`disable_cpu_ep_fallback`, `prove()`'s `UNATTRIBUTED`, `entry_line()`'s refusal); Switch's hand-read of the source was a fourth, but R10 says a code reading is not a falsifier — both shapes are now planted in the lane with a healthy control.
-
-**3. Stale input cache does not affect any of the 95 entries** — every proof arm is a fresh subprocess with exactly one `sess.run` (`compute_calls: 1` verified), and the defect needs a *second* `Compute()` in-session. Made durable as a field: `compute_calls` is recorded per entry and `entry_line()` refuses a run that computed more than once, so a future multi-inference form cannot inherit today's immunity by coincidence.
-
-**4. The actual find: `device_losses` inserted mid-struct, three ctypes mirrors reading the old layout.** Census read `partitioner: UNWIRED (dispatches_executed delta = 0)` on a run that also reported `claimed=1`/`compile_calls=1`/`compute_calls=1` — two artifacts from one run disagreeing is a reader fault. `a52024f` inserted the field between `compute_failures` and `dispatches_executed` (against the struct's own doc comment) without bumping `COUNTERS_ABI_VERSION`; everything below shifted eight bytes, so `dispatches_executed` silently read `device_losses` (always 0 healthy) and `unproven_forms_claimed` silently read `ledger_entries` (95 — exactly what `--check-counters` fails on). Nothing went red because the wrong number was stable and plausible. ABI bumped to 4, all three mirrors repaired, reader now raises outside the `try` that returns `{}` (an empty dict reads as delta-0, which reads as `UNWIRED`).
-
-**Judgement call on record:** the lane now asserts `struct_size` equality, not `>=`, forfeiting documented forward-compatibility, because an append and an insertion are indistinguishable from the reader's side and only one is safe. Cost: a red lane on every counter added, until a per-field offset manifest exists.
-
-**Filed, not done:** three hand-maintained ctypes mirrors of one C ABI is the real defect (two in `test_phi35.py` repaired but unguarded; one shared reader is the honest fix, not mine to land unilaterally). **Every ctypes reading between `a52024f` and `4d47362` is suspect.**
-
-Verified: 479 lib tests, clippy clean, ledger lane 14/14, both census lanes green on device 0, `--check PASS 95 entr(ies)`, shrink guard and ABI guard both mutation-tested in both polarities.
+<!-- SUMMARIZED by Scribe 2026-08-03T19-55-00-07-00 -- entries from Switch's round (2026-08-02) through §8.9.18 alignment condensed above; full text lives in git history at 8566ce4 and earlier -->
 
 ---
 
-
-## 2026-08-02 — The second evidence list (§8.9.16). Op suite 11 red -> 6 red.
-
-**The defect was mine and it was three weeks old.** `Add-i32`/`Mul-i32` declined `[dtype] ... has
-never executed on a device`. True, and unfixable: `elementwise::EXERCISED` was a hand-written
-`(op, dtype)` list consulted *inside the claim predicate*, which runs before a proof key is
-computed. The form reported no key at all -- not `[unproven]`, which the generator can unlock --
-so `gen_proof_ledger.py` could never reach it and the only exit was to type the pair in by hand.
-A form was unproven because it was unproven. Criterion 11's own shape, arriving from inside
-criterion 11's own module.
-
-**The rule I want to keep:** a gate that runs before the evidence is computed can only ever be
-satisfied by hand. Split it -- capability upstream (claiming an uncreatable module is a crash,
-not a decline), evidence downstream where a run can clear it.
-
-`EXERCISED` and `TEMPLATE_LIVE` deleted; `only_proved_dtypes` -> `only_loadable_variants`, backed
-by `variants::variant_is_loadable`, which reads the SPIR-V and refuses every `_i64` stem because
-`Int64` needs `shaderInt64` and `vk::device` passes no `pEnabledFeatures`. Derived, not
-remembered. `no_live_claim_rests_on_an_unloadable_variant` used to scope itself by `proved_at` --
-it could only see pairs somebody had written down, i.e. not the forms most at risk. It now walks
-every dtype the caps accept and asserts `refused > 0` (R12).
-
-**Stated before running, per R10:** add_i32 and mul_i32 each offer one unlockable key and clear
-it; swish_f32 offers none, because the *row* is still Staged and that is a separate gate. Held
-exactly. MATCH `worst_rel 0.0` both, `dispatches_executed 1`, shader named, `compute_calls 1`.
-Ledger 95 -> 97. Green on device 1 as well as 0.
-
-**My own guard, applied to me:** the ledger grew and `claimed_nodes` did *not* move -- 355 before
-and after. Correct here, and I would rather say why than let it be noticed: the two forms are i32
-at static extent, Phi-3.5 is f16 with no i32 elementwise node, so no key of theirs can be looked
-up on it. The falsifier that moved is the op suite, which is their actual surface.
-
-**Six left, and they are four different pieces of work, none reachable by a proof run.**
-`clip_no_bounds` is *not* a claim-predicate defect -- `claim::ew_clip` already documents the
-refusal and the repair (a variant substituting +/-infinity; an omitted bound is a different
-dispatch shape, and widening the predicate would bind a buffer with no producer). `Cast` x3 needs
-a template and a manifest column keyed on a dtype *pair* -- the only op in the table whose stem is
-not a single dtype. `IsInf` is the selector case, four bodies not one uniform. `Flatten`/`Reshape`
-I deliberately did not register: a lone shape op in a one-node island buys nothing, their only
-value is not breaking an island, and no graph we have asks for that today. Registering them to
-turn a test green would be widening the claim table for the suite's benefit rather than a
-model's.
-
-Verified: 478 lib tests, clippy clean, ledger `--check PASS 97 entr(ies)` digest `eb7c4e1f90cd7ec2`,
-ledger + diagnostics lanes 22/22, census + elementwise 42 pass / 1 expected red, op table 85/6.
-DLL `A61DC855FF85FCAD` (pre) -> `96C19E95C16E4295` (post).
-
----
-
-## Session 28 — 2026-08-02 — kernel identity for GEMV, and `a52024f` again
-
-**Ask:** `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED` selects a different kernel and no artifact records
-whether it was in force, so every kernel reading we hold is silent about its own subject.
-
-**Merged `main` (`2c1e2c7`) -> merge `d3f79eb`. Rebuilt. DLL hashed either side:**
-before `96C19E95...FBA1FF`, after `F2A1D728...36DD9C33`.
-
-**Done.** `counters.rs` emits `pipeline_variants` and `gemv_packed_spec_constant`, recorded in
-`vk/session.rs` from `eff_shader`/`eff_spec_constants` -- the effective pair, not the request.
-**JSON-only, no ABI bump**, following the `model_output_equivalence` precedent, so the three-mirror
-hazard is not enlarged. Five-state string token; `UNOBSERVABLE` when no GEMV pipeline was built,
-which is the common case and would have been a lying `0`.
-
-**Falsifier:** `probe_gemv_kernel_identity.py`, 5 arms predicted before running, **PASS on both
-devices, 5/5**. Arm B is the one that matters -- env untouched, block 16, token moves `1 -> 0` by
-shape alone. `shaders_dispatched` is byte-identical across the packed/unpacked arms; the old field
-cannot name the kernel, the new one can.
-
-**Found while validating:** `898a2ba` inserted three fields mid-struct without an ABI bump. Three
-stale ctypes mirrors, seven fields of shift, `ledger_entries` stale-reads **0** against a true
-**97**. One defect, three red tests -- and **not mine**: my diff adds no struct field. My own
-equality guard is what caught it; the older `<` guard cannot see a grow.
-
-**Built the real fix:** `counters_abi.py` derives the mirror by parsing `counters.rs`. Not wired
-into Trinity's three call sites -- four agents live in this tree, routed to her instead.
-
-**Own error, disclosed:** first `--compare` run crashed because I called the export without its
-length argument. ERROR(instrument), mine, fixed. Then checked all three test call sites pass the
-length correctly -- they do, so the drift is misattribution only, not memory unsafety.
-
-**Fourth time this week the invisible bug was the plausible one.** `dispatches_executed` landing on
-`outputs_device_resident` reads 0 on every healthy run. I keep learning the same lesson: the
-dangerous reading is not the wrong-looking one.
-
-**Scope:** does not generalise to the other eight env switches (not spec constants) -- they stay with
-Link. Does generalise across all kernels.
-
-📌 Team update (2026-08-02T22:37:04-07:00): Link's `link-ledger-toolchain-not-device` finding — it's your ledger, and Morpheus's ruling is pending. `registry::shader_digest_for` hashes SPIR-V bytes, so Ubuntu's `glslc` faults all 74 entries with no kernel change; meanwhile `"device": "device0"` is recorded on 74 of 75 entries and no predicate reads it — demonstrated by forcing Intel Iris Xe on Windows, where the EP claims a form "proven ... on device0" though nothing has been proven there. Morpheus has ruled a three-state remedy (`PROVEN`/`PROVEN-ELSEWHERE`/`UNPROVEN`, plus `SUBJECT-CHANGED` vs `TOOLCHAIN-CHANGED` demotion) — the predicate change (read `device`), the states, and the demotion split are named as still owed to you. Do not resolve by re-proving per platform: that turns the digest into a per-machine fingerprint and `--reprove` without `--append` was destructive at the time it was checked. — decided by Link, Morpheus
-
----
-
-## 2026-08-02 — The mirrors are gone, the layout is compiler-checked, and `PROVEN-ELSEWHERE` runs
-
-**What I got wrong yesterday, in one sentence.** I built `counters_abi.py`, called it "the real fix,
-built but not yet installed", routed the three call sites to Trinity because four agents were live in
-the tree, and the same defect bit again. The concurrency reasoning was fine. The safety reasoning was
-not: **a generator that co-exists with the thing it replaces is a fourth mirror.** Filing the removal
-of a hazard is not removing the hazard.
-
-**Verified three mirrors, not assumed three** — `test_phi35.py` x2, `test_wiring_census.py` x1. The
-JSON emission and `snapshot()` are name-keyed and compiler-exhaustive, so they are not mirrors.
-All three deleted; `tests/ops/test_counters_abi_singleton.py` fails on any file outside
-`counters.rs` and `counters_abi.py` that declares two or more counter names in a `_fields_` block,
-and carries both a planted-mirror control and a consumer control.
-
-**Version discipline is now computed.** One field list in `counters_abi_struct!`, offsets from
-`offset_of!`, `COUNTERS_LAYOUT_HASH` const-evaluated, and a `const _` assertion that fails the build
-unless `(version, hash)` is in `COUNTERS_LAYOUT_REGISTRY`. A compile-time assertion rather than a
-test, because a test can be filtered out by the person inserting the field. The DLL now also exports
-`OrtEpVulkanGetCountersLayout` — the per-field offset manifest I said last time would be strictly
-better; it is, and it took an afternoon, and I should have built it then.
-
-**Acceptance run, not reasoned about.** Applied the exact `898a2ba` insertion; the build died with
-`error[E0080]` naming the registry and the repair, and the tool exited 1 printing the row to append.
-Reverted.
-
-**Three surprises.**
-
-1. **The build error also showed `E0063 missing fields ... in initializer`.** Appends were *already*
-   compiler-checked, in five places. What was never checked was the meaning of the version number.
-   I had been treating the whole struct as unguarded when only the numbering was.
-2. **The Phi-3.5 probe never saw the defect and never could.** It reads the name-keyed JSON counters
-   file. The offset defect lived only in the ctypes readers. So "the probe reads the same" is not
-   evidence the ABI repair is safe — it is evidence the probe was never in the blast radius. Same
-   digest `eb7c4e1f90cd7ec2`, same 97 entries, same 355 claimed nodes, `ALL-PROVEN`: unchanged, and
-   neither a fix nor a new defect. The fix shows up where the mirrors were: `ledger_entries` reads
-   97 through the derived mirror where the stale one read 0.
-3. **`cargo test --lib` was already racy on `main`** — 2 failures in 6 full runs before I touched
-   anything. Several `counters::tests` call `reset()` on process-global statics without
-   `allocator::ledger::test_lock()`. Added the missing guards; 8/8 clean runs after. Not my defect,
-   but it was quietly eating the signal I needed to trust my own change.
-
-**`PROVEN-ELSEWHERE` observed in both polarities** on real hardware: device 0 `ALL-PROVEN`,
-`proven_elsewhere_claims=0`; device 1 `PROVEN-ELSEWHERE-PRESENT`, 355 claims across 8 named forms,
-each disclosed with `proved-on=device0 running-on=device1`. A missing key stays `UNPROVEN` and
-declines.
-
-**Two honest gaps, recorded rather than papered over.** `docs/DESIGN.md` §8.9 contains no four
-numbered discharge conditions — §8.9 ends at §8.9.7; the ruling is R12 in §10.0.1, and I implemented
-four obligations taken verbatim from its text. And `PROVEN-ELSEWHERE` discloses at INFO rather than
-WARN, because on a non-`device0` run every form is elsewhere-proven and a WARN per form would cost
-the `UNMEASURED` WARN its audience.
-
-**Standing weakness, unmitigated by design.** The device identity is a *selector index*, and Trinity
-established a selector is a request and not an identity. `device_frame_matches` also accepts a
-physical-name match. I did not add an env override for the frame: that is a fail-open lever on the
-one predicate whose failure mode is fail-open.
-
-
----
-
-## 2026-08-02 (later) — `PROVEN-ELSEWHERE` withdrawn; the device field made load-bearing instead
-
-The coordinator stopped me mid-implementation: Fact Checker's audit returned ❌ on *"model-level ULP
-evidence cannot promote unexercised per-form keys"*, which is the premise Morpheus's cost argument
-rests on. So the entry above describing `PROVEN-ELSEWHERE` as implemented is **withdrawn**, and
-`docs/OP_COVERAGE.md` §7.19(c) with it. The slot exists in `ProofState` and declines.
-
-**What I built instead, and what it cost.** `registry::device_state` is now a four-state classifier
-read on every claim: `PROVEN` / `DEVICE-UNATTRIBUTED` / `PROVEN-ON-ANOTHER-DEVICE` / `UNPROVEN`.
-`DEVICE-UNATTRIBUTED` still claims — declining it would take the EP from 355 nodes to zero over a
-bookkeeping question — but it is counted on every claim and named per form with `entry-device=` and
-`running-device=` in both the session disclosure and the counters file. Being in every artifact of
-every run is what keeps it from becoming the field nobody reads, which was Fact Checker's question.
-
-**The surprise, and it is a good one.** I keyed the predicate on the device name read off the run
-rather than the selector, on Morpheus's finding that a selector is a request. Then the very run that
-validates the fix reproduced it: `ONNXRUNTIME_EP_VULKAN_DEVICE=0` opened
-`1=NVIDIA GeForce RTX 4060 Laptop GPU`. Had I keyed on the ordinal, the predicate would have read
-`device0 == device0` and reported a match against hardware it had never looked at — a predicate that
-is always true, which is the exact shape I spent the morning removing from the counters ABI.
-
-**`parse_ledger` faulted 103 proofs on one stale entry**, directly contradicting its own comment
-three lines above. Split into `Ledger::faults` (whole-file) and `Ledger::entry_faults` (per-entry).
-The header-count check had to move to `entries + entry_faults` or the demotion re-creates the global
-fault through the back door — that one nearly slipped past me, and it is the same shape as the
-defect: a second path to the state you thought you had closed.
-
-**Condition 4 cannot be satisfied as written and I said so rather than reinterpreting it.** For
-`PROVEN-ELSEWHERE` to be a guard something must be able to come out negative on the second device.
-With no per-form evidence there, nothing can. Written up in §7.20(c), together with a counter-
-proposal I have *not* verified: every entry names a per-form case model under `evidence/cases/`, so
-second-device proof may be a replay of 103 tiny graphs rather than the fatal cost the ruling assumes
-— in which case the answer is an entry per `(key, device)` and the status is unnecessary, not merely
-unsound.
-
-**Readings.** Device 0: `claimed_nodes` 355, `ledger_hits` 355, `unproven_declines` 3 — unchanged.
-`claimed_form_evidence` `ALL-PROVEN` → `DEVICE-UNATTRIBUTED-PRESENT`: **a fix**. No node changed
-hands; `ALL-PROVEN` had been asserting a device frame nothing checked. `ledger_entries` 97 → 103 is
-the `main` merge, not this change. 507 lib tests pass, clippy clean, census lane 7 passed/1 xfailed.
-
-
-## 2026-08-02 — §8.9.18 alignment: the ruling landed and the guard bit me
-
-**Morpheus upheld the refutation and withdrew his own paragraph in place.** `PROVEN-ELSEWHERE`
-**keeps disclosure, loses promotion**. His arithmetic is the part I will keep: `proven_key_lookups`
-6 against `ledger_entries` 95 — one clean ULP curve would have promoted 89 keys nothing ever
-touched. My §7.20(c) "condition 4 cannot be satisfied as written" now resolves the other way, and it
-is worth being precise about how: it is not that I was wrong, it is that with promotion withdrawn
-the predicate that must read the status is the *declining* one, and that one does come out negative
-on a planted entry. The condition was unsatisfiable for a status that promotes; it is satisfiable
-for a status that discloses and refuses.
-
-**The layout guard fired on a pure rename, and I did not plan the demonstration.** Renaming
-`device_mismatch_*` → `proven_elsewhere_*` for the ruling's vocabulary moved no offset and changed
-no size; `cargo build --lib` failed with `E0080` regardless, because the hash covers
-`name:offset:size`. v7 `0x16eacc53e6e18d97` ≠ v6 `0xf3fac68aa2c3a3ef` at an identical 152 bytes and
-20 fields. This is the mechanism working in anger on work that was not about layout — and it is
-right, because a name-keyed ctypes reader would have read `0` for the renamed field exactly as
-`ledger_entries` read 0 under `898a2ba`.
-
-**Fault scope: I had the split right and the boundary wrong.** I had put "unparseable line" and
-"invalid key" in `entry_faults`. Morpheus's rule — *fault scope is set by the scope of what you
-cannot locate, not by the severity of what you found* — puts them back on the artifact: you cannot
-locate what a line you cannot read meant to say. Moved. Both attached obligations discharged: a
-demotion count printed on every disclosure (INFO at zero, WARN otherwise), and a demotion test that
-cannot read zero by construction.
-
-**Per-key replay: recorded, not commissioned.** He was careful about that and I will be too. I do
-judge it right, structurally: per-key by construction, so it cannot promote what it did not
-exercise. Still unrun on a second device, so still a proposal.
-
-**Readings after the ABI change: 355 / 355 / 3, unchanged.** 509 lib tests pass, clippy clean, 12
-passed + 1 xfailed on the census + singleton lanes, `counters_abi.py --check` PASS at v7.
-
-📌 Team update (2026-08-03T04-55-00-07-00): Link found the eleven Linux `cargo test --lib` failures are a representational difference in bindgen typing (MSVC `c_int` vs. GCC `c_uint`, no negative enumerator, no arithmetic), not a signedness bug — three carrier declarations needed, not eleven casts, and `as i32` was rejected on principle (now portability rule P3). More load-bearing for the ledger: Ubuntu shaderc 2023.8 vs. Windows SDK v2026.2 compile different SPIR-V bytes from identical GLSL, so `shader_digest_for` faults every one of the ledger's 74/75 entries on Linux — proved by perturbing one GLSL template *on Windows* and getting a superset of the same test names. This is the keying decision Morpheus's `PROVEN`/`PROVEN-ELSEWHERE`/`UNPROVEN` ruling still needs settled: per-toolchain digest vs. device-independent shader correctness. — decided by Link
-
-📌 Team update (2026-08-03T04-55-00-07-00): Trinity measured that at the final RMSNorm, Vulkan is bit-exact against a float64 reference while ORT's CPU EP is the side carrying 1 ULP of error — the residual criterion 10 flags is not evidence of a Vulkan defect. Residual is flat ~2 ULP across all 32 blocks (not monotone), with a `3 → 6 → 12` jump only in the last two hops. Bears on the open tolerance ruling: an oracle-side rounding difference should not be scored against Vulkan as if Vulkan were the imprecise side. — decided by Trinity
+- 📌 Team update (2026-08-02T22:37:04-07:00): Link's `link-ledger-toolchain-not-device` finding — it's your ledger, and Morpheus's ruling is pending. `registry::shader_digest_for` hashes SPIR-V bytes, so Ubuntu's `glslc` faults all 74 entries with no kernel change; meanwhile `"device": "device0"` is recorded on 74 of 75 entries and no predicate reads it. Morpheus ruled a three-state remedy (`PROVEN`/`PROVEN-ELSEWHERE`/`UNPROVEN`, plus `SUBJECT-CHANGED` vs `TOOLCHAIN-CHANGED` demotion) — decided by Link, Morpheus. (Superseded by the device-state classifier and §8.9.19/§8.9.22 work below.)
+- 📌 Team update (2026-08-03T04-55-00-07-00): Link found the eleven Linux `cargo test --lib` failures are a representational difference in bindgen typing (MSVC `c_int` vs. GCC `c_uint`), not a signedness bug. More load-bearing: Ubuntu shaderc 2023.8 vs. Windows SDK v2026.2 compile different SPIR-V bytes from identical GLSL, faulting the ledger on Linux — this is the keying decision resolved by §8.9.19's two-digest split below. — decided by Link
+- 📌 Team update (2026-08-03T04-55-00-07-00): Trinity measured that at the final RMSNorm, Vulkan is bit-exact against a float64 reference while ORT's CPU EP is the side carrying 1 ULP of error — the residual criterion 10 flags is not evidence of a Vulkan defect. — decided by Trinity
 
 ---
 
@@ -643,3 +413,6 @@ measured is that the same *cause* (differing line endings, identical SPIR-V) now
 correct verdict here. Link's `.so` has to be rebuilt and re-checked before anyone quotes a Linux
 number, and its `source_digest` values will only agree once his build carries this `build.rs`.
 The 103 older entries remain `SPEC-UNRECORDED`. And the `UNKNOWN` toolchain cause is undiagnosed.
+
+📌 Team update (2026-08-03T19:55:00-07:00): the deleted-proof incident — Tank found three proofs a merge deleted (proven at 26fd93f, absent from main; the removal happened inside merge commit eb84364 and history simplification hid it from the file's own log), re-proved, ledger 103→106. The deleting merge was the coordinator's, and the op suite was the only instrument that saw it — a git log-visible loss that no ledger check, census, or CI lane flagged on its own. Bears on your ledger-mechanics work: a merge can silently remove entries the same way --reprove and mid-struct insertions have silently corrupted state before. — decided by Scribe, from Tank's finding
+📌 Team update (2026-08-03T19:55:00-07:00): Switch's refutation — "Phi-3.5 has never been a valid proof subject." Withholding one form and withholding nine from the graph produce the identical refusal (Shape, ReduceSum, If have no Vulkan handler), so no re-proof run on Phi-3.5 alone can distinguish a broken form from a form the model never reaches. Bears on your gpt-oss-20b second-model work and any future ledger claim that cites Phi-3.5 as the exercised subject. — decided by Switch

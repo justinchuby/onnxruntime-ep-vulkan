@@ -400,3 +400,5 @@ Decision records: `switch-int8-kv-error-budget.md`, `switch-int8-kv-residual-sat
 Artifacts: `bench/results/kv_int8_budget-dev{0,1}.json`,
 `bench/results/kv_int8_depth-i{8,8,4}-{per_head,per_block32,per_block32}-n256.json`,
 `bench/results/kv-int8-budget-prediction.md` (written before the first run).
+
+📌 Team update (2026-08-03T19:55:00-07:00): Trinity found "nobody has run it" was itself an unchecked claim — 	est_gqa.py had G=4 all along, and every citation of the Nq/Nkv caveat made it less likely anyone would actually look. You wrote the caveat repeatedly without checking whether the suite already answered it; it did. Trinity's GREEN, per-output, both-devices, arena-bit-exact-at-G=4 result stands as the answer, and your disjointness argument survives algebraically (it is invariant in group size). — decided by Trinity

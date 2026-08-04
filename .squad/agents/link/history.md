@@ -521,3 +521,5 @@ clean. `check_open_reds.py` PASS over 8 (4 green, 4 accepted red).
 census-extent reds. `negative_control_open_reds.py` 48/48 (2 LIVE, 6 REPLAYED,
 40 PLANTED). Lane inventory PASS, build-precondition PASS.
 
+
+📌 Team update (2026-08-03T19:55:00-07:00): the deleted-proof incident — Tank found three proofs a merge deleted (proven at 26fd93f, absent from main via merge commit eb84364, hidden from the file's own git log by history simplification), re-proved, ledger 103→106. You own the register that should have caught it; the deleting merge was the coordinator's, and the op suite was the only instrument that saw it — udit_instruments --check and the ledger's own PASS did not. — decided by Scribe, from Tank's finding
