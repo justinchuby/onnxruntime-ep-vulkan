@@ -254,3 +254,43 @@ Frame: `main` @ `7c9d1b7`, rebuilt. DLL `47F668336A7BF6A9…` -> `3A9115417CD1A7
 
 📌 Team update (2026-08-03T04-55-00-07-00): Switch measured on the real Phi-3.5 graph (64 KV outputs, 6-step chain) that the shipping (host) KV lane OOMs at past context 4096 on the 8 GB discrete GPU while the device-resident lane completes — the round trip is a VRAM cost, not only the bandwidth cost your link-bound figure names. Also: ctx 8192 fails on both lanes, so the operating point the 82.2%-of-traffic KV figure is quoted at has never been reached on this hardware — bounds what your link-bound-past-2048 measurement can be extrapolated to at longer context. — decided by Switch
 📌 Team update (2026-08-03T19:55:00-07:00): Switch's GLSL.std.450 table correction — the SIMT interpreter's extended-instruction table was wrong at slots 30/37/40/43. The silent-miscompute set is {37, 43} → celu, hardsigmoid, hardswish; a elu would NOT have been silently miscomputed (Switch corrected his own earlier headline on this point) — the actual discriminator is operand count, not op identity. Your weight-amplification measurement (re-derived at 1.000000 with three positive controls) is untouched by this and needs no re-run — it does not exercise the affected instruction slots. — decided by Switch
+## 2026-08-03 night — the paired ratio, attacked and refused (`squad/niobe`)
+
+**Task:** make "is this a high-performance EP" answerable, by testing whether a paired,
+interleaved A/B ratio escapes §20's refusal. **Result: it does not, and the refusal now has an
+instrument.** `docs/PERF.md` §24, `bench/results/probe_paired_ratio.py`, three records,
+`bench/test_paired_ratio.py` (19 tests).
+
+- **I built the instrument to attack the proposal, not to use it.** The six phases exist so the
+  *apparatus* is priced (`solo` -> `blocked` -> `paired`) before any injection runs. That ordering
+  is what found the killer: the apparatus perturbs the two arms unequally (1.64x vs the CPU EP,
+  2.13x vs our own resident lane) **before any foreign load exists**. A ratio published from the
+  paired phase would have carried that factor as if it were the EP.
+- **The surprise: foreign GPU work made our arm faster.** `vk_lift_x = 0.771`. Interleaving with a
+  ~300 ms CPU step idles the board to 825 MHz; a co-tenant holds it at 2475 MHz. §20.2's mechanism
+  running backwards. **The interleaving granularity that makes a foreign episode symmetric is the
+  same one that manufactures a device-axis asymmetry**, and a decode step is atomic, so there is no
+  finer granularity to retreat to. This is not tunable; it is a property of pairing a GPU arm
+  against a slower arm on a boost-clocked board.
+- **Host contention flatters us.** Against the CPU EP the ratio improves ~1.8x purely because the
+  box got busy. A number taken in a loud hour would look better than the same number taken quiet.
+- **Pairing bought 1.30-1.44x variance reduction**, not the 5x it is adopted for. §10.3's 2.65x was
+  the right number to size with: the cross-device form needs ~350 pairs for +-5%, and I took 72.
+- **Side finding worth more than the ratio:** under 19 spinners the host-KV lane inflated **8.67x**
+  while the device-resident lane inflated **2.78x**. The 393,216 B/past-token round trip is
+  *host-contention* sensitive, not only link sensitive. New axis, found by accident.
+- **The thing I nearly published:** the same-device ratio is 1.185 (+-4.4%) as found — and 1.081 /
+  1.480 / 3.701 under three other box states. **A 3.4x swing driven entirely by what else was
+  running.** Quoting 1.185 as "the KV round trip costs 19%" would have been exactly the Fact
+  Checker's diagnosis of my long-lived errors: a pre-formed number re-quoted rather than
+  re-derived. §24.7 is a table for that reason, and the table is the quotable unit.
+- **Confirmed Switch myself rather than on trust**, and against the shipped SPIR-V rather than the
+  GLSL: `spirv-dis q_gemv_matmul_nbits_f16.spv` -> eleven ext-inst, all `PackHalf2x16` (58) /
+  `UnpackHalf2x16` (62); the f32 variant issues none. Neither is in `{30,37,40,43,50}`. The
+  1.000000 amplification needs no re-run.
+- **Trap paid for twice:** `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` must be set **before**
+  `register_execution_provider_library`. Set after, the EP registers no DEFAULT allocator and the
+  resident arm returns `ERROR(instrument)`.
+- Intel: `clock_producer: NO_PRODUCER` in every phase, so the confound that turned out to *be* the
+  story is unobservable there in principle. Permanently `UNCERTIFIED(partial_companion)`.
+- **The original question is still unanswered, on purpose.** §24.12 says what it would take.

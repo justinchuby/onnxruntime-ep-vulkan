@@ -3962,3 +3962,252 @@ Reproduce: `python bench/results/probe_kv_write_redundancy.py`, then
 `python bench/results/probe_kv_lever_ledger.py`, then
 `python bench/results/probe_glsl450_blast_radius.py`.
 Locked by `bench/test_kv_write_redundancy.py` (24 tests).
+
+## 24. The paired ratio does not rescue a timing on this box — and the arm that got *faster* (2026-08-03 night)
+
+**Verdict first, because it is the deliverable: a paired, finely interleaved A/B ratio is NOT a
+sound way to time this EP on this machine.** All three runs return
+`PAIRING_FAILS`, and they fail for three independent reasons, each of which is on its own
+sufficient. This section is the fourth "this cannot be measured here" this project has accepted,
+and unlike the previous three it is accompanied by the instrument that establishes it, so the
+refusal is falsifiable rather than asserted.
+
+The proposal under test was the standard answer to a noisy shared box, and it is a good one:
+contention corrupts an *absolute* number but should cancel out of a *ratio* taken under shared
+conditions, so run our EP and a reference back to back, alternating, in one process, on the same
+inputs, and publish the ratio with its dispersion. §20 forbids *waiting* for a quiet box; it does
+not forbid *measuring* under a busy one. I set out to build that and spent the run attacking it
+instead, because it does not survive its own controls.
+
+Artifact: `bench/results/probe_paired_ratio.py`. Records:
+`paired_ratio_dev0.json` (NVIDIA, EP vs CPU EP, 12x6 = 72 pairs/phase),
+`paired_ratio_resident_dev0.json` (NVIDIA, EP vs *itself* with device-resident KV, 72 pairs/phase),
+`paired_ratio_dev1.json` (Intel, EP vs CPU EP, 8x5 = 40 pairs/phase).
+All three on DLL `2fb929da1179eb55`, `claimed_nodes 355`, `islands_offered 1`,
+`compute_failures 0`, `device_losses 0`, argmax `AGREE` between the arms on every step compared.
+
+### 24.1 The design, and the three things it had to prove about itself
+
+Six phases per run, in order: `solo_vk` (arm A alone, before the other session exists),
+`paired` (alternating), `blocked` (each arm's steps in a block, same sessions), `cpuload`
+(paired, with N-1 spinning host workers), `gpuload` (paired, with a second Phi-3.5 decoding on the
+same board), `solo_ref` (arm B alone). `solo`/`blocked`/`paired` price the **apparatus itself**;
+`cpuload`/`gpuload` are the **injections** that test the common-mode claim. The unit of pairing is
+one decode step, matched by `(sweep, step)` so the ratio is never pooled across `past_len` — a
+decode step is atomic, so **there is no finer interleaving available on this design**, and that
+fact turns out to matter more than anything else here.
+
+Three outcomes are defined, and the third is deliberately not a pass:
+
+| outcome | meaning |
+|---|---|
+| `PAIRING_HOLDS` | the injection moved at least one arm's level and the ratio did not move |
+| `PAIRING_FAILS(not_common_mode)` | the ratio moved: the disturbance was not shared |
+| `VACUOUS(injection_not_witnessed)` | neither arm moved, so nothing was tested |
+
+`VACUOUS` is the guard that matters. An instrument that reports success when nothing was injected
+would have certified every contended run this project has ever taken.
+
+### 24.2 Failure 1 — the apparatus perturbs the two arms unequally, before any foreign load exists
+
+| run | vk apparatus cost | ref apparatus cost | asymmetry |
+|---|---|---|---|
+| NVIDIA, vs CPU EP | x2.459 | x1.496 | **1.644x** |
+| NVIDIA, vs resident KV | x0.987 | x0.464 | **2.125x** |
+| Intel, vs CPU EP | x0.968 | x0.858 | 1.128x |
+
+Read the middle row: applying the pairing apparatus more than *halved* the reference arm's step
+time. A ratio published from the paired phase of that run carries a factor of **2.1x that belongs
+to the instrument**, not to the EP. The three rows also disagree with one another in direction,
+which is the same conclusion by a second route: **the apparatus cost is not a stable quantity on
+this box**, so it cannot be divided out. Its own confound is stated here rather than buried — the
+`solo` phases sit at the ends of the run, so these figures are entangled with warm-up at the start
+and board state at the end; they are an upper bound on instrument error, not a clean measurement
+of it.
+
+### 24.3 Failure 2 — host contention is not common-mode, and it flatters us
+
+| run | injection | vk lift | ref lift | ratio-of-ratios (95% CI) | verdict |
+|---|---|---|---|---|---|
+| NVIDIA, vs CPU EP | 19 spinners | x3.32 | x5.94 | **0.560** (0.498-0.629) | FAILS |
+| NVIDIA, vs resident KV | 19 spinners | x8.67 | x2.78 | **3.122** (2.777-3.524) | FAILS |
+| Intel, vs CPU EP | 19 spinners | x1.06 | x1.66 | **0.638** | FAILS |
+
+Every CI excludes 1.0 by a wide margin. Against the CPU EP the ratio improves ~1.8x **purely
+because the box got busy** — the CPU arm is hurt far more than the GPU arm, so a number taken
+during a loud hour would look better than the same number taken during a quiet one, in the
+direction that flatters this EP. That is the precise failure a paired design is adopted to
+prevent.
+
+The middle row is a real finding hiding inside a methodological failure: under host load the
+**host-KV lane inflates 8.67x while the device-resident lane inflates only 2.78x**. The lane that
+pays the 393,216 B/past-token round trip through host memory every step is the lane that is
+sensitive to a busy host, and it is sensitive by a factor of three. That is the KV round trip's
+signature showing up on an axis nobody was pointing at it.
+
+### 24.4 Failure 3 — foreign GPU work made our arm *faster*
+
+On the NVIDIA cross-device run, injecting a second Phi-3.5 decode onto the same board produced
+`vk_lift_x = 0.771`. **Our arm sped up by a quarter while a competitor was running on the same
+GPU.** The mechanism is §20.2's, running in the opposite direction from the naive expectation, and
+the clock series attributed to each arm's own executing intervals says it outright:
+
+| phase (NVIDIA) | board clock, phase-wide (cross-device run) | attributed to the vk arm's own steps (same-device run) |
+|---|---|---|
+| `solo_vk` | 1740 MHz (56% of the 3105 MHz boost ceiling) | 2010 MHz |
+| `paired` | **825 MHz** (27%) | 2010 MHz |
+| `blocked` | 210 MHz | 1328 MHz |
+| `cpuload` | 420 MHz | 795 MHz |
+| `gpuload` | **2475 MHz** (80%) | **2460 MHz** |
+| `solo_ref` | 210 MHz | 210 MHz (attributed to the ref arm) |
+
+The two columns are two different runs and two different reductions, given side by side because
+they disagree in a way that is itself the point: a phase-wide median is dominated by whichever arm
+holds the wall clock longest — on the cross-device pair that is a factor of five — so `blocked`
+reads 210 MHz phase-wide while the Vulkan arm's own dispatches were seeing 1328 MHz. Only the
+attributed column answers the §20.2 question, which is about the board *while our dispatches are in
+flight*. Both columns agree on the two extremes: interleaving idles the board, a co-tenant holds it
+near boost.
+
+Interleaving with a ~300 ms CPU step leaves the GPU idle for most of every pair, and the board
+downclocks into it. A co-tenant holds the board *up*. **The interleaving granularity that would
+make a foreign episode land on both arms is the same granularity that manufactures an
+own-asymmetry on the device axis**, and since a decode step is atomic there is no granularity
+available that does one without the other. This is the deepest of the three failures: it is not a
+tuning problem, it is a property of pairing a GPU arm against a slower arm on a boost-clocked
+board.
+
+### 24.5 Failure 4, the quiet one — the pairing barely buys anything
+
+§10.3 measured this machine at **2.65x** in single-threaded throughput, and that is the number
+that decides whether a paired design is enough. Measured from the runs' own data:
+
+| run | variance reduction from pairing | pairs for a +-5% CI | pairs actually taken |
+|---|---|---|---|
+| NVIDIA, vs CPU EP | 1.44x | **351** | 72 (giving +-11.4%) |
+| NVIDIA, vs resident KV | 1.30x | 55 | 72 (giving +-4.4%) |
+| Intel, vs CPU EP | 1.35x | 342 | 40 (giving +-15.3%) |
+
+A paired design is adopted for a 5x-and-up variance reduction. It delivers **1.3-1.4x** here,
+because the disturbance the two arms share is a small part of what either arm's dispersion
+actually is. Even had the common-mode claim held, the cross-device form would have needed ~350
+pairs for a claim of the precision anyone would want to quote.
+
+### 24.6 What the reference is, and why there is no better one today
+
+Stated in the verdict and not in a comment, as required: **the cross-device ratio is a ratio of
+this EP on this GPU against ORT's CPU EP on this CPU.** It is an end-to-end system ratio that
+confounds the EP with the device, and it may not be quoted as evidence about kernel quality.
+A second GPU EP would have been the truer comparison and **is not available on this machine
+today**: `onnxruntime-directml` publishes no wheel past ORT 1.24.4, this process runs 1.28.0, and
+the Vulkan EP loads through the 1.28 plugin-EP ABI, so the two cannot be co-resident. That is
+recorded in every record's `reference.second_gpu_ep`.
+
+The same-device form was built to escape the confound: arm B is **the same EP, same session, same
+binary and same board**, differing only in whether the KV round trip is paid. That ratio is a
+ratio of the shipping lane against the resident lane and prices one lever. It escapes the *device*
+confound and still fails the *contention* test, which is the finding.
+
+### 24.7 The number I would have published, and why it is not a number
+
+The same-device paired ratio, on the NVIDIA board, decode only, `past_len` 4..9, is not one value.
+It is this, and its variation is the result:
+
+| box state during the pair | host-KV / resident-KV | dispersion (exp sd) |
+|---|---|---|
+| blocked | 1.081 | 1.33x |
+| paired, box as found | **1.185** (+-4.4%) | 1.20x |
+| + foreign GPU tenant | 1.480 | 1.22x |
+| + 19 host spinners | 3.701 | 1.62x |
+
+**A 3.4x swing driven entirely by what else was running.** Quoting `1.185` as "the KV round trip
+costs 19%" would be exactly the error the Fact Checker diagnosed in my own long-lived claims — a
+pre-formed number re-quoted rather than re-derived — because the same instrument produces `3.70`
+under a condition this box reaches routinely (its mean foreign load during these runs was
+**5.8-7.9 busy cores of 20**, loud on 92.5-99.7% of samples). If a figure from this work is ever
+re-quoted, it must be this table and not a row of it.
+
+### 24.8 Intel is permanently uncertifiable for this question
+
+Every phase of the Intel run returns `clock_producer: NO_PRODUCER` (§16.3). The confound that
+turned out to *be* the story on NVIDIA — the board's clock moving with the interleaving pattern —
+is **unobservable in principle** on that device. An Intel paired ratio is therefore
+`UNCERTIFIED(partial_companion)` permanently: the tenancy half can be recorded, the clock half
+cannot, and a half-companion is not a pass. The Intel `paired` figure of 0.191 is in the record and
+is not quotable.
+
+### 24.9 Provenance of every figure above (§22)
+
+| figure | class |
+|---|---|
+| `sm_max_mhz` (3105 MHz boost ceiling) | SPECIFICATION |
+| step times, ratios, `sm_mhz`, device name, apparatus costs, lifts, variance reduction | MEASUREMENT |
+| `BYTES_PER_PAST_TOKEN` = 393,216 | MODEL (32 layers x 2 x 32 heads x 96 dim x 2 B) |
+| `pairs_for_5pct_ci`, `unpaired_runs_for_5pct_ci` | MODEL (log-normal, from this run's own sd) |
+| `PAIRING_TOLERANCE` = 0.10, `INJECTION_MIN_LIFT` = 0.15 | MODEL (judgement, stated beside itself) |
+
+The 2.65x of §10.3 is carried forward as MEASUREMENT from that section, not re-derived here.
+
+### 24.10 A disclosure about the injections
+
+The injected load is our own descendant process, so `probe_gpustate`'s ancestry classifier calls it
+"ours" and the board still reads `SOLE_TENANT` **while a second Phi-3.5 is decoding on it**. The
+witness for an injection is therefore the launch plus the utilisation and clock series, never the
+tenancy verdict. This is written into each record's `injection.witness` so that a later reader
+cannot mistake the tenancy line for evidence that the injection did not happen.
+
+### 24.11 What this does not establish
+
+It establishes that a paired interleaved ratio against ORT's CPU EP, and against this EP's own
+device-resident lane, both fail their common-mode controls on this machine, in three named ways,
+with the numbers above. It establishes nothing else. Specifically:
+
+- **Nothing about prefill.** Every step measured is a single-token decode. Prefill has a different
+  arithmetic intensity and was not touched.
+- **Nothing about any other model.** Phi-3.5 mini int4 only, whose Nq/Nkv = 1.00 is the degenerate
+  case of the grouped-attention axis.
+- **Nothing about long context.** `past_len` 4..9. The shipping lane OOMs at past 4096 on the 8 GB
+  discrete card, so at long context the honest comparison is not "slower", it is "does not run".
+- **Nothing about a quiet machine.** These are ratios measured under contention and they are not
+  predictions of what either arm would do alone. That is not a caveat on the result; §24.3 and
+  §24.4 are the demonstration that the box state *is* an argument to the number.
+- **Nothing about kernel quality.** No two-GPU-EP comparison was possible, so nothing here
+  compares this EP's kernels against anyone's.
+- **Nothing about how fast this EP is.** The original question — "is this a high-performance EP" —
+  is *still unanswered*, and this section is the argument that it cannot be answered on this box by
+  this method. What it would take is stated below.
+
+### 24.12 What it would take
+
+1. **A second machine, or a second board in this one, that is not shared.** The cheapest sound
+   answer. Not available.
+2. **A second GPU EP at a compatible ORT version**, which removes the device confound and lets the
+   two arms share the board's clock state. Blocked on the DirectML wheel matrix, and it would still
+   have to pass the §24.2 apparatus test.
+3. **A locked clock.** `nvidia-smi --lock-gpu-clocks` would remove the §24.4 mechanism outright and
+   would make the interleaving-idle problem disappear. It requires privileges this process does not
+   have and it would perturb the co-tenant, which §20 treats as a standing occupant with equal
+   claim on the box.
+4. **A counting instrument instead of a clock.** This is the project's existing answer and it
+   remains the right one: bytes, slopes and bounds survived scrutiny that killed several timings,
+   and §22's weight amplification of exactly 1.000000 is worth more than any of the ratios above.
+
+Reproduce: `python bench/results/probe_paired_ratio.py --device 0`,
+`python bench/results/probe_paired_ratio.py --device 0 --arm-b resident`,
+`python bench/results/probe_paired_ratio.py --device 1 --sweeps 8 --steps 5`.
+Requires `ONNXRUNTIME_VULKAN_EP_LIB` — without it `counters_abi.py --check` PASSes having read
+nothing. Locked by `bench/test_paired_ratio.py` (19 tests), which includes the positive control
+(a common-mode disturbance must yield `PAIRING_HOLDS`), the negative control (an arm-specific one
+must yield `PAIRING_FAILS`), and the vacuity control (an injection that moves nothing must not be
+reported as a pass).
+
+### 24.13 Independent confirmation of Switch's GLSL.std.450 correction
+
+Asked to confirm rather than take on trust, and confirmed against the shipped SPIR-V rather than
+the GLSL source. `spirv-dis` on the release build:
+`q_gemv_matmul_nbits_f16.spv` issues **eleven ext-inst calls, all of them `UnpackHalf2x16` (62) or
+`PackHalf2x16` (58)**; `q_gemv_matmul_nbits_f32.spv` imports `GLSL.std.450` and issues **no
+ext-inst at all**. Neither opcode is in the affected set `{30, 37, 40, 43, 50}`, and neither is in
+the silent subset `{37, 43}`. **The weight read amplification of exactly 1.000000 is untouched and
+needs no re-run.**
+
