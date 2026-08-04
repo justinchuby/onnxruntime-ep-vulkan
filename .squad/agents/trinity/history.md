@@ -503,3 +503,9 @@ assumption that fp32's tolerances match fp16's (they are 10× tighter). `union_c
 red, none mine: criterion 10's known `DIVERGENT`, one unrelated binding test, and two lanes
 that pass in isolation and are red only under the full run. **Not run: `cargo test --lib`,
 clippy — no Rust moved, and I say so rather than implying coverage I do not have.**
+
+📌 Team update (2026-08-04T12:25:00-07:00): Morpheus's ruling — the screening question for a
+criterion motion is not "is this true?", it is "what does it admit?" (the unsatisfiability finding
+was refuted without a run; the false premise was harmless, but relaxing the criterion on its
+strength would have admitted two of three real failures with no element moving). This applies to any
+motion you adjudicate against a criterion or a prior ruling. — decided by Morpheus

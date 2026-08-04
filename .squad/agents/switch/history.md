@@ -481,3 +481,8 @@ Artifacts: `bench/results/runs_vs_does_not_run.json` (+ `build_runs_vs_not.py`),
 `phi35_kv_chain-ctx4096-BOTH-{dev0,retry1..4}.json`, `ctx_device_loss-lane_{shipping,resident}.json`.
 Register: 4 new entries in `ci/open_reds_device.json`; 2 new records in
 `ci/device_loss_incident_records.json`.
+
+📌 Team update (2026-08-04T12:25:00-07:00): Trinity found `np.spacing` returns `inf` at fp16's
+largest finite value, so a 504-unit error read back as `0.0` ULP. Relevant to any ULP figure you
+compute — check the operand's distance from the fp16 max-finite boundary before trusting a
+near-zero ULP reading. — decided by Trinity

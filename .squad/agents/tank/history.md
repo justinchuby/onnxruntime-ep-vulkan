@@ -387,3 +387,11 @@ RAI-008's status is Rai's.
 📌 Team update (2026-08-03T10-35-00-07-00): Rai opened RAI-013 🟡 — an honestly-labelled emission a user never sees by default is not "the user was told." You are the named owner. — decided by Rai
 
 📌 Team update (2026-08-03T19:55:00-07:00): Switch's refutation — "Phi-3.5 has never been a valid proof subject." Re-proving GQA against a single-form graph with no flag disabled showed withholding one form and withholding nine produce the identical refusal, because Shape, ReduceSum, If have no Vulkan handler at all on this graph — the model was never exercising the claim it was cited for. This changes what a re-proof run can be asked to do: a re-proof on Phi-3.5 alone cannot distinguish "this form is broken" from "this model never reached this form." — decided by Switch
+
+📌 Team update (2026-08-04T12:25:00-07:00): Switch's "the blocker has no control lane" finding —
+ctx-512 blocks nothing (both lanes `NO_LOSS`, identical dispatch counts, memory maximally separated);
+the actual blocker is option 1 (`DEVICE_MEMORY=1`, `KV_ARENA=0`), established structurally with no
+rate needed, and at ctx 4096 the shipping lane cannot run at all (zero EP dispatches, deterministic
+3/3). This changes what your `closes_when` can require — a closing condition resting on a rate
+measured through a lane that cannot dispatch at all is not a rate, it is a null manipulation.
+— decided by Switch

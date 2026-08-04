@@ -286,3 +286,9 @@ accordingly.
 
 - **Session — 2026-07-28T19:16:08-07:00 (OQ-M6 / First RAI Pass)** — Resolved OQ-M6: licence compliance ruling for reading/adapting llama.cpp Vulkan shaders. Conducted first RAI pass of all project docs.
 - **Session — 2026-07-30T07:12:15-07:00 (R9 event — silent inference RAI verdict)** — On-demand RAI ruling on the R9 event (§10.0.1): the EP claimed and dispatched 161 `MatMulNBits`
+
+📌 Team update (2026-08-04T12:25:00-07:00): Morpheus's ruling — the screening question for a
+criterion motion is not "is this true?", it is "what does it admit?" (the criterion-10
+unsatisfiability finding was refuted without a run; the false premise was harmless, but relaxing the
+criterion on its strength would have admitted two of three real failures with no element moving).
+Applies to any motion you rule on against a criterion or a prior finding. — decided by Morpheus
