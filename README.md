@@ -7,37 +7,164 @@
 > confirm the badge above is green. A red badge blocks all merges — not by a GitHub branch
 > protection rule (not yet configured), but by team discipline enforced by this notice.
 > See [`.github/CI_POLICY.md`](.github/CI_POLICY.md) for the full policy.
+>
+> **The badge is red as of this writing, and has been for the last five pushes to `main`**
+> (`gh run list --limit 5`, all `completed / failure`). Read the notice above as a rule the
+> project is currently in violation of, not as a description of its state.
 
 A **cross-platform Vulkan compute execution provider for ONNX Runtime**, written in Rust and
 shipped as an out-of-tree **plugin EP**. It is loaded by a stock, unmodified ONNX Runtime through
 the plugin-EP C ABI — no ORT fork, no ORT rebuild, no link against `libonnxruntime`.
 
-> **Status: early implementation.** The architecture is settled and written down; the crate
-> scaffolding, the test harness and CI have landed and M0 is in progress. **M0 is not met.** As of
-> 2026-07-29 **45 op rows are `Live`** — claimed by the EP and executing on the GPU through ONNX
-> Runtime, with `VulkanExecutionProvider` in the profiling JSON and output matched against the ORT
-> CPU EP — on two desktop GPUs (Intel Iris Xe, NVIDIA RTX 4060), under **both** barrier backends,
-> agreeing bit-exactly. Every one of those results is **Windows, on local hardware, on one desk**.
-> A 2.2 GB production model (Phi-3.5, fp16, external data) now also loads through the EP, runs, and
-> falls back to CPU cleanly with a machine-readable reason for every one of its 363 nodes — of which
-> **zero are currently claimed**, because symbolic tensor dimensions, not missing kernels, are the
-> dominant blocker on a real decoder (`docs/DESIGN.md` §8.8).
-> The Linux lane has never executed a claimed node, the software-rasteriser CI lanes have not run
-> since these changes landed, and CI has no GPU hardware — and M0's own sentence requires all three.
-> Everything else — every contrib op, all quantized paths, and every platform in the table below
-> that is not this machine — is unexecuted. See [`docs/DESIGN.md`](docs/DESIGN.md) §9.1.2 for the
-> full execution status and §10 for the criterion-by-criterion M0 assessment.
+## Status
+
+> **Every number in this section is re-derived from a named artifact or symbol in this tree, at a
+> named commit. Where a figure is a *computation* rather than a *measurement*, it says so.**
+> A README that lists only wins is a marketing document, and the first reader who checks one line
+> of it will correctly distrust the rest — so the second half of this section is as long as the
+> first. [`docs/DESIGN.md`](docs/DESIGN.md) §0 is the same statement one level down, for a reader
+> who is going to work on the code.
+>
+> **Re-derived: 2026-08-04, at `4ee8c9c` (`main` = `b8679a4` plus one docs merge).** Sources:
+> `epctl --dump-capabilities --json`; `bench/results/{op_census_phi35_r13_after,
+> op_census_mnv2_r14_final, op_census_bert_r14_final, op_census_gptoss20b_r13_after,
+> phi35_claim_reading_summary, criterion10-dev0, lane-identity-armA-arena0,
+> paired_ratio_dev0, _ledger_counters}.json`; `evidence/proof_ledger.jsonl`;
+> `ci/check_ledger_census.py`; `cargo test --lib`; `docs/PLATFORMS.md` §7.26.3.
+> **A README with no commit and no artifact list is a citation with no subject** — it cannot be
+> checked, only believed, and it will be stale again within days. Check it: every claim below
+> names where it came from.
+
+### What it does
+
+**It loads into a stock ORT and claims most of a real decoder.** On Phi-3.5-mini-instruct (ONNX,
+fp16, int4 `MatMulNBits`, external data, 2.2 GB), `op_census_phi35_r13_after.json` reads
+`graph.nodes: 366`, `claimed_nodes: 355`, `declined_nodes: 8`. ORT fuses them into **one island**:
+`phi35_claim_reading_summary.json` — `islands_offered: 1`, `viable_islands_retained: 1`,
+`ledger_hits: 355`, `unproven_forms_claimed: 0`. Attribution is ORT's own profiler, not ours:
+`criterion10-dev0.json` records `executed_by = {VulkanExecutionProvider: 3, CPUExecutionProvider: 24}`
+over three inferences — one island execution per run.
+
+**It runs two model classes, not one.** Since `Conv` (f32) landed, the EP is no longer
+decoder-only: `op_census_mnv2_r14_final.json` reads **98 of 105** claimed on MobileNetV2-12, a
+convolutional image classifier that was **0 of 105** before. The 7 declines are one contiguous
+`Shape→Gather→Unsqueeze→Concat→Reshape` classifier tail, not seven scattered holes.
+
+| Model | Graph nodes | Claimed | Artifact |
+|---|---|---|---|
+| Phi-3.5-mini-instruct (int4, fp16) | 366 | **355** | `op_census_phi35_r13_after.json` |
+| gpt-oss-20b (int4 MoE, fp16) | 374 | **293** | `op_census_gptoss20b_r13_after.json` |
+| MobileNetV2-12 (f32) | 105 | **98** | `op_census_mnv2_r14_final.json` |
+| BERT-SQuAD-12 (f32) | 1167 | **480** of 1274 decisions | `op_census_bert_r14_final.json` |
+
+BERT records more decisions than the graph has nodes because ORT calls `GetCapability` more than
+once; the number quoted is the decision count, which is what the census counts.
+
+**Its op table is 94 rows, of which 76 carry a kernel.** Read from `epctl --dump-capabilities
+--json` (`rust/src/bin/epctl.rs`), not by counting `ops!` lines: **46 `live`, 30 `ready`, 18
+`staged`** — the staged rows are described and claim-tested and decline at runtime with a named
+blocker in the dump's own `staged_reason` field. **This count has been misstated more than once,
+including by earlier revisions of this file; the dump is the only reading of it that is not a hand
+tally.** `OpStatus::Live` is a **deprecated alias** of `OpStatus::Ready`
+(`rust/src/registry.rs::OpStatus`) and neither status grants a claim — **claimability is a ledger
+fact, not a table field** ([`docs/DESIGN.md`](docs/DESIGN.md) §8.9).
+
+**Nothing is claimed without a proof under its own key.** `evidence/proof_ledger.jsonl` holds
+**129 entries** (its own header line, `entry_count: 129`), each recording the device, the ORT
+build, the tolerance, the artifact and its sha256, the nodes claimed and dispatches executed on the
+proof run, the shader stems dispatched, and three digests over those stems — SPIR-V, source
+closure, and specialisation — so that a compiler change, a kernel change and a specialisation
+change are distinguishable from one another. A form with no entry declines with `[unproven]`.
+**All 129 entries now carry `spec_digest`** (`_ledger_counters.json::ledger_specialisation_unrecorded_entries: 0`),
+closing a debt that stood at 102 of 121 two days ago: `SPEC-UNRECORDED` was the ledger's own word
+for *"this proof does not name the specialisation constant it was proven under"*, and a
+specialisation constant is resolved at pipeline creation and changes the code the driver emits, so
+an entry without it named its subject only partly.
+
+**The KV cache can decline the host round trip.** `kv_chain_readback-{nvidia,intel}.json` both
+read `ROUND_TRIP_REMOVED`: steady-state device→host traffic falls from **1792 to 0 bytes per step**
+at identical dispatch counts, on both an RTX 4060 and an Iris Xe. No wall-clock appears in that
+artifact, by design. **None of it reaches a user today** — see below.
+
+**The conservatism is tested, not asserted.** Zero Vulkan devices are advertised when there is no
+ICD and when the build carries no shaders (`criterion4_icd_witness-dev{0,1}.json`,
+`criterion5_shaderless_witness-dev{0,1}.json`); the layering lint runs in CI over permanently
+planted violations (`rust/tests/layering.rs::detects_planted_ort_abi_violations`); and the Rust
+library suite is **574 passed / 0 failed / 4 ignored** (`cargo test --lib` at `4ee8c9c`).
+
+### What is not true yet
+
+**M0 is not met.** Five of its twelve criteria are met (3, 4, 5, 6, 7) and seven are not (1, 2, 8,
+9, 10, 11, 12), per the criterion-by-criterion table in [`docs/DESIGN.md`](docs/DESIGN.md) §10.
+Criterion 1 is red *today* — CI's clippy step, above. **This is an early implementation.**
+
+**The device-memory path ships OFF, so none of the KV work above reaches a user.**
+`factory::device_memory_enabled` is a read of the `ENV_DEVICE_MEMORY` environment variable and
+nothing else; unset means false. A default run reports `alloc_device_frame: "OFF"` and, in its own
+words, `"no device-memory provider exists in this process, so the allocator side is on no VkDevice
+at all"` (`_ledger_counters.json`). A capability behind an opt-in flag is a capability the project
+has, **not one the product ships**.
+
+**There is no timing of any kind here, and the design that was going to produce it is refuted —
+not withheld.** The paired interleaved A/B alternation assumed contention is common-mode across
+the two arms. `paired_ratio_dev0.json` returns `PAIRING_FAILS(apparatus_asymmetry)`: `cpuload`
+moves the ratio 0.560×, `gpuload` 0.722×; `paired_ratio_dev1.json` and
+`paired_ratio_resident_dev0.json` fail the same way — four control failures. Two are worse than a
+failed control: under foreign **GPU** load our own arm gets *faster* (`vk_lift_x: 0.771`), which no
+contention model predicts, and the granularity that would make contention symmetric is the same
+granularity that manufactures the device-axis asymmetry, **so the failure is not tunable**. No
+ratio is published and none is withheld: the apparatus does not measure what it claims to.
+
+**Output agreement with the CPU EP is `DIVERGENT`, on both devices.** Over all 65 model outputs,
+`criterion10-dev0.json` records **62 of 65 within tolerance**, a **median of 1 fp16 ULP**,
+`argmax_cpu == argmax_vk` and `top10_overlap = 10`. Three are outside: the logits head at a median
+of **12 ULP**, and the last layer's key and value at **4 ULP** each. It must not be closed by
+moving `atol` — [`docs/DESIGN.md`](docs/DESIGN.md) §8.9.24 rules the predicate satisfiable at every
+representable fp16 value with ≥ 20.48 element-ULPs of margin, so each failing element failed by
+more than twenty representable steps at its own magnitude. **Which side is wrong is under
+investigation and not yet answered.**
+
+**At a 4096-token context the shipping lane cannot run at all.** `lane-identity-armA-arena0.json`
+records verdict `ERROR(instrument)` with `gpu-allocator failed to allocate 14155776 bytes for
+'ep_in_427': Out of memory`, `compute_failures: 1`, `dispatches_executed: 0` — **and
+`exit_code: 0`.** The same lane at past lengths 512 and 1024 runs clean (`ctx_device_loss.json`:
+8875 and 5325 dispatches, 355 claimed nodes, zero failures). Two separate defects: the allocation
+failure, and **a failed inference that reports success at the process level**, which is the one a
+user meets first.
+
+**The ledger's loss invariant is FAILING, and the cause is two retirement registers.**
+`ci/check_ledger_census.py` reports `172 ever proven = 129 present now + 0 retired + 43 VANISHED`
+and exits non-zero. Those 43 keys *were* retired, deliberately and with reasons, into
+`evidence/retired_proof_keys.json` — which is the file `rust/tools/gen_proof_ledger.py` reads. The
+census reads `evidence/proof_retired.json`, which **does not exist**, and the two files do not even
+share a schema (a list of `{key, reason}` against an object keyed by proof key with
+`owner`/`date`/`reason`). So the generator says *43 retired* and the census says *43 vanished*
+about the same 43 keys. **The screen written to catch a silent deletion is currently failing on a
+deliberate one**, which is the same class of defect it exists to detect, and it is open.
+
+**Windows is one desk, and Linux is red.** Every GPU result above is Windows, on local hardware,
+on two desktop GPUs (Intel Iris Xe, NVIDIA RTX 4060). The Linux/lavapipe op suite reads **8 failed
+/ 633 passed / 50 skipped / 3 xfailed** ([`docs/PLATFORMS.md`](docs/PLATFORMS.md) §7.26.3, where
+the 8 are decomposed by cause rather than quoted as a total: 3 host provisioning, 1 unexplained
+instrument error, 2 real `Asin`/`Acos` divergence on llvmpipe, 1 closed, 1 a declared accepted
+red). M0 criterion 2 says *green*; green is not what either lane reports. **Android and macOS have
+never run at all** — every Android and macOS entry in [`docs/PLATFORMS.md`](docs/PLATFORMS.md) §5
+is explicitly marked untested, and CI has no GPU hardware of any kind.
+
+**No performance claim is made anywhere in this repository.** The development machine is
+permanently contended by several agents.
 
 | | |
 |---|---|
 | Registered EP name | `VulkanExecutionProvider` |
 | Artifact | `libonnxruntime_vulkan_ep.so` / `onnxruntime_vulkan_ep.dll` / `libonnxruntime_vulkan_ep.dylib` |
-| ORT ABI | plugin-EP C ABI · built against ONNX Runtime **1.28** · minimum runtime API **1.24** |
+| ORT ABI | plugin-EP C ABI · built against ONNX Runtime **1.28** · minimum runtime API **1.24** *(`epctl --dump-capabilities --json`: `ort_built_against 1.28.0`, `ort_api_version 28`, `ort_minimum 1.24.0`, `ort_api_version_min 24`)* |
 | Backend | Vulkan compute · GLSL → SPIR-V · [`ash`](https://github.com/ash-rs/ash) |
-| Target platforms | `Windows · Linux · Android · macOS (MoltenVK)` — **Windows and Linux are verified in CI (lavapipe). The Android and macOS paths are designed for but have zero CI coverage on physical hardware; every Android and macOS entry in [`docs/PLATFORMS.md`](docs/PLATFORMS.md) §5 is explicitly marked untested.** |
+| Target platforms | `Windows · Linux · Android · macOS (MoltenVK)` — **Windows executes claimed nodes on real GPUs, on one desk. Linux/lavapipe has executed claimed nodes since 2026-07-30 ([`docs/PLATFORMS.md`](docs/PLATFORMS.md) §7.7) and its op suite is red (§7.26.3). Android and macOS have zero coverage on any hardware; every Android and macOS entry in [`docs/PLATFORMS.md`](docs/PLATFORMS.md) §5 is explicitly marked untested.** |
 | Device requirement | **Vulkan 1.1 core + a compute queue.** No required extensions — see [`docs/DESIGN.md`](docs/DESIGN.md) §7. |
-| Target hardware | NVIDIA · AMD · Intel · Adreno · Mali — *none of these is covered by CI today; the only verified lanes are the lavapipe software rasterizer on Linux and Windows* |
+| Target hardware | NVIDIA · AMD · Intel · Adreno · Mali — *none of these is covered by CI today; CI has no GPU hardware at all. The only executing lanes are two desktop GPUs on one development machine and the lavapipe software rasterizer.* |
 | Operator domains | `ai.onnx` and `com.microsoft` — the contrib domain is in scope because the ORT GenAI model builder emits contrib ops directly; see [`docs/DESIGN.md`](docs/DESIGN.md) §1.4 for the claim-safety constraints |
+| Op table | **94 rows — 46 `live`, 30 `ready`, 18 `staged`; 76 carry a kernel.** Status is not permission to claim: **claimability is a ledger fact** (`evidence/proof_ledger.jsonl`, 129 entries), not a table field. |
 
 ## How it works
 
@@ -90,10 +217,11 @@ sess = ort.InferenceSession(
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Morpheus | **Architecture of record.** Goals and non-goals, ORT integration, crate layout, module boundaries, execution flow, tensor/memory model, Vulkan baseline, op strategy, testing, milestones, open questions. |
 | [`docs/ENGINE.md`](docs/ENGINE.md) | Switch | Vulkan runtime: device and context, memory and allocators, shader strategy, pipelines and descriptors, command submission and synchronization. |
 | [`docs/PLATFORMS.md`](docs/PLATFORMS.md) | Link | Platform and driver support matrix, Vulkan version reality per platform, capability detection, toolchains, CI lanes. |
-| `docs/OP_COVERAGE.md` | Mouse | **Authoritative op-coverage plan** — 174 ops across 16 families, driven by model families (LLM/Qwen3.5 → int4 → MoE → multimodal → linear attention → conv), with model-level exit criteria per tier. Ratified by Morpheus 2026-07-28. |
+| [`docs/OP_COVERAGE.md`](docs/OP_COVERAGE.md) | Mouse | **Authoritative op-coverage plan** — 174 ops across 16 families, driven by model families (LLM/Qwen3.5 → int4 → MoE → multimodal → linear attention → conv), with model-level exit criteria per tier. Ratified by Morpheus 2026-07-28. |
 | `docs/THIRD_PARTY.md` | Rai | Third-party licence compliance and attribution requirements for adapted code. |
-| `docs/OP_ARCHITECTURE.md` | Mouse | Op registry design and the per-op claim contract. *(forthcoming)* |
-| `docs/BENCHMARKS.md` | Niobe | Benchmark methodology and published baselines. *(forthcoming)* |
+| [`docs/PERF.md`](docs/PERF.md) | Niobe | Performance record and methodology. **No wall-clock ratio is published here**; every quantity carries a provenance class (SPECIFICATION, MEASUREMENT, or MODEL) and the paired-alternation apparatus that would produce a timing is refuted, not pending. |
+| `docs/OP_ARCHITECTURE.md` | Mouse | Op registry design and the per-op claim contract. *(does not exist)* |
+| `docs/BENCHMARKS.md` | Niobe | *(does not exist — superseded by `docs/PERF.md`)* |
 
 ## Design in one paragraph
 
