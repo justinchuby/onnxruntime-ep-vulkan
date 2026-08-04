@@ -656,3 +656,58 @@ number does not.**
 - Third and fourth times this week that a rule already in the record answered a question I was
   treating as new (§7.5 this morning, §5.4.1(a) this afternoon). The register is under-*indexed by
   question*, and that is the version of the navigability complaint that survives the refutation.
+
+## 2026-08-04T06:40:00-07:00 — The figure I was warned about was wrong again, in the direction of the change I was updating for
+
+**§0 omitted an entire model class and I was handed the pre-`Conv` op count to fix it with.** The
+brief said 91 rows / 73 kernel-carrying and said, in the same sentence, that this figure has been
+wrong on the record three times. It is 92 / 74 — `epctl --dump-capabilities --json`, 46 `live` + 28
+`ready` + 18 `staged` — and **Mouse's own delta table already said so**: 91/73 is its *before*
+column. So the count was not merely stale, it was **the row immediately above the one the update was
+about**. I have now put the provenance in the paragraph itself rather than in a footnote, because
+four wrong readings of one integer is a defect in where the number lives, not in who read it.
+
+**The `Conv` question had a third answer and the interesting part was not the answer.** `group`,
+`strides`, `dilations`, `pads` are push constants in one uniform code path — `conv_f32.comp`
+branches on none of them, grouped is the general form — so under §8.7 they are expressions, not
+paths, and the key that omits them is **true**. Adding them would assert that a stride-2 `Conv` runs
+different code from a stride-1 one, which it does not, and would demand ~52 proofs for one form.
+What is owed is a **disclosure**: `blind_axes` on the row, rendered into the claim line, plus the
+clause that a CI-time suite speaks for those axes and nothing in the reader's session does. Same
+mechanism closes Rai's 🟡. Neither of the two options Mouse offered me was the one.
+
+**And then the thing I actually went looking for turned up somewhere else.** All four `Conv` keys
+render their variant component as `metadata` — documented meaning: *"this row has no shader"* —
+while the same ledger entries record `"shaders": ["conv_f32"]`. `kernel!(None)` on the row; the
+module is chosen inside `translate`, where the key does not look. **The subject knows the shader;
+the key denies it exists.** It makes the variant component constant across every future `Conv` form,
+so the one mechanism that would separate a specialised grouped kernel from the general one is inert
+on the op that will get one first — *Mouse's worry, arriving through a door he did not name*. And
+`form_is_provable` short-circuits on `variant_is_generated("metadata")`, so `Conv` reads provable in
+a shaderless build. §8.9.21's loud-default test failing permissive on a **non-composite** row, which
+is the case that ruling reasoned past.
+
+**Rai's residual is a bound and I wrote it as one.** THE SELF-WITNESS BOUND: an instrument reports
+the last event on its own side of the boundary; the positive reading is a fact about the attempt,
+never the arrival, and elaborating the instrument does not help because the elaboration runs on this
+side too. Two arms of opposite sign — the canary that cannot fail, the `write()` that cannot
+distinguish. Both are R9 arriving through the *observer* instead of the observable, which is a
+direction I had not considered R9 could arrive from.
+
+**The stale citation is R13 and I nearly minted it.** A reference that resolves to a plausible
+non-referent is the defaulting read; what differs is that the reader does the defaulting and that a
+version has an **order** an absence does not — so the loud-default remedy cannot reach it, nothing
+being silent. The remedy already exists one floor down: *a citation is a proof key with no subject
+digest*. Cite a state, not a path.
+
+**Carry forward**
+- `blind_axes` is Mouse's and the `metadata` repair is blocking before a second `Conv` variant.
+- `REACHED_USER` should read `WRITE_SUCCEEDED`. One token, owner is whoever owns `disclosure.rs`.
+- 102 of 121 entries specialisation-unrecorded. That is the §8.9.19/§8.9.21 debt with a number on
+  it now, and it is still unowned. Third session naming it.
+- §8.9.22 was used for the thing it was built for and **bought criterion 10 nothing** — which is the
+  test I set for it (*a repair makes nothing pass that did not pass before*) passing in the
+  uncomfortable direction. I would have preferred the other result and that is exactly why the test
+  was written first.
+- The hand-written blind list is the next thing to go wrong and I said so in the ruling rather than
+  waiting to be shown. Check whether that turns out to be foresight or an alibi.
