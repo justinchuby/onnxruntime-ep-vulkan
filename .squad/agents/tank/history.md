@@ -387,3 +387,63 @@ RAI-008's status is Rai's.
 📌 Team update (2026-08-03T10-35-00-07-00): Rai opened RAI-013 🟡 — an honestly-labelled emission a user never sees by default is not "the user was told." You are the named owner. — decided by Rai
 
 📌 Team update (2026-08-03T19:55:00-07:00): Switch's refutation — "Phi-3.5 has never been a valid proof subject." Re-proving GQA against a single-form graph with no flag disabled showed withholding one form and withholding nine produce the identical refusal, because Shape, ReduceSum, If have no Vulkan handler at all on this graph — the model was never exercising the claim it was cited for. This changes what a re-proof run can be asked to do: a re-proof on Phi-3.5 alone cannot distinguish "this form is broken" from "this model never reached this form." — decided by Switch
+---
+
+## 2026-08-04 — mintability is an ABI question; the ctx-4096 fallback is loudly logged and silently returned
+
+**Task 1 — `--check` could not tell whether a ledger key is mintable.** Repaired as an ABI
+addition, not a Python inference: `form_mintability_report()` in `registry.rs`, exported as
+`OrtEpVulkanGetFormMintability` (two-call size-then-fill, newline-separated because proof keys
+contain commas in their dtype signature — this is where the shader-subject export's comma format
+would have silently mis-split). It is pure over the baked SPIR-V and `ENGINE_ENABLED_CAPABILITIES`
+and answers identically with no device in scope; `--check` calls it through `ctypes.CDLL` with no
+ORT session at all. A missing export is `ERROR(instrument)`, never PASS. Unmintable **ledger** key
+is FAIL; unmintable **retired** key is a NOTE — retirement is deliberate, and the note is what
+supplies the split the 43 retired keys did not have.
+
+**The red state is shown, not reasoned.** `probe_ledger_mintability.py`, 6/6 arms. Arm 5 is the
+load-bearing one: a genuinely shaderless build reports **129/129 declared-stem keys
+`mintable=no`**. Getting there cost a real finding — `build.rs::installed_sdk_glslc()` scans
+`C:\VulkanSDK` after `VULKAN_SDK` and `PATH` both miss, so
+`ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC=1` is **unreachable on this box**; the first attempt at
+arm 5 reported 129/129 *mintable* because the "shaderless" build had quietly compiled shaders
+anyway. The reliable route is deleting `shaders/glsl/*.comp` and `shader_variants.txt`
+(worktree `ep-vulkan-tank-mint-shaderless`, kept as a reusable control). A synthetic ledger also
+trips `check_baked_vs_disk`, so probe arms pass `expect_rebuild=True` or they measure staleness
+instead of mintability.
+
+**Task 2 — the brief's premise did not survive the measurement.** The ctx-4096 fault is not a
+session-creation rebuild and not `alloc_device failed for input buffer`. The session creates, the
+EP claims all 355 nodes, `Compute()` is entered, and the gpu-allocator refuses 67108864 bytes for
+the **intermediate** `ep_inter_76`. And it is **not silent**: three disclosures fire at ORT's
+default severity, not just at VERBOSE — arm E's log is byte-identical to arm B's after timestamp
+normalisation. What lies is exit 0, the correct finite logits, and `get_providers()`. Honest name:
+**loudly logged, silently returned**.
+
+**`disable_cpu_ep_fallback=1` screens the partition, not the fallback.** Arm D — ctx 1, no island
+retained, no allocator involvement anywhere — produces the **identical refusal sentence** as arm C
+at ctx 4096. Switch's own discriminator applied to my instrument: a screen that cannot separate the
+lanes is not reading the fault. On Phi-3.5 the flag is unusable, because five `[unproven]` declines
+sit on the CPU EP on every run. `probe_runtime_fallback_guard.py` (arms F–I, `add_f32`, fully
+claimed, failure injected) reaches the question C could not: the guard **does** block the run-time
+path, but by side effect of ORT re-initialising on `['CPUExecutionProvider']`, and its message
+names the user's provider list rather than the EP's broken commitment. RAI-012's shape one layer
+out, in ORT rather than in us.
+
+**The null manipulation I nearly shipped.** My first C and D named `CPUExecutionProvider` in the
+provider list *while* setting the flag, so ORT refused for a *configuration* reason before
+partitioning. It looks exactly like the guard firing. Both probes now pass
+`providers=["VulkanExecutionProvider"]` alone and the trap is written down in the probe.
+
+**Verified:** `cargo test --lib` 576 passed / 0 failed / 4 ignored (main was 574); clippy
+`--all-targets -D warnings` clean; `gen_proof_ledger.py --check` PASS with the new subject
+arithmetic line `129 mintable / 0 not`, `43 retired — 43 mintable / 0 not`;
+`tests/ops/test_proof_ledger.py` 18 passed (was 14); `pytest tests/ops` 829 passed / 2 failed,
+**both reproduced identically on unmodified `main` b8679a4 with main's own DLL**. Every ctx-4096
+arm pinned `DEVICE_MEMORY=1` / `KV_ARENA=0` and screened on `dispatches_executed`. No clock.
+
+**Instrument note carried forward:** ORT's Windows log sink writes wide characters into a captured
+pipe, so a UTF-8 read renders every ORT line NUL-separated and every grep answers "absent". Both
+probes strip NULs before matching. A log-absence claim taken without that strip is a null reading.
+
+**Decisions:** `tank-mintability-is-an-abi-question.md`, `tank-loudly-logged-silently-returned.md`.
