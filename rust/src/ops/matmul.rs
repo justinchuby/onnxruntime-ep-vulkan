@@ -25,17 +25,21 @@
 //! * **a `C` whose extents are symbolic** — the broadcast rule needs to know which of `C`'s axes
 //!   are 1, and an axis whose extent is unknown could be either.
 //!
-//! # `transA`/`transB` are a proof-key form, not a selector
+//! # `transA`/`transB` are a blind axis, not a key component and not a selector
 //!
 //! They change which index strides and therefore what the kernel computes, but one module serves
-//! all four combinations from push constants. `ops::common::form` is the mechanism for exactly
-//! that shape of attribute, and the four combinations are four distinct proof keys. Without it a
-//! `Gemm` proven at `transB=1` would silently grant a claim to a `Gemm` at `transB=0`, which is a
-//! transposed answer of the right shape — the worst possible failure, because it is plausible.
+//! all four combinations from a ternary on a push constant — one pipeline, one set of emitted
+//! instructions. Under §8.7 that makes them **expressions, not paths**, and §8.9.23 rules that an
+//! expression is not a proof-key component however much it changes the answer. They were a key
+//! component for one round, on the worry that a `Gemm` proven at `transB=1` would silently grant a
+//! claim to a `Gemm` at `transB=0` — a transposed answer of the right shape, which is the worst
+//! failure because it is plausible. That worry is real; it is discharged by `blind_axes` on the
+//! row, which prints the caveat on the claim line, and by the CI-time suite that varies the
+//! transposes. It is not discharged by asserting a code-path distinction that does not exist.
 //!
-//! `alpha` and `beta` are deliberately **not** form bits. They are multiplied into one
-//! expression, so every value runs the same instructions; they ride the push-constant tail, which
-//! is what `ops::common::params` is for.
+//! `alpha` and `beta` are blind for the same reason and were never in the key: they are multiplied
+//! into one expression, so every value runs the same instructions; they ride the push-constant
+//! tail, which is what `ops::common::params` is for.
 
 use crate::engine::{
     AttrValue, DType, DispatchContext, EpError, EpResult, KernelRequest, NodeDesc, TensorDesc,
@@ -209,7 +213,11 @@ crate::op_table! {
     // broadcasting opt-in, and opset 7 removed it in favour of the unidirectional rule this
     // module implements. A row that opened at 1 would claim a node whose `broadcast=0` means
     // "C must already be [M, N]" and read it under the opposite rule.
-    "Gemm",   Ai,     7 ..= OPSET_ANY, F32,  kernel!(None),  gemm,   translate,  Ready;
+    // `alpha` and `beta` are push constants in `gemm_f32.comp` — expressions, not paths, by the
+    // same §8.9.23 argument that rules `Conv`'s four. `transA`/`transB` are **not** here: they are
+    // in the key, under `form.rs`, because they change which index the loop reads.
+    "Gemm",   Ai,     7 ..= OPSET_ANY, F32,  kernel!(Standalone, "gemm"),  gemm,   translate,  Ready,
+        blind_axes: &["alpha", "beta", "transA", "transB"];
 }
 
 /// Translate into one dispatch: one invocation per output element.
@@ -402,13 +410,28 @@ mod tests {
         assert!(err.contains("rank 3"), "{err}");
     }
 
-    /// The transposes must be form bits, or a `transB=1` proof would grant a `transB=0` claim and
-    /// the wrong answer would have the right shape.
+    /// The transposes are **blind axes, not key components** — §8.9.23, and this test is the
+    /// reversal of the one it replaces.
+    ///
+    /// It previously asserted `transA`/`transB` were form bits in the proof key, on the reasoning
+    /// that a `transB=1` proof would otherwise grant a `transB=0` claim. Morpheus ruled the
+    /// general form of that question on `Conv`'s four attributes and the ruling applies here
+    /// verbatim: `gemm_f32.comp` selects the index with a ternary on a push constant, which is one
+    /// pipeline emitting one set of instructions, so under §8.7 a transpose is an **expression,
+    /// not a path** and the key that omits it is true. Proof of one transpose *is* proof of the
+    /// other by the key's own stated meaning ("two nodes whose keys are equal are dispatched by
+    /// the same code with the same descriptor layout").
+    ///
+    /// The worry the old test encoded is real and survives — it is just not the key's to answer.
+    /// It is answered by the disclosure, which names these axes as blind, and by the CI-time suite
+    /// that varies them.
     #[test]
-    fn the_transposes_are_declared_as_proof_key_form_bits() {
-        let bits = crate::ops::common::form::bits_for("Gemm").expect("Gemm declares form bits");
-        let names: Vec<&str> = bits.iter().map(|b| b.attr).collect();
-        assert_eq!(names, vec!["transA", "transB"]);
+    fn the_transposes_are_declared_as_blind_axes_and_not_as_key_components() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "Gemm")
+            .expect("Gemm must be registered");
+        assert!(spec.blind_axes.contains(&"transA"));
+        assert!(spec.blind_axes.contains(&"transB"));
     }
 
     /// `Gemm` is already an anchor in the partitioner, which is why a lone one at a model's tail

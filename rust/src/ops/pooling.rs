@@ -95,7 +95,7 @@ crate::op_table! {
     //
     // Opset window opens at 1: `GlobalAveragePool` has existed since opset 1 and has never been
     // revised. `caps` is F32 for the reason in the module docs, not FLOAT.
-    "GlobalAveragePool", Ai, 1 ..= OPSET_ANY, F32, kernel!(None), global_average_pool, translate, Ready;
+    "GlobalAveragePool", Ai, 1 ..= OPSET_ANY, F32, kernel!(Standalone, "global_average_pool"), global_average_pool, translate, Ready;
 }
 
 /// Translate into one dispatch: one invocation per `(n, c)` pair.
@@ -195,10 +195,13 @@ mod tests {
         );
     }
 
-    /// `GlobalAveragePool` declares no form bits, and that is a decision rather than an omission:
-    /// it has no attributes at all, so there is no form for a key to carry.
+    /// `GlobalAveragePool` declares no blind axes, and that is a decision rather than an omission:
+    /// it has no attributes at all, so there is nothing for a key to be blind to.
     #[test]
-    fn the_op_has_no_form_bits_because_it_has_no_attributes() {
-        assert!(crate::ops::common::form::bits_for("GlobalAveragePool").is_none());
+    fn the_op_has_no_blind_axes_because_it_has_no_attributes() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GlobalAveragePool")
+            .expect("GlobalAveragePool must be registered");
+        assert!(spec.blind_axes.is_empty());
     }
 }

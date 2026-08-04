@@ -1,28 +1,26 @@
-"""`Conv` conformance — the attribute *values* a form-tagged proof key still does not cover.
+"""`Conv` conformance — the attribute axes the proof key deliberately does not carry.
 
 WHY THIS FILE EXISTS AND `test_op_table.py` IS NOT ENOUGH
 --------------------------------------------------------
-Until 2026-08-04 the proof ledger recorded four `Conv` keys of the shape::
+The proof ledger records `Conv` keys of the shape::
 
-    ai.onnx::Conv/1+/f32,f32,f32>f32/metadata/static/n3
+    ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32/static/n3
 
-and `group`, `strides`, `dilations` and `pads` appeared nowhere in any of them. This file was
-written to close that gap by running the axes explicitly, and it said so — but a conformance
-test is not a claim gate, so all 52 of MobileNetV2's convolutions were still being *claimed*
-against an entry obtained on a form the model does not contain. Counting the four attribute
-classes off that graph found `padded` (what the entries proved) is not one of the four forms
-(`base` x34, `strided+padded` x1, `grouped+padded` x13, `grouped+strided+padded` x4) the model
-runs.
+and `group`, `strides`, `dilations` and `pads` appear nowhere in any of them. That is a ruling,
+not an oversight (§8.9.23): `conv_f32.comp` folds all four into push-constant *expressions* on
+one uniform code path — `cpg = c / pc.group`, with pads/strides/dilations as index arithmetic
+and bounds `continue`s every node executes — so they are expressions, not paths, and the
+ProofKey contract permits the collapse. They are **disclosed** instead, as `blind_axes` on the
+registry row, rendered into every `Conv` claim line with the clause that a CI-time suite speaks
+for them and nothing in the reader's session does.
 
-`ops::common::form` closes that. The key now carries one boolean per code path in
-`conv_f32.comp`, so the keys read::
+**This file is that suite.** The disclosure a user reads points here. If these cases stop
+running, the claim line is making a promise nothing keeps.
 
-    ai.onnx::Conv/1+/f32,f32,f32>f32/metadata#grouped+strided+padded/runtime-extent/n3
-
-**This file's job did not disappear; it narrowed.** A form bit separates `stride > 1` from
-`stride == 1`; it does not separate `stride=2` from `stride=3`, and that is deliberate — see
-`form.rs` for why the bit rather than the value is the honest granularity. The cases below are
-the values *within* a form, which no key carries and no key should.
+A short-lived attempt (2026-08-04, same day) to put four boolean form bits in the key instead
+was reversed: a bit separates `stride > 1` from `stride == 1` but not `stride=2` from
+`stride=3`, so it moved the granularity question without answering it, while making the key
+claim a distinction the kernel does not draw.
 
 DECLINES ARE ALSO TESTED
 ------------------------

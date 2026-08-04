@@ -1029,17 +1029,70 @@ mod tests {
     #[test]
     fn every_shader_row_translates_to_a_stem_that_is_in_the_manifest() {
         // The end-to-end coherence check: table row -> handler -> variant -> build manifest.
+        //
+        // Widened 2026-08-04 to cover **hand-written** modules. A `kernel!(Standalone, ..)` row
+        // names a `.comp` that `build.rs` compiles straight out of `shaders/glsl` rather than a
+        // variant the manifest generates, so the manifest is the wrong place to look for it — but
+        // the property being asserted is the same one, and it is the property that failed when
+        // `Conv` said `kernel!(None)` while dispatching `conv_f32`: *the module this row names
+        // must be something the build actually produces*.
+        //
+        // The source file is checked rather than `SHADER_MODULES`, because `SHADER_MODULES` is
+        // empty in a build with no `glslc` and the assertion would then pass by having nothing to
+        // check on exactly the build it exists to catch.
         let manifest = super::super::variants::manifest();
+        let glsl = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("shaders")
+            .join("glsl");
         for spec in crate::registry::all_specs() {
             for d in spec.caps.iter() {
                 if let Some(stem) = spec.kernel.stem(d) {
+                    let generated = manifest.iter().any(|v| v.stem == stem);
+                    let handwritten = glsl.join(format!("{stem}.comp")).is_file();
                     assert!(
-                        manifest.iter().any(|v| v.stem == stem),
-                        "`{}` would dispatch `{stem}`, which the build never produces",
+                        generated || handwritten,
+                        "`{}` would dispatch `{stem}` at {d:?}, which the build never produces: \
+                         it is in neither the variant manifest nor shaders/glsl/{stem}.comp",
                         spec.op_type
                     );
                 }
             }
+        }
+    }
+
+    /// Every hand-written `.comp` is named by a row, and every name is a real file.
+    ///
+    /// The converse of the test above, and the one that keeps the `metadata` defect from coming
+    /// back one row at a time: a `.comp` nobody's row names is a module the proof key can never
+    /// mention, which is precisely the state `conv_f32.comp` shipped in.
+    #[test]
+    fn every_hand_written_shader_is_named_by_a_row() {
+        let glsl = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("shaders")
+            .join("glsl");
+        let mut named = std::collections::BTreeSet::new();
+        for spec in crate::registry::all_specs() {
+            for d in spec.caps.iter() {
+                if let Some(stem) = spec.kernel.stem(d) {
+                    named.insert(stem);
+                }
+            }
+        }
+        for entry in std::fs::read_dir(&glsl).expect("shaders/glsl must be readable") {
+            let path = entry.expect("readable dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("comp") {
+                continue;
+            }
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .expect("a .comp file has a UTF-8 stem")
+                .to_string();
+            assert!(
+                named.contains(stem.as_str()),
+                "shaders/glsl/{stem}.comp is compiled by the build but no registry row names it, \
+                 so no proof key can ever carry it"
+            );
         }
     }
 

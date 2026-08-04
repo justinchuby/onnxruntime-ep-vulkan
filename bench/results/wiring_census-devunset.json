@@ -17,24 +17,24 @@
       "layering_lint": 12000
     },
     "observed_units": {
-      "counters_child_clean": 607,
-      "counters_child_inject": 661,
+      "counters_child_clean": 679,
+      "counters_child_inject": 655,
       "add_session_profiling": 19,
-      "counters_child_flags_a": 691,
-      "counters_child_flags_b": 791,
-      "validation_probe": 93,
-      "layering_lint": 2597
+      "counters_child_flags_a": 657,
+      "counters_child_flags_b": 624,
+      "validation_probe": 92,
+      "layering_lint": 3501
     },
     "observed_max_silence_units": {
-      "counters_child_clean": 32,
-      "counters_child_inject": 78,
+      "counters_child_clean": 86,
+      "counters_child_inject": 55,
       "add_session_profiling": 19,
-      "counters_child_flags_a": 89,
-      "counters_child_flags_b": 85,
-      "validation_probe": 45,
-      "layering_lint": 1220
+      "counters_child_flags_a": 60,
+      "counters_child_flags_b": 59,
+      "validation_probe": 43,
+      "layering_lint": 1781
     },
-    "clock_units_total": 6297,
+    "clock_units_total": 7094,
     "why_not_a_timeout": "A wall-clock threshold moves the same way for 'the box is loaded' and 'the census hung', so no value of it is right (R9 amendment 5).  A budget in work units does not: contention lowers units-per-second, widening the window in wall time, while a hang leaves the machine producing units and the step producing nothing.",
     "measures_cpu_contention_only": "The reference unit is CPU-bound.  GPU and disk contention slow a step without slowing the clock; observed_units above is recorded on every run so that margin is auditable."
   },
@@ -45,9 +45,9 @@
     "gpu_tracer": "28 trace event(s), ph_types=['C', 'M', 'X', 'i'], distinct_names=16; Phase variants emitted (6/10): ['Record', 'DescAlloc', 'PipelineLookup', 'CmdUpload', 'Submit', 'FenceWait']; NOT-EMITTED: ['Compile', 'Prepack', 'Upload', 'Readback'] (matched as ['vulkan.compile', 'vulkan.prepack']\u2026 \u2014 the trace spells the variants snake_case under a `vulkan.` prefix, per trace.rs::Phase::as_str; a matcher that looked for the Rust identifier reported 0/10 and was wrong, which is why R13 says a result confirming a prediction earns more scrutiny than one contradicting it); (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE=census-trace-devunset.json; ONNXRUNTIME_EP_VULKAN_TRACE_GPU=unset \u2014 the census does not arm device spans, because a device-clock reading under four-agent contention is Switch's exclusive claim and Niobe's admissibility frame, so any device-side phase above is UNOBSERVABLE in this frame rather than absent. No duration from this file is quoted \u2014 \u00a710.0 obligation 8. A variant present in Rust and missing from this list is a name this census has never seen emitted, which is what Phase::Record was for fifty runs)",
     "model_output_equivalence": "census-child verdict='UNMEASURED' executed_by=None (this lane runs an elementwise chain, not the criterion-10 model; the attributed MATCH belongs to test_criterion10.py and is not claimed here)",
     "retain_viable": "viable_islands_retained=77 (the mechanism's own namesake counter, named here because a line that reports a bare number does not say which counter it read \u2014 this mechanism's extent against the independent whole was 0/1 for exactly that reason)",
-    "ledger_lookup": "ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=149 unproven_declines=0 unproven_forms_claimed=0 unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int) | ledger frame: ONNXRUNTIME_EP_VULKAN_LEDGER_FILE=unset ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=unset (the ledger the lookup consulted is named by the first; the second is what would let an unproven form be claimed anyway, and a lookup reading observed without both is not replayable)",
+    "ledger_lookup": "ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=129 unproven_declines=0 unproven_forms_claimed=0 unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int) | ledger frame: ONNXRUNTIME_EP_VULKAN_LEDGER_FILE=unset ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=unset (the ledger the lookup consulted is named by the first; the second is what would let an unproven form be claimed anyway, and a lookup reading observed without both is not replayable)",
     "validation_messenger": "ARMED probe_frame: ONNXRUNTIME_EP_VULKAN_VALIDATE=unset ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION=unset ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION=unset",
-    "layering_lint": "PASS",
+    "layering_lint": "FAIL (exit 101): : cannot open file 'C:\\Users\\justinchu\\dev\\ep-vulkan-mouse\\rust\\target\\debug\\deps\\onnxruntime_vulkan_ep.dll'\n          \n\nerror: could not compile `onnxruntime-ep-vulkan` (lib) due to 1 previous error\n",
     "broken_commitment_warn": "planted: channel='ORT_SINK' broken_commitments=1 compute_failures=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 compute_failures=0 fault_injection='NONE' | armed by ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE=unset in this process, set to '1' in the planted arm's child environment only (the EP caches its environment at DLL load on Windows, so an in-process set would be read by nothing)",
     "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-mouse\\\\bench\\\\results\\\\census\\\\census-counters-dev0-clean.json'",
     "instrument_census": "exit=1 CENSUS VERDICT: FAIL(drift) | ",

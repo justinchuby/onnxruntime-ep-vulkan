@@ -133,15 +133,15 @@ fn skip_simplified_layer_norm(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult
 
 crate::op_table! {
     //  op                                    domain  opsets                       caps    kernel          claim                       translate                  status                    schema
-    "SimplifiedLayerNormalization",           Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  simplified_layer_norm,      templates::simplified_norm, Ready,                   schema: &SIMPLIFIED_LAYER_NORM;
-    "SkipSimplifiedLayerNormalization",       Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  skip_simplified_layer_norm, templates::skip_norm,      Ready,                    schema: &SKIP_SIMPLIFIED_LAYER_NORM;
+    "SimplifiedLayerNormalization",           Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(Standalone, "simplified_layer_norm"),  simplified_layer_norm,      templates::simplified_norm, Ready,                   schema: &SIMPLIFIED_LAYER_NORM;
+    "SkipSimplifiedLayerNormalization",       Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(Standalone, "skip_simplified_layer_norm"),  skip_simplified_layer_norm, templates::skip_norm,      Ready,                    schema: &SKIP_SIMPLIFIED_LAYER_NORM;
 
     // `RMSNormalization` is the same maths under the standard-domain spelling and runs the same
     // kernel. It stays staged behind `UNEXERCISED` rather than `NEEDS_REDUCTION` because the
     // reduction shader now exists — the blocker is no longer "no kernel", it is "no device has
     // run this row". No graph on this machine emits it, so flipping it would be a claim with no
     // instrument behind it (§8.9, R9).
-    "RMSNormalization",                       Ai,     OPSET_STD_LLM ..= OPSET_STD_NORM_MAX, FLOAT,  kernel!(None),  simplified_layer_norm,      templates::simplified_norm, Ready;
+    "RMSNormalization",                       Ai,     OPSET_STD_LLM ..= OPSET_STD_NORM_MAX, FLOAT,  kernel!(Standalone, "simplified_layer_norm"),  simplified_layer_norm,      templates::simplified_norm, Ready;
 
     // The same op again, in the **default domain**. Not a duplicate and not defensive coding: the
     // ORT GenAI model builder writes `SimplifiedLayerNormalization` with `node.domain == ""`, and
@@ -154,7 +154,7 @@ crate::op_table! {
     // **This is the row Phi-3.5's one remaining norm node keys against**: the single
     // `/model/layers.0/input_layernorm/LayerNorm` (every other layer's input norm is fused into
     // `SkipSimplifiedLayerNormalization`).
-    "SimplifiedLayerNormalization",           Ai,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  simplified_layer_norm,      templates::simplified_norm, Ready,                   schema: &SIMPLIFIED_LAYER_NORM;
+    "SimplifiedLayerNormalization",           Ai,     1 ..= OPSET_ANY,             FLOAT,  kernel!(Standalone, "simplified_layer_norm"),  simplified_layer_norm,      templates::simplified_norm, Ready,                   schema: &SIMPLIFIED_LAYER_NORM;
 }
 
 #[cfg(test)]

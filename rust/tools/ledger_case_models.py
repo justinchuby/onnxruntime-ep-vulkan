@@ -417,17 +417,26 @@ def _conv(
     graph carries, and the claim predicate refuses a symbolic weight extent, so a case whose
     weights arrived as an input would be proving a form no model contains.
 
-    The **four** cases built from this at the default form are the cross product of {bias, no
-    bias} x {static, runtime-extent}. That was the entire key space until 2026-08-04, when
-    `ops::common::form` made `group`, `strides`, `dilations` and `pads` visible to the key as
-    four boolean bits — one per code path in `conv_f32.comp`, not one per value. The four
-    default-form cases are all `padded`, and the census that motivated the change found that
-    `padded` is **not one of the four forms MobileNetV2 contains**: 52 nodes had been claiming
-    against a proof obtained on a form the model does not have. `tests/ops/test_conv.py` still
-    speaks for the attribute *values* within a form; the key now speaks for the form.
+    The **four** cases built from this at the default attribute set are the cross product of
+    {bias, no bias} x {static, runtime-extent}, and that is the entire `Conv` key space.
 
-    MobileNetV2's own form is `bias=True, dynamic=True`: all 52 of its convolutions carry a bias
-    and a symbolic batch extent.
+    `group`, `strides`, `dilations` and `pads` are **not** key components. They were briefly
+    rendered into the key as boolean form bits on 2026-08-04; §8.9.23 reversed that, because
+    `conv_f32.comp` folds all four into push-constant *expressions* on one uniform code path
+    (`cpg = c / pc.group`; pads/strides/dilations are index arithmetic and bounds `continue`s
+    that every node executes). They are expressions, not paths, so the ProofKey contract —
+    "equal keys are dispatched by the same code with the same descriptor layout" — permits the
+    collapse. They are disclosed instead, as `blind_axes` on the registry row, rendered into
+    every claim line.
+
+    The attribute-varying cases below are therefore **not** distinct keys. They are the CI-time
+    suite that speaks for the blind axes: the disclosure says a suite checked these axes and
+    nothing in the reader's session did, and these cases (with `tests/ops/test_conv.py`) are
+    that suite. Several of them now mint a key another case already minted; that is expected and
+    is what the collapse means.
+
+    MobileNetV2's own shape is `bias=True, dynamic=True`: all 52 of its convolutions carry a
+    bias and a symbolic batch extent.
     """
     h, w = hw
     kh, kw = kernel
@@ -499,11 +508,13 @@ def _gemm(
 ) -> onnx.ModelProto:
     """A one-node `Gemm` with `B` (and `C`) as initializers.
 
-    `transA` and `transB` are proof-key **form** bits (`ops::common::form`), so the four
-    transpose combinations are four distinct keys and a case per combination is not redundant —
-    a proof obtained at `transB=1` grants nothing at `transB=0`, which is exactly the point of
-    the form mechanism. `alpha` and `beta` are *not* form bits and are therefore deliberately
-    varied inside a single case rather than across cases.
+    `transA`, `transB`, `alpha` and `beta` are all **blind axes**, not key components. A
+    transpose in `gemm_f32.comp` is a ternary on a push constant selecting an index expression —
+    one pipeline, one descriptor layout — and `alpha`/`beta` are scalar multiplies. So the four
+    transpose combinations mint the *same* key at a given arity and shape_class, and the cases
+    below are a CI-time suite over those axes rather than four separate proofs. (§8.9.23 names
+    only `Conv`'s four axes; extending it to `Gemm`'s transposes is Mouse's own reading of the
+    same argument and is reversible by Morpheus.)
 
     MobileNetV2's own head is `transB=1, bias=True, dynamic=True` with `C` of rank 1.
     """
@@ -758,24 +769,27 @@ BUILDERS.update({
     # `Add` nodes decline `[unproven]` on exactly this key.
     "add_f32_dyn": lambda: _binary_dyn("Add", TensorProto.FLOAT),
 
-    # `Conv`: the key space is now {bias, no bias} x {static, runtime-extent} x **form**, where
-    # form is `ops::common::form`'s four boolean bits over group/strides/dilations/pads. The four
-    # entries below were the whole ledger for `Conv` until 2026-08-04 and all four are the
-    # `padded` form — which the census then showed is **not one of the four forms MobileNetV2
-    # contains**. They are kept because they are the arity x shape_class cross product; the
-    # form-varying cases that follow are what the model actually runs.
+    # `Conv`: the key space is {bias, no bias} x {static, runtime-extent}. `group`, `strides`,
+    # `dilations` and `pads` are push-constant expressions on one code path, so they are
+    # `blind_axes` on the registry row and not key components (§8.9.23 reversed the form bits
+    # that briefly made them visible to the key). The four entries below are the arity x
+    # shape_class cross product and are the whole `Conv` ledger.
     "conv_f32": lambda: _conv(TensorProto.FLOAT),
     "conv_f32_nobias": lambda: _conv(TensorProto.FLOAT, bias=False),
     "conv_f32_dyn": lambda: _conv(TensorProto.FLOAT, dynamic=True),
     "conv_f32_nobias_dyn": lambda: _conv(TensorProto.FLOAT, bias=False, dynamic=True),
 
-    # The four `Conv` forms MobileNetV2 actually contains, counted off its graph on 2026-08-04:
-    #   base                    x34   (1x1 pointwise, no pad, no stride, dense)
-    #   strided+padded          x1
-    #   grouped+padded          x13   (3x3 depthwise)
-    #   grouped+strided+padded  x4
-    # All 52 nodes carry a bias and a symbolic batch extent, so every case here is
-    # `bias=True, dynamic=True` — the model's own arity and shape_class.
+    # The four attribute shapes MobileNetV2 actually contains, counted off its graph on
+    # 2026-08-04:
+    #   dense 1x1 unpadded       x34
+    #   strided + padded         x1
+    #   grouped + padded         x13   (3x3 depthwise)
+    #   grouped + strided+padded x4
+    # These are **not** four keys — they all collapse onto `conv_f32` at
+    # `bias=True, dynamic=True`. They are kept as the CI-time suite the `blind_axes` disclosure
+    # points at: the claim line says a suite checked group/strides/dilations/pads and the
+    # reader's session did not, and this is that suite. Running them costs a proof attempt each
+    # and buys a differential measurement on the arithmetic the key cannot see.
     "conv_f32_base_dyn": lambda: _conv(
         TensorProto.FLOAT, dynamic=True, kernel=(1, 1), pads=(0, 0, 0, 0)
     ),
@@ -788,19 +802,17 @@ BUILDERS.update({
     "conv_f32_grouped_strided_dyn": lambda: _conv(
         TensorProto.FLOAT, dynamic=True, group=4, c=4, m=4, strides=(2, 2), pads=(0, 1, 0, 1)
     ),
-    # `dilated` is the one form bit no censused model sets. It is proven anyway, because the bit
-    # exists to separate a code path and an unexercised separator is a separator nobody has
-    # checked — the same argument the negative controls in this repo are built on.
+    # `dilations` is the one blind axis no censused model sets. It is exercised anyway, because
+    # an unexercised axis is an axis nobody has checked — the same argument the negative
+    # controls in this repo are built on. It mints no key of its own.
     "conv_f32_dilated": lambda: _conv(
         TensorProto.FLOAT, dilations=(2, 2), pads=(0, 0, 0, 0), hw=(10, 12)
     ),
 
-    # The same four forms at `static` shape_class. Added after `probe_conv_tolerance.py`
-    # refused to run: `shape_class` is a key component, so proving `base` on a symbolic batch
-    # proves nothing about `base` on a fixed one, and every static-shaped `Conv` in
-    # `tests/ops/_conv_cases.py` except the `padded` ones had silently become `[unproven]` the
-    # moment the form suffix landed. The instrument that caught it was a probe declining to
-    # measure, not a test — which is why it declines.
+    # The same four attribute shapes at `static` shape_class. `shape_class` *is* a key
+    # component, so these are a genuinely different key from the `_dyn` ones above — but again
+    # one key for all four, not four. They were added when `probe_conv_tolerance.py` refused to
+    # run against the short-lived form suffix; they are kept as suite coverage.
     "conv_f32_base": lambda: _conv(
         TensorProto.FLOAT, kernel=(1, 1), pads=(0, 0, 0, 0)
     ),
@@ -819,9 +831,9 @@ BUILDERS.update({
     "global_average_pool_f32": lambda: _global_average_pool(TensorProto.FLOAT),
     "global_average_pool_f32_dyn": lambda: _global_average_pool(TensorProto.FLOAT, dynamic=True),
 
-    # `Gemm`: form (transA x transB) x arity (C present) x shape_class. `alpha`/`beta` are not
-    # key components and are varied *within* the base case rather than across cases, which is
-    # the assertion that they really are one code path.
+    # `Gemm`: the key space is arity (C present) x shape_class. `transA`/`transB`/`alpha`/`beta`
+    # are blind axes, not key components, so the transpose cases below collapse onto the same
+    # key as `gemm_f32` and exist as the CI-time suite the disclosure points at.
     "gemm_f32": lambda: _gemm(TensorProto.FLOAT, alpha=0.75, beta=1.5),
     "gemm_f32_nobias": lambda: _gemm(TensorProto.FLOAT, bias=False),
     "gemm_f32_transa": lambda: _gemm(TensorProto.FLOAT, trans_a=1),

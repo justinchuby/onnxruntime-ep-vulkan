@@ -1373,6 +1373,27 @@ pub struct OpSpec {
     /// Almost every row leaves this `None`, which is why it is an optional column rather than a
     /// required one.
     pub compile: Option<CompileHook>,
+    /// Attribute axes this row's proof key **deliberately does not distinguish**.
+    ///
+    /// §8.9.23 (Morpheus, 2026-08-04), and the third answer to a question that was posed as a
+    /// binary. `Conv`'s `group`, `strides`, `dilations` and `pads` are **push constants in one
+    /// uniform code path** — `conv_f32.comp` branches on none of them, and grouped is the general
+    /// form of dense. Under §8.7 they are *expressions, not paths*, so the key that omits them is
+    /// **true**, and adding them as a key component would assert that a stride-2 `Conv` runs
+    /// different code from a stride-1 one, which it does not. It would also demand ~52 proofs for
+    /// one form.
+    ///
+    /// What is owed instead is a **disclosure**. The reader of a session-time "proven" line is
+    /// entitled to know which axes that proof did not vary, because the honest reading of the
+    /// claim is *"one proof covers every value of these axes by construction"* and the honest
+    /// reading of the evidence is *"a CI-time suite varied them; nothing in your session did"*.
+    /// Both clauses are rendered, and the second is the one Rai was watching for: without it the
+    /// disclosure implies a coverage the session cannot witness.
+    ///
+    /// This is not a list of things that are unproven. It is a list of things the *key* is silent
+    /// about, which is a different and narrower statement — and one nothing else in the system
+    /// records.
+    pub blind_axes: &'static [&'static str],
 }
 
 impl OpSpec {
@@ -1443,6 +1464,7 @@ macro_rules! op_table {
         $kernel:expr, $claim:path, $translate:path, $status:expr
         $(, schema: $schema:expr)?
         $(, compile: $compile:expr)?
+        $(, blind_axes: $blind:expr)?
     );* $(;)?) => {
         /// Registry rows declared by this module.
         pub static OPS: &[$crate::registry::OpSpec] = &[
@@ -1459,9 +1481,27 @@ macro_rules! op_table {
                     status: $status,
                     schema: $crate::opt_schema!($($schema)?),
                     compile: $crate::opt_hook!($($compile)?),
+                    blind_axes: $crate::opt_blind_axes!($($blind)?),
                 }
             ),*
         ];
+    };
+}
+
+/// The row's declared blind axes, or the empty slice when it declares none.
+///
+/// Empty is the right default and not a placeholder: a row whose key distinguishes every axis its
+/// kernel reads has nothing to disclose. A row that *should* have declared axes and did not is a
+/// silent under-disclosure, which is why `blind_axes` is checked against the shipped list in a
+/// test rather than trusted to be remembered.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! opt_blind_axes {
+    () => {
+        &[]
+    };
+    ($blind:expr) => {
+        $blind
     };
 }
 
@@ -1520,6 +1560,22 @@ fn lookup(qualified: &str) -> Option<&'static OpSpec> {
     all_specs().find(|s| s.qualified_name() == qualified)
 }
 
+/// The attribute axes the row for `qualified` declares its proof key blind to.
+///
+/// Public because the disclosure needs it and the disclosure is where the obligation lands: a
+/// blind axis recorded in the registry and never rendered is a caveat the reader does not get.
+/// Returns the empty slice for a name with no row, which is the same answer as "declares none" and
+/// correct for both — a form the registry does not know is not one this EP claimed.
+pub fn blind_axes_for(qualified: &str) -> &'static [&'static str] {
+    // Two spellings reach here. `NodeView::qualified_name` renders the default domain as the bare
+    // op type (`Conv`), `OpSpec::qualified_name` renders it the same way, and human-written call
+    // sites — including this project's own doc comments — say `ai.onnx::Conv`. Accepting both is
+    // not laxity: a disclosure that silently drops its caveat because the caller spelled the
+    // domain out is exactly the failure this field exists to prevent.
+    let bare = qualified.strip_prefix("ai.onnx::").unwrap_or(qualified);
+    lookup(bare).map(|s| s.blind_axes).unwrap_or(&[])
+}
+
 // -------------------------------------------------------------------------------------------
 // Proof ledger and CLAIM_UNPROVEN escape hatch — §8.9 scaffolding
 // -------------------------------------------------------------------------------------------
@@ -1561,14 +1617,29 @@ impl ProofKey {
         ProofKey(s.trim().to_owned())
     }
 
-    /// The `variant` component — the SPIR-V module stem this form would dispatch.
+    /// The whole `variant` component, suffixes and all.
     ///
     /// Component 3 of `domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs`. `None` for
     /// a key that does not have six components, because a malformed key must not be answered with
     /// a plausible substring.
-    pub fn variant_stem(&self) -> Option<&str> {
+    pub fn variant_component(&self) -> Option<&str> {
         let parts: Vec<&str> = self.0.split('/').collect();
         (parts.len() >= 5).then(|| parts[3])
+    }
+
+    /// The SPIR-V module stem this form would dispatch, with the `@sel` and `#form` suffixes
+    /// stripped.
+    ///
+    /// Those suffixes name a *specialisation constant* and an *attribute form*; neither is part of
+    /// the module's name. Before they were stripped, every selector-bearing and every form-bearing
+    /// key answered this question with a string that names no module — and the one caller that
+    /// matters, [`form_is_provable`], reads an unknown stem as *"do not know, assume provable"*.
+    /// So the day `Conv` gained a form suffix, every `Conv` key silently joined the under-claiming
+    /// branch. Stripping here is what makes the suffixes additive rather than blinding.
+    pub fn variant_stem(&self) -> Option<&str> {
+        let v = self.variant_component()?;
+        let v = v.split('#').next().unwrap_or(v);
+        Some(v.split('@').next().unwrap_or(v))
     }
 
     /// Derive the key for one node against the row that would dispatch it.
@@ -1776,16 +1847,26 @@ fn dtype_signature(view: &NodeView<'_>) -> String {
 /// write the same fact into the key twice and change every existing `Clip` key for no distinction
 /// gained.
 ///
-/// # The form suffix
+/// # There is no form suffix, and that is a ruling rather than an omission
 ///
-/// `ops::common::form` carries an op's *form* — attributes that change what the kernel computes
-/// without forking the pipeline, such as `Conv`'s `group` and `Gemm`'s `transB`. A selector could
-/// not carry them: a selector is a specialisation constant, and forking a pipeline per `group`
-/// value would multiply modules for a distinction the shader resolves from a push constant. But
-/// the *proof* needs the distinction, because a form proven on a dense convolution says nothing
-/// about a grouped one. It rides this component under `#` for the reason given in `form`'s module
-/// docs: the key has exactly six fields by rule, and this is the field that already folds in
-/// per-op identity. Ops with no form bits are byte-identical to what they were before.
+/// For one round this component carried an op's *form* under `#` — `Conv`'s `group`, `Gemm`'s
+/// `transB` — on the reasoning that a proof obtained on a dense convolution says nothing about a
+/// grouped one. §8.9.23 (Morpheus, 2026-08-04) ruled that reasoning wrong at its root, and
+/// `conv_f32.comp` settles it by inspection: `group`, `strides`, `dilations` and `pads` are push
+/// constants folded into index arithmetic that every node executes, and grouped is the *general*
+/// form of dense (`cpg = c / group`, which is `c` at `group=1`). One module, one pipeline, one set
+/// of emitted instructions. Under §8.7 they are **expressions, not paths**, so a key that omits
+/// them satisfies this key's own stated meaning — *two nodes whose keys are equal are dispatched
+/// by the same code with the same descriptor layout* — and a key that included them would assert a
+/// distinction the hardware does not make, while demanding ~52 proofs for one form.
+///
+/// The worry that motivated the suffix does not go away with it: an expression can still be wrong,
+/// and a proof taken at `group=1` never executed the `group=32` arithmetic. What discharges it is
+/// [`OpSpec::blind_axes`] — the axes are named on the claim line the user reads, together with the
+/// clause that a CI-time suite speaks for them and nothing in that session does.
+///
+/// `has_bias` is *not* one of these and never was: it changes the populated input set, which is
+/// component 6 of this key already.
 fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
     let dispatch_dtype = view
         .input_types()
@@ -1830,10 +1911,7 @@ fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
         }
         _ => stem,
     };
-    match crate::ops::common::form::tag_for(spec.op_type, view) {
-        Some(form) => format!("{selected}#{form}"),
-        None => selected,
-    }
+    selected
 }
 
 /// `shape_class ∈ {static, runtime-extent}` as §8.9 spells it, over the four classes we compute.
@@ -3311,21 +3389,48 @@ pub fn unproven_decline_detail(outcome: LedgerLookup, key: &ProofKey) -> String 
 /// value that changed once a device existed would be the time-dependent-global defect this
 /// project has now shipped three times.
 ///
-/// **It answers `true` whenever it is not sure**, which is a deliberate under-claim in two places:
-/// a key whose variant component cannot be read, and a key whose variant names no module at all.
-/// The second is not hypothetical — a composite row keys its form as `metadata`, and the first
-/// version of this predicate called `variant_is_loadable("metadata")`, got `false`, and reported
-/// `ai.onnx::Gather/1+/i64,i64>i64/metadata/static/n2` as unprovable on the strength of a stem
-/// that names no module. Composite forms *are* provable; several are proven in the ledger today.
-/// So the published list is a **lower bound** on what no proof run can clear: everything on it has
-/// a generated module that cannot be created, and a form may be unreachable for other reasons
-/// without appearing.
+/// **It answers `true` whenever it is not sure**, and the boundary of "not sure" is the repair
+/// Morpheus's §8.9.23 finding forced. A key whose variant component names no module the registry
+/// declares — `metadata` on a genuinely composite row, or a malformed key — is unknown, and
+/// unknown under-claims: composite forms *are* provable, several are proven in the ledger today,
+/// and the first version of this predicate reported
+/// `ai.onnx::Gather/1+/i64,i64>i64/metadata/static/n2` unprovable on the strength of a stem that
+/// names nothing.
+///
+/// But a key whose variant **is** a module the registry declares is not unknown, and it must not
+/// be answered from the same branch. That was the defect: `Conv`'s keys rendered `metadata`
+/// because its row said `kernel!(None)` while its entries recorded `"shaders":["conv_f32"]`, so
+/// the predicate took the unknown branch and answered *provable* — including in a build with no
+/// SPIR-V at all, which is the positive control this predicate was supposed to have and did not.
+/// A declared stem now answers [`variant_is_loadable`] directly, so a shaderless build reports
+/// every hand-written row unprovable, which is true.
+///
+/// The published list is therefore still a **lower bound** on what no proof run can clear:
+/// everything on it has a declared module that cannot be created, and a form may be unreachable
+/// for other reasons without appearing.
 fn form_is_provable(key: &ProofKey) -> bool {
     let Some(stem) = key.variant_stem() else {
         return true;
     };
-    !crate::ops::common::variants::variant_is_generated(stem)
-        || crate::ops::common::variants::variant_is_loadable(stem)
+    use crate::ops::common::variants::{variant_is_declared, variant_is_generated, variant_is_loadable};
+    form_provable_from(
+        variant_is_declared(stem),
+        variant_is_generated(stem),
+        variant_is_loadable(stem),
+    )
+}
+
+/// [`form_is_provable`]'s decision, as a pure function of its three inputs.
+///
+/// Split out so the **shaderless build** — the positive control this predicate shipped without —
+/// is reachable from a test. `variant_is_generated` and `variant_is_loadable` both read
+/// `SHADER_MODULES`, which is baked in by `build.rs`, so a test inside this process cannot make
+/// the build have no SPIR-V; it can only be handed the booleans that build would produce.
+fn form_provable_from(declared: bool, generated: bool, loadable: bool) -> bool {
+    if declared {
+        return loadable;
+    }
+    !generated || loadable
 }
 
 /// Whether the ledger holds a proof for this key.
@@ -4165,12 +4270,19 @@ mod tests {
         assert!(form_is_provable(&malformed));
     }
 
-    /// **A composite form's `metadata` stem is a placeholder, not a refusal.**
+    /// **A `metadata` stem is a placeholder, not a refusal — but nothing live produces one now.**
     ///
     /// The first version of this predicate reported `Gather/…/metadata/static/n2` as unprovable
-    /// because `variant_is_loadable("metadata")` is `false` for an unknown stem. Composite forms
-    /// are provable — the ledger holds proven `metadata` entries today — so the classifier was
-    /// asserting a capability finding on a string that names no module.
+    /// because `variant_is_loadable("metadata")` is `false` for an unknown stem, so it under-claims
+    /// on stems it does not recognise. That branch is kept, because a key it cannot recognise is
+    /// still not evidence of anything.
+    ///
+    /// What changed on 2026-08-04 is which keys reach it. `Gather` — like `Conv`, `Gemm`,
+    /// `GlobalAveragePool`, the norms and `GroupQueryAttention` — said `kernel!(None)` while
+    /// dispatching a hand-written module, so its keys rendered `metadata` and took this branch.
+    /// They now name their module and take the declared branch. Every row that still renders
+    /// `metadata` is `Staged` with no dispatch path at all, which is what the component was
+    /// documented to mean.
     #[test]
     fn a_composite_forms_metadata_stem_is_not_read_as_an_unloadable_module() {
         let composite = ProofKey::parse("ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2");
@@ -4180,10 +4292,88 @@ mod tests {
             "no module is named `metadata`; that is the point"
         );
         assert!(
+            !crate::ops::common::variants::variant_is_declared("metadata"),
+            "no row names `metadata`; that is what makes it the unknown branch"
+        );
+        assert!(
             form_is_provable(&composite),
-            "this exact key is proven in the shipped ledger — a classifier that calls it \
+            "an unrecognised stem is not a capability finding — a classifier that calls it \
              unprovable is reporting its own blind spot as a finding about the form"
         );
+    }
+
+    /// **The positive control `form_is_provable` shipped without: a build with no SPIR-V.**
+    ///
+    /// Morpheus, §8.9.23: `Conv`'s four keys rendered their variant as `metadata` — documented to
+    /// mean *"this row has no shader"* — while the same ledger entries recorded
+    /// `"shaders":["conv_f32"]`. The cause was `kernel!(None)`, and one consequence was that this
+    /// predicate short-circuited: `metadata` is not a module, so it took the under-claiming branch
+    /// and answered *provable* for a row whose module it never consulted. In a build that produced
+    /// no SPIR-V at all, `Conv` still read provable. That is the control this predicate was built
+    /// to have, and it passed.
+    ///
+    /// The three inputs are enumerated rather than simulated: both readings go to `SHADER_MODULES`,
+    /// which `build.rs` bakes in, so no test in this process can make the build shaderless. It can
+    /// only assert what the predicate does with the booleans that build would hand it.
+    #[test]
+    fn a_declared_module_that_the_build_did_not_produce_is_not_provable() {
+        // declared, generated, loadable -> provable
+        assert!(form_provable_from(true, true, true), "a real, loadable module");
+        assert!(
+            !form_provable_from(true, true, false),
+            "declared and built, but declares a capability the engine does not enable"
+        );
+        assert!(
+            !form_provable_from(true, false, false),
+            "A SHADERLESS BUILD. The row names a module and the build did not produce it; no \
+             proof run can measure it. This is the case that answered `true` before 2026-08-04, \
+             via `metadata` on the unknown branch."
+        );
+        // Not declared: nothing is known, and under-claiming is deliberate.
+        assert!(form_provable_from(false, false, false), "unknown stem, unknown answer");
+        assert!(form_provable_from(false, true, true));
+    }
+
+    /// The rows that carried the defect now key on their module, and the module is real.
+    #[test]
+    fn hand_written_rows_key_on_the_module_they_dispatch() {
+        use crate::engine::DType;
+        for (op, dtype, stem) in [
+            ("Conv", DType::F32, "conv_f32"),
+            ("Gemm", DType::F32, "gemm_f32"),
+            ("GlobalAveragePool", DType::F32, "global_average_pool_f32"),
+            ("Gather", DType::F16, "gather_f16"),
+            ("GroupQueryAttention", DType::F16, "gqa_f16"),
+            ("SkipSimplifiedLayerNormalization", DType::F32, "skip_simplified_layer_norm_f32"),
+        ] {
+            let spec = all_specs()
+                .find(|s| s.op_type == op)
+                .unwrap_or_else(|| panic!("{op} must be registered"));
+            assert_eq!(
+                spec.kernel.stem(dtype),
+                Some(stem),
+                "`{op}` records `{stem}` in its ledger entries; its key must say so too"
+            );
+            assert!(
+                crate::ops::common::variants::variant_is_declared(stem),
+                "`{stem}` must be reachable from the registry, or the key takes the unknown branch"
+            );
+        }
+    }
+
+    /// The `@sel` and `#form` suffixes must not blind the stem lookup.
+    ///
+    /// This is how the defect would have come back the moment a second `Conv` form existed: the
+    /// variant component is `conv_f32#grouped+padded`, and no module is named that.
+    #[test]
+    fn a_suffixed_variant_component_still_resolves_to_its_module() {
+        let k = ProofKey::parse(
+            "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32#grouped+padded/static/n3",
+        );
+        assert_eq!(k.variant_component(), Some("conv_f32#grouped+padded"));
+        assert_eq!(k.variant_stem(), Some("conv_f32"));
+        let sel = ProofKey::parse("ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel1/static/n1");
+        assert_eq!(sel.variant_stem(), Some("ew_unary_isinf_f32"));
     }
 
     #[test]

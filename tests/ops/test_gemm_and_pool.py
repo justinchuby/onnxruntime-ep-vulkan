@@ -2,13 +2,15 @@
 
 WHY THIS FILE EXISTS
 --------------------
-Both ops landed on 2026-08-04 with proof-ledger entries, and for `Gemm` those entries now carry
-the transpose form (`ops::common::form`), so `transA`/`transB` are separated by the key rather
-than by hope. What the key still does not carry, and what this file is for:
+Both ops landed on 2026-08-04 with proof-ledger entries. For `Gemm` those entries do **not**
+carry `transA`/`transB`: a transpose in `gemm_f32.comp` is a ternary on a push constant
+selecting an index expression — one pipeline, one descriptor layout — so the transposes are
+`blind_axes` on the registry row, disclosed in the claim line, and this file is the CI-time
+suite that disclosure points at. What the key does not carry, and what this file is for:
 
-* the **values** inside a form — `alpha`, `beta`, and `C`'s broadcast shape. None of these fork
-  a code path, so none of them is a form bit, and a ledger entry proved on `alpha=0.75,
-  C=[N]` says nothing about `alpha=1, C=[M,1]`.
+* the **transposes themselves**, and the **values** beside them — `alpha`, `beta`, and `C`'s
+  broadcast shape. None of these forks a code path, so none is a key component, and a ledger
+  entry proved on `alpha=0.75, C=[N]` says nothing about `alpha=1, C=[M,1]`.
 * the **structural** properties a tolerance comparison can hide. A transposed read of a square
   matrix produces numbers of the right magnitude in the wrong places; against a random reference
   that fails, but against a nearly-symmetric one it can pass. The exact cases below make those

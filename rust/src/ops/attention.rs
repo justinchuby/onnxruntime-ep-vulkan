@@ -74,7 +74,7 @@ use crate::engine::{
 };
 use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
-use crate::ops::common::dtype::{ANY, FLOAT};
+use crate::ops::common::dtype::{ANY, F16, FLOAT};
 use crate::ops::common::templates;
 use crate::registry::OpStatus::{Live, Staged};
 use crate::registry::{
@@ -674,7 +674,14 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
 
 crate::op_table! {
     //  op                     domain  opsets                       caps    kernel          claim                   translate                  status              schema
-    "GroupQueryAttention",     Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  group_query_attention,  translate_gqa,             Live,               schema: &GROUP_QUERY_ATTENTION;
+    //
+    // `caps` is F16 and not FLOAT, and that narrowing is a consequence of naming the module in the
+    // row (2026-08-04, Mouse). `translate_gqa` has always refused f32 outright — *"an f32 GQA
+    // shader is not implemented"* — and there is no `gqa_f32.comp`, so the previous FLOAT let an
+    // f32 node pass the claim gate and fail at translate, which is a partition-compile failure
+    // where a `[dtype]` decline was meant. It is the same argument `Conv`'s row already makes for
+    // f16 in the other direction: a dtype with no module declines at the gate.
+    "GroupQueryAttention",     Ms,     1 ..= OPSET_ANY,             F16,    kernel!(Standalone, "gqa"),  group_query_attention,  translate_gqa,             Live,               schema: &GROUP_QUERY_ATTENTION;
     "RotaryEmbedding",         Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  rotary_embedding,       templates::unimplemented,  Staged(XL_KERNEL),  schema: &ROTARY_EMBEDDING;
     "MultiHeadAttention",      Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  claim::never,           templates::unimplemented,  Staged(XL_KERNEL),  schema: &MULTI_HEAD_ATTENTION;
     "Attention",               Ai,     OPSET_STD_LLM ..= OPSET_STD_ATTENTION_MAX, FLOAT,  kernel!(None),  std_attention,          templates::unimplemented,  Staged(XL_KERNEL);

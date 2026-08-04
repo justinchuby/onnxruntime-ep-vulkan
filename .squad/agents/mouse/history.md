@@ -676,3 +676,112 @@ proofs could go stale in silence.
 
 **Untouched, as instructed:** `shaderInt64`; `DEVICE_MEMORY` and `KV_ARENA` were never enabled in
 any lane of mine (Tank's blocker); no clock.
+
+---
+
+## Round 2026-08-04 (later) — the `metadata` variant defect, the `#form` reversal, `blind_axes`, and two censuses
+
+**Order given, and kept:** the `metadata` variant defect first (blocking, Morpheus §8.9.23(3) /
+Rai RAI-015), then `blind_axes`, then coverage. **No second `Conv` variant landed**, which was
+the whole point of the ordering — a constant variant component is invisible while only one exists.
+
+### Gates
+
+| gate | result |
+|---|---|
+| `cargo build` | clean |
+| `cargo test --lib` | **574 passed / 0 failed / 4 ignored** |
+| `cargo clippy --all-targets` | clean |
+| `counters_abi.py --check` | PASS, layout `(8, 0xdf71f4e6a59271b3)`, mirror matches the DLL |
+| `gen_proof_ledger.py --check` | PASS — **129 entries**, digest `e2a5e721767e6ee1` |
+| loss invariant | **172 ever MATCHed / 129 in ledger / 0 missing / 43 retired** |
+| `tests/ops` | **738 passed / 3 failed / 33 skipped / 3 xfailed** |
+
+The 3 reds are the three pre-existing declared reds. I checked the one that could plausibly have
+been mine — `test_census_baseline_has_no_drift` — and its drift is `bench/test_paired_ratio.py`
+undeclared in the census frame, a bench file of Trinity's, not a registry change of mine. Baseline
+was 3 failed / 737 passed / 34 skipped; one test moved skipped → passed.
+
+### Census, before and after
+
+| model | before | after |
+|---|---|---|
+| MobileNetV2-12 | 97 / 105 | **98 / 105** |
+| BERT-SQuAD-12 | not censused | **480 / 1167** (first measurement) |
+| Phi-3.5 | `claimed_nodes 355 / islands_offered 1` | unchanged |
+
+MobileNetV2's +1 landed with **no kernel** — it is the form collapse returning nodes that had been
+declining against a suffixed key nobody proved.
+
+### What surprised me
+
+**The composite escape hatch was never once used for the case it exists for.** `metadata` is
+documented as "this row has no shader", for composite rows that dispatch several. I queried every
+plain-`metadata` ledger entry before deciding how wide the fix should be: **all 20 record exactly
+one shader.** Ten `.comp` files, seven row families, 1:1 under `<prefix>_<dtype>`. Not one row
+was ever composite. The placeholder existed only as the thing rows fell into when the kernel table
+was left unfilled — which is why the defect was seven rows wide and not one, and why I fixed all
+seven rather than the `Conv` I was asked for.
+
+**Morpheus's ruling reversed my own previous round's central artifact.** I built `form.rs` and
+handed up a two-option question; §8.9.23 answered *neither*, and on inspection it is plainly right —
+`cpg = c / pc.group` means grouped is the general form and dense is `group=1` inside it, so
+there is no dense branch to separate. My form bits were asserting a distinction the kernel does not
+draw. I deleted `form.rs`.
+
+**A latent hole nobody reported, found while fixing the reported one.** `variant_stem()` returned
+the *whole* variant component, so every `@sel`- or `#form`-suffixed key resolved to a string
+naming no module and fell into the permissive unknown-stem branch. **The suffixes were blinding the
+lookup.** My own `#form` suffix from last round had, among other things, silently broken this.
+
+**The live capture beat the unit tests twice.** The tests assert the `BLIND` clause renders; they
+assert on substrings. Running a real `Conv` showed the clause spliced into the `UNATTRIBUTED`
+group message rendering `...does.. The proofs are sound`. And running `DEVICE=1` is what
+established the second vendor's *name*.
+
+### The vendor hazard, half answered
+
+`ONNXRUNTIME_EP_VULKAN_DEVICE=1` opens **`Intel(R) Iris(R) Xe Graphics`** on this box, read off
+the run as instructed rather than off the selector. The EP names it itself and correctly reports
+`PROVEN-ELSEWHERE{device}` rather than repeating the ordinal back. That establishes the identity
+and that the instrument is honest about it. **It establishes nothing about `FP32_CONV` on Intel** —
+no tolerance was measured there.
+
+### What my verification established, and what it did not
+
+**Established.** That the seven affected row families now render the module they actually dispatch,
+in the key, verified on a live session line reading `.../conv_f32/static/n3` rather than
+`.../metadata/...`. That `form_is_provable` now answers *not provable* for a declared module the
+build did not produce — the shaderless positive control this predicate was built to have and
+previously failed, now an in-process test over the pure `form_provable_from`. That the `BLIND`
+clause reaches a reader's session on both devices and in both the `PROVEN` and
+`PROVEN-ELSEWHERE` branches. That 129 ledger entries agree with the DLL and that no proof went
+missing across a 43-key retirement. That MobileNetV2 and BERT claim 98/105 and 480/1167, counted off
+the graphs.
+
+**Not established.** That the blind axes are *correct* — the key is now silent about `group` and
+`strides` by design, and what speaks for them is a CI-time suite of twelve combinations, which is
+a **weaker** guarantee than a key component and I want that on the record as weaker. That the
+`Gemm` extension of §8.9.23 is sanctioned: **Morpheus named only `Conv`'s four axes; extending
+the argument to `transA`/`transB` is my reading and is reversible by him.** That narrowing
+`GroupQueryAttention` to `F16` declines an f32 GQA *at the gate* rather than at translate — I
+read `translate_gqa` and observed no `gqa_f32.comp`, but built no f32 GQA graph, so that
+specific positive control is unbuilt. That `FP32_CONV` holds on Intel — the device was opened, not
+measured. That f16 `Conv` is not needed: what I measured is only that **neither censused model is
+blocked by it** (MobileNetV2 is f32; BERT has zero convolutions), which is why it stays declined on
+a measurement rather than on the packed-`uint` reasoning I offered last round.
+
+### Still open, and not mine
+
+**`--check` does not verify that a ledger key is still mintable.** All 43 orphaned keys passed
+`--check` cleanly and would have surfaced only as `[unproven]` in a census. I flagged this last
+round and it is still true; the repair — ask the DLL for its mintable key set — is an ABI addition,
+so it is Tank's. The alloc/free asymmetry in `allocator.rs` also remains unexplained and unowned.
+
+**`SPEC-UNRECORDED`:** the re-prove of 39 artifacts this round was a `--reprove`-class pass in
+all but name and shrank this materially as a side effect. A full sweep is one `gen_proof_ledger.py`
+invocation with one `--model` per case and costs roughly the ten minutes this round's 39 took.
+
+**Untouched, as instructed:** `DEVICE_MEMORY` and `KV_ARENA` never enabled in any lane of mine
+(Tank's blocker); every proof arm screened on `dispatches_executed > 0` — 39/39; no clock, no
+timing, none offered.
