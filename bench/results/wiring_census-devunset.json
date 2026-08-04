@@ -17,24 +17,24 @@
       "layering_lint": 12000
     },
     "observed_units": {
-      "counters_child_clean": 702,
-      "counters_child_inject": 639,
-      "add_session_profiling": 15,
-      "counters_child_flags_a": 674,
-      "counters_child_flags_b": 863,
-      "validation_probe": 66,
-      "layering_lint": 182
+      "counters_child_clean": 607,
+      "counters_child_inject": 661,
+      "add_session_profiling": 19,
+      "counters_child_flags_a": 691,
+      "counters_child_flags_b": 791,
+      "validation_probe": 93,
+      "layering_lint": 2597
     },
     "observed_max_silence_units": {
-      "counters_child_clean": 95,
-      "counters_child_inject": 53,
-      "add_session_profiling": 15,
-      "counters_child_flags_a": 80,
-      "counters_child_flags_b": 82,
-      "validation_probe": 37,
-      "layering_lint": 81
+      "counters_child_clean": 32,
+      "counters_child_inject": 78,
+      "add_session_profiling": 19,
+      "counters_child_flags_a": 89,
+      "counters_child_flags_b": 85,
+      "validation_probe": 45,
+      "layering_lint": 1220
     },
-    "clock_units_total": 3498,
+    "clock_units_total": 6297,
     "why_not_a_timeout": "A wall-clock threshold moves the same way for 'the box is loaded' and 'the census hung', so no value of it is right (R9 amendment 5).  A budget in work units does not: contention lowers units-per-second, widening the window in wall time, while a hang leaves the machine producing units and the step producing nothing.",
     "measures_cpu_contention_only": "The reference unit is CPU-bound.  GPU and disk contention slow a step without slowing the clock; observed_units above is recorded on every run so that margin is auditable."
   },

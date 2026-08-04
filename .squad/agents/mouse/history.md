@@ -539,3 +539,140 @@ them, on twelve combinations, which is not the space.
 
 **Untouched, as instructed:** `shaderInt64`. It still blocks 5 of Phi-3.5's 8 declines and 4 of
 gpt-oss's, and none of the ops I added needed it.
+
+
+## §8.12 — the proof key could not tell a grouped convolution from a dense one (2026-08-04)
+
+**Ask.** Finish MobileNetV2's 8 residual declines; census a *new* model class after stating the
+criterion first; **measure** the f16-`Conv` gap rather than reasoning about it; rule whether
+`Conv`'s `group`/`strides`/`dilations`/`pads` need a key component (mine) or a schema change
+(Morpheus's); two hazards — `FP32_CONV` is one GPU's accumulation order, and 102/121 ledger entries
+were `SPEC-UNRECORDED`.
+
+### The central finding: ask 4 answered itself by counting
+
+I parsed MobileNetV2's 52 `Conv` nodes into attribute forms and got four: `base` x34,
+`strided+padded` x1, `grouped+padded` x13, `grouped+strided+padded` x4. Then I read the four
+shipped `Conv` ledger entries. **All four were proved at the `padded` form — which is none of the
+four forms the model contains.** The six-component key could not say so, because it does not carry
+attributes: a grouped depthwise convolution and a dense one minted the *same* key, and the ledger
+answered "proven" to a question it had never been asked.
+
+**Ruling: key component, mine, no schema change.** `variant` already carries `@sel<n>` for
+selectors, so a `#<form>` suffix rides the existing field; `validate()`'s six-component invariant is
+untouched and Morpheus's schema is untouched. `rust/src/ops/common/form.rs` holds the `FORMS` table.
+**Row order in `FORMS` is part of the key** — reordering is a ledger migration, and that is written
+in the file.
+
+The mechanism confirmed itself the way I wanted it to: mid-change, MobileNetV2 fell **97 -> 45**
+with a per-form histogram of 34/1/13/4, matching the graph parse exactly. A key that suddenly stops
+claiming the right number of the right things is a key that started distinguishing something.
+
+Forms are **booleans, not values**: `group` is a push constant, so one module serves every group
+count; the form records *that* the node is grouped, not *which* grouping. The falsifier is written
+down — `stride > kernel_shape` would need a form class, because it changes which invocations read
+which memory.
+
+### The other five
+
+- **Ask 1, MobileNetV2 97 -> 98/105.** Added `GlobalAveragePool` and `Gemm` (with
+  `global_average_pool_f32.comp`, `gemm_f32.comp`). The residual 7 are argued one at a time in the
+  decision file. The one worth repeating: **`Gemm` is unclaimable here for a graph reason, not a
+  kernel reason.** `Reshape(464,471)`'s target is computed at runtime (`Concat` of a symbolic batch
+  with a literal `-1`), so node 472's rank is unknown to ORT *and* to `onnx.shape_inference`; the
+  predicate sees rank `Some(0)` and declines `[rank]`. The kernel exists and is proven. Relaxing the
+  predicate to claim it would be claim-then-fail, which the charter forbids. **98/105 is the honest
+  ceiling** and the remaining 7 are one contiguous classifier-tail island.
+- **Ask 2, criterion stated before the pick.** (a) the EP cannot run the class at all, (b) its
+  missing set is disjoint from the CNN's, (c) the ops recur most across the class. That selects
+  **BERT-class**, and I fetched `bertsquad-12.onnx` rather than reasoning about what a transformer
+  probably contains. Census **473/1167**; I proved the 4 `[unproven]` keys; re-census **480/1167**
+  with **zero `[unproven]` declines left**. That last number is the useful one: on this model **the
+  registry, not the proof gate, is now the binding constraint** — 794 declines and not one of them
+  is a missing proof. Largest single unclaimed op: `MatMul` x95.
+- **Ask 3, f16 `Conv` declined on evidence, not extended reasoning.** I did what was asked and
+  measured: no f16 convolution appears in any of the three censused graphs. The vision model is
+  fp32; the LLMs have no convolution at all. Declining a second packed-`uint` module is now a
+  measurement, and the decision file names the trigger that reverses it. The measurement also
+  pointed somewhere I did not expect — the vision evidence argues for **int8/QDQ** before f16.
+- **Hazard 1, second vendor.** `probe_conv_tolerance.py` now reads `running_device_names` back off
+  the counters, refuses when `dispatches_executed == 0`, and files per device name. Two surprises:
+  `--device 0` ran on **NVIDIA**, because `ONNXRUNTIME_EP_VULKAN_DEVICE` indexes the *best-first
+  sorted capables* list, not `vkEnumeratePhysicalDevices` order (where `vulkaninfo` calls Intel
+  GPU0) — the selector really is a request, not an identity, so read the name off the run.
+  `--device Intel` then opened `Intel(R) Iris(R) Xe Graphics`, and both devices produced
+  **bit-identical residuals** (worst `max_rel=1.858e-04`). That is expected, not lucky:
+  `conv_f32.comp` accumulates serially in a fixed order, and IEEE-754 fp32 is exactly specified. So
+  the constant measures **our accumulation order against ORT CPU's**, not a vendor property — and
+  it stops transferring the moment the kernel gains tiling or a subgroup reduction. That expiry is
+  now in `_models.py`.
+- **Hazard 2, `SPEC-UNRECORDED` 102 -> 0.** I was asked what a cheap pass would cost. I measured one
+  case at 18.6 s, wrote a per-case loop, and it failed **101/101** with `REFUSING --reprove: the EP
+  is not reading the ledger you are about to rewrite` — because the first write makes disk differ
+  from the baked `include_str!` ledger, so every subsequent case is refused by design. **The cost I
+  was asked to estimate was a cost I had invented.** `--model` is `action="append"`: all 101
+  artifacts in one invocation, one rebuild, ~30 min. And `--reprove` makes entries *stricter*, not
+  merely better documented — a recorded `spec_digest` lets the EP warn `PROVEN-ELSEWHERE`, and
+  subject arithmetic went from **27 identical + 115 cosmetic** to **136 identical + 13 cosmetic**.
+
+### The bug that was not where the failure was
+
+`tests/ops` went red on `test_shape_inference_delta[Add-fp32-dyn]`, which passes standalone. A
+baseline worktree off `main` proved the regression was mine. The log said the EP had **panicked** —
+`attempt to add with overflow` at `counters.rs:377`, inside `CreateEp`, caught at the ABI boundary,
+returned `ORT_EP_FAIL`, ORT fell back to CPU. `on_device_free` used `fetch_sub`, so an alloc/free
+asymmetry wrapped the in-use total and the *next* allocation died. **A counter aborted the session
+it was observing, and the symptom surfaced in a different test three files later.** The counters now
+saturate, with a regression test. The asymmetry itself lives in `allocator.rs`, is unexplained, and
+is referred, not fixed — see `mouse-counters-overflow.md`.
+
+### Two instruments I disarmed and repaired
+
+Proving `mul_f32_dyn` for BERT **disarmed a negative control** in `test_wiring_census.py` (control 2
+asserted a runtime-extent form was unproven). Moved to `Acosh`, following the file's own 2026-08-02
+precedent, and documented that I disarmed it. Separately, adding forms **orphaned every static
+`Conv` proof** — I had proved the dyn forms only, and `shape_class` is a key component. The
+tolerance probe found it by *refusing to run*. Both hazards were caught by instruments declining to
+measure, not by tests asserting values, which is the second time this round that has been the
+cheaper detector.
+
+### Before / after
+
+| | before | after |
+|---|---|---|
+| **MobileNetV2-12** | **97 / 105** | **98 / 105** |
+| **BERT-SQuAD-12** | n/a (new class) | **480 / 1167**, 0 `[unproven]` declines |
+| ledger entries | 121 | **149** |
+| `SPEC-UNRECORDED` | 102 (84%) | **0** |
+| subject arithmetic | 27 identical + 115 cosmetic | **136 identical + 13 cosmetic** |
+| `cargo test --lib` | 553 | **578 passed / 0 failed / 4 ignored** |
+| `tests/ops` | 3 failed / 672 passed | **3 failed / 737 passed / 34 skipped / 3 xfailed** |
+| Phi-3.5-mini | 355 / 366 | 355 / 366 (unchanged) |
+
+### What my verification established, and what it did not
+
+**Established:** on this Windows box, debug build, after merging `main` at `7a1aa34` —
+`cargo test --lib` **578 passed / 0 failed / 4 ignored**; clippy `--all-targets -D warnings` clean;
+`counters_abi.py --check` PASS; `gen_proof_ledger.py --check` PASS at **149 entries**, digest
+`7f88ffdb8af09cba`, loss invariant **149 / 149 / 0 missing / 0 retired**; `tests/ops`
+**3 failed / 737 passed**, and the three are exactly the declared reds (`test_criterion10`,
+`test_census_baseline_has_no_drift`, `test_kv_device_residency`) — the counters panic is gone, and
+that is a *reproduced-then-removed* symptom, not an absence I am inferring. Censuses re-run
+**after** the merge: MobileNetV2 **98/105**, BERT **480/1167**. `FP32_CONV` now rests on **two
+vendors**, each read back by device name off the run and each screened on `dispatches_executed > 0`.
+
+**Did not:** establish that the **alloc/free asymmetry** is fixed — it is not, it is referred, and I
+do not know whether it is triggered by my new ops' sessions or is latent on `main` (main's suite is
+a *different* test set, so main being green is not evidence). Establish anything about **f16
+convolution as a kernel** — I measured that no censused model needs it, which is an argument about
+demand, not about the packed-`uint` design. Establish anything about **`group` values**: forms are
+booleans, so `group=8` and `group=960` still mint one key, and only `test_conv.py` speaks for the
+values. Establish that **the two vendors agree on anything but this kernel's current accumulation
+order**. Establish anything about **release builds** (where the overflow would have wrapped
+silently and published a nonsense figure rather than panicking), **Linux**, or **any timing** —
+none taken, by instruction. And the **orphaned-key hazard has no guard**: I found no check that
+every ledger key is still mintable by the registry, which is why an entire `shape_class` of `Conv`
+proofs could go stale in silence.
+
+**Untouched, as instructed:** `shaderInt64`; `DEVICE_MEMORY` and `KV_ARENA` were never enabled in
+any lane of mine (Tank's blocker); no clock.
