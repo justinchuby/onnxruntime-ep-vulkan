@@ -1,0 +1,31 @@
+{
+  "files": {
+    ".lane-reached": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "counters-linux.json": "42d74d15748fab7c642dbfafff410837bf022feccfb690d9281bb1caf96618d0",
+    "gate-armb.log": "50091c9d8c0d592071660267c78afa1de7d796ae93ba0cd82d77d276cd616c92",
+    "gate_chain_fp32_ort_stderr.log": "bd2a297b2984483f6f7346c40d024e7d5a69ebcc8913c0a7ba0dcc30d5240ff1",
+    "gate_chain_fp32_profile_2026-08-02_23-45-21_405.json": "43e15fc184d9de37224de4ce44308a22c8a70d079cd87418018b238627627dfb",
+    "gate_chain_fp32_profile_2026-08-03_07-45-29_590.json": "5310c7d2a154f8df7f981b9c8578dc4e9aade20626c01e6e7593e0902fe53f66",
+    "gate_chain_fp32_profile_2026-08-03_13-39-48_945.json": "acc214c3ac8dbd091615e0c806d0132a7f7eb5be6951988ef7ffd620cf11ea24",
+    "gate_chain_fp32_profile_2026-08-03_20-34-13_610.json": "9a2533ee4ac54621d4fb4549d8d6bc75e87a0f33042a9cd8aaabb72e1368d311",
+    "gate_chain_fp32_profile_2026-08-03_20-44-03_345.json": "416069dcf6c1e1aa3403f70774d3a26fb9ec123aa99f984bb878a88432d73dde",
+    "ledger-check-linux.log": "2bb994b162edcdcf6681223628ac81fa4c1458fa8976fd34aeda2be5a7deab8b",
+    "loader-probe.log": "b379a8b0b2aa8e960ce4c77a297600224cf2c718411b7bcf8291bf359c036593",
+    "pytest-linux.log": "c387e0f9d7a56a21b24b15f7090aad6bedc4bb626365c8a64cc241489142bc9e",
+    "session17-device-steps.txt": "32903dcc30a7e41edc523d3c946e837098aa0b385ad5c1cab03dfe79cf0c1dd0",
+    "session19-device-steps.txt": "cb10d3409640fdd861b1ede483802a2e1bffded7aa7970d3764afb194412c523",
+    "verdict-linux.json": "b19806d86c6647b830c443dddaa24ac9a921796d86affa43f2603c936bb94c82"
+  },
+  "note": "Linux device lane, session 19, taken after the source_digest re-witness. libonnxruntime_vulkan_ep.so sha256 727d0f41a6a31291f5ce54f264f420d1f8e06b501e39b62b7ae051c59f98ae30 (the .so lives outside the repo at CARGO_TARGET_DIR, so its digest is recorded here rather than compared).",
+  "platform": "WSL Ubuntu / llvmpipe (LLVM 20.1.2, 256 bits) / shaderc 2023.8-1build1",
+  "produced_at_commit": "3365221746a8c621f10de7d33061a77e692bc63b",
+  "produced_with_uncommitted_changes_in_dir": true,
+  "schema": 1,
+  "subject_path": "",
+  "subject_paths": [
+    "rust/src",
+    "rust/shaders",
+    "evidence/proof_ledger.jsonl"
+  ],
+  "subject_sha256": ""
+}

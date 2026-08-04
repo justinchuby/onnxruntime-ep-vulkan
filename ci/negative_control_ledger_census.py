@@ -77,6 +77,64 @@ def _plant_repo(tmp: Path, history: list[list[str]]) -> Path:
     return repo
 
 
+def _write_rewitness(repo: Path, doc: dict) -> None:
+    (repo / "evidence" / "proof_rewitness.json").write_text(
+        json.dumps(doc, indent=2), encoding="utf-8"
+    )
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "rewitness register"], repo)
+
+
+def _declare(repo: Path, revision: str, owner: str, reason: str) -> None:
+    _write_rewitness(
+        repo,
+        {
+            "schema": 1,
+            "screened_since": "",
+            "rewitness": [
+                {
+                    "revision": revision,
+                    "field": "source_digest",
+                    "owner": owner,
+                    "date": "2026-08-04",
+                    "reason": reason,
+                }
+            ],
+        },
+    )
+
+
+def _plant_frames(tmp: Path, history: list[dict[str, str]]) -> Path:
+    """A repo whose ledger keeps the SAME KEYS and moves only their frame witnesses.
+
+    The key census reads 0 VANISHED on every state here, which is the whole point: the loss
+    these arms are about is inside surviving entries, where every other screen is blind.
+    """
+    repo = tmp / "framed"
+    (repo / "evidence").mkdir(parents=True)
+    _git(["init", "-q", "-b", "main"], repo)
+    for state in history:
+        (repo / "evidence" / "proof_ledger.jsonl").write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "key": k,
+                        "verdict": "MATCH",
+                        "shader_digest": "0" * 16,
+                        "source_digest": v,
+                        "toolchain": "planted",
+                    }
+                )
+                + "\n"
+                for k, v in state.items()
+            ),
+            encoding="utf-8",
+        )
+        _git(["add", "-A"], repo)
+        _git(["commit", "-q", "-m", f"frames {sorted(state.items())}"], repo)
+    return repo
+
+
 def main() -> int:
     print("negative control: ci/check_ledger_census.py")
 
@@ -117,6 +175,21 @@ def main() -> int:
     # constant, not a screen.
     r = run(["--at", "26fd93f"])
     record("REPLAYED", "26fd93f (the proving commit) is acquitted", r.returncode == 0)
+
+    # THE FRAME-WITNESS ARM, REPLAYED ON A REAL EVENT. `eee65aa` really did put 115
+    # withdrawn source digests back, nobody planted it, and no key went missing — so the
+    # census arms above are all green at that revision and every other screen in the
+    # repository read clean. The screen must still be RULING on that revision: a record is
+    # not a deletion, so the declaration makes it legible rather than silent.
+    r = run(["--at", "eee65aab6cc8940bfdbaeda562106f5aaa519f30"])
+    record(
+        "REPLAYED",
+        "eee65aa's 115 witness moves are named, and no key vanished there",
+        "DECLARED ACCIDENT: eee65aab6cc8" in r.stdout
+        and "115 entr(ies)" in r.stdout
+        and "0 VANISHED" in r.stdout,
+        f"exit={r.returncode}",
+    )
 
     # THE ARM THAT CAUGHT THE SCREEN'S OWN DEFECT. Without `--full-history`, git's default
     # simplification hides 26fd93f from the ledger's own log and the replay above reports PASS
@@ -187,6 +260,79 @@ def main() -> int:
             "PLANTED",
             "a MISSING ledger is an error, not a PASS",
             r.returncode != 0 and "UNOBSERVABLE" in (r.stdout + r.stderr),
+        )
+
+        # ── the frame-witness arm ──────────────────────────────────────────────────
+        # Same key set throughout, so the census above reads 0 VANISHED on every arm here:
+        # the whole point is that the loss is INSIDE surviving entries.
+        repo = _plant_frames(tmp / "6", [{"a": "X", "b": "X"}, {"a": "X", "b": "X"}])
+        r = run(["--repo", str(repo)], cwd=repo)
+        record("PLANTED", "witnesses that never move are green", r.returncode == 0)
+
+        repo = _plant_frames(tmp / "7", [{"a": "X"}, {"a": "Y"}])
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "an UNDECLARED witness move is convicted (0 keys vanished)",
+            r.returncode == 1
+            and "undeclared_witness_move" in r.stdout
+            and "0 VANISHED" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        repo = _plant_frames(tmp / "8", [{"a": "X"}, {"a": "Y"}])
+        head = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+        _declare(repo, head, "link", "planted: a deliberate re-witness")
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "the SAME move, declared, is green — the arm is about the record, not the value",
+            r.returncode == 0,
+            f"exit={r.returncode}",
+        )
+
+        # The reversion shape that actually happened, and the reason this arm does not ask
+        # "did the value go back": X -> Y -> X is symmetric, and only the declaration
+        # distinguishes the repair from the regression.
+        repo = _plant_frames(tmp / "9", [{"a": "X"}, {"a": "Y"}, {"a": "X"}])
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "X->Y->X (the real 2026-08-04 shape) is convicted for BOTH undeclared moves",
+            r.returncode == 1 and "undeclared_witness_move" in r.stdout,
+        )
+
+        repo = _plant_frames(tmp / "10", [{"a": "X"}, {"a": "X"}])
+        _declare(repo, _git(["rev-parse", "HEAD"], repo).stdout.strip(), "link", "planted")
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "a declaration matching no move is convicted (the register does not rot)",
+            r.returncode == 1 and "stale_rewitness_declaration" in r.stdout,
+        )
+
+        repo = _plant_frames(tmp / "11", [{"a": "X"}, {"a": "Y"}])
+        _write_rewitness(repo, {"schema": 1, "screened_since": "deadbeef" * 5, "rewitness": []})
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "an unresolvable screened_since is an instrument ERROR, not a PASS",
+            r.returncode == 2 and "does not resolve" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # THE ARM FOR THE DEFECT THIS SCREEN HAD ON ITS FIRST RUN. A boundary that does not
+        # resolve puts every transition out of frame; the first version printed PASS.
+        assert "0 UNDECLARED" not in r.stdout, "an unusable boundary must not report a colour"
+
+        repo = _plant_frames(tmp / "12", [{"a": "X"}, {"a": "Y"}])
+        _git(["clone", "-q", "--depth", "1", "--no-local", repo.as_uri(), str(tmp / "shallow")], tmp)
+        r = run(["--repo", str(tmp / "shallow")], cwd=tmp / "shallow")
+        record(
+            "PLANTED",
+            "a SHALLOW clone is an instrument ERROR, not a PASS",
+            r.returncode == 2 and "SHALLOW" in r.stdout,
+            f"exit={r.returncode}",
         )
 
     kinds = {}

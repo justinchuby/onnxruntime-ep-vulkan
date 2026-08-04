@@ -1,0 +1,78 @@
+   Compiling onnxruntime-ep-vulkan v0.28.0 (/mnt/c/Users/justinchu/dev/ep-vulkan-link/rust)
+    Finished `release` profile [optimized] target(s) in 2m 44s
+727d0f41a6a31291f5ce54f264f420d1f8e06b501e39b62b7ae051c59f98ae30  /home/justinchu/link-linux-target/release/libonnxruntime_vulkan_ep.so
+shader modules embedded: 1
+=== STEP: build release (cargo build --release) ===
+    Finished `release` profile [optimized] target(s) in 3.17s
+exit=0
+=== STEP: Probe Vulkan loader (epctl --probe-loader) ===
+  subgroup_basic_in_compute: true
+  subgroup_ops          : BASIC | VOTE | ARITHMETIC | BALLOT | SHUFFLE | SHUFFLE_RELATIVE | CLUSTERED | QUAD | ROTATE_KHR | ROTATE_CLUSTERED_KHR
+  is_uma                : true
+  timestamp_period_ns   : 1.0000 ns/tick
+  timestamp_valid_bits  : 64
+1 device(s) passed the §7.2 capability gate.
+
+ONNXRUNTIME_EP_VULKAN_DEVICE = <not set — best-first (discrete preferred)>
+
+ONNXRUNTIME_EP_VULKAN_DEVICE selector index map (best-first sorted; use these indices for ONNXRUNTIME_EP_VULKAN_DEVICE):
+  [0] 'llvmpipe (LLVM 20.1.2, 256 bits)'  (Vulkan enum index 0)
+Would select: selector index 0 → 'llvmpipe (LLVM 20.1.2, 256 bits)' (Vulkan enum index 0; best-first default; set ONNXRUNTIME_EP_VULKAN_DEVICE=<selector-index|name> to override)
+exit=0
+=== STEP: Op-correctness + barrier-parity tests (pytest, lavapipe) ===
+=== end R13 lane summary ===
+=========================== short test summary info ============================
+FAILED tests/ops/test_harness_census.py::test_census_baseline_has_no_drift - ...
+FAILED tests/ops/test_kv_device_residency.py::test_ort_permits_a_device_resident_kv_cache
+FAILED tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda
+FAILED tests/ops/test_op_table.py::test_op_table[Asin-fp32] - AssertionError: 
+FAILED tests/ops/test_op_table.py::test_op_table[Acos-fp32] - AssertionError: 
+FAILED tests/ops/test_validation.py::test_ep_messenger_plant_fires_in_lane - ...
+FAILED tests/ops/test_validation.py::test_validation_clean_after_binding_arity_fix
+FAILED tests/ops/test_validation.py::test_the_armed_gate_changes_its_answer_when_the_layer_is_removed
+FAILED tests/ops/test_wiring_census.py::test_wiring_census - _verdict.Instrum...
+9 failed, 676 passed, 50 skipped, 3 xfailed, 58 warnings in 1370.84s (0:22:50)
+exit=1
+=== STEP: Criterion 10 gate artifact (gate_chain_fp32) ===
+  "output_coverage": "not-computed",
+  "outputs_cpu_only": "not-computed",
+  "outputs_reaching_this_ep": "not-computed",
+  "own_provider_count_means": "fused-island executions by this EP, NOT graph nodes; one island can cover hundreds of graph nodes",
+  "own_provider_execution_count": 1,
+  "permits_triple_and_ratio": true,
+  "verdict": "MATCH"
+}
+GATE: spliced MATCH into /mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/link-linux-downstream/counters-linux.json for epctl --check-counters.
+GATE: PASS — gate_chain_fp32 verdict=MATCH; executed_by={'VulkanExecutionProvider': 1}; max_abs_diff=0.
+  What this claims: the outputs of a run in which this EP executed at least one fused island agree with a CPU-only run of the same artifact.
+  What it does not claim: anything about any other artifact, about fp16, about multi-run arena reuse (PLATFORMS.md §7.4.2 single-run blindness), or about performance.
+exit=0
+=== STEP: Criterion 10 verdict gate (independent reader) ===
+  "own_provider_count_means": "fused-island executions by this EP, NOT graph nodes; one island can cover hundreds of graph nodes",
+  "own_provider_execution_count": 1,
+  "permits_triple_and_ratio": true,
+  "verdict": "MATCH"
+}
+VERDICT-CHECK: PASS
+verdict=MATCH, executed_by={'VulkanExecutionProvider': 1}, attribution_source=ort_profile, artifact='gate_chain_fp32@ci-gate-v1 sha256:aba0cd3847ec28ac', device_index=''.
+This lane is `green` for this artifact only. The verdict travels with the artifact at producer-at-version and never generalises to another one.
+exit=0
+=== STEP: Criterion 10 verdict gate (epctl --check-counters) ===
+      "permits_triple_and_ratio": true,
+      "verdict": "MATCH"
+    }
+  }
+epctl: DEVICE IDENTITY, BOTH SIDES: alloc_device_frame=OFF — no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=llvmpipe (LLVM 20.1.2, 256 bits).
+epctl: alloc_device_authoritative_spans = UNOBSERVABLE (R12) — the event it counts cannot occur in this run's frame. Not a negative result, and not fixable by adding a call site.
+epctl: PASS — 2 dispatch(es) executed on a real device in this lane (required 1).
+  Note what this does and does not claim: it claims a command buffer reached a device and the fence signalled. It claims nothing about whether the results are numerically correct — that is the differential test's job, not this one's.
+exit=0
+=== STEP: Known-fatal log line (check_fatal_log.py) ===
+FATAL-LOG-CHECK: PASS
+Scanned 1 captured log(s) for ['Falling\\s+back\\s+to\\s+\\[[^\\]]*\\]\\s+and\\s+retrying', 'EP\\s+Error[:\\s].{0,400}?EP_FAIL'] and found no match.
+What this claims: ORT did not *announce* a run-time fallback in the captured output. What it does not claim: that the EP executed anything — that is the verdict's job (ci/check_verdict.py), and this exists to cover that guard's outage, not to replace it.
+exit=0
+=== STEP: Proof-ledger portability screen ===
+LEDGER-PORTABILITY: frame — 1 named run artifact(s); device-lane=yes; loader gate evidence=yes (bench/results/link-linux-downstream/loader-probe.log).
+LEDGER-PORTABILITY: PASS — 1 named run artifact(s) carry no ledger fault, claimed at least one node, and no misnamed device absence. Conditions marked UNOBSERVABLE above were not checked and are not claimed.
+exit=0

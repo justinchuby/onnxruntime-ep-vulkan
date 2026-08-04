@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "purpose": "Every deliberate move of a §8.9.19 FRAME WITNESS (`source_digest`, `toolchain`) in evidence/proof_ledger.jsonl, with an owner and a reason. Read ci/check_ledger_census.py for the argument; the short form is that on 2026-08-04 an author regenerating the ledger from a base that predated a re-witness put the withdrawn digests back on 115 of 121 entries, and NOTHING SAW IT: no key went missing, so the key census and the loss invariant both reported 0, and on Windows a stale source digest with matching SPIR-V is SOURCE-COSMETIC, which forgives, so `--check` printed PASS over all 115. Only the Linux lane declined, and it declined 115 entries and the op suite with them. A witness move is legitimate and routine; a witness move NOBODY WROTE DOWN is indistinguishable from that accident.",
+  "why_not_a_value_rule": "The first version of this arm asked 'did the value go back to something a later revision replaced'. That question is SYMMETRIC: it convicted the repair exactly as loudly as it convicted the regression, because from the values alone the two are the same event seen from opposite ends. A screen cannot rank two alternating values without a frame, and the ledger records no frame for its own hashing rule. So the question asked is not 'which value is right' — it is 'did the writer say they were moving it', which has an answer in the repository and needs no build, no device and no second platform.",
+  "how_to_add_a_record": "One record per (revision, field). `revision` is the commit that carries the move, or the literal WORKTREE for an uncommitted one — WORKTREE records must be re-pointed at the real sha before merge, and a WORKTREE record that matches nothing fails as `stale_rewitness_declaration`. Say WHY the witness moved: `--reprove` (the kernel changed) and `--backfill-frame --rewitness-source` (the hashing rule changed) are different events and only the second is a re-witness.",
+  "screened_since": "aea0147b4cd4697d2b79e68cc4d369455cf9b61e",
+  "screened_since_note": "The merge that first carried a portable source_digest into main. Moves in revisions that are not descendants of it predate the rule this screen enforces and are counted and named, not failed — the same append-only discipline as `retired` in ci/open_reds.json. Adopting a screen must not retroactively convict history it could not have governed.",
+  "rewitness": [
+    {
+      "revision": "eee65aab6cc8940bfdbaeda562106f5aaa519f30",
+      "field": "source_digest",
+      "owner": "mouse",
+      "date": "2026-08-03",
+      "deliberate": false,
+      "keys": 115,
+      "repaired_by": "WORKTREE",
+      "reason": "NOT a re-witness — an accident, recorded because it happened and not to excuse it. The Conv commit regenerated evidence/proof_ledger.jsonl from a base predating aea0147 and restored the digests computed under the WITHDRAWN pre-`normalize_shader_text` rule on 115 of 121 entries. Every existing screen read clean: no key went missing (key census 0 VANISHED, loss invariant 0 missing) and Windows `--check` printed PASS because a stale source digest with matching SPIR-V is SOURCE-COSMETIC, which forgives. Linux read the same 115 as SUBJECT-CHANGED and declined; the op suite went 8 failed to 50 failed, the criterion-10 gate to UNATTRIBUTED, epctl --check-counters to exit 3 and the portability screen to claimed_nothing. Repaired in the WORKTREE record above. This arm is the screen that would have caught it at the merge.",
+      "how_this_gets_closed": "It does not get deleted. The same argument as `retired` in ci/open_reds.json: deleting the record removes the CHECK's memory of the event, not the event. It stays with deliberate=false so the next reader can see that this class of accident has happened once and what it cost."
+    },
+    {
+      "revision": "WORKTREE",
+      "field": "source_digest",
+      "owner": "link",
+      "date": "2026-08-04",
+      "deliberate": true,
+      "keys": 115,
+      "tool": "rust/tools/gen_proof_ledger.py --backfill-frame --rewitness-source",
+      "reason": "Re-running the re-witness that aea0147 landed and eee65aa undid. eee65aa regenerated the ledger from a base predating aea0147, restoring the digests computed under the WITHDRAWN pre-`normalize_shader_text` rule on 115 of 121 entries; the 6 survivors are the entries that commit newly proved (Conv x4, Add f32, Clip f32), which carry a current digest by construction. Windows read the result as 121 entries = 6 identical + 115 SOURCE-COSMETIC and printed PASS; Linux read the same file as 6 PROVEN-ELSEWHERE{toolchain} + 115 SUBJECT-CHANGED and declined, taking the op suite from 8 failed to 50. After the re-witness Windows reads 121 identical."
+    }
+  ]
+}

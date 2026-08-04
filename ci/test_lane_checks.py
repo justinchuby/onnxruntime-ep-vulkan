@@ -2427,6 +2427,12 @@ def _entry(**over):
         "closes_when": "n/a",
     }
     e.update(over)
+    if e.get("expect") == "red" and "extent" not in e and not e.pop("_no_extent", False):
+        # Red entries now require an extent (Switch's substring finding). Tests that are
+        # not about the extent arm get one that matches nothing, so the set is trivially
+        # equal and the arm is a no-op for them.
+        e["extent"] = {"pattern": r"^MEMBER (\S+)", "members": []}
+    e.pop("_no_extent", None)
     return e
 
 
@@ -2520,6 +2526,64 @@ def test_open_reds_refuses_an_acceptance_with_no_signature(tmp_path):
     assert "signature" in out
 
 
+def test_open_reds_notices_a_second_file_joining_an_accepted_red(tmp_path):
+    """SWITCH'S FINDING, CLOSED. A substring cannot see a set grow.
+
+    The signature still matches — that is the whole point. Only the membership moved, and
+    before `extent` the acceptance absorbed the newcomer in silence.
+    """
+    cmd = ["python", "-c",
+           "import sys; print('MEMBER a'); print('MEMBER b'); print('CENSUS-EXTENT'); sys.exit(1)"]
+    e = _entry(id="r", expect="red", signature="CENSUS-EXTENT", cmd=cmd,
+               extent={"pattern": r"^MEMBER (\S+)", "members": ["a"]})
+    rc, out = _open_reds(tmp_path, [e])
+    assert rc == 1, out
+    assert "extent_widened" in out
+    assert "'b'" in out and "signature` matched" in out
+
+
+def test_open_reds_reports_an_accepted_red_that_shrank(tmp_path):
+    """The other polarity, and it is good news rather than a regression — same argument as
+    `stale_acceptance`. An acceptance that has stopped covering something must be re-read,
+    not left covering it in principle."""
+    cmd = ["python", "-c", "import sys; print('MEMBER a'); print('SIG'); sys.exit(1)"]
+    e = _entry(id="r", expect="red", signature="SIG", cmd=cmd,
+               extent={"pattern": r"^MEMBER (\S+)", "members": ["a", "b"]})
+    rc, out = _open_reds(tmp_path, [e])
+    assert rc == 1, out
+    assert "extent_narrowed" in out and "'b'" in out
+
+
+def test_open_reds_accepts_a_red_whose_membership_is_unchanged(tmp_path):
+    """The green polarity of the same knob: `extent` must not fail a red it does cover, or
+    it is just a second way to say red."""
+    cmd = ["python", "-c",
+           "import sys; print('MEMBER a'); print('MEMBER b'); print('SIG'); sys.exit(1)"]
+    e = _entry(id="r", expect="red", signature="SIG", cmd=cmd,
+               extent={"pattern": r"^MEMBER (\S+)", "members": ["a", "b"]})
+    rc, out = _open_reds(tmp_path, [e])
+    assert rc == 0, out
+    assert "ACCOUNTED" in out
+
+
+def test_open_reds_refuses_an_acceptance_with_no_extent(tmp_path):
+    e = _entry(id="r", expect="red", signature="x", _no_extent=True,
+               cmd=["python", "-c", "import sys; print('x'); sys.exit(1)"])
+    rc, out = _open_reds(tmp_path, [e])
+    assert rc == 2, out
+    assert "extent" in out and "SUBSTRING" in out
+
+
+def test_open_reds_refuses_an_extent_pattern_with_no_capture_group(tmp_path):
+    """Zero groups makes `findall` return whole lines, and a set of whole lines is a
+    signature again — the arm would look like it was running and be measuring nothing."""
+    e = _entry(id="r", expect="red", signature="x", extent={"pattern": "^x$", "members": []},
+               cmd=["python", "-c", "import sys; print('x'); sys.exit(1)"])
+    rc, out = _open_reds(tmp_path, [e])
+    assert rc == 2, out
+    assert "capture group" in out
+
+
 @pytest.mark.parametrize("field", ["owner", "reason", "closes_when", "review_by", "opened"])
 def test_open_reds_refuses_a_partial_entry(tmp_path, field):
     e = _entry(id="r", expect="red", signature="x",
@@ -2597,6 +2661,48 @@ def test_every_accepted_red_in_the_shipped_register_names_who_can_close_it():
         )
         assert len(c["closes_when"]) > 40, f"{c['id']}: closes_when must name an event"
         assert len(c["signature"]) >= 8, f"{c['id']}: signature too short to be specific"
+
+
+def test_every_known_limit_is_admitted_by_the_screen_that_owns_it():
+    """A limit that lives only in a register is prose with punctuation.
+
+    Two limitations of my own tooling sat in module docstrings this quarter — Switch's
+    substring finding and the census's shallow-clone blindness — and both stayed open
+    until somebody tripped over them. `known_limits` is checked, not listed: each entry
+    names a command that makes the screen ITSELF admit the limit by token and exit 1.
+    """
+    doc = json.loads(OPEN_REDS_REGISTER.read_text(encoding="utf-8"))
+    limits = doc.get("known_limits")
+    assert limits, "the register must have a known_limits section, even if empty on purpose"
+    ids = [lim["id"] for lim in limits]
+    assert len(set(ids)) == len(ids), "duplicate known_limit id"
+    for lim in limits:
+        for field in ("id", "screen", "cmd", "admits", "owner", "opened", "review_by"):
+            assert lim.get(field), f"{lim.get('id', '?')}: known limit is missing {field!r}"
+        assert len(lim["limit"]) > 120, f"{lim['id']}: a limit needs saying, not naming"
+        assert len(lim["closes_when"]) > 80, (
+            f"{lim['id']}: a limit with no closing condition is a limit nobody can retire, "
+            "which is how the two prose ones survived"
+        )
+        assert (REPO_ROOT / lim["screen"]).is_file(), f"{lim['id']}: screen {lim['screen']} missing"
+
+
+def test_a_known_limit_is_not_filed_as_an_accepted_red():
+    """The two categories are different in kind and the register must keep them apart.
+
+    An accepted red is a failing check somebody OTHER than its acceptor closes — the test
+    above this one enforces `owner != link` for exactly that reason. A known limit is a
+    bounded gap in a screen held by the screen's own author, which is the case that rule
+    forbids. Filing one as the other would have meant either weakening that rule or
+    writing an `owner` I did not mean.
+    """
+    doc = json.loads(OPEN_REDS_REGISTER.read_text(encoding="utf-8"))
+    limit_ids = {lim["id"] for lim in doc.get("known_limits", [])}
+    check_ids = {c["id"] for c in doc["checks"]}
+    assert not (limit_ids & check_ids), (
+        f"{limit_ids & check_ids} appear in both checks and known_limits; one subject, two "
+        "registers, and the arithmetic in each is wrong about the other"
+    )
 
 
 def test_the_register_says_what_it_did_not_look_at():
