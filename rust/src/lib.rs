@@ -524,6 +524,68 @@ pub unsafe extern "C" fn OrtEpVulkanGetLedgerIdentity(
     bytes.len()
 }
 
+/// Answer "could any proof run on this build ever mint an entry for these forms?" as UTF-8 text.
+///
+/// `keys` is a NUL-terminated, **newline**-separated list of proof keys. Newline rather than
+/// comma because a key's dtype signature contains commas. One reply line per key, tab-separated:
+///
+/// ```text
+/// ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2\tmintable=yes\tstem=ew_binary_add_f32\tdeclared=yes\tgenerated=yes\tloadable=yes
+/// ```
+///
+/// Returns the byte length the reply needs even when `out` is null or too small, so a caller can
+/// size a buffer in two calls.
+///
+/// # Why this is an export
+///
+/// `gen_proof_ledger.py --check` had no way to ask whether a key is mintable, so a form whose
+/// module declares a capability this engine does not enable — no pipeline creatable on any device
+/// we run on, nothing for a proof run to measure — was indistinguishable from a healthy one, and
+/// all 43 retired keys passed cleanly. The answer lives in the baked SPIR-V and in
+/// `ops/common/variants.rs::ENGINE_ENABLED_CAPABILITIES`; re-deriving it in Python would be a
+/// second implementation of the capability rule, which is the mirror that agrees the day it is
+/// written and disagrees three weeks later.
+///
+/// # Purity
+///
+/// This reads no device handle and no global written at device creation, so it answers the same
+/// before and after device creation, and a caller with no `VkDevice` at all — `ctypes.CDLL` on
+/// the shipped `.dll` — gets the same answer as the claim path. That is a property, not an
+/// accident: a mintability answer that changed once a device existed would be the
+/// time-dependent-global class this project has shipped three times.
+///
+/// # Safety
+/// `keys` must be null or a valid NUL-terminated C string. `out` must be null, or writable for
+/// `out_bytes` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OrtEpVulkanGetFormMintability(
+    keys: *const std::ffi::c_char,
+    out: *mut std::ffi::c_void,
+    out_bytes: usize,
+) -> usize {
+    let list = if keys.is_null() {
+        String::new()
+    } else {
+        // SAFETY: the caller promises a NUL-terminated C string.
+        match unsafe { std::ffi::CStr::from_ptr(keys) }.to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => String::new(),
+        }
+    };
+    let keys: Vec<&str> = list
+        .split('\n')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let text = registry::form_mintability_report(&keys);
+    let bytes = text.as_bytes();
+    if !out.is_null() && out_bytes >= bytes.len() {
+        // SAFETY: `out` is non-null and the caller promises `out_bytes` writable bytes.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), bytes.len()) };
+    }
+    bytes.len()
+}
+
 /// Zero the EP's execution counters.
 ///
 /// For a harness that wants to scope a claim to one model run: reset, run, read. Without it the

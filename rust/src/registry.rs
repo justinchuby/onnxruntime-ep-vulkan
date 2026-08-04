@@ -3419,6 +3419,76 @@ fn form_is_provable(key: &ProofKey) -> bool {
     )
 }
 
+/// Answer [`form_is_provable`] for a list of keys, as text, for a caller outside this process.
+///
+/// # Why an export exists for a predicate the claim path already consults
+///
+/// `gen_proof_ledger.py --check` cannot tell whether a ledger key is **mintable** — whether any
+/// proof run on this build could ever produce an entry for it. All 43 retired keys pass `--check`
+/// cleanly, and the check has no way to separate *"retired on purpose because the form stopped
+/// existing"* from *"never mintable on this build"*. Those have different repairs and the second
+/// one is a capability regression that no other instrument in the tree reports.
+///
+/// The only place the answer exists is the compiled artifact: `variant_is_loadable` reads the
+/// SPIR-V that `build.rs` baked in, and `ENGINE_ENABLED_CAPABILITIES` is checked-in source. A
+/// Python re-derivation would be a second implementation of the capability rule, which is the
+/// mirror-drift failure `OrtEpVulkanGetShaderSubject` already exists to avoid.
+///
+/// # The purity this preserves
+///
+/// [`form_is_provable`] reads no device handle and no global written at device creation, so it
+/// answers identically before and after device creation. This function adds no state of its own
+/// and is therefore callable from a process that has never created a `VkDevice` — which is
+/// exactly how `--check` calls it, via `ctypes.CDLL` with no ORT session at all. **Do not give
+/// this path a device-created global**; a mintability answer that depends on whether a device
+/// exists is a different question wearing this one's name.
+///
+/// # Format
+///
+/// Input is a NUL-terminated, **newline**-separated list of proof keys — newline rather than
+/// comma because a dtype signature contains commas. One output line per input key, tab-separated:
+///
+/// ```text
+/// <key>\tmintable=yes|no\tstem=<stem|->\tdeclared=yes|no\tgenerated=yes|no\tloadable=yes|no
+/// ```
+///
+/// `stem=-` is a key with no parseable variant component. Those answer `mintable=yes`, matching
+/// [`form_is_provable`]'s deliberate under-claim: unknown is not the same as refused, and the
+/// published unmintable list is a lower bound.
+pub fn form_mintability_report(keys: &[&str]) -> String {
+    use crate::ops::common::variants::{
+        variant_is_declared, variant_is_generated, variant_is_loadable,
+    };
+    let yn = |b: bool| if b { "yes" } else { "no" };
+    let mut out = String::new();
+    for raw in keys {
+        let key = ProofKey::parse(raw);
+        match key.variant_stem() {
+            None => {
+                out.push_str(&format!(
+                    "{}\tmintable=yes\tstem=-\tdeclared=no\tgenerated=no\tloadable=no\n",
+                    key.0
+                ));
+            }
+            Some(stem) => {
+                let declared = variant_is_declared(stem);
+                let generated = variant_is_generated(stem);
+                let loadable = variant_is_loadable(stem);
+                out.push_str(&format!(
+                    "{}\tmintable={}\tstem={}\tdeclared={}\tgenerated={}\tloadable={}\n",
+                    key.0,
+                    yn(form_provable_from(declared, generated, loadable)),
+                    stem,
+                    yn(declared),
+                    yn(generated),
+                    yn(loadable),
+                ));
+            }
+        }
+    }
+    out
+}
+
 /// [`form_is_provable`]'s decision, as a pure function of its three inputs.
 ///
 /// Split out so the **shaderless build** — the positive control this predicate shipped without —
@@ -4258,6 +4328,67 @@ mod tests {
             no_kernel.contains("ew_cast_i64_to_i32") && no_kernel.contains("capability"),
             "the decline has to name the module and the reason, or the reader is back to \
              guessing: {no_kernel}"
+        );
+    }
+
+    /// **The mintability export answers exactly `form_is_provable`, for a caller with no device.**
+    ///
+    /// Three properties, because the export is the only thing `gen_proof_ledger.py --check` can
+    /// ask and a report that drifts from the predicate would be a screen that is clean because it
+    /// is looking somewhere else:
+    ///
+    /// 1. **Agreement.** Every line's `mintable=` equals `form_is_provable` on the same key.
+    /// 2. **Non-vacuity.** The batch contains both answers. A report that can only say `yes` is
+    ///    the 43-retired-keys-pass-cleanly state one layer down.
+    /// 3. **Line discipline.** One line per input key, in input order, and a dtype signature's
+    ///    commas do not split a key — which is why the wire separator is a newline.
+    #[test]
+    fn the_mintability_report_agrees_with_the_predicate_and_says_both_words() {
+        let keys = [
+            "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2",
+            "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+            "ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2",
+            "not-a-key",
+        ];
+        let text = form_mintability_report(&keys);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), keys.len(), "one line per key: {text}");
+
+        let mut yes = 0;
+        let mut no = 0;
+        for (line, key) in lines.iter().zip(keys.iter()) {
+            let fields: Vec<&str> = line.split('\t').collect();
+            assert_eq!(fields[0], *key, "key must round-trip verbatim: {line}");
+            let mintable = match fields[1] {
+                "mintable=yes" => true,
+                "mintable=no" => false,
+                other => panic!("unreadable verdict {other:?} in {line}"),
+            };
+            assert_eq!(
+                mintable,
+                form_is_provable(&ProofKey::parse(key)),
+                "the export must not be a second opinion: {line}"
+            );
+            if mintable { yes += 1 } else { no += 1 }
+        }
+        assert!(yes > 0 && no > 0, "a report with one reachable answer screens nothing: {text}");
+    }
+
+    /// The report is stable across calls and carries no state of its own.
+    ///
+    /// This is the property the spawn brief asked to preserve: `form_is_provable` reads only the
+    /// baked SPIR-V and a checked-in capability list, so the answer cannot depend on whether a
+    /// device has been created. A test in this process cannot create a `VkDevice`, so it asserts
+    /// the reachable half — two calls, identical bytes, and no interior mutability behind them.
+    #[test]
+    fn the_mintability_report_is_stable_and_device_free() {
+        let keys = ["ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1"];
+        let a = form_mintability_report(&keys);
+        let b = form_mintability_report(&keys);
+        assert_eq!(a, b);
+        assert!(
+            a.contains("mintable=no") && a.contains("declared=yes") && a.contains("loadable=no"),
+            "the report has to say *why*, or the caller is back to guessing: {a}"
         );
     }
 
