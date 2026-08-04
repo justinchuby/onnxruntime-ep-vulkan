@@ -1,0 +1,85 @@
+{
+ "alloc_device_frame_sides": "alloc_device_frame=SHARED \u2014 BOTH sides are on the same VkDevice: 'Intel(R) Iris(R) Xe Graphics' (factory device index 1). Sessions have offered: 0=Intel(R) Iris(R) Xe Graphics.",
+ "arena_run_error": "RuntimeError(\"Error in execution: Non-zero status code returned while running VulkanExecutionProvider_11166495542738204718_0 node. Name:'VulkanExecutionProvider_VulkanExecutionProvider_11166495542738204718_0_0' Status Message: an output was built as an alias of an input (the KV arena: `present` shares `past`'s allocation, so the kernel writes only the new token and never materialises the past) but is not bound to that input's device buffer. Writing this dispatch's result into ORT's tensor would leave every past token unwritten and the answer silently wrong, so this EP refuses instead. Bind the same OrtValue as `past_key_values.*` input and `present.*` output with ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1 and ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS left on, or unset ONNXRUNTIME_EP_VULKAN_KV_ARENA.\")",
+ "arena_verdict": "UNMEASURED(arena_refused)",
+ "arm_run": "arena",
+ "cause_evidence_map": {
+  "A_no_ort_output_ptr": [
+   "outputs_bind_attempted",
+   "outputs_bind_declined"
+  ],
+  "B_output_not_our_span": [
+   "alloc_failed_lookups",
+   "alloc_device_attach_failures"
+  ],
+  "C_input_never_device_bound": [
+   "alloc_device_authority_grants",
+   "alloc_device_backed_spans",
+   "alloc_device_attach_unavailable"
+  ],
+  "D_alias_not_honoured": [
+   "outputs_device_bound",
+   "alloc_device_buffer_binds"
+  ],
+  "E_authority_refused": [
+   "alloc_device_authoritative_spans",
+   "outputs_bind_declined"
+  ],
+  "F_allocator_index_mismatch": [
+   "alloc_device_frame",
+   "alloc_device_frame_allocator_index",
+   "alloc_device_frame_session_devices",
+   "outputs_bind_declined",
+   "alloc_device_authority_grants"
+  ]
+ },
+ "claimed_nodes": 1,
+ "classification": {
+  "consistent_with": [
+   "F_allocator_index_mismatch"
+  ],
+  "notes": [
+   "alloc_device_frame_allocator_index='1' but the session's own device list puts the device it ran on at index '0', and 2 output bind(s) were declined. ORT keys its allocator to the device IT bound; device-memory OrtValues then carry an allocator identity the session's spans are not registered under, `bind_target_for` cannot resolve the `present` pointers, and the alias sweep refuses -- correctly. Set ONNXRUNTIME_EP_VULKAN_DEVICE before the EP library is registered so the factory advertises only that device. This is harness configuration, not a device capability, and `alloc_device_frame` is SHARED either way."
+  ],
+  "ruled_out": [],
+  "separated": true
+ },
+ "control_verdict": null,
+ "counters_after_control": {
+  "alloc_device_attach_failures": null,
+  "alloc_device_attach_unavailable": null,
+  "alloc_device_authoritative_spans": null,
+  "alloc_device_authority_grants": null,
+  "alloc_device_backed_spans": null,
+  "alloc_device_buffer_binds": null,
+  "alloc_device_frame": null,
+  "alloc_device_frame_allocator_index": null,
+  "alloc_device_frame_session_devices": null,
+  "alloc_failed_lookups": null,
+  "outputs_bind_attempted": null,
+  "outputs_bind_declined": null,
+  "outputs_device_bound": null
+ },
+ "counters_arena": {
+  "alloc_device_attach_failures": 0,
+  "alloc_device_attach_unavailable": 0,
+  "alloc_device_authoritative_spans": 0,
+  "alloc_device_authority_grants": 1,
+  "alloc_device_backed_spans": 12,
+  "alloc_device_buffer_binds": 10,
+  "alloc_device_frame": "SHARED",
+  "alloc_device_frame_allocator_index": "1",
+  "alloc_device_frame_session_devices": "0=Intel(R) Iris(R) Xe Graphics",
+  "alloc_failed_lookups": 0,
+  "outputs_bind_attempted": 3,
+  "outputs_bind_declined": 2,
+  "outputs_device_bound": 1
+ },
+ "counters_attributable": true,
+ "device_name_from_run": "Intel(R) Iris(R) Xe Graphics",
+ "device_selector_requested": 1,
+ "dispatches_executed": 0,
+ "ep_vulkan_device_env": null,
+ "probe": "arena_refusal",
+ "running_device_names": "Intel(R) Iris(R) Xe Graphics"
+}
