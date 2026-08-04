@@ -402,3 +402,82 @@ Artifacts: `bench/results/kv_int8_budget-dev{0,1}.json`,
 `bench/results/kv-int8-budget-prediction.md` (written before the first run).
 
 📌 Team update (2026-08-03T19:55:00-07:00): Trinity found "nobody has run it" was itself an unchecked claim — 	est_gqa.py had G=4 all along, and every citation of the Nq/Nkv caveat made it less likely anyone would actually look. You wrote the caveat repeatedly without checking whether the suite already answered it; it did. Trinity's GREEN, per-output, both-devices, arena-bit-exact-at-G=4 result stands as the answer, and your disjointness argument survives algebraically (it is invariant in group size). — decided by Trinity
+
+## Session 49 — 2026-08-04 — the DEVICE_MEMORY flip: four gates, one blocker
+
+**Task.** Decide whether `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` can flip ON by default, by closing
+or formally registering the four named gates. No clock this round — counts, bytes, slopes.
+
+**Method.** One discriminator applied to all four, written down before any run
+(`bench/results/device-memory-flip-gates-prediction.md`): *a gate blocks the flip only if its
+failure separates the lanes.* A failure that happens identically with the flag on and off is a
+project defect, not a reason to keep a flag off.
+
+**Result: three gates closed, one blocker, and it is not the gate as it was named.**
+
+1. **BLOCKER — `device_memory_flip_blocker_ctx4096_device_loss`.** The gate said *ctx-512*. At
+   ctx 512 the lanes are indistinguishable: both NO_LOSS, *identical* dispatch counts per arm
+   (8875 / 5325), while memory is maximally separated (5,044,598,400 B staging readback vs **0**;
+   1625 declined vs 1625 device-bound). Equal work, opposite memory, no loss — **ctx 512 blocks
+   nothing.** What blocks is a loss **I produced at ctx 4096** in the *resident* lane, rate **1 in
+   8** (7 clean at 710 dispatches). Did not reproduce in 3 solo nor 3 both-lane re-runs, including
+   one testing the sequencing hypothesis. Call site `vkWaitForFences` — Tank's class, **not** the
+   `vkQueueSubmit` class. Not merged.
+2. **NOT A BLOCKER, argues FOR the flip — concurrent sessions.** My pre-registered prediction said
+   this was the sole blocker and named the wrong lane. `res_threads` 0/6 dirty, bit-identical,
+   8520 dispatches. `ship_threads` **6/6 dirty, 0 EP dispatches, exit 0 with no exception** — ORT
+   silently rebuilds on CPU. Cause in the text: `alloc_device failed for input buffer`; the
+   shipping path's transient per-Compute input allocation doubles the peak when two Computes
+   overlap. The default returns wrong-provider answers under concurrency and says nothing.
+3. **CLOSED — MIXED two-device frame.** Was `#[ignore]`d, so nobody had observed its colour. Runs:
+   `device_index 0` → `SPLIT-DEVICE` (1 declared), `device_index 1` → `MIXED` (2 declared).
+   Production really does declare two frames in one process; the R12 guard correctly refuses to
+   publish `device_authoritative_observable()`. Reporting, not bytes.
+4. **CLOSED — ctx 8192.** grow worker exits 1 with no counters; arena completes 355 dispatches/step
+   at **5,512,528,520 B**, slope **32,064 B/past token**. Reproduced live on the merged build,
+   digit-for-digit against a prior-session record.
+
+**Code fix — the one real defect.** `vkQueueSubmit` lists `queue` as externally synchronised.
+One `VkDevice` per physical device (§6.5) ⇒ one shared compute queue; ORT permits concurrent
+`Run`. **Nothing synchronised it.** Added a per-queue mutex keyed on the raw handle, so all three
+routes to submit take the same lock *by construction*; deliberately **not** across the fence wait,
+which would serialise execution. Made falsifiable by `queue_submit_contentions` — **JSON-only**,
+ABI still `(8, 0xdf71f4e6a59271b3)`. 547 lib tests pass, clippy clean.
+
+**Verification (probe, not `--check` alone).** `counters_abi.py --check` PASS *with
+`ONNXRUNTIME_VULKAN_EP_LIB` set* — unset it prints the layout and passes having read nothing.
+`gen_proof_ledger.py --check` PASS, 115 entries. `probe_phi35_claim_reading.py`:
+**355 / 5 / 1**.
+
+### What surprised me
+1. **I predicted the wrong lane, in writing, and the probe that would have hidden it was my own.**
+   Its first version had three lanes and no `ship_threads`. In that version `res_threads` raised
+   and I was one step from filing "device memory breaks under concurrency" as the blocker. A failure
+   in the armed lane is only attributable to the flag if the unarmed lane is run too.
+2. **`ci/check_device_loss.py` found a device loss in a file I had already read and reported on.**
+   I read `alloc_device failed`, stopped, and missed `vkQueueSubmit failed: The logical device has
+   been lost` in the same stderr. Link's screen was more careful than I was. That makes **three**
+   losses on record, two of them at `vkQueueSubmit` — the call site I had just found unsynchronised.
+   Mechanism and evidence agreeing is not proof: 6 pre-fix and 6 post-fix rounds both show zero
+   further losses, so **the rate does not discriminate and the fix stands on the specification.**
+3. **My own artifact refused me.** `build_runs_vs_not.py` aggregates by direction, so at ctx 4096
+   it reads `SPLIT(4 favour device-resident, 1 favours shipping)` and marks it **not citable** —
+   even though the majority runs my way and the brief for this round asserted that claim as settled.
+   Only ctx 8189 is citable, 2/2. A tool that only ever confirms its author is not an instrument.
+4. **`check_open_reds.py` rejected two of my four register entries on first run**, and both were
+   real: a prose `signature` (it matches a literal substring) and a bare `cargo` from the repo
+   root (`could not find Cargo.toml` → `unaccounted_red`). The register caught me twice in one
+   session. I also found a limitation of it — one substring cannot notice a *second* file joining an
+   accepted red — and routed it to Link rather than working around it.
+
+Decision records: `switch-device-memory-flip-gates-scored.md`,
+`switch-queue-submit-must-be-externally-synchronised.md`,
+`switch-concurrency-breaks-the-shipping-lane.md`,
+`switch-utf8-reader-thread-can-silence-a-detector.md`,
+`switch-for-niobe-flag-spellings-and-the-citable-claim.md`,
+`switch-for-mouse-no-spec-constant-and-a-live-digest-mismatch.md`.
+Artifacts: `bench/results/runs_vs_does_not_run.json` (+ `build_runs_vs_not.py`),
+`device_memory_concurrency-{BEFORE,AFTER,register}.json`, `kv_arena_chain-A8192-LIVE.json`,
+`phi35_kv_chain-ctx4096-BOTH-{dev0,retry1..4}.json`, `ctx_device_loss-lane_{shipping,resident}.json`.
+Register: 4 new entries in `ci/open_reds_device.json`; 2 new records in
+`ci/device_loss_incident_records.json`.

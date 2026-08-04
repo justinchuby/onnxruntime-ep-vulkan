@@ -23,9 +23,33 @@
       "date": "2026-08-02"
     },
     {
-      "file": "bench/results/trinity-suite-dev1.log",
-      "reason": "SECOND, EARLIER device loss, found by this check on 2026-08-02 and not previously reported as one: line 3216, 2026-07-31 10:00:04, Intel (dev1), 'vkQueueSubmit failed: The logical device has been lost' inside test_phi35.py:784. It surfaced only as an AssertionError and was read as a test failure, not as a lost device. It predates the GQA attention change and comes through a different call site (vkQueueSubmit, not vkWaitForFences), so the class is not one kernel's bug and the reporting defect outlives whatever Switch fixes. Routed to Switch with the cause; kept here as the record.",
+      "file": "bench/results/device-memory-flip-gates-prediction.md",
+      "reason": "NOT an incident and not the artifact of one. This is the recorded-before-measuring prediction document for the DEVICE_MEMORY flip gates, and it QUOTES the strings `device_losses > 0` and `VK_ERROR_DEVICE_LOST` in the sentence that names what a device loss would look like if one were seen. A prose file that names the marker is matched by a marker scan, so it made the lane red without a run behind it. Excluded by name rather than by rewording the prediction: a document must be free to name the thing it predicts, and a detector that forces its own subject matter out of the project's writing is a detector shaping the evidence. Owner is mine because the file is mine. If a future prediction document does the same, add it here rather than softening the language.",
       "owner": "switch",
+      "date": "2026-08-04"
+    },
+    {
+      "file": "bench/results/device_memory_concurrency.json",
+      "reason": "THIRD device loss on this project, 2026-08-03, and the artifact of it. Found not by me but by ci/check_device_loss.py --lane after I had already read this file and reported its failure as `alloc_device failed for input buffer` — I read the allocation text, stopped, and missed a lost device in the same stderr. The line is `vkQueueSubmit failed: The logical device has been lost`, twice, from cmd.rs:235. It is the FIRST (three-lane, pre-fix) concurrency run, taken before this round's queue submit lock existed. Its call site is vkQueueSubmit, which matches the earlier Intel incident in bench/results/trinity-suite-dev1.log and NOT Tank's ctx-512 loss (vkWaitForFences). vkQueueSubmit lists its `queue` parameter as externally synchronized and nothing in this EP provided that synchronization while two sessions on two threads shared one queue, so an unsynchronized submit from two threads is a mechanism that predicts exactly this call site. That is an argument, not a proof: 6 pre-fix and 6 post-fix rounds both show zero further losses, so the loss rate does not discriminate and the fix is justified by the specification rather than by this file. Kept as the record of the state before the lock.",
+      "owner": "switch",
+      "date": "2026-08-03"
+    },
+    {
+      "file": "bench/results/device_memory_kv_lanes/armed-kvbytes_p512_n25.counters.json",
+      "reason": "Per-point counter dump for a truncated ctx-512 point (uploads=5, readbacks=4). Raw record of the incident.",
+      "owner": "tank",
+      "date": "2026-08-02"
+    },
+    {
+      "file": "bench/results/device_memory_kv_lanes/armed-kvbytes_p512_n5.counters.json",
+      "reason": "Per-point counter dump for a truncated ctx-512 point (uploads=3, readbacks=2 — an inference caught in flight). It is the raw record of the incident, not a new one.",
+      "owner": "tank",
+      "date": "2026-08-02"
+    },
+    {
+      "file": "bench/results/device_memory_kv_lanes/default-kvbytes_p512_n25.counters.json",
+      "reason": "Per-point counter dump for a truncated ctx-512 point (uploads=9, readbacks=8). Raw record of the incident.",
+      "owner": "tank",
       "date": "2026-08-02"
     },
     {
@@ -41,21 +65,9 @@
       "date": "2026-08-02"
     },
     {
-      "file": "bench/results/device_memory_kv_lanes/armed-kvbytes_p512_n5.counters.json",
-      "reason": "Per-point counter dump for a truncated ctx-512 point (uploads=3, readbacks=2 — an inference caught in flight). It is the raw record of the incident, not a new one.",
-      "owner": "tank",
-      "date": "2026-08-02"
-    },
-    {
-      "file": "bench/results/device_memory_kv_lanes/armed-kvbytes_p512_n25.counters.json",
-      "reason": "Per-point counter dump for a truncated ctx-512 point (uploads=5, readbacks=4). Raw record of the incident.",
-      "owner": "tank",
-      "date": "2026-08-02"
-    },
-    {
-      "file": "bench/results/device_memory_kv_lanes/default-kvbytes_p512_n25.counters.json",
-      "reason": "Per-point counter dump for a truncated ctx-512 point (uploads=9, readbacks=8). Raw record of the incident.",
-      "owner": "tank",
+      "file": "bench/results/trinity-suite-dev1.log",
+      "reason": "SECOND, EARLIER device loss, found by this check on 2026-08-02 and not previously reported as one: line 3216, 2026-07-31 10:00:04, Intel (dev1), 'vkQueueSubmit failed: The logical device has been lost' inside test_phi35.py:784. It surfaced only as an AssertionError and was read as a test failure, not as a lost device. It predates the GQA attention change and comes through a different call site (vkQueueSubmit, not vkWaitForFences), so the class is not one kernel's bug and the reporting defect outlives whatever Switch fixes. Routed to Switch with the cause; kept here as the record.",
+      "owner": "switch",
       "date": "2026-08-02"
     }
   ]

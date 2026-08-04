@@ -67,3 +67,9 @@ bench/results/ci-lane/
 bench/results/link-gate/
 gate_chain_fp32_profile_*.json
 bench/results/claim_log_attribution.jsonl
+
+# Raw tensor dumps from probes: regenerable, and one kv.npz reached 2.8 GB.
+# They are inputs to a verdict, not the verdict; the JSON records are the evidence.
+bench/results/**/*.npy
+bench/results/**/*.npz
+

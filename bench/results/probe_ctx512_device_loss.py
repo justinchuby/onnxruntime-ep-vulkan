@@ -233,7 +233,7 @@ def gpu_events(since: float) -> dict:
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command", ps],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
         ).stdout
     except Exception:  # noqa: BLE001
         return {"state": "UNREADABLE"}
@@ -265,13 +265,23 @@ def run_arm(arm: str, past: int, iters: int, scratch: pathlib.Path) -> dict:
     env = dict(os.environ)
     env[COUNTERS_ENV] = str(cfile)
     t0 = time.time()
+    # `text=True` without an explicit encoding decodes as UTF-8 and RAISES inside
+    # `subprocess`'s reader thread on the first non-UTF-8 byte (observed 2026-08-03: a 0xa7 in
+    # the Windows event-log arm). The exception is printed by threading's excepthook and
+    # `subprocess.run` returns a TRUNCATED buffer with a zero exit status. On this call site
+    # that would silence `lost_in_text` — the device-loss detector reading False on a run that
+    # lost the device, from a codec error in a different thread. Decode explicitly and never
+    # raise: a byte we cannot decode must not be able to erase the string we are looking for.
     proc = subprocess.run(
         [sys.executable, str(pathlib.Path(__file__).resolve()),
          "--worker", "--arm", arm, "--past", str(past), "--iters", str(iters)],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
     text = (proc.stdout or "") + (proc.stderr or "")
     lost_in_text = "device has been lost" in text or "DEVICE_LOST" in text
+    # A truncated capture is itself a finding: if the driver read fewer bytes than the worker
+    # wrote, a negative text reading is not a clearance. Recorded rather than assumed away.
+    text_bytes = len(text)
     c: dict = {}
     if cfile.is_file():
         raw = json.loads(cfile.read_text(encoding="utf-8"))
@@ -282,6 +292,8 @@ def run_arm(arm: str, past: int, iters: int, scratch: pathlib.Path) -> dict:
         "iters": iters,
         "exit": proc.returncode,
         "device_lost_in_text": lost_in_text,
+        "worker_text_bytes": text_bytes,
+        "worker_text_replacement_chars": text.count("\ufffd"),
         "device_losses_counter": c.get("device_losses"),
         "compute_calls": c.get("compute_calls"),
         "compute_failures": c.get("compute_failures"),
@@ -313,6 +325,12 @@ def main() -> int:
         "--plan",
         default="gqa:512:200,gqa:2048:100,phi:512:25",
         help="comma-separated arm:past:iters points",
+    )
+    ap.add_argument(
+        "--record",
+        default="ctx_device_loss.json",
+        help="record filename under bench/results (use a per-LANE name so the shipping and "
+             "resident lanes do not overwrite each other's evidence)",
     )
     args = ap.parse_args()
 
@@ -385,9 +403,22 @@ def main() -> int:
     elif lost:
         print("  REPORTING OK: every arm that lost the device exited non-zero.")
 
-    rec = HERE / "ctx_device_loss.json"
+    rec = HERE / args.record
     rec.write_text(
-        json.dumps({"points": points, "trivial_arms": len(trivial)}, indent=2),
+        json.dumps(
+            {
+                # The lane is read off the environment the run actually had, never off a
+                # command-line label: a label says what was intended, `os.environ` says what
+                # the worker inherited. `device_memory_env` is the exact spelling, unparsed.
+                "device_memory_env": os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY"),
+                "kv_arena_env": os.environ.get("ONNXRUNTIME_EP_VULKAN_KV_ARENA"),
+                "bind_outputs_env": os.environ.get("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS"),
+                "ep_lib": os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
+                "points": points,
+                "trivial_arms": len(trivial),
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
     print(f"\n  record: {rec}")

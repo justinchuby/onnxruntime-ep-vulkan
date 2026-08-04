@@ -1,0 +1,52 @@
+{
+  "probe": "kv_arena_chain",
+  "arena": 8192,
+  "past": 8189,
+  "steps": 3,
+  "correctness": {
+    "arena": {
+      "verdict": "NOT_PERFORMED"
+    }
+  },
+  "bytes": {
+    "grow": {
+      "per_step_link_bytes": [],
+      "slope_bytes_per_past_token": NaN,
+      "dispatches": [],
+      "kv_cache_convention": null,
+      "alloc_high_water_bytes": null,
+      "session_device_high_water_bytes": null,
+      "alloc_device_attach_failures": null,
+      "compute_failures": null,
+      "device_losses": null,
+      "ep_device": null,
+      "worker_rc": 1
+    },
+    "arena": {
+      "per_step_link_bytes": [
+        0,
+        64128,
+        64128
+      ],
+      "slope_bytes_per_past_token": 32064.0,
+      "dispatches": [
+        355,
+        355,
+        355
+      ],
+      "kv_cache_convention": "SHARED",
+      "alloc_high_water_bytes": 5512528520,
+      "session_device_high_water_bytes": 5542432816,
+      "alloc_device_attach_failures": 0,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "ep_device": {
+        "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vulkan.device_index": "1",
+        "vulkan.vendor_id": "0x10de"
+      },
+      "worker_rc": 0
+    }
+  },
+  "verdict": "ARENA_RAN_WHERE_GROWING_COULD_NOT(no bitwise reference this size)"
+}

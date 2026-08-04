@@ -1,0 +1,19 @@
+[ctx-loss] phi past=512 iters=25 ...
+[ctx-loss] phi past=512 iters=25 ...
+[ctx-loss] phi past=512 iters=25 ...
+[ctx-loss] phi past=1024 iters=15 ...
+
+==============================================================================
+CTX DEVICE LOSS: which arm, which mechanism, and does it exit non-zero
+==============================================================================
+  phi  past=  512  iters=  25  exit=  0  lost=False  device_losses=0  calls=25  dispatches=8875  events=UNDETERMINED
+  phi  past=  512  iters=  25  exit=  0  lost=False  device_losses=0  calls=25  dispatches=8875  events=UNDETERMINED
+  phi  past=  512  iters=  25  exit=  0  lost=False  device_losses=0  calls=25  dispatches=8875  events=UNDETERMINED
+  phi  past= 1024  iters=  15  exit=  0  lost=False  device_losses=0  calls=15  dispatches=5325  events=UNDETERMINED
+
+
+  NO_LOSS — no arm lost the device in this session. The defect is intermittent,
+  so this is NOT evidence that it is fixed; it is evidence this pass missed it.
+
+
+  record: C:\Users\justinchu\dev\ep-vulkan-switch\bench\results\ctx_device_loss-lane_shipping.json
