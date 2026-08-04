@@ -434,3 +434,72 @@ auditor 0/0 with selftest 3/3.
 📌 Team update (2026-08-03T04-55-00-07-00): Link retired his own Session-13 method of quoting a rebuilt-DLL hash as evidence a binary changed — six builds of an unchanged tree produced six distinct Windows DLL hashes, so a hash witnesses nothing about content. Where your quoted DLL hashes (e.g. in the fatal-log and push-constant liveness work) are being used to argue "this is a different binary," they need a different witness (a real diff, a digest of the compiled artifact's semantic content, or a behavioral control) — a hash alone is not evidence of a code change. — decided by Link
 
 📌 Team update (2026-08-03T10-35-00-07-00): Link generalised from his own accepted-red incident: "an accepted red and a new red are indistinguishable when the only record of the acceptance is a number in someone's head." You maintain instruments with accepted-failure states — apply the same discipline Link built (`ci/check_open_reds.py`'s `stale_acceptance` and `signature_changed` arms) rather than carrying an acceptance count from memory. — decided by Link
+
+## Round 37 — 2026-08-04 — which side is wrong, and my own prediction written down as a reading
+
+**§8.9.24 refuted my unsatisfiability finding and needed no run to do it.** I quoted `atol`
+alone out of `|a−b| ≤ atol + rtol·|b|` — one term of a two-term sum — and divided by the
+spacing at the **tensor maximum** while the predicate evaluates **per element**. The
+corollary inverts my reading of layer 31: its key and value do not fail within one
+representable step, they fail by **640–1266 element-basis ULP** against an allowance of
+**58–297**. What made them look sub-step was a step borrowed from a value ~500× larger.
+`ULP-at-scale` is fenced, not withdrawn, and I own the fence: any row reporting it now
+carries the allowance in the same unit and the failing set on the element basis, checked by
+a function that **raises**.
+
+**What surprised me most: `np.spacing` returns `inf` at fp16's largest finite value.** It
+looks upward and above 65504 there is nothing but `inf`, so `|a−b|/inf == 0` and **a
+504-unit error read `0.0` ULP on both bases**. Every prior instrument defect here made a
+*sound* residual look wrong. **This is the first one that makes a wrong residual look
+sound** — strictly worse, because nobody re-derives a clean number. It moved no verdict
+(`np.allclose` reads no ULP), but the report could have acquitted a saturating tensor while
+the gate failed it, on the same row. `format_spacing` takes the step downward at the
+boundary. numpy's answer was outside the format; the algebra was fine.
+
+**I was the specimen for A PREDICTION IS NOT A READING, in the same round it was minted.**
+I reasoned: position 0 → rotation by angle 0 → `present.31.key` is the K slice verbatim.
+Sound reasoning, false conclusion — Phi-3.5 folds a long-rope factor into the cache and
+`cos_cache[0]` is **1.1904296875**. Because the sine is zero it degenerates to a single
+multiply, still one correctly-rounded operation, so the reference stayed envelope-free and
+**the conclusion that mattered survived; the stated reason for it did not.** With a nonzero
+sine the same assumption would have reported a rotation defect as a copy defect. The form is
+now classified from the tapped caches and `reference_is_exact` is a *consequence* of it.
+
+**The answer, identical bytes to both EPs, float64 reference from those same bytes, both
+devices agreeing.** Outputs 63/64: **both EPs bit-exact** — neither side is wrong, and arm E
+reconstructs each EP's own in-situ output from its own QKV tap **bit-equally**, so the
+divergence is inherited as an *identity*, not a story. Criterion 10's two tail failures
+contain **no arithmetic of their own**. Output 0 at the isolated `lm_head`: **ORT's CPU EP is
+the further side**, unanimously (2 vs 11 ULP max, 11 vs 47 elements, 0.00024 vs 0.0039 abs).
+Second node where "the Vulkan EP is wrong until proven otherwise" runs backwards.
+
+**Round 36 said `neither (equal)` for that same node and I nearly published a changed
+result.** Round 36 discriminated on the *median*, which is 0.0 on both sides — 32053/32064
+bit-exact — so it could not have separated them whatever the answer was. R11's shape again.
+The record now reports five discriminators at once. **Building that machinery immediately
+caught a conflict in my own current result**: the `qkv_proj` arm splits — CPU wrong in 18
+elements vs Vulkan's 2, but Vulkan's worst element 32× further in absolute terms. There is
+no fact of the matter without a further choice, so `unanimous_direction` is null and the
+**split is the finding**. The single-discriminator version reported `neither (equal)` and hid
+it entirely.
+
+**What I did NOT establish:** which side is wrong for these outputs **as criterion 10 sees
+them**. Every answer is per-hop with identical inputs; at model scale the EPs reach the
+`lm_head` with hidden states 6 ULP apart, and a float64 reference built from either is my own
+discarded arm F — `"vulkan"` by construction. It needs a float64 forward pass of all 355
+nodes (~30 GB dense, infeasible here; ~0.7 GB layer-at-a-time, feasible) with a liveness bar
+at **every** layer, since a reference that dies mid-graph agrees with everything downstream.
+Written into the record, not just this report, so the limit travels with the answer. I
+proposed nothing that follows — §8.9.24(4), enforced by `assert_record_proposes_no_motion`
+running as a gate, with a test proving it can still refuse.
+
+**`atol`/`rtol` untouched for the fourth round running.** Arm D's "ORT is 11 ULP from true"
+is precisely the budget a loosening argument would want. It is a reading and nothing else.
+
+**Verified:** 152 passed / 0 FAIL / 0 ERROR across the criterion-10 and ULP lanes; probe
+selftests 11 and 5 arms with no GPU; **9 deliberate corruptions of the records, 9 caught** by
+the new gate — which also went red unprompted on three schema mismatches and on my own wrong
+assumption that fp32's tolerances match fp16's (they are 10× tighter). `union_check --run` 5
+red, none mine: criterion 10's known `DIVERGENT`, one unrelated binding test, and two lanes
+that pass in isolation and are red only under the full run. **Not run: `cargo test --lib`,
+clippy — no Rust moved, and I say so rather than implying coverage I do not have.**
