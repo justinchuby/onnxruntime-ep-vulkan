@@ -1899,7 +1899,7 @@ fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
         Some(stem) if !stem.is_empty() => stem.to_string(),
         _ => "metadata".to_string(),
     };
-    let selected = match crate::ops::common::selector::source_for(spec.op_type) {
+    match crate::ops::common::selector::source_for(spec.op_type) {
         Some(crate::ops::common::selector::SelectorSource::Attrs(_)) => {
             // An unresolvable selector is a node the predicate declines; the key still has to be a
             // distinct, total string, so the failure renders as its own tag rather than collapsing
@@ -1910,8 +1910,7 @@ fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
             }
         }
         _ => stem,
-    };
-    selected
+    }
 }
 
 /// `shape_class ∈ {static, runtime-extent}` as §8.9 spells it, over the four classes we compute.
