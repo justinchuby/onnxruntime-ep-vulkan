@@ -51,10 +51,13 @@ census; nothing here modifies `test_wiring_census.py`.
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import pathlib
 import subprocess
 import sys
+from contextlib import redirect_stdout
 
 import pytest
 
@@ -371,6 +374,110 @@ def test_check_ledger_fails_on_a_tampered_artifact(tmp_path):
     assert r.returncode != 0, (
         f"--check accepted a ledger whose only entry is a wildcard key:\n{r.stdout}\n{r.stderr}"
     )
+
+
+# ---------------------------------------------------------------------------
+# §8.9.24 — mintability. Can a key exist at all?
+# ---------------------------------------------------------------------------
+
+
+def _mint_lib():
+    import gen_proof_ledger as gpl
+
+    lib = gpl._find_lib(os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB", ""))
+    if lib is None:
+        pytest.skip("no built EP; mintability is a question about an artifact")
+    return gpl, lib
+
+
+def test_the_mintability_screen_can_say_no():
+    """A screen whose red state is never shown is a screen nobody has seen work.
+
+    Measured 2026-08-04: all 43 retired keys passed `--check` cleanly, because nothing asked
+    whether a key could ever be minted. This asserts the positive state on a **real** key —
+    every `_i64` module declares `OpCapability Int64` and `ENGINE_ENABLED_CAPABILITIES` does not
+    carry it — and asserts a sibling on the same op answers the other way, so the screen is
+    non-vacuous by measurement rather than by argument.
+    """
+    gpl, lib = _mint_lib()
+    unmintable = "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1"
+    mintable = "ai.onnx::Cast/6+/f32>i32/ew_cast_f32_to_i32/static/n1"
+    report, err = gpl._mintability(lib, [unmintable, mintable])
+    assert not err, err
+    assert report[unmintable]["mintable"] is False, report[unmintable]
+    assert report[unmintable]["loadable"] == "no", (
+        f"the report has to say why, or the caller is back to guessing: {report[unmintable]}"
+    )
+    assert report[mintable]["mintable"] is True, (
+        f"a screen that can only say `no` is as blind as one that can only say `yes`: "
+        f"{report[mintable]}"
+    )
+
+
+def test_the_mintability_screen_fails_a_ledger_that_holds_an_unmintable_key(tmp_path):
+    """And the red reaches `--check`'s exit code, not only the report."""
+    gpl, lib = _mint_lib()
+    lines = _ledger_lines()
+    if len(lines) < 2:
+        pytest.skip("ledger has no entries to clone")
+    header = json.loads(lines[0])
+    entries = [json.loads(l) for l in lines[1:]]
+    donor = dict(entries[0])
+    donor["key"] = "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1"
+    entries.append(donor)
+    body = "".join(json.dumps(e, sort_keys=True) + "\n" for e in entries)
+    header["entry_count"] = len(entries)
+    header["content_fnv1a64"] = f"{gpl.fnv1a64(body.encode('utf-8')):016x}"
+    dest = tmp_path / "proof_ledger.jsonl"
+    dest.write_text(json.dumps(header, sort_keys=True) + "\n" + body, encoding="utf-8")
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        # A synthetic ledger differs from the baked one by construction; `expect_rebuild` is the
+        # same allowance a fresh generation run gets, and without it this would be asserting the
+        # baked-vs-disk check instead.
+        rc = gpl.check_ledger(dest, lib, expect_rebuild=True)
+    out = buf.getvalue()
+    assert rc == 1, f"--check accepted a ledger holding an unmintable key:\n{out}"
+    assert "NOT MINTABLE" in out and "ew_cast_i64_to_i32" in out, out
+
+
+def test_the_mintability_arithmetic_line_is_printed_on_a_pass():
+    """The PASS line is a summary; the subject arithmetic line is the reading.
+
+    Twice in two days a real loss sat behind a PASS — a `source_digest` revert on 115 of 121
+    entries, then 9 more on a merge — and was caught only by reading the arithmetic. So the
+    counts print on the green path too, and this asserts they add up to their populations.
+    """
+    gpl, lib = _mint_lib()
+    retired, err = gpl._retired_keys()
+    assert not err, err
+    keys = {json.loads(l)["key"] for l in _ledger_lines()[1:]}
+    fails, notes, merr = gpl.check_mintability(lib, keys, retired)
+    assert not merr, merr
+    assert not fails, fails
+    line = next((n for n in notes if n.startswith("mintability:")), "")
+    assert line, f"no arithmetic line among {notes}"
+    assert f"{len(keys)} ledger key(s)" in line and f"{len(retired)} retired key(s)" in line, line
+
+
+def test_a_build_that_cannot_be_asked_is_an_instrument_error_not_a_pass():
+    """A missing export is the same finding as a missing artifact: ERROR, never PASS.
+
+    Any pre-2026-08-04 build lacks `OrtEpVulkanGetFormMintability`. Skipped rather than faked
+    when no such artifact is on this machine — an unrun control is not a passed one.
+    """
+    gpl, lib = _mint_lib()
+    older = [
+        p
+        for p in sorted(REPO.parent.glob("ep-vulkan-*/rust/target/release/onnxruntime_vulkan_ep.dll"))
+        if p.resolve() != lib.resolve()
+    ]
+    for cand in older:
+        _, err = gpl._mintability(cand, ["ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2"])
+        if err and "OrtEpVulkanGetFormMintability" in err:
+            return
+    pytest.skip("no artifact without the export is available to ask")
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,223 @@
+[
+  {
+    "arm": "A_ctx1_fallback_allowed",
+    "ctx": 1,
+    "forbid_fallback": false,
+    "log_severity_level": 0,
+    "device_memory": "1",
+    "kv_arena": "0",
+    "extra_env": {},
+    "exit_code": 0,
+    "providers": [
+      "VulkanExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "session_created": true,
+    "get_providers": [
+      "VulkanExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "ran": true,
+    "logits_shape": [
+      1,
+      1,
+      32064
+    ],
+    "logits_finite": true,
+    "counters": {
+      "compile_calls": 1,
+      "subgraphs_live": 1,
+      "subgraphs_stub": 0,
+      "compute_calls": 1,
+      "compute_failures": 0,
+      "dispatches_executed": 355,
+      "claimed_nodes": 355,
+      "islands_offered": 1,
+      "viable_islands_retained": 1,
+      "ledger_hits": 355,
+      "unproven_declines": 5
+    },
+    "observable": {
+      "exit_code": 0,
+      "log_bytes": 14682,
+      "ep_broken_commitment_warn": false,
+      "ep_allocator_error": false,
+      "ort_retry_on_cpu": false,
+      "ort_ep_fail": false
+    },
+    "dispatches_executed": 355
+  },
+  {
+    "arm": "B_ctx4096_fallback_allowed",
+    "ctx": 4096,
+    "forbid_fallback": false,
+    "log_severity_level": 0,
+    "device_memory": "1",
+    "kv_arena": "0",
+    "extra_env": {},
+    "exit_code": 0,
+    "providers": [
+      "VulkanExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "session_created": true,
+    "get_providers": [
+      "VulkanExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "ran": true,
+    "logits_shape": [
+      1,
+      4096,
+      32064
+    ],
+    "logits_finite": true,
+    "counters": {
+      "compile_calls": 1,
+      "subgraphs_live": 1,
+      "subgraphs_stub": 0,
+      "compute_calls": 1,
+      "compute_failures": 1,
+      "dispatches_executed": 0,
+      "claimed_nodes": 355,
+      "islands_offered": 1,
+      "viable_islands_retained": 1,
+      "ledger_hits": 355,
+      "unproven_declines": 5
+    },
+    "observable": {
+      "exit_code": 0,
+      "log_bytes": 6402,
+      "ep_broken_commitment_warn": true,
+      "ep_allocator_error": true,
+      "ort_retry_on_cpu": true,
+      "ort_ep_fail": true
+    },
+    "dispatches_executed": 0
+  },
+  {
+    "arm": "C_ctx4096_fallback_forbidden",
+    "ctx": 4096,
+    "forbid_fallback": true,
+    "log_severity_level": 0,
+    "device_memory": "1",
+    "kv_arena": "0",
+    "extra_env": {},
+    "exit_code": 0,
+    "providers": [
+      "VulkanExecutionProvider"
+    ],
+    "session_created": false,
+    "session_error": "Fail: [ONNXRuntimeError] : 1 : FAIL : This session contains graph nodes that are assigned to the default CPU EP, but fallback to CPU EP has been explicitly disabled by the user.",
+    "counters": {
+      "compile_calls": 1,
+      "subgraphs_live": 1,
+      "subgraphs_stub": 0,
+      "compute_calls": 0,
+      "compute_failures": 0,
+      "dispatches_executed": 0,
+      "claimed_nodes": 355,
+      "islands_offered": 1,
+      "viable_islands_retained": 1,
+      "ledger_hits": 355,
+      "unproven_declines": 5
+    },
+    "observable": {
+      "exit_code": 0,
+      "log_bytes": 2654,
+      "ep_broken_commitment_warn": false,
+      "ep_allocator_error": false,
+      "ort_retry_on_cpu": false,
+      "ort_ep_fail": false
+    },
+    "dispatches_executed": 0
+  },
+  {
+    "arm": "D_ctx1_fallback_forbidden_no_island_retained",
+    "ctx": 1,
+    "forbid_fallback": true,
+    "log_severity_level": 0,
+    "device_memory": "1",
+    "kv_arena": "0",
+    "extra_env": {
+      "ONNXRUNTIME_EP_VULKAN_PARTITION_MIN_NODES": "100000",
+      "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION": "0"
+    },
+    "exit_code": 0,
+    "providers": [
+      "VulkanExecutionProvider"
+    ],
+    "session_created": false,
+    "session_error": "Fail: [ONNXRuntimeError] : 1 : FAIL : This session contains graph nodes that are assigned to the default CPU EP, but fallback to CPU EP has been explicitly disabled by the user.",
+    "counters": {
+      "compile_calls": 1,
+      "subgraphs_live": 1,
+      "subgraphs_stub": 0,
+      "compute_calls": 0,
+      "compute_failures": 0,
+      "dispatches_executed": 0,
+      "claimed_nodes": 355,
+      "islands_offered": 1,
+      "viable_islands_retained": 0,
+      "ledger_hits": 355,
+      "unproven_declines": 5
+    },
+    "observable": {
+      "exit_code": 0,
+      "log_bytes": 5265,
+      "ep_broken_commitment_warn": false,
+      "ep_allocator_error": false,
+      "ort_retry_on_cpu": false,
+      "ort_ep_fail": false
+    },
+    "dispatches_executed": 0
+  },
+  {
+    "arm": "E_ctx4096_fallback_allowed_default_severity",
+    "ctx": 4096,
+    "forbid_fallback": false,
+    "log_severity_level": 2,
+    "device_memory": "1",
+    "kv_arena": "0",
+    "extra_env": {},
+    "exit_code": 0,
+    "providers": [
+      "VulkanExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "session_created": true,
+    "get_providers": [
+      "VulkanExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "ran": true,
+    "logits_shape": [
+      1,
+      4096,
+      32064
+    ],
+    "logits_finite": true,
+    "counters": {
+      "compile_calls": 1,
+      "subgraphs_live": 1,
+      "subgraphs_stub": 0,
+      "compute_calls": 1,
+      "compute_failures": 1,
+      "dispatches_executed": 0,
+      "claimed_nodes": 355,
+      "islands_offered": 1,
+      "viable_islands_retained": 1,
+      "ledger_hits": 355,
+      "unproven_declines": 5
+    },
+    "observable": {
+      "exit_code": 0,
+      "log_bytes": 6402,
+      "ep_broken_commitment_warn": true,
+      "ep_allocator_error": true,
+      "ort_retry_on_cpu": true,
+      "ort_ep_fail": true
+    },
+    "dispatches_executed": 0
+  }
+]

@@ -1,0 +1,1 @@
+{"forbid": true, "providers": ["VulkanExecutionProvider"], "session_created": true, "ran": false, "run_error": "InvalidArgument: [ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Conflicting session configuration: explicitly added the CPU EP to the session, but also disabled fallback to the CPU EP via session configuration options."}
