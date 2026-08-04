@@ -1,0 +1,172 @@
+{
+ "model": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\gpt-oss-20b-cuda-gpu\\v1\\model.onnx",
+ "tag": "gptoss20b_r2",
+ "graph": {
+  "nodes": 374,
+  "opset_import": {
+   "ai.onnx": 21,
+   "com.microsoft": 1
+  },
+  "ir_version": 10
+ },
+ "graph_op_counts": {
+  "Gather": 2,
+  "Shape": 1,
+  "Constant": 3,
+  "Cast": 100,
+  "ReduceSum": 1,
+  "Sub": 1,
+  "SimplifiedLayerNormalization": 1,
+  "com.microsoft::MatMulNBits": 73,
+  "Add": 72,
+  "com.microsoft::GroupQueryAttention": 24,
+  "com.microsoft::SkipSimplifiedLayerNormalization": 48,
+  "Reshape": 24,
+  "com.microsoft::QMoE": 24
+ },
+ "decisions_recorded": 371,
+ "claimed_nodes": 293,
+ "declined_nodes": 78,
+ "no_decision_nodes": 3,
+ "no_decision_ops": {
+  "Constant": 3
+ },
+ "per_op": {
+  "Add": {
+   "seen": 72,
+   "claimed": 72,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 72,
+   "proof_keys": {
+    "ai.onnx::Add/7+/f16,f16>f16/ew_binary_add_f16/runtime-extent/n2": 72
+   }
+  },
+  "Cast": {
+   "seen": 100,
+   "claimed": 98,
+   "declined": 2,
+   "codes": {
+    "dtype": 2
+   },
+   "ledger_hits": 98,
+   "proof_keys": {
+    "ai.onnx::Cast/6+/f16>f32/ew_cast_f16_to_f32/runtime-extent/n1": 49,
+    "ai.onnx::Cast/6+/f32>f16/ew_cast_f32_to_f16/runtime-extent/n1": 49,
+    "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1": 1,
+    "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1": 1
+   }
+  },
+  "Gather": {
+   "seen": 2,
+   "claimed": 1,
+   "declined": 1,
+   "codes": {
+    "dtype": 1
+   },
+   "ledger_hits": 1,
+   "proof_keys": {
+    "ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2": 1,
+    "ai.onnx::Gather/1+/i64,i64>i64/metadata/static/n2": 1
+   }
+  },
+  "ReduceSum": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Reshape": {
+   "seen": 24,
+   "claimed": 0,
+   "declined": 24,
+   "codes": {
+    "not-registered": 24
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Shape": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "SimplifiedLayerNormalization": {
+   "seen": 1,
+   "claimed": 1,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 1,
+   "proof_keys": {
+    "ai.onnx::SimplifiedLayerNormalization/1+/f32,f32>f32/metadata/runtime-extent/n2": 1
+   }
+  },
+  "Sub": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "dtype": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2": 1
+   }
+  },
+  "com.microsoft::GroupQueryAttention": {
+   "seen": 24,
+   "claimed": 0,
+   "declined": 24,
+   "codes": {
+    "attribute": 24
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache": 24
+   }
+  },
+  "com.microsoft::MatMulNBits": {
+   "seen": 73,
+   "claimed": 73,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 73,
+   "proof_keys": {
+    "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points": 73
+   }
+  },
+  "com.microsoft::QMoE": {
+   "seen": 24,
+   "claimed": 0,
+   "declined": 24,
+   "codes": {
+    "staged": 24
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "com.microsoft::QMoE/1+/f16,f16,u8,f16,f16,u8,f16,f16>f16/metadata/runtime-extent/n8": 24
+   }
+  },
+  "com.microsoft::SkipSimplifiedLayerNormalization": {
+   "seen": 48,
+   "claimed": 48,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 48,
+   "proof_keys": {
+    "com.microsoft::SkipSimplifiedLayerNormalization/1+/f32,f32,f32>f32,-,-,f32/metadata/runtime-extent/none": 47,
+    "com.microsoft::SkipSimplifiedLayerNormalization/1+/f32,f32,f32>f32/metadata/runtime-extent/none": 1
+   }
+  }
+ },
+ "ep_lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-mouse\\rust\\target\\debug\\onnxruntime_vulkan_ep.dll"
+}

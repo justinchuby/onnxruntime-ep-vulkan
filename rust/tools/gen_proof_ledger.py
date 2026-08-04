@@ -1096,16 +1096,30 @@ def check_ledger(
             f"  (the file is internally consistent: {len(lines) - 1} entr(ies), digest {digest} "
             f"— that was never the question)"
         )
+        # The notes used to print only after the PASS line, four lines past a `return 1`. On the
+        # first fresh Linux `.so` every one of 103 failures had a toolchain cause and the word
+        # "toolchain" appeared nowhere in the output; on PASS, where nothing needs explaining, it
+        # printed in full. A diagnostic present exactly when it is not needed and absent exactly
+        # when it is has the sign of its usefulness inverted, and it is how a reader is told the
+        # wrong reason for a decline (RAI-012) through the tool rather than the runtime.
+        _print_notes(notes)
+        _print_spec_note(spec_unrecorded, len(lines) - 1)
         return 1
 
     print(
         f"PASS: {path} — {len(lines) - 1} entr(ies), digest {digest}; "
-        f"every entry's shader_digest agrees with {lib.name}"
+        f"every entry's subject agrees with {lib.name} — by identical SPIR-V, or by identical "
+        f"source under a different compiler. The NOTEs below say which, and in what numbers."
     )
-    for n in notes:
-        print(f"  NOTE: {n}")
+    _print_notes(notes)
     _print_spec_note(spec_unrecorded, len(lines) - 1)
     return 0
+
+
+def _print_notes(notes: list[str]) -> None:
+    """Print the notes. Called on **both** the PASS and the FAIL path — see `cmd_check`."""
+    for n in notes:
+        print(f"  NOTE: {n}")
 
 
 def _print_spec_note(spec_unrecorded: list[str], total: int) -> None:
@@ -1213,13 +1227,21 @@ def check_against_build(path: pathlib.Path, lib: pathlib.Path) -> tuple[list[str
     WHAT FAILS AND WHAT ONLY NOTES
     ------------------------------
     This mirrors `registry.rs::subject_verdict` deliberately: the gate must go red exactly where
-    the runtime declines, or it is a second, disagreeing opinion about the same fact.
+    the runtime declines, or it is a second, disagreeing opinion about the same fact. **It must
+    mirror the whole table, in the same order.** The first version tested `spirv_digest` first and
+    unconditionally, so `differs/same` — the row that names a toolchain difference, the reason the
+    source digest exists — could not be reached: on a fresh Linux `.so` all 103 entries rendered as
+    `SUBJECT-CHANGED`, which is not merely the wrong token but the strongest available accusation,
+    telling a Linux user their source moved when what moved was their compiler. A row whose
+    condition is tested after a condition that subsumes it is a row that cannot fire.
 
-      * SPIR-V moved (or the build has no such module) → **FAIL**. That is `SUBJECT-CHANGED`,
-        and the runtime declines the form.
-      * source moved, SPIR-V identical → **NOTE**. That is `SOURCE-COSMETIC`; the runtime claims,
-        and so does this.
-      * toolchain differs, SPIR-V identical → **NOTE**, for the same reason.
+      * the build has no such module → **FAIL**. There is no subject to compare.
+      * SPIR-V same, source same (or unrecorded) → **PASS**, silently. `Identical`.
+      * SPIR-V same, source moved → **NOTE**. `SOURCE-COSMETIC`; the runtime claims, so does this.
+      * **SPIR-V moved, source same → NOTE.** `PROVEN-ELSEWHERE{toolchain}`; the runtime claims.
+      * SPIR-V moved, source moved → **FAIL**. `SUBJECT-CHANGED`; the runtime declines.
+      * SPIR-V moved, no recorded source → **FAIL**. `SUBJECT-INDETERMINATE`; the runtime declines
+        and the repair is `--backfill-frame`, not `--reprove`.
     """
     text = path.read_text(encoding="utf-8")
     lines = [l for l in (x.strip() for x in text.splitlines()) if l and not l.startswith("#")]
@@ -1228,14 +1250,19 @@ def check_against_build(path: pathlib.Path, lib: pathlib.Path) -> tuple[list[str
     notes: list[str] = []
 
     build_toolchain = ""
+    build_named_toolchain = True
     changed: list[str] = []
     cosmetic: list[str] = []
     absent: list[str] = []
+    indeterminate: list[str] = []
+    toolchain_delta: list[str] = []
     for e in entries:
         key = e.get("key", "")
         stems = sorted(e.get("shaders") or [])
         subject = _shader_subject(lib, stems)
         build_toolchain = subject.get("toolchain", build_toolchain)
+        if build_toolchain in ("", "UNKNOWN"):
+            build_named_toolchain = False
         recorded = e.get("shader_digest") or ""
         current = subject.get("spirv_digest")
         if current is None:
@@ -1245,38 +1272,95 @@ def check_against_build(path: pathlib.Path, lib: pathlib.Path) -> tuple[list[str
                 f"has no subject in the artifact that is about to ship"
             )
             continue
-        if current != recorded:
-            changed.append(key)
-            failures.append(
-                f"entry {key}: recorded shader_digest {recorded} != this build's {current} "
-                f"(shaders {stems}). The ledger describes a kernel this binary does not contain; "
-                f"the form will decline as SUBJECT-CHANGED at run time. Repair: "
-                f"rust/tools/gen_proof_ledger.py --reprove"
-            )
-            continue
         recorded_source = e.get("source_digest") or ""
         current_source = subject.get("source_digest")
-        if recorded_source and current_source and current_source != recorded_source:
-            cosmetic.append(key)
+        # Mirrors `subject_verdict`'s guard: an empty recorded source is "unrecorded", never
+        # "agrees with an empty one".
+        source_same = bool(recorded_source) and current_source == recorded_source
+        if current == recorded:
+            if recorded_source and current_source and not source_same:
+                cosmetic.append(key)
+            continue
+        if not recorded_source:
+            indeterminate.append(key)
+            failures.append(
+                f"entry {key}: recorded shader_digest {recorded} != this build's {current} "
+                f"(shaders {stems}), and the entry records NO source_digest, so a second "
+                f"compiler cannot be told from a rewritten kernel. That is "
+                f"SUBJECT-INDETERMINATE and the runtime declines it. Repair: "
+                f"rust/tools/gen_proof_ledger.py --backfill-frame on a build whose SPIR-V still "
+                f"matches, then re-check here"
+            )
+            continue
+        if source_same:
+            # THE ROW THIS FUNCTION EXISTS FOR. Same source closure, different bytes: a different
+            # compiler produced them. The runtime claims this as PROVEN-ELSEWHERE{toolchain}, so
+            # failing it here would be the gate disagreeing with the thing it gates.
+            toolchain_delta.append(key)
+            continue
+        changed.append(key)
+        failures.append(
+            f"entry {key}: recorded shader_digest {recorded} != this build's {current} AND "
+            f"recorded source_digest {recorded_source} != this build's {current_source} "
+            f"(shaders {stems}). BOTH witnesses moved, so this is not a compiler difference: "
+            f"the ledger describes a kernel this binary does not contain; the form will decline "
+            f"as SUBJECT-CHANGED at run time. Repair: rust/tools/gen_proof_ledger.py --reprove"
+        )
 
+    agree = (
+        len(entries) - len(cosmetic) - len(toolchain_delta) - len(changed)
+        - len(indeterminate) - len(absent)
+    )
+    # Arithmetic, not a count: the six populations must add up to the file, so a reader can see
+    # that nothing fell between two classifications. Link's `N ever declared = M ruled on + K
+    # retired` line, applied to the subject table.
+    notes.append(
+        f"SUBJECT ARITHMETIC vs {lib.name}: {len(entries)} entr(ies) = {agree} identical "
+        f"+ {len(cosmetic)} SOURCE-COSMETIC + {len(toolchain_delta)} "
+        f"PROVEN-ELSEWHERE{{toolchain}} + {len(changed)} SUBJECT-CHANGED "
+        f"+ {len(indeterminate)} SUBJECT-INDETERMINATE + {len(absent)} no-module-in-build. "
+        f"The first three claim at run time; the last three decline."
+    )
     if cosmetic:
         notes.append(
             f"{len(cosmetic)} entr(ies) are SOURCE-COSMETIC against this build — identical "
             f"SPIR-V, moved source. The runtime claims them and so does this check; they are "
             f"named so a reader can see the edit landed: {sorted(cosmetic)[:8]}"
         )
-    if build_toolchain:
+    if toolchain_delta:
+        notes.append(
+            f"{len(toolchain_delta)} entr(ies) are PROVEN-ELSEWHERE{{toolchain}} against this "
+            f"build — the SPIR-V differs but the source closure is IDENTICAL, so the compiler "
+            f"changed and the kernel did not. The runtime claims them with a nameable frame "
+            f"delta and so does this check (§8.9.19 row 2). This build's toolchain is "
+            f"{build_toolchain!r}; the entries record "
+            f"{sorted({e.get('toolchain', '') for e in entries if e.get('key') in set(toolchain_delta)})}. "
+            f"Examples: {sorted(toolchain_delta)[:8]}"
+        )
+    if not build_named_toolchain and entries:
+        notes.append(
+            "this build reports its own shader toolchain as UNKNOWN. Frame deltas against it "
+            "cannot be NAMED, only detected — every proof taken here would be stamped UNKNOWN "
+            "and --backfill-frame will refuse to stamp it. Fix the build's `glslc --version` "
+            "before quoting any reading from it as evidence about a second compiler."
+        )
+    if build_toolchain and build_named_toolchain:
         others = sorted({e.get("toolchain", "") for e in entries} - {"", build_toolchain})
         if others:
             notes.append(
                 f"this build's toolchain is {build_toolchain!r}; entries also record {others}. "
-                f"Bytes agree, so the frame difference is disclosed, not failed (§8.9.19)."
+                f"Where the bytes agree the frame difference is disclosed, not failed (§8.9.19); "
+                f"where they do not, the source digest above decides whether it was the compiler "
+                f"or the kernel."
             )
-    if changed or absent:
+    if changed or absent or indeterminate:
         failures.append(
-            f"SUBJECT SUMMARY: {len(changed)} entr(ies) describe moved kernels, "
-            f"{len(absent)} name shaders this build has no module for, "
-            f"{len(entries) - len(changed) - len(absent)} agree"
+            f"SUBJECT SUMMARY: {len(changed)} entr(ies) describe moved kernels (both witnesses "
+            f"moved), {len(indeterminate)} moved with no source witness to tell a compiler from "
+            f"a kernel, {len(absent)} name shaders this build has no module for, "
+            f"{len(toolchain_delta)} differ by TOOLCHAIN ONLY and are claimed, "
+            f"{len(entries) - len(changed) - len(absent) - len(indeterminate) - len(toolchain_delta)} "
+            f"agree outright"
         )
     return failures, notes
 
@@ -1326,7 +1410,7 @@ def check_baked_vs_disk(path: pathlib.Path, lib: pathlib.Path) -> list[str]:
     ]
 
 
-def backfill_frame(path: pathlib.Path, lib: pathlib.Path) -> int:
+def backfill_frame(path: pathlib.Path, lib: pathlib.Path, rewitness_source: bool = False) -> int:
     """Stamp `source_digest`/`toolchain` onto entries proven before those fields existed.
 
     WHY THIS IS RECORDING A FACT AND NOT GUESSING ONE
@@ -1341,6 +1425,15 @@ def backfill_frame(path: pathlib.Path, lib: pathlib.Path) -> int:
     rewritten kernel or it might be a second compiler, and backfilling it would *manufacture* the
     `PROVEN-ELSEWHERE` reading for a form that may genuinely have changed. Those are skipped and
     named, and the remedy for them is `--reprove`, which measures instead of asserting.
+
+    `--rewitness-source` (`rewitness_source=True`) RE-stamps entries that already carry a source
+    digest. It exists for exactly one situation and should not be used for any other: **the
+    hashing rule itself changed.** A value recorded under a withdrawn rule is not a stale fact, it
+    is a number computed by a function that no longer exists, and leaving it in place makes every
+    entry read as SOURCE-COSMETIC forever. It carries one extra refusal on top of the SPIR-V
+    equality above — the entry's recorded `toolchain` must match this build's — because SPIR-V
+    equality only implies same-source when the same compiler produced both, and without that
+    guard this would be asserting a source digest onto a proof taken somewhere it cannot see.
     """
     if not lib.is_file():
         print(f"FAIL(condition=NO_ARTIFACT): {lib} does not exist; build the EP first")
@@ -1353,10 +1446,12 @@ def backfill_frame(path: pathlib.Path, lib: pathlib.Path) -> int:
     header, entries = body[0], body[1:]
 
     stamped, already, skipped = 0, 0, []
+    rewitnessed = 0
     rewritten: list[str] = []
     for line in entries:
         e = json.loads(line)
-        if e.get("source_digest") and e.get("toolchain"):
+        is_rewitness = bool(e.get("source_digest") and e.get("toolchain"))
+        if is_rewitness and not rewitness_source:
             already += 1
             rewritten.append(line)
             continue
@@ -1381,17 +1476,33 @@ def backfill_frame(path: pathlib.Path, lib: pathlib.Path) -> int:
             skipped.append(f"{e['key']}: this build formed no source digest for {stems}")
             rewritten.append(line)
             continue
+        build_tc = subject.get("toolchain", "")
+        if is_rewitness and e.get("toolchain") != build_tc:
+            skipped.append(
+                f"{e['key']}: proven under toolchain {e.get('toolchain')!r} but this build is "
+                f"{build_tc!r}. Identical SPIR-V across two compilers does not establish "
+                f"identical source, so this build cannot re-witness that entry's source digest"
+            )
+            rewritten.append(line)
+            continue
+        if source == e.get("source_digest"):
+            already += 1
+            rewritten.append(line)
+            continue
         e["source_digest"] = source
-        e["toolchain"] = subject.get("toolchain", "")
+        e["toolchain"] = build_tc
         if not e["toolchain"] or e["toolchain"] == "UNKNOWN":
             skipped.append(f"{e['key']}: this build cannot name its toolchain")
             rewritten.append(line)
             continue
         rewritten.append(json.dumps(e, separators=(",", ":"), sort_keys=True))
-        stamped += 1
+        if is_rewitness:
+            rewitnessed += 1
+        else:
+            stamped += 1
 
-    if stamped == 0 and not skipped:
-        print(f"PASS: {path} — every entry already carries a frame ({already})")
+    if stamped == 0 and rewitnessed == 0 and not skipped:
+        print(f"PASS: {path} — every entry already carries a current frame ({already})")
         return 0
 
     body_text = "\n".join(rewritten) + "\n"
@@ -1402,7 +1513,10 @@ def backfill_frame(path: pathlib.Path, lib: pathlib.Path) -> int:
         json.dumps(hdr, separators=(",", ":"), sort_keys=True) + "\n" + body_text,
         encoding="utf-8",
     )
-    print(f"backfilled {stamped} entr(ies); {already} already framed; {len(skipped)} skipped")
+    print(
+        f"backfilled {stamped} entr(ies); re-witnessed {rewitnessed}; {already} already current; "
+        f"{len(skipped)} skipped"
+    )
     for s in skipped:
         print(f"  - SKIP {s}")
     # Skips are reported, not fatal: a partially framed ledger is strictly better than an
@@ -1449,6 +1563,15 @@ def main() -> int:
              "moved are skipped and named; --reprove them instead.",
     )
     ap.add_argument(
+        "--rewitness-source",
+        action="store_true",
+        help="with --backfill-frame, RE-derive source_digest for entries that already have one. "
+             "Only legitimate when the source-digest hashing rule itself changed, because a "
+             "value computed by a withdrawn rule is not a stale fact but a number from a "
+             "function that no longer exists. Refuses per entry unless the recorded "
+             "shader_digest AND the recorded toolchain both match this build's.",
+    )
+    ap.add_argument(
         "--lib",
         default=os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB", ""),
         help="path to the built EP, used by --backfill-frame to ask the artifact for its digests",
@@ -1474,7 +1597,7 @@ def main() -> int:
                 )
                 return 3
             lib = str(cands[0])
-        return backfill_frame(out, pathlib.Path(lib))
+        return backfill_frame(out, pathlib.Path(lib), rewitness_source=args.rewitness_source)
     if args.check:
         return check_ledger(
             out,

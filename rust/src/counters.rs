@@ -1261,11 +1261,16 @@ pub fn record_unprovable_decline(key: &str) {
 }
 
 /// The subset of [`unproven_decline_forms`] that no proof run can clear.
-pub fn unprovable_decline_forms() -> Vec<String> {
-    UNPROVABLE_DECLINE_FORMS
-        .lock()
-        .map(|v| v.clone())
-        .unwrap_or_default()
+///
+/// `None` is a **poisoned lock**, not an empty list — the same distinction its sibling above
+/// keeps, for the same reason. This accessor was written one round later and one letter-cluster
+/// away, ended `.unwrap_or_default()`, and had no caller because
+/// `unprovable_decline_forms_json` read the static directly: a poisoned lock would have been
+/// spelt as "nothing is unprovable", which is mis-scoring in the dead direction — reporting a
+/// clean bill of health from an instrument that could not be read. Link's uninvoked-accessor
+/// census found it as the eighth subject; the repair is the one the sibling already had.
+pub fn unprovable_decline_forms() -> Option<Vec<String>> {
+    UNPROVABLE_DECLINE_FORMS.lock().ok().map(|v| v.clone())
 }
 
 /// Record that the §8.9.4 escape hatch let one node through, and which key did it.
@@ -2238,11 +2243,7 @@ fn unproven_decline_forms_json() -> String {
 
 /// `unprovable_decline_forms` — the subset of the above that no proof run can clear.
 fn unprovable_decline_forms_json() -> String {
-    let Ok(seen) = UNPROVABLE_DECLINE_FORMS.lock() else {
-        return "\"INSTRUMENT-ERROR\"".to_string();
-    };
-    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
-    format!("[{}]", body.join(", "))
+    forms_json(unprovable_decline_forms())
 }
 
 /// `subject_changed_forms` — one row per form declined because its subject moved.
@@ -4249,7 +4250,7 @@ mod tests {
         let _g = crate::allocator::ledger::test_lock();
 
         reset();
-        assert!(unprovable_decline_forms().is_empty());
+        assert_eq!(unprovable_decline_forms(), Some(vec![]));
 
         record_unproven_decline("ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2");
         record_unproven_decline("ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1");
@@ -4263,7 +4264,7 @@ mod tests {
         );
         assert_eq!(
             unprovable_decline_forms(),
-            vec!["ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1".to_string()],
+            Some(vec!["ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1".to_string()]),
             "deduplicated, and a strict subset of the backlog"
         );
         let json = snapshot().to_json();
@@ -4273,6 +4274,6 @@ mod tests {
         );
 
         reset();
-        assert!(unprovable_decline_forms().is_empty());
+        assert_eq!(unprovable_decline_forms(), Some(vec![]));
     }
 }
