@@ -474,6 +474,16 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_tenancy_signature.py": "test module.",
     "test_win_gpu_counters.py": "test module.",
     "test_ceiling.py": "test module — a caller, screened as polarity, not as an instrument.",
+    # Arrived with Switch's fa5f514 and was the frame arm's second live catch. Worth naming
+    # what it cost before it was declared: the frame arm runs BEFORE the uninvoked census, so
+    # `audit_instruments --check` failed on the frame and never printed
+    # `1 NEW uninvoked instrument(s)` — the exact string ci/open_reds.json holds as the
+    # signature of Mouse's accepted red. The register then reported `signature_changed`
+    # rather than ACCOUNTED, which is the arm behaving correctly: the acceptance was granted
+    # for one red and a different red had taken its place.
+    "test_kv_write_redundancy.py": (
+        "test module — a caller, screened as polarity, not as an instrument."
+    ),
 }
 
 

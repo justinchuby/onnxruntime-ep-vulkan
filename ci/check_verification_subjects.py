@@ -136,6 +136,11 @@ TABLE: dict[str, dict[str, str]] = {
         "subject": "a cross-platform run's claim",
         "oracle": "the run's own ledger faults and decline counts",
     },
+    "ci/check_ledger_census.py": {
+        "verdict": "ARTIFACT",
+        "subject": "evidence/proof_ledger.jsonl's key set over time",
+        "oracle": "git history of the same file, taken with --full-history",
+    },
     "ci/check_open_reds.py": {
         "verdict": "ARTIFACT",
         "subject": "ci/open_reds.json's accepted reds",

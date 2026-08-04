@@ -719,6 +719,67 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.ledger_census",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Proof-ledger census (has a proof ever gone missing?)",
+        watches=(
+            "Whether a key that was once committed to evidence/proof_ledger.jsonl has "
+            "left it without a retirement record. `gen_proof_ledger.py --check` asks "
+            "whether every entry AGREES with the build; it cannot ask about an entry "
+            "that is no longer there, and the shrinking-write guard covers writes by "
+            "the tool, which a merge is not."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "None needed: the arm that convicts is a real revision. "
+            "`--at eb84364` — a merge in this repository — reports 3 VANISHED and names "
+            "the three Cast forms 26fd93f proved. `--at 26fd93f` is green, so the screen "
+            "is not a constant."
+        ),
+        arm_healthy="the working tree: 115 ever proven = 115 present + 0 retired + 0 VANISHED",
+        arm_broken="eb84364: 106 ever proven = 103 present + 0 retired + 3 VANISHED",
+        observed="2026-08-03",
+        misses=(
+            "It rules on the KEY SET only. An entry whose digests were rewritten in the "
+            "same merge is present, so this screen says nothing about it; that is "
+            "`gen_proof_ledger.py --check`'s question and the two must stay separate.",
+            "It cannot see a form that was never proven. 'Which forms ought to be in the "
+            "ledger' is probe_model_op_census.py's question, not this one.",
+            "Its denominator is git history, so it is blind in a shallow clone. A CI "
+            "checkout with `fetch-depth: 1` would report a smaller N and PASS — the same "
+            "shape as the defect it detects, one level down.",
+        ),
+    ),
+    Check(
+        id="hostfree.ledger_census_negative_control",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Proof-ledger census negative control",
+        watches=(
+            "Whether ci/check_ledger_census.py still convicts what it is supposed to "
+            "convict and acquits what it is supposed to acquit: 13 arms, 2 LIVE / 5 "
+            "REPLAYED / 6 PLANTED, the ratio printed."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Its own first run convicted the screen: without `--full-history` the replay "
+            "arm reported PASS on eb84364, the merge it exists to convict, because git's "
+            "default history simplification hides 26fd93f from the ledger's own log — 13 "
+            "revisions simplified against 55 with the flag. One arm now asserts that gap "
+            "by the numbers, so the flag cannot be removed as noise."
+        ),
+        arm_healthy="13/13 arms passed (2 LIVE, 5 REPLAYED, 6 PLANTED)",
+        arm_broken="the same screen with --full-history dropped: 12/13, the REPLAYED conviction lost",
+        observed="2026-08-03",
+        misses=(
+            "The PLANTED arms build synthetic repositories, so they prove the rule and "
+            "not the wiring. Only the REPLAYED arms touch this repository's real history, "
+            "and they are 5 of 13 — which is why the ratio is printed rather than the "
+            "total.",
+        ),
+    ),
+    Check(
         id="hostfree.open_reds",
         falsifier=FALSIFIER_OBSERVED,
         lane=LANE_HOSTFREE,

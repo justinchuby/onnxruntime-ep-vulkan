@@ -118,13 +118,12 @@
         "rust/tools/audit_instruments.py",
         "--check"
       ],
-      "expect": "red",
-      "signature": "1 NEW uninvoked instrument(s)",
+      "expect": "green",
       "owner": "mouse",
       "opened": "2026-08-03",
       "review_by": "2026-11-01",
-      "reason": "RE-OPENED the same day it was closed, and the re-opening is the finding. Mouse's 2832526 wired SEVEN of the *_forms() accessors (they now return Option, because unwrap_or_default() made a poisoned lock read as 'nothing recorded') and fixed a genuine false positive in the screen itself, where clear_session_devices was mis-scored in the DEAD direction by a positional production/test split. But counters.rs::unprovable_decline_forms was missed: it still returns Vec<String>, its emitter unprovable_decline_forms_json() still reads the static directly rather than going through it, and its only callers are #[cfg(test)]. It is the eighth instance of the exact defect the other seven were repaired for, including the poisoned-lock-reads-as-empty half, and its name is one letter-cluster away from a repaired sibling (unproven_decline_forms), which is the most likely reason a by-hand sweep skipped it. The count in the signature moved 9 -> 1, so the old acceptance did NOT stretch: the screen reported signature_changed rather than quietly accepting a different red.",
-      "closes_when": "Mouse gives unprovable_decline_forms the same treatment as its seven siblings (Option return, emitter reads through the accessor) and runs `python rust/tools/audit_instruments.py --write-baseline`. Then set expect=green -- do not delete this entry.",
+      "reason": "CLOSED 2026-08-03 (link). Was accepted red with signature '1 NEW uninvoked instrument(s)'. Mouse wired the last accessor, and the remaining red was a different one: Switch's fa5f514 added bench/test_kv_write_redundancy.py, undeclared, and the FRAME arm runs before the uninvoked census — so the check failed without ever printing the signature the acceptance names, and the register correctly reported signature_changed rather than stretching it. Declaring the module in audit_instruments.py::BENCH_HELD_OUT takes the whole check to CENSUS VERDICT: PASS. Kept as expect=green rather than deleted, per this register's own rule: deleting removes the CHECK, not the acceptance, and the next regression must land as unaccounted_red rather than as silence.\n\nPREVIOUSLY: RE-OPENED the same day it was closed, and the re-opening is the finding. Mouse's 2832526 wired SEVEN of the *_forms() accessors (they now return Option, because unwrap_or_default() made a poisoned lock read as 'nothing recorded') and fixed a genuine false positive in the screen itself, where clear_session_devices was mis-scored in the DEAD direction by a positional production/test split. But counters.rs::unprovable_decline_forms was missed: it still returns Vec<String>, its emitter unprovable_decline_forms_json() still reads the static directly rather than going through it, and its only callers are #[cfg(test)]. It is the eighth instance of the exact defect the other seven were repaired for, including the poisoned-lock-reads-as-empty half, and its name is one letter-cluster away from a repaired sibling (unproven_decline_forms), which is the most likely reason a by-hand sweep skipped it. The count in the signature moved 9 -> 1, so the old acceptance did NOT stretch: the screen reported signature_changed rather than quietly accepting a different red.",
+      "closes_when": "n/a — closed; this is expected green and must stay green.",
       "timeout": 900
     },
     {
@@ -138,13 +137,12 @@
         "-p",
         "no:cacheprovider"
       ],
-      "expect": "red",
-      "signature": "FAIL(drift)",
+      "expect": "green",
       "owner": "mouse",
       "opened": "2026-08-03",
       "review_by": "2026-11-01",
-      "reason": "The same condition as audit_instruments_census read by a second gate. Registered separately rather than folded in, because folding them would hide the day one of them stops reading it.",
-      "closes_when": "Closes with audit_instruments_census, same event, same commit.",
+      "reason": "CLOSED 2026-08-03 (link). Same condition as audit_instruments_census read by a second gate, and it closed with it in the same commit, exactly as its closes_when predicted. Kept as expect=green for the same reason.\n\nPREVIOUSLY: The same condition as audit_instruments_census read by a second gate. Registered separately rather than folded in, because folding them would hide the day one of them stops reading it.",
+      "closes_when": "n/a — closed; this is expected green and must stay green.",
       "timeout": 900
     },
     {
@@ -160,6 +158,34 @@
       "reason": "Mouse's sweep for checks that verify themselves -- CHECKED 22, classified 22, FOUND 0 SELF (13 ARTIFACT, 9 EXTERNAL). It arrived at 2832526 in ci/ and IS IN NO WORKFLOW STEP. ci/check_lane_inventory.py could not see that, because it asks whether every workflow step has a Check, not whether every check has a step -- so an unwired tool is invisible to the coverage census by construction. That is one more instance of the class, arriving with the fix for the previous instance, and the register is the right home for it because the register runs things.",
       "closes_when": "n/a -- expected green.",
       "timeout": 600
+    },
+    {
+      "id": "ledger_census",
+      "cmd": [
+        "python",
+        "ci/check_ledger_census.py"
+      ],
+      "expect": "green",
+      "owner": "link",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "Declared here because a check that is in a lane and in no register is one merge away from being a check that is in neither. This screen exists for a failure three other instruments missed: gen_proof_ledger.py --check cannot ask about an entry that is gone, the shrinking-write guard covers writes by the tool and a merge is not one, and check_open_reds.py does not read the ledger. The only thing that noticed the three Cast proofs eb84364 dropped was the op suite going red and staying unaccounted. Its own replay arm convicts eb84364 and acquits 26fd93f.",
+      "closes_when": "n/a — this is expected green and must stay green.",
+      "timeout": 900
+    },
+    {
+      "id": "ledger_census_negative_control",
+      "cmd": [
+        "python",
+        "ci/negative_control_ledger_census.py"
+      ],
+      "expect": "green",
+      "owner": "link",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "The control that keeps the census falsifiable: 13 arms, 2 LIVE / 5 REPLAYED / 6 PLANTED, ratio printed so a control made only of plants is visible as one. One arm asserts by revision count (13 simplified vs 55 --full-history) that dropping --full-history silently disarms the screen — which it did, on the first run, reporting PASS on the merge it was written to convict.",
+      "closes_when": "n/a — this is expected green and must stay green.",
+      "timeout": 900
     }
   ],
   "subjects": [
@@ -171,7 +197,9 @@
     "harness_census_drift",
     "kv_caller_bind_reading",
     "proof_ledger_writer_refuses",
-    "verification_subjects"
+    "verification_subjects",
+    "ledger_census",
+    "ledger_census_negative_control"
   ],
   "retired": {
     "proof_ledger_writer_refuses": {
