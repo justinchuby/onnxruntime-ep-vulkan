@@ -372,29 +372,53 @@ pub mod weights {
 
     /// One device-local (`DeviceLocal` / `PackedWeights`) buffer was allocated through the session
     /// allocator. Raises the high-water mark if the new in-use total exceeds any prior peak.
+    ///
+    /// **The arithmetic saturates, and that is a fix, not a shortcut (2026-08-04, Mouse).** This
+    /// line was `fetch_add(bytes, ORD) + bytes` and it *panicked* — `attempt to add with overflow`
+    /// inside `CreateEp` — partway through a full `tests/ops` run, taking that session down and
+    /// leaving ORT to fall back to the CPU EP. The visible symptom was a completely unrelated
+    /// test (`test_shape_inference_delta[Add-fp32-dyn]`) reporting that the EP claimed nothing,
+    /// three files later.
+    ///
+    /// The root cause is upstream of this line: `on_device_free` subtracted, so any alloc/free
+    /// asymmetry wrapped `DEV_BYTES_IN_USE` to near `u64::MAX`, and the *next* allocation's add
+    /// overflowed. A release build would have wrapped silently instead of panicking.
+    ///
+    /// **A counter must never be able to abort the thing it observes.** An instrument that kills a
+    /// session is worse than one that reports a wrong number: the wrong number is visible in the
+    /// artifact, whereas the dead session is visible only as an unexplained CPU fallback in a
+    /// different test. Saturating keeps the run alive and leaves the asymmetry visible as an
+    /// absurd in-use total — which is a reading, and readings are what this module is for.
     pub fn on_device_alloc(bytes: u64) {
         DEV_ALLOCS.fetch_add(1, ORD);
-        let now = DEV_BYTES_IN_USE.fetch_add(bytes, ORD) + bytes;
+        let prev = DEV_BYTES_IN_USE
+            .fetch_update(ORD, ORD, |cur| Some(cur.saturating_add(bytes)))
+            .unwrap_or(0);
+        let now = prev.saturating_add(bytes);
         // Monotonic-max update. Relaxed is fine: the only reader is a post-run snapshot, and a
         // transient under-report during a race resolves on the next alloc.
         DEV_HIGH_WATER.fetch_max(now, ORD);
     }
 
     /// One device-local buffer was freed through the session allocator.
+    ///
+    /// Saturating for the same reason as [`on_device_alloc`]: a free not matched by an alloc must
+    /// not wrap the total into the top of the `u64` range, because that wrap is what turns the
+    /// next allocation into a panic.
     pub fn on_device_free(bytes: u64) {
         DEV_FREES.fetch_add(1, ORD);
-        DEV_BYTES_IN_USE.fetch_sub(bytes, ORD);
+        let _ = DEV_BYTES_IN_USE.fetch_update(ORD, ORD, |cur| Some(cur.saturating_sub(bytes)));
     }
 
     /// A weight-tensor buffer entered the cache (moved out of the per-call free path).
     pub fn on_cache_insert(bytes: u64) {
-        WC_BYTES_RESIDENT.fetch_add(bytes, ORD);
+        let _ = WC_BYTES_RESIDENT.fetch_update(ORD, ORD, |cur| Some(cur.saturating_add(bytes)));
     }
 
     /// A cache entry was evicted mid-run (stale key overwrite), not released at subgraph teardown.
     /// Adjusts resident bytes without touching the release-call wiring artifact.
     pub fn on_cache_evict(bytes: u64) {
-        WC_BYTES_RESIDENT.fetch_sub(bytes, ORD);
+        let _ = WC_BYTES_RESIDENT.fetch_update(ORD, ORD, |cur| Some(cur.saturating_sub(bytes)));
     }
 
     /// `release_weight_cache` freed a cache for one subgraph: `buffers` entries, `bytes` total.
@@ -404,7 +428,10 @@ pub mod weights {
         WC_RELEASE_CALLS.fetch_add(1, ORD);
         WC_RELEASE_BUFFERS.fetch_add(buffers, ORD);
         WC_RELEASE_BYTES.fetch_add(bytes, ORD);
-        WC_BYTES_RESIDENT.fetch_sub(bytes, ORD);
+        // Saturating for the same reason as `on_device_alloc`: a release whose byte total exceeds
+        // what we recorded as resident must not wrap the residency figure into the top of the u64
+        // range, where the next `on_cache_insert` would have to reason about it.
+        let _ = WC_BYTES_RESIDENT.fetch_update(ORD, ORD, |cur| Some(cur.saturating_sub(bytes)));
     }
 
     /// `(dev_allocs, dev_frees, dev_bytes_in_use, dev_high_water, wc_release_calls,
@@ -3058,6 +3085,53 @@ mod tests {
         assert_eq!((n, bytes), (1, 4096), "staging upload was not counted");
         assert!(us >= 25, "staging time was not counted; got {us}");
         staging::reset();
+    }
+
+    /// **A counter must not be able to abort the thing it observes (2026-08-04, Mouse).**
+    ///
+    /// This is the regression test for a real failure, not a hypothetical: partway through a full
+    /// `tests/ops` run the EP panicked with `attempt to add with overflow` at
+    /// `weights::on_device_alloc`, inside `CreateEp`. The panic was caught at the C ABI boundary,
+    /// `CreateEp` returned `ORT_EP_FAIL`, and ORT silently fell back to the CPU EP — so the
+    /// symptom surfaced as an unrelated test three files later reporting that the EP claimed no
+    /// nodes. The cause was an alloc/free asymmetry: `on_device_free` subtracted more than had
+    /// been added, wrapping the in-use total to near `u64::MAX`, and the next allocation's add
+    /// overflowed.
+    ///
+    /// The asymmetry itself is NOT fixed by this test or by the code it covers, and this test
+    /// deliberately does not assert that it cannot happen — it asserts that when it does happen
+    /// the instrument degrades to a wrong number instead of killing the session. A wrong number is
+    /// visible in the artifact; a dead session is visible only as an unexplained CPU fallback
+    /// somewhere else.
+    #[test]
+    fn an_unmatched_free_cannot_make_the_next_alloc_panic() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        weights::reset();
+
+        // The asymmetry: free bytes that were never allocated. Under `fetch_sub` this wrapped.
+        weights::on_device_free(1024);
+        let (_, _, in_use, ..) = weights::snapshot();
+        assert_eq!(
+            in_use, 0,
+            "an unmatched free must clamp to zero, not wrap to the top of the u64 range"
+        );
+
+        // The line that used to panic. Debug builds abort here on overflow; release builds wrap
+        // silently, which is worse, because then the artifact lies without saying so.
+        weights::on_device_alloc(4096);
+        let (allocs, frees, in_use, high_water, ..) = weights::snapshot();
+        assert_eq!((allocs, frees), (1, 1), "call counts are unaffected by clamping");
+        assert_eq!(in_use, 4096, "in-use must resume from the clamped zero");
+        assert!(high_water >= 4096, "high-water must see the clamped total");
+
+        // The same property at the other end: a release larger than what we recorded resident.
+        weights::on_cache_insert(512);
+        weights::on_cache_release(1, 4096);
+        let (.., resident) = weights::snapshot();
+        assert_eq!(resident, 0, "an over-large release must clamp, not wrap");
+
+        weights::reset();
     }
 
     /// Zero is the value residency produces AND the value a moved hook produces. The artifact must

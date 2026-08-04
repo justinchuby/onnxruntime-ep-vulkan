@@ -1503,6 +1503,8 @@ pub static REGISTRY: &[&[OpSpec]] = &[
     crate::ops::norm::OPS,
     crate::ops::indexing::OPS,
     crate::ops::conv::OPS,
+    crate::ops::pooling::OPS,
+    crate::ops::matmul::OPS,
     crate::ops::quant::OPS,
     crate::ops::moe::OPS,
     crate::ops::ssm::OPS,
@@ -1773,6 +1775,17 @@ fn dtype_signature(view: &NodeView<'_>) -> String {
 /// already recorded, exactly and independently, by [`populated_input_set`]; appending it too would
 /// write the same fact into the key twice and change every existing `Clip` key for no distinction
 /// gained.
+///
+/// # The form suffix
+///
+/// `ops::common::form` carries an op's *form* — attributes that change what the kernel computes
+/// without forking the pipeline, such as `Conv`'s `group` and `Gemm`'s `transB`. A selector could
+/// not carry them: a selector is a specialisation constant, and forking a pipeline per `group`
+/// value would multiply modules for a distinction the shader resolves from a push constant. But
+/// the *proof* needs the distinction, because a form proven on a dense convolution says nothing
+/// about a grouped one. It rides this component under `#` for the reason given in `form`'s module
+/// docs: the key has exactly six fields by rule, and this is the field that already folds in
+/// per-op identity. Ops with no form bits are byte-identical to what they were before.
 fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
     let dispatch_dtype = view
         .input_types()
@@ -1805,7 +1818,7 @@ fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
         Some(stem) if !stem.is_empty() => stem.to_string(),
         _ => "metadata".to_string(),
     };
-    match crate::ops::common::selector::source_for(spec.op_type) {
+    let selected = match crate::ops::common::selector::source_for(spec.op_type) {
         Some(crate::ops::common::selector::SelectorSource::Attrs(_)) => {
             // An unresolvable selector is a node the predicate declines; the key still has to be a
             // distinct, total string, so the failure renders as its own tag rather than collapsing
@@ -1816,6 +1829,10 @@ fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
             }
         }
         _ => stem,
+    };
+    match crate::ops::common::form::tag_for(spec.op_type, view) {
+        Some(form) => format!("{selected}#{form}"),
+        None => selected,
     }
 }
 

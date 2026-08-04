@@ -1,0 +1,83 @@
+// Gemm (f32) — ONNX `Gemm`, opset 7+, general matrix product with an optional broadcast C.
+// Owner: Mouse.
+//
+// THE MAPPING
+// -----------
+//   A : [M, K]  or  [K, M]  when transA          (row-major, as ONNX stores it)
+//   B : [K, N]  or  [N, K]  when transB
+//   C : broadcast onto [M, N] from rank 0, 1 or 2
+//   Y : [M, N]
+//
+//   Y[i, j] = alpha * sum over k of A'[i, k] * B'[k, j]  +  beta * C'[i, j]
+//
+// One invocation per output element, each running the K-long inner product. No tiling and no
+// shared-memory staging: this is the honest general case, and a tiled kernel is a separate
+// measured change with this as its oracle — the same call `conv_f32.comp` made and for the same
+// reason. The first question a model asks is whether `Gemm` is claimed at all.
+//
+// WHY THE TRANSPOSES ARE PUSH CONSTANTS AND NOT SPECIALISATION CONSTANTS
+// ----------------------------------------------------------------------
+// A specialisation constant would fold the index expression at pipeline creation and cost four
+// pipelines. The multiply below is one fused select per index, which on a K-long loop is noise
+// next to the two loads it guards. What the transposes *do* need is a distinct proof key, and
+// that is `ops::common::form`'s job, not a pipeline's: they change the answer, not the code.
+//
+// The accumulator is `float`, matching ORT's f32 CPU reference in loop order, for the reason
+// spelled out in `global_average_pool_f32.comp`.
+//
+// C's broadcast arrives already resolved as `(c_rows, c_cols)`, each either 1 or the full
+// extent. Resolving it here would mean re-deriving ONNX's unidirectional rule in GLSL, where it
+// cannot be unit-tested; `matmul.rs::c_broadcast` owns it and is the only implementation.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    uint m;        // output rows
+    uint n;        // output columns
+    uint k;        // inner-product length
+    uint trans_a;  // 0 or 1
+    uint trans_b;  // 0 or 1
+    uint has_c;    // 0 or 1
+    uint c_rows;   // 1, or m
+    uint c_cols;   // 1, or n
+    uint total;    // m * n
+    float alpha;
+    float beta;
+} pc;
+
+layout(set = 0, binding = 0) readonly  buffer A { float data[]; } u_a;
+layout(set = 0, binding = 1) readonly  buffer B { float data[]; } u_b;
+layout(set = 0, binding = 2) readonly  buffer C { float data[]; } u_c;
+layout(set = 0, binding = 3) writeonly buffer Y { float data[]; } u_y;
+
+void main() {
+    uint stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+    for (uint o = gl_GlobalInvocationID.x; o < pc.total; o += stride) {
+        uint col = o % pc.n;
+        uint row = o / pc.n;
+
+        float acc = 0.0;
+        for (uint i = 0u; i < pc.k; ++i) {
+            // A is [M, K] row-major, or [K, M] when transposed. Both are the same buffer read
+            // with the two factors swapped, which is why one branchless expression serves.
+            uint ai = (pc.trans_a != 0u) ? (i * pc.m + row) : (row * pc.k + i);
+            uint bi = (pc.trans_b != 0u) ? (col * pc.k + i) : (i * pc.n + col);
+            acc += u_a.data[ai] * u_b.data[bi];
+        }
+        acc *= pc.alpha;
+
+        if (pc.has_c != 0u) {
+            // A broadcast axis reads element 0 of that axis for every row/column. `c_rows` and
+            // `c_cols` are 1 exactly when the axis broadcasts, so the select needs no second
+            // flag.
+            uint cr = (pc.c_rows == 1u) ? 0u : row;
+            uint cc = (pc.c_cols == 1u) ? 0u : col;
+            acc += pc.beta * u_c.data[cr * pc.c_cols + cc];
+        }
+        u_y.data[o] = acc;
+    }
+}

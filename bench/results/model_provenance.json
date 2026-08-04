@@ -7,6 +7,14 @@
       "why": "the first non-LLM proof subject this project has had; two LLMs cannot see a Conv",
       "sha256": "c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5",
       "bytes": 13964571
+    },
+    {
+      "url": "https://github.com/onnx/models/raw/main/validated/text/machine_comprehension/bert-squad/model/bertsquad-12.onnx",
+      "name": "bertsquad-12",
+      "fetched": "2026-08-04",
+      "why": "the transformer-encoder class. Criterion stated before the pick: choose the class whose census (a) this EP cannot run at all today, (b) whose missing set is DISJOINT from the CNN's, so the census produces new information rather than re-confirming what Conv already answered, and (c) whose ops recur across the most other models in that class. A detection or segmentation model would have re-exercised Conv plus Resize/NMS, which overlaps what just landed; a BERT-class encoder's body is MatMul/ReduceMean/Transpose/Softmax/Reshape, of which the registry holds none.",
+      "sha256": "5f0d96a9e6b8a4a2e59f9636f8bbad09ee8a0c58c8212027cc17c5fcc9659e55",
+      "bytes": 435852736
     }
   ]
 }

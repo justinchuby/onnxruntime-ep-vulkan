@@ -14,11 +14,21 @@ It is a **measuring instrument, not a test**. It has no pass/fail: a number it p
 input to a human choosing a constant, and the constant then lives in `_models.py` with this
 script named as its provenance. Re-run it on a new vendor before quoting its number there.
 
-    python tests/ops/probe_conv_tolerance.py
+    python tests/ops/probe_conv_tolerance.py [--device N]
+
+DEVICE IDENTITY IS READ OFF THE RUN, NOT OFF THE REQUEST (added 2026-08-04, Mouse)
+---------------------------------------------------------------------------------
+`--device N` sets `ONNXRUNTIME_EP_VULKAN_DEVICE`, which is a *request* handed to the loader.
+Trinity has observed `DEVICE=0` running on `1=NVIDIA`, so a result filed under "device 1"
+because that is what was asked for names nothing. This script therefore takes the EP's own
+`running_device_names` counter and files its output under that, and refuses to report at all
+if `dispatches_executed` is 0 — Switch found a lane with zero EP dispatches, exit 0 and no
+exception, and every number such a lane prints is the CPU compared against itself.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -90,7 +100,55 @@ def build(case) -> tuple[bytes, dict[str, np.ndarray]]:
     return model, feeds
 
 
+_COUNTERS = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "bench"
+    / "results"
+    / "_conv_tolerance_counters.json"
+)
+
+
+def _read_run_identity() -> tuple[str, int]:
+    """Return `(device_name, dispatches_executed)` as reported by the EP that just ran.
+
+    Raises rather than returning a default: an unknown device makes the whole measurement
+    unattributable, which is worse than no measurement.
+    """
+    if not _COUNTERS.is_file():
+        raise SystemExit(
+            "ERROR(instrument): the EP wrote no counters file, so the device that produced "
+            "these residuals cannot be named and the numbers cannot be filed."
+        )
+    c = json.loads(_COUNTERS.read_text(encoding="utf-8"))
+    name = (c.get("running_device_names") or "").strip()
+    dispatches = int(c.get("dispatches_executed") or 0)
+    if not name:
+        raise SystemExit(
+            "ERROR(instrument): counters carry no running_device_names; see above."
+        )
+    return name, dispatches
+
+
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--device",
+        default=None,
+        help="sets ONNXRUNTIME_EP_VULKAN_DEVICE, before the EP library is registered (the only "
+        "construction that makes ORT's binding and ours the same device). Accepts an index into "
+        "the *best-first sorted capables* list — which is NOT vulkaninfo's enumeration order, so "
+        "0 is the discrete part on this box, not GPU0 — or a substring of the device name such "
+        "as `Intel`. Either way it is a request: the name this script files its results under is "
+        "read back off the run.",
+    )
+    args = ap.parse_args()
+    if args.device is not None:
+        os.environ["ONNXRUNTIME_EP_VULKAN_DEVICE"] = str(args.device)
+    _COUNTERS.parent.mkdir(parents=True, exist_ok=True)
+    if _COUNTERS.exists():
+        _COUNTERS.unlink()
+    os.environ["ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"] = str(_COUNTERS)
+
     _register_ep()
     worst_rel = 0.0
     worst_atol = 0.0
@@ -114,12 +172,39 @@ def main() -> int:
                      "shape": list(vk.shape)})
         print(f"  {case[0]:<18} max_rel={rel:.3e}  max_abs={absolute:.3e}  shape={vk.shape}")
 
-    print(f"\nWORST ACROSS {len(rows)} CASE(S): max_rel={worst_rel:.3e} max_abs={worst_atol:.3e}")
+    device_name, dispatches = _read_run_identity()
+    if dispatches <= 0:
+        raise SystemExit(
+            f"ERROR(instrument): dispatches_executed={dispatches} on {device_name!r}. The EP "
+            "claimed but never dispatched; every residual above is the CPU against itself."
+        )
+    print(f"\nDEVICE (read off the run): {device_name}   dispatches_executed={dispatches}")
+    print(f"REQUESTED: ONNXRUNTIME_EP_VULKAN_DEVICE="
+          f"{os.environ.get('ONNXRUNTIME_EP_VULKAN_DEVICE', '<unset>')}")
+    print(f"WORST ACROSS {len(rows)} CASE(S): max_rel={worst_rel:.3e} max_abs={worst_atol:.3e}")
     print("Quote these two numbers when pinning FP32_CONV in _models.py; do not round them down.")
-    out = pathlib.Path(__file__).resolve().parents[2] / "bench" / "results" / "conv_tolerance_derivation.json"
+    slug = "".join(ch if ch.isalnum() else "_" for ch in device_name).strip("_").lower()
+    out = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "bench"
+        / "results"
+        / f"conv_tolerance_derivation_{slug}.json"
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"cases": rows, "worst_rel": worst_rel,
-                               "worst_abs": worst_atol}, indent=2), encoding="utf-8")
+    out.write_text(
+        json.dumps(
+            {
+                "device_name": device_name,
+                "device_requested": os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", ""),
+                "dispatches_executed": dispatches,
+                "cases": rows,
+                "worst_rel": worst_rel,
+                "worst_abs": worst_atol,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(f"-> {out}")
     return 0
 

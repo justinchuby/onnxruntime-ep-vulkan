@@ -1,0 +1,149 @@
+{
+ "model": ".scratch-models\\mobilenetv2-12.onnx",
+ "tag": "mobilenetv2_r14_mid",
+ "graph": {
+  "nodes": 105,
+  "opset_import": {
+   "ai.onnx": 12
+  },
+  "ir_version": 7
+ },
+ "graph_op_counts": {
+  "Conv": 52,
+  "Clip": 35,
+  "Add": 10,
+  "GlobalAveragePool": 1,
+  "Shape": 1,
+  "Constant": 1,
+  "Gather": 1,
+  "Unsqueeze": 1,
+  "Concat": 1,
+  "Reshape": 1,
+  "Gemm": 1
+ },
+ "decisions_recorded": 149,
+ "claimed_nodes": 45,
+ "declined_nodes": 104,
+ "no_decision_nodes": 1,
+ "no_decision_ops": {
+  "Constant": 1
+ },
+ "per_op": {
+  "Add": {
+   "seen": 20,
+   "claimed": 10,
+   "declined": 10,
+   "codes": {
+    "partition": 10
+   },
+   "ledger_hits": 10,
+   "proof_keys": {
+    "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/runtime-extent/n2": 10
+   }
+  },
+  "Clip": {
+   "seen": 70,
+   "claimed": 35,
+   "declined": 35,
+   "codes": {
+    "partition": 35
+   },
+   "ledger_hits": 35,
+   "proof_keys": {
+    "ai.onnx::Clip/11+/f32,f32,f32>f32/ew_select_clip_f32/runtime-extent/min+max": 35
+   }
+  },
+  "Concat": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Conv": {
+   "seen": 52,
+   "claimed": 0,
+   "declined": 52,
+   "codes": {
+    "unproven": 52
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::Conv/1+/f32,f32,f32>f32/metadata#strided+padded/runtime-extent/n3": 1,
+    "ai.onnx::Conv/1+/f32,f32,f32>f32/metadata#grouped+padded/runtime-extent/n3": 13,
+    "ai.onnx::Conv/1+/f32,f32,f32>f32/metadata#base/runtime-extent/n3": 34,
+    "ai.onnx::Conv/1+/f32,f32,f32>f32/metadata#grouped+strided+padded/runtime-extent/n3": 4
+   }
+  },
+  "Gather": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "dtype": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::Gather/1+/i64,i64>i64/metadata/static/n2": 1
+   }
+  },
+  "Gemm": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "rank": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::Gemm/7+/f32,f32,f32>f32/metadata#transB/runtime-extent/n3": 1
+   }
+  },
+  "GlobalAveragePool": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "unproven": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::GlobalAveragePool/1+/f32>f32/metadata/runtime-extent/n1": 1
+   }
+  },
+  "Reshape": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Shape": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Unsqueeze": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  }
+ },
+ "ep_lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-mouse\\rust\\target\\debug\\onnxruntime_vulkan_ep.dll"
+}

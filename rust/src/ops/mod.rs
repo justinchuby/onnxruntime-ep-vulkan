@@ -67,6 +67,12 @@ pub mod indexing;
 /// Convolution — `Conv`, the spatial-window op the CNN model class rests on.
 pub mod conv;
 
+/// Pooling — `GlobalAveragePool`, the op that turns a feature map into a feature vector.
+pub mod pooling;
+
+/// Dense linear algebra — `Gemm`, the classifier head and the feed-forward layer.
+pub mod matmul;
+
 /// Weight-only quantization: `MatMulNBits` and the block-quantized dequant path.
 pub mod quant;
 

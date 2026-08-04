@@ -1,23 +1,28 @@
-"""`Conv` conformance — the attribute axes a ledger entry does not cover.
+"""`Conv` conformance — the attribute *values* a form-tagged proof key still does not cover.
 
 WHY THIS FILE EXISTS AND `test_op_table.py` IS NOT ENOUGH
 --------------------------------------------------------
-The proof ledger records four `Conv` keys::
+Until 2026-08-04 the proof ledger recorded four `Conv` keys of the shape::
 
     ai.onnx::Conv/1+/f32,f32,f32>f32/metadata/static/n3
-    ai.onnx::Conv/1+/f32,f32>f32/metadata/static/n2
-    ai.onnx::Conv/1+/f32,f32,f32>f32/metadata/runtime-extent/n3
-    ai.onnx::Conv/1+/f32,f32>f32/metadata/runtime-extent/n2
 
-and that is the entire key space: domain, opset window, dtypes, module, shape class, arity.
-`group`, `strides`, `dilations` and `pads` appear nowhere in it. So the ledger says the
-convolution kernel produced ORT's answer for **one** attribute combination per key, and a reader
-who took the four entries as coverage of `Conv` would be reading them for more than they say.
+and `group`, `strides`, `dilations` and `pads` appeared nowhere in any of them. This file was
+written to close that gap by running the axes explicitly, and it said so — but a conformance
+test is not a claim gate, so all 52 of MobileNetV2's convolutions were still being *claimed*
+against an entry obtained on a form the model does not contain. Counting the four attribute
+classes off that graph found `padded` (what the entries proved) is not one of the four forms
+(`base` x34, `strided+padded` x1, `grouped+padded` x13, `grouped+strided+padded` x4) the model
+runs.
 
-The gap is real and it is not closed by a fifth entry — attributes do not change which module
-runs or how the bindings are laid out, which is what a key is about. It is closed here, by
-running the axes explicitly. Each case is a form MobileNetV2-12 contains or the boundary just
-outside one; see `_conv_cases.py` for why each one is in the list.
+`ops::common::form` closes that. The key now carries one boolean per code path in
+`conv_f32.comp`, so the keys read::
+
+    ai.onnx::Conv/1+/f32,f32,f32>f32/metadata#grouped+strided+padded/runtime-extent/n3
+
+**This file's job did not disappear; it narrowed.** A form bit separates `stride > 1` from
+`stride == 1`; it does not separate `stride=2` from `stride=3`, and that is deliberate — see
+`form.rs` for why the bit rather than the value is the honest granularity. The cases below are
+the values *within* a form, which no key carries and no key should.
 
 DECLINES ARE ALSO TESTED
 ------------------------
