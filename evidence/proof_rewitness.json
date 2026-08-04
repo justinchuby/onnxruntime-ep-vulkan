@@ -13,12 +13,12 @@
       "date": "2026-08-03",
       "deliberate": false,
       "keys": 115,
-      "repaired_by": "WORKTREE",
-      "reason": "NOT a re-witness — an accident, recorded because it happened and not to excuse it. The Conv commit regenerated evidence/proof_ledger.jsonl from a base predating aea0147 and restored the digests computed under the WITHDRAWN pre-`normalize_shader_text` rule on 115 of 121 entries. Every existing screen read clean: no key went missing (key census 0 VANISHED, loss invariant 0 missing) and Windows `--check` printed PASS because a stale source digest with matching SPIR-V is SOURCE-COSMETIC, which forgives. Linux read the same 115 as SUBJECT-CHANGED and declined; the op suite went 8 failed to 50 failed, the criterion-10 gate to UNATTRIBUTED, epctl --check-counters to exit 3 and the portability screen to claimed_nothing. Repaired in the WORKTREE record above. This arm is the screen that would have caught it at the merge.",
+      "repaired_by": "69ac22255175a987b165e87b9aba5b2993818479",
+      "reason": "NOT a re-witness — an accident, recorded because it happened and not to excuse it. The Conv commit regenerated evidence/proof_ledger.jsonl from a base predating aea0147 and restored the digests computed under the WITHDRAWN pre-`normalize_shader_text` rule on 115 of 121 entries. Every existing screen read clean: no key went missing (key census 0 VANISHED, loss invariant 0 missing) and Windows `--check` printed PASS because a stale source digest with matching SPIR-V is SOURCE-COSMETIC, which forgives. Linux read the same 115 as SUBJECT-CHANGED and declined; the op suite went 8 failed to 50 failed, the criterion-10 gate to UNATTRIBUTED, epctl --check-counters to exit 3 and the portability screen to claimed_nothing. Repaired in the 69ac222 record above. This arm is the screen that would have caught it at the merge.",
       "how_this_gets_closed": "It does not get deleted. The same argument as `retired` in ci/open_reds.json: deleting the record removes the CHECK's memory of the event, not the event. It stays with deliberate=false so the next reader can see that this class of accident has happened once and what it cost."
     },
     {
-      "revision": "WORKTREE",
+      "revision": "69ac22255175a987b165e87b9aba5b2993818479",
       "field": "source_digest",
       "owner": "link",
       "date": "2026-08-04",
