@@ -557,3 +557,89 @@ corroboration is that it reproduced Phi-3.5's independently-known 355/366 withou
 eight full-suite runs and passes in isolation. Hypothesis only — cross-test device-state
 interference through `state_for`'s device predicate. Unconfirmed, unexplained, reported rather than
 buried.
+
+## §8.9.22 — the portable digest was a checkout fingerprint (2026-08-03, later)
+Link took a fresh Linux `.so` to my two-digest schema and got **0 of 103 agreeing** where Windows
+got 102, with his probe showing **both** digests moved on all 103 and the build naming its own
+toolchain `UNKNOWN`. He filed two defects. There were three, and the third is the one that made the
+other two fixes matter.
+**Defect 3, which nobody had named: `source_digest` hashed line endings.**
+`build.rs::source_digest_for` hashed `fs::read` output raw. `core.autocrlf=true`, no
+`.gitattributes` rule for `*.comp`/`*.glsl`, so this checkout is CRLF (I counted: `gqa_f16.comp`
+CR=423 LF=423) and Linux checks out the same blob as LF. **The witness I added to be
+toolchain-independent was less portable than the SPIR-V digest it exists to be more portable
+than** — glslc emits byte-identical bytes from both. I had excluded the absolute `-I` path so the
+digest would not be a machine fingerprint, and then hashed bytes a git option chose. Same mistake,
+one level down. A digest that needs a version-control setting to be comparable is a machine
+fingerprint with extra steps.
+**Defect 1: `PROVEN-ELSEWHERE{toolchain}` could not be reached in the Python classifier.** Its
+condition is "SPIR-V differs, source same"; `check_against_build` tested `spirv_digest` first and
+unconditionally, so a condition tested earlier subsumed it and every Linux entry rendered as
+`SUBJECT-CHANGED` -- not the wrong token but the **strongest available accusation**, telling a user
+their source moved when their compiler moved. `registry.rs::subject_verdict` had the table right;
+the gate that mirrors it did not, which makes it a second disagreeing opinion about the same fact.
+It now mirrors the whole table in the same order, and FAILs on exactly what the runtime declines.
+**Defect 2: `cmd_check` computed the explanation and threw it away.** Notes printed only after the
+PASS line, four lines past the failure branch's `return 1`. In a Linux run where all 103 failures
+had a toolchain cause, the word "toolchain" appeared nowhere; on PASS, where nothing needs
+explaining, it printed in full. Present exactly when not needed, absent exactly when needed.
+**Also: the eighth uninvoked accessor was mine.** `counters::unprovable_decline_forms` returned
+`Vec<String>` via `unwrap_or_default()`, so a poisoned lock read as **"nothing is unprovable"** --
+mis-scoring in the dead direction -- and had no caller because the emitter read the static. Now
+`Option<Vec<String>>`, emitter goes through `forms_json`. That greened
+`tests/ops/test_harness_census.py::test_census_baseline_has_no_drift`, one of the three reds I
+reported as pre-existing this morning.
+### The measurement, and its negative control
+`rust/tools/probe_source_digest_eol.py`: two arms, predictions written first, tree restored and
+rebuilt afterwards. **215/215 modules moved under the old rule; 0/215 under the new; P1 (SPIR-V
+identical across arms) PASS in both.** I ran the negative control by reverting `normalize_shader_text`
+and rebuilding, because P2 passing on a tree I had just fixed proves nothing about whether P2 can
+fail. It can: it went `FAIL (215 moved)`. That reproduces Link's Linux reading on Windows without a
+Linux box, and it is the strongest thing I have -- I still cannot see his machine.
+`probe_ledger_subject_check.py` 5 arms -> 7 (8 assertions), **8/8**. Arm 6 plants a moved
+`spirv_digest` with a **correct** `source_digest` and requires `PROVEN-ELSEWHERE{toolchain}` in a run
+that FAILS for an unrelated reason -- one arm falsifying defects 1 and 2 together. Arm 7 moves both
+and requires `SUBJECT-CHANGED`, so arm 6 cannot be satisfied by a classifier that merely stopped
+failing. Arm 2 (Switch's real case) still fails and now says "both witnesses moved", which is the
+sentence I wanted: the classifier got more precise, not looser.
+`--rewitness-source`: 115 re-witnessed, 0 skipped. It carries `--backfill-frame`'s SPIR-V-equality
+refusal **plus** a toolchain-equality refusal, because identical SPIR-V from two compilers does not
+establish identical source. Ledger digest `0eef01359c467110` -> `f3bb172dffd6be28`; entry count
+unchanged at 115; **no proof was re-asserted, only the source witness recomputed under the
+corrected rule.**
+### Coverage, re-measured under the new build
+gpt-oss-20b **293 / 374 claimed**, unchanged from this morning -- the digest change and the
+re-witness moved nothing, which is what I wanted to know. The 78 declines are unchanged in
+composition: GQA x24 `[attribute]` (8-input, attention sinks), `Reshape` x24 `[not-registered]`,
+QMoE x24 `[staged]`, and 5 `shaderInt64` forms plus `ReduceSum`/`Shape`. **I added no new op this
+round and that is a real cost of taking the Linux defects first**, which was the right order:
+coverage measured by an instrument that misattributes every entry on the second platform is
+coverage nobody can bank.
+### What surprised me
+**The `UNKNOWN` toolchain is the more interesting half and I could not diagnose it.** I made the
+capture read stderr and tolerate a non-zero exit, warned at build time, and added a test that fails
+a build which embeds modules and cannot name its compiler -- but those are a gate and two guesses,
+not a diagnosis. I have no Linux machine and did not pretend otherwise.
+**A row can be unreachable three different ways and I have now shipped all three.** Unobservable
+because every entry was device-unattributed (SOURCE-COSMETIC, two rounds ago); mis-scored by a
+positional split (`clear_session_devices`, last round); and now unsatisfiable because an earlier
+test subsumes it. The common shape is a counter whose only possible value is zero, and I have not
+yet found a way to see it except by someone running the thing on a second machine.
+**Deleting an accepted red removes the check, not the acceptance** -- Link found that I did exactly
+that with his `how_to_remove_an_entry`, and the screen went from ruling on 8 subjects to 5 and
+printed PASS over a red it had stopped looking at. `BUILD_SKIPPED=1; exit 0` reproduced inside the
+tool built to make it impossible. I have not closed any red by deletion this round.
+### What my verification established, and what it did not
+**Established:** `cargo test --lib` **545 passed / 0 failed / 4 ignored**; clippy `--all-targets -D
+warnings` clean; `counters_abi.py --check` PASS with `ONNXRUNTIME_VULKAN_EP_LIB` **set**
+(`ledger_entries = 115`); `gen_proof_ledger.py --check` PASS, 115 entr(ies), digest
+`f3bb172dffd6be28`, arithmetic **115 = 115 identical + 0 + 0 + 0 + 0 + 0**; the eol probe 3/3 with a
+negative control that failed 215/215; the subject falsifier 8/8; `audit_instruments` census clean
+(8 -> 8 subjects, no drift); gpt-oss-20b census 293/374 reproduced.
+**Did not:** anything about Linux. Every arm above ran on Windows against the **debug** build; the
+release artifact in this worktree is stale and nothing here speaks for it. **The claim that these
+three repairs turn Linux's 0/103 into 103/103 is a PREDICTION, not a measurement** -- what I
+measured is that the same *cause* (differing line endings, identical SPIR-V) now produces the
+correct verdict here. Link's `.so` has to be rebuilt and re-checked before anyone quotes a Linux
+number, and its `source_digest` values will only agree once his build carries this `build.rs`.
+The 103 older entries remain `SPEC-UNRECORDED`. And the `UNKNOWN` toolchain cause is undiagnosed.

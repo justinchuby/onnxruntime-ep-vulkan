@@ -1,0 +1,26 @@
+{
+  "lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-mouse\\rust\\target\\debug\\onnxruntime_vulkan_ep.dll",
+  "modules": 215,
+  "p1_spirv_identical": true,
+  "p2_source_identical": true,
+  "p3_arms_differed": true,
+  "rewritten_files": [
+    "rust/shaders/glsl/gather_f16.comp",
+    "rust/shaders/glsl/gather_f32.comp",
+    "rust/shaders/glsl/gqa_f16.comp",
+    "rust/shaders/glsl/simplified_layer_norm_f16.comp",
+    "rust/shaders/glsl/simplified_layer_norm_f32.comp",
+    "rust/shaders/glsl/skip_simplified_layer_norm_f16.comp",
+    "rust/shaders/glsl/skip_simplified_layer_norm_f32.comp",
+    "rust/shaders/glsl/templates/ew_binary.comp",
+    "rust/shaders/glsl/templates/ew_cast.comp",
+    "rust/shaders/glsl/templates/ew_select.comp",
+    "rust/shaders/glsl/templates/ew_unary.comp",
+    "rust/shaders/glsl/templates/q_gemv.comp",
+    "rust/shaders/include/indexing.glsl",
+    "rust/shaders/include/op_codes.glsl"
+  ],
+  "source_moved": [],
+  "spirv_moved": [],
+  "verdict": "PASS"
+}

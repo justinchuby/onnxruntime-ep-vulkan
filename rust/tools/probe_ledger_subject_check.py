@@ -28,9 +28,31 @@ ARMS (predictions written before the first run)
                                                                 -> FAIL(baked != on disk)
   5. no artifact        --check with a lib path that does not exist
                                                                 -> ERROR(instrument), never PASS
+  6. toolchain row      one entry's spirv_digest moved, source_digest LEFT CORRECT
+                                                                -> that entry is PROVEN-ELSEWHERE{toolchain},
+                                                                   NOT SUBJECT-CHANGED, and the word
+                                                                   "toolchain" appears in a FAILING run
+  7. both moved         same entry, spirv AND source both moved  -> SUBJECT-CHANGED, and it fails
 
 Arm 3 is what makes arms 2 and 4 detections rather than a check that fails on everything.
 Arm 5 is the dangling-reference arm: a check that cannot see its subject must not resolve anyway.
+
+Arms 6 and 7 were added on 2026-08-03 after Link took a fresh Linux `.so` to this classifier and
+got **0 of 103 agreeing** where Windows got 102. Two defects, both mine:
+
+  * the classifier tested `spirv_digest` first and unconditionally, so `PROVEN-ELSEWHERE{toolchain}`
+    — whose condition is "SPIR-V differs, source same" — could never be reached, and every Linux
+    entry rendered as `SUBJECT-CHANGED`: not merely the wrong token but the strongest available
+    accusation, telling a user their source moved when their compiler moved;
+  * `cmd_check` printed its notes only after the PASS line and returned 1 from the failure branch
+    before reaching them, so in a run where all 103 failures had a toolchain cause the word
+    "toolchain" appeared nowhere. On PASS, where nothing needs explaining, it printed in full.
+
+Arm 6 is the falsifier for both at once: it is a run that FAILS (the variant ledger is not the one
+baked into the binary) in which the toolchain reading must nevertheless be printed. Arm 7 is what
+keeps arm 6 from being satisfied by a classifier that has simply stopped failing.
+
+Usage:  python rust/tools/probe_ledger_subject_check.py [--skip-rebuild-arms]
 
 ONE ENTRY, THIRTY-TWO NODES
 ---------------------------
@@ -129,7 +151,7 @@ def main() -> int:
         )
         return 3
 
-    print("§8.9.21 ledger-subject falsifier — 5 arms")
+    print("§8.9.21 ledger-subject falsifier — 7 arms")
     try:
         print("\narm 1: baseline — unmodified tree")
         _build()
@@ -198,6 +220,67 @@ def main() -> int:
             rc == 3 and "ERROR(instrument)" in out and "PASS:" not in out,
             f"rc={rc}",
         )
+
+        # ── arms 6 and 7: the two rows the Linux reading turned on ──────────────────────
+        def _variant(mutate) -> tuple[pathlib.Path, str]:
+            """Write a self-consistent ledger with one entry mutated; return (path, that key)."""
+            ls = original_ledger.splitlines()
+            h = _json.loads(ls[0])
+            picked = ""
+            body_lines = []
+            for line in ls[1:]:
+                e = _json.loads(line)
+                if not picked and e.get("source_digest") and e.get("shader_digest"):
+                    picked = e["key"]
+                    mutate(e)
+                    line = _json.dumps(e, separators=(",", ":"), sort_keys=True)
+                body_lines.append(line)
+            b = "\n".join(body_lines) + "\n"
+            h["entry_count"] = len(body_lines)
+            h["content_fnv1a64"] = f"{g.fnv1a64(b.encode('utf-8')):016x}"
+            p = REPO / "rust" / "target" / "probe_ledger_rowcase.jsonl"
+            p.write_text(
+                _json.dumps(h, separators=(",", ":"), sort_keys=True) + "\n" + b, encoding="utf-8"
+            )
+            return p, picked
+
+        print("\narm 6: spirv moved, source LEFT CORRECT — the Linux row")
+        p6, key6 = _variant(lambda e: e.__setitem__("shader_digest", "dead0000dead0000"))
+        rc, out = _check(["--out", str(p6)])
+        entry_lines = [l for l in out.splitlines() if key6 in l]
+        record(
+            "toolchain-row-is-reachable",
+            "PROVEN-ELSEWHERE{toolchain}" in out
+            and not any("SUBJECT-CHANGED" in l for l in entry_lines)
+            and "+ 1 PROVEN-ELSEWHERE{toolchain}" in out,
+            f"key={key6[:56]}",
+        )
+        record(
+            "notes-print-on-the-failure-path",
+            rc != 0 and "toolchain" in out and "SUBJECT ARITHMETIC" in out,
+            f"rc={rc} (a FAILING run that still explains itself)",
+        )
+        for line in out.splitlines():
+            if "SUBJECT ARITHMETIC" in line:
+                print(f"      | {line.strip()[:190]}")
+        p6.unlink(missing_ok=True)
+
+        print("\narm 7: spirv AND source both moved — still SUBJECT-CHANGED")
+
+        def _both(e):
+            e["shader_digest"] = "dead0000dead0000"
+            e["source_digest"] = "beef0000beef0000"
+
+        p7, key7 = _variant(_both)
+        rc, out = _check(["--out", str(p7)])
+        record(
+            "both-moved-still-fails",
+            rc != 0
+            and "+ 1 SUBJECT-CHANGED" in out
+            and any(key7 in l and "BOTH witnesses moved" in l for l in out.splitlines()),
+            f"rc={rc} key={key7[:56]}",
+        )
+        p7.unlink(missing_ok=True)
     finally:
         SHADER.write_text(original_shader, encoding="utf-8")
         LEDGER.write_text(original_ledger, encoding="utf-8")

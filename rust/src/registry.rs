@@ -3832,6 +3832,35 @@ mod tests {
         );
     }
 
+    /// **A build that compiled shaders must be able to name the compiler that compiled them.**
+    ///
+    /// Link's first fresh Linux `.so` embedded a full set of modules and reported its own
+    /// toolchain as `UNKNOWN`. `SubjectVerdict::ToolchainDelta` is reachable without the string —
+    /// it compares digests, not names — but the *disclosure* is the whole licence for claiming out
+    /// of frame (§8.9.17), and `PROVEN-ELSEWHERE{toolchain}` with an unnameable toolchain
+    /// discloses nothing. `--backfill-frame` already refuses to stamp `UNKNOWN`; nothing made the
+    /// build itself say so, so an artifact whose every future proof is unframeable was
+    /// indistinguishable from a good one.
+    ///
+    /// Skipped rather than failed for a shader-less artifact, because
+    /// `ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC=1` never invokes a compiler and has no
+    /// toolchain to name — a genuine absence, not an unread one.
+    #[test]
+    fn a_build_that_embeds_shaders_can_name_its_shader_toolchain() {
+        if !crate::engine::shaders::has_any() {
+            return;
+        }
+        let tc = crate::engine::shaders::toolchain();
+        assert!(
+            !tc.is_empty() && tc != "UNKNOWN",
+            "this artifact embeds {} SPIR-V module(s) but records toolchain={tc:?}. Every proof \
+             taken against it would be stamped UNKNOWN, and an UNKNOWN frame cannot be told from \
+             a second compiler: a ledger entry proven elsewhere reads as a changed kernel rather \
+             than as a toolchain delta, which is the Linux 0-of-103 reading.",
+            crate::engine::shaders::SHADER_MODULES.len(),
+        );
+    }
+
     /// **The second route back to the state §8.9.19 part 1 closed.**
     ///
     /// Entry survival moved subject-mismatched entries out of `entry_faults` and into `entries`,
