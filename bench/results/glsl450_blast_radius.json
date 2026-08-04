@@ -1,0 +1,82 @@
+{
+  "what": "blast radius of the _GLSL450 opcode-table defect",
+  "old_table": {
+    "30": "Fma",
+    "37": "FMax",
+    "40": "FClamp",
+    "43": "FMin"
+  },
+  "verdicts": {
+    "40": {
+      "form": "max(x, 0.0)",
+      "real_name": "FMax",
+      "old_name": "FClamp",
+      "verdict": "LOUD",
+      "detail": "IndexError: list index out of range"
+    },
+    "37": {
+      "form": "min(x, 0.0)",
+      "real_name": "FMin",
+      "old_name": "FMax",
+      "verdict": "SILENT",
+      "correct_head": [
+        -2.0,
+        -1.8709677457809448,
+        -1.7419354915618896,
+        -1.6129032373428345
+      ],
+      "under_old_head": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "43": {
+      "form": "clamp(x, 0.0, 1.0)",
+      "real_name": "FClamp",
+      "old_name": "FMin",
+      "verdict": "SILENT",
+      "correct_head": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "under_old_head": [
+        -2.0,
+        -1.8709677457809448,
+        -1.7419354915618896,
+        -1.6129032373428345
+      ]
+    },
+    "50": {
+      "form": "fma(x, x, 1.0)",
+      "real_name": "Fma",
+      "old_name": "(absent)",
+      "verdict": "LOUD",
+      "detail": "InstrumentError: unsupported GLSL.std.450 instruction 50"
+    }
+  },
+  "silently_miscomputed_kernels": [
+    "ew_unary_celu_f32",
+    "ew_unary_hardsigmoid_f16",
+    "ew_unary_hardsigmoid_f32",
+    "ew_unary_hardswish_f16",
+    "ew_unary_hardswish_f32"
+  ],
+  "kernels_issuing_a_suspect_opcode": [
+    "ew_unary_celu_f32",
+    "ew_unary_hardsigmoid_f16",
+    "ew_unary_hardsigmoid_f32",
+    "ew_unary_hardswish_f16",
+    "ew_unary_hardswish_f32",
+    "ew_unary_mish_f16",
+    "ew_unary_mish_f32",
+    "ew_unary_relu_f16",
+    "ew_unary_relu_f32",
+    "ew_unary_softplus_f16",
+    "ew_unary_softplus_f32"
+  ],
+  "correction": "my earlier claim that a relu would have been silently miscomputed is FALSE: ext-inst 40 under the old table mapped to FClamp, which reads a third operand max() does not supply, so it raises IndexError. The silent set is {37, 43}."
+}

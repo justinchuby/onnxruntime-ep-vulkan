@@ -111,13 +111,24 @@ _OPNAMES = {
 #: GLSL.std.450 instruction numbers, from the extended-instruction-set specification.
 #:
 #: The four entries that used to live here -- `30: "Fma", 43: "FMin", 37: "FMax", 40: "FClamp"`
-#: -- were **wrong**, and wrong in the worst available way: 37 is `FMin` and 40 is `FMax`, so a
-#: `relu` (which compiles to 40) would have been interpreted as a minimum and a `celu` (37) as a
-#: maximum. Every one of them would have returned a plausible float. Nothing caught it because
-#: the interpreter's only correctness control is a quantised GEMV, which uses none of them; the
-#: numbers were checked here by disassembling every `.spv` in the tree and matching the opcode
-#: histogram against the ops the sources actually call (40 appears in `ew_unary_relu`, 43 in
-#: `hardsigmoid`/`hardswish`, 45 in `gather`'s index clamp, 42 in `gqa_f16`'s `max(int, 0)`).
+#: -- were **wrong**. The numbers were checked by disassembling every `.spv` in the tree and
+#: matching the opcode histogram against the ops the sources actually call (40 appears in
+#: `ew_unary_relu`/`mish`/`softplus`, 43 in `hardsigmoid`/`hardswish`, 37 in `celu`, 45 in
+#: `gather`'s index clamp, 42 in `gqa_f16`'s `max(int, 0)`).
+#:
+#: HOW BADLY WRONG, MEASURED RATHER THAN ASSERTED. The first account of this said every one of
+#: them would have returned a plausible float. That is false; the discriminator is the operand
+#: count. A wrong name taking MORE operands than the real one indexes past the end of the operand
+#: list and raises -- 40 (`FMax`) read as `FClamp` reads `args[2]`, and `max(x, 0.0)` supplies
+#: two, so a `relu` would have raised `IndexError` on its first invocation. A wrong name taking
+#: FEWER silently drops the extra: 37 (`FMin`) read as `FMax` returns a maximum, and 43
+#: (`FClamp`) read as `FMin` drops the upper bound entirely. So the SILENT set is `{37, 43}` and
+#: the silently-miscomputed kernels are exactly `celu`, `hardsigmoid` and `hardswish`.
+#: `bench/results/probe_glsl450_blast_radius.py` executes all four under both tables and prints
+#: the split; `bench/test_kv_write_redundancy.py` gates the numbering against glslc's own output.
+#:
+#: Nothing caught it because the interpreter's only correctness control was a quantised GEMV,
+#: which issues none of them. That control now exists.
 _GLSL450 = {
     1: "Round", 2: "RoundEven", 3: "Trunc", 4: "FAbs", 5: "SAbs", 6: "FSign", 7: "SSign",
     8: "Floor", 9: "Ceil", 10: "Fract",

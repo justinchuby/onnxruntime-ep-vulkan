@@ -1,7 +1,7 @@
 {
-  "device_selector": "0",
-  "ledger_entries": 103,
-  "dll_mtime": 1785773100.4862251,
+  "device_selector": "unset",
+  "ledger_entries": 115,
+  "dll_mtime": 1785809967.189788,
   "claimed_nodes": 355,
   "ledger_hits": 355,
   "unproven_declines": 5,

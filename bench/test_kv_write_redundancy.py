@@ -10,8 +10,9 @@ Two things landed this round that a later edit could silently undo:
    and would come straight back the next time somebody touches the write.
 
 2. The SIMT interpreter's GLSL.std.450 opcode table was **wrong** for `FMin`/`FMax`/`FClamp`/
-   `Fma`. Every one of those returns a plausible float, and the interpreter's only correctness
-   control was a quantised GEMV that calls none of them.
+   `Fma`. Two of the four (37 `FMin` read as `FMax`, 43 `FClamp` read as `FMin`) return plausible
+   floats silently; the other two raise. The interpreter's only correctness control was a
+   quantised GEMV that calls none of them.
 
 Both are gated here by executing the compiled SPIR-V, not by reading the source.
 """
@@ -19,6 +20,7 @@ Both are gated here by executing the compiled SPIR-V, not by reading the source.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -57,7 +59,8 @@ def test_glsl450_numbering_matches_the_specification(num: int, name: str) -> Non
     from spirv_simt import _GLSL450
     assert _GLSL450.get(num) == name, (
         f"GLSL.std.450 {num} is {name}; the table says {_GLSL450.get(num)!r}. A wrong entry "
-        f"here makes the interpreter compute a different function and return a plausible float."
+        f"here makes the interpreter compute a different function; whether it does so silently "
+        f"or raises depends on the operand count, and 37 and 43 were the silent ones."
     )
 
 
@@ -82,6 +85,67 @@ def test_the_shaders_in_this_tree_only_use_understood_ext_instructions() -> None
             if ins.op == "OpExtInst" and ins.operands[1] not in _GLSL450:
                 unknown.setdefault(ins.operands[1], p.name)
     assert not unknown, f"ext-inst numbers with no name in the table: {unknown}"
+
+
+_EXT_CONTROL_GLSL = """#version 450
+layout(local_size_x = 8) in;
+layout(std430, binding = 0) readonly buffer A { float a[]; };
+layout(std430, binding = 1) readonly buffer B { float b[]; };
+layout(std430, binding = 2) writeonly buffer O { float o[]; };
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    float x = a[i], y = b[i];
+    o[i * 4u + 0u] = min(x, y);
+    o[i * 4u + 1u] = max(x, y);
+    o[i * 4u + 2u] = clamp(x, -0.5, 0.5);
+    o[i * 4u + 3u] = fma(x, y, 1.0);
+}
+"""
+
+
+def test_min_max_clamp_and_fma_are_executed_as_themselves() -> None:
+    """The correctness control the interpreter never had for the four opcodes it got wrong.
+
+    `_GLSL450` said 30:Fma, 37:FMax, 40:FClamp, 43:FMin; the real numbering is 37:FMin, 40:FMax,
+    43:FClamp, 50:Fma. Two of those return plausible floats silently (37 and 43, whose wrong names
+    take FEWER operands than the real ones and drop the extra); two raise. The error stayed
+    invisible because the interpreter's only correctness control was a quantised GEMV that issues
+    none of them.
+
+    This compiles a kernel that calls all four through glslc, so the opcode NUMBERS come from the
+    real toolchain rather than from anybody's memory, executes it in the interpreter, and
+    compares against numpy. Verified to fail under the old table before being trusted under the
+    new one; see `bench/results/probe_glsl450_blast_radius.py` for the silent/loud split.
+    """
+    try:
+        spv = W.compile_glsl(_EXT_CONTROL_GLSL, "ext-control")
+    except InstrumentError as e:
+        pytest.skip(f"glslc unavailable: {e}")
+
+    mod = SpirvModule(spv)
+    issued = {i.operands[1] for i in mod.body if i.op == "OpExtInst"}
+    assert {37, 40, 43, 50} <= issued, (
+        f"the control kernel did not issue the four opcodes under test; it issued {issued}. "
+        f"A control that does not exercise the thing is not a control.")
+
+    n = 64
+    rng = np.random.default_rng(4242)
+    a = rng.standard_normal(n).astype(np.float32)
+    b = rng.standard_normal(n).astype(np.float32)
+    d = Dispatch(
+        groups=(n // 8, 1, 1),
+        local_size=(8, 1, 1),
+        spec={},
+        push_constants=[],
+        buffers={0: a.copy(), 1: b.copy(), 2: np.zeros(n * 4, np.float32)},
+    )
+    mod.run_traced(d)
+    got = d.buffers[2].reshape(n, 4)
+
+    np.testing.assert_allclose(got[:, 0], np.minimum(a, b), rtol=0, atol=0)
+    np.testing.assert_allclose(got[:, 1], np.maximum(a, b), rtol=0, atol=0)
+    np.testing.assert_allclose(got[:, 2], np.clip(a, -0.5, 0.5), rtol=0, atol=0)
+    np.testing.assert_allclose(got[:, 3], a * b + 1.0, rtol=1e-6, atol=1e-6)
 
 
 # ----------------------------------------------------------------------------------
@@ -222,3 +286,47 @@ def test_int8_footprint_figures_are_derived_not_transcribed() -> None:
         scales = lane["kv_bytes_per_token"] - payload
         assert scales > 0, f"{lane['lane']} carries no scale bytes; it cannot be dequantised"
         assert lane["kv_bytes_per_token"] < L5["derivation"]["fp16_kv_bytes_per_token"]
+
+
+# ----------------------------------------------------------------------------------
+# The gate that was missing, and whose absence cost a rollback.
+# ----------------------------------------------------------------------------------
+
+
+def test_the_ledger_on_disk_describes_the_shaders_in_this_build() -> None:
+    """A shader edit that leaves its proof-ledger entry stale must fail HERE, not at merge.
+
+    This is the gate whose absence cost `2b38528` a rollback. That commit's `--check` was green
+    in its own worktree because the entry had been re-proved against *that* build; after the
+    merge the entry described a kernel the merged binary did not contain, and the only symptom
+    was a silent `SUBJECT-CHANGED` decline. The user-visible cost was 355 claimed nodes falling
+    to 323 and one island shattering into 33 -- a performance regression wearing the clothes of
+    a correctness mechanism working correctly.
+
+    `--check` alone is not sufficient and that is the point: the file is internally consistent
+    either way. The question is whether it agrees with the DLL, so the DLL has to be read.
+    """
+    sys.path.insert(0, str(ROOT / "rust" / "tools"))
+    try:
+        from gen_proof_ledger import _find_lib, check_against_build  # noqa: PLC0415
+    except Exception as e:  # pragma: no cover - tool absent
+        pytest.skip(f"gen_proof_ledger not importable: {e}")
+
+    lib = _find_lib(os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB", ""))
+    if lib is None or not pathlib.Path(lib).is_file():
+        pytest.skip(
+            "no EP binary found; set ONNXRUNTIME_VULKAN_EP_LIB to "
+            "rust/target/release/onnxruntime_vulkan_ep.dll. Note this skip is the reason the "
+            "check must never be read as a PASS when the variable is unset.")
+
+    problems, _ = check_against_build(ROOT / "evidence" / "proof_ledger.jsonl",
+                                      pathlib.Path(lib))
+    assert not problems, (
+        "the ledger does not describe this build:\n  " + "\n  ".join(problems) +
+        "\n\nRepair, and BOTH steps are required:\n"
+        "  1. python rust/tools/gen_proof_ledger.py --model <single-form case> --reprove --append\n"
+        "  2. rebuild -- proof_ledger.jsonl is include_str!'d, so the on-disk file takes "
+        "effect only at the next build.\n"
+        "Use a graph from evidence/cases/, not Phi-3.5: the prove pass sets "
+        "`disable_cpu_ep_fallback`, and Phi-3.5 contains Shape/ReduceSum/If, which this EP "
+        "registers no handler for, so the session can never build.")

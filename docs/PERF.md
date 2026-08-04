@@ -3834,15 +3834,44 @@ something is untested, check.
 Extending the interpreter hit `unsupported GLSL.std.450 instruction 42`. Adding 42 would have been
 the small fix. Checking the table instead found **four wrong entries**: it said
 `30:Fma, 37:FMax, 40:FClamp, 43:FMin`; the real numbering is `30:Log2, 37:FMin, 40:FMax,
-43:FClamp, 50:Fma`. A `relu` — ext-inst 40 — would have been computed as a **minimum**, returning a
-plausible float, silently.
+43:FClamp, 50:Fma`.
 
 Verified by histogramming the opcode numbers our own parser extracts and matching them against
 `spirv-dis`'s names on `gqa_f16.spv` (`27->Exp x2, 42->SMax x1, 58->PackHalf2x16 x3,
-62->UnpackHalf2x16 x9`, exact counts), then corroborated across every `.spv` in the tree: 40 appears
-only in `ew_unary_relu`, 43 only in `hardsigmoid`/`hardswish`, 37 only in `celu`, 45 in `gather`,
-32 in the layer norms. Nothing caught it because the interpreter's sole correctness control is a
-quantised GEMV that calls none of the four.
+62->UnpackHalf2x16 x9`, exact counts), then corroborated across every `.spv` in the tree: 40
+appears only in `ew_unary_relu`/`mish`/`softplus`, 43 only in `hardsigmoid`/`hardswish`, 37 only in
+`celu`, 45 in `gather`, 32 in the layer norms. Nothing caught it because the interpreter's sole
+correctness control is a quantised GEMV that calls none of the four.
+
+**Correction (same day, second pass): I said a `relu` would have been silently miscomputed. That
+is false, and I had not checked the thing that decides it.** The discriminator is the **operand
+count**. A wrong name taking *more* operands than the real one indexes past the end of the operand
+list and raises; a wrong name taking *fewer* silently drops the extra and returns a plausible
+float. Executed under both tables rather than reasoned about:
+
+| ext-inst | real | old table said | verdict |
+|---|---|---|---|
+| 37 | `FMin` | `FMax` (2 ops) | **SILENT** — a minimum returned as a maximum |
+| 40 | `FMax` | `FClamp` (3 ops) | **LOUD** — `IndexError` on the first invocation |
+| 43 | `FClamp` | `FMin` (2 ops) | **SILENT** — the upper bound dropped entirely |
+| 50 | `Fma` | absent | **LOUD** — `unsupported GLSL.std.450 instruction 50` |
+
+So the silent set is `{37, 43}` and the silently-miscomputed kernels are exactly **`celu`,
+`hardsigmoid` (f16/f32), `hardswish` (f16/f32)** — five kernels, none of them `relu`. The general
+lesson is unchanged; the vivid example was wrong, and it was wrong in the direction that made the
+defect sound worse than it was.
+
+**What it could *not* have touched, which is the question that matters to standing results.**
+`q_gemv_matmul_nbits_f16` issues only `PackHalf2x16`/`UnpackHalf2x16`; `q_gemv_matmul_nbits_f32`
+issues no ext-inst at all; `gqa_f16` issues `27/42/58/62`. **None of them is in either set, so
+§22's weight-amplification measurement and §23.2's write traffic are both untouched** — and 42
+(`SMax`) was *missing* rather than wrong, which is why extending the interpreter errored loudly
+instead of returning a number. Reproduce: `python bench/results/probe_glsl450_blast_radius.py`.
+
+The repair is not just the table. `bench/test_kv_write_redundancy.py` now compiles a kernel that
+calls `min`/`max`/`clamp`/`fma` through glslc — so the opcode numbers come from the toolchain
+rather than from anybody's memory — executes it, and compares against numpy. That is the
+correctness control the four opcodes never had.
 
 ### 23.4 The KV lever ledger, re-derived — and three numbers retracted
 
@@ -3887,6 +3916,49 @@ was re-proven. This is the mechanism working. Repair is two steps and the second
 then **rebuild** — `proof_ledger.jsonl` is `include_str!`d, so the on-disk file only takes effect at
 the next build. Any shader edit needs both.
 
+### 23.6 It caught me twice, and the second time cost a rollback
+
+The first commit of this work was merged, verified, found to regress, and backed out. **The
+`--check` in my own worktree was green** — I had re-proved the entry against *my* build — but
+after the merge the entry described a kernel the merged binary did not contain, and the only
+symptom was a silent `SUBJECT-CHANGED` decline. Measured on the merged tree, with
+`probe_phi35_claim_reading.py`:
+
+| | main without it | with the stale entry | after re-proving |
+|---|---|---|---|
+| `claimed_nodes` | 355 | **323** | 355 |
+| `unproven_declines` | 5 | **37** | 5 |
+| `islands_offered` | 1 | **33** | 1 |
+
+**One declined form shatters a 355-node island into 33.** That is the proof economics §21 measured,
+arriving as a bill. Note what the two instruments each told me: `--check` said *one entry
+disagrees*; only the claim-reading probe said *it costs 32 nodes and 32 islands*. A subject
+mismatch is a fact about the ledger; the claim reading is the fact about the user, and they are
+not substitutes.
+
+The hole was that **nothing gated the ledger against the build**. `--check` is run by hand;
+`tests/ops/test_proof_ledger.py` checks the artifact's internal consistency and its behaviour
+against planted controls, but never calls `check_against_build`. That gate now exists in
+`bench/test_kv_write_redundancy.py`, because the discipline it enforces belongs to shader editing.
+
+**Re-prove against a single-form case model, never against Phi-3.5.** The prove pass sets
+`session.disable_cpu_ep_fallback`, which requires the EP to claim **every node in the graph**.
+Phi-3.5 contains three ops this EP registers no handler for at all — `Shape`, `ReduceSum` and `If`
+— so the session can never build, `--reprove` or not, and the failure is identical whether or not
+any form is withheld. It is not that an unprovable form blocks the others: **Phi-3.5 has never
+been a valid proof subject and cannot become one while `If` is unhandled.** The tool says so in
+its own comment — *"every evidence case is a single-form model"* — and the entry proves a **form**,
+which does not care which graph exercised it. `evidence/cases/group_query_attention_f16.onnx`
+re-proves the GQA form in about ten seconds, `worst_rel 7.29e-04`, `claimed_nodes 1`,
+`dispatches_executed 1`.
+
+What the diagnostic does not say is which of those it is. `UNATTRIBUTED` reports the ORT refusal
+and lists the *offered* forms, which reads as though the offered-but-unproven ones are the
+blocker; the census that would settle it (`no_key: 3`) is already computed one function earlier and
+is not shown. That is a diagnostic gap in `gen_proof_ledger.py`, which is Mouse's, and it is filed
+rather than fixed here.
+
 Reproduce: `python bench/results/probe_kv_write_redundancy.py`, then
-`python bench/results/probe_kv_lever_ledger.py`.
-Locked by `bench/test_kv_write_redundancy.py` (22 tests).
+`python bench/results/probe_kv_lever_ledger.py`, then
+`python bench/results/probe_glsl450_blast_radius.py`.
+Locked by `bench/test_kv_write_redundancy.py` (24 tests).
