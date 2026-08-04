@@ -1,0 +1,40 @@
+
+DEVICE-LOSS-GATE: detection power at 20 repetition(s)
+  rate        P(at least one loss seen)   P(NONE seen | hazard is real)
+    0.1250                      0.9308   0.0692
+    0.0500                      0.6415   0.3585
+    0.0250                      0.3973   0.6027
+    0.0100                      0.1821   0.8179
+  The right-hand column is the uncomfortable number: it is the probability that
+  this gate returns PASS while the hazard is exactly as real as it was before.
+  A PASS rules out the rates whose right-hand column is small. It rules out
+  nothing about the rates whose right-hand column is not.
+  rep   0  LOST     exit=1 dispatches=1775 compute=6/1f losses=1 367.6s  faults=broken_commitment_reported,device_lost_reported
+        [broken_commitment_reported] [vulkan-ep] WARN: VulkanExecutionProvider: BROKEN COMMITMENT — this EP claimed fused subgraph #1 (355 node(s): /model/embed_tokens/Gather(Gather), /model/layers.0/input_layernorm/LayerNorm(SimplifiedLayerNormalization), 
+        [broken_commitment_reported] [0;93m2026-08-04 03:30:45.5487402 [W:onnxruntime:Default, <onnxruntime-ep-vulkan>:0 onnxruntime_ep_vulkan::compute] VulkanExecutionProvider: BROKEN COMMITMENT   this EP claimed fused subgraph #1 (355 node(s): /model/em
+        [device_lost_reported] [vulkan-ep] ERROR: vkWaitForFences failed: The logical device has been lost. See <https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#devsandqueues-lost-device>
+        [device_lost_reported] [1;31m2026-08-04 03:30:45.5421835 [E:onnxruntime:Default, cmd.rs:327 onnxruntime_vulkan_ep::vk::cmd] vkWaitForFences failed: The logical device has been lost. See <https://registry.khronos.org/vulkan/specs/1.3-extension
+        [device_lost_reported] [vulkan-ep] WARN: VulkanExecutionProvider: BROKEN COMMITMENT — this EP claimed fused subgraph #1 (355 node(s): /model/embed_tokens/Gather(Gather), /model/layers.0/input_layernorm/LayerNorm(SimplifiedLayerNormalization), 
+        [device_lost_reported] [0;93m2026-08-04 03:30:45.5487402 [W:onnxruntime:Default, <onnxruntime-ep-vulkan>:0 onnxruntime_ep_vulkan::compute] VulkanExecutionProvider: BROKEN COMMITMENT   this EP claimed fused subgraph #1 (355 node(s): /model/em
+        [device_lost_reported] [1;31m2026-08-04 03:30:45.6045968 [E:onnxruntime:, sequential_executor.cc:671 onnxruntime::ExecuteKernel] Non-zero status code returned while running VulkanExecutionProvider_13948954645276092517_0 node. Name:'VulkanExec
+        [device_lost_reported] RuntimeError: Error in execution: Non-zero status code returned while running VulkanExecutionProvider_13948954645276092517_0 node. Name:'VulkanExecutionProvider_VulkanExecutionProvider_13948954645276092517_0_0' Status Me
+  rep   1  LOST     exit=1 dispatches=0 compute=1/1f losses=1 250.7s  faults=broken_commitment_reported,device_lost_reported
+        [broken_commitment_reported] [vulkan-ep] WARN: VulkanExecutionProvider: BROKEN COMMITMENT — this EP claimed fused subgraph #1 (355 node(s): /model/embed_tokens/Gather(Gather), /model/layers.0/input_layernorm/LayerNorm(SimplifiedLayerNormalization), 
+        [broken_commitment_reported] [0;93m2026-08-04 03:34:59.5132505 [W:onnxruntime:Default, <onnxruntime-ep-vulkan>:0 onnxruntime_ep_vulkan::compute] VulkanExecutionProvider: BROKEN COMMITMENT   this EP claimed fused subgraph #1 (355 node(s): /model/em
+        [device_lost_reported] [vulkan-ep] ERROR: vkWaitForFences failed: The logical device has been lost. See <https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#devsandqueues-lost-device>
+        [device_lost_reported] [1;31m2026-08-04 03:34:59.5076365 [E:onnxruntime:Default, cmd.rs:327 onnxruntime_vulkan_ep::vk::cmd] vkWaitForFences failed: The logical device has been lost. See <https://registry.khronos.org/vulkan/specs/1.3-extension
+        [device_lost_reported] [vulkan-ep] WARN: VulkanExecutionProvider: BROKEN COMMITMENT — this EP claimed fused subgraph #1 (355 node(s): /model/embed_tokens/Gather(Gather), /model/layers.0/input_layernorm/LayerNorm(SimplifiedLayerNormalization), 
+        [device_lost_reported] [0;93m2026-08-04 03:34:59.5132505 [W:onnxruntime:Default, <onnxruntime-ep-vulkan>:0 onnxruntime_ep_vulkan::compute] VulkanExecutionProvider: BROKEN COMMITMENT   this EP claimed fused subgraph #1 (355 node(s): /model/em
+        [device_lost_reported] [1;31m2026-08-04 03:34:59.6706910 [E:onnxruntime:, sequential_executor.cc:671 onnxruntime::ExecuteKernel] Non-zero status code returned while running VulkanExecutionProvider_13948954645276092517_0 node. Name:'VulkanExec
+        [device_lost_reported] RuntimeError: Error in execution: Non-zero status code returned while running VulkanExecutionProvider_13948954645276092517_0 node. Name:'VulkanExecutionProvider_VulkanExecutionProvider_13948954645276092517_0_0' Status Me
+  rep   2  LOST     exit=1 dispatches=0 compute=1/1f losses=1 259.6s  faults=broken_commitment_reported,device_lost_reported
+        [broken_commitment_reported] [vulkan-ep] WARN: VulkanExecutionProvider: BROKEN COMMITMENT — this EP claimed fused subgraph #1 (355 node(s): /model/embed_tokens/Gather(Gather), /model/layers.0/input_layernorm/LayerNorm(SimplifiedLayerNormalization), 
+        [broken_commitment_reported] [0;93m2026-08-04 03:39:20.2612561 [W:onnxruntime:Default, <onnxruntime-ep-vulkan>:0 onnxruntime_ep_vulkan::compute] VulkanExecutionProvider: BROKEN COMMITMENT   this EP claimed fused subgraph #1 (355 node(s): /model/em
+        [device_lost_reported] [vulkan-ep] ERROR: vkWaitForFences failed: The logical device has been lost. See <https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#devsandqueues-lost-device>
+        [device_lost_reported] [1;31m2026-08-04 03:39:20.1917769 [E:onnxruntime:Default, cmd.rs:327 onnxruntime_vulkan_ep::vk::cmd] vkWaitForFences failed: The logical device has been lost. See <https://registry.khronos.org/vulkan/specs/1.3-extension
+        [device_lost_reported] [vulkan-ep] WARN: VulkanExecutionProvider: BROKEN COMMITMENT — this EP claimed fused subgraph #1 (355 node(s): /model/embed_tokens/Gather(Gather), /model/layers.0/input_layernorm/LayerNorm(SimplifiedLayerNormalization), 
+        [device_lost_reported] [0;93m2026-08-04 03:39:20.2612561 [W:onnxruntime:Default, <onnxruntime-ep-vulkan>:0 onnxruntime_ep_vulkan::compute] VulkanExecutionProvider: BROKEN COMMITMENT   this EP claimed fused subgraph #1 (355 node(s): /model/em
+        [device_lost_reported] [1;31m2026-08-04 03:39:20.3981368 [E:onnxruntime:, sequential_executor.cc:671 onnxruntime::ExecuteKernel] Non-zero status code returned while running VulkanExecutionProvider_13948954645276092517_0 node. Name:'VulkanExec
+        [device_lost_reported] RuntimeError: Error in execution: Non-zero status code returned while running VulkanExecutionProvider_13948954645276092517_0 node. Name:'VulkanExecutionProvider_VulkanExecutionProvider_13948954645276092517_0_0' Status Me
+  rep   3  ok       exit=0 dispatches=2840 compute=8/0f losses=0 602.7s 
+  rep   4  ok       exit=0 dispatches=2840 compute=8/0f losses=0 560.1s 
