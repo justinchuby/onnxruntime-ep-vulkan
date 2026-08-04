@@ -97,10 +97,17 @@ ENV_COUNTERS = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
 # Arms A and B run ORT at WARNING so that the WARN's presence/absence is the only variable. Arm C
 # needs INFO, and asking for it through the environment keeps the child a single code path.
 ENV_SEVERITY = "_PROBE_ORT_SEVERITY"
+# Arm E's fault injector. `logging::stderr_line` returns `false` when this is set, which is the
+# only way to reach the "no quiet channel carried it" state on a host whose stderr works.
+ENV_FORCE_STDERR_FAILURE = "ONNXRUNTIME_EP_VULKAN_FORCE_STDERR_FAILURE"
 
 WARN_MARKER = "§8.9.7"
 UNPROVEN_MARKER = "NOT established"
 PROVEN_MARKER = "proven by"
+# The escalation's own words. Taken from `disclosure.rs::escalate_if_unreachable`, which is the
+# only site that emits them; it is a phrase rather than a section number because §8.9.7 marks
+# four different messages and this arm is about exactly one of them.
+ESCALATION_MARKER = "could not be delivered on any channel"
 ORT_DECORATION = re.compile(r"\[[VIWEF]:onnxruntime:")
 
 sys.path.insert(0, str(REPO / "rust" / "tools"))
@@ -192,6 +199,22 @@ def sink_disclosure_warns(log: str) -> list[str]:
         ln
         for ln in log.splitlines()
         if ORT_DECORATION.search(ln) and WARN_MARKER in ln and UNPROVEN_MARKER in ln
+    ]
+
+
+def sink_escalation_warns(log: str) -> list[str]:
+    """The §8.9.7 **delivery escalation** WARN, on ORT's own sink.
+
+    A separate matcher from `sink_disclosure_warns` on purpose. The escalation is not a
+    broken-commitment warning — it carries no ``NOT established`` — and folding the two into one
+    needle would let an escalation satisfy arm A, or an arm-A warning satisfy arm E. They are
+    different statements at the same severity, and a matcher that cannot tell them apart is the
+    reason arm A's own plant had to be imported rather than spelled.
+    """
+    return [
+        ln
+        for ln in log.splitlines()
+        if ORT_DECORATION.search(ln) and WARN_MARKER in ln and ESCALATION_MARKER in ln
     ]
 
 
@@ -564,6 +587,85 @@ def judge(device_index: int) -> tuple[str, list[str], dict]:
                     "the condition it is in — and a channel token that names the wrong condition "
                     "is worse than one that names none."
                 )
+
+    # ---- ARM E: RAI-013. Which channel *reached the user*, and the escalation when none did ---
+    #
+    # Arm D rules on `session_disclosure_info_channel`, which is a true statement about ORT's
+    # threshold and an INCOMPLETE statement about the obligation: it reads BELOW_ORT_THRESHOLD on
+    # every default-severity run, including every run where the console printed the disclosure in
+    # full. RAI-013 is not a question about ORT's threshold. It is "was the user told", and the
+    # observable that answers it is `session_disclosure_info_reach`, which no arm read until now —
+    # the counter that discharges the finding existed and the control certifying §8.9.7 did not
+    # consult it. Same shape as the finding itself, one level up.
+    #
+    # Two polarities, because one is a constant:
+    #   positive — arm B's default-severity run, where stderr carries it: REACHED_USER.
+    #   negative — the same run with the EP's stderr write forced to fail, so BOTH quiet channels
+    #              refuse: ESCALATED_TO_WARNING, *and* the escalation witnessed on ORT's own sink.
+    # Without the negative arm, REACHED_USER is a token that has never been shown to be able to
+    # read anything else. The escalation is the only part of §8.9.7 that a default-severity user
+    # is guaranteed to see, and until this arm it had never been witnessed outside a unit test.
+    e_log, e_doc, e_rc = run_child(
+        device_index, PROVEN_CASE, "armE", {ENV_FORCE_STDERR_FAILURE: "1"}
+    )
+    e_escalations = sink_escalation_warns(e_log)
+    report["arm_e"] = {
+        "returncode": e_rc,
+        "reach_default_severity": b_doc.get("session_disclosure_info_reach"),
+        "reach_stderr_forced_to_fail": e_doc.get("session_disclosure_info_reach"),
+        "session_disclosure_infos": e_doc.get("session_disclosure_infos"),
+        "session_disclosure_infos_reached_user": e_doc.get(
+            "session_disclosure_infos_reached_user"
+        ),
+        "session_disclosure_info_escalations": e_doc.get("session_disclosure_info_escalations"),
+        "ort_sink_escalation_warns": readable(e_escalations[:1]),
+        "expected": {
+            "reach_default_severity": "REACHED_USER",
+            "reach_stderr_forced_to_fail": "ESCALATED_TO_WARNING",
+        },
+    }
+    if e_rc == 4:
+        return "ERROR", [f"ERROR(instrument): arm E child could not run: {e_log[-600:]!r}"], report
+
+    if not e_doc.get("session_disclosure_infos"):
+        failures.append(
+            "arm E: no INFO was due in the fault-injected run, so neither the escalation nor its "
+            "absence measures anything (session_disclosure_infos="
+            f"{e_doc.get('session_disclosure_infos')!r})."
+        )
+    else:
+        if b_doc.get("session_disclosure_info_reach") != "REACHED_USER":
+            failures.append(
+                "arm E (positive): at ORT's DEFAULT severity the disclosure's INFO half reads "
+                f"session_disclosure_info_reach={b_doc.get('session_disclosure_info_reach')!r}, "
+                "expected 'REACHED_USER'. RAI-013 asks whether a user with nothing configured is "
+                "told; this is the token that answers it."
+            )
+        if e_doc.get("session_disclosure_info_reach") != "ESCALATED_TO_WARNING":
+            failures.append(
+                "arm E (negative): with the EP's stderr write forced to fail and ORT's threshold "
+                "excluding INFO, no quiet channel can have carried the disclosure, yet "
+                f"session_disclosure_info_reach={e_doc.get('session_disclosure_info_reach')!r} "
+                "(expected 'ESCALATED_TO_WARNING'). Either the escalation did not fire or the "
+                "token cannot report it — and a reach token that reads the same whether or not "
+                "the user was told is the defect RAI-013 names."
+            )
+        elif not e_escalations:
+            failures.append(
+                "arm E (negative): the counters report ESCALATED_TO_WARNING but no escalation "
+                "WARN reached ORT's own sink, so the escalation is asserted by the same process "
+                "that claims to have made it. The escalation exists precisely because it is the "
+                "one severity ORT's default threshold admits; if it is not on that sink it "
+                "discharges nothing."
+            )
+        if b_doc.get("session_disclosure_info_reach") == e_doc.get(
+            "session_disclosure_info_reach"
+        ):
+            failures.append(
+                "arm E: the reach token reads the same with the quiet channels working and with "
+                f"them refused ({b_doc.get('session_disclosure_info_reach')!r}), so it does not "
+                "vary with the only thing it is supposed to depend on and certifies nothing."
+            )
 
     # ---- R13 blindness control: the witness must be able to see a WARN at all ----------------
     if not a_warns and not b_warns:

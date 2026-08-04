@@ -1,0 +1,19 @@
+{
+  "capable_devices": 2,
+  "criterion": "3(a)",
+  "device_labels": [
+    "'NVIDIA GeForce RTX 4060 Laptop GPU' kind=Discrete api=1.4.325 uma=false subgroup_sz=32 ts_period=1.0000ns ts_bits=64",
+    "'Intel(R) Iris(R) Xe Graphics' kind=Integrated api=1.4.309 uma=true subgroup_sz=32 ts_period=52.0833ns ts_bits=36"
+  ],
+  "device_selector_env": "unset",
+  "dispatched_devices": 2,
+  "frame_read_at": "dispatch window \u2014 from process start to the last verified per-device dispatch, with the instance and every device still alive",
+  "in_frame_vuid_count": 0,
+  "no_duration_quoted": "\u00a710.0 obligation 8 \u2014 no clock figure is taken or quoted here.",
+  "reading": "zero validation errors, messenger ARMED, post binding-arity fix",
+  "selector_note": "add_f32_dispatches_end_to_end enumerates and runs on EVERY capable device in one process; ONNXRUNTIME_EP_VULKAN_DEVICE selects for the ORT path and does not partition this run.  Both devices are covered by the device_labels above, not by running this test twice.",
+  "teardown_window_lines_seen": 0,
+  "teardown_window_vuids": "UNOBSERVABLE \u2014 the production device is leaked (Switch, 2026-08-01), so validation messages emitted at vkDestroyInstance are about object lifetimes and not about the dispatch path.  A `0 validation errors at shutdown` gate is out-of-frame by construction on this build and is not read here in either direction.",
+  "validation_frame": "ARMED",
+  "validation_frame_reason": "epctl reports VALIDATION ARMED"
+}

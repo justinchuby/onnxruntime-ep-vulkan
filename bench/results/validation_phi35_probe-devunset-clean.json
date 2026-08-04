@@ -1,0 +1,28 @@
+{
+  "probe": "criterion 3(a) \u2014 validation over a real Phi-3.5 execution",
+  "arm": "clean",
+  "device_selector": "unset",
+  "child_exit_code": 0,
+  "counters_written": true,
+  "frame": {
+    "boundary_seen": true,
+    "in_frame_vuids": [],
+    "teardown_vuids": [],
+    "messenger_lines_in_frame": []
+  },
+  "in_frame_vuid_count": 0,
+  "teardown_vuid_count": 0,
+  "messenger_lines_in_frame_count": 0,
+  "counters": {
+    "claimed_nodes": 355,
+    "islands_offered": 1,
+    "viable_islands_retained": 1,
+    "ledger_gate": "MIXED",
+    "ledger_hits": 355,
+    "unproven_declines": 5,
+    "device_losses": 0,
+    "dispatches_executed": 355,
+    "model_output_equivalence": "UNMEASURED",
+    "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU"
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "purpose": "The DEVICE-LANE half of ci/open_reds.json. Same tool (`python ci/check_open_reds.py --register ci/open_reds_device.json`), same rules, different frame: every check here needs a Vulkan device and a built EP, so its colour cannot be observed on the host-free runner and must not be declared in the other file. ci/open_reds.json says so itself, twice, and ends both notes with 'it belongs in a device-lane register when one exists'. This is that register. It exists because `tests/ops` on main carried reds that no register had a name for -- I quoted `cargo test --lib` 540/0 after every merge as though it were the project's test result, and it is the Rust unit suite. The op suite is a different instrument measuring the thing users actually care about.",
+  "how_to_run": "Set ONNXRUNTIME_VULKAN_EP_LIB to a FRESH release build (an unset variable makes tests/ops skip and several tools PASS having read nothing), then `python ci/check_open_reds.py --register ci/open_reds_device.json`. A run against a stale DLL is not a run: the proof ledger is include_str!'d, so a ledger change takes effect only at the next build.",
+  "not_wired_to_a_workflow": "Stated rather than left to be discovered, because an unwired tool is invisible to ci/check_lane_inventory.py by construction -- that screen asks whether every workflow step has a Check, not whether every check has a step, and ci/check_verification_subjects.py arrived in ci/ with exactly this defect. This register is deliberately in NO workflow step today. The only GPU lane this repository has in CI is conformance.yml on ubuntu-22.04 + lavapipe, and neither entry can render a true colour there: criterion10 needs the Phi-3.5 artifact, which that lane does not fetch, so it would SKIP, exit 0, be observed green, and fail as stale_acceptance -- an acceptance revoked by an absence. The op-table Cast triple would be observable there, but splitting one register across two lanes so that half of it is ruled on is the shrinking-denominator defect this schema's `subjects` arm exists to catch. So it runs on the developer box that has the hardware and the model, which is where every reading in it was taken. Owner of the wiring question: Link. It closes when either a real-hardware lane exists or conformance.yml fetches the Phi-3.5 artifact; until then this note is the record that the omission is a decision.",
+  "how_to_add_an_entry": "Identical to ci/open_reds.json -- an expect=red entry is a LEASE with an owner who can close it, a `closes_when` naming the observable event, and a `signature` that is the exact red accepted. Closing a red means setting expect=green and LEAVING IT RUNNING, never deleting the entry; `subjects` is append-only.",
+  "not_declared_here": {
+    "tests/ops/test_harness_census.py::test_census_baseline_has_no_drift": "Already declared in ci/open_reds.json as `harness_census_drift`, owner mouse. It is host-free and belongs there. Declaring it in both registers would be a second census over one subject -- the failure `rust/tools/audit_instruments.py` exists to name.",
+    "tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda": "Already declared in ci/open_reds.json as `kv_caller_bind_reading`, owner switch. Same reason as above. Both of these appear in a `tests/ops` run on this box, which is why they are named here: their absence from this file is a statement, not a gap.",
+    "tests/ops/test_matmulnbits.py::test_layer_capture_mechanism": "The entry ci/open_reds.json deferred to this register. NOT declared, and the reason is a measurement rather than a preference: on 2026-08-03 it is GREEN inside a full `pytest tests/ops` run and RED when selected alone (0.04s, 'LANE FAILURE (fallback log)' attributing a session-scoped fallback line to the only test in the session). Its colour is a function of what else ran, so there is no stable signature to accept and an entry would encode whichever run I happened to take. That isolation-dependence is itself a defect and it is a harness defect, not an EP defect -- routed to Trinity, who owns the R13 lane machinery. When it is fixed this check gets an entry here.",
+    "the eight failures this register was opened for": "There were never eight. Measured 2026-08-03 on this box, ONNXRUNTIME_VULKAN_EP_LIB set to a fresh release build of each tree: at 3bac325 `pytest tests/ops` reports 9 failed / 623 passed, and the R13 lane summary decomposes that 9 into 6 FAIL(condition) + 3 ERROR(instrument). On main (85c57b2) it is 6 failed / 652 passed, 6 FAIL(condition) + 0 ERROR(instrument) -- the three instrument errors (test_proof_ledger writer-refuses x2, test_wiring_census) were closed by Mouse at 2832526 and are already retired from ci/open_reds.json. The '8' was a number nobody could re-derive, which is the same defect as the 540/0 that hid it. Recorded here so the count has a citation the next time it is quoted."
+  },
+  "checks": [
+    {
+      "id": "criterion10_series_verdict",
+      "cmd": [
+        "python",
+        "-m",
+        "pytest",
+        "tests/ops/test_criterion10.py::test_criterion_10_three_consecutive_attributed_match",
+        "-q",
+        "-p",
+        "no:cacheprovider"
+      ],
+      "expect": "red",
+      "signature": "series verdict is DIVERGENT, not MATCH",
+      "owner": "mouse (the L31 residual), morpheus (which statistic criterion 10 is ruled on)",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "A DELIBERATE red with a real finding under it, red since 7d02f00 -- whose own commit title is 'criterion 10 compares 65 of 65, records the route, and STAYS DIVERGENT'. It has been an accepted red in someone's head for three sessions. The reading, not the exit code: 62 of 65 outputs are within tolerance; the three that are not are output 0 (logits) and outputs 63/64 (layer 31 key and value). Cross-run identity holds on all 65, argmax matches the CPU oracle exactly (30751), top-10 overlap is 10/10, and the ULP median over outputs is 1.0. Two things are behind the one red and they must not be merged: (a) an ACCURACY finding -- the per-layer median ULP curve rises monotonically 0 -> 4 through the 32 layers, and DESIGN.md 10.0.4 states that in ULPs a correct implementation's residual is expected FLAT, so a rise is a located finding; the recorded-before-measuring prediction (bench/results/criterion10-ulp-prediction.md, 'flat at 1-3 ULP') is exceeded at L31 by exactly 1 ULP. (b) a STATISTIC question -- output 0 fails an atol+rtol test (max_abs 0.0625 against 0.001 + 0.001*13.14) at a magnitude where 0.0625 is 8 fp16 ULP, and the same run's max_ulp_at_scale reads 8.0 while its raw max_ulp reads 255658.0 off 35 cancellation elements. Morpheus's degenerate-denominator ruling (8.9.22) is about exactly this shape: two numbers, never one. Neither half is mine to rule on -- I own FFI, ABI and the EP lifecycle -- and the honest outcome is a red with a written reason and two named owners, not a loosened tolerance.",
+      "closes_when": "EITHER Mouse accounts for the L31 step (a located kernel cause, or a re-derived ceiling that predicts 4 ULP at depth 32 BEFORE it is measured -- a ceiling raised after the fact predicts nothing) AND the outputs come inside the criterion; OR Morpheus rules on which statistic criterion 10 is decided by, at which point the criterion is restated and this entry is re-opened against the new one. Do not close it by widening KV_CACHE_FP16: a tolerance moved to admit the number it failed on is the assertion deleted, wearing the tolerance's name.",
+      "timeout": 1800
+    },
+    {
+      "id": "op_table_cast_triple",
+      "cmd": [
+        "python",
+        "-m",
+        "pytest",
+        "tests/ops/test_op_table.py::test_op_table",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "-k",
+        "Cast-fp32-to-i32 or Cast-i32-to-fp32 or Cast-fp32-to-bool"
+      ],
+      "expect": "green",
+      "owner": "tank",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "Closed today, and declared expect=green rather than left undeclared, because the WAY they broke is the argument for this whole file. All three were proven and their ledger entries committed at 26fd93f ('Ledger 103 -> 106'). They are absent from main. `git log -S` over every ref finds the addition and no removal, because the removal happened inside a MERGE: eb84364 ('Merge branch squad/mouse', bringing 52710a8) resolved evidence/proof_ledger.jsonl in favour of a side that did not have them, and history simplification then hid 26fd93f from `git log -- evidence/proof_ledger.jsonl` entirely. Nothing caught it. gen_proof_ledger.py --check asks whether every entry agrees with the build, never whether an entry went missing; its shrinking-write guard (4d47362) covers writes by the TOOL, and a merge is not one. The three op-suite tests that would have caught it did catch it -- they went red at that merge and stayed red through every session since, unaccounted. The claim log named the cause in one line the whole time: code `unproven`, `ledger_hit: false`, on `ai.onnx::Cast/6+/f32>i32/ew_cast_f32_to_i32/static/n1`. Re-proved with `gen_proof_ledger.py --model evidence/cases/cast_{f32_to_i32,i32_to_f32,f32_to_bool}.onnx --append`, all three MATCH with worst_rel 0.0 and one real dispatch each, ledger 103 -> 106, and the EP rebuilt so the file is actually baked in.",
+      "closes_when": "n/a -- expected green. Its job is to make the NEXT merge that drops these lines an unaccounted_red on the day it happens instead of a silence for three sessions.",
+      "timeout": 900
+    }
+  ],
+  "subjects": [
+    "criterion10_series_verdict",
+    "op_table_cast_triple"
+  ],
+  "retired": {}
+}

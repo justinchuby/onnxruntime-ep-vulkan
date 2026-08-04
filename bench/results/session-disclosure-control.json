@@ -59,6 +59,21 @@
           "at_WARNING": "BELOW_ORT_THRESHOLD"
         }
       },
+      "arm_e": {
+        "returncode": 0,
+        "reach_default_severity": "REACHED_USER",
+        "reach_stderr_forced_to_fail": "ESCALATED_TO_WARNING",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_reached_user": 0,
+        "session_disclosure_info_escalations": 1,
+        "ort_sink_escalation_warns": [
+          "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\u00a78.9.7] the session-creation disclosure could not be delivered on any channel a user sees by default: ORT's own severity threshold excludes INFO and this process's stderr refused the write. It is repeated here at WARNING because that is the one severity ORT's default threshold admits \u2014 this is a delivery escalation, not a fault report. This session claims 1 proof-backed form(s) (0 proven here, 1 device-unattributed, 0 proven elsewhere) and 0 form(s) whose correctness is not established. Set the host logger to INFO, or read ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE, for the per-form detail."
+        ],
+        "expected": {
+          "reach_default_severity": "REACHED_USER",
+          "reach_stderr_forced_to_fail": "ESCALATED_TO_WARNING"
+        }
+      },
       "verdict": "PASS",
       "failures": []
     },
@@ -110,6 +125,21 @@
         "expected": {
           "at_INFO": "OFFERED_TO_ORT",
           "at_WARNING": "BELOW_ORT_THRESHOLD"
+        }
+      },
+      "arm_e": {
+        "returncode": 0,
+        "reach_default_severity": "REACHED_USER",
+        "reach_stderr_forced_to_fail": "ESCALATED_TO_WARNING",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_reached_user": 0,
+        "session_disclosure_info_escalations": 1,
+        "ort_sink_escalation_warns": [
+          "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\u00a78.9.7] the session-creation disclosure could not be delivered on any channel a user sees by default: ORT's own severity threshold excludes INFO and this process's stderr refused the write. It is repeated here at WARNING because that is the one severity ORT's default threshold admits \u2014 this is a delivery escalation, not a fault report. This session claims 1 proof-backed form(s) (0 proven here, 1 device-unattributed, 0 proven elsewhere) and 0 form(s) whose correctness is not established. Set the host logger to INFO, or read ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE, for the per-form detail."
+        ],
+        "expected": {
+          "reach_default_severity": "REACHED_USER",
+          "reach_stderr_forced_to_fail": "ESCALATED_TO_WARNING"
         }
       },
       "verdict": "PASS",
