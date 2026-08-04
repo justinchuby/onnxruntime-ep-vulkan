@@ -182,6 +182,21 @@ def build(*, force: bool = False) -> "tuple[Path, Path]":
     # Set even though the empty-source-set early return fires first: when Tank makes this
     # variable a hard override, this build takes the route DESIGN.md names, unchanged.
     env["ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC"] = "1"
+    # PIN the output directory to the one `artifact_paths()` reads.
+    #
+    # Found on the Linux lane, where `CARGO_TARGET_DIR` is exported (it must be: left unset it
+    # lands on `/mnt/c/.../rust/target` and races the Windows build). `dict(os.environ)` carried
+    # it into this build, so the SHADER-LESS artifact was written into the SHARED target
+    # directory — over the real one. Two failures from one line, and the loud one was the wrong
+    # one: this function raised `cargo exited 0 but <scratch>/rust/target/release/... does not
+    # exist`, which reads as a build problem, while the silent damage was that every later step
+    # in the same run then loaded an EP that advertises zero devices. The gate went UNATTRIBUTED,
+    # the EP wrote no counters file, and `epctl --check-counters` fell back to reading a snapshot
+    # left by an earlier session and reported its AGE as `counters ABI 4 vs 8`.
+    #
+    # A witness that must produce a deliberately broken binary has to own the directory it writes
+    # it to. Inheriting one is how the broken binary escapes into the run it was measuring.
+    env["CARGO_TARGET_DIR"] = str((SCRATCH / "rust" / "target").resolve())
 
     result = _verdict.run_subprocess_checked(
         [

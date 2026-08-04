@@ -3219,6 +3219,202 @@ agent using the tool normally, not by a test I designed.**
 
 ---
 
+## 7.26 The Linux subject arithmetic, and three causes that were not the ones named (2026-08-03)
+
+Session 18c. Four questions were put to the Linux lane, all of them re-runs of readings I had
+taken before. Three of them changed, and in each case the *cause* was not the one the previous
+reading had named. That pattern is the section's real content.
+
+### 7.26.1 The two-digest schema, before and after
+
+The reading that matters is the subject arithmetic, not the verdict. Windows, on the fresh
+release DLL:
+
+```
+115 entries = 0 identical + 115 SOURCE-COSMETIC + 0 PROVEN-ELSEWHERE{toolchain}
+            + 0 SUBJECT-CHANGED + 0 SUBJECT-INDETERMINATE + 0 no-module-in-build
+```
+
+Linux, on a fresh `.so`, **before** anything I did this session:
+
+```
+115 entries = 0 identical + 0 SOURCE-COSMETIC + 0 PROVEN-ELSEWHERE{toolchain}
+            + 115 SUBJECT-CHANGED + 0 SUBJECT-INDETERMINATE + 0 no-module-in-build
+```
+
+Both defects I had filed against the classifier were visibly repaired: the arithmetic now prints
+on the **failure** path (previously it was computed and discarded before `return 1`), and the
+build named its toolchain `shaderc 2023.8-1build1` instead of `UNKNOWN`. But
+`PROVEN-ELSEWHERE{toolchain}` — the row the entire two-digest schema exists to produce — was
+still **zero**. The repair had landed and the target row had not moved.
+
+The obvious reading was that `source_digest` was still unportable. I wrote
+`rust/tools/probe_source_digest_platform.py` to falsify that rather than assume it: it asks each
+platform's artifact for its own `{spirv, source, toolchain}` per module, re-deriving nothing, and
+diffs the two dumps. Over **215 modules: 0 source digests moved, 215 SPIR-V digests moved, 0
+source files differing in LF-normalised bytes.** `source_digest` **is** portable. The blocker was
+**data, not code**: the 115 recorded `source_digest` values had been computed under the
+*withdrawn* pre-`normalize_shader_text` rule, so they matched neither platform's build.
+
+`gen_proof_ledger.py --backfill-frame --rewitness-source` — the tool written for exactly a
+hashing-rule change — had never been run after the rule changed. Running it (115 `source_digest`
+values and the header `content_fnv1a64`; keys, `shader_digest` and `generated_at` untouched):
+
+```
+Linux:   115 entries = 0 identical + 0 SOURCE-COSMETIC + 115 PROVEN-ELSEWHERE{toolchain}
+                     + 0 SUBJECT-CHANGED + 0 SUBJECT-INDETERMINATE + 0 no-module-in-build
+         gen_proof_ledger.py --check → exit 0, PASS
+Windows: 115 identical, --check → exit 0, PASS
+```
+
+**Why Windows never showed this.** `SOURCE-COSMETIC` is *source moved, SPIR-V identical*;
+`PROVEN-ELSEWHERE{toolchain}` is *SPIR-V moved, source identical*. On Windows the stale source
+digests moved while the SPIR-V matched, so every entry landed in `SOURCE-COSMETIC`, which
+**claims at run time** — the staleness was forgiven and invisible. On Linux, where the SPIR-V
+legitimately moves, the same staleness collided into `SUBJECT-CHANGED`, which declines. One
+defect, forgiving on one platform and fatal on the other, and only the platform that declines
+could see it.
+
+### 7.26.2 The `toolchain` grep
+
+Previous reading: **0 hits** in a live Linux run, in a run where all 103 failures had a toolchain
+cause four lines out of reach. Current reading on the same grep: **3 hits**. The runtime also now
+emits `PROVEN-ELSEWHERE{toolchain}` *during* the op suite (the `§10.0.1 R12` UNATTRIBUTED-frame
+lines for Asin/Acos), so the schema is reachable end-to-end and not only inside the checker.
+
+### 7.26.3 The op suite: 19 → 8, and the `no proof ledger entry for` row at zero
+
+First run of `link_linux_device_steps.sh` this session: **19 failed / 622 passed / 50 skipped /
+3 xfailed**, with `no proof ledger entry for` down to **0** — Tank's re-proofs of `f32>i32`,
+`i32>f32` and `f32>bool` closed the last three. Four device steps were red: the Criterion 10
+gate, the verdict reader, `epctl --check-counters`, and the ledger-portability screen.
+
+The cause of most of it was not in any of them. `tests/ops/_shaderless.py` builds a
+**deliberately broken** artifact (`ALLOW_MISSING_GLSLC`) and passed `env = dict(os.environ)` to
+its cargo invocation, inheriting the exported `CARGO_TARGET_DIR`. The zero-shader `.so` therefore
+landed in the **shared** target directory and overwrote the real one mid-run. Every later step in
+that pytest process then read an artifact reporting `built without shaders`, a degenerate
+`_shader_subject` where `spirv == source == 742426eaa51783f6`, `toolchain: UNKNOWN`, and a
+`strings` SPIR-V count of **0**.
+
+Pinning `env["CARGO_TARGET_DIR"]` to the witness's own scratch tree:
+
+```
+8 failed / 633 passed / 50 skipped / 3 xfailed
+Criterion 10 gate, verdict reader, epctl --check-counters,
+fatal-log check, ledger-portability screen: all exit 0
+```
+
+The loud symptom (`cargo exited 0 but <scratch>/....so does not exist`) named the scratch path,
+which is the one thing that was *not* wrong. Note the fix is to **pin, not to unset**:
+`CARGO_TARGET_DIR` unset on this lane resolves to `/mnt/c/.../rust/target` and clobbers the
+Windows build. Guarded by `tests/ops/test_shaderless_target_dir.py`, whose third test asserts the
+pin's source text is still present so that deleting it cannot leave the other two green.
+
+The remaining **8**, decomposed, because "8 failed" is not a finding:
+
+| n | Failure | Whose |
+| --- | --- | --- |
+| 3 | `ERROR(instrument)` — `VK_LAYER_KHRONOS_validation` not installed | host provisioning, mine, **untested** |
+| 1 | `ERROR(instrument=NO_PROGRESS)` wiring census, kind TOOLCHAIN, last progress `layering_lint:err`, 12013 units against a 12000 budget on a machine that completed 13472 — so not contention | unexplained |
+| 2 | `test_op_table[Asin-fp32]`, `[Acos-fp32]` — real numeric divergence on llvmpipe, 5/12 elements at rtol/atol 1e-5 | Mouse / Switch |
+| 1 | `test_harness_census::test_census_baseline_has_no_drift` | closed this session (§7.26.5) |
+| 1 | `test_kv_device_residency::test_the_python_binding_hardcodes_gpu_to_cuda` | Switch's declared accepted red |
+
+### 7.26.4 The thirteen `ERROR(instrument)`: refuted, not demonstrated
+
+I was asked to demonstrate or refute that one fix greens all thirteen `ERROR(instrument)`, all
+tracing to `epctl --check-counters` exit 3 (`counters ABI 4, but this epctl understands 8`). I
+had recorded that this was *not yet demonstrated*. It is now **refuted, and so is the premise**.
+
+`link_linux_counters_abi.sh` Arm B deletes the counters file and re-runs the gate. **No counters
+file was written at all.** The EP writes counters on first successful dispatch and at factory
+teardown; neither happened, because the artifact under test was the shader-less one from §7.26.3.
+The `ABI 4` was the *age* of a snapshot left by an earlier session, and `epctl` reported a stale
+file's version as a live ABI break. The v8 mirror generated from `counters.rs` with a
+compiler-checked layout hash was never in question.
+
+So: one fix did green a large cluster — but **not the hypothesised fix, and not for the
+hypothesised reason.** The correct generalisation is not "the ABI story was right after all"; it
+is that *thirteen reporters of one cause* was the right instinct and the named cause was wrong.
+An error that reports a **file's** version as the **build's** version cannot distinguish stale
+from broken, and that is a defect in `epctl`'s message, still open.
+
+### 7.26.5 A shrinking ledger is now a screened subject
+
+`26fd93f` proved and committed three `Cast` entries. They were absent from main. `git log -S`
+found the addition and **no removal**, because the removal happened inside a conflict resolution
+in `eb84364` and history simplification then hid the proving commit from the file's own log.
+`gen_proof_ledger.py --check` asks whether every entry present **agrees with the build**; it has
+no question that a *missing* entry could answer. The shrinking-write guard covers writes by the
+tool, and a merge is not one. The only instrument that noticed was the op suite, red since that
+merge and unaccounted — which is this register's thesis stated as an incident: **a red nobody
+owns is how a deletion survives.**
+
+`ci/check_ledger_census.py` applies the register's own arithmetic to proofs:
+
+```
+N ever proven = M present + K retired + D VANISHED
+```
+
+The denominator comes from git history, because history is the one record a merge cannot subtract
+from; retirements come from `evidence/proof_retired.json` with an owner, date and reason, so
+removing a proof on purpose is a *writable* act and removing one by accident is not.
+
+Its own first replay run **reported PASS on the merge it was written to convict.** `git rev-list
+<rev> -- <path>` applies history simplification by default and listed 13 revisions where
+`--full-history` lists 55 — the same simplification that hid the deletion from the agent who
+found it. A deletion screen must not take its denominator from the view the deletion is invisible
+in. With `--full-history`, and with the denominator bounded to `--at`'s ancestors, it convicts
+`eb84364` naming the three real `Cast` keys and acquits `26fd93f`.
+`ci/negative_control_ledger_census.py` holds it at **13/13 arms (2 LIVE, 5 REPLAYED, 6
+PLANTED)**, one of which asserts by revision count that `--full-history` is load-bearing, so a
+future edit that drops the flag fails rather than silently returns to PASS.
+
+**What it does not cover, said out loud:** it is **blind in a shallow clone** — with no history
+the denominator collapses to the present and every deletion reads as PASS. This is declared in
+`ci/lane_inventory.py`'s `misses` and is not otherwise guarded.
+
+### 7.26.6 Two acceptances closed, and one red found in main
+
+`check_open_reds.py` reported my own new workflow steps as `unaccounted_red` until I classified
+them, which is the check behaving correctly against its author. It also surfaced
+`audit_instruments --check` red **in main**: Switch's `fa5f514` added
+`bench/test_kv_write_redundancy.py`, undeclared in `audit_instruments.py`'s frame lists. Because
+the FRAME arm runs *before* the uninvoked census, the check failed without ever printing the
+signature that two accepted-red entries named — so those entries read as `signature_changed`
+rather than being stretched to cover a different defect, which is the register working. Declaring
+the module took the check to PASS, and `audit_instruments_census` and `harness_census_drift` were
+flipped to `expect: "green"`. **Neither was deleted**: deleting an entry removes the *check*, not
+the acceptance, and the next regression must arrive as `unaccounted_red` rather than as silence.
+Register now: 11 subjects ever declared = 10 ruled on (8 expected green, 2 accepted red) + 1
+retired.
+
+### 7.26.7 What this section established and what it did not
+
+**Established.** That `source_digest` is portable across Windows and Linux, by asking 215 modules
+on both platforms rather than by reasoning about the hash. That the previously-unreachable
+`PROVEN-ELSEWHERE{toolchain}` row is reachable, at 115/115 on Linux, with `--check` exit 0 on
+both platforms. That the `toolchain` grep went 0 → 3 on a live run. That a witness inheriting
+`CARGO_TARGET_DIR` overwrote the shared artifact, by asking the loaded library what it was, and
+that pinning it takes the Linux op suite from 19 failed to 8 and greens four device steps. That
+the `ABI 4 vs 8` cause was a stale snapshot, by deleting the file and observing that nothing
+rewrote it. That `check_ledger_census.py` convicts a deletion this repository actually shipped
+and acquits the commit that made the proofs.
+
+**Not established.** I did **not** show that the 2 Asin/Acos numeric divergences and the
+wiring-census `NO_PROGRESS` share a cause with anything else here; I have no explanation for the
+`NO_PROGRESS` at all. I did **not** test the 3 `VK_LAYER_KHRONOS_validation` errors against an
+installed validation layer — that host has none, so "provisioning" is my inference, not a
+reading. I did **not** establish that the re-witnessed ledger is *correct*, only that it agrees
+with two builds; the 102 of 115 entries that are `SPEC-UNRECORDED` (no `spec_digest`) are
+unchanged by this session and only `--reprove` repairs them. The census is **blind in a shallow
+clone** and I did not guard that, only declared it. And the arithmetic in §7.26.1 comes from a
+classifier Mouse wrote and a probe I wrote; the independent corroboration is that the two
+platforms disagreed in the direction the schema predicts, not that either tool was audited.
+
+---
+
 ## 8. OQ-1: Extension Coverage Data and the Frozen Decision
 
 

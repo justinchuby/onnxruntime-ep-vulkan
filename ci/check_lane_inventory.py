@@ -89,6 +89,12 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     # of "Open reds", but "Open reds" would substring neither — they are disjoint by
     # luck, not by design, so the control goes first anyway and this comment records why.
     ("Open-reds negative control", "hostfree.open_reds_negative_control"),
+    # ORDER IS LOAD-BEARING here too: "Proof-ledger census negative control" contains
+    # "Proof-ledger census", so the control must be matched first or it silently maps to
+    # the screen it controls — which would make the control invisible to this census while
+    # still reporting a classified step.
+    ("Proof-ledger census negative control", "hostfree.ledger_census_negative_control"),
+    ("Proof-ledger census", "hostfree.ledger_census"),
     ("Open reds", "hostfree.open_reds"),
     ("Verification-subject screen", "hostfree.verification_subjects"),
     ("Layering lint asserted something", "build.layering_lint_productivity"),

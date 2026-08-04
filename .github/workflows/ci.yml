@@ -229,6 +229,32 @@ jobs:
         # today's bytes is green, so it is not a constant.
         run: python ci/negative_control_open_reds.py
 
+      - name: Proof-ledger census (has a proof ever gone missing?)
+        # `gen_proof_ledger.py --check` asks whether every entry in the ledger agrees with
+        # the build. It cannot ask about an entry that is no longer there. On 2026-08-03
+        # Tank found three Cast proofs committed by 26fd93f and absent from main: the
+        # deletion happened inside a merge conflict resolution (eb84364), and `git log -S`
+        # on the ledger found the addition and no removal, because history simplification
+        # hides the proving commit from the file's own log -- 13 revisions simplified vs
+        # 55 with --full-history. --check stayed green, the shrinking-write guard covers
+        # writes by the TOOL and a merge is not one, and the only instrument that noticed
+        # was the op suite, red and unaccounted since that merge.
+        #
+        # This is `N ever declared = M ruled on + K retired` (check_open_reds.py's frame)
+        # applied to proofs, with the denominator taken from git history rather than a
+        # tracked file -- because the failure being detected is a merge rewriting tracked
+        # files, and a denominator the merge can edit is not a denominator.
+        run: python ci/check_ledger_census.py --json bench/results/ledger-census.json
+
+      - name: Proof-ledger census negative control
+        # 13 arms, 2 LIVE / 5 REPLAYED / 6 PLANTED, ratio printed. The REPLAYED arms are
+        # not plants: they run the screen against eb84364 and 26fd93f as they really are
+        # and require conviction of the first and acquittal of the second. One arm exists
+        # only to assert that --full-history is load-bearing, by the revision counts,
+        # because without it the replay reported PASS on the merge it was written to
+        # convict.
+        run: python ci/negative_control_ledger_census.py
+
       - name: Verification-subject screen (does a check verify itself?)
         # Mouse's sweep, wired here because it arrived in ci/ at 2832526 in NO workflow
         # step. ci/check_lane_inventory.py could not see that: it asks whether every
