@@ -1,0 +1,59 @@
+{
+  "gate": "device_loss_gate",
+  "arm": {
+    "lane": "resident",
+    "seed_past": 4096,
+    "steps": 8,
+    "env": {
+      "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "1",
+      "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "1",
+      "ONNXRUNTIME_EP_VULKAN_KV_ARENA": "0",
+      "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB": "<unset \u2014 UNCAPPED>"
+    },
+    "ep_lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-tank\\rust\\target\\release\\onnxruntime_vulkan_ep.dll"
+  },
+  "reps_requested": 2,
+  "reps_nonvacuous": 2,
+  "reps_vacuous": 0,
+  "losses": 0,
+  "rate_per_run": 0.0,
+  "rate_per_compute": 0.0,
+  "computes_observed": 16,
+  "basis_note": "rate_per_run is comparable to Switch's 1/8 ONLY at --steps 2; at any other --steps the exposure per run differs and rate_per_compute is the comparable quantity.",
+  "detection_power": {
+    "0.1250": 0.234375,
+    "0.0500": 0.09750000000000003,
+    "0.0250": 0.04937500000000006,
+    "0.0100": 0.01990000000000003
+  },
+  "reps": [
+    {
+      "rep": 0,
+      "exit_code": 0,
+      "elapsed_s": 587.7,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep000.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 1,
+      "exit_code": 0,
+      "elapsed_s": 589.3,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep001.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    }
+  ]
+}

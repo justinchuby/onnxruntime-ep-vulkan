@@ -1,0 +1,73 @@
+{
+  "gate": "device_loss_gate",
+  "arm": {
+    "lane": "resident",
+    "seed_past": 4096,
+    "steps": 8,
+    "env": {
+      "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "1",
+      "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "1",
+      "ONNXRUNTIME_EP_VULKAN_KV_ARENA": "0",
+      "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB": "5600"
+    },
+    "ep_lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-tank\\rust\\target\\release\\onnxruntime_vulkan_ep.dll"
+  },
+  "reps_requested": 3,
+  "reps_nonvacuous": 3,
+  "reps_vacuous": 0,
+  "losses": 0,
+  "rate_per_run": 0.0,
+  "rate_per_compute": 0.0,
+  "computes_observed": 24,
+  "basis_note": "rate_per_run is comparable to Switch's 1/8 ONLY at --steps 2; at any other --steps the exposure per run differs and rate_per_compute is the comparable quantity.",
+  "detection_power": {
+    "0.1250": 0.330078125,
+    "0.0500": 0.1426250000000001,
+    "0.0250": 0.07314062500000007,
+    "0.0100": 0.029700999999999977
+  },
+  "reps": [
+    {
+      "rep": 0,
+      "exit_code": 0,
+      "elapsed_s": 619.6,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep000.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 1,
+      "exit_code": 0,
+      "elapsed_s": 727.4,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep001.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 2,
+      "exit_code": 0,
+      "elapsed_s": 556.7,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep002.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    }
+  ]
+}

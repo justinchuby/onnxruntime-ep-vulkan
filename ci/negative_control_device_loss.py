@@ -31,6 +31,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CHECK = REPO_ROOT / "ci" / "check_device_loss.py"
 TANK_ARTIFACT = REPO_ROOT / "bench" / "results" / "ctx512_device_lost.txt"
 TRINITY_LOG = REPO_ROOT / "bench" / "results" / "trinity-suite-dev1.log"
+#: Switch's ctx-4096 resident-lane incident record. Its device-loss witness sits inside a
+#: JSON string, in two encodings: ORT's own UTF-16LE line and a plain-ASCII Python
+#: traceback. Used by the arm that removes the second and requires the first to be seen.
+SWITCH_CTX4096 = REPO_ROOT / "bench" / "results" / "phi35_kv_chain-ctx4096-BOTH-dev0.json"
 
 CLEAN_LOG = """\
 [vulkan-ep] INFO: VulkanExecutionProvider: device 0 (NVIDIA GeForce RTX 4060)
@@ -323,6 +327,74 @@ def main() -> int:
         [str(wide)],
         "marker_list_misses_real_line",
     )
+
+    # --- The wide capture, one level further in: inside a JSON string --------
+    #
+    # MEASURED BLIND, 2026-08-04. A probe that captures a worker's stderr into a JSON
+    # field stores ORT's UTF-16LE text as `\u0000`-escaped characters. There are no real
+    # NULs in the file, so `normalise_log_text` has nothing to strip and every marker
+    # misses. This check reported PASS on the real incident record with its (ASCII) Python
+    # traceback removed — it was reading the accident, not the witness.
+    #
+    # Two arms, because the previous arm above proves only that a *raw* wide log is seen.
+    json_wide = tmp / "wide_in_json.json"
+    json_wide.write_text(
+        json.dumps(
+            {
+                "lanes": {
+                    "resident": {
+                        "verdict": "ERROR(instrument)",
+                        "stderr_tail": (
+                            "vkWaitForFences failed: the Vulkan device was lost "
+                            "(VK_ERROR_DEVICE_LOST)\n"
+                        ).encode("utf-16-le").decode("utf-8", "replace"),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    arms.expect_condition(
+        "a UTF-16LE device loss inside a JSON string value",
+        "PLANTED",
+        [str(json_wide)],
+        "device_lost_reported",
+    )
+
+    # And the same shape replayed off the committed incident record rather than built:
+    # `phi35_kv_chain-ctx4096-BOTH-dev0.json` is red today only because its `stderr_tail`
+    # also carries a plain-ASCII Python traceback. Strip that and keep ORT's own wide line
+    # — which is exactly what the artifact looks like when ORT falls back and the process
+    # exits 0, the original ctx-512 incident — and the check must still be red.
+    if SWITCH_CTX4096.exists():
+        try:
+            doc = json.loads(SWITCH_CTX4096.read_text(encoding="utf-8"))
+            tail = doc["lanes"]["resident"]["stderr_tail"]
+            doc["lanes"]["resident"]["stderr_tail"] = tail[: tail.index("Traceback")]
+            replay = tmp / "ctx4096_wide_only.json"
+            replay.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+            arms.expect_condition(
+                "the real ctx-4096 record with its ASCII traceback removed",
+                "REPLAYED",
+                [str(replay)],
+                "device_lost_reported",
+            )
+        except Exception as exc:  # noqa: BLE001
+            arms.arm(
+                "the real ctx-4096 record with its ASCII traceback removed",
+                "REPLAYED",
+                False,
+                f"could not build the replay from {SWITCH_CTX4096.name}: {exc} — an "
+                "instrument outage in this control, not a pass",
+            )
+    else:
+        arms.arm(
+            "the real ctx-4096 record with its ASCII traceback removed",
+            "REPLAYED",
+            False,
+            f"{SWITCH_CTX4096} is missing — the arm cannot be run, which is an instrument "
+            "outage in this control, not a pass",
+        )
 
     # --- Instrument-outage arms: an outage is never a pass ------------------
     arms.expect_error("no path named at all", "PLANTED", [], "no_paths_given")

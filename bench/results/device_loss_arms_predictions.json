@@ -1,0 +1,80 @@
+{
+ "record": "ctx-4096 device-loss arms — PREDICTIONS WRITTEN BEFORE THE FIRST RUN",
+ "by": "tank",
+ "date": "2026-08-04",
+ "why_predictions_first": "Switch's own note on the vkQueueSubmit fix is the standing rule here: 6 pre-fix and 6 post-fix rounds both showed zero further losses, so the rate did not discriminate and the fix stood on the spec. A rate quoted after the fact can be read to support whatever the reader already believes. These predictions are committed before the arms are run so that a wrong one is visible as a wrong one.",
+ "arm_A_baseline": {
+  "cmd": "python rust/tools/device_loss_gate.py --reps 20 --steps 8 --seed-past 4096",
+  "env": {
+   "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "1",
+   "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "1",
+   "ONNXRUNTIME_EP_VULKAN_KV_ARENA": "0",
+   "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB": "<unset — UNCAPPED>"
+  },
+  "prediction": "the loss reproduces",
+  "observed": "3 losses in 5 repetitions before the run was stopped (rep0 lost at Compute #6 after 1775 dispatches; rep1 and rep2 lost at Compute #1 with 0 dispatches; rep3 and rep4 completed 8/8 Computes with 2840 dispatches and 0 losses). Stopped at 5 of 20 because the reps that COMPLETE take 560-603 s against 251-368 s for the reps that lose, and the remaining 15 repetitions would have cost ~2.3 h for a rate this arm has already established is not small.",
+  "verdict": "REPRODUCED"
+ },
+ "arm_B_budget": {
+  "cmd": "python rust/tools/device_loss_gate.py --reps 3 --steps 8 --seed-past 4096 --budget-mb 5600",
+  "hypothesis_under_test": "The device is lost because this EP oversubscribes the 8188 MiB board. At ctx 4096 the resident lane holds ~3.90 GB of weights plus a `past` and a `present` KV generation of ~1.61 GB each through its own provider — ~7.1 GB of device-local allocation on a board that also carries the Windows desktop. `budget_bytes()` is UNCAPPED by default and this EP never reads the driver's `VkPhysicalDeviceMemoryBudgetPropertiesEXT::heapBudget`, so it allocates until `vkAllocateMemory` errors — which a WDDM driver does not do, because it backs the allocation with evictable system memory instead. The fault then surfaces in the driver's residency/migration path.",
+  "prediction": "NO device loss. `alloc` refuses once `live_bytes` would pass 5600 MiB, `try_attach_device_buffer` degrades that span to host staging, and the run either completes or fails with a NAMED allocation error. `device_losses` must be 0 in every repetition.",
+  "what_would_falsify_the_hypothesis": "a device loss under the cap. If the device is still lost with the EP's own device-local footprint held below the board, the cause is not this EP's oversubscription and the diagnosis is wrong.",
+  "observed": "3/3 repetitions clean: 8/8 Compute() calls, 2840 dispatches, 0 device losses, 619.6 s / 727.4 s / 556.7 s. AND THAT RESULT IS WORTHLESS AS EVIDENCE. The counters say why: with the cap set to 5600 MiB (alloc_device_memory_budget_bytes = 5872025600) the EP's peak device-local figure was alloc_high_water_bytes = 5518426760 -- BELOW the cap. alloc_device_attach_failures = 0 and alloc_device_attach_unavailable = 0: nothing was ever refused. Arm A's clean repetitions (rep003, rep004, uncapped) report alloc_high_water_bytes = 5518426760, the SAME NUMBER TO THE BYTE. The treatment did not touch the treated variable. Arm B is not a negative result about the hypothesis; it is a null manipulation, and a PASS from it means only that nothing was tested.",
+  "verdict": "INERT MANIPULATION - DOES NOT DISCRIMINATE",
+  "what_it_also_falsified": "My own arithmetic. The prediction was written on ~7.1 GB of device-local allocation (3.90 weights + 1.61 past + 1.61 present). The measured peak is 5.52 GB. I double-counted the KV generations. The board is 8188 MiB and the driver offers 7191 MiB of it, so at 5262 MiB the EP was never close to the ceiling on its own. Any story in which THIS EP's own footprint crosses a threshold is dead: the footprint is a constant across losing and clean runs alike."
+ },
+ "arm_C_half_context": {
+  "cmd": "python rust/tools/device_loss_gate.py --reps 3 --steps 8 --seed-past 2048",
+  "why": "The independent control on the same hypothesis, with nothing about the EP changed. Halving the context halves both KV generations: ~3.90 + 0.80 + 0.80 = 5.5 GB, comfortably inside the board.",
+  "prediction": "NO device loss, and the repetitions complete at a wall time closer to each other than arm A's did — arm A's completing repetitions took ~1.6x the losing ones, which is what paging looks like.",
+  "what_would_falsify_the_hypothesis": "a device loss at ctx 2048, which would mean the fault is not a function of the device-local footprint.",
+  "observed": "NOT RUN",
+  "verdict": "WITHDRAWN - NO POWER",
+  "why_withdrawn": "Arm C tests whether the loss is a function of the EP's device-local footprint. Arm B already answered that without meaning to: the footprint is identical to the byte in runs that lose the device and runs that do not. A clean arm C would therefore have been consistent with every hypothesis on the table and would have discriminated nothing, at a cost of ~30 minutes of board time. The same board time went to arm D, which moves a variable that actually differs between the two outcomes."
+ },
+ "independent_witness_not_produced_by_this_project": {
+  "source": "Windows System event log, provider nvlddmkm",
+  "events": [
+   "2026-08-03 23:41:42 — Id 153, '\\Device\\UVMLiteController0x1 | Error occurred on GPUID: 100'",
+   "2026-08-04 03:30:45 — Id 153, byte-identical payload"
+  ],
+  "why_it_matters": "The first is the same second as the `vkWaitForFences` line in Switch's committed incident artifact (`2026-08-03 23:41:42.0633812`). The second is the same second as this round's rep 0. UVM is NVIDIA's unified-memory paging/migration controller, so the driver's own error names the residency path rather than the queue. NOT a TDR: there is no Display Event 4101 ('stopped responding and has successfully recovered') anywhere in the window, which is what a compute timeout would have produced.",
+  "caution": "nvlddmkm Id 153 is not rare on this box in general (many on 2026-08-02), so it corroborates the class of fault; it does not on its own attribute a loss."
+ },
+ "arm_D_foreign_cotenant": {
+  "cmd": "rust/target/release/examples/vram_occupant.exe --mib 2560 --until-deleted <sentinel> --device-index 1 --budget, held across: python rust/tools/device_loss_gate.py --reps 2 --steps 8 --seed-past 4096",
+  "why_this_arm": "The losses are time-ordered, not treatment-ordered: L,L,L,C,C in arm A and then C,C,C in arm B, with the EP's own footprint constant across all eight. That is the signature of a variable belonging to the box, not to the EP. The only board-level variable that plausibly changes on that timescale is how much of the 8188 MiB somebody else is holding. Niobe has already measured foreign GPU work on this box; while I was writing this, nvidia-smi listed a live foreign compute process (C:\\Users\\justinchu\\dev\\onnx-genai\\target\\debug\\deps\\indexing_gpu-*.exe) that had not been there twenty minutes earlier. A hypothesis about a variable I cannot set is not testable, so rust/examples/vram_occupant.rs sets it.",
+  "hypothesis_under_test": "The ctx-4096 device loss is a board-occupancy fault: the EP's 5262 MiB is survivable alone and not survivable when a co-tenant holds ~2.5 GB, because the driver must then page our resident set and the fault surfaces in its unified-memory path -- which is what the external nvlddmkm Id 153 / UVMLiteController witness names.",
+  "prediction": "The device loss RETURNS while the co-tenant is held, at a rate materially above the 0-in-5 most recently observed on a quiet board.",
+  "what_would_falsify_the_hypothesis": "2 clean repetitions under a held 2560 MiB co-tenant. That would say board occupancy is not the variable either, and the next owner should stop looking at memory residency.",
+  "note_on_power": "2 repetitions is a weak arm and is reported as one. Under a true 3-in-5 rate, P(no loss in 2) = 0.16; a clean arm D is therefore evidence against the hypothesis but not much of it, and must not be written up as a refutation.",
+  "observed": "4 clean repetitions in two escalating steps, 0 device losses, 2840 dispatches and 8/8 Compute() calls in every one. D at 2560 MiB held and touched: 587.7 s, 589.3 s. D2 at 3584 MiB held and touched: 543.9 s, 592.2 s. D2 is the one that counts: the EP's measured peak is 5262 MiB and the board is 7959 MiB, so 3584 + 5262 = 8846 MiB is a REQUEST THAT DOES NOT FIT, oversubscribed by ~890 MiB. The EP completed every Compute anyway with alloc_device_attach_failures = 0, alloc_device_attach_unavailable = 0 and the same alloc_high_water_bytes = 5518426760 as every other repetition ever recorded. The driver absorbed a genuine overcommit without losing the device.",
+  "verdict": "HYPOTHESIS FALSIFIED - BOARD OCCUPANCY IS NOT THE VARIABLE",
+  "power_actually_achieved": "4 repetitions, not the 2 the note was written for. Under the 3-in-5 rate arm A observed, P(no loss in 4) = 0.4^4 = 0.026. Under Switch's 1-in-8, P(no loss in 4) = 0.51 and this arm would say almost nothing - so the falsification is stated against the rate I measured on this instrument, not against his, and the two are not comparable because his observations were --steps 2 and mine are --steps 8."
+ },
+ "arm_E_can_the_ep_even_see_the_board": {
+  "cmd": "rust/target/release/examples/vram_occupant.exe --budget --device-index 1, run as a SECOND process while a FIRST process holds and touches 2560 MiB",
+  "why_this_arm": "The fix I was going to ship was: default the EP's allocation ceiling to the driver's VkPhysicalDeviceMemoryBudgetPropertiesEXT::heapBudget instead of leaving it uncapped. That fix is only worth anything if heapBudget actually reports the board, so I measured the instrument before building on it. This arm was run BEFORE arm D and before any EP change.",
+  "prediction": "heapBudget seen by the observing process DROPS by roughly the 2560 MiB the other process is holding, because heapBudget is specified as the driver's estimate of how much of the heap is available to this process given system-wide conditions.",
+  "observed": "It does not move. Quiet board: 'heap 0 size 7959 MiB budget 7191 MiB usage 0 MiB'. With a foreign process holding and touching 2560 MiB: 'heap 0 size 7959 MiB budget 7191 MiB usage 0 MiB' -- identical. heapUsage is this process's own allocation only (the holding process itself reports usage 2562 MiB). nvidia-smi is no better and is worse: with 2560 MiB held and touched it reported memory.used = 0 MiB, memory.free = 7959 MiB, and --query-compute-apps reported [N/A] for per-process memory.",
+  "verdict": "THE PROPOSED FIX IS INERT ON THIS HARDWARE",
+  "consequence": "Defaulting the ceiling to heapBudget would have capped the EP at a CONSTANT 7191 MiB that no co-tenant ever lowers. The EP's peak is 5262 MiB, so the cap would never bind -- exactly the way arm B's 5600 MiB cap never bound. I would have shipped a change that cannot fire, watched a quiet board return a clean run, and called it a fix. Arm B would have been quoted as its evidence. Both would have been ceremony.",
+  "answered_along_the_way": "VK_EXT_memory_budget does NOT have to be enabled on a VkDevice to be queried: chaining VkPhysicalDeviceMemoryBudgetPropertiesEXT onto vkGetPhysicalDeviceMemoryProperties2 returns populated values on a physical device with no device created at all. So the risk I was weighing -- adding a device extension to caps.rs::required_device_extensions and changing device creation for everyone -- was never necessary. Recording that so the next owner does not pay for it."
+ },
+ "what_is_left_standing": {
+  "ruled_out_with_a_measurement_each": [
+   "The KV arena. KV_ARENA=1 makes the EP REFUSE before any Compute, because the probe binds distinct `present` OrtValues and the alias sweep bails. Every run that has ever produced this fault had the arena off, including Switch's. The prime suspect was never in the frame.",
+   "This EP's own device-local footprint. alloc_high_water_bytes = 5518426760 in ten out of ten repetitions - capped, uncapped, losing, clean, with a co-tenant and without. A constant cannot be the variable.",
+   "TDR / compute timeout. No Display Event 4101 anywhere in either loss window; the witness is nvlddmkm Id 153 on \\Device\\UVMLiteController0x1, which is the paging path.",
+   "Board occupancy. Arm D2 oversubscribed the board by ~890 MiB with a foreign process and the EP completed 8/8 Computes twice.",
+   "The vkQueueSubmit class. Different call site, and Switch's queue_lock fix was already in the tree for every repetition here."
+  ],
+  "not_ruled_out": [
+   "Memory TYPE selection rather than memory QUANTITY. The counters report alloc_unified_memory = 2 - two allocations landing on a DEVICE_LOCAL-and-HOST_VISIBLE type - and the external witness names the driver's unified-memory controller by name. That is a type-selection question and it is the next place I would look.",
+   "A box-state variable I have not identified. Every loss on record sits in one of two narrow windows (23:41:42 on 2026-08-03, 03:30-03:45 on 2026-08-04) and ten repetitions since have been clean. Time-ordered, not treatment-ordered.",
+   "An unguarded read in gqa_f16.comp: history is read at t < past_len indexed against pc.past_stride with no t < past_stride guard (lines ~354, ~413), while the write IS bounds-checked (line ~280). Not reachable in this configuration, so not the cause, but it is the right class of defect and is recorded so it is not rediscovered as a finding."
+  ],
+  "the_instrument_finding_that_constrains_every_future_fix": "There is NO headroom instrument on this hardware. heapBudget is a constant 7191 MiB that no co-tenant lowers; heapUsage is this process only; nvidia-smi reports 0 MiB used and [N/A] per process while 2560 MiB is held and touched. Any future fix in this class must state how it OBSERVES the condition it claims to avoid, because the two obvious answers are both measured blind."
+ }
+}
