@@ -2,6 +2,11 @@
   "lane": "host",
   "steps": 2,
   "seed_past": 4096,
+  "env_pinned": {
+    "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "0",
+    "ONNXRUNTIME_EP_VULKAN_KV_ARENA": "0",
+    "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "<unset>"
+  },
   "ort_version": "1.28.0",
   "ep_device": {
     "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
@@ -65,6 +70,9 @@
     "dispatches_executed": 0,
     "compute_calls": 1,
     "compute_failures": 1,
-    "device_losses": 0
+    "device_losses": 0,
+    "kv_cache_convention": "UNOBSERVABLE",
+    "outputs_bind_declined": 0,
+    "alloc_high_water_bytes": 0
   }
 }

@@ -121,6 +121,12 @@ def _worker(lane: str, steps: int, seed_past: int, out_path: pathlib.Path) -> in
 
     rng = np.random.default_rng(20260803)
     doc: dict = {"lane": lane, "steps": steps, "seed_past": seed_past,
+                 "env_pinned": {
+                     k: os.environ.get(k, "<unset>")
+                     for k in ("ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY",
+                               "ONNXRUNTIME_EP_VULKAN_KV_ARENA",
+                               "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS")
+                 },
                  "ort_version": ort.__version__}
 
     counters_path = pathlib.Path(os.environ[COUNTERS_ENV]) if COUNTERS_ENV in os.environ else None
@@ -385,6 +391,16 @@ def _worker(lane: str, steps: int, seed_past: int, out_path: pathlib.Path) -> in
                 "compute_calls",
                 "compute_failures",
                 "device_losses",
+                # The witness for WHICH KV lane actually ran. `dispatches_executed` and
+                # `device_losses` describe the run; this names the convention the GQA
+                # dispatches were built with, read off their effective push constants. Without
+                # it a record cannot tell an arena run from a growing-cache run, and a device
+                # loss recorded in a run whose lane identity is unstated is a loss that can be
+                # attributed to the wrong flag. It was missing when the ctx-4096 loss was
+                # recorded, which is exactly how that attribution came into doubt.
+                "kv_cache_convention",
+                "outputs_bind_declined",
+                "alloc_high_water_bytes",
             )
         }
     out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
@@ -600,6 +616,14 @@ def _run_lane(lane: str, steps: int, seed_past: int, scratch: pathlib.Path) -> d
     env = dict(os.environ)
     env[COUNTERS_ENV] = str(counters)
     env["ONNXRUNTIME_VULKAN_EP_LIB"] = _lib()
+    # KV_ARENA is pinned EXPLICITLY in every arm, never inherited. It was inherited when the
+    # ctx-4096 device loss was recorded, so that record does not state which KV lane it ran and
+    # the loss could not be attributed to a flag from the artifact alone. "0" and unset read the
+    # same through `factory::kv_arena_enabled` (only 1/true/yes/on arm it), so pinning costs
+    # nothing and buys the record a stated lane.
+    env["ONNXRUNTIME_EP_VULKAN_KV_ARENA"] = os.environ.get(
+        "ONNXRUNTIME_EP_VULKAN_KV_ARENA", "0"
+    )
     if lane in ("resident", "outbind", "outbind_noread", "outbind_readdev", "separating"):
         env["ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY"] = "1"
         # `PROBE_LEAVE_BIND_DEFAULT=1` runs these lanes with `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS`
@@ -614,6 +638,9 @@ def _run_lane(lane: str, steps: int, seed_past: int, scratch: pathlib.Path) -> d
     else:
         env.pop("ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY", None)
         env.pop("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS", None)
+    env["ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY"] = env.get(
+        "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY", "0"
+    )
     cmd = [
         sys.executable, str(pathlib.Path(__file__).resolve()),
         "--worker", "--lane", lane, "--steps", str(steps),
@@ -623,9 +650,17 @@ def _run_lane(lane: str, steps: int, seed_past: int, scratch: pathlib.Path) -> d
     doc = json.loads(out.read_text(encoding="utf-8")) if out.is_file() else {}
     doc["exit_code"] = proc.returncode
     doc["logits_npy"] = str(out) + ".logits.npy"
+    # stderr is kept on EVERY arm, not only the failing ones. The failure this probe has to be
+    # able to show is ORT's silent CPU rebuild: the EP's Compute returns non-OK, ORT re-executes
+    # the subgraph on the CPU EP, and the worker exits **0** with no exception. On that path the
+    # only evidence is the BROKEN COMMITMENT line on stderr — and the previous version discarded
+    # stderr precisely when the return code was 0, so it deleted the one artifact
+    # `ci/check_device_loss.py` screens for. MEASURED 2026-08-04: the ctx-4096 `host` lane
+    # OOMs at `alloc_device failed for input buffer`, executes zero EP dispatches, and the
+    # detector read the record as clean.
+    doc["stderr_tail"] = (proc.stderr or b"").decode("utf-8", "replace")[-4000:]
     if proc.returncode != 0:
         doc.setdefault("verdict", "ERROR(instrument)")
-        doc["stderr_tail"] = (proc.stderr or b"").decode("utf-8", "replace")[-2000:]
     return doc
 
 
@@ -665,6 +700,9 @@ def main() -> int:
         "steps": args.steps,
         "seed_past": args.seed_past,
         "bytes_per_past_token_declared": BYTES_PER_PAST_TOKEN,
+        "kv_arena_env_requested": os.environ.get(
+            "ONNXRUNTIME_EP_VULKAN_KV_ARENA", "<unset — pinned to 0 in every arm>"
+        ),
     }
     if not ONNX_FILE.is_file():
         doc["verdict"] = "ERROR(instrument)"
