@@ -1,0 +1,177 @@
+{
+  "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+  "model": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu\\cuda-int4-rtn-block-32\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+  "dll_sha256_16": "E2B90510F4BCC4A2",
+  "steps": 2,
+  "seed_past": 4096,
+  "bytes_per_past_token_declared": 393216,
+  "kv_arena_env_requested": "0",
+  "lanes": {
+    "host": {
+      "lane": "host",
+      "steps": 2,
+      "seed_past": 4096,
+      "env_pinned": {
+        "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "0",
+        "ONNXRUNTIME_EP_VULKAN_KV_ARENA": "0",
+        "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "<unset>"
+      },
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vulkan.device_index": "1",
+        "vulkan.vendor_id": "0x10de"
+      },
+      "logits_dtype": "float16",
+      "seed_kv_sha256": "1c46b16311305136",
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 4096,
+          "readback_bytes": 0,
+          "readbacks": 0,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 0,
+          "dispatches": 0
+        },
+        {
+          "step": 1,
+          "past_len": 4097,
+          "readback_bytes": 0,
+          "readbacks": 0,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 0,
+          "dispatches": 0
+        }
+      ],
+      "logits": [
+        {
+          "step": 0,
+          "past_len": 4096,
+          "argmax": 1919,
+          "max": 18.953125,
+          "sum": -119048.03494608402,
+          "sha256": "4c22a6695987414a"
+        },
+        {
+          "step": 1,
+          "past_len": 4097,
+          "argmax": 4018,
+          "max": 18.9375,
+          "sum": 165304.48486995697,
+          "sha256": "15fca943fef75b96"
+        }
+      ],
+      "final_counters": {
+        "session_staging_readback_bytes": 0,
+        "session_staging_readbacks": 0,
+        "session_staging_upload_bytes": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_authority_grants": 0,
+        "outputs_device_bound": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 0,
+        "dispatches_executed": 0,
+        "compute_calls": 1,
+        "compute_failures": 1,
+        "device_losses": 0,
+        "kv_cache_convention": "UNOBSERVABLE",
+        "outputs_bind_declined": 0,
+        "alloc_high_water_bytes": 0
+      },
+      "exit_code": 0,
+      "logits_npy": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\phi35_chain_host.json.logits.npy",
+      "stderr_tail": "than an identity. Re-prove with gen_proof_ledger.py --append on this device to replace the ordinal with a device name.\n[vulkan-ep] ERROR: gpu-allocator failed to allocate 14155776 bytes for 'ep_in_427': Out of memory\n\u001b\u0000[\u00001\u0000;\u00003\u00001\u0000m\u00002\u00000\u00002\u00006\u0000-\u00000\u00008\u0000-\u00000\u00004\u0000 \u00000\u00009\u0000:\u00001\u00007\u0000:\u00003\u00006\u0000.\u00002\u00005\u00002\u00009\u00007\u00001\u00001\u0000 \u0000[\u0000E\u0000:\u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000:\u0000D\u0000e\u0000f\u0000a\u0000u\u0000l\u0000t\u0000,\u0000 \u0000a\u0000l\u0000l\u0000o\u0000c\u0000.\u0000r\u0000s\u0000:\u00002\u00006\u00002\u0000 \u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000_\u0000v\u0000u\u0000l\u0000k\u0000a\u0000n\u0000_\u0000e\u0000p\u0000:\u0000:\u0000v\u0000k\u0000:\u0000:\u0000a\u0000l\u0000l\u0000o\u0000c\u0000]\u0000 \u0000g\u0000p\u0000u\u0000-\u0000a\u0000l\u0000l\u0000o\u0000c\u0000a\u0000t\u0000o\u0000r\u0000 \u0000f\u0000a\u0000i\u0000l\u0000e\u0000d\u0000 \u0000t\u0000o\u0000 \u0000a\u0000l\u0000l\u0000o\u0000c\u0000a\u0000t\u0000e\u0000 \u00001\u00004\u00001\u00005\u00005\u00007\u00007\u00006\u0000 \u0000b\u0000y\u0000t\u0000e\u0000s\u0000 \u0000f\u0000o\u0000r\u0000 \u0000'\u0000e\u0000p\u0000_\u0000i\u0000n\u0000_\u00004\u00002\u00007\u0000'\u0000:\u0000 \u0000O\u0000u\u0000t\u0000 \u0000o\u0000f\u0000 \u0000m\u0000e\u0000m\u0000o\u0000r\u0000y\u0000\u001b\u0000[\u0000m\u0000\n\u0000[vulkan-ep] WARN: VulkanExecutionProvider: BROKEN COMMITMENT \u2014 this EP claimed fused subgraph #1 (355 node(s): /model/embed_tokens/Gather(Gather), /model/layers.0/input_layernorm/LayerNorm(SimplifiedLayerNormalization), /model/layers.0/attn/qkv_proj/MatMul_Q4(com.microsoft::MatMulNBits), /model/layers.0/attn/GroupQueryAttention(com.microsoft::GroupQueryAttention), +351 more) and its Compute() then returned a non-OK status. condition=allocator; error text: alloc_device failed for input buffer. ONNX Runtime will now re-execute these node(s) on the CPU EP, so the answer this run produces is not this EP's \u2014 and get_providers() will still list VulkanExecutionProvider, because the provider list is fixed at session-create time. This is a claim the EP made and did not keep; it is not the planned fallback of a node this EP never claimed.\n\u001b\u0000[\u00000\u0000;\u00009\u00003\u0000m\u00002\u00000\u00002\u00006\u0000-\u00000\u00008\u0000-\u00000\u00004\u0000 \u00000\u00009\u0000:\u00001\u00007\u0000:\u00003\u00007\u0000.\u00002\u00002\u00006\u00007\u00007\u00008\u00008\u0000 \u0000[\u0000W\u0000:\u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000:\u0000D\u0000e\u0000f\u0000a\u0000u\u0000l\u0000t\u0000,\u0000 \u0000<\u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000-\u0000e\u0000p\u0000-\u0000v\u0000u\u0000l\u0000k\u0000a\u0000n\u0000>\u0000:\u00000\u0000 \u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000_\u0000e\u0000p\u0000_\u0000v\u0000u\u0000l\u0000k\u0000a\u0000n\u0000:\u0000:\u0000c\u0000o\u0000m\u0000p\u0000u\u0000t\u0000e\u0000]\u0000 \u0000V\u0000u\u0000l\u0000k\u0000a\u0000n\u0000E\u0000x\u0000e\u0000c\u0000u\u0000t\u0000i\u0000o\u0000n\u0000P\u0000r\u0000o\u0000v\u0000i\u0000d\u0000e\u0000r\u0000:\u0000 \u0000B\u0000R\u0000O\u0000K\u0000E\u0000N\u0000 \u0000C\u0000O\u0000M\u0000M\u0000I\u0000T\u0000M\u0000E\u0000N\u0000T\u0000 \u0000\u0014  \u0000t\u0000h\u0000i\u0000s\u0000 \u0000E\u0000P\u0000 \u0000c\u0000l\u0000a\u0000i\u0000m\u0000e\u0000d\u0000 \u0000f\u0000u\u0000s\u0000e\u0000d\u0000 \u0000s\u0000u\u0000b\u0000g\u0000r\u0000a\u0000p\u0000h\u0000 \u0000#\u00001\u0000 \u0000(\u00003\u00005\u00005\u0000 \u0000n\u0000o\u0000d\u0000e\u0000(\u0000s\u0000)\u0000:\u0000 \u0000/\u0000m\u0000o\u0000d\u0000e\u0000l\u0000/\u0000e\u0000m\u0000b\u0000e\u0000d\u0000_\u0000t\u0000o\u0000k\u0000e\u0000n\u0000s\u0000/\u0000G\u0000a\u0000t\u0000h\u0000e\u0000r\u0000(\u0000G\u0000a\u0000t\u0000h\u0000e\u0000r\u0000)\u0000,\u0000 \u0000/\u0000m\u0000o\u0000d\u0000e\u0000l\u0000/\u0000l\u0000a\u0000y\u0000e\u0000r\u0000s\u0000.\u00000\u0000/\u0000i\u0000n\u0000p\u0000u\u0000t\u0000_\u0000l\u0000a\u0000y\u0000e\u0000r\u0000n\u0000o\u0000r\u0000m\u0000/\u0000L\u0000a\u0000y\u0000e\u0000r\u0000N\u0000o\u0000r\u0000m\u0000(\u0000S\u0000i\u0000m\u0000p\u0000l\u0000i\u0000f\u0000i\u0000e\u0000d\u0000L\u0000a\u0000y\u0000e\u0000r\u0000N\u0000o\u0000r\u0000m\u0000a\u0000l\u0000i\u0000z\u0000a\u0000t\u0000i\u0000o\u0000n\u0000)\u0000,\u0000 \u0000/\u0000m\u0000o\u0000d\u0000e\u0000l\u0000/\u0000l\u0000a\u0000y\u0000e\u0000r\u0000s\u0000.\u00000\u0000/\u0000a\u0000t\u0000t\u0000n\u0000/\u0000q\u0000k\u0000v\u0000_\u0000p\u0000r\u0000o\u0000j\u0000/\u0000M\u0000a\u0000t\u0000M\u0000u\u0000l\u0000_\u0000Q\u00004\u0000(\u0000c\u0000o\u0000m\u0000.\u0000m\u0000i\u0000c\u0000r\u0000o\u0000s\u0000o\u0000f\u0000t\u0000:\u0000:\u0000M\u0000a\u0000t\u0000M\u0000u\u0000l\u0000N\u0000B\u0000i\u0000t\u0000s\u0000)\u0000,\u0000 \u0000/\u0000m\u0000o\u0000d\u0000e\u0000l\u0000/\u0000l\u0000a\u0000y\u0000e\u0000r\u0000s\u0000.\u00000\u0000/\u0000a\u0000t\u0000t\u0000n\u0000/\u0000G\u0000r\u0000o\u0000u\u0000p\u0000Q\u0000u\u0000e\u0000r\u0000y\u0000A\u0000t\u0000t\u0000e\u0000n\u0000t\u0000i\u0000o\u0000n\u0000(\u0000c\u0000o\u0000m\u0000.\u0000m\u0000i\u0000c\u0000r\u0000o\u0000s\u0000o\u0000f\u0000t\u0000:\u0000:\u0000G\u0000r\u0000o\u0000u\u0000p\u0000Q\u0000u\u0000e\u0000r\u0000y\u0000A\u0000t\u0000t\u0000e\u0000n\u0000t\u0000i\u0000o\u0000n\u0000)\u0000,\u0000 \u0000+\u00003\u00005\u00001\u0000 \u0000m\u0000o\u0000r\u0000e\u0000)\u0000 \u0000a\u0000n\u0000d\u0000 \u0000i\u0000t\u0000s\u0000 \u0000C\u0000o\u0000m\u0000p\u0000u\u0000t\u0000e\u0000(\u0000)\u0000 \u0000t\u0000h\u0000e\u0000n\u0000 \u0000r\u0000e\u0000t\u0000u\u0000r\u0000n\u0000e\u0000d\u0000 \u0000a\u0000 \u0000n\u0000o\u0000n\u0000-\u0000O\u0000K\u0000 \u0000s\u0000t\u0000a\u0000t\u0000u\u0000s\u0000.\u0000 \u0000c\u0000o\u0000n\u0000d\u0000i\u0000t\u0000i\u0000o\u0000n\u0000=\u0000a\u0000l\u0000l\u0000o\u0000c\u0000a\u0000t\u0000o\u0000r\u0000;\u0000 \u0000e\u0000r\u0000r\u0000o\u0000r\u0000 \u0000t\u0000e\u0000x\u0000t\u0000:\u0000 \u0000a\u0000l\u0000l\u0000o\u0000c\u0000_\u0000d\u0000e\u0000v\u0000i\u0000c\u0000e\u0000 \u0000f\u0000a\u0000i\u0000l\u0000e\u0000d\u0000 \u0000f\u0000o\u0000r\u0000 \u0000i\u0000n\u0000p\u0000u\u0000t\u0000 \u0000b\u0000u\u0000f\u0000f\u0000e\u0000r\u0000.\u0000 \u0000O\u0000N\u0000N\u0000X\u0000 \u0000R\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000 \u0000w\u0000i\u0000l\u0000l\u0000 \u0000n\u0000o\u0000w\u0000 \u0000r\u0000e\u0000-\u0000e\u0000x\u0000e\u0000c\u0000u\u0000t\u0000e\u0000 \u0000t\u0000h\u0000e\u0000s\u0000e\u0000 \u0000n\u0000o\u0000d\u0000e\u0000(\u0000s\u0000)\u0000 \u0000o\u0000n\u0000 \u0000t\u0000h\u0000e\u0000 \u0000C\u0000P\u0000U\u0000 \u0000E\u0000P\u0000,\u0000 \u0000s\u0000o\u0000 \u0000t\u0000h\u0000e\u0000 \u0000a\u0000n\u0000s\u0000w\u0000e\u0000r\u0000 \u0000t\u0000h\u0000i\u0000s\u0000 \u0000r\u0000u\u0000n\u0000 \u0000p\u0000r\u0000o\u0000d\u0000u\u0000c\u0000e\u0000s\u0000 \u0000i\u0000s\u0000 \u0000n\u0000o\u0000t\u0000 \u0000t\u0000h\u0000i\u0000s\u0000 \u0000E\u0000P\u0000'\u0000s\u0000 \u0000\u0014  \u0000a\u0000n\u0000d\u0000 \u0000g\u0000e\u0000t\u0000_\u0000p\u0000r\u0000o\u0000v\u0000i\u0000d\u0000e\u0000r\u0000s\u0000(\u0000)\u0000 \u0000w\u0000i\u0000l\u0000l\u0000 \u0000s\u0000t\u0000i\u0000l\u0000l\u0000 \u0000l\u0000i\u0000s\u0000t\u0000 \u0000V\u0000u\u0000l\u0000k\u0000a\u0000n\u0000E\u0000x\u0000e\u0000c\u0000u\u0000t\u0000i\u0000o\u0000n\u0000P\u0000r\u0000o\u0000v\u0000i\u0000d\u0000e\u0000r\u0000,\u0000 \u0000b\u0000e\u0000c\u0000a\u0000u\u0000s\u0000e\u0000 \u0000t\u0000h\u0000e\u0000 \u0000p\u0000r\u0000o\u0000v\u0000i\u0000d\u0000e\u0000r\u0000 \u0000l\u0000i\u0000s\u0000t\u0000 \u0000i\u0000s\u0000 \u0000f\u0000i\u0000x\u0000e\u0000d\u0000 \u0000a\u0000t\u0000 \u0000s\u0000e\u0000s\u0000s\u0000i\u0000o\u0000n\u0000-\u0000c\u0000r\u0000e\u0000a\u0000t\u0000e\u0000 \u0000t\u0000i\u0000m\u0000e\u0000.\u0000 \u0000T\u0000h\u0000i\u0000s\u0000 \u0000i\u0000s\u0000 \u0000a\u0000 \u0000c\u0000l\u0000a\u0000i\u0000m\u0000 \u0000t\u0000h\u0000e\u0000 \u0000E\u0000P\u0000 \u0000m\u0000a\u0000d\u0000e\u0000 \u0000a\u0000n\u0000d\u0000 \u0000d\u0000i\u0000d\u0000 \u0000n\u0000o\u0000t\u0000 \u0000k\u0000e\u0000e\u0000p\u0000;\u0000 \u0000i\u0000t\u0000 \u0000i\u0000s\u0000 \u0000n\u0000o\u0000t\u0000 \u0000t\u0000h\u0000e\u0000 \u0000p\u0000l\u0000a\u0000n\u0000n\u0000e\u0000d\u0000 \u0000f\u0000a\u0000l\u0000l\u0000b\u0000a\u0000c\u0000k\u0000 \u0000o\u0000f\u0000 \u0000a\u0000 \u0000n\u0000o\u0000d\u0000e\u0000 \u0000t\u0000h\u0000i\u0000s\u0000 \u0000E\u0000P\u0000 \u0000n\u0000e\u0000v\u0000e\u0000r\u0000 \u0000c\u0000l\u0000a\u0000i\u0000m\u0000e\u0000d\u0000.\u0000\u001b\u0000[\u0000m\u0000\n\u0000\u001b\u0000[\u00001\u0000;\u00003\u00001\u0000m\u00002\u00000\u00002\u00006\u0000-\u00000\u00008\u0000-\u00000\u00004\u0000 \u00000\u00009\u0000:\u00001\u00007\u0000:\u00003\u00007\u0000.\u00002\u00004\u00000\u00001\u00005\u00005\u00005\u0000 \u0000[\u0000E\u0000:\u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000:\u0000,\u0000 \u0000s\u0000e\u0000q\u0000u\u0000e\u0000n\u0000t\u0000i\u0000a\u0000l\u0000_\u0000e\u0000x\u0000e\u0000c\u0000u\u0000t\u0000o\u0000r\u0000.\u0000c\u0000c\u0000:\u00006\u00007\u00001\u0000 \u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000:\u0000:\u0000E\u0000x\u0000e\u0000c\u0000u\u0000t\u0000e\u0000K\u0000e\u0000r\u0000n\u0000e\u0000l\u0000]\u0000 \u0000N\u0000o\u0000n\u0000-\u0000z\u0000e\u0000r\u0000o\u0000 \u0000s\u0000t\u0000a\u0000t\u0000u\u0000s\u0000 \u0000c\u0000o\u0000d\u0000e\u0000 \u0000r\u0000e\u0000t\u0000u\u0000r\u0000n\u0000e\u0000d\u0000 \u0000w\u0000h\u0000i\u0000l\u0000e\u0000 \u0000r\u0000u\u0000n\u0000n\u0000i\u0000n\u0000g\u0000 \u0000V\u0000u\u0000l\u0000k\u0000a\u0000n\u0000E\u0000x\u0000e\u0000c\u0000u\u0000t\u0000i\u0000o\u0000n\u0000P\u0000r\u0000o\u0000v\u0000i\u0000d\u0000e\u0000r\u0000_\u00001\u00003\u00009\u00004\u00008\u00009\u00005\u00004\u00006\u00004\u00005\u00002\u00007\u00006\u00000\u00009\u00002\u00005\u00001\u00007\u0000_\u00000\u0000 \u0000n\u0000o\u0000d\u0000e\u0000.\u0000 \u0000N\u0000a\u0000m\u0000e\u0000:\u0000'\u0000V\u0000u\u0000l\u0000k\u0000a\u0000n\u0000E\u0000x\u0000e\u0000c\u0000u\u0000t\u0000i\u0000o\u0000n\u0000P\u0000r\u0000o\u0000v\u0000i\u0000d\u0000e\u0000r\u0000_\u0000V\u0000u\u0000l\u0000k\u0000a\u0000n\u0000E\u0000x\u0000e\u0000c\u0000u\u0000t\u0000i\u0000o\u0000n\u0000P\u0000r\u0000o\u0000v\u0000i\u0000d\u0000e\u0000r\u0000_\u00001\u00003\u00009\u00004\u00008\u00009\u00005\u00004\u00006\u00004\u00005\u00002\u00007\u00006\u00000\u00009\u00002\u00005\u00001\u00007\u0000_\u00000\u0000_\u00000\u0000'\u0000 \u0000S\u0000t\u0000a\u0000t\u0000u\u0000s\u0000 \u0000M\u0000e\u0000s\u0000s\u0000a\u0000g\u0000e\u0000:\u0000 \u0000a\u0000l\u0000l\u0000o\u0000c\u0000_\u0000d\u0000e\u0000v\u0000i\u0000c\u0000e\u0000 \u0000f\u0000a\u0000i\u0000l\u0000e\u0000d\u0000 \u0000f\u0000o\u0000r\u0000 \u0000i\u0000n\u0000p\u0000u\u0000t\u0000 \u0000b\u0000u\u0000f\u0000f\u0000e\u0000r\u0000\u001b\u0000[\u0000m\u0000\n\u0000"
+    },
+    "resident": {
+      "lane": "resident",
+      "steps": 2,
+      "seed_past": 4096,
+      "env_pinned": {
+        "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "1",
+        "ONNXRUNTIME_EP_VULKAN_KV_ARENA": "0",
+        "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "1"
+      },
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vulkan.device_index": "1",
+        "vulkan.vendor_id": "0x10de"
+      },
+      "logits_dtype": "float16",
+      "seed_kv_sha256": "1c46b16311305136",
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 4096,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 25165832,
+          "dispatches": 355
+        },
+        {
+          "step": 1,
+          "past_len": 4097,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 64128,
+          "downloads": 1,
+          "upload_bytes": 25165832,
+          "dispatches": 355
+        }
+      ],
+      "logits": [
+        {
+          "step": 0,
+          "past_len": 4096,
+          "argmax": 1919,
+          "max": 18.78125,
+          "sum": -122201.77975320816,
+          "sha256": "259b737a7b537ed9"
+        },
+        {
+          "step": 1,
+          "past_len": 4097,
+          "argmax": 4018,
+          "max": 18.921875,
+          "sum": 162214.6089527607,
+          "sha256": "ce364927f45c098e"
+        }
+      ],
+      "final_counters": {
+        "session_staging_readback_bytes": 0,
+        "session_staging_readbacks": 2,
+        "session_staging_upload_bytes": 50331664,
+        "alloc_device_download_bytes": 128256,
+        "alloc_device_downloads": 2,
+        "alloc_device_upload_bytes": 3901851664,
+        "alloc_device_frame": "SHARED",
+        "alloc_device_authority_grants": 130,
+        "outputs_device_bound": 130,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 0,
+        "dispatches_executed": 710,
+        "compute_calls": 2,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "kv_cache_convention": "GROWING",
+        "outputs_bind_declined": 0,
+        "alloc_high_water_bytes": 5513708168
+      },
+      "exit_code": 0,
+      "logits_npy": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\phi35_chain_resident.json.logits.npy",
+      "stderr_tail": "tion x1 [com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/runtime-extent/none] DEVICE-UNATTRIBUTED: proven by evidence/cases/skip_simplified_layer_norm_f16.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU \u2014 the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity SUBJECT=SOURCE-COSMETIC: source closure 7be9c0c64fd28e32 -> 65d5601db1fe16b7, SPIR-V byte-identical.. The proofs are sound; what cannot be checked is whether they were obtained on the hardware this run opened, because the entry records a selector ordinal and a selector is a request rather than an identity. Re-prove with gen_proof_ledger.py --append on this device to replace the ordinal with a device name.\n[vulkan-ep] WARN: [VulkanEP] [\u00a78.9.20] proof ledger entry for `com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points` was obtained under specialisation 4827adaf34644bd4 and this run bound 186a0d36af2caa83 for the same shader set: same SPIR-V, same source, different pipeline. The claim stands and is out of frame \u2014 re-prove it with rust/tools/gen_proof_ledger.py --reprove to bring the proof back into this run's frame.\n\u001b\u0000[\u00000\u0000;\u00009\u00003\u0000m\u00002\u00000\u00002\u00006\u0000-\u00000\u00008\u0000-\u00000\u00004\u0000 \u00000\u00009\u0000:\u00001\u00008\u0000:\u00002\u00002\u0000.\u00005\u00008\u00009\u00007\u00008\u00000\u00006\u0000 \u0000[\u0000W\u0000:\u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000:\u0000D\u0000e\u0000f\u0000a\u0000u\u0000l\u0000t\u0000,\u0000 \u0000r\u0000e\u0000g\u0000i\u0000s\u0000t\u0000r\u0000y\u0000.\u0000r\u0000s\u0000:\u00002\u00002\u00003\u00009\u0000 \u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000_\u0000v\u0000u\u0000l\u0000k\u0000a\u0000n\u0000_\u0000e\u0000p\u0000:\u0000:\u0000r\u0000e\u0000g\u0000i\u0000s\u0000t\u0000r\u0000y\u0000]\u0000 \u0000[\u0000V\u0000u\u0000l\u0000k\u0000a\u0000n\u0000E\u0000P\u0000]\u0000 \u0000[\u0000\ufffd\u00008\u0000.\u00009\u0000.\u00002\u00000\u0000]\u0000 \u0000p\u0000r\u0000o\u0000o\u0000f\u0000 \u0000l\u0000e\u0000d\u0000g\u0000e\u0000r\u0000 \u0000e\u0000n\u0000t\u0000r\u0000y\u0000 \u0000f\u0000o\u0000r\u0000 \u0000`\u0000c\u0000o\u0000m\u0000.\u0000m\u0000i\u0000c\u0000r\u0000o\u0000s\u0000o\u0000f\u0000t\u0000:\u0000:\u0000M\u0000a\u0000t\u0000M\u0000u\u0000l\u0000N\u0000B\u0000i\u0000t\u0000s\u0000/\u00001\u0000+\u0000/\u0000f\u00001\u00006\u0000,\u0000u\u00008\u0000,\u0000f\u00001\u00006\u0000,\u0000u\u00008\u0000>\u0000f\u00001\u00006\u0000/\u0000q\u0000_\u0000g\u0000e\u0000m\u0000v\u0000_\u0000m\u0000a\u0000t\u0000m\u0000u\u0000l\u0000_\u0000n\u0000b\u0000i\u0000t\u0000s\u0000_\u0000f\u00001\u00006\u0000/\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000-\u0000e\u0000x\u0000t\u0000e\u0000n\u0000t\u0000/\u0000s\u0000c\u0000a\u0000l\u0000e\u0000s\u0000+\u0000z\u0000e\u0000r\u0000o\u0000_\u0000p\u0000o\u0000i\u0000n\u0000t\u0000s\u0000`\u0000 \u0000w\u0000a\u0000s\u0000 \u0000o\u0000b\u0000t\u0000a\u0000i\u0000n\u0000e\u0000d\u0000 \u0000u\u0000n\u0000d\u0000e\u0000r\u0000 \u0000s\u0000p\u0000e\u0000c\u0000i\u0000a\u0000l\u0000i\u0000s\u0000a\u0000t\u0000i\u0000o\u0000n\u0000 \u00004\u00008\u00002\u00007\u0000a\u0000d\u0000a\u0000f\u00003\u00004\u00006\u00004\u00004\u0000b\u0000d\u00004\u0000 \u0000a\u0000n\u0000d\u0000 \u0000t\u0000h\u0000i\u0000s\u0000 \u0000r\u0000u\u0000n\u0000 \u0000b\u0000o\u0000u\u0000n\u0000d\u0000 \u00001\u00008\u00006\u0000a\u00000\u0000d\u00003\u00006\u0000a\u0000f\u00002\u0000c\u0000a\u0000a\u00008\u00003\u0000 \u0000f\u0000o\u0000r\u0000 \u0000t\u0000h\u0000e\u0000 \u0000s\u0000a\u0000m\u0000e\u0000 \u0000s\u0000h\u0000a\u0000d\u0000e\u0000r\u0000 \u0000s\u0000e\u0000t\u0000:\u0000 \u0000s\u0000a\u0000m\u0000e\u0000 \u0000S\u0000P\u0000I\u0000R\u0000-\u0000V\u0000,\u0000 \u0000s\u0000a\u0000m\u0000e\u0000 \u0000s\u0000o\u0000u\u0000r\u0000c\u0000e\u0000,\u0000 \u0000d\u0000i\u0000f\u0000f\u0000e\u0000r\u0000e\u0000n\u0000t\u0000 \u0000p\u0000i\u0000p\u0000e\u0000l\u0000i\u0000n\u0000e\u0000.\u0000 \u0000T\u0000h\u0000e\u0000 \u0000c\u0000l\u0000a\u0000i\u0000m\u0000 \u0000s\u0000t\u0000a\u0000n\u0000d\u0000s\u0000 \u0000a\u0000n\u0000d\u0000 \u0000i\u0000s\u0000 \u0000o\u0000u\u0000t\u0000 \u0000o\u0000f\u0000 \u0000f\u0000r\u0000a\u0000m\u0000e\u0000 \u0000\u0014  \u0000r\u0000e\u0000-\u0000p\u0000r\u0000o\u0000v\u0000e\u0000 \u0000i\u0000t\u0000 \u0000w\u0000i\u0000t\u0000h\u0000 \u0000r\u0000u\u0000s\u0000t\u0000/\u0000t\u0000o\u0000o\u0000l\u0000s\u0000/\u0000g\u0000e\u0000n\u0000_\u0000p\u0000r\u0000o\u0000o\u0000f\u0000_\u0000l\u0000e\u0000d\u0000g\u0000e\u0000r\u0000.\u0000p\u0000y\u0000 \u0000-\u0000-\u0000r\u0000e\u0000p\u0000r\u0000o\u0000v\u0000e\u0000 \u0000t\u0000o\u0000 \u0000b\u0000r\u0000i\u0000n\u0000g\u0000 \u0000t\u0000h\u0000e\u0000 \u0000p\u0000r\u0000o\u0000o\u0000f\u0000 \u0000b\u0000a\u0000c\u0000k\u0000 \u0000i\u0000n\u0000t\u0000o\u0000 \u0000t\u0000h\u0000i\u0000s\u0000 \u0000r\u0000u\u0000n\u0000'\u0000s\u0000 \u0000f\u0000r\u0000a\u0000m\u0000e\u0000.\u0000\u001b\u0000[\u0000m\u0000\n\u0000[vulkan-ep] WARN: [VulkanEP] [\u00a78.9.20] proof ledger entry for `com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points` was obtained under specialisation 4827adaf34644bd4 and this run bound ae7fbbefe46c9914 for the same shader set: same SPIR-V, same source, different pipeline. The claim stands and is out of frame \u2014 re-prove it with rust/tools/gen_proof_ledger.py --reprove to bring the proof back into this run's frame.\n\u001b\u0000[\u00000\u0000;\u00009\u00003\u0000m\u00002\u00000\u00002\u00006\u0000-\u00000\u00008\u0000-\u00000\u00004\u0000 \u00000\u00009\u0000:\u00001\u00008\u0000:\u00002\u00002\u0000.\u00006\u00003\u00008\u00004\u00008\u00007\u00006\u0000 \u0000[\u0000W\u0000:\u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000:\u0000D\u0000e\u0000f\u0000a\u0000u\u0000l\u0000t\u0000,\u0000 \u0000r\u0000e\u0000g\u0000i\u0000s\u0000t\u0000r\u0000y\u0000.\u0000r\u0000s\u0000:\u00002\u00002\u00003\u00009\u0000 \u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000_\u0000v\u0000u\u0000l\u0000k\u0000a\u0000n\u0000_\u0000e\u0000p\u0000:\u0000:\u0000r\u0000e\u0000g\u0000i\u0000s\u0000t\u0000r\u0000y\u0000]\u0000 \u0000[\u0000V\u0000u\u0000l\u0000k\u0000a\u0000n\u0000E\u0000P\u0000]\u0000 \u0000[\u0000\ufffd\u00008\u0000.\u00009\u0000.\u00002\u00000\u0000]\u0000 \u0000p\u0000r\u0000o\u0000o\u0000f\u0000 \u0000l\u0000e\u0000d\u0000g\u0000e\u0000r\u0000 \u0000e\u0000n\u0000t\u0000r\u0000y\u0000 \u0000f\u0000o\u0000r\u0000 \u0000`\u0000c\u0000o\u0000m\u0000.\u0000m\u0000i\u0000c\u0000r\u0000o\u0000s\u0000o\u0000f\u0000t\u0000:\u0000:\u0000M\u0000a\u0000t\u0000M\u0000u\u0000l\u0000N\u0000B\u0000i\u0000t\u0000s\u0000/\u00001\u0000+\u0000/\u0000f\u00001\u00006\u0000,\u0000u\u00008\u0000,\u0000f\u00001\u00006\u0000,\u0000u\u00008\u0000>\u0000f\u00001\u00006\u0000/\u0000q\u0000_\u0000g\u0000e\u0000m\u0000v\u0000_\u0000m\u0000a\u0000t\u0000m\u0000u\u0000l\u0000_\u0000n\u0000b\u0000i\u0000t\u0000s\u0000_\u0000f\u00001\u00006\u0000/\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000-\u0000e\u0000x\u0000t\u0000e\u0000n\u0000t\u0000/\u0000s\u0000c\u0000a\u0000l\u0000e\u0000s\u0000+\u0000z\u0000e\u0000r\u0000o\u0000_\u0000p\u0000o\u0000i\u0000n\u0000t\u0000s\u0000`\u0000 \u0000w\u0000a\u0000s\u0000 \u0000o\u0000b\u0000t\u0000a\u0000i\u0000n\u0000e\u0000d\u0000 \u0000u\u0000n\u0000d\u0000e\u0000r\u0000 \u0000s\u0000p\u0000e\u0000c\u0000i\u0000a\u0000l\u0000i\u0000s\u0000a\u0000t\u0000i\u0000o\u0000n\u0000 \u00004\u00008\u00002\u00007\u0000a\u0000d\u0000a\u0000f\u00003\u00004\u00006\u00004\u00004\u0000b\u0000d\u00004\u0000 \u0000a\u0000n\u0000d\u0000 \u0000t\u0000h\u0000i\u0000s\u0000 \u0000r\u0000u\u0000n\u0000 \u0000b\u0000o\u0000u\u0000n\u0000d\u0000 \u0000a\u0000e\u00007\u0000f\u0000b\u0000b\u0000e\u0000f\u0000e\u00004\u00006\u0000c\u00009\u00009\u00001\u00004\u0000 \u0000f\u0000o\u0000r\u0000 \u0000t\u0000h\u0000e\u0000 \u0000s\u0000a\u0000m\u0000e\u0000 \u0000s\u0000h\u0000a\u0000d\u0000e\u0000r\u0000 \u0000s\u0000e\u0000t\u0000:\u0000 \u0000s\u0000a\u0000m\u0000e\u0000 \u0000S\u0000P\u0000I\u0000R\u0000-\u0000V\u0000,\u0000 \u0000s\u0000a\u0000m\u0000e\u0000 \u0000s\u0000o\u0000u\u0000r\u0000c\u0000e\u0000,\u0000 \u0000d\u0000i\u0000f\u0000f\u0000e\u0000r\u0000e\u0000n\u0000t\u0000 \u0000p\u0000i\u0000p\u0000e\u0000l\u0000i\u0000n\u0000e\u0000.\u0000 \u0000T\u0000h\u0000e\u0000 \u0000c\u0000l\u0000a\u0000i\u0000m\u0000 \u0000s\u0000t\u0000a\u0000n\u0000d\u0000s\u0000 \u0000a\u0000n\u0000d\u0000 \u0000i\u0000s\u0000 \u0000o\u0000u\u0000t\u0000 \u0000o\u0000f\u0000 \u0000f\u0000r\u0000a\u0000m\u0000e\u0000 \u0000\u0014  \u0000r\u0000e\u0000-\u0000p\u0000r\u0000o\u0000v\u0000e\u0000 \u0000i\u0000t\u0000 \u0000w\u0000i\u0000t\u0000h\u0000 \u0000r\u0000u\u0000s\u0000t\u0000/\u0000t\u0000o\u0000o\u0000l\u0000s\u0000/\u0000g\u0000e\u0000n\u0000_\u0000p\u0000r\u0000o\u0000o\u0000f\u0000_\u0000l\u0000e\u0000d\u0000g\u0000e\u0000r\u0000.\u0000p\u0000y\u0000 \u0000-\u0000-\u0000r\u0000e\u0000p\u0000r\u0000o\u0000v\u0000e\u0000 \u0000t\u0000o\u0000 \u0000b\u0000r\u0000i\u0000n\u0000g\u0000 \u0000t\u0000h\u0000e\u0000 \u0000p\u0000r\u0000o\u0000o\u0000f\u0000 \u0000b\u0000a\u0000c\u0000k\u0000 \u0000i\u0000n\u0000t\u0000o\u0000 \u0000t\u0000h\u0000i\u0000s\u0000 \u0000r\u0000u\u0000n\u0000'\u0000s\u0000 \u0000f\u0000r\u0000a\u0000m\u0000e\u0000.\u0000\u001b\u0000[\u0000m\u0000\n\u0000"
+    }
+  },
+  "verdict": "ERROR(instrument)",
+  "why": [
+    "lane host recorded compute_failures=1 device_losses=0; a run that ended early is not a cheaper run"
+  ]
+}

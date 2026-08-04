@@ -1,0 +1,95 @@
+{
+  "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+  "model": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu\\cuda-int4-rtn-block-32\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+  "dll_sha256_16": "E2B90510F4BCC4A2",
+  "steps": 2,
+  "seed_past": 4096,
+  "bytes_per_past_token_declared": 393216,
+  "kv_arena_env_requested": "0",
+  "lanes": {
+    "resident": {
+      "lane": "resident",
+      "steps": 2,
+      "seed_past": 4096,
+      "env_pinned": {
+        "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "1",
+        "ONNXRUNTIME_EP_VULKAN_KV_ARENA": "0",
+        "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "1"
+      },
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vulkan.device_index": "1",
+        "vulkan.vendor_id": "0x10de"
+      },
+      "logits_dtype": "float16",
+      "seed_kv_sha256": "1c46b16311305136",
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 4096,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 25165832,
+          "dispatches": 355
+        },
+        {
+          "step": 1,
+          "past_len": 4097,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 64128,
+          "downloads": 1,
+          "upload_bytes": 25165832,
+          "dispatches": 355
+        }
+      ],
+      "logits": [
+        {
+          "step": 0,
+          "past_len": 4096,
+          "argmax": 1919,
+          "max": 18.78125,
+          "sum": -122201.77975320816,
+          "sha256": "259b737a7b537ed9"
+        },
+        {
+          "step": 1,
+          "past_len": 4097,
+          "argmax": 4018,
+          "max": 18.921875,
+          "sum": 162214.6089527607,
+          "sha256": "ce364927f45c098e"
+        }
+      ],
+      "final_counters": {
+        "session_staging_readback_bytes": 0,
+        "session_staging_readbacks": 2,
+        "session_staging_upload_bytes": 50331664,
+        "alloc_device_download_bytes": 128256,
+        "alloc_device_downloads": 2,
+        "alloc_device_upload_bytes": 3901851664,
+        "alloc_device_frame": "SHARED",
+        "alloc_device_authority_grants": 130,
+        "outputs_device_bound": 130,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 0,
+        "dispatches_executed": 710,
+        "compute_calls": 2,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "kv_cache_convention": "GROWING",
+        "outputs_bind_declined": 0,
+        "alloc_high_water_bytes": 5513708168
+      },
+      "exit_code": 0,
+      "logits_npy": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\phi35_chain_resident.json.logits.npy"
+    }
+  },
+  "verdict": "ERROR(instrument)",
+  "why": [
+    "the `host` control lane was not run; there is nothing to compare against"
+  ]
+}
