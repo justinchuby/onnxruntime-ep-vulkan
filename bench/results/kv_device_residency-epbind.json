@@ -70,6 +70,6 @@
     "the EP's own gap against the CPU reference is unchanged by binding: {'attn_out': 0.11038780212402344, 'present_key': 0.0, 'present_value': 0.0} unbound vs {'attn_out': 0.11038780212402344, 'present_key': 0.0, 'present_value': 0.0} bound. That gap is this case's fp16 arithmetic and is not this probe's question",
     "ORDERING IS LOAD-BEARING: the session must exist before the allocator is asked for memory. Asking first yields alloc_device_frame = SPLIT-DEVICE \u2014 a second VkDevice no dispatch can bind. This probe refused itself for exactly that on its first run"
   ],
-  "ep_side_step1c_bind": "1",
+  "ep_side_step1c_bind": "0",
   "lane": "epbind"
 }

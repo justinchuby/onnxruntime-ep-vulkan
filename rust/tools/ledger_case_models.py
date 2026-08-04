@@ -621,6 +621,42 @@ BUILDERS.update({
     # then they cost two files and answer a question that otherwise takes a second build.
     "cast_i64_to_i32": lambda: _cast(TensorProto.INT64, TensorProto.INT32),
     "cast_i64_to_i32_dyn": lambda: _cast_dyn(TensorProto.INT64, TensorProto.INT32),
+    # ------------------------------------------------------------------
+    # THE gpt-oss-20b FORMS (census 2026-08-03, `probe_model_op_census.py`).
+    #
+    # Selected from a graph, not from a list. On gpt-oss-20b the EP claimed **1 of 374 nodes**,
+    # and 292 of the 370 declines were `[unproven]` — not missing kernels. Every form below is
+    # a `runtime-extent` sibling of a form the ledger already proves `static`, so the shader,
+    # the claim predicate and the translate handler all exist and the only thing missing is the
+    # measurement. `shape_class` is a key component, which is correct and is exactly why the
+    # gap was invisible: the ledger read full while a whole model declined.
+    #
+    # The pairing rule this taught, applied below: when a module is proven in one shape class,
+    # prove the other one in the same run. The marginal cost is one comparison; the cost of not
+    # doing it is a model.
+    # ------------------------------------------------------------------
+    # 49 nodes each on gpt-oss-20b's MoE router path (f16 activations -> f32 router -> f16).
+    "cast_f16_to_f32": lambda: _cast(TensorProto.FLOAT16, TensorProto.FLOAT),
+    "cast_f16_to_f32_dyn": lambda: _cast_dyn(TensorProto.FLOAT16, TensorProto.FLOAT),
+    "cast_f32_to_f16": lambda: _cast(TensorProto.FLOAT, TensorProto.FLOAT16),
+    "cast_f32_to_f16_dyn": lambda: _cast_dyn(TensorProto.FLOAT, TensorProto.FLOAT16),
+    # 72 nodes. `Add` at f16 is proven static; every gpt-oss-20b `Add` is symbolic.
+    "add_f16_dyn": lambda: _binary_dyn("Add", TensorProto.FLOAT16),
+    # 73 nodes — the anchor op, in the one form gpt-oss-20b carries: zero points AND symbolic
+    # extents. The ledger holds `scales`/runtime-extent and `scales+zero_points`/static; the
+    # intersection of the two axes was never measured, and it is the whole model.
+    "matmulnbits_f16_scales_zp_dyn": lambda: _matmulnbits_typed(
+        TensorProto.FLOAT16, True, dynamic=True
+    ),
+    # 1 node.
+    "simplified_layer_norm_f32": lambda: _simplified_layer_norm(TensorProto.FLOAT),
+    # 47 + 1 nodes. The f32 pair is proven `static` only; gpt-oss-20b is symbolic throughout.
+    "skip_simplified_layer_norm_f32": lambda: _skip_simplified_layer_norm(
+        TensorProto.FLOAT, with_extra_outputs=False
+    ),
+    "skip_simplified_layer_norm_f32_slot3": lambda: _skip_simplified_layer_norm(
+        TensorProto.FLOAT, with_extra_outputs=True
+    ),
     # Pow is a partial function in its *first* argument: a negative base with a non-integral
     # exponent has no real value, and standard_normal supplies both. Sampled positive.
     "pow_f32": lambda: _binary("Pow", TensorProto.FLOAT, opset=21),

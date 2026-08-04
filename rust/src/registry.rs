@@ -655,6 +655,21 @@ fn dtype_from_onnx(et: ort::ONNXTensorElementDataType) -> Option<DType> {
     }
 }
 
+/// Map a raw ONNX `TensorProto.DataType` value — the integer `Cast`'s `to` attribute carries —
+/// to this EP's [`DType`], or `None` for types we have no storage for.
+///
+/// `Cast` is the one row whose *destination* element type is a node attribute rather than
+/// something derivable from its inputs, and the attribute is the only source that survives a
+/// symbolic extent: [`crate::ep::tensor_desc`] drops the whole `TensorDesc` — dtype included —
+/// when any dimension is unknown, so a handler that reads the destination off the output edge
+/// has no answer for exactly the graphs that need one. Delegates to `dtype_from_onnx` so the
+/// enum mapping has one implementation and cannot drift.
+pub fn dtype_from_onnx_value(v: i64) -> Option<DType> {
+    u32::try_from(v)
+        .ok()
+        .and_then(|e| dtype_from_onnx(e as ort::ONNXTensorElementDataType))
+}
+
 // -------------------------------------------------------------------------------------------
 // Public helpers for `compile_impl` (ep.rs boundary layer)
 // -------------------------------------------------------------------------------------------

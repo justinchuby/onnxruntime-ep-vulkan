@@ -459,3 +459,101 @@ corroboration is the 5-arm falsifier.
 **Touched that others own:** `ci/open_reds.json` (Link) — deleted only my three entries, by hand,
 because `json.dumps` reformatted his whole file the first time. `audit_instruments.py` (Link) —
 `survey()` now skips `#[cfg(test)]` items.
+
+## §8.10 — coverage measured from two models: gpt-oss-20b was at 1 claimed node of 374 (2026-08-03)
+The task was "raise op coverage, cheaply, via the templates". I started from evidence rather than
+a list, and the evidence said the cheapest coverage available was not a new op at all.
+**The registry census first, because I have miscounted this three times on the record.**
+`epctl --dump-capabilities --json`: **91 rows / 73 kernel-carrying (46 `live` + 27 `ready`) /
+18 staged**. Morpheus's artifact-derived 91/71/20 is the same file two rows later — two rows moved
+staged->live since. Nothing here is derived by reading registry source.
+**The instrument.** `rust/tools/probe_model_op_census.py` joins the ONNX graph
+(`load_external_data=False`, so gpt-oss-20b's 11.8 GB of external data never loads) against
+`ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` from a real session and reports claimed / declined /
+no-decision per op type with decline codes and proof keys. It re-derives nothing — registry,
+ledger lookup and shape classifier all stay in the DLL, same rule as `--check` asking the
+artifact. No claim log is `ERROR(instrument)`, never a prediction.
+**Criterion, stated before I picked:** expected coverage gain = nodes in a *real shipped model*
+that decline today and would claim after the change, weighted by whether it unblocks a model
+class, divided by kernel cost. Forms already backed by a generated template variant — proof-only
+work — rank above new kernels. That criterion is what produced the pick, not a taxonomy.
+**Phi-3.5 read 355/366, which everyone including me has been quoting. gpt-oss-20b read 1/374.**
+Nobody had asked a second model. 292 of its 370 declines were `[unproven]` — not missing kernels.
+Every one was the `runtime-extent` sibling of a form the ledger already proved `static`:
+`Add/f16` (72), `Cast/f16>f32` (49), `Cast/f32>f16` (49), `MatMulNBits/f16+zero_points` (73),
+`SkipSimplifiedLayerNorm/f32` both arities (48), `SimplifiedLayerNormalization/f32` (1). All 36
+`ew_cast_*` modules were already generated. **The ledger read full while a whole model declined**,
+which is correct behaviour and precisely why it was invisible. Standing rule now written into
+`ledger_case_models.py`: prove both shape classes of a module in the same run.
+**Then the generator went red and found a broken commitment.** `cast_f16_to_f32_dyn` failed with
+`Unsupported("Cast output has no element type at compile time")` -> `EP_FAIL` -> BROKEN COMMITMENT.
+`ep::tensor_desc` returns `None` for an edge with any symbolic dim and drops the **dtype** with the
+shape. `claim::cast` reads the destination off the live `OrtValueInfo`, so `Compile` is fine;
+`templates::ew_cast` read it off `OutRef.desc`, which the Compute-time dynamic re-translate rebuilds
+from `NodeDesc`. So every dynamic `Cast` was claimed and then failed — 98 real nodes. **A Cast's
+destination type is a node attribute, and a node attribute does not stop existing because an extent
+is unknown.** `cast_destination()` prefers the resolved edge, falls back to `to`, and **refuses**
+when they disagree; resolving that would put an unannounced reinterpretation of the model inside a
+dispatch. I did not repair `tensor_desc` — handing every handler a desc with unusable shapes is a
+worse trade than one helper.
+**No grandfathering.** `proof_attempts.jsonl` had 106 MATCHed keys against the ledger's 103; the
+difference was exactly `Cast f32>bool`, `Cast f32>i32`, `Cast i32>f32`, static — proven once and
+lost. I re-measured them through `--append` rather than pasting them forward, the same rule I held
+myself to on `--backfill-frame`.
+### The delta, as a measurement
+| model | before | after |
+|---|---|---|
+| gpt-oss-20b | **1 / 374 claimed** | **293 / 374** |
+| Phi-3.5-mini-int4 | 355 / 366 | 355 / 366 |
+Ledger **103 -> 115**, digest `94d994ba54821056` -> `0eef01359c467110`, 12/12 MATCH. **Frame the
+new entries were proven under:** debug `onnxruntime_vulkan_ep.dll`, device0 = NVIDIA GeForce RTX
+4060 Laptop GPU, ORT 1.28.0, `toolchain = shaderc v2026.2 v2026.2`, tolerance `rtol=1e-3,
+atol=1e-5`, and — unlike the 103 older entries — a **recorded `spec_digest`**. No tolerance was
+widened and no proof skipped; the 12 entries went through the ordinary three-pass path.
+**What it unblocks, honestly.** 293 nodes on one model, which is the difference between gpt-oss-20b
+being unrunnable on this EP and being mostly-claimed. It unblocks **no new op**: zero kernels were
+written. What still blocks gpt-oss-20b is `QMoE` x24 (staged), `Reshape` x24 (unregistered) and
+`GroupQueryAttention` x24 — the last declining on `[attribute]` with an **8-input** signature
+(`f16,f16,f16,i32,i32,f16,f16,f16`) against the proven 7-input form. That is attention sinks, a
+kernel-semantics question, and it is the largest single remaining item on either model.
+**`shaderInt64`: stopped, as instructed.** Every remaining kernel-carrying Phi-3.5 decline is an
+i64 form — `Cast/i64>i32` (both shape classes), `Sub/i64`, `Greater/i64`, `Gather/i64,i64>i64`.
+Their SPIR-V declares `OpCapability Int64`, absent from `ENGINE_ENABLED_CAPABILITIES`, so they
+decline `[dtype]`, not `[unproven]`. That extends Tank's "4 of 5 declines are one device feature"
+to the full 8: **5 of 8 are one feature**; the other 3 are `Shape`, `ReduceSum`, `If`, unregistered,
+one node each. I did not enable it and did not work around it.
+### What surprised me
+**The cheapest coverage in the project was not an op.** I expected to be picking between contrib
+ops. The answer was a schema axis: the ledger had proven the `static` arm of nearly everything and
+the `runtime-extent` arm of almost nothing, and Phi-3.5 is static-friendly enough that no
+instrument we had could see it. The apparatus was not wrong — `unproven_decline_forms` named these
+exactly — it was that nobody had pointed it at a second model.
+**A form can be proven and still be lost.** Three Cast forms had MATCH rows and no ledger entry.
+Whatever dropped them was silent, and only comparing the attempt log to the ledger showed it. I did
+not find the cause and am not claiming one.
+**`--reprove`'s refusal-before-measuring caught me being sloppy** exactly once: I regenerated the
+ledger and re-ran a probe without rebuilding, and `include_str!` meant the EP was still answering
+from 103 entries. The gate I wrote yesterday to protect somebody else caught me today.
+### What my verification established, and what it did not
+**Established:** `cargo test --lib` 540 passed / 0 failed; clippy `--all-targets -D warnings`
+clean; `counters_abi.py --check` PASS with `ONNXRUNTIME_VULKAN_EP_LIB` **set** (`ledger_entries =
+115`); `gen_proof_ledger.py --check` PASS, 115 entries, digest `0eef01359c467110`, every entry's
+`shader_digest` agreeing with the built DLL. `tests/ops` **3 failed / 655 passed / 33 skipped /
+3 xfailed** here, and the **same 3** — `test_criterion10`, `test_harness_census`
+(`+ counters.rs::unprovable_decline_forms`, byte-identical drift text), `test_kv_device_residency`
+— fail on a clean `85c57b2` worktree I built and ran separately. **My delta on `tests/ops` is
+zero.** I ran only those three files on the baseline; the full baseline suite ran >25 minutes with
+no output and I stopped it rather than report a number I did not watch finish, so I am **not**
+claiming a full-suite before-count and I am not contradicting Trinity's 8 at `3bac325`.
+**Did not:** anything about the **release** artifact — everything here is the debug build, and the
+release DLL in this worktree is stale. Anything about another device or another driver. Anything
+about `spec_digest` for the 103 older entries; they remain `SPEC-UNRECORDED`. Anything about
+whether the 293 newly-claimed gpt-oss-20b nodes produce *correct output on that model* — the ledger
+proves the **forms** against reference on small cases, and I did not run gpt-oss-20b end-to-end.
+And `probe_model_op_census.py` is a **new instrument reporting on itself**: its only independent
+corroboration is that it reproduced Phi-3.5's independently-known 355/366 without being told it.
+**One test is intermittently red and I did not fix it.**
+`registry::tests::the_digest_pair_separates_a_second_compiler_from_a_second_kernel` failed once in
+eight full-suite runs and passes in isolation. Hypothesis only — cross-test device-state
+interference through `state_for`'s device predicate. Unconfirmed, unexplained, reported rather than
+buried.
