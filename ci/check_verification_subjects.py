@@ -141,8 +141,13 @@ TABLE: dict[str, dict[str, str]] = {
         "subject": "evidence/proof_ledger.jsonl's key set over time",
         "oracle": "git history of the same file, taken with --full-history",
     },
-    "ci/check_open_reds.py": {
+    "ci/check_artifact_frame.py": {
         "verdict": "ARTIFACT",
+        "subject": "a committed reading (bench/results/.../*) and the frame it carries",
+        "oracle": "git log over the source paths the frame names, since the commit it names",
+        "note": "the frame is written by the producer and read by the screen; the oracle is git, not the artifact. Rai found the case it exists for: a log committed three hours BEFORE the fix it was cited as evidence for.",
+    },
+    "ci/check_open_reds.py": {        "verdict": "ARTIFACT",
         "subject": "ci/open_reds.json's accepted reds",
         "oracle": "the guards themselves, executed",
     },

@@ -523,3 +523,90 @@ census-extent reds. `negative_control_open_reds.py` 48/48 (2 LIVE, 6 REPLAYED,
 
 
 📌 Team update (2026-08-03T19:55:00-07:00): the deleted-proof incident — Tank found three proofs a merge deleted (proven at 26fd93f, absent from main via merge commit eb84364, hidden from the file's own git log by history simplification), re-proved, ledger 103→106. You own the register that should have caught it; the deleting merge was the coordinator's, and the op suite was the only instrument that saw it — udit_instruments --check and the ledger's own PASS did not. — decided by Scribe, from Tank's finding
+
+## Session 19 (2026-08-04) -- a cited artifact has a frame, and a merge reverted a field inside 115 surviving entries
+
+Assigned: regenerate the three Linux artifacts Rai found were cited as evidence
+for a fix committed three hours AFTER them; then ask whether a cheap invariant
+would make a stale citation detectable; then close or register two limitations
+of my own that were living in prose.
+
+Did all three. The regeneration is the smaller half of what came back.
+
+THE FINDING. First regeneration came back 50 failed / 372 passed against 8
+failed / 633 passed the round before. Ledger --check on the fresh .so read
+6 PROVEN-ELSEWHERE + 115 SUBJECT-CHANGED -- the exact inverse of session 18.
+Cause: eee65aa (Mouse, Conv) regenerated evidence/proof_ledger.jsonl from a base
+predating my merge aea0147 and restored the withdrawn pre-normalize_shader_text
+source_digest on 115 of 121 entries. No key lost, no entry deleted, file GREW
+116 -> 122. Key census 0 VANISHED. Loss invariant 0 missing. Shrinking-write
+guard silent. Windows --check PASS, because stale source + identical SPIR-V is
+SOURCE-COSMETIC, which forgives. Linux declines the same staleness as
+SUBJECT-CHANGED. Second firing of my own session-18c sentence, with a count:
+only the declining platform could see it, and a field inside a surviving entry
+is invisible to every instrument that counts entries.
+
+Repaired with --backfill-frame --rewitness-source (115 re-witnessed) plus a
+rebuild -- the ledger is include_str!'d, so an unrebuilt --check reads the baked
+copy. After: Windows 121 identical / 0 SOURCE-COSMETIC; Linux 9 failed / 676
+passed, gate MATCH, counters PASS, portability PASS.
+
+BUILT. ci/check_artifact_frame.py + evidence/proof_rewitness.json + a
+frame-witness arm and a shallow-clone guard in ci/check_ledger_census.py + an
+xtent requirement on accepted reds + a new known_limits section in
+ci/open_reds.json that makes each screen ADMIT its own bounded gap by token
+every run.
+
+THREE ERRORS I MADE, each of a class the tools exist to prevent. (1) My first
+frame-witness arm was SYMMETRIC -- it convicted my own repair as loudly as the
+regression, because from values alone the two are one event seen from opposite
+ends. The answerable question is whether the writer DECLARED the move, not what
+the value did. (2) A hand-typed screened_since sha resolved to nothing, so
+merge-base --is-ancestor failed for every revision, everything fell out of
+frame, and the screen printed PASS having ruled on nothing. (3) Ancestry is not
+the frame boundary: eee65aa was authored on squad/mouse, which forked BEFORE the
+merge, so an ancestry test excused the one event the arm exists for. Fixed with
+position in the --full-history --topo-order walk. All three are planted arms now.
+
+Also learned: a known limit is NOT an accepted red. test_lane_checks enforces
+owner != link on accepted reds, and it is right to; a bounded gap in a screen is
+held by the screen's own author, which is exactly the case that rule forbids.
+Filing one as the other means either weakening the rule or writing an owner you
+do not mean. New category, and a test that no id appears in both.
+
+Evidence: Windows cargo test --lib 553 passed / 0 failed / 4 ignored, clippy
+clean with -D warnings. gen_proof_ledger.py --check PASS, 121 entries = 121
+identical, loss invariant 0 missing (ONNXRUNTIME_VULKAN_EP_LIB set -- without it
+the checks pass having read nothing). check_ledger_census.py PASS, 0 UNDECLARED.
+negative_control_ledger_census.py 21/21 (2 LIVE, 6 REPLAYED, 13 PLANTED).
+negative_control_artifact_frame.py 11/11 (1 LIVE, 2 REPLAYED, 8 PLANTED) -- the
+REPLAYED arms convict the real ac4bd0b/7688356 citation gap. test_lane_checks.py
+164 passed, 3 failed and the 3 are the declared census-extent reds.
+check_open_reds.py: all 12 entries the declared colour, 2 known limits admitted.
+audit_instruments --check PASS (declared Niobe's bench/test_paired_ratio.py).
+verification_subjects PASS, 24 classified, 0 SELF. Lane inventory PASS.
+Linux: WSL Ubuntu / llvmpipe LLVM 20.1.2, .so sha256 727d0f41a6a31291.
+No timing claims. DEVICE_MEMORY and KV_ARENA not enabled in any lane.
+
+NOT established: the regenerated pytest-linux.log does NOT witness the corrected
+decline message, because on the repaired tree there are zero declines left to
+carry it. The reading that did witness it (42 declines, all corrected, 0
+old-message) was taken mid-session and overwritten by the second run; it is
+recorded in numbers in the decision, not as a file.
+
+POSTSCRIPT, same session. Ran check_ledger_census.py a second time hours after
+the first and it went from PASS to 28 VANISHED / 102 undeclared moves on an
+unchanged tree -- because Mouse had pushed 18ddece to squad/mouse in between and
+the walk was scoped --all. It was convicting my branch for not containing
+somebody else's unmerged draft, and the sentence it printed ("committed to this
+ledger and no longer in it") was false. DEFAULT_SCOPE is now HEAD; both merge
+parents are reachable from HEAD so a proof dropped inside a merge is still
+convicted, and there are now two planted arms holding both halves.
+negative_control_ledger_census.py 23/23 (2 LIVE, 6 REPLAYED, 15 PLANTED).
+
+Four framing errors in one session and not one of them was a wrong value test.
+Symmetric comparison; unresolvable boundary; ancestry mistaken for frame
+boundary; scope too wide. A screen with a right question and a wrong scope
+reports confidently about the wrong population, and the only reason I caught the
+fourth is that I happened to run it twice while a teammate was working. That is
+not a method.

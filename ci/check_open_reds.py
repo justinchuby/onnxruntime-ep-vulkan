@@ -112,6 +112,7 @@ import argparse
 import datetime as _dt
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -141,6 +142,8 @@ STATE_ACCOUNTED = "ACCOUNTED"
 STATE_UNACCOUNTED = "FAIL(condition=unaccounted_red)"
 STATE_STALE = "FAIL(condition=stale_acceptance)"
 STATE_SIGNATURE = "FAIL(condition=signature_changed)"
+STATE_WIDENED = "FAIL(condition=extent_widened)"
+STATE_NARROWED = "FAIL(condition=extent_narrowed)"
 STATE_EXPIRED = "FAIL(condition=lease_expired)"
 STATE_ERROR = "ERROR(instrument"
 
@@ -219,6 +222,37 @@ def load_register(path: Path) -> list[dict]:
                 "An acceptance with no signature covers every future red of that check, "
                 "which is a deletion of the check wearing an acceptance's name."
             )
+        if entry["expect"] == "red":
+            ext = entry.get("extent")
+            if not isinstance(ext, dict):
+                raise ValueError(
+                    f"{path}: entry {entry['id']!r} expects red but declares no `extent`. "
+                    "`signature` is a SUBSTRING test and a substring cannot notice a SECOND "
+                    "subject joining an accepted red (Switch, 2026-08-03). `extent` names the "
+                    "members the acceptance is granted over: "
+                    '{"pattern": "<regex with one capture group>", "members": [...]}.'
+                )
+            if not ext.get("pattern"):
+                raise ValueError(f"{path}: entry {entry['id']!r} extent is missing 'pattern'")
+            try:
+                if re.compile(ext["pattern"]).groups != 1:
+                    raise ValueError(
+                        f"{path}: entry {entry['id']!r} extent.pattern must have EXACTLY one "
+                        "capture group — the member name. Zero groups matches whole lines and "
+                        "a set of whole lines is a signature again; more than one is ambiguous."
+                    )
+            except re.error as exc:
+                raise ValueError(f"{path}: entry {entry['id']!r} extent.pattern: {exc}") from exc
+            if "members" not in ext or not isinstance(ext["members"], list):
+                # Presence and type, not truthiness: an EMPTY members list is legal and is
+                # the STRICTEST possible declaration — it says the acceptance is granted
+                # over nothing, so any member the pattern finds is extent_widened. Rejecting
+                # it as "missing" would have made the safest declaration unspellable.
+                raise ValueError(
+                    f"{path}: entry {entry['id']!r} extent.members must be present and a list"
+                )
+            if len(set(ext["members"])) != len(ext["members"]):
+                raise ValueError(f"{path}: entry {entry['id']!r} extent.members has duplicates")
         if entry["id"] in seen:
             raise ValueError(f"{path}: duplicate id {entry['id']!r}")
         seen.add(entry["id"])
@@ -386,7 +420,61 @@ def run_entry(entry: dict, repo: Path) -> Outcome:
             + _tail(out),
             entry,
         )
+    verdict = _extent_verdict(entry, out)
+    if verdict is not None:
+        state, detail = verdict
+        return Outcome(ident, state, expect, observed, detail + "\n" + _tail(out), entry)
     return Outcome(ident, STATE_ACCOUNTED, expect, observed, signature, entry)
+
+
+def _extent_verdict(entry: dict, out: str) -> tuple[str, str] | None:
+    """The set of things the acceptance is FOR, not just a string that appears in it.
+
+    FOUND BY SWITCH, DECLARED BY ME, AND LEFT OPEN FOR A SESSION.
+
+    `signature` is a SUBSTRING test, and a substring cannot notice a second subject joining
+    an accepted red. `lane_checks_census_extent` accepts the string `CENSUS-EXTENT` over
+    three named tests; a fourth test failing the same way still contains that string, so the
+    acceptance absorbs it in silence — which is the identical defect the register was built
+    to fix, one level down. `kv_caller_bind_reading` accepts `assert 'CUDA' in 'OK'` over one
+    node; a second node in the same file failing differently would not move the substring.
+
+    `extent` closes it by naming the MEMBERS. The set must match exactly: growing is
+    `extent_widened` (a red the acceptance was not granted for), shrinking is
+    `extent_narrowed` — good news, and the same arm as `stale_acceptance`, because an
+    acceptance that has stopped covering something must be re-read rather than left to
+    cover it in principle.
+    """
+    ext = entry.get("extent")
+    if not ext:
+        return None
+    found = set(re.findall(ext["pattern"], out, flags=re.MULTILINE))
+    members = set(ext["members"])
+    if found == members:
+        return None
+    extra = sorted(found - members)
+    gone = sorted(members - found)
+    lead = (
+        f"the acceptance names {len(members)} member(s) and this run has {len(found)}. "
+        f"`signature` matched — a substring cannot see this, which is why `extent` exists."
+    )
+    if extra and not gone:
+        return STATE_WIDENED, (
+            f"{lead}\n  JOINED the accepted red, uncovered by it: {extra}\n"
+            "  Either the newcomer belongs to the same owned red — add it to `members` and "
+            "say so in `reason` — or it is a different red and needs its own entry."
+        )
+    if gone and not extra:
+        return STATE_NARROWED, (
+            f"{lead}\n  NO LONGER failing: {gone}\n"
+            "  Good news. Narrow `members` to what is still red; if the list empties, the "
+            "entry is `stale_acceptance` and `expect` flips to green."
+        )
+    return STATE_WIDENED, (
+        f"{lead}\n  JOINED: {extra}\n  NO LONGER failing: {gone}\n"
+        "  The membership moved in both directions, so this is a different red wearing the "
+        "same signature. Re-read it before extending the acceptance."
+    )
 
 
 def _tail(text: str, limit: int = 2000) -> str:
@@ -502,6 +590,8 @@ def screen(argv: list[str] | None = None) -> int:
     if args.summary:
         _write_summary(Path(args.summary), outcomes)
 
+    limit_fails = screen_known_limits(doc, repo)
+
     print()
     if errors:
         print(
@@ -509,8 +599,16 @@ def screen(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return EXIT_ERROR_INSTRUMENT
-    if fails:
-        print(f"OPEN-REDS: FAIL — {len(fails)} check(s) are not the colour the register declares.")
+    if fails or limit_fails:
+        if fails:
+            print(
+                f"OPEN-REDS: FAIL — {len(fails)} check(s) are not the colour the register declares."
+            )
+        if limit_fails:
+            print(
+                f"OPEN-REDS: FAIL — {len(limit_fails)} declared known limit(s) are no longer "
+                "admitted by the screen that owns them."
+            )
         return EXIT_FAIL_CONDITION
     print(
         f"OPEN-REDS: PASS — {len(outcomes)} check(s) are the colour the register declares "
@@ -519,6 +617,65 @@ def screen(argv: list[str] | None = None) -> int:
         "is one somebody is holding."
     )
     return EXIT_PASS
+
+
+def screen_known_limits(doc: dict, repo: Path) -> list[str]:
+    """A limit a tool is KNOWN to have, held by the tool's own author, run every time.
+
+    WHY THIS IS NOT AN ACCEPTED RED. An accepted red is a failing check somebody OTHER than
+    the person who accepted it is expected to close — the shipped-register test enforces
+    exactly that, `owner != link`, and it is right to. A known limit is different in kind:
+    it is a bounded gap in a screen, owned by the person who wrote the screen, which is
+    precisely the case that rule forbids. Filing one as an accepted red would have meant
+    either weakening that rule or writing `owner` I did not mean. So it gets its own
+    category rather than a category it does not fit.
+
+    WHY IT IS CHECKED AND NOT MERELY LISTED. Two limitations of mine lived in prose this
+    quarter — a substring cannot notice a second file joining an accepted red (Switch's
+    finding) and the census is blind in a shallow clone (mine, declared and unguarded) —
+    and both stayed open until somebody tripped over them. A list nobody executes decays
+    the same way. So each entry names a command that must make the SCREEN ITSELF admit the
+    limit by token, and exit 1 doing it. If a limit is quietly closed the admission stops
+    and this arm goes red: a stale declaration is as much a defect as an undeclared gap,
+    which is the same asymmetry evidence/proof_rewitness.json is built on.
+    """
+    limits = doc.get("known_limits") or []
+    print("\nKNOWN LIMITS — bounded gaps in these screens, held by the screen's own author:")
+    if not limits:
+        print("  (none declared)")
+        return []
+    bad: list[str] = []
+    for lim in limits:
+        for field in ("id", "cmd", "admits", "owner", "opened", "review_by", "limit",
+                      "closes_when"):
+            if not lim.get(field):
+                bad.append(f"{lim.get('id', '?')}: declaration is missing {field!r}")
+        if bad and bad[-1].startswith(lim.get("id", "?")):
+            print(f"  MALFORMED  {lim.get('id', '?')}")
+            continue
+        out = subprocess.run(
+            lim["cmd"], cwd=str(repo), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=lim.get("timeout", 300),
+        )
+        blob = (out.stdout or "") + (out.stderr or "")
+        token = f"KNOWN-LIMIT {lim['admits']}"
+        if out.returncode == 1 and token in blob:
+            print(f"  ADMITTED   {lim['id']}")
+            print(f"             owner {lim['owner']}, opened {lim['opened']}, "
+                  f"review by {lim['review_by']}")
+            print(f"             screen {lim['screen']} still admits {lim['admits']!r}")
+            print(f"             closes when: {lim['closes_when'][:160]}")
+        else:
+            print(f"  FAIL(condition=limit_declaration_is_stale)  {lim['id']}")
+            bad.append(
+                f"{lim['id']}: {lim['screen']} no longer admits {lim['admits']!r} "
+                f"(rc={out.returncode}). Either the limit was closed and this declaration "
+                "must be retired with owner, date and reason, or the admission was removed "
+                "while the gap remains — which is the register's own failure mode."
+            )
+    for b in bad:
+        print(f"    - {b}", file=sys.stderr)
+    return bad
 
 
 def _write_summary(path: Path, outcomes: list[Outcome]) -> None:

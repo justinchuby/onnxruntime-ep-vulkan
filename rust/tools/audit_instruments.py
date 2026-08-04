@@ -473,6 +473,12 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_run_disturbance.py": "test module.",
     "test_tenancy_signature.py": "test module.",
     "test_win_gpu_counters.py": "test module.",
+    # Arrived with main 98d5bf3 (Niobe, the paired-ratio soundness instrument). Declared
+    # here by link rather than left to drift: the frame arm caught it on the first run
+    # after the merge, which is the arm working. Handed back to Niobe if she means it as
+    # an instrument rather than a caller — moving it to BENCH_INSTRUMENT_FILES is a
+    # one-line change and this comment is the record that nobody decided it silently.
+    "test_paired_ratio.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_ceiling.py": "test module — a caller, screened as polarity, not as an instrument.",
     # Arrived with Switch's fa5f514 and was the frame arm's second live catch. Worth naming
     # what it cost before it was declared: the frame arm runs BEFORE the uninvoked census, so

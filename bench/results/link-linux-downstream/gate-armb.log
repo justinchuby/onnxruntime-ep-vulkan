@@ -1,0 +1,65 @@
+GATE: /mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/link-linux-downstream/verdict-linux.json initialised to UNMEASURED before session open.
+GATE: artifact = gate_chain_fp32@ci-gate-v1 sha256:aba0cd3847ec28ac (256 elements, Add -> Relu)
+[vulkan-ep] WARN: probe_devices: built without shaders (ALLOW_MISSING_GLSLC build) — advertising zero devices so ORT falls back to CPU. This artifact cannot dispatch compute and must not be shipped.
+[0;93m2026-08-03 20:44:03.283207367 [W:onnxruntime:Default, engine.rs:698 onnxruntime_vulkan_ep::engine] probe_devices: built without shaders (ALLOW_MISSING_GLSLC build) — advertising zero devices so ORT falls back to CPU. This artifact cannot dispatch compute and must not be shipped.[m
+[vulkan-ep] WARN: VulkanExecutionProvider: no Vulkan device satisfies the capability gate on this machine; advertising zero devices. Models will run on the CPU EP.
+[0;93m2026-08-03 20:44:03.296180247 [W:onnxruntime:Default, factory.rs:258 onnxruntime_vulkan_ep::factory] VulkanExecutionProvider: no Vulkan device satisfies the capability gate on this machine; advertising zero devices. Models will run on the CPU EP.[m
+*************** EP Error ***************
+EP Error Unknown Provider Type: VulkanExecutionProvider when using ['VulkanExecutionProvider', 'CPUExecutionProvider']
+Falling back to ['CPUExecutionProvider'] and retrying.
+****************************************
+GATE: session providers (session-create time) = ['CPUExecutionProvider']
+GATE: attribution — 0 fused-island executions by VulkanExecutionProvider — this EP ran NOTHING. Providers that did execute: CPUExecutionProvider=2.
+GATE: verdict record written to /mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/link-linux-downstream/verdict-linux.json
+{
+  "artifact": "gate_chain_fp32@ci-gate-v1 sha256:aba0cd3847ec28ac",
+  "attribution_source": "ort_profile",
+  "attribution_witness_agreement": "UNOBSERVABLE",
+  "attribution_witnesses": {
+    "counters_dispatches_executed": "UNOBSERVABLE",
+    "counters_witness_reason": "second witness absent for an unrecorded reason",
+    "profile_digest": "sha256:67fef4f1d5719f06",
+    "profile_mtime_ns": 1785815042974335600,
+    "profile_node_events": 0,
+    "profile_node_events_total": 2,
+    "profile_path": "/mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/link-linux-downstream/gate_chain_fp32_profile_2026-08-03_20-44-03_410.json",
+    "witness_agreement": "UNOBSERVABLE",
+    "witnesses_present": [
+      "ort_profile"
+    ]
+  },
+  "attribution_witnesses_present": [
+    "ort_profile"
+  ],
+  "comparison": "AGREE",
+  "detail": "max_abs_diff=0 rtol=1e-05 atol=1e-05",
+  "device_index": "",
+  "device_name": "",
+  "executed_by": {
+    "CPUExecutionProvider": 2
+  },
+  "output_coverage": "not-computed",
+  "outputs_cpu_only": "not-computed",
+  "outputs_reaching_this_ep": "not-computed",
+  "own_provider_count_means": "fused-island executions by this EP, NOT graph nodes; one island can cover hundreds of graph nodes",
+  "own_provider_execution_count": 0,
+  "permits_triple_and_ratio": false,
+  "verdict": "UNATTRIBUTED"
+}
+GATE: could not splice the verdict into /mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/link-linux-downstream/counters-linux.json:
+write_equivalence_record: counters file not found: /mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/link-linux-downstream/counters-linux.json
+Is ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE set?  Did the EP write a snapshot?
+This is an instrument outage, NOT a finding about the EP (R13).
+GATE: FAIL(condition=UNATTRIBUTED)
+model_output_equivalence = UNATTRIBUTED — the comparison ran and this EP did not run. This is NOT DIVERGENT: the model was not wrong, the subject was absent, and the comparison was CPU-vs-CPU. 0 fused-island executions by VulkanExecutionProvider — this EP ran NOTHING. Providers that did execute: CPUExecutionProvider=2. The triple and the wall-clock ratio may not be reported. Owner: whoever owns the run-time fallback (Switch), not the kernel authors.
+
+max_abs_diff=0 (rtol=1e-05, atol=1e-05)
+Attribution: 0 fused-island executions by VulkanExecutionProvider — this EP ran NOTHING. Providers that did execute: CPUExecutionProvider=2.
+Record: /mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/link-linux-downstream/verdict-linux.json
+
+The verdict could not be attached to the counters snapshot either:
+write_equivalence_record: counters file not found: /mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/link-linux-downstream/counters-linux.json
+Is ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE set?  Did the EP write a snapshot?
+This is an instrument outage, NOT a finding about the EP (R13).
+For UNATTRIBUTED that is usually the same finding said twice — an EP that executed nothing never dispatched, so it never wrote a snapshot.
+GATE: this is a finding about the EP. It is NOT an instrument error; the check reached its observation and the observation is quoted above.

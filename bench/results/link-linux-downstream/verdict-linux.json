@@ -3,13 +3,13 @@
   "attribution_source": "ort_profile",
   "attribution_witness_agreement": "AGREE",
   "attribution_witnesses": {
-    "counters_dispatches_executed": 0,
+    "counters_dispatches_executed": 2,
     "counters_witness_reason": "",
-    "profile_digest": "sha256:d4508114cbff7e55",
-    "profile_mtime_ns": 1785739521254377200,
-    "profile_node_events": 0,
-    "profile_node_events_total": 2,
-    "profile_path": "/mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/link-linux-downstream/gate_chain_fp32_profile_2026-08-02_23-45-21_412.json",
+    "profile_digest": "sha256:622b5191278ab867",
+    "profile_mtime_ns": 1785854573127736500,
+    "profile_node_events": 1,
+    "profile_node_events_total": 1,
+    "profile_path": "/mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/link-linux-downstream/gate_chain_fp32_profile_2026-08-04_07-42-52_176.json",
     "witness_agreement": "AGREE",
     "witnesses_present": [
       "ort_profile",
@@ -25,13 +25,13 @@
   "device_index": "",
   "device_name": "",
   "executed_by": {
-    "CPUExecutionProvider": 2
+    "VulkanExecutionProvider": 1
   },
   "output_coverage": "not-computed",
   "outputs_cpu_only": "not-computed",
   "outputs_reaching_this_ep": "not-computed",
   "own_provider_count_means": "fused-island executions by this EP, NOT graph nodes; one island can cover hundreds of graph nodes",
-  "own_provider_execution_count": 0,
-  "permits_triple_and_ratio": false,
-  "verdict": "UNATTRIBUTED"
+  "own_provider_execution_count": 1,
+  "permits_triple_and_ratio": true,
+  "verdict": "MATCH"
 }
