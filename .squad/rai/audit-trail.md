@@ -4,6 +4,139 @@
 
 <!-- Rai appends findings below -->
 
+## Audit Entry — 2026-08-04T03:00:00-07:00
+
+**Review type:** Recall via coordinator — rule on RAI-013 (Tank's Arm D/E measurement); verify RAI-012
+follow-through (Mouse's repair, Link's re-run claim); fresh pass on the shipping surface after Conv
+(f32) landed; `docs/DESIGN.md` §0 re-check against artifacts.
+**Merged `main` first:** `1db2aef`, clean working tree, confirmed before review.
+
+### RAI-013 — ruling: 🟢 DISCHARGED for the claim as written; one residual named, not blocking
+
+Ran `rust/tools/probe_disclosure_reachability.py` live against a freshly-built `.dll`
+(`8/4/2026 02:37:43`), both devices (RTX 4060, Iris Xe), both polarities. Verdict both times:
+`PASS`, zero failures. Read the raw report, not just the verdict:
+
+- **Default arm (no env vars, ORT at its default threshold):** `disclosure_lines` on the `ep_stderr`
+  bucket = 2 on both devices; `ort` bucket = 0. `session_disclosure_infos_to_ort_sink: 0`,
+  `session_disclosure_infos_to_stderr: 1`, `session_disclosure_info_reach: "REACHED_USER"`. This is
+  a **direct, unconditional write to process stderr that bypasses ORT's logger threshold entirely**
+  — a channel the original `session_disclosure_info_channel: BELOW_ORT_THRESHOLD` counter could not
+  see because it only instruments the ORT-sink path. Pure and instrumented arms agree exactly
+  (control check: the counters variable did not change what reached the console).
+- **Escalation arm (stderr forced to fail, both devices):** `ep_stderr` disclosure lines drop to 0
+  (plant is live), `ort` bucket carries 2 lines including the literal `[§8.9.7] ... It is repeated
+  here at WARNING because that is the one severity ORT's default threshold admits — this is a
+  delivery escalation, not a fault report`, witnessed on ORT's own decorated sink.
+  `session_disclosure_stderr_failures: 4` (refusals counted, not swallowed), reach token reads
+  `ESCALATED_TO_WARNING`, differing from the default arm's token (R10 liveness check on the token
+  itself, satisfied).
+
+**This is not RAI-008(a) again.** RAI-008(a) was refused because its falsifier required Criterion 11
+**MET as a whole**, and the repair left a named, untouched defect inside that same criterion (device
+attribution). RAI-013's falsifier is a single clause: *does the disclosure reach a user who set
+nothing, by default severity*. That clause is now affirmatively measured true, on both devices, with
+both a positive control (pure vs. instrumented agreement) and a negative control (escalation arm
+proves the mechanism fires only when the quiet channel is actually gone). There is no analogous
+untouched defect inside the clause as stated — crediting this is not the same move I refused there.
+
+**Residual, ruled separately: an accepted, real, structural limit — not an open violation.**
+A stderr fd redirected to a writable sink (a log file, `2>/dev/null` on a system where that still
+returns success, a pipe with a reader that never looks) makes `write()` succeed exactly as a live
+terminal would, and no return code distinguishes "a human saw this" from "a human's shell ate this
+without complaint." `session_disclosure_info_reach` can report `REACHED_USER` in both cases and
+cannot do otherwise from inside the process. **This is not a defect to fix; it is the same class of
+limit as the canary-token unobservability the coordinator names in this very session** — a
+process cannot witness its own external environment. The correct disposition is disclosure, not
+repair: Morpheus should add one line to `DESIGN.md` §0.2 stating that `REACHED_USER` means "the
+write succeeded," not "a human read it," so a future reader does not over-trust the token. Owner:
+Morpheus (doc line only). Not escalated — naming a limit that cannot be closed from inside the
+process is the discharge, not a gap in it.
+
+### RAI-012 — ruling: 🟢 VERIFIED FIXED, one artifact-freshness gap named
+
+Read `unproven_decline_detail` (`rust/src/registry.rs`) directly: the `LedgerLookup::Faulted` arm now
+returns "the proof ledger could not be read... this is an INSTRUMENT failure, not a finding that the
+form is unproven," names `--check` as the repair, and never asserts "nothing has proven it correct."
+The regression test `a_faulted_ledger_does_not_decline_a_form_by_saying_nothing_proved_it` encodes
+Link's exact measured numbers (0 × `proof ledger fault`, 42 × `no proof ledger entry`) as its own
+assertions and **passes** (`cargo test --lib`, verified live, Windows).
+
+Independently built the crate fresh under WSL Ubuntu (12m13s release build, untouched tree at
+`main` = `1db2aef`) and ran `pytest tests/ops` for real — not quoting the stale committed artifact.
+Live result: 42 `[unproven]` decline lines, each reading the **new** message (`"the proof ledger
+entry for X was obtained against shader digest Y and this build's modules hash to Z... A proof that
+survives a change to its subject is not a proof of that subject (§8.9.19)"`) — zero instances of the
+old false sentence. The subject-arithmetic NOTE printed by the same run: `121 entries = ... 6
+PROVEN-ELSEWHERE{toolchain} + 115 SUBJECT-CHANGED ...`, `PROVEN-ELSEWHERE{toolchain}` live and
+non-zero, including two `Conv` keys. This exercises the adjacent per-entry-fault path correctly, not
+the exact whole-ledger-parse-fault path the original `ledger_faults: 97` reading came from — but
+combined with the source-level fix and the passing unit test built for that exact scenario, the
+mechanism is credited as fixed.
+
+**Gap, named rather than credited away:** `bench/results/link-linux-downstream/{pytest-linux.log,
+counters-linux.json,verdict-linux.json}` — the artifacts the original finding and this round's
+"re-ran, went to zero" claim both point to — are still the **stale, pre-fix** files. `git log`:
+committed at `ac4bd0b` (2026-08-03T07:12:14), the message fix landed at `7688356`
+(2026-08-03T10:33:07), three hours later; the artifact was never regenerated after. They still read
+`ledger_faults: 97` / 42× the old sentence / 0× `PROVEN-ELSEWHERE`, and no other file in the tree
+shows a re-run. **"Link re-ran and the decline count went to zero" is correct about the code and
+not yet evidenced by any committed artifact** — this is the exact shape Link's own finding names
+("an accepted red and a new red are indistinguishable when the only record of acceptance is a
+number in someone's head," `.squad/decisions.md`). Recommend Link regenerate and commit the three
+files before this is cited as artifact-verified again; does not block, because I verified the
+underlying mechanism myself, independently, live.
+
+### Item 3 — shipping surface after Conv (f32)
+
+- **Second model class, real:** `evidence/proof_ledger.jsonl` now 121 lines (was 97), 4 new `Conv`
+  keys confirmed by direct grep. `docs/OP_COVERAGE.md` §13.9.6: MobileNetV2-12 `0/105 → 97/105`,
+  matches the report.
+- **The 8 unclaimed nodes:** `docs/OP_COVERAGE.md` names them precisely — a
+  `Shape→Gather→Unsqueeze→Concat→Reshape` classifier tail plus `GlobalAveragePool` and `Gemm`, one
+  contiguous island, not scattered holes. Not independently verified against a live decline log this
+  round (time-boxed); named as the artifact source for that claim.
+- **Proof-key breadth — real gap, already self-disclosed, not over-broad in effect:** confirmed by
+  reading the ledger directly — the four `Conv` keys carry `{domain, opset, dtypes, module,
+  shape_class, arity}` and **nothing else**; `group`, `strides`, `dilations`, `pads` are absent from
+  every key, exactly as `tests/ops/test_conv.py`'s own docstring and `OP_COVERAGE.md` §13.9.4 state
+  in plain language, unprompted, before I asked. This is unusually good self-disclosure — **in
+  writing, in two places, by the author of the gap, before review**. But the session-time
+  `§8.9.7` disclosure line the user actually sees (`disclosure.rs:282`, `"{} proven by {} on {}
+  against {}"`) prints the raw `ProofKey` string with no caveat attached — a user who does not
+  already know the key schema reads "Conv proven" as "Conv is correct," not "this arity/shape-class
+  pair is correct; group/stride/dilation/pad are untested by this key." **🟡 Advisory, not 🔴:** the
+  underlying kernel implements grouping generally (not dense-only) and `test_conv.py` conformance-
+  tests 12 attribute combinations including depthwise/grouped/dilated/padded cases with two exact
+  structural assertions, which is real coverage of the practically-relevant space even though it is
+  not the full space and is a CI-time check, not a session-time proof. The gap is that the
+  *documentation* of the limit is excellent and the *runtime disclosure* of it is silent. Recommend
+  one clause added to the `Conv` disclosure line (or a class of ops whose key is attribute-blind)
+  naming the axes the key does not cover. Owner: Mouse or Tank (disclosure text).
+- **`FP32_CONV` vendor scope:** confirmed in `OP_COVERAGE.md` §13.9.5 — derived on RTX 4060 only,
+  the text says "re-derive before quoting it on AMD or lavapipe," matches `_models.py`'s own
+  per-vendor rule. No overstatement found.
+- **Re-checked, unchanged:** `alloc_device_frame = OFF` confirmed live in `docs/DESIGN.md` §6.5.2 —
+  DEVICE_MEMORY still opt-in, no performance claim reaches a user by default.
+- **`docs/DESIGN.md` §0:** stamped "Last re-derived from artifacts: 2026-08-02, at `main` =
+  `6ef62bb`" — one day and several merges stale by its own header. Does not mention Conv, the second
+  model class, MobileNetV2, RAI-012, or RAI-013 anywhere in §0.1/§0.2. Ledger entry count in §0.1
+  ("97 entries... 69 distinct (op, domain) pairs") is now stale (121 entries) but not **false** in
+  the sense of misrepresenting a live artifact — it is simply the previous, dated snapshot, and the
+  header says so. **🟡 minor, same finding as last round, now compounded by omission of an entire
+  new model class rather than just two counters.** Owner: Morpheus.
+
+### Summary
+
+- 🔴 Critical: 0
+- 🟡 Advisory: 3 (RAI-013's self-witness residual — doc-only; RAI-012's stale Linux artifact —
+  regenerate before re-citing; Conv's session-disclosure not naming its uncovered attribute axes)
+- 🟢 Closed this round: RAI-013 (discharged), RAI-012 (verified fixed, independently reproduced)
+- Surprise: the coordinator's specific artifact citation for RAI-012's "re-ran, went to zero" did
+  not hold up — the cited files are three hours older than the fix. The underlying claim was
+  nonetheless true, verified by an independent live rebuild and run, not by the cited artifacts.
+
+
 ---
 
 ## Audit Entry — 2026-07-28T19:16:08-07:00
