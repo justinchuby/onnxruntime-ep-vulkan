@@ -711,3 +711,90 @@ digest*. Cite a state, not a path.
   was written first.
 - The hand-written blind list is the next thing to go wrong and I said so in the ruling rather than
   waiting to be shown. Check whether that turns out to be foresight or an alibi.
+
+## 2026-08-04T08:50:00-07:00 — I was handed a true figure and a false inference, and the false half was mine to catch in one line of algebra
+
+**The unsatisfiability claim is refuted by arithmetic that needed no run, and I nearly did not
+check it because the shape was so persuasive.** *An unsatisfiable criterion is the dual of an
+unfalsifiable one* is a good sentence, it is true, and I have been demoting the other half of that
+pair all week — which is exactly why it walked straight past me. `np.allclose` is a **sum**,
+`atol + rtol·|b|`, and the finding quoted one term of it. And it divided by the spacing at the
+**tensor maximum** while the predicate evaluates **per element**. Two errors, same sentence, both
+in the direction of the relaxation.
+
+**The bound settles it for every fp16 tensor this project will ever compare.** `ulp(b) ≤ |b|·2⁻¹⁰`,
+so `allowance/ulp(b) ≥ rtol·2¹⁰ = 20.48`, independent of magnitude. Swept the whole normal range:
+minimum **20.48000 at |b|=32768**, exactly where the algebra puts it. **The corollary is the part
+that inverts the reading and it is the thing I am most pleased to have found:** layer 31's key and
+value do not fail sub-step. They fail by **more than twenty representable fp16 steps at their own
+magnitudes**. The only thing that made them look sub-step was a step size borrowed from a value
+~500× larger.
+
+**And it is §8.9.22 with the sign reversed, on the same instrument, four days apart.** There the
+denominator collapsed and made a sound residual look catastrophic. Here it inflates and makes a
+real residual look like nothing. **I have now watched one construction fail in both directions**,
+which is a better argument for the rule than either specimen alone — it is about the construction,
+not about the tensor.
+
+**The narrowing was hiding in the true observation, not in the false one.** The two-mechanism
+finding is correct. Splitting the verdict on it would move outputs 63 and 64 out of
+`OUTSIDE_TOLERANCE` with **no element moving** — admitting two of the three, in the round the
+mechanism was found, on exactly the outputs that would go green. My own §8.9.22 test caught it
+instantly. *A taxonomy bolted to the front of a relaxation is still a relaxation.* Worth noting
+that the false premise was harmless — it collapses on contact — and the true one was the dangerous
+one.
+
+**Applied the test to my own ruling and stated the result in the weak form.** §8.9.24 admits
+nothing **because it moves nothing**. That is a cheaper clean bill than §8.9.22's, which was at
+risk and passed, and I said so rather than taking the credit.
+
+**What caught my error was already in the artifact before I opened it.** Trinity turned "the
+predicate does not read a ULP" from an observation into an **assertion scored against a
+hand-written `allclose`**, on every per-output row. A reader arguing from a ULP figure to a verdict
+now has the predicate printed in the row they are reading. **That is the loud form, built by
+someone else, working on me.**
+
+**The oracle question is now blocking and the ordering is the whole ruling.** At the final RMSNorm
+we are bit-exact against float64 and ORT's CPU EP carries the 1 ULP, and nobody has asked which
+side is wrong on 0, 63, 64. If it is the reference, every tolerance argument made first was an
+argument about the wrong question — **and it would have been made in the direction of loosening,
+using the reference's own error as the budget.** Costs a legitimate relaxation its place in the
+queue; costs an illegitimate one its only route.
+
+**THE MOVER IS NOT THE MEASURER, and I numbered someone else's sentence rather than my own.**
+Trinity wrote it before anyone ruled it and has obeyed it three rounds, including at the moment it
+would have turned two of three green. §8.9.18 part 2 says a sentence obeyed as binding is numbered
+or withdrawn, so it is numbered. **I recorded the declines and did not score them** — a tally of
+her declines has the identical defect as the tally of mine I retired four days ago, and the
+temptation to build it was real.
+
+**The second item is a class this project has not had, and the specimen is my prose.** §6.5
+obligation 3 *predicts* `alloc_device_frame = SPLIT-DEVICE`; it was read back as a reading. Both
+polarities actually read `SHARED`; the discriminant is `alloc_device_frame_allocator_index`, `1`
+refusing / `0` passing. **Every prior class here is a failure of resolution** — R13's absent
+referent, the amendment's sentinel, §8.9.23(6)'s wrong version. **This one resolves perfectly.**
+What changes in transit is the **modality**, and the better-maintained the document the more
+convincing the substitution. No number: the remedy is Switch's provenance classes plus one token,
+`PREDICTION`.
+
+**The part that lands on me.** I wrote that obligation in the **bare present indicative** — *"a run
+with two devices reports `SPLIT-DEVICE`"* — which is an instruction and a description in the same
+tense. **You cannot put the whole burden of telling a prediction from a reading on the reader when
+the author wrote them identically.** Drafting rule: normative clauses take an explicit modal. Owed
+at the next §6.5 edit.
+
+**Carry forward**
+- Fifth time this week a rule already in the record answered a question I was treating as new
+  (§7.5, §5.4.1(a), the specialisation debt twice, Switch's provenance classes). I have now said
+  *the register is under-indexed by question* three times and built nothing. **Named Fact Checker
+  as owner of a question→ruling index rather than naming my intention again** — that is the
+  decision-versus-mechanism gap I keep grading other people on, closed on my own side for once.
+- No tolerance motion on criterion 10 until the float64 side-of-error answer exists. Trinity.
+- `allowance_in_ulps_at_scale` companion field is owed in the comparator. Trinity.
+- §6.5 obligation 3's tense. Mine, non-blocking.
+- Still open and still unowned from yesterday: 102/121 specialisation-unrecorded; `REACHED_USER`
+  → `WRITE_SUCCEEDED`; `metadata` variant on `Conv` (Mouse, blocking); int8 KV admission (mine,
+  waiting on a MEASUREMENT-class byte figure).
+- **The thing to watch:** the false premise was harmless and the true observation was the
+  dangerous one. I should stop treating "is this claim true?" as the screening question for a
+  criterion motion. The screening question is *what does it admit?*
