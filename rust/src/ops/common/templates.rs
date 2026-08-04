@@ -257,13 +257,63 @@ pub fn ew_clip(spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) ->
     })
 }
 
+/// The destination element type of a `Cast` node: the output edge if it is typed, else `to`.
+///
+/// See [`ew_cast`] for why the attribute path exists. Both present and disagreeing is refused;
+/// neither present is refused with a message that names both places that were looked.
+fn cast_destination(node: &NodeDesc, out: &crate::engine::OutRef) -> EpResult<DType> {
+    let from_edge = out.desc.as_ref().map(|d| d.dtype);
+    let from_attr = match node.attributes.get("to") {
+        Some(AttrValue::Int(v)) => Some(*v),
+        _ => None,
+    };
+    let mapped_attr = from_attr.and_then(crate::registry::dtype_from_onnx_value);
+
+    match (from_edge, from_attr, mapped_attr) {
+        (Some(edge), _, Some(attr)) if edge != attr => Err(EpError::Unsupported(format!(
+            "`{}` output edge says {edge:?} and its `to` attribute says {attr:?}; the graph and \
+             ONNX Runtime's shape inference disagree about this node's output type and this EP \
+             will not choose between them",
+            node.op_type
+        ))),
+        (Some(edge), _, _) => Ok(edge),
+        (None, _, Some(attr)) => Ok(attr),
+        // `to` present but naming a type this EP has no storage for. The claim predicate rejects
+        // that case on the edge, so reaching it here means the edge was dropped *and* the type is
+        // one we cannot hold — a different fact from "no type at all", and it says which.
+        (None, Some(raw), None) => Err(EpError::Unsupported(format!(
+            "`{}` casts to ONNX element type {raw}, which this EP has no storage for",
+            node.op_type
+        ))),
+        (None, None, _) => Err(EpError::Unsupported(format!(
+            "`{}` output has no element type: the output edge carries none (ONNX Runtime drops \
+             it together with a symbolic shape) and the node has no `to` attribute",
+            node.op_type
+        ))),
+    }
+}
+
 /// Translate `Cast` — the one template whose module is chosen by a dtype **pair**.
 ///
-/// The destination type comes from the *output edge*, not from the `to` attribute. They say the
-/// same thing when the graph is well formed, and ONNX Runtime has already run shape inference by
-/// the time we are asked to compile, so the edge is the resolved answer and `to` is the request.
-/// Reading the request would mean this handler and `claim::cast` — which checks the edge — could
-/// disagree, and the node would already have been claimed by then.
+/// The destination type is read from the *output edge* when the edge has one, and from the `to`
+/// attribute when it does not. They say the same thing when the graph is well formed, and ONNX
+/// Runtime has already run shape inference by the time we are asked to compile, so the edge is
+/// the resolved answer and `to` is the request; `claim::cast` checks the edge, and preferring
+/// the edge here keeps the claim and the translate reading the same thing.
+///
+/// THE FALLBACK IS NOT DEFENSIVE, IT IS THE ONLY SOURCE ON A DYNAMIC GRAPH (found 2026-08-03).
+/// `ep::tensor_desc` returns `None` for an edge with **any** symbolic extent, and it drops the
+/// dtype with the shape. At `Compile` that costs nothing — ORT hands the claim predicate a
+/// typed `OrtValueInfo` and the edge type is read from there — but the Compute-time dynamic
+/// re-translate rebuilds the node from `NodeDesc`, whose outputs carry the dropped `desc`. So
+/// every `runtime-extent` `Cast` was claimed and then failed its re-run with "output has no
+/// element type at compile time" — a broken commitment, on 98 of gpt-oss-20b's 374 nodes. The
+/// destination type of a `Cast` is a node attribute; a node attribute does not stop existing
+/// because an extent is unknown, and this handler must not behave as though it does.
+///
+/// A disagreement between the two is refused rather than resolved. `to` and the inferred edge
+/// differing means the graph and ORT's inference disagree about the node's output type, and
+/// picking a winner would put an unannounced reinterpretation of the model inside a dispatch.
 pub fn ew_cast(spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
     let shapes = input_shapes(node, 1)?;
     let refs: Vec<&[i64]> = shapes.iter().map(Vec::as_slice).collect();
@@ -273,16 +323,7 @@ pub fn ew_cast(spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) ->
 
     let src = common_dtype(node, 0, 1)?;
     let out = single_output(node)?;
-    let dst = out
-        .desc
-        .as_ref()
-        .map(|d| d.dtype)
-        .ok_or_else(|| {
-            EpError::Unsupported(format!(
-                "`{}` output has no element type at compile time",
-                node.op_type
-            ))
-        })?;
+    let dst = cast_destination(node, out)?;
 
     let shader = spec.kernel.pair_stem(src, dst).ok_or_else(|| {
         EpError::Internal(format!(
@@ -1542,5 +1583,84 @@ mod tests {
             .join("glsl")
             .join("gather_f16.comp");
         assert!(path.is_file(), "shaders/glsl/gather_f16.comp is missing");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // `Cast` on a graph whose extents are symbolic.
+    //
+    // These four are one finding, and the first is the regression: `ep::tensor_desc` returns
+    // `None` for an edge with any symbolic dimension and drops the **dtype** with the shape, so
+    // the Compute-time dynamic re-translate hands this handler an output with no element type.
+    // `claim::cast` reads the edge type off the live `OrtValueInfo` and is unaffected, so every
+    // `runtime-extent` `Cast` was claimed and then broke its commitment — 98 nodes of
+    // gpt-oss-20b, measured 2026-08-03 by `rust/tools/probe_model_op_census.py`.
+    //
+    // A unit test rather than only a ledger case because the ledger case proves the *fixed*
+    // path and would go green again if someone restored the edge-only read on a build where the
+    // case model happened to have concrete shapes. This one states the precondition directly.
+    // ---------------------------------------------------------------------------------------
+
+    /// ONNX `TensorProto.DataType` values, as `Cast`'s `to` attribute spells them.
+    const ONNX_FLOAT: i64 = 1;
+    const ONNX_INT32: i64 = 6;
+
+    fn cast_node(src: DType, out_desc: Option<DType>, to: Option<i64>, shape: &[i64]) -> NodeDesc {
+        let mut attributes = std::collections::BTreeMap::new();
+        if let Some(t) = to {
+            attributes.insert("to".to_string(), AttrValue::Int(t));
+        }
+        NodeDesc {
+            op_type: "Cast".into(),
+            inputs: vec![tensor("x", src, shape)],
+            outputs: vec![OutRef {
+                name: "y".into(),
+                desc: out_desc.map(|d| TensorDesc::new(d, shape.to_vec())),
+            }],
+            attributes,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cast_takes_its_destination_from_to_when_the_output_edge_was_dropped() {
+        let spec = spec_named("Cast");
+        let node = cast_node(DType::F16, None, Some(ONNX_FLOAT), &[4, 8]);
+        let mut ctx = Recorder::default();
+        ew_cast(spec, &node, &mut ctx).expect(
+            "a symbolic extent drops the output desc; `to` is the destination type and it is \
+             still there",
+        );
+        assert_eq!(ctx.dispatches[0].shader, "ew_cast_f16_to_f32");
+        assert_eq!(ctx.outputs[0].dtype, DType::F32);
+    }
+
+    #[test]
+    fn cast_still_prefers_the_resolved_output_edge_when_it_has_one() {
+        let spec = spec_named("Cast");
+        let node = cast_node(DType::F32, Some(DType::I32), Some(ONNX_INT32), &[4, 8]);
+        let mut ctx = Recorder::default();
+        ew_cast(spec, &node, &mut ctx).expect("translate");
+        assert_eq!(ctx.dispatches[0].shader, "ew_cast_f32_to_i32");
+    }
+
+    #[test]
+    fn cast_refuses_when_the_edge_and_the_attribute_disagree() {
+        let spec = spec_named("Cast");
+        let node = cast_node(DType::F32, Some(DType::I32), Some(ONNX_FLOAT), &[4, 8]);
+        let mut ctx = Recorder::default();
+        let err = ew_cast(spec, &node, &mut ctx)
+            .expect_err("choosing between a graph and ORT's inference is not this EP's call");
+        assert!(format!("{err:?}").contains("disagree"), "{err:?}");
+    }
+
+    #[test]
+    fn cast_refuses_when_neither_source_of_the_destination_type_survives() {
+        let spec = spec_named("Cast");
+        let node = cast_node(DType::F32, None, None, &[4, 8]);
+        let mut ctx = Recorder::default();
+        let err = ew_cast(spec, &node, &mut ctx).expect_err("no destination type anywhere");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("output edge"), "{msg}");
+        assert!(msg.contains("`to`"), "the message has to name both places looked: {msg}");
     }
 }

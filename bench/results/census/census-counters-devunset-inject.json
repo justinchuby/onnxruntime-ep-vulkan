@@ -30,7 +30,7 @@
   "ledger_hits": 6,
   "ledger_gate": "ALL-PROVEN",
   "ledger_miss": "HIT",
-  "ledger_entries": 106,
+  "ledger_entries": 115,
   "ledger_faults": 0,
   "ledger_entry_faults": 0,
   "unproven_declines": 0,
