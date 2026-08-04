@@ -1,0 +1,1 @@
+{"ctx": 1, "forbid_fallback": false, "providers": ["VulkanExecutionProvider", "CPUExecutionProvider"], "log_severity_level": 0, "session_created": true, "get_providers": ["VulkanExecutionProvider", "CPUExecutionProvider"], "ran": true, "logits_shape": [1, 1, 32064], "logits_finite": true}

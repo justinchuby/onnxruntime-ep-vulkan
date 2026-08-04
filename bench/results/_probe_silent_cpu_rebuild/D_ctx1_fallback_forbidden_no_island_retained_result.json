@@ -1,0 +1,1 @@
+{"ctx": 1, "forbid_fallback": true, "providers": ["VulkanExecutionProvider"], "log_severity_level": 0, "session_created": false, "session_error": "Fail: [ONNXRuntimeError] : 1 : FAIL : This session contains graph nodes that are assigned to the default CPU EP, but fallback to CPU EP has been explicitly disabled by the user."}

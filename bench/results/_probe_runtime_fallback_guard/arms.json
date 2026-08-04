@@ -1,0 +1,124 @@
+[
+  {
+    "arm": "F_allowed_clean",
+    "forbid_fallback": false,
+    "failure_injected": false,
+    "device_memory": "1",
+    "kv_arena": "0",
+    "exit_code": 0,
+    "forbid": false,
+    "providers": [
+      "VulkanExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "session_created": true,
+    "ran": true,
+    "output_correct": true,
+    "counters": {
+      "compile_calls": 1,
+      "compute_calls": 1,
+      "compute_failures": 0,
+      "dispatches_executed": 1,
+      "claimed_nodes": 1,
+      "fault_injection": "NONE",
+      "compute_failures_injected": 0
+    },
+    "dispatches_executed": 1,
+    "observable": {
+      "ep_broken_commitment_warn": false,
+      "ort_retry_on_cpu": false,
+      "ort_ep_fail": false
+    }
+  },
+  {
+    "arm": "G_forbidden_clean",
+    "forbid_fallback": true,
+    "failure_injected": false,
+    "device_memory": "1",
+    "kv_arena": "0",
+    "exit_code": 0,
+    "forbid": true,
+    "providers": [
+      "VulkanExecutionProvider"
+    ],
+    "session_created": true,
+    "ran": true,
+    "output_correct": true,
+    "counters": {
+      "compile_calls": 1,
+      "compute_calls": 1,
+      "compute_failures": 0,
+      "dispatches_executed": 1,
+      "claimed_nodes": 1,
+      "fault_injection": "NONE",
+      "compute_failures_injected": 0
+    },
+    "dispatches_executed": 1,
+    "observable": {
+      "ep_broken_commitment_warn": false,
+      "ort_retry_on_cpu": false,
+      "ort_ep_fail": false
+    }
+  },
+  {
+    "arm": "H_forbidden_failure_injected",
+    "forbid_fallback": true,
+    "failure_injected": true,
+    "device_memory": "1",
+    "kv_arena": "0",
+    "exit_code": 0,
+    "forbid": true,
+    "providers": [
+      "VulkanExecutionProvider"
+    ],
+    "session_created": true,
+    "ran": false,
+    "run_error": "InvalidArgument: [ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Conflicting session configuration: explicitly added the CPU EP to the session, but also disabled fallback to the CPU EP via session configuration options.",
+    "counters": {
+      "compile_calls": 1,
+      "compute_calls": 1,
+      "compute_failures": 1,
+      "dispatches_executed": 0,
+      "claimed_nodes": 1,
+      "fault_injection": "ACTIVE",
+      "compute_failures_injected": 1
+    },
+    "dispatches_executed": 0,
+    "observable": {
+      "ep_broken_commitment_warn": true,
+      "ort_retry_on_cpu": true,
+      "ort_ep_fail": true
+    }
+  },
+  {
+    "arm": "I_allowed_failure_injected",
+    "forbid_fallback": false,
+    "failure_injected": true,
+    "device_memory": "1",
+    "kv_arena": "0",
+    "exit_code": 0,
+    "forbid": false,
+    "providers": [
+      "VulkanExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "session_created": true,
+    "ran": true,
+    "output_correct": true,
+    "counters": {
+      "compile_calls": 1,
+      "compute_calls": 1,
+      "compute_failures": 1,
+      "dispatches_executed": 0,
+      "claimed_nodes": 1,
+      "fault_injection": "ACTIVE",
+      "compute_failures_injected": 1
+    },
+    "dispatches_executed": 0,
+    "observable": {
+      "ep_broken_commitment_warn": true,
+      "ort_retry_on_cpu": true,
+      "ort_ep_fail": true
+    }
+  }
+]
