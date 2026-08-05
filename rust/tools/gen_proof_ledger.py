@@ -1203,14 +1203,31 @@ def check_ledger(
             "  NOTE: no artifact was compared. This says the file agrees with itself and says "
             "NOTHING about the shaders in any build. Do not quote it as merge evidence."
         )
+        print(
+            "  NOTE: mintability was NOT evaluated — whether a key could ever be minted is a "
+            "question about the baked SPIR-V and the engine's enabled-capability list, and "
+            "there is no artifact here to ask."
+        )
         _print_notes(loss_notes)
         _print_spec_note(spec_unrecorded, len(lines) - 1)
         return 0
 
     stale = check_baked_vs_disk(path, lib)
     subject_failures, notes = check_against_build(path, lib)
-    notes = list(loss_notes) + notes
-    build_failures = list(subject_failures)
+    # §8.9.24 (Tank, 2026-08-04): the mintability half. Everything above asks whether an entry
+    # agrees with the build; this asks whether the key could exist at all. It lives below the
+    # `lib is None` gate because the answer is in the artifact — the baked SPIR-V and the
+    # engine's enabled-capability list — and nowhere else.
+    retired_map, retired_err = _retired_keys()
+    if retired_err:
+        print(f"ERROR(instrument): the retirement list could not be read — {retired_err}")
+        return 3
+    mint_failures, mint_notes, mint_err = check_mintability(lib, seen, retired_map)
+    if mint_err:
+        print(f"ERROR(instrument): mintability could not be evaluated — {mint_err}")
+        return 3
+    notes = list(loss_notes) + notes + mint_notes
+    build_failures = list(subject_failures) + mint_failures
     if stale and expect_rebuild:
         # Immediately after a generation run the two copies differ *by construction* — that is
         # what writing the file means. Failing here would fail every successful proof run, which
@@ -1269,6 +1286,127 @@ def _print_spec_note(spec_unrecorded: list[str], total: int) -> None:
             f"spec_digest and prove their form under an UNRECORDED runtime specialisation. "
             f"They claim and are disclosed as SPEC-UNRECORDED; --reprove is the only repair."
         )
+
+
+def _mintability(lib: pathlib.Path, keys: list[str]) -> tuple[dict[str, dict], str]:
+    """Ask the built EP whether each key is **mintable**: could any proof run ever produce it?
+
+    Returns `({key: {"mintable": bool, "stem": str, ...}}, error)`. A build with no
+    `OrtEpVulkanGetFormMintability` export is an `error`, never an empty dict — a screen that
+    cannot see its subject must say so rather than answer `PASS` about something else. That is
+    the same rule `--check` already applies to a missing artifact, and the same defect class as
+    a key census that reported `0 VANISHED` while a field inside every surviving entry reverted.
+
+    Newline is the wire separator because a key's dtype signature contains commas.
+    """
+    import ctypes
+
+    if not keys:
+        return {}, ""
+    dll = ctypes.CDLL(str(lib))
+    try:
+        fn = dll.OrtEpVulkanGetFormMintability
+    except AttributeError:
+        return {}, (
+            f"{lib.name} has no OrtEpVulkanGetFormMintability export, so nothing here can tell "
+            f"a key that is retired on purpose from a key no proof run on this build could ever "
+            f"produce. Rebuild the EP from this tree."
+        )
+    fn.restype = ctypes.c_size_t
+    fn.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t]
+    arg = "\n".join(keys).encode("utf-8")
+    n = fn(arg, None, 0)
+    buf = ctypes.create_string_buffer(n + 1)
+    fn(arg, buf, n)
+    out: dict[str, dict] = {}
+    for line in buf.raw[:n].decode("utf-8", "replace").splitlines():
+        fields = line.split("\t")
+        if len(fields) < 2:
+            continue
+        rec = {"stem": "?"}
+        for f in fields[1:]:
+            k, _, v = f.partition("=")
+            rec[k.strip()] = v.strip()
+        rec["mintable"] = rec.get("mintable") == "yes"
+        out[fields[0]] = rec
+    unanswered = [k for k in keys if k not in out]
+    if unanswered:
+        return {}, (
+            f"{lib.name} answered {len(out)} of {len(keys)} mintability question(s); "
+            f"{len(unanswered)} key(s) got no line, first {unanswered[0]!r}. A partial reply "
+            f"read as a full one is a screen that is clean because it is not looking."
+        )
+    return out, ""
+
+
+def check_mintability(
+    lib: pathlib.Path, ledger_keys: set[str], retired: dict[str, str]
+) -> tuple[list[str], list[str], str]:
+    """Is every ledger key mintable, and which retirements are retirements? (failures, notes, err).
+
+    WHY THIS IS NOT A QUESTION ANY OTHER CHECK ASKS
+    -----------------------------------------------
+    Every entry-level check in `check_ledger` asks *does this entry agree with something* — the
+    header, its artifact, the build's SPIR-V. `check_no_proof_went_missing` asks about the empty
+    space in the file. Neither can ask **could this key exist at all**, and on 2026-08-04 all 43
+    retired keys passed `--check` cleanly: it cannot distinguish *"retired on purpose because the
+    form stopped existing"* from *"never mintable on this build"*. Those have opposite repairs.
+    One is bookkeeping; the other means a module declares a SPIR-V capability
+    `ENGINE_ENABLED_CAPABILITIES` does not carry, so no pipeline can be created from it on any
+    device we run on and a proof run has nothing to measure.
+
+    TWO ARMS, AND ONLY ONE OF THEM FAILS
+    ------------------------------------
+    * **A ledger key that is not mintable is a FAILURE.** The entry asserts a proof of a form
+      this build cannot execute. Either the capability list narrowed under it or the entry is
+      describing a module that no longer exists, and in both cases the claim is unbacked and
+      `--reprove` cannot repair it — a proof run over that key reports "no unlockable keys".
+    * **A retired key that is not mintable is a NOTE**, because retirement is deliberate and
+      already costs a written reason. What the note adds is the *split*: which withdrawals are
+      forms that stopped existing and which are forms nothing on this build could ever mint.
+
+    THE READING IS THE ARITHMETIC LINE, NOT THE VERDICT
+    ---------------------------------------------------
+    Both arms print counts that add up to their populations, on PASS as well as on FAIL. A
+    summary verdict is what let a `source_digest` revert on 115 of 121 entries sit behind a PASS
+    twice in two days; the subject arithmetic line is the reading.
+    """
+    keys = sorted(ledger_keys | set(retired))
+    report, err = _mintability(lib, keys)
+    if err:
+        return [], [], err
+
+    failures: list[str] = []
+    ledger_unmintable = sorted(k for k in ledger_keys if not report[k]["mintable"])
+    for k in ledger_unmintable:
+        rec = report[k]
+        failures.append(
+            f"key {k} is in the ledger and is NOT MINTABLE on this build: module "
+            f"{rec.get('stem', '?')} declared={rec.get('declared')} "
+            f"generated={rec.get('generated')} loadable={rec.get('loadable')}. No pipeline can "
+            f"be created from it on any device we run on, so the entry asserts a proof of a form "
+            f"this build cannot execute, and --reprove cannot repair it — a proof run over this "
+            f"key reports `no unlockable keys`. Either enable the capability "
+            f"(ops/common/variants.rs::ENGINE_ENABLED_CAPABILITIES) or retire the key by name "
+            f"and reason in {RETIRED.name}"
+        )
+
+    retired_unmintable = sorted(k for k in retired if not report[k]["mintable"])
+    notes = [
+        f"mintability: {len(ledger_keys)} ledger key(s) — "
+        f"{len(ledger_keys) - len(ledger_unmintable)} mintable / {len(ledger_unmintable)} not; "
+        f"{len(retired)} retired key(s) — "
+        f"{len(retired) - len(retired_unmintable)} mintable / {len(retired_unmintable)} not "
+        f"(asked {lib.name}, which is the only place the capability rule exists)"
+    ]
+    if retired_unmintable:
+        notes.append(
+            f"{len(retired_unmintable)} retirement(s) name a form NO PROOF RUN ON THIS BUILD "
+            f"COULD MINT, which is a capability finding rather than bookkeeping: "
+            + ", ".join(retired_unmintable[:8])
+            + ("" if len(retired_unmintable) <= 8 else f", +{len(retired_unmintable) - 8} more")
+        )
+    return failures, notes, ""
 
 
 def _shader_subject(lib: pathlib.Path, stems: list[str]) -> dict:

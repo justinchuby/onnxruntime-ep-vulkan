@@ -294,3 +294,9 @@ instrument.** `docs/PERF.md` §24, `bench/results/probe_paired_ratio.py`, three 
 - Intel: `clock_producer: NO_PRODUCER` in every phase, so the confound that turned out to *be* the
   story is unobservable there in principle. Permanently `UNCERTIFIED(partial_companion)`.
 - **The original question is still unanswered, on purpose.** §24.12 says what it would take.
+
+📌 Team update (2026-08-04T12:25:00-07:00): Trinity found `np.spacing` returns `inf` at fp16's
+largest finite value, so a 504-unit error read back as `0.0` ULP — strictly worse than the previous
+two instrument defects, because those made a sound residual look wrong and this makes a wrong
+residual look sound. Relevant to any ULP figure you compute near the fp16 max-finite boundary.
+— decided by Trinity

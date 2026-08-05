@@ -1906,7 +1906,10 @@ mod tests {
             Some("[\"ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2\"]")
         );
 
-        let dir = std::env::current_dir().unwrap().join("target").join("epctl-unproven-test");
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("epctl-unproven-test");
         std::fs::create_dir_all(&dir).unwrap();
 
         let ok = dir.join("empty.json");

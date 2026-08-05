@@ -32,7 +32,9 @@
 //! would make the differential comparison a test of two algorithms rather than of one
 //! implementation. `FP32_CONV`'s derivation in `tests/ops/_models.py` makes the same call.
 
-use crate::engine::{DType, DispatchContext, EpError, EpResult, KernelRequest, NodeDesc, TensorDesc};
+use crate::engine::{
+    DType, DispatchContext, EpError, EpResult, KernelRequest, NodeDesc, TensorDesc,
+};
 use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::F32;
@@ -100,12 +102,16 @@ crate::op_table! {
 
 /// Translate into one dispatch: one invocation per `(n, c)` pair.
 pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
-    let x = node.inputs.first().and_then(|t| t.desc.as_ref()).ok_or_else(|| {
-        EpError::Unsupported(format!(
-            "`{}` input 0 has no shape at compile time",
-            node.op_type
-        ))
-    })?;
+    let x = node
+        .inputs
+        .first()
+        .and_then(|t| t.desc.as_ref())
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input 0 has no shape at compile time",
+                node.op_type
+            ))
+        })?;
     if x.shape.len() != POOL_RANK {
         return Err(EpError::Unsupported(format!(
             "`{}` was claimed with rank {}; this kernel is 4-D",
@@ -135,10 +141,16 @@ pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     }
 
     let x_buf = ctx.resolve(&node.inputs[0])?;
-    let out_buf = ctx.bind_output(&node.outputs[0], TensorDesc::new(DType::F32, vec![n, c, 1, 1]))?;
+    let out_buf = ctx.bind_output(
+        &node.outputs[0],
+        TensorDesc::new(DType::F32, vec![n, c, 1, 1]),
+    )?;
 
     let total = u32::try_from(n * c).map_err(|_| {
-        EpError::Unsupported(format!("`{}` output element count overflows u32", node.op_type))
+        EpError::Unsupported(format!(
+            "`{}` output element count overflows u32",
+            node.op_type
+        ))
     })?;
     let hw = u32::try_from(h * w).map_err(|_| {
         EpError::Unsupported(format!("`{}` spatial window overflows u32", node.op_type))
@@ -148,7 +160,9 @@ pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     push.extend_from_slice(&hw.to_le_bytes());
     push.extend_from_slice(&total.to_le_bytes());
 
-    let groups = total.div_ceil(POOL_LOCAL_SIZE).clamp(1, POOL_MAX_WORKGROUPS);
+    let groups = total
+        .div_ceil(POOL_LOCAL_SIZE)
+        .clamp(1, POOL_MAX_WORKGROUPS);
     ctx.dispatch(KernelRequest {
         shader: "global_average_pool_f32",
         spec_constants: vec![POOL_LOCAL_SIZE],
@@ -186,7 +200,10 @@ mod tests {
 
     #[test]
     fn f16_is_declined_not_read_through_the_f32_kernel() {
-        let row = OPS.iter().find(|s| s.op_type == "GlobalAveragePool").unwrap();
+        let row = OPS
+            .iter()
+            .find(|s| s.op_type == "GlobalAveragePool")
+            .unwrap();
         assert!(row.caps.contains(DType::F32));
         assert!(
             !row.caps.contains(DType::F16),

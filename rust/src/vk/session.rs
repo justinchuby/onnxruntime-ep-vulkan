@@ -20,7 +20,7 @@ use super::{
     cmd::{CommandPool, create_and_submit, wait_fence_then_destroy},
     device::{Device, register_ep_device},
     instance::{CapableDevice, Instance},
-    pipeline::{DispatchDescriptorPool, PipelineCache, PipelineKey, PUSH_CONSTANT_RANGE_BYTES},
+    pipeline::{DispatchDescriptorPool, PUSH_CONSTANT_RANGE_BYTES, PipelineCache, PipelineKey},
     timestamp::GpuQueryPool,
 };
 use crate::{
@@ -692,7 +692,12 @@ pub(crate) struct VulkanSession {
 fn output_bind_disabled_by(v: Option<&str>) -> bool {
     matches!(
         v.map(str::trim),
-        Some("0") | Some("false") | Some("FALSE") | Some("off") | Some("OFF") | Some("no")
+        Some("0")
+            | Some("false")
+            | Some("FALSE")
+            | Some("off")
+            | Some("OFF")
+            | Some("no")
             | Some("NO")
     )
 }
@@ -1562,20 +1567,21 @@ impl VulkanSession {
                 // context's output count equals the compiled output count; `actual_output_shapes`
                 // is index-parallel to `actual_output_byte_sizes` and was finalised by the
                 // dynamic-shape pre-pass above.
-                let Some(ptr) = (unsafe {
-                    ort_output_ptr(api, kernel_ctx, i, &actual_output_shapes[i])
-                }) else {
+                let Some(ptr) =
+                    (unsafe { ort_output_ptr(api, kernel_ctx, i, &actual_output_shapes[i]) })
+                else {
                     crate::counters::record_output_bind_declined();
                     continue;
                 };
-                bound_outputs[i] =
-                    crate::vk::host_device_memory::bind_target_for(ptr, sz as usize);
+                bound_outputs[i] = crate::vk::host_device_memory::bind_target_for(ptr, sz as usize);
                 if let Some(in_idx) = aliased_in {
                     // The alias must land on the buffer the dispatch actually wrote. Recorded
                     // as a decline here; the **refusal** is the sweep after this loop, which
                     // catches this path and the three others that can leave it unbound.
-                    let same = match (bound_outputs[i], bound_inputs.get(in_idx).copied().flatten())
-                    {
+                    let same = match (
+                        bound_outputs[i],
+                        bound_inputs.get(in_idx).copied().flatten(),
+                    ) {
                         (Some((ob, _)), Some((ib, _))) => ob == ib,
                         _ => false,
                     };
@@ -2219,7 +2225,8 @@ impl VulkanSession {
             // rather than on the claim path: a claim is decided before any pipeline is built.
             if crate::counters::record_pipeline_variant(eff_shader, eff_spec_constants) {
                 crate::registry::audit_dispatch_specialisation(eff_shader);
-            }            desc_pools.push(desc_pool);
+            }
+            desc_pools.push(desc_pool);
 
             // For multi-node islands: emit a SHADER_WRITE → SHADER_READ barrier after each
             // dispatch (except the last), so a later kernel in the same island sees this one's
@@ -2775,7 +2782,9 @@ mod bind_default_tests {
         // The default arm, and the reason this test exists.
         assert!(!output_bind_disabled_by(None), "unset must mean ON");
 
-        for off in ["0", "false", "FALSE", "off", "OFF", "no", "NO", " 0 ", "\t0"] {
+        for off in [
+            "0", "false", "FALSE", "off", "OFF", "no", "NO", " 0 ", "\t0",
+        ] {
             assert!(
                 output_bind_disabled_by(Some(off)),
                 "{off:?} must disable the output-side bind"

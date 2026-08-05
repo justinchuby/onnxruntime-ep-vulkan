@@ -43,7 +43,7 @@ use super::{
     cmd::{CommandPool, submit_and_wait},
     device::Device,
     instance::{CapableDevice, Instance},
-    pipeline::{DispatchDescriptorPool, PipelineCache, PipelineKey, PUSH_CONSTANT_RANGE_BYTES},
+    pipeline::{DispatchDescriptorPool, PUSH_CONSTANT_RANGE_BYTES, PipelineCache, PipelineKey},
 };
 use crate::ops::common::{shape_plan::ShapePlan, templates::EW_LOCAL_SIZE};
 

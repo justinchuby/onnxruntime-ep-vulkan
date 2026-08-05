@@ -868,10 +868,7 @@ pub(crate) fn bind_target_for(p: *mut u8, len: usize) -> Option<(vk::Buffer, u64
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        OfferResolution, ProviderPosition, resolve_offer, resolve_provider_position,
-    };
-
+    use super::{OfferResolution, ProviderPosition, resolve_offer, resolve_provider_position};
 
     /// The rule must be SYMMETRIC under swapping the two devices.
     ///
@@ -1003,7 +1000,11 @@ mod tests {
         // between enumerations reaches the same branch.
         let r = resolve_provider_position(physical.iter().copied(), 4243, 1);
         assert_eq!(r, ProviderPosition::Untranslatable(1));
-        assert_eq!(r.position(), 1, "it still resolves — it just does not pretend to have selected");
+        assert_eq!(
+            r.position(),
+            1,
+            "it still resolves — it just does not pretend to have selected"
+        );
         assert_ne!(
             r,
             ProviderPosition::Translated(1),
@@ -1062,7 +1063,11 @@ mod tests {
                 "  best-first position {pos} -> physical enumerate index {} -> '{}'{}",
                 d.info.index,
                 d.info.name,
-                if pos == selected { "   <- select_device" } else { "" }
+                if pos == selected {
+                    "   <- select_device"
+                } else {
+                    ""
+                }
             );
         }
         // Every physical index the factory could ever advertise as a PROVIDERS key.

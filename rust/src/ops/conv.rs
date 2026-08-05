@@ -29,7 +29,9 @@
 //!   not, because the padding arithmetic is not linear in them. This is a decline with a lift
 //!   condition, not a permanent one.
 
-use crate::engine::{DType, DispatchContext, EpError, EpResult, KernelRequest, NodeDesc, TensorDesc};
+use crate::engine::{
+    DType, DispatchContext, EpError, EpResult, KernelRequest, NodeDesc, TensorDesc,
+};
 use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::F32;
@@ -119,7 +121,14 @@ pub(crate) fn conv_attrs(
 }
 
 /// Output spatial extent for one axis. The formula ONNX defines, in one place.
-pub(crate) fn conv_out_extent(input: i64, pad_begin: i64, pad_end: i64, dil: i64, k: i64, stride: i64) -> i64 {
+pub(crate) fn conv_out_extent(
+    input: i64,
+    pad_begin: i64,
+    pad_end: i64,
+    dil: i64,
+    k: i64,
+    stride: i64,
+) -> i64 {
     (input + pad_begin + pad_end - ((k - 1) * dil + 1)) / stride + 1
 }
 
@@ -273,18 +282,26 @@ crate::op_table! {
 
 /// Translate a 2-D convolution into one dispatch.
 pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
-    let x = node.inputs.first().and_then(|t| t.desc.as_ref()).ok_or_else(|| {
-        EpError::Unsupported(format!(
-            "`{}` input 0 has no shape at compile time",
-            node.op_type
-        ))
-    })?;
-    let w = node.inputs.get(1).and_then(|t| t.desc.as_ref()).ok_or_else(|| {
-        EpError::Unsupported(format!(
-            "`{}` input 1 (W) has no shape at compile time",
-            node.op_type
-        ))
-    })?;
+    let x = node
+        .inputs
+        .first()
+        .and_then(|t| t.desc.as_ref())
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input 0 has no shape at compile time",
+                node.op_type
+            ))
+        })?;
+    let w = node
+        .inputs
+        .get(1)
+        .and_then(|t| t.desc.as_ref())
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input 1 (W) has no shape at compile time",
+                node.op_type
+            ))
+        })?;
     if x.shape.len() != CONV_SPATIAL_RANK + 2 || w.shape.len() != CONV_SPATIAL_RANK + 2 {
         return Err(EpError::Unsupported(format!(
             "`{}` was claimed with rank {} / {} inputs; this kernel is 2-D",
@@ -313,8 +330,22 @@ pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
 
     let (n, c, h, wd) = (x.shape[0], x.shape[1], x.shape[2], x.shape[3]);
     let m = w.shape[0];
-    let oh = conv_out_extent(h, a.pads[0], a.pads[2], a.dilations[0], a.kernel_shape[0], a.strides[0]);
-    let ow = conv_out_extent(wd, a.pads[1], a.pads[3], a.dilations[1], a.kernel_shape[1], a.strides[1]);
+    let oh = conv_out_extent(
+        h,
+        a.pads[0],
+        a.pads[2],
+        a.dilations[0],
+        a.kernel_shape[0],
+        a.strides[0],
+    );
+    let ow = conv_out_extent(
+        wd,
+        a.pads[1],
+        a.pads[3],
+        a.dilations[1],
+        a.kernel_shape[1],
+        a.strides[1],
+    );
     if oh <= 0 || ow <= 0 || n <= 0 {
         return Err(EpError::Unsupported(format!(
             "`{}` computes a {oh}x{ow} output over batch {n}; nothing to dispatch",
@@ -345,22 +376,38 @@ pub fn translate(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     let out_buf = ctx.bind_output(out, TensorDesc::new(DType::F32, vec![n, m, oh, ow]))?;
 
     let total = u32::try_from(n * m * oh * ow).map_err(|_| {
-        EpError::Unsupported(format!("`{}` output element count overflows u32", node.op_type))
+        EpError::Unsupported(format!(
+            "`{}` output element count overflows u32",
+            node.op_type
+        ))
     })?;
 
     let mut push = Vec::with_capacity(18 * 4);
     for v in [
-        n, c, h, wd, m,
-        a.kernel_shape[0], a.kernel_shape[1], oh, ow,
-        a.pads[0], a.pads[1],
-        a.strides[0], a.strides[1],
-        a.dilations[0], a.dilations[1],
+        n,
+        c,
+        h,
+        wd,
+        m,
+        a.kernel_shape[0],
+        a.kernel_shape[1],
+        oh,
+        ow,
+        a.pads[0],
+        a.pads[1],
+        a.strides[0],
+        a.strides[1],
+        a.dilations[0],
+        a.dilations[1],
         a.group,
         i64::from(has_bias),
         i64::from(total),
     ] {
         let v = u32::try_from(v).map_err(|_| {
-            EpError::Unsupported(format!("`{}` parameter {v} does not fit a u32", node.op_type))
+            EpError::Unsupported(format!(
+                "`{}` parameter {v} does not fit a u32",
+                node.op_type
+            ))
         })?;
         push.extend_from_slice(&v.to_le_bytes());
     }
@@ -386,7 +433,10 @@ mod tests {
 
     #[test]
     fn the_conv_row_is_ready_and_points_at_the_conv_handler() {
-        let row = OPS.iter().find(|s| s.op_type == "Conv").expect("Conv must be registered");
+        let row = OPS
+            .iter()
+            .find(|s| s.op_type == "Conv")
+            .expect("Conv must be registered");
         assert_eq!(row.status, OpStatus::Ready);
         assert!(std::ptr::fn_addr_eq(
             row.translate,

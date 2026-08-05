@@ -1714,6 +1714,9 @@ mod tests {
         let err = ew_cast(spec, &node, &mut ctx).expect_err("no destination type anywhere");
         let msg = format!("{err:?}");
         assert!(msg.contains("output edge"), "{msg}");
-        assert!(msg.contains("`to`"), "the message has to name both places looked: {msg}");
+        assert!(
+            msg.contains("`to`"),
+            "the message has to name both places looked: {msg}"
+        );
     }
 }

@@ -610,3 +610,14 @@ boundary; scope too wide. A screen with a right question and a wrong scope
 reports confidently about the wrong population, and the only reason I caught the
 fourth is that I happened to run it twice while a teammate was working. That is
 not a method.
+
+📌 Team update (2026-08-04T12:25:00-07:00): the field-level reversion class has now happened twice
+(your own 115-of-121 finding, then a second reversion inside a `squad/mouse` merge) and every
+count-based screen read clean both times, for the same reason both times — the loss is a field
+inside a surviving entry, invisible to any instrument that counts entries. Only reading the subject
+arithmetic line, not the PASS line, catches it. — decided by Rai, Link, Morpheus
+
+📌 Team update (2026-08-04T12:25:00-07:00): Rai's "the claim is true; the citation is not" (RAI-012's
+cited artifacts were three hours stale) is the event your `check_artifact_frame.py` was built to
+catch. Morpheus's ruling: a citation is a proof key with no subject digest — cite a state, not a
+path. — decided by Rai, Morpheus

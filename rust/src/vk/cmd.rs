@@ -408,7 +408,10 @@ mod tests {
         let a = queue_lock(q1);
         let b = queue_lock(q1);
         let c = queue_lock(q2);
-        assert!(std::ptr::eq(a, b), "the same VkQueue must map to the same lock");
+        assert!(
+            std::ptr::eq(a, b),
+            "the same VkQueue must map to the same lock"
+        );
         assert!(
             !std::ptr::eq(a, c),
             "two distinct VkQueues must not share a lock — serializing across devices would be a \

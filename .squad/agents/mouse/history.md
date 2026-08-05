@@ -785,3 +785,13 @@ invocation with one `--model` per case and costs roughly the ten minutes this ro
 **Untouched, as instructed:** `DEVICE_MEMORY` and `KV_ARENA` never enabled in any lane of mine
 (Tank's blocker); every proof arm screened on `dispatches_executed > 0` — 39/39; no clock, no
 timing, none offered.
+
+📌 Team update (2026-08-04T12:25:00-07:00): the field-level reversion class has now happened twice
+(Link's 115-of-121 `source_digest` restoration by `eee65aa`, then a second reversion inside a
+`squad/mouse` merge) and every count-based screen read clean both times — no key lost, file grew,
+census/loss-invariant/Windows `--check` all PASS — because the loss was a field inside a surviving
+entry, not a missing entry. Only a declining platform (Linux) or reading the subject arithmetic line
+instead of the PASS line caught it. `ci/check_ledger_census.py`'s new frame-witness arm and
+`evidence/proof_rewitness.json` now require any deliberate `source_digest` move to be declared
+`{revision, who, keys, deliberate, why}` — an undeclared move is `FAIL(condition=undeclared_witness_move)`.
+The `eee65aa` record is entered permanently with `deliberate: false`. — decided by Rai, Link

@@ -510,14 +510,7 @@ fn source_digest_for(
 
     let mut seen: Vec<String> = Vec::new();
     let mut closure: Vec<(String, Vec<u8>)> = Vec::new();
-    collect_include_closure(
-        src,
-        &root,
-        glsl_dir,
-        include_dir,
-        &mut seen,
-        &mut closure,
-    );
+    collect_include_closure(src, &root, glsl_dir, include_dir, &mut seen, &mut closure);
     // Sorted by resolved name so the digest does not depend on include order within a file, which
     // is a formatting choice rather than a subject change.
     closure.sort_by(|a, b| a.0.cmp(&b.0));
@@ -556,10 +549,7 @@ fn collect_include_closure(
             Some(include_dir.join(&name)),
             Some(glsl_dir.join(&name)),
         ];
-        let resolved = candidates
-            .into_iter()
-            .flatten()
-            .find(|p| p.is_file());
+        let resolved = candidates.into_iter().flatten().find(|p| p.is_file());
         match resolved {
             Some(path) => {
                 println!("cargo:rerun-if-changed={}", path.display());

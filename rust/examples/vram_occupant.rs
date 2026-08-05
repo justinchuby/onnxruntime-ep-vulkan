@@ -58,14 +58,15 @@ struct Args {
 fn report_budget(instance: &ash::Instance, pd: vk::PhysicalDevice, when: &str) {
     let supported = match unsafe { instance.enumerate_device_extension_properties(pd) } {
         Ok(exts) => exts.iter().any(|e| {
-            unsafe { CStr::from_ptr(e.extension_name.as_ptr()) }
-                .to_string_lossy()
+            unsafe { CStr::from_ptr(e.extension_name.as_ptr()) }.to_string_lossy()
                 == "VK_EXT_memory_budget"
         }),
         Err(_) => false,
     };
     if !supported {
-        println!("budget[{when}]: VK_EXT_memory_budget NOT SUPPORTED - no headroom readout exists here");
+        println!(
+            "budget[{when}]: VK_EXT_memory_budget NOT SUPPORTED - no headroom readout exists here"
+        );
         return;
     }
     let mut budget = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
@@ -113,7 +114,9 @@ fn parse_args() -> Result<Args, String> {
                 i += 2;
             }
             "--seconds" => {
-                a.seconds = need(i)?.parse().map_err(|_| "--seconds must be an integer")?;
+                a.seconds = need(i)?
+                    .parse()
+                    .map_err(|_| "--seconds must be an integer")?;
                 i += 2;
             }
             "--until-deleted" => {

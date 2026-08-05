@@ -571,7 +571,9 @@ fn declared_capabilities_impl(spv: &[u8]) -> Vec<u32> {
 /// has ever been named that — so a caller reading loadability off a proof key must be able to tell
 /// a placeholder from a refusal.
 pub fn variant_is_generated(stem: &str) -> bool {
-    crate::engine::shaders::SHADER_MODULES.iter().any(|(name, _)| *name == stem)
+    crate::engine::shaders::SHADER_MODULES
+        .iter()
+        .any(|(name, _)| *name == stem)
 }
 
 /// Does **the registry** name a module under this stem?
@@ -692,7 +694,10 @@ mod tests {
             if spec.kernel.template.is_pair_keyed() {
                 for src in spec.caps.iter() {
                     for dst in spec.caps.iter() {
-                        let stem = spec.kernel.pair_stem(src, dst).expect("pair row has a stem");
+                        let stem = spec
+                            .kernel
+                            .pair_stem(src, dst)
+                            .expect("pair row has a stem");
                         assert!(
                             m.iter().any(|v| v.stem == stem),
                             "{} @ {src:?}->{dst:?} claims `{stem}` but it is not in the build \
@@ -731,7 +736,10 @@ mod tests {
                 );
             }
         }
-        assert!(k.stem(DType::F32).is_none(), "a pair row has no single stem");
+        assert!(
+            k.stem(DType::F32).is_none(),
+            "a pair row has no single stem"
+        );
         assert!(k.defines(DType::F32).is_empty());
     }
 

@@ -833,7 +833,10 @@ mod tests {
     #[test]
     fn a_row_with_blind_axes_renders_both_clauses() {
         let clause = blind_axes_clause("ai.onnx::Conv");
-        assert!(!clause.is_empty(), "Conv declares blind axes; the clause must not be empty");
+        assert!(
+            !clause.is_empty(),
+            "Conv declares blind axes; the clause must not be empty"
+        );
         assert_eq!(
             clause,
             blind_axes_clause("Conv"),
@@ -891,7 +894,10 @@ mod tests {
             key: Some(key),
             nodes: 7,
         }]);
-        assert_eq!(d.blind_axes_disclosed, 1, "the caveat was not counted: {d:?}");
+        assert_eq!(
+            d.blind_axes_disclosed, 1,
+            "the caveat was not counted: {d:?}"
+        );
 
         // And a form with no key at all — the `continue` branch, which skips the code that
         // appends the caveat to every other line and therefore has to carry it itself.
@@ -908,7 +914,8 @@ mod tests {
 
     /// Positive polarity: a claimed form with no proof must warn.
     #[test]
-    fn an_unmeasured_claimed_form_warns() {        let _g = test_lock();
+    fn an_unmeasured_claimed_form_warns() {
+        let _g = test_lock();
         counters::reset();
         let key = ProofKey::parse(
             "test.planted::NeverProven/1+/f16>f16/no_such_kernel/static/unmeasured-control",
@@ -1097,7 +1104,8 @@ mod tests {
 
     /// Both polarities in one claim set: the WARN names the unproven form and not the proven one.
     #[test]
-    fn a_mixed_claim_set_warns_only_about_the_unproven_form() {        let _g = test_lock();
+    fn a_mixed_claim_set_warns_only_about_the_unproven_form() {
+        let _g = test_lock();
         counters::reset();
         let proven = a_proven_key();
         let unproven =

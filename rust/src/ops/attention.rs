@@ -1074,7 +1074,10 @@ mod tests {
             present_len, 257,
             "KV write stride is the PRESENT extent, past + seq_len"
         );
-        assert_eq!(past_stride, 256, "past reads still stride by the past extent");
+        assert_eq!(
+            past_stride, 256,
+            "past reads still stride by the past extent"
+        );
         assert!(
             (scale - 96f32.sqrt().recip()).abs() < 1e-6,
             "scale = 1/sqrt(D)"
@@ -1314,7 +1317,11 @@ mod tests {
         let mut ctx = Recorder::default();
         translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
 
-        assert_eq!(ctx.outputs.len(), 3, "growing: present is its own allocation");
+        assert_eq!(
+            ctx.outputs.len(),
+            3,
+            "growing: present is its own allocation"
+        );
         let pc = &ctx.dispatches[0].push_constants;
         assert_eq!(
             u32::from_le_bytes(pc[24..28].try_into().unwrap()),

@@ -1706,16 +1706,20 @@ impl ProofKey {
         // it says "yes" most readily to the input the reader is least equipped to check. So the
         // structure is required outright rather than warned about.
         if !t.contains("::") {
-            return Err("proof key is missing its `domain::op_type` prefix; use the full \
-                 domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs form");
+            return Err(
+                "proof key is missing its `domain::op_type` prefix; use the full \
+                 domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs form",
+            );
         }
         if t.matches('/').count() != 5 {
             return Err("proof key does not have all six components; use the full \
                  domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs form");
         }
         if t.split('/').any(|c| c.trim().is_empty()) {
-            return Err("proof key has an empty component; an empty field is a wildcard \
-                 by another name");
+            return Err(
+                "proof key has an empty component; an empty field is a wildcard \
+                 by another name",
+            );
         }
         Ok(ProofKey(t.to_owned()))
     }
@@ -1948,7 +1952,9 @@ fn populated_input_set(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
         }
         return present.join("+");
     }
-    let n = (0..view.num_inputs()).filter(|i| view.has_input(*i)).count();
+    let n = (0..view.num_inputs())
+        .filter(|i| view.has_input(*i))
+        .count();
     format!("n{n}")
 }
 
@@ -1961,12 +1967,9 @@ fn populated_input_set(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
 fn optional_input_names(qualified: &str) -> Option<&'static [(usize, &'static str)]> {
     Some(match qualified {
         // A, B, scales, zero_points?, g_idx?, bias?  — the defect of 2026-07-30 is slot 3.
-        "com.microsoft::MatMulNBits" => &[
-            (2, "scales"),
-            (3, "zero_points"),
-            (4, "g_idx"),
-            (5, "bias"),
-        ],
+        "com.microsoft::MatMulNBits" => {
+            &[(2, "scales"), (3, "zero_points"), (4, "g_idx"), (5, "bias")]
+        }
         // query, key?, value?, past_key?, past_value?, seqlens_k, total_sequence_length,
         // cos_cache?, sin_cache?  — key/value absent is R5's packed-QKV form.
         "com.microsoft::GroupQueryAttention" => &[
@@ -2634,7 +2637,11 @@ pub fn baked_ledger_identity() -> String {
 }
 
 /// Compare one entry's recorded subject witnesses against this build's — §8.9.19 part 2's table.
-pub fn subject_verdict(recorded_spirv: &str, recorded_source: &str, stems: &[&str]) -> SubjectVerdict {
+pub fn subject_verdict(
+    recorded_spirv: &str,
+    recorded_source: &str,
+    stems: &[&str],
+) -> SubjectVerdict {
     let current_spirv = shader_digest_for(stems).unwrap_or_default();
     let current_source = source_digest_for(stems).unwrap_or_default();
     let spirv_same = current_spirv == recorded_spirv;
@@ -2709,7 +2716,8 @@ fn json_u64_field(line: &str, field: &str) -> Option<u64> {
     rest[..end].parse().ok()
 }
 
-fn json_field(line: &str, field: &str) -> Option<String> {    let needle = format!("\"{field}\":");
+fn json_field(line: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\":");
     let start = line.find(&needle)? + needle.len();
     let rest = line[start..].trim_start();
     let mut chars = rest.chars();
@@ -2761,7 +2769,9 @@ pub(crate) fn parse_ledger(source: &str) -> Ledger {
             let needle = "\"entry_count\":";
             let start = header.find(needle)? + needle.len();
             let rest = header[start..].trim_start();
-            let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
             Some(rest[..end].to_string())
         })
         .and_then(|s| s.trim().parse().ok())
@@ -3104,7 +3114,10 @@ pub enum ProofState {
     /// this is exactly the population the ledger cannot attribute to hardware, and an
     /// unattributable proof that nothing reports is the fail-open Link found wearing a different
     /// hat.
-    DeviceUnattributed { entry_label: String, reason: &'static str },
+    DeviceUnattributed {
+        entry_label: String,
+        reason: &'static str,
+    },
     /// An entry exists and **its subject moved** — both digests differ, so the kernel it proves
     /// has been replaced. Not claimable.
     SubjectChanged {
@@ -3411,12 +3424,84 @@ fn form_is_provable(key: &ProofKey) -> bool {
     let Some(stem) = key.variant_stem() else {
         return true;
     };
-    use crate::ops::common::variants::{variant_is_declared, variant_is_generated, variant_is_loadable};
+    use crate::ops::common::variants::{
+        variant_is_declared, variant_is_generated, variant_is_loadable,
+    };
     form_provable_from(
         variant_is_declared(stem),
         variant_is_generated(stem),
         variant_is_loadable(stem),
     )
+}
+
+/// Answer [`form_is_provable`] for a list of keys, as text, for a caller outside this process.
+///
+/// # Why an export exists for a predicate the claim path already consults
+///
+/// `gen_proof_ledger.py --check` cannot tell whether a ledger key is **mintable** — whether any
+/// proof run on this build could ever produce an entry for it. All 43 retired keys pass `--check`
+/// cleanly, and the check has no way to separate *"retired on purpose because the form stopped
+/// existing"* from *"never mintable on this build"*. Those have different repairs and the second
+/// one is a capability regression that no other instrument in the tree reports.
+///
+/// The only place the answer exists is the compiled artifact: `variant_is_loadable` reads the
+/// SPIR-V that `build.rs` baked in, and `ENGINE_ENABLED_CAPABILITIES` is checked-in source. A
+/// Python re-derivation would be a second implementation of the capability rule, which is the
+/// mirror-drift failure `OrtEpVulkanGetShaderSubject` already exists to avoid.
+///
+/// # The purity this preserves
+///
+/// [`form_is_provable`] reads no device handle and no global written at device creation, so it
+/// answers identically before and after device creation. This function adds no state of its own
+/// and is therefore callable from a process that has never created a `VkDevice` — which is
+/// exactly how `--check` calls it, via `ctypes.CDLL` with no ORT session at all. **Do not give
+/// this path a device-created global**; a mintability answer that depends on whether a device
+/// exists is a different question wearing this one's name.
+///
+/// # Format
+///
+/// Input is a NUL-terminated, **newline**-separated list of proof keys — newline rather than
+/// comma because a dtype signature contains commas. One output line per input key, tab-separated:
+///
+/// ```text
+/// <key>\tmintable=yes|no\tstem=<stem|->\tdeclared=yes|no\tgenerated=yes|no\tloadable=yes|no
+/// ```
+///
+/// `stem=-` is a key with no parseable variant component. Those answer `mintable=yes`, matching
+/// [`form_is_provable`]'s deliberate under-claim: unknown is not the same as refused, and the
+/// published unmintable list is a lower bound.
+pub fn form_mintability_report(keys: &[&str]) -> String {
+    use crate::ops::common::variants::{
+        variant_is_declared, variant_is_generated, variant_is_loadable,
+    };
+    let yn = |b: bool| if b { "yes" } else { "no" };
+    let mut out = String::new();
+    for raw in keys {
+        let key = ProofKey::parse(raw);
+        match key.variant_stem() {
+            None => {
+                out.push_str(&format!(
+                    "{}\tmintable=yes\tstem=-\tdeclared=no\tgenerated=no\tloadable=no\n",
+                    key.0
+                ));
+            }
+            Some(stem) => {
+                let declared = variant_is_declared(stem);
+                let generated = variant_is_generated(stem);
+                let loadable = variant_is_loadable(stem);
+                out.push_str(&format!(
+                    "{}\tmintable={}\tstem={}\tdeclared={}\tgenerated={}\tloadable={}\n",
+                    key.0,
+                    yn(form_provable_from(declared, generated, loadable)),
+                    stem,
+                    yn(declared),
+                    yn(generated),
+                    yn(loadable),
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// [`form_is_provable`]'s decision, as a pure function of its three inputs.
@@ -3891,7 +3976,11 @@ mod tests {
 
         // Row 1 — both agree.
         let same = build(&this_spirv, &this_source);
-        assert!(same.state_for(&key).claimable(), "{:?}", same.state_for(&key));
+        assert!(
+            same.state_for(&key).claimable(),
+            "{:?}",
+            same.state_for(&key)
+        );
         assert!(matches!(
             same.get(&key).expect("entry").subject,
             SubjectVerdict::Identical
@@ -3947,7 +4036,10 @@ mod tests {
             changed.state_for(&key).token(),
         ];
         assert_eq!(
-            tokens.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            tokens
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
             3,
             "three different frames produced the same verdict {tokens:?}; the digest pair is not \
              an instrument"
@@ -4011,7 +4103,11 @@ mod tests {
             "a declared-count mismatch faulted the whole artifact over one drifted entry: {:?}",
             l.faults
         );
-        assert_eq!(l.len() + l.entry_faults.len(), 1, "the populations must still sum to 1");
+        assert_eq!(
+            l.len() + l.entry_faults.len(),
+            1,
+            "the populations must still sum to 1"
+        );
         assert!(!l.state_for(&key).claimable());
     }
 
@@ -4058,7 +4154,10 @@ mod tests {
             "a run that has bound no pipeline has observed no specialisation, and that is not the \
              same fact as having bound the recorded one"
         );
-        assert!(cold.deltas().is_empty(), "an unobserved frame is not a delta: {cold:?}");
+        assert!(
+            cold.deltas().is_empty(),
+            "an unobserved frame is not a delta: {cold:?}"
+        );
 
         // Bind a pipeline. Everything below is compared against THIS.
         crate::counters::record_pipeline_variant(STEM, &[256, 0]);
@@ -4132,7 +4231,10 @@ mod tests {
             spec_witness_for(unrecorded.get(&key).expect("entry")).token(),
         ];
         assert_eq!(
-            witnesses.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            witnesses
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
             3,
             "three specialisation frames produced one verdict {witnesses:?}"
         );
@@ -4142,8 +4244,8 @@ mod tests {
         crate::counters::reset();
         crate::counters::record_pipeline_variant(STEM, &[256, 1]);
         audit_dispatch_specialisation_of(&delta, STEM);
-        let rows = crate::counters::specialisation_delta_forms()
-            .expect("the delta list must be readable");
+        let rows =
+            crate::counters::specialisation_delta_forms().expect("the delta list must be readable");
         assert!(
             rows.iter().any(|r| r.starts_with(KEY)),
             "the audit saw a proof taken on another pipeline and said nothing: {rows:?}"
@@ -4261,6 +4363,70 @@ mod tests {
         );
     }
 
+    /// **The mintability export answers exactly `form_is_provable`, for a caller with no device.**
+    ///
+    /// Three properties, because the export is the only thing `gen_proof_ledger.py --check` can
+    /// ask and a report that drifts from the predicate would be a screen that is clean because it
+    /// is looking somewhere else:
+    ///
+    /// 1. **Agreement.** Every line's `mintable=` equals `form_is_provable` on the same key.
+    /// 2. **Non-vacuity.** The batch contains both answers. A report that can only say `yes` is
+    ///    the 43-retired-keys-pass-cleanly state one layer down.
+    /// 3. **Line discipline.** One line per input key, in input order, and a dtype signature's
+    ///    commas do not split a key — which is why the wire separator is a newline.
+    #[test]
+    fn the_mintability_report_agrees_with_the_predicate_and_says_both_words() {
+        let keys = [
+            "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2",
+            "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+            "ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2",
+            "not-a-key",
+        ];
+        let text = form_mintability_report(&keys);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), keys.len(), "one line per key: {text}");
+
+        let mut yes = 0;
+        let mut no = 0;
+        for (line, key) in lines.iter().zip(keys.iter()) {
+            let fields: Vec<&str> = line.split('\t').collect();
+            assert_eq!(fields[0], *key, "key must round-trip verbatim: {line}");
+            let mintable = match fields[1] {
+                "mintable=yes" => true,
+                "mintable=no" => false,
+                other => panic!("unreadable verdict {other:?} in {line}"),
+            };
+            assert_eq!(
+                mintable,
+                form_is_provable(&ProofKey::parse(key)),
+                "the export must not be a second opinion: {line}"
+            );
+            if mintable { yes += 1 } else { no += 1 }
+        }
+        assert!(
+            yes > 0 && no > 0,
+            "a report with one reachable answer screens nothing: {text}"
+        );
+    }
+
+    /// The report is stable across calls and carries no state of its own.
+    ///
+    /// This is the property the spawn brief asked to preserve: `form_is_provable` reads only the
+    /// baked SPIR-V and a checked-in capability list, so the answer cannot depend on whether a
+    /// device has been created. A test in this process cannot create a `VkDevice`, so it asserts
+    /// the reachable half — two calls, identical bytes, and no interior mutability behind them.
+    #[test]
+    fn the_mintability_report_is_stable_and_device_free() {
+        let keys = ["ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1"];
+        let a = form_mintability_report(&keys);
+        let b = form_mintability_report(&keys);
+        assert_eq!(a, b);
+        assert!(
+            a.contains("mintable=no") && a.contains("declared=yes") && a.contains("loadable=no"),
+            "the report has to say *why*, or the caller is back to guessing: {a}"
+        );
+    }
+
     /// An unparseable key is not evidence that a form is unprovable.
     #[test]
     fn a_key_whose_variant_cannot_be_read_gets_the_ordinary_message() {
@@ -4284,7 +4450,8 @@ mod tests {
     /// documented to mean.
     #[test]
     fn a_composite_forms_metadata_stem_is_not_read_as_an_unloadable_module() {
-        let composite = ProofKey::parse("ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2");
+        let composite =
+            ProofKey::parse("ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2");
         assert_eq!(composite.variant_stem(), Some("metadata"));
         assert!(
             !crate::ops::common::variants::variant_is_generated("metadata"),
@@ -4317,7 +4484,10 @@ mod tests {
     #[test]
     fn a_declared_module_that_the_build_did_not_produce_is_not_provable() {
         // declared, generated, loadable -> provable
-        assert!(form_provable_from(true, true, true), "a real, loadable module");
+        assert!(
+            form_provable_from(true, true, true),
+            "a real, loadable module"
+        );
         assert!(
             !form_provable_from(true, true, false),
             "declared and built, but declares a capability the engine does not enable"
@@ -4329,7 +4499,10 @@ mod tests {
              via `metadata` on the unknown branch."
         );
         // Not declared: nothing is known, and under-claiming is deliberate.
-        assert!(form_provable_from(false, false, false), "unknown stem, unknown answer");
+        assert!(
+            form_provable_from(false, false, false),
+            "unknown stem, unknown answer"
+        );
         assert!(form_provable_from(false, true, true));
     }
 
@@ -4343,7 +4516,11 @@ mod tests {
             ("GlobalAveragePool", DType::F32, "global_average_pool_f32"),
             ("Gather", DType::F16, "gather_f16"),
             ("GroupQueryAttention", DType::F16, "gqa_f16"),
-            ("SkipSimplifiedLayerNormalization", DType::F32, "skip_simplified_layer_norm_f32"),
+            (
+                "SkipSimplifiedLayerNormalization",
+                DType::F32,
+                "skip_simplified_layer_norm_f32",
+            ),
         ] {
             let spec = all_specs()
                 .find(|s| s.op_type == op)
@@ -4366,9 +4543,8 @@ mod tests {
     /// variant component is `conv_f32#grouped+padded`, and no module is named that.
     #[test]
     fn a_suffixed_variant_component_still_resolves_to_its_module() {
-        let k = ProofKey::parse(
-            "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32#grouped+padded/static/n3",
-        );
+        let k =
+            ProofKey::parse("ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32#grouped+padded/static/n3");
         assert_eq!(k.variant_component(), Some("conv_f32#grouped+padded"));
         assert_eq!(k.variant_stem(), Some("conv_f32"));
         let sel = ProofKey::parse("ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel1/static/n1");
@@ -4984,9 +5160,8 @@ mod tests {
             // one this build would compute.
             let digest_now =
                 shader_digest_for(&["ew_binary_add_f32"]).expect("a non-empty stem list");
-            let subject = format!(
-                ",\"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{digest_now}\""
-            );
+            let subject =
+                format!(",\"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{digest_now}\"");
             let entry = format!(
                 "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
                  \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\"{subject}{extra}}}"
@@ -5153,10 +5328,7 @@ mod tests {
         // And with no device opened, even a named entry cannot be checked.
         crate::allocator::tally::clear_session_devices();
         assert!(
-            matches!(
-                here.state_for(&key),
-                ProofState::DeviceUnattributed { .. }
-            ),
+            matches!(here.state_for(&key), ProofState::DeviceUnattributed { .. }),
             "with no device opened there is nothing to compare against, and saying so is not the \
              same as saying the devices differ"
         );
@@ -5453,7 +5625,10 @@ mod tests {
              \"generator\":\"test\"}}\n{entry}\n"
         ));
         let key = ProofKey::validate(KEY).expect("valid key");
-        assert!(l.get(&key).is_none(), "an entry with no subject granted a claim");
+        assert!(
+            l.get(&key).is_none(),
+            "an entry with no subject granted a claim"
+        );
         assert_eq!(l.demotion_for(&key), Some("NO-SUBJECT-WITNESS"));
     }
 
@@ -5482,14 +5657,10 @@ mod tests {
     /// ledger file, and nothing at all.
     #[test]
     fn a_ledger_miss_reports_which_of_three_things_happened() {
-        let proven = ProofKey::validate(
-            "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2",
-        )
-        .expect("valid");
-        let absent = ProofKey::validate(
-            "ai.onnx::Add/7+/f64,f64>f64/ew_binary_add_f64/static/n2",
-        )
-        .expect("valid");
+        let proven = ProofKey::validate("ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2")
+            .expect("valid");
+        let absent = ProofKey::validate("ai.onnx::Add/7+/f64,f64>f64/ew_binary_add_f64/static/n2")
+            .expect("valid");
 
         assert_eq!(lookup_key(&proven), LedgerLookup::Hit);
         assert_eq!(lookup_key(&absent), LedgerLookup::KeyAbsent);

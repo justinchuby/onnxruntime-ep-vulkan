@@ -636,9 +636,7 @@ unsafe fn copy_one(
     use std::sync::atomic::Ordering::Relaxed;
     COPIES.fetch_add(1, Relaxed);
     COPIED_BYTES.fetch_add(src_len as u64, Relaxed);
-    log::debug!(
-        "[VulkanEP] CopyTensors: {src_len} B {src_side:?} -> {dst_len} B {dst_side:?}"
-    );
+    log::debug!("[VulkanEP] CopyTensors: {src_len} B {src_side:?} -> {dst_len} B {dst_side:?}");
     if interior {
         // Worth a line the first time: this is ORT's planner doing pointer arithmetic on a handle
         // and our range lookup resolving it, which is the property the whole scheme exists for.
@@ -1560,7 +1558,10 @@ mod tests {
              reading staging here is the all-zero failure this flag exists to prevent"
         );
         assert!(
-            provider.downloads.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            provider
+                .downloads
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0,
             "the bytes must have come from a download, not from staging that happened to match"
         );
         reg.free(h);
@@ -1581,7 +1582,9 @@ mod tests {
         refresh_from_device_if_authoritative(e, 128).expect("refresh");
 
         assert_eq!(
-            provider.downloads.load(std::sync::atomic::Ordering::Relaxed),
+            provider
+                .downloads
+                .load(std::sync::atomic::Ordering::Relaxed),
             0,
             "the default path must be inert: nothing marked authority, so nothing may be read back"
         );
@@ -1606,7 +1609,13 @@ mod tests {
         let side = classify(&regs, h as *mut u8);
         let e = resolve_endpoint(&regs, side, 64).expect("resolve");
         assert!(
-            !matches!(e, Endpoint::Mirrored { device_authoritative: true, .. }),
+            !matches!(
+                e,
+                Endpoint::Mirrored {
+                    device_authoritative: true,
+                    ..
+                }
+            ),
             "the refusal must leave the span unmarked, not merely return Err"
         );
         reg.free(h);
@@ -1666,7 +1675,9 @@ mod tests {
         refresh_whole_span_before_partial_write(e, 128).expect("refresh");
 
         assert_eq!(
-            provider.downloads.load(std::sync::atomic::Ordering::Relaxed),
+            provider
+                .downloads
+                .load(std::sync::atomic::Ordering::Relaxed),
             0,
             "downloading bytes that are about to be overwritten is the round trip this design \
              removes, paid for nothing"
@@ -1723,7 +1734,13 @@ mod tests {
         let side = classify(&regs, h2 as *mut u8);
         let e = resolve_endpoint(&regs, side, 128).expect("resolve");
         assert!(
-            !matches!(e, Endpoint::Mirrored { device_authoritative: true, .. }),
+            !matches!(
+                e,
+                Endpoint::Mirrored {
+                    device_authoritative: true,
+                    ..
+                }
+            ),
             "a newly allocated span starts with staging authoritative, whatever its address held \
              before"
         );

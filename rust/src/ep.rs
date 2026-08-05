@@ -1907,8 +1907,7 @@ unsafe fn compile_impl(
         // inferences". `dispatch_ort` previously inferred it from `(cpu_ptr, byte_size)` plus a
         // 32 KiB size floor, which is a different question: an address identifies storage, not
         // contents. See the comment at the cache site.
-        let input_is_constant: Vec<bool> =
-            plan.inputs.iter().map(|r| r.is_initializer).collect();
+        let input_is_constant: Vec<bool> = plan.inputs.iter().map(|r| r.is_initializer).collect();
         let output_byte_sizes: Vec<u64> = plan
             .outputs
             .iter()

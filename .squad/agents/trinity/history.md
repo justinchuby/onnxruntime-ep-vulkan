@@ -579,3 +579,8 @@ records so this one cannot smuggle a proposal into a reading.
 **cargo/libtest** gate, so it is *not* the instrument for a pytest pair — I say that rather
 than imply coverage I do not have). **Not run: `cargo test --lib` and clippy — no Rust
 moved this round.**
+📌 Team update (2026-08-04T12:25:00-07:00): Morpheus's ruling — the screening question for a
+criterion motion is not "is this true?", it is "what does it admit?" (the unsatisfiability finding
+was refuted without a run; the false premise was harmless, but relaxing the criterion on its
+strength would have admitted two of three real failures with no element moving). This applies to any
+motion you adjudicate against a criterion or a prior ruling. — decided by Morpheus
