@@ -950,6 +950,111 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.gh_auth_screen",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="GH-invocation auth screen (every API-using `gh` call has a token path)",
+        watches=(
+            "Every workflow step that reaches the GitHub API through `gh` — directly, "
+            "by running a `gh <subcommand>` that talks to the network (`run`, `api`, "
+            "`pr`, `issue`, `release`, `workflow`, `repo`, `gist`, `org`, `project`, "
+            "`search`, `secret`, `variable`, `cache`, `auth status`; NOT `--version`, "
+            "`help`, `completion`, `config`, `extension`), or indirectly, by invoking a "
+            "`ci/*.py` script that itself shells out to `gh`, or by being one of the two "
+            "scripts independently verified to run `ci/open_reds.json`'s real, default "
+            "register end to end while that register still has a live entry pointing at "
+            "a `gh`-shelling script — must have `GH_TOKEN` or `GITHUB_TOKEN` declared in "
+            "an `env:` block it can see (its own, its job's, or the workflow's)."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "It was written against, and first convicted, the real defect: PR #13 run "
+            "31052604259's `Open-reds negative control` step called `gh run list` (via "
+            "ci/negative_control_open_reds.py -> ci/check_open_reds.py -> the real "
+            "register's main_is_green entry -> ci/check_main_is_green.py) with no "
+            "GH_TOKEN anywhere in scope. REPLAYED against the real ci.yml at b1886d99, "
+            "that exact step is convicted; the same rule over today's fixed bytes is "
+            "green, so it is not a constant."
+        ),
+        arm_healthy=(
+            "GH-AUTH: PASS — 2 `gh`-reaching step(s) across 2 workflow file(s), every "
+            "one with GH_TOKEN or GITHUB_TOKEN declared in scope. 3 ci/*.py script(s) "
+            "classified as reaching `gh` (directly or through ci/open_reds.json)."
+        ),
+        arm_broken=(
+            "GH-AUTH: FAIL(condition=missing_token_path) — REPLAYED against the real "
+            "ci.yml at b1886d99, naming the `Open-reds negative control` step exactly."
+        ),
+        observed="2026-08-05",
+        misses=(
+            "It reads key NAMES out of `env:` blocks and never a value, so it cannot "
+            "tell a real token from an empty string assigned to the right name — that "
+            "is a provisioning defect (the secret was never set), not an authoring "
+            "defect (the step forgot to ask for one), and the two want different fixes.",
+            "It does not check that the token has enough SCOPE for the call (`actions: "
+            "read` vs `contents: write` etc.); that is a human judgement made once per "
+            "step and reviewed in the diff, not a thing derivable from the YAML text.",
+            "It does not follow `uses:` steps (third-party actions), which authenticate "
+            "however their own inputs say to — a different surface from `run:` shelling "
+            "out to `gh` directly.",
+            "The indirect-detection table (KNOWN_REAL_REGISTER_RUNNERS) is a short, "
+            "named, hand-verified allowlist rather than a generic call graph, because a "
+            "generic 'file A's text mentions file B's name' graph cannot distinguish "
+            "ci/negative_control_open_reds.py's real run of the register from "
+            "ci/test_lane_checks.py's synthetic one without producing exactly that "
+            "false positive.",
+        ),
+    ),
+    Check(
+        id="hostfree.gh_auth_negative_control",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="GH-invocation auth negative control (demand red without a token, never a skip)",
+        watches=(
+            "That the gh-auth screen still fires on a missing token path, AND — the arm "
+            "issue #16 specifically asked for — that ci/check_main_is_green.py itself, "
+            "run with every GitHub credential stripped from its environment, reports "
+            "ERROR(instrument=github_unreachable) and exits 4: never exit 0, never the "
+            "word PASS, never a skip. An absent instrument must read as absent, not as a "
+            "quiet green."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "15 arms: 5 LIVE (today's workflows pass the screen; check_main_is_green.py "
+            "with GH_TOKEN/GITHUB_TOKEN/GH_ENTERPRISE_TOKEN removed and GH_CONFIG_DIR "
+            "pointed at an empty throwaway directory must exit 4 with "
+            "ERROR(instrument=github_unreachable) and never PASS or SKIP), 2 REPLAYED "
+            "(the real ci.yml at b1886d99 convicts on `Open-reds negative control`; the "
+            "same rule over today's bytes is green), 8 PLANTED (no-token API call; "
+            "non-API `gh --version` with no token is NOT flagged; a token in a "
+            "different job does not satisfy this one; a job-level token satisfies every "
+            "step in that job; indirect reach through the real open-reds register is "
+            "still caught; a missing workflow file is ERROR(instrument), not a red; an "
+            "empty workflow is ERROR(instrument=no_steps_parsed); a comment that merely "
+            "quotes `gh run list` as prose is not mistaken for the command)."
+        ),
+        arm_healthy="15/15 arms fire as specified, exit 0",
+        arm_broken=(
+            "Each arm is red by construction with its defect genuinely present: the "
+            "screen convicts the real pre-fix ci.yml bytes; check_main_is_green.py with "
+            "no credentials exits 4 and names github_unreachable rather than exiting 0 "
+            "or printing PASS/SKIP; each planted shape trips the rule it targets."
+        ),
+        observed="2026-08-05",
+        misses=(
+            "8 of 15 arms are PLANTED and this control prints that ratio itself. A "
+            "planted arm proves the rule fires on the shape it was written for; it does "
+            "not show the rule is load-bearing. The LIVE and REPLAYED arms are the ones "
+            "that do.",
+            "The 'no credential leak' property rests on never having a real token to "
+            "leak in the first place (the arm deletes GH_TOKEN/GITHUB_TOKEN/"
+            "GH_ENTERPRISE_TOKEN before invoking check_main_is_green.py) rather than on "
+            "scanning a real secret out of captured output — the stronger version of "
+            "this arm would need a real token deliberately withheld from logging, which "
+            "this host-free lane cannot provision.",
+        ),
+    ),
+    Check(
         id="hostfree.build_precondition",
         falsifier=FALSIFIER_OBSERVED,
         lane=LANE_HOSTFREE,
