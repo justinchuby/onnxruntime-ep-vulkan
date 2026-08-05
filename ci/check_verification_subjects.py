@@ -127,6 +127,18 @@ TABLE: dict[str, dict[str, str]] = {
         "subject": "a lane's exit status",
         "oracle": "known-fatal lines in the run's own log",
     },
+    "ci/check_gh_auth.py": {
+        "verdict": "EXTERNAL",
+        "subject": "a workflow step's declared `gh` invocation",
+        "oracle": "the same file's own declared `env:` blocks, plus ci/open_reds.json's "
+                  "registered commands for the indirect (register-runner) reach",
+        "note": "written against the real PR #13 run 31052604259 defect: `Open-reds "
+                "negative control` called `gh run list` with no GH_TOKEN in scope. The "
+                "subject and oracle are both text in the tree -- no network, no `gh` "
+                "invocation, no device -- which is why this screen alone cannot tell a "
+                "declared-but-empty token from a real one; that is a provisioning "
+                "question, not an authoring one.",
+    },
     "ci/check_flake_witness.py": {
         "verdict": "ARTIFACT",
         "subject": "a red-then-green sequence",

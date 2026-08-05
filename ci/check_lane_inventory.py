@@ -96,6 +96,14 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Proof-ledger census negative control", "hostfree.ledger_census_negative_control"),
     ("Proof-ledger census", "hostfree.ledger_census"),
     ("Open reds", "hostfree.open_reds"),
+    # Same ordering hazard again: "GH-invocation auth negative control" does not
+    # substring "GH-invocation auth screen" (they diverge at "negative control" vs.
+    # "screen"), so this pair is order-safe by construction — but it is listed
+    # negative-control-first anyway, matching every other pair above, so a future
+    # rename that introduces a substring relationship fails safe instead of silently
+    # mapping the control onto the screen it controls.
+    ("GH-invocation auth negative control", "hostfree.gh_auth_negative_control"),
+    ("GH-invocation auth screen", "hostfree.gh_auth_screen"),
     ("Verification-subject screen", "hostfree.verification_subjects"),
     ("Layering lint asserted something", "build.layering_lint_productivity"),
     ("Portability lint asserted something", "build.portability_lint_productivity"),
