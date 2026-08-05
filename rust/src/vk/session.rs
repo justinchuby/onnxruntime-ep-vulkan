@@ -15,7 +15,9 @@ use std::sync::Arc;
 use ash::vk;
 
 use super::{
-    alloc::{Allocator, GpuBuffer, MemClass, record_download, record_upload, record_upload_blocked},
+    alloc::{
+        Allocator, GpuBuffer, MemClass, record_download, record_upload, record_upload_blocked,
+    },
     barrier::{Access, BufferDep},
     cmd::{CommandPool, create_and_submit, wait_fence_then_destroy},
     device::{Device, register_ep_device},
@@ -1482,7 +1484,7 @@ impl VulkanSession {
                     &mut staging_dls,
                     &mut gpu_intermediates,
                     &mut gpu_temps,
-                    ]);
+                ]);
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and `$msg` is
                 // a 'static NUL-terminated literal. `free_all` above has already released every
                 // buffer, so nothing owned by this frame outlives the return.
@@ -1759,7 +1761,6 @@ impl VulkanSession {
                 }
             }
         }
-
 
         // One sweep, after every path above, rather than a check at each of them: an aliased
         // output that is not bound to its input's buffer is a wrong answer whatever unbound it
@@ -2068,14 +2069,7 @@ impl VulkanSession {
             // SAFETY: cmd is recording; `stg` is Upload and was just allocated at `sz` bytes;
             // `gpu_outputs[j]` is DeviceLocal and the geometry was checked against its size.
             prefix_staged_bytes += unsafe {
-                record_upload_blocked(
-                    self.device.ash(),
-                    cmd,
-                    &stg,
-                    &gpu_outputs[j],
-                    data,
-                    layout,
-                )
+                record_upload_blocked(self.device.ash(), cmd, &stg, &gpu_outputs[j], data, layout)
             };
             staging_prefix.push(stg);
         }
@@ -2211,7 +2205,7 @@ impl VulkanSession {
                     &mut staging_dls,
                     &mut gpu_intermediates,
                     &mut gpu_temps,
-                    ]);
+                ]);
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
                 // this frame has been released above, so nothing outlives the return.
@@ -2249,7 +2243,7 @@ impl VulkanSession {
                     &mut staging_dls,
                     &mut gpu_intermediates,
                     &mut gpu_temps,
-                    ]);
+                ]);
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
                 // this frame has been released above, so nothing outlives the return.
@@ -2284,7 +2278,7 @@ impl VulkanSession {
                     &mut staging_dls,
                     &mut gpu_intermediates,
                     &mut gpu_temps,
-                    ]);
+                ]);
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
                 // this frame has been released above, so nothing outlives the return.
@@ -2351,7 +2345,7 @@ impl VulkanSession {
                     &mut staging_dls,
                     &mut gpu_intermediates,
                     &mut gpu_temps,
-                    ]);
+                ]);
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
                 // this frame has been released above, so nothing outlives the return.
@@ -2567,7 +2561,7 @@ impl VulkanSession {
                 &mut staging_dls,
                 &mut gpu_intermediates,
                 &mut gpu_temps,
-                ]);
+            ]);
             // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
             // message is a 'static NUL-terminated literal. Every buffer allocated by
             // this frame has been released above, so nothing outlives the return.
@@ -2608,7 +2602,7 @@ impl VulkanSession {
                 &mut staging_dls,
                 &mut gpu_intermediates,
                 &mut gpu_temps,
-                ]);
+            ]);
             // SAFETY: `api` is a valid ORT API pointer for this EP invocation.
             return unsafe {
                 crate::sys::make_status(api, ort::OrtErrorCode_ORT_EP_FAIL, "vkQueueSubmit failed")
@@ -2636,7 +2630,7 @@ impl VulkanSession {
                 &mut staging_dls,
                 &mut gpu_intermediates,
                 &mut gpu_temps,
-                ]);
+            ]);
             // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
             // message is a 'static NUL-terminated literal. Every buffer allocated by
             // this frame has been released above, so nothing outlives the return.
@@ -2797,7 +2791,7 @@ impl VulkanSession {
             &mut staging_dls,
             &mut gpu_intermediates,
             &mut gpu_temps,
-            ]);
+        ]);
         status
     }
 

@@ -54,7 +54,8 @@
 //! `engine::BufferView` token side-table in `ep.rs`.
 
 use ash::vk;
-use gpu_allocator::MemoryLocation;use gpu_allocator::vulkan::{
+use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::{
     Allocation, AllocationCreateDesc, AllocationScheme, Allocator as GpuAllocator,
     AllocatorCreateDesc,
 };
