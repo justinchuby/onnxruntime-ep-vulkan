@@ -166,3 +166,88 @@ criterion motion is not "is this true?", it is "what does it admit?" (the unsati
 was refuted without a run; the false premise was harmless, but relaxing the criterion on its
 strength would have admitted two of three real failures with no element moving). This applies to any
 motion you adjudicate against a criterion or a prior ruling. — decided by Morpheus
+## Round 39 — 2026-08-05 — the reds I was given do not reproduce, and the register that was supposed to hold them could not load
+**Assigned:** two device-lane reds from Link's triage (criterion 4 / criterion 3d, and the
+wiring census), and a repair attempt on `ci/check_flake_witness.py` — which the brief said
+was worth more than either red. It was right, and for a reason nobody had stated yet.
+**The two Windows reds do not reproduce on a real device, and that is the finding.** On
+this box, unelevated, with a fresh release build: `epctl --probe-validation` reads ARMED in
+the real frame and LAYER ABSENT (exit 3) with `VK_LAYER_PATH` redirected, and the criterion-4
+suppressed row classifies as `suppressed` through Link's own `check_icd_suppression.classify()`.
+Both witnesses pass. So the lane's failure is a property of the lane, not of the code, and
+it is a different repair with a different owner. Both now carry a **second removal
+mechanism** — `VK_LOADER_LAYERS_DISABLE` / `VK_LOADER_DRIVERS_DISABLE`, tried only when the
+search-path arm leaves the loader armed — because the loader documents the path variables
+as *ignored under elevation* and attaches no such caveat to the filters. **I could not
+verify elevation.** This account has a UAC-split token and consent is interactive, so the
+instruments **record which mechanism took** instead of asserting why, and the failure text
+now says that if the filter arm also failed then elevation is not the explanation.
+**The census red reproduced exactly, on a GPU box, with no file changed** — by setting
+`ci/device_state.py`'s own `ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS=none`. The defect was
+that the planted control demanded the token only a *telemetry host* produces, so its
+polarity came from the runner rather than from its input, and every GPU-free lane was red
+forever with no path to green. Repaired by **predicting** the token the host class owes and
+adding a second arm whose expected answer is host-independent. Six device-free falsifiers,
+one of which proved a branch unreachable — removed rather than left as a line that can
+never execute.
+**The surprise that cost the most, and it was mine.** The CI step "Lane-check self-test"
+has been red on `main` for days with `ASSERTIONS: FAIL(tautological_assertions=1)`. The
+tautology is `assert filesystem_progress([d], depth=1) == filesystem_progress([d], depth=1)`
+in `tests/ops/test_stall_guard.py` — **the stall-guard test I wrote last round**, two
+spellings of one call, true of every function ever written, in the arm whose entire purpose
+was to show that a depth-1 witness is *blind* to the write a depth-3 witness sees. The arm
+that measured the interesting polarity could not have failed. Fixed by capturing the
+shallow fingerprint **before** the deep write; `lane_checks_suite` is now **green** in
+`ci/open_reds.json`, having been an unaccounted red. I was told two of the reds were mine.
+Three were.
+**The second surprise: the device register had not ruled on anything for days.** The
+`extent` rule (69ac222) is enforced by raising out of `load_register`, and three of four
+accepted reds in `ci/open_reds_device.json` predate it — so the whole file exited 2 having
+measured nothing, `--list` and `--only` included. Ten entries, one of them a lease that
+could have expired unnoticed, answered by a usage error about a fourth. That is
+`target_ran_nothing` inside the screen written to prevent it. A missing extent is now that
+**entry's** `ERROR(instrument=extent_undeclared)`, exit 4, never accepted and never run,
+while the rest of the file is ruled on. And the same omission one level down:
+`negative_control_open_reds.py` had **no extent arm at all** and its `red_entry()` factory
+had no extent, so every planted red arm had silently been measuring "the register refuses
+to load" while its recorded question was about `stale_acceptance` or `lease_expired`. Six
+extent arms added, both polarities.
+**The flake witness was inert one level below the defect that was fixed.** Link's regex
+repair works — I verified it against the **real** captured Windows lane log from the
+`lane-evidence-windows` artifact, in-lane and locally, 8 failures named. Underneath:
+`parse_pytest`'s docstring described a complement reconstruction that **did not exist**, so
+`join()`'s `if not fails or not passes` branch was taken every time, at any history depth,
+and the pytest half of the intermittency join could not fire — 8 `FAILED` and 0
+`NOT_FAILED` in 609 real records. And a green pytest run wrote **nothing**: the run that
+exonerates a commit left no trace. `RUN_SEEN` markers plus `synthesise_not_failed()` close
+both. The old control arm passed on a **hand-typed** `NOT_FAILED` the parser can never
+emit — the same shape as the `====` regex, a control agreeing with its own fixtures. The
+new arms go through the tool's own append path only, and the real log is now tracked as a
+fixture. 21 arms.
+**What my verification established and what it did not.** It established that on one real,
+unelevated GPU box all three assigned reds are green, that the census red is reproducible
+on demand through a documented switch, that the flake witness parses a real lane log and
+that its pytest join now fires end-to-end on that log with no hand-written record. It did
+**not** establish why the CI lanes are red: elevation remains a hypothesis I could not test
+here, lavapipe was not run on this box at all, and the loader-filter arms are unproven
+against an elevated process. It did not establish that the flake witness can find a real
+intermittent — in CI the ledger still holds **one run**, because it is uploaded and never
+downloaded back, so the inference is correct and has almost nothing to infer over. And it
+says nothing about the other CI reds: `harness_census_drift`, `audit_instruments_census`,
+`artifact_frame` and its control read **unaccounted red on this box today** and belong to
+Mouse and Link.
+**Verified on this box (Windows, RTX 4060 Laptop, unelevated, ORT 1.28):** `cargo fmt
+--check` clean; `cargo test --lib` **620 passed / 0 failed / 4 ignored**;
+`tests/ops/test_wiring_census.py` **13 passed, 1 xfailed** after the merge and the repair;
+criterion 4 + criterion 3d **6 passed**; `ci/test_lane_checks.py` **174 passed, 3 failed**
+and those three are the declared `lane_checks_census_extent` red; `negative_control_flake_witness.py`
+**21/21**; `negative_control_open_reds.py` planted and replayed arms **all green**;
+`check_open_reds.py --register ci/open_reds_device.json --only` my three entries **3 PASS**.
+**Not run, and named:** the lavapipe lanes (no lavapipe on this box), any elevated process
+(interactive UAC consent), `criterion10` beyond the one run taken to derive its extent, and
+the full `pytest tests/ops` suite.
+**`atol`/`rtol` untouched for the sixth round running.**
+**For Link:** the `pre-merge-commit` hook did **not** fire on either of my merges. A
+fast-forward writes no merge commit, and a conflicted merge finishes through `git commit`,
+which runs `pre-commit`. Two of the three ways to merge bypass the colour read. I read it
+by hand: `main` is RED at 61627d6, 9 of the last 10 completed runs failed.

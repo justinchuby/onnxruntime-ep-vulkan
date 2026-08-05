@@ -366,6 +366,62 @@ def main() -> int:
             tmp,
         )
 
+        # ---- 11b. THE SAME CLAIM WITH NOTHING HAND-TYPED IN THE LEDGER -------------
+        # Arm 11 above supplies the NOT_FAILED record by writing it into the ledger by
+        # hand.  `parse_pytest` never produces that record — it returns `[]` for
+        # `not_failed` on every pytest log there has ever been — so arm 11 was green
+        # while the pytest half of the join could not fire at any history depth.  The
+        # control agreed with its fixtures and the fixtures were typed from the
+        # docstring.
+        #
+        # This arm writes NOTHING by hand.  Both runs go through the tool's own append
+        # path, so every record in the ledger is a record the parser can actually emit,
+        # and the second run is a GREEN log — the run that exonerates a commit, which
+        # until 2026-08-04 left no trace in the ledger at all.
+        led11b = tmp / "l11b.jsonl"
+        run(["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "HHHB",
+             "--run-id", "r1", "--ledger", str(led11b), str(tmp / "pytest-red.log")])
+        run(["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "HHHB",
+             "--run-id", "r2", "--ledger", str(led11b), str(tmp / "pytest-green.log")])
+        typed_by_hand = [
+            ln for ln in led11b.read_text(encoding="utf-8").splitlines()
+            if ln.strip() and json.loads(ln).get("outcome") == "NOT_FAILED"
+        ]
+        if typed_by_hand:
+            failures.append(
+                "[PLANTED] arm 11b's ledger contains a written NOT_FAILED record. The "
+                "whole point of this arm is that the parser cannot write one, so if it "
+                "now can, the inference is no longer an inference and this arm is not "
+                "the control it claims to be."
+            )
+        arm(
+            PLANTED,
+            "a pytest flake is found with NO hand-written ledger record (the arm 11 gap)",
+            ["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "HHHB",
+             "--run-id", "r3", "--ledger", str(led11b), "--no-append", "--require-history", "2",
+             str(tmp / "pytest-green.log")],
+            1,
+            "THE COMMIT IS EXONERATED AND THE TEST IS NOT",
+            tmp,
+        )
+
+        # ---- 11c. and the inference does not manufacture a flake out of one run -----
+        # If a single failing run were enough, every red would be reported as a flake.
+        # One run cannot be a rate — the same sentence this file's header makes.
+        led11c = tmp / "l11c.jsonl"
+        run(["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "HHHC",
+             "--run-id", "r1", "--ledger", str(led11c), str(tmp / "pytest-red.log")])
+        arm(
+            PLANTED,
+            "one failing pytest run alone is NOT an intermittent, inference or not",
+            ["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "HHHC",
+             "--run-id", "r2", "--ledger", str(led11c), "--no-append",
+             str(tmp / "pytest-red.log")],
+            0,
+            "FLAKE-WITNESS: PASS",
+            tmp,
+        )
+
         # ---- 12. LIVE: real captured runs must NOT claim an intermittent -----------
         # Two of the forty runs are TRACKED under ci/fixtures/flake-witness/ so this arm
         # exists on a hosted runner and not only on the box that produced them. The other
@@ -413,6 +469,81 @@ def main() -> int:
                     "FLAKE-WITNESS: FAIL(condition=intermittent)",
                     tmp,
                 )
+
+        # ---- 13. LIVE, PYTEST: the first real pytest lane log this check has ever read -
+        # Every pytest arm above this line is planted, and until 2026-08-04 every pytest
+        # FIXTURE in this file was hand-typed from memory — which is how the check came to
+        # require `====` decoration that no lane emits, and how a control agreed with the
+        # code for weeks about a log neither had seen. The subject here is
+        # ci/fixtures/flake-witness/real-pytest-windows-run-30974825118.log: the Windows
+        # lane's ACTUAL captured pytest output, downloaded from the lane-evidence-windows
+        # artifact of run 30974825118 on main 3ede9c5, `-q`, no decoration, 8 real
+        # failures. It is tracked for the same reason the libtest captures are: an arm
+        # that depends on an untracked download is an arm that quietly stops existing.
+        pyfix = HERE / "fixtures" / "flake-witness" / "real-pytest-windows-run-30974825118.log"
+        if not pyfix.is_file():
+            failures.append(
+                f"[LIVE] {pyfix.name} is missing. It is the only pytest subject in this "
+                "file that was not typed by hand, which is exactly why it is tracked."
+            )
+        else:
+            live_py = tmp / "live-pytest.jsonl"
+            code, out = run(
+                ["--harness", "pytest", "--suite", "ops", "--lane", "windows",
+                 "--commit", "3ede9c5", "--run-id", "30974825118", "--ledger", str(live_py),
+                 str(pyfix)]
+            )
+            named = [
+                line for line in out.splitlines()
+                if "failing test" in line or "FLAKE-WITNESS" in line
+            ]
+            if code == 0 and "FLAKE-WITNESS: PASS" in out:
+                fired.append((
+                    LIVE,
+                    "a REAL captured pytest lane log parses and names its failures",
+                    " | ".join(named)[:200] or "exit 0",
+                ))
+            else:
+                failures.append(
+                    f"[{LIVE}] real pytest log: wanted exit 0 / PASS, got {code}.\n"
+                    f"{out.strip()[:2000]}\n"
+                )
+            recs = [
+                json.loads(line)
+                for line in live_py.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            failed_ids = {r["test_id"] for r in recs if r["outcome"] == "FAILED"}
+            if len(failed_ids) == 8:
+                fired.append((
+                    LIVE,
+                    "and it names 8 distinct failing ids off a bare `-q` summary",
+                    "the count the lane's own log carries",
+                ))
+            else:
+                failures.append(
+                    f"[{LIVE}] the real pytest log yielded {len(failed_ids)} failing id(s), "
+                    "not the 8 its summary lists. Either the parser regressed or the "
+                    f"fixture was replaced: {sorted(failed_ids)[:10]}"
+                )
+            # The complement, on the real subject: a SECOND run of the same lane in which
+            # those ids do not fail must make them intermittent — and no NOT_FAILED record
+            # is written by hand anywhere in this arm, because the parser cannot write one.
+            green = tmp / "real-pytest-green.log"
+            green.write_text("852 passed in 900.00s\n", encoding="utf-8")
+            run(["--harness", "pytest", "--suite", "ops", "--lane", "windows",
+                 "--commit", "3ede9c5", "--run-id", "30974825118#2", "--ledger", str(live_py),
+                 str(green)])
+            arm(
+                LIVE,
+                "and a later green run of the same lane makes the real ids intermittent",
+                ["--harness", "pytest", "--suite", "ops", "--lane", "windows",
+                 "--commit", "3ede9c5", "--run-id", "30974825118#q", "--ledger", str(live_py),
+                 "--no-append", "--require-history", "2", str(green)],
+                1,
+                "FLAKE-WITNESS: FAIL(condition=intermittent)",
+                tmp,
+            )
 
     print("FLAKE-WITNESS NEGATIVE CONTROL")
     print("=" * 78)

@@ -1,0 +1,568 @@
+
+[ORACLE STATUS] Q/DQ-23 ReferenceEvaluator: SAFE (raises): ReferenceEvaluator raises TypeError for DQ-23 output_dtype in this environment (onnx 1.22.0). The fallback is live but detectable. Detail: Issues with types [<class 'numpy.ndarray'>, <class 'numpy.float32'>, <class 'numpy.uint8'>] and attributes ['axis', 'block_size', 'output_dtype'] and linked attributes=[] (operator 'DequantizeLinear_21').
+...................ssssssssssssssssss.......................ssss........ [  7%]
+.....................ssss...............................ss.............. [ 15%]
+........................................................................ [ 23%]
+........................................................................ [ 31%]
+......F..........................................
+PRECONDITION(equivalence authority): 19 uncertified record(s) carry both values; 19 are unreconciled. Not a gate � see _is_certified().
+....................... [ 39%]
+............................sssss..................F....s............... [ 47%]
+......FF............x................................................... [ 55%]
+...................................FF................................... [ 63%]
+...........................................sssssssss..............s..... [ 71%]
+........s...............................................x..............s [ 79%]
+........................................................................ [ 87%]
+....................F.......ssss........................................ [ 95%]
+..............................F......x                                   [100%]
+================================== FAILURES ===================================
+____________________ test_criterion4_icd_polarity_witness _____________________
+tests\ops\test_criterion_4_5_witness.py:285: in test_criterion4_icd_polarity_witness
+    raise _verdict.InstrumentError(
+E   _verdict.InstrumentError: [criterion 4 instrument failure] ERROR(instrument): the ICD-removal negative control did not fire � classifier says 'probe_report_unreadable'.
+E   The loader-probe report contains neither the capability-gate line nor an instance-creation failure. It cannot tell 'no capable device' from 'the report was reworded', and guessing would either green-light a broken runner or condemn a working one.
+E   The control did not reach its observation, so THIS IS NOT A CRITERION-4 FAILURE and it is not a pass either (R13).  On Windows the usual cause is PLATFORMS.md �7.4.1: the LunarG loader ignores VK_DRIVER_FILES / VK_ICD_FILENAMES in elevated processes.  Run the lane unelevated, or unregister the ICD from HKLM\SOFTWARE\Khronos\Vulkan\Drivers.
+E   artifact: D:\a\onnxruntime-ep-vulkan\onnxruntime-ep-vulkan\bench\results\criterion4_icd_witness-devunset.json
+---------------------------- Captured stderr call -----------------------------
+
+[WITNESS] wrote D:\a\onnxruntime-ep-vulkan\onnxruntime-ep-vulkan\bench\results\criterion4_icd_witness-devunset.json
+______________________ test_census_baseline_has_no_drift ______________________
+tests\ops\test_harness_census.py:199: in test_census_baseline_has_no_drift
+    assert rc == audit.EXIT_PASS, (
+E   AssertionError: instrument census reported FAIL(drift).  Quote the drift, not the exit code:
+E     ALSIFIED bench/timestamp_audit.py::wrap_period_seconds              calls=4 reject_polarity=0 accept_polarity=2
+E     
+E       SCREENED   bench/clock_log.py::load                                   calls=63 reject_polarity=4 accept_polarity=53
+E       SCREENED   bench/win_gpu_counters.py::luid_for_adapter                calls=6 reject_polarity=1 accept_polarity=1
+E       SCREENED   bench/run_disturbance.py::measure                          calls=17 reject_polarity=2 accept_polarity=10
+E       SCREENED   bench/run_disturbance.py::per_inference_kernel_us          calls=13 reject_polarity=1 accept_polarity=4
+E       SCREENED   bench/run_disturbance.py::synthetic_clean                  calls=8 reject_polarity=1 accept_polarity=3
+E     
+E       UNFALSIFIED is not a bug report; it is the absence of one. It says only that
+E       nothing in the always-on lane has ever watched this instrument disagree, so a
+E       broken one and a working one would look the same. Guard D lived here for its
+E       whole life while the Rust screen's question ('has it got a caller?') said WIRED.
+E     
+E       READ THE UNFALSIFIED COUNT HERE AS A PROPERTY OF THIS SCREEN, NOT AS A VERDICT ON
+E       bench/'s TESTS. Polarity is detected from `pytest.raises`, and most bench
+E       instruments are TOTAL functions: they return a token (`STEADY`, `MARGINAL_TAIL`,
+E       `NO_STEADY_TAIL`, `SOLE_TENANT`) instead of raising, so a test that watches
+E       `gpu_steady_tail` refuse a series is invisible to the raise-based model. This is the
+E       same limit already recorded for `classify_` in the harness domain. `unfalsified`
+E       here means THIS SCREEN has not seen a disagreement, which is exactly what R12 says
+E       it should say, and not that no test watches one. Crediting a polarity this screen
+E       did not observe would be the Guard D shape with the sign flipped.
+E       Handed to Niobe: a value-polarity model for total instruments, or a note per row.
+E     
+E     CENSUS VERDICT: FAIL(drift)
+E     
+E     FAIL: 3 NEW uninvoked instrument(s):
+E       + counters.rs::on_arena_insert
+E       + counters.rs::on_arena_release
+E       + counters.rs::on_arena_remove
+E     
+E   assert 1 == 0
+E    +  where 0 = <module 'audit_instruments' from 'D:\\a\\onnxruntime-ep-vulkan\\onnxruntime-ep-vulkan\\rust\\tools\\audit_instruments.py'>.EXIT_PASS
+________________ test_the_python_binding_hardcodes_gpu_to_cuda ________________
+tests\ops\test_kv_device_residency.py:166: in test_the_python_binding_hardcodes_gpu_to_cuda
+    assert "CUDA" in d["q1_addressable"]["by_device_type_and_vendor"]
+E   AssertionError: assert 'CUDA' in 'OK'
+_______________ test_live_caller_bound_kv_stays_device_resident _______________
+tests\ops\test_kv_device_residency.py:189: in test_live_caller_bound_kv_stays_device_resident
+    assert r.returncode == 0, (r.stdout or "")[-3000:]
+E   AssertionError: 
+E   assert 3221225477 == 0
+E    +  where 3221225477 = CompletedProcess(args=['C:\\hostedtoolcache\\windows\\Python\\3.11.9\\x64\\python.exe', 'D:\\a\\onnxruntime-ep-vulkan\...x00 \x00t\x00o\x00 \x00l\x00e\x00n\x00i\x00e\x00n\x00t\x00 \x00m\x00e\x00r\x00g\x00e\x00.\x00\x1b\x00[\x00m\x00\n\x00').returncode
+__________________________ test_op_table[Asin-fp32] ___________________________
+tests\ops\test_op_table.py:559: in test_op_table
+    m.check(model, case.feeds, **case.tol)
+tests\ops\_models.py:1942: in check
+    assert_matches_cpu(model, feeds, rtol=rtol, atol=atol)
+tests\ops\_models.py:1684: in assert_matches_cpu
+    np.testing.assert_allclose(
+E   AssertionError: 
+E   Not equal to tolerance rtol=1e-05, atol=1e-05
+E   output[0]: Vulkan EP vs ORT CPU EP mismatch
+E   Mismatched elements: 5 / 12 (41.7%)
+E   Mismatch at indices:
+E    [0, 3]: 0.7177761793136597 (ACTUAL), 0.717923104763031 (DESIRED)
+E    [1, 1]: 0.5720859169960022 (ACTUAL), 0.5723021626472473 (DESIRED)
+E    [1, 2]: -0.9474952220916748 (ACTUAL), -0.9473399519920349 (DESIRED)
+E    [2, 1]: 0.700371503829956 (ACTUAL), 0.7005334496498108 (DESIRED)
+E    [2, 2]: -1.1018685102462769 (ACTUAL), -1.1015288829803467 (DESIRED)
+E   Max absolute difference among violations: 0.00033963
+E   Max relative difference among violations: 0.00037785
+E    ACTUAL: array([[ 0.321036,  0.393978,  0.515187,  0.717776],
+E          [ 0.445575,  0.572086, -0.947495, -0.49819 ],
+E          [ 0.221216,  0.700372, -1.101869,  0.026336]], dtype=float32)
+E    DESIRED: array([[ 0.321036,  0.393978,  0.515187,  0.717923],
+E          [ 0.445575,  0.572302, -0.94734 , -0.49819 ],
+E          [ 0.221216,  0.700533, -1.101529,  0.026336]], dtype=float32)
+---------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [�8.9.18] proof ledger: 131/131 entries live, 0 demoted
+[vulkan-ep] INFO: [�8.9.20] proof ledger: all 131 entr(ies) name the runtime specialisation they were proven under
+[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [�10.0.1 R12]: Asin x1 [ai.onnx::Asin/7+/f32>f32/ew_unary_asin_f32/static/n1] PROVEN-ELSEWHERE{device}: proven by evidence/cases/asin_f32.onnx against 1.28.0 � device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `llvmpipe (LLVM 22.1.8, 256 bits)`. The subject is this build's code; only the frame moved, so the claim stands and says so.. The proofs are sound; what cannot be checked is whether they were obtained on the hardware this run opened, because the entry records a selector ordinal and a selector is a request rather than an identity. Re-prove with gen_proof_ledger.py --append on this device to replace the ordinal with a device name.
+[vulkan-ep] WARN: GetCapability: sole-island override � the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 96 boundary bytes across 0 fabricated-extent slots, 24 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })
+ [ 0 ; 9 3 m 2 0 2 6 - 0 8 - 0 5   0 4 : 3 1 : 1 4 . 6 6 9 1 9 1 8   [ W : o n n x r u n t i m e : D e f a u l t ,   e p . r s : 1 2 4 1   o n n x r u n t i m e _ v u l k a n _ e p : : e p ]   G e t C a p a b i l i t y :   s o l e - i s l a n d   o v e r r i d e      t h e   n e t - b e n e f i t   g a t e   R E J E C T E D   t h e   g r a p h ' s   o n l y   i s l a n d   ( 1   n o d e s ,   0   a n c h o r s ,   9 6   b o u n d a r y   b y t e s   a c r o s s   0   f a b r i c a t e d - e x t e n t   s l o t s ,   2 4   e s t .   F L O P s )   a n d   t h e   r e j e c t i o n   w a s   o v e r r i d d e n   b e c a u s e   t h e r e   i s   n o   a l t e r n a t i v e   p a r t i t i o n .   G a t e ' s   o w n   v e r d i c t :   R e j e c t ( T o o S m a l l   {   n o d e s :   1 ,   m i n _ n o d e s :   4   } )  [ m 
+ [vulkan-ep] INFO: [�8.9.18] proof ledger: 131/131 entries live, 0 demoted
+[vulkan-ep] INFO: [�8.9.20] proof ledger: all 131 entr(ies) name the runtime specialisation they were proven under
+[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [�10.0.1 R12]: Asin x1 [ai.onnx::Asin/7+/f32>f32/ew_unary_asin_f32/static/n1] PROVEN-ELSEWHERE{device}: proven by evidence/cases/asin_f32.onnx against 1.28.0 � device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `llvmpipe (LLVM 22.1.8, 256 bits)`. The subject is this build's code; only the frame moved, so the claim stands and says so.. The proofs are sound; what cannot be checked is whether they were obtained on the hardware this run opened, because the entry records a selector ordinal and a selector is a request rather than an identity. Re-prove with gen_proof_ledger.py --append on this device to replace the ordinal with a device name.
+[vulkan-ep] WARN: GetCapability: sole-island override � the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 96 boundary bytes across 0 fabricated-extent slots, 24 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })
+ [ 0 ; 9 3 m 2 0 2 6 - 0 8 - 0 5   0 4 : 3 1 : 1 4 . 6 8 3 2 4 6 3   [ W : o n n x r u n t i m e : D e f a u l t ,   e p . r s : 1 2 4 1   o n n x r u n t i m e _ v u l k a n _ e p : : e p ]   G e t C a p a b i l i t y :   s o l e - i s l a n d   o v e r r i d e      t h e   n e t - b e n e f i t   g a t e   R E J E C T E D   t h e   g r a p h ' s   o n l y   i s l a n d   ( 1   n o d e s ,   0   a n c h o r s ,   9 6   b o u n d a r y   b y t e s   a c r o s s   0   f a b r i c a t e d - e x t e n t   s l o t s ,   2 4   e s t .   F L O P s )   a n d   t h e   r e j e c t i o n   w a s   o v e r r i d d e n   b e c a u s e   t h e r e   i s   n o   a l t e r n a t i v e   p a r t i t i o n .   G a t e ' s   o w n   v e r d i c t :   R e j e c t ( T o o S m a l l   {   n o d e s :   1 ,   m i n _ n o d e s :   4   } )  [ m 
+ 
+__________________________ test_op_table[Acos-fp32] ___________________________
+tests\ops\test_op_table.py:559: in test_op_table
+    m.check(model, case.feeds, **case.tol)
+tests\ops\_models.py:1942: in check
+    assert_matches_cpu(model, feeds, rtol=rtol, atol=atol)
+tests\ops\_models.py:1684: in assert_matches_cpu
+    np.testing.assert_allclose(
+E   AssertionError: 
+E   Not equal to tolerance rtol=1e-05, atol=1e-05
+E   output[0]: Vulkan EP vs ORT CPU EP mismatch
+E   Mismatched elements: 12 / 12 (100%)
+E   First 5 mismatches are at indices:
+E    [0, 0]: 1.2458429336547852 (ACTUAL), 1.245998501777649 (DESIRED)
+E    [0, 1]: 2.5805158615112305 (ACTUAL), 2.580561399459839 (DESIRED)
+E    [0, 2]: 1.7494127750396729 (ACTUAL), 1.7493031024932861 (DESIRED)
+E    [0, 3]: 0.7783222198486328 (ACTUAL), 0.7782506346702576 (DESIRED)
+E    [1, 0]: 1.2566008567810059 (ACTUAL), 1.2567567825317383 (DESIRED)
+E   Max absolute difference among violations: 0.00015593
+E   Max relative difference among violations: 0.00012485
+E    ACTUAL: array([[1.245843, 2.580516, 1.749413, 0.778322],
+E          [1.256601, 2.062682, 0.882819, 1.848025],
+E          [0.881506, 1.94125 , 1.407396, 1.7575  ]], dtype=float32)
+E    DESIRED: array([[1.245999, 2.580561, 1.749303, 0.778251],
+E          [1.256757, 2.062598, 0.88278 , 1.847872],
+E          [0.881466, 1.941103, 1.407495, 1.757385]], dtype=float32)
+---------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [�8.9.18] proof ledger: 131/131 entries live, 0 demoted
+[vulkan-ep] INFO: [�8.9.20] proof ledger: all 131 entr(ies) name the runtime specialisation they were proven under
+[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [�10.0.1 R12]: Acos x1 [ai.onnx::Acos/7+/f32>f32/ew_unary_acos_f32/static/n1] PROVEN-ELSEWHERE{device}: proven by evidence/cases/acos_f32.onnx against 1.28.0 � device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `llvmpipe (LLVM 22.1.8, 256 bits)`. The subject is this build's code; only the frame moved, so the claim stands and says so.. The proofs are sound; what cannot be checked is whether they were obtained on the hardware this run opened, because the entry records a selector ordinal and a selector is a request rather than an identity. Re-prove with gen_proof_ledger.py --append on this device to replace the ordinal with a device name.
+[vulkan-ep] WARN: GetCapability: sole-island override � the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 96 boundary bytes across 0 fabricated-extent slots, 24 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })
+ [ 0 ; 9 3 m 2 0 2 6 - 0 8 - 0 5   0 4 : 3 1 : 1 4 . 7 8 8 0 0 0 7   [ W : o n n x r u n t i m e : D e f a u l t ,   e p . r s : 1 2 4 1   o n n x r u n t i m e _ v u l k a n _ e p : : e p ]   G e t C a p a b i l i t y :   s o l e - i s l a n d   o v e r r i d e      t h e   n e t - b e n e f i t   g a t e   R E J E C T E D   t h e   g r a p h ' s   o n l y   i s l a n d   ( 1   n o d e s ,   0   a n c h o r s ,   9 6   b o u n d a r y   b y t e s   a c r o s s   0   f a b r i c a t e d - e x t e n t   s l o t s ,   2 4   e s t .   F L O P s )   a n d   t h e   r e j e c t i o n   w a s   o v e r r i d d e n   b e c a u s e   t h e r e   i s   n o   a l t e r n a t i v e   p a r t i t i o n .   G a t e ' s   o w n   v e r d i c t :   R e j e c t ( T o o S m a l l   {   n o d e s :   1 ,   m i n _ n o d e s :   4   } )  [ m 
+ [vulkan-ep] INFO: [�8.9.18] proof ledger: 131/131 entries live, 0 demoted
+[vulkan-ep] INFO: [�8.9.20] proof ledger: all 131 entr(ies) name the runtime specialisation they were proven under
+[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [�10.0.1 R12]: Acos x1 [ai.onnx::Acos/7+/f32>f32/ew_unary_acos_f32/static/n1] PROVEN-ELSEWHERE{device}: proven by evidence/cases/acos_f32.onnx against 1.28.0 � device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `llvmpipe (LLVM 22.1.8, 256 bits)`. The subject is this build's code; only the frame moved, so the claim stands and says so.. The proofs are sound; what cannot be checked is whether they were obtained on the hardware this run opened, because the entry records a selector ordinal and a selector is a request rather than an identity. Re-prove with gen_proof_ledger.py --append on this device to replace the ordinal with a device name.
+[vulkan-ep] WARN: GetCapability: sole-island override � the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 96 boundary bytes across 0 fabricated-extent slots, 24 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })
+ [ 0 ; 9 3 m 2 0 2 6 - 0 8 - 0 5   0 4 : 3 1 : 1 4 . 8 0 1 9 3 5 8   [ W : o n n x r u n t i m e : D e f a u l t ,   e p . r s : 1 2 4 1   o n n x r u n t i m e _ v u l k a n _ e p : : e p ]   G e t C a p a b i l i t y :   s o l e - i s l a n d   o v e r r i d e      t h e   n e t - b e n e f i t   g a t e   R E J E C T E D   t h e   g r a p h ' s   o n l y   i s l a n d   ( 1   n o d e s ,   0   a n c h o r s ,   9 6   b o u n d a r y   b y t e s   a c r o s s   0   f a b r i c a t e d - e x t e n t   s l o t s ,   2 4   e s t .   F L O P s )   a n d   t h e   r e j e c t i o n   w a s   o v e r r i d d e n   b e c a u s e   t h e r e   i s   n o   a l t e r n a t i v e   p a r t i t i o n .   G a t e ' s   o w n   v e r d i c t :   R e j e c t ( T o o S m a l l   {   n o d e s :   1 ,   m i n _ n o d e s :   4   } )  [ m 
+ 
+______ test_the_armed_gate_changes_its_answer_when_the_layer_is_removed _______
+tests\ops\test_validation.py:594: in test_the_armed_gate_changes_its_answer_when_the_layer_is_removed
+    raise _verdict.InstrumentError(
+E   _verdict.InstrumentError: [criterion 3d instrument failure] ERROR(instrument): VK_LAYER_PATH was redirected to a directory with no layer manifests and this loader still reports ARMED, so the unarmed branch of the gate could not be exercised on this machine. The gate's classification is still falsified without a machine in tests/ops/test_r13_lane.py; what is missing here is the on-hardware half.
+---------------------------- Captured stderr call -----------------------------
+
+[CRITERION 3d] real frame: ARMED � epctl reports VALIDATION ARMED
+[CRITERION 3d] frame with VK_LAYER_PATH stripped: ARMED � epctl reports VALIDATION ARMED
+_____________________________ test_wiring_census ______________________________
+tests\ops\test_wiring_census.py:2183: in test_wiring_census
+    raise _verdict.InstrumentError(
+E   _verdict.InstrumentError: [wiring census instrument failure] ERROR(instrument): the census could not observe the following mechanisms, so it has said nothing about them:
+E     device_state_guard: INSTRUMENT-ERROR (planted control: DEVICE-STATE: ERROR(instrument=device_state_producer_absent))
+E   
+E   An instrument error NEVER counts as a detection (R13). None of the lines above is evidence that a mechanism is unwired. Note the census no longer carries a wall-clock timeout at all: its stall detector is denominated in reference computations this machine completed during this run (see `stall_detector` in the artifact), so contention cannot by itself produce a line above.
+E   
+E   All census observations:
+E     partitioner: dispatches_executed=1, subgraphs_live=1, claimed_from_profiling=1, islands_from_profiling=1 (both numbers are DELTAS across this session; claimed counts graph nodes and islands counts fused subgraphs, so one island over many claimed nodes is a success and not a catastrophe)
+E     partition_identity_check: VACUOUS (claimed=1, islands=1; single-node graph is expected)
+E     net_benefit_gate: EVALUATED clusters_seen=1 evaluations=1 bypasses=0 sole_island_overrides=1 viable_islands_retained=0 (retained is typed: 'UNWIRED'/'UNOBSERVABLE'/int � a type cannot be forged by an increment) cost_model_inputs: ONNXRUNTIME_EP_VULKAN_PARTITION_MARGIN=unset ONNXRUNTIME_EP_VULKAN_PARTITION_MIN_NODES=unset ONNXRUNTIME_EP_VULKAN_PARTITION_FLOPS_PER_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_BYTES_PER_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION=unset
+E     gpu_tracer: 28 trace event(s), ph_types=['C', 'M', 'X', 'i'], distinct_names=16; Phase variants emitted (6/10): ['Record', 'DescAlloc', 'PipelineLookup', 'CmdUpload', 'Submit', 'FenceWait']; NOT-EMITTED: ['Compile', 'Prepack', 'Upload', 'Readback'] (matched as ['vulkan.compile', 'vulkan.prepack']� � the trace spells the variants snake_case under a `vulkan.` prefix, per trace.rs::Phase::as_str; a matcher that looked for the Rust identifier reported 0/10 and was wrong, which is why R13 says a result confirming a prediction earns more scrutiny than one contradicting it); (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE=census-trace-devunset.json; ONNXRUNTIME_EP_VULKAN_TRACE_GPU=unset � the census does not arm device spans, because a device-clock reading under four-agent contention is Switch's exclusive claim and Niobe's admissibility frame, so any device-side phase above is UNOBSERVABLE in this frame rather than absent. No duration from this file is quoted � �10.0 obligation 8. A variant present in Rust and missing from this list is a name this census has never seen emitted, which is what Phase::Record was for fifty runs)
+E     model_output_equivalence: census-child verdict='UNMEASURED' executed_by=None (this lane runs an elementwise chain, not the criterion-10 model; the attributed MATCH belongs to test_criterion10.py and is not claimed here)
+E     retain_viable: viable_islands_retained=157 (the mechanism's own namesake counter, named here because a line that reports a bare number does not say which counter it read � this mechanism's extent against the independent whole was 0/1 for exactly that reason)
+E     ledger_lookup: ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=131 unproven_declines=0 unproven_forms_claimed=0 unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int) | ledger frame: ONNXRUNTIME_EP_VULKAN_LEDGER_FILE=unset ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=unset (the ledger the lookup consulted is named by the first; the second is what would let an unproven form be claimed anyway, and a lookup reading observed without both is not replayable)
+E     validation_messenger: ARMED probe_frame: ONNXRUNTIME_EP_VULKAN_VALIDATE='1' ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION=unset ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION=unset
+E     layering_lint: PASS
+E     broken_commitment_warn: planted: channel='ORT_SINK' broken_commitments=1 compute_failures=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 compute_failures=0 fault_injection='NONE' | armed by ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE=unset in this process, set to '1' in the planted arm's child environment only (the EP caches its environment at DLL load on Windows, so an in-process set would be read by nothing)
+E     device_state_guard: INSTRUMENT-ERROR (planted control: DEVICE-STATE: ERROR(instrument=device_state_producer_absent))
+E     instrument_census: exit=1 CENSUS VERDICT: FAIL(drift) | 
+E     ep_entrypoints: COMPILED-AND-DISPATCHED compile_calls=1 compute_calls=1 subgraphs_stub=0 dispatches_executed=6 (counts are ENTRIES to the ORT entry points, not graph nodes and not islands; planted-failure polarity: compile_calls=1 compute_calls=1 subgraphs_stub=0 � CONSTANT-ACROSS-POLARITIES)
+E     flag_frame: 9 switch(es) disclosed; 6 discriminated by an artifact this run produced, 3 UNOBSERVABLE in this frame with a reason. Disclosure is not discrimination: the first says which world the census observed in, only the second can fail. || ONNXRUNTIME_EP_VULKAN_GEMV_PACKED[census_frame='1'] UNOBSERVABLE(armed in arm A and no discriminator exists in this frame: the census graph is a six-node elementwise chain with no MatMulNBits, so the packed GEMV kernel is not reachable and a 'no difference' reading would be a 0 for an event that cannot occur (R12). The kernel-identity observation needs either a GEMV case in the census lane or a counter naming the selected kernel � requested from Mouse/Switch as `gemv_packed_dispatches`) | ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY[census_frame='1'] MOVED(alloc_device_frame/frames_declared/device_backed_spans unset=('OFF', 0, 0) armed=('SHARED', 1, 3) (device='llvmpipe (LLVM 22.1.8, 256 bits)')) | ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS[census_frame='8'] MOVED(alloc_quarantine_peak_spans/retired unset=(0, 0) armed=(3, 0)) | ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB[census_frame='1024'] UNOBSERVABLE(armed at '1024' in arm A and no counter publishes the reservation size, so no artifact this run produced could differ. Requested from Tank: an `alloc_va_reserved_bytes` field, after which this segment becomes a two-arm discriminator like DEVICE_MEMORY's) | ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE[census_frame='D:\\a\\onnxruntime-ep-vulkan\\onnxruntime-ep-vulkan\\bench\\results\\census\\census-backend-probe-devunset.txt'] MOVED(the probe file the EP wrote names backend='sync2' (an artifact the mechanism produced, whose content names its selection)) | ONNXRUNTIME_EP_VULKAN_CLAIM_LOG[census_frame='D:\\a\\onnxruntime-ep-vulkan\\onnxruntime-ep-vulkan\\bench\\results\\census\\census-claim-log-devunset.jsonl'] MOVED(6 claim-decision record(s), ops=['Add', 'Mul'] (the count is of DECISIONS, not of graph nodes and not of claimed nodes)) | ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES[census_frame='1'] MOVED('dispatch kernel[' marker lines unset=0 armed=6 � each names the shader the dispatch used, so this is the one line in the census that observes kernel IDENTITY rather than kernel count) | ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG[census_frame='1'] UNOBSERVABLE(armed in arm A at child log severity '0' and its only output is a DECLINE report (`ep.rs:605`, "unclaimed {op} x{n} ({why})"). The census graph is a six-node Add/Mul chain that the EP claims in full � the claim log for this arm recorded every decision as claimed � so the switch has nothing to report in this frame. That is an event that cannot occur here, not a switch that does nothing (R12). Making it discriminable needs a census graph carrying at least one declined op) | ONNXRUNTIME_EP_VULKAN_VERBOSE[census_frame='1'] MOVED(child log lines unset=1036 armed=1107 at child log severity '0' (arm B arms VERBOSE and nothing else, so a difference here is attributable to it alone))
+---------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [�8.9.18] proof ledger: 131/131 entries live, 0 demoted
+[vulkan-ep] INFO: [�8.9.20] proof ledger: all 131 entr(ies) name the runtime specialisation they were proven under
+[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [�10.0.1 R12]: Add x1 [ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2] PROVEN-ELSEWHERE{device,specialisation}: proven by evidence/cases/add_f32.onnx against 1.28.0 � specialisation: the entry was proven under 77ed1c69886e68d5 and this run bound 378771d001ca0c50 for the same shader set � identical SPIR-V and identical source, different pipeline; device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `llvmpipe (LLVM 22.1.8, 256 bits)`. The subject is this build's code; only the frame moved, so the claim stands and says so.. The proofs are sound; what cannot be checked is whether they were obtained on the hardware this run opened, because the entry records a selector ordinal and a selector is a request rather than an identity. Re-prove with gen_proof_ledger.py --append on this device to replace the ordinal with a device name.
+[vulkan-ep] WARN: GetCapability: sole-island override � the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 192 boundary bytes across 0 fabricated-extent slots, 32 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })
+ [ 0 ; 9 3 m 2 0 2 6 - 0 8 - 0 5   0 4 : 3 2 : 4 7 . 1 8 0 2 1 1 4   [ W : o n n x r u n t i m e : D e f a u l t ,   e p . r s : 1 2 4 1   o n n x r u n t i m e _ v u l k a n _ e p : : e p ]   G e t C a p a b i l i t y :   s o l e - i s l a n d   o v e r r i d e      t h e   n e t - b e n e f i t   g a t e   R E J E C T E D   t h e   g r a p h ' s   o n l y   i s l a n d   ( 1   n o d e s ,   0   a n c h o r s ,   1 9 2   b o u n d a r y   b y t e s   a c r o s s   0   f a b r i c a t e d - e x t e n t   s l o t s ,   3 2   e s t .   F L O P s )   a n d   t h e   r e j e c t i o n   w a s   o v e r r i d d e n   b e c a u s e   t h e r e   i s   n o   a l t e r n a t i v e   p a r t i t i o n .   G a t e ' s   o w n   v e r d i c t :   R e j e c t ( T o o S m a l l   {   n o d e s :   1 ,   m i n _ n o d e s :   4   } )  [ m 
+ 
+FAIL: 3 NEW uninvoked instrument(s):
+  + counters.rs::on_arena_insert
+  + counters.rs::on_arena_release
+  + counters.rs::on_arena_remove
+
+[WIRING CENSUS] M0 criterion 12 � per-mechanism observations:
+[WIRING CENSUS] partitioner: dispatches_executed=1, subgraphs_live=1, claimed_from_profiling=1, islands_from_profiling=1 (both numbers are DELTAS across this session; claimed counts graph nodes and islands counts fused subgraphs, so one island over many claimed nodes is a success and not a catastrophe)
+[WIRING CENSUS] partition_identity_check: VACUOUS (claimed=1, islands=1; single-node graph is expected)
+[WIRING CENSUS] net_benefit_gate: EVALUATED clusters_seen=1 evaluations=1 bypasses=0 sole_island_overrides=1 viable_islands_retained=0 (retained is typed: 'UNWIRED'/'UNOBSERVABLE'/int � a type cannot be forged by an increment) cost_model_inputs: ONNXRUNTIME_EP_VULKAN_PARTITION_MARGIN=unset ONNXRUNTIME_EP_VULKAN_PARTITION_MIN_NODES=unset ONNXRUNTIME_EP_VULKAN_PARTITION_FLOPS_PER_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_BYTES_PER_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION=unset
+[WIRING CENSUS] gpu_tracer: 28 trace event(s), ph_types=['C', 'M', 'X', 'i'], distinct_names=16; Phase variants emitted (6/10): ['Record', 'DescAlloc', 'PipelineLookup', 'CmdUpload', 'Submit', 'FenceWait']; NOT-EMITTED: ['Compile', 'Prepack', 'Upload', 'Readback'] (matched as ['vulkan.compile', 'vulkan.prepack']� � the trace spells the variants snake_case under a `vulkan.` prefix, per trace.rs::Phase::as_str; a matcher that looked for the Rust identifier reported 0/10 and was wrong, which is why R13 says a result confirming a prediction earns more scrutiny than one contradicting it); (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE=census-trace-devunset.json; ONNXRUNTIME_EP_VULKAN_TRACE_GPU=unset � the census does not arm device spans, because a device-clock reading under four-agent contention is Switch's exclusive claim and Niobe's admissibility frame, so any device-side phase above is UNOBSERVABLE in this frame rather than absent. No duration from this file is quoted � �10.0 obligation 8. A variant present in Rust and missing from this list is a name this census has never seen emitted, which is what Phase::Record was for fifty runs)
+[WIRING CENSUS] model_output_equivalence: census-child verdict='UNMEASURED' executed_by=None (this lane runs an elementwise chain, not the criterion-10 model; the attributed MATCH belongs to test_criterion10.py and is not claimed here)
+[WIRING CENSUS] retain_viable: viable_islands_retained=157 (the mechanism's own namesake counter, named here because a line that reports a bare number does not say which counter it read � this mechanism's extent against the independent whole was 0/1 for exactly that reason)
+[WIRING CENSUS] ledger_lookup: ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=131 unproven_declines=0 unproven_forms_claimed=0 unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int) | ledger frame: ONNXRUNTIME_EP_VULKAN_LEDGER_FILE=unset ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=unset (the ledger the lookup consulted is named by the first; the second is what would let an unproven form be claimed anyway, and a lookup reading observed without both is not replayable)
+[WIRING CENSUS] validation_messenger: ARMED probe_frame: ONNXRUNTIME_EP_VULKAN_VALIDATE='1' ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION=unset ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION=unset
+[WIRING CENSUS] layering_lint: PASS
+[WIRING CENSUS] broken_commitment_warn: planted: channel='ORT_SINK' broken_commitments=1 compute_failures=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 compute_failures=0 fault_injection='NONE' | armed by ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE=unset in this process, set to '1' in the planted arm's child environment only (the EP caches its environment at DLL load on Windows, so an in-process set would be read by nothing)
+[WIRING CENSUS] device_state_guard: INSTRUMENT-ERROR (planted control: DEVICE-STATE: ERROR(instrument=device_state_producer_absent))
+[WIRING CENSUS] instrument_census: exit=1 CENSUS VERDICT: FAIL(drift) | 
+[WIRING CENSUS] ep_entrypoints: COMPILED-AND-DISPATCHED compile_calls=1 compute_calls=1 subgraphs_stub=0 dispatches_executed=6 (counts are ENTRIES to the ORT entry points, not graph nodes and not islands; planted-failure polarity: compile_calls=1 compute_calls=1 subgraphs_stub=0 � CONSTANT-ACROSS-POLARITIES)
+[WIRING CENSUS] flag_frame: 9 switch(es) disclosed; 6 discriminated by an artifact this run produced, 3 UNOBSERVABLE in this frame with a reason. Disclosure is not discrimination: the first says which world the census observed in, only the second can fail. || ONNXRUNTIME_EP_VULKAN_GEMV_PACKED[census_frame='1'] UNOBSERVABLE(armed in arm A and no discriminator exists in this frame: the census graph is a six-node elementwise chain with no MatMulNBits, so the packed GEMV kernel is not reachable and a 'no difference' reading would be a 0 for an event that cannot occur (R12). The kernel-identity observation needs either a GEMV case in the census lane or a counter naming the selected kernel � requested from Mouse/Switch as `gemv_packed_dispatches`) | ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY[census_frame='1'] MOVED(alloc_device_frame/frames_declared/device_backed_spans unset=('OFF', 0, 0) armed=('SHARED', 1, 3) (device='llvmpipe (LLVM 22.1.8, 256 bits)')) | ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS[census_frame='8'] MOVED(alloc_quarantine_peak_spans/retired unset=(0, 0) armed=(3, 0)) | ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB[census_frame='1024'] UNOBSERVABLE(armed at '1024' in arm A and no counter publishes the reservation size, so no artifact this run produced could differ. Requested from Tank: an `alloc_va_reserved_bytes` field, after which this segment becomes a two-arm discriminator like DEVICE_MEMORY's) | ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE[census_frame='D:\\a\\onnxruntime-ep-vulkan\\onnxruntime-ep-vulkan\\bench\\results\\census\\census-backend-probe-devunset.txt'] MOVED(the probe file the EP wrote names backend='sync2' (an artifact the mechanism produced, whose content names its selection)) | ONNXRUNTIME_EP_VULKAN_CLAIM_LOG[census_frame='D:\\a\\onnxruntime-ep-vulkan\\onnxruntime-ep-vulkan\\bench\\results\\census\\census-claim-log-devunset.jsonl'] MOVED(6 claim-decision record(s), ops=['Add', 'Mul'] (the count is of DECISIONS, not of graph nodes and not of claimed nodes)) | ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES[census_frame='1'] MOVED('dispatch kernel[' marker lines unset=0 armed=6 � each names the shader the dispatch used, so this is the one line in the census that observes kernel IDENTITY rather than kernel count) | ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG[census_frame='1'] UNOBSERVABLE(armed in arm A at child log severity '0' and its only output is a DECLINE report (`ep.rs:605`, "unclaimed {op} x{n} ({why})"). The census graph is a six-node Add/Mul chain that the EP claims in full � the claim log for this arm recorded every decision as claimed � so the switch has nothing to report in this frame. That is an event that cannot occur here, not a switch that does nothing (R12). Making it discriminable needs a census graph carrying at least one declined op) | ONNXRUNTIME_EP_VULKAN_VERBOSE[census_frame='1'] MOVED(child log lines unset=1036 armed=1107 at child log severity '0' (arm B arms VERBOSE and nothing else, so a difference here is attributable to it alone))
+[WIRING CENSUS] end.
+[WIRING CENSUS] wrote D:\a\onnxruntime-ep-vulkan\onnxruntime-ep-vulkan\bench\results\wiring_census-devunset.json
+============================== warnings summary ===============================
+tests/ops/test_barrier_parity.py::test_barrier_parity[Add-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Add-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sub-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Sub-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mul-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Mul-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Div-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Div-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Pow-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Pow-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Neg-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Neg-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Abs-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Abs-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sign-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Sign-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Floor-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Floor-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Ceil-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Ceil-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Round-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Round-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sqrt-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Sqrt-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Reciprocal-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Reciprocal-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Exp-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Exp-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Log-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Log-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Erf-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Erf-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sin-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Sin-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Cos-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Cos-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tan-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Tan-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Asin-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Asin-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Acos-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Acos-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Atan-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Atan-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sinh-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Sinh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Cosh-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Cosh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tanh-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Tanh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Asinh-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Asinh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Acosh-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Acosh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Atanh-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Atanh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Relu-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Relu-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sigmoid-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Sigmoid-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tanh-act-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Tanh-act-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[LeakyRelu-default]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [LeakyRelu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[LeakyRelu-alpha0.1]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [LeakyRelu-alpha0.1] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Elu-default]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Elu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Elu-alpha1.5]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Elu-alpha1.5] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Selu-default]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Selu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Celu-default]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Celu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[HardSigmoid-default]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [HardSigmoid-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[HardSigmoid-custom]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [HardSigmoid-custom] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[HardSwish-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [HardSwish-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Softplus-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Softplus-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Softsign-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Softsign-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Gelu-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Gelu-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mish-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Mish-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[ThresholdedRelu-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [ThresholdedRelu-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Add-fp16]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Add-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sub-fp16]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Sub-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mul-fp16]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Mul-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Div-fp16]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Div-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mul-fp16-bcast]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Mul-fp16-bcast] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Relu-fp16]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Relu-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sigmoid-fp16]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Sigmoid-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sqrt-fp16]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Sqrt-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Exp-fp16]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Exp-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tanh-fp16]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Tanh-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Erf-fp16]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Erf-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Gelu-fp16]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Gelu-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Identity-fp32]
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\python.py:167: UserWarning: [Identity-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written � EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+
+=== R13 LANE SUMMARY � one token per terminal state ===
+PASS               : 841
+FAIL(condition)    : 5
+ERROR(instrument)  : 3
+XPASS(stale expect): 0
+  FAIL(condition)   tests/ops/test_harness_census.py::test_census_baseline_has_no_drift
+                    AssertionError: instrument census reported FAIL(drift).  Quote the drift, not the exit code:
+  FAIL(condition)   tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda
+                    AssertionError: assert 'CUDA' in 'OK'
+  FAIL(condition)   tests/ops/test_kv_device_residency.py::test_live_caller_bound_kv_stays_device_resident
+                    AssertionError:
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Asin-fp32]
+                    AssertionError:
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Acos-fp32]
+                    AssertionError:
+  ERROR(instrument) tests/ops/test_criterion_4_5_witness.py::test_criterion4_icd_polarity_witness
+                    _verdict.InstrumentError: [criterion 4 instrument failure] ERROR(instrument): the ICD-removal negative control did not fire � classifier says 'probe_report_unreadable'.
+  ERROR(instrument) tests/ops/test_validation.py::test_the_armed_gate_changes_its_answer_when_the_layer_is_removed
+                    _verdict.InstrumentError: [criterion 3d instrument failure] ERROR(instrument): VK_LAYER_PATH was redirected to a directory with no layer manifests and this loader still reports ARMED, so the unarmed b
+  ERROR(instrument) tests/ops/test_wiring_census.py::test_wiring_census
+                    _verdict.InstrumentError: [wiring census instrument failure] ERROR(instrument): the census could not observe the following mechanisms, so it has said nothing about them:
+A lane with any instrument error is not a lane that ran, whatever else it reports.  An instrument error NEVER counts as a detection: none of the ERROR(instrument) lines above is evidence about the EP.
+=== end R13 lane summary ===
+=========================== short test summary info ===========================
+FAILED tests/ops/test_criterion_4_5_witness.py::test_criterion4_icd_polarity_witness - _verdict.InstrumentError: [criterion 4 instrument failure] ERROR(instrument): the ICD-removal negative control did not fire � classifier says 'probe_report_unreadable'.
+The loader-probe report contains neither the capability-gate line nor an instance-creation failure. It cannot tell 'no capable device' from 'the report was reworded', and guessing would either green-light a broken runner or condemn a working one.
+The control did not reach its observation, so THIS IS NOT A CRITERION-4 FAILURE and it is not a pass either (R13).  On Windows the usual cause is PLATFORMS.md �7.4.1: the LunarG loader ignores VK_DRIVER_FILES / VK_ICD_FILENAMES in elevated processes.  Run the lane unelevated, or unregister the ICD from HKLM\SOFTWARE\Khronos\Vulkan\Drivers.
+artifact: D:\a\onnxruntime-ep-vulkan\onnxruntime-ep-vulkan\bench\results\criterion4_icd_witness-devunset.json
+FAILED tests/ops/test_harness_census.py::test_census_baseline_has_no_drift - AssertionError: instrument census reported FAIL(drift).  Quote the drift, not the exit code:
+  ALSIFIED bench/timestamp_audit.py::wrap_period_seconds              calls=4 reject_polarity=0 accept_polarity=2
+  
+    SCREENED   bench/clock_log.py::load                                   calls=63 reject_polarity=4 accept_polarity=53
+    SCREENED   bench/win_gpu_counters.py::luid_for_adapter                calls=6 reject_polarity=1 accept_polarity=1
+    SCREENED   bench/run_disturbance.py::measure                          calls=17 reject_polarity=2 accept_polarity=10
+    SCREENED   bench/run_disturbance.py::per_inference_kernel_us          calls=13 reject_polarity=1 accept_polarity=4
+    SCREENED   bench/run_disturbance.py::synthetic_clean                  calls=8 reject_polarity=1 accept_polarity=3
+  
+    UNFALSIFIED is not a bug report; it is the absence of one. It says only that
+    nothing in the always-on lane has ever watched this instrument disagree, so a
+    broken one and a working one would look the same. Guard D lived here for its
+    whole life while the Rust screen's question ('has it got a caller?') said WIRED.
+  
+    READ THE UNFALSIFIED COUNT HERE AS A PROPERTY OF THIS SCREEN, NOT AS A VERDICT ON
+    bench/'s TESTS. Polarity is detected from `pytest.raises`, and most bench
+    instruments are TOTAL functions: they return a token (`STEADY`, `MARGINAL_TAIL`,
+    `NO_STEADY_TAIL`, `SOLE_TENANT`) instead of raising, so a test that watches
+    `gpu_steady_tail` refuse a series is invisible to the raise-based model. This is the
+    same limit already recorded for `classify_` in the harness domain. `unfalsified`
+    here means THIS SCREEN has not seen a disagreement, which is exactly what R12 says
+    it should say, and not that no test watches one. Crediting a polarity this screen
+    did not observe would be the Guard D shape with the sign flipped.
+    Handed to Niobe: a value-polarity model for total instruments, or a note per row.
+  
+  CENSUS VERDICT: FAIL(drift)
+  
+  FAIL: 3 NEW uninvoked instrument(s):
+    + counters.rs::on_arena_insert
+    + counters.rs::on_arena_release
+    + counters.rs::on_arena_remove
+  
+assert 1 == 0
+ +  where 0 = <module 'audit_instruments' from 'D:\\a\\onnxruntime-ep-vulkan\\onnxruntime-ep-vulkan\\rust\\tools\\audit_instruments.py'>.EXIT_PASS
+FAILED tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda - AssertionError: assert 'CUDA' in 'OK'
+FAILED tests/ops/test_kv_device_residency.py::test_live_caller_bound_kv_stays_device_resident - AssertionError: 
+assert 3221225477 == 0
+ +  where 3221225477 = CompletedProcess(args=['C:\\hostedtoolcache\\windows\\Python\\3.11.9\\x64\\python.exe', 'D:\\a\\onnxruntime-ep-vulkan\...x00 \x00t\x00o\x00 \x00l\x00e\x00n\x00i\x00e\x00n\x00t\x00 \x00m\x00e\x00r\x00g\x00e\x00.\x00\x1b\x00[\x00m\x00\n\x00').returncode
+FAILED tests/ops/test_op_table.py::test_op_table[Asin-fp32] - AssertionError: 
+Not equal to tolerance rtol=1e-05, atol=1e-05
+output[0]: Vulkan EP vs ORT CPU EP mismatch
+Mismatched elements: 5 / 12 (41.7%)
+Mismatch at indices:
+ [0, 3]: 0.7177761793136597 (ACTUAL), 0.717923104763031 (DESIRED)
+ [1, 1]: 0.5720859169960022 (ACTUAL), 0.5723021626472473 (DESIRED)
+ [1, 2]: -0.9474952220916748 (ACTUAL), -0.9473399519920349 (DESIRED)
+ [2, 1]: 0.700371503829956 (ACTUAL), 0.7005334496498108 (DESIRED)
+ [2, 2]: -1.1018685102462769 (ACTUAL), -1.1015288829803467 (DESIRED)
+Max absolute difference among violations: 0.00033963
+Max relative difference among violations: 0.00037785
+ ACTUAL: array([[ 0.321036,  0.393978,  0.515187,  0.717776],
+       [ 0.445575,  0.572086, -0.947495, -0.49819 ],
+       [ 0.221216,  0.700372, -1.101869,  0.026336]], dtype=float32)
+ DESIRED: array([[ 0.321036,  0.393978,  0.515187,  0.717923],
+       [ 0.445575,  0.572302, -0.94734 , -0.49819 ],
+       [ 0.221216,  0.700533, -1.101529,  0.026336]], dtype=float32)
+FAILED tests/ops/test_op_table.py::test_op_table[Acos-fp32] - AssertionError: 
+Not equal to tolerance rtol=1e-05, atol=1e-05
+output[0]: Vulkan EP vs ORT CPU EP mismatch
+Mismatched elements: 12 / 12 (100%)
+First 5 mismatches are at indices:
+ [0, 0]: 1.2458429336547852 (ACTUAL), 1.245998501777649 (DESIRED)
+ [0, 1]: 2.5805158615112305 (ACTUAL), 2.580561399459839 (DESIRED)
+ [0, 2]: 1.7494127750396729 (ACTUAL), 1.7493031024932861 (DESIRED)
+ [0, 3]: 0.7783222198486328 (ACTUAL), 0.7782506346702576 (DESIRED)
+ [1, 0]: 1.2566008567810059 (ACTUAL), 1.2567567825317383 (DESIRED)
+Max absolute difference among violations: 0.00015593
+Max relative difference among violations: 0.00012485
+ ACTUAL: array([[1.245843, 2.580516, 1.749413, 0.778322],
+       [1.256601, 2.062682, 0.882819, 1.848025],
+       [0.881506, 1.94125 , 1.407396, 1.7575  ]], dtype=float32)
+ DESIRED: array([[1.245999, 2.580561, 1.749303, 0.778251],
+       [1.256757, 2.062598, 0.88278 , 1.847872],
+       [0.881466, 1.941103, 1.407495, 1.757385]], dtype=float32)
+FAILED tests/ops/test_validation.py::test_the_armed_gate_changes_its_answer_when_the_layer_is_removed - _verdict.InstrumentError: [criterion 3d instrument failure] ERROR(instrument): VK_LAYER_PATH was redirected to a directory with no layer manifests and this loader still reports ARMED, so the unarmed branch of the gate could not be exercised on this machine. The gate's classification is still falsified without a machine in tests/ops/test_r13_lane.py; what is missing here is the on-hardware half.
+FAILED tests/ops/test_wiring_census.py::test_wiring_census - _verdict.InstrumentError: [wiring census instrument failure] ERROR(instrument): the census could not observe the following mechanisms, so it has said nothing about them:
+  device_state_guard: INSTRUMENT-ERROR (planted control: DEVICE-STATE: ERROR(instrument=device_state_producer_absent))
+
+An instrument error NEVER counts as a detection (R13). None of the lines above is evidence that a mechanism is unwired. Note the census no longer carries a wall-clock timeout at all: its stall detector is denominated in reference computations this machine completed during this run (see `stall_detector` in the artifact), so contention cannot by itself produce a line above.
+
+All census observations:
+  partitioner: dispatches_executed=1, subgraphs_live=1, claimed_from_profiling=1, islands_from_profiling=1 (both numbers are DELTAS across this session; claimed counts graph nodes and islands counts fused subgraphs, so one island over many claimed nodes is a success and not a catastrophe)
+  partition_identity_check: VACUOUS (claimed=1, islands=1; single-node graph is expected)
+  net_benefit_gate: EVALUATED clusters_seen=1 evaluations=1 bypasses=0 sole_island_overrides=1 viable_islands_retained=0 (retained is typed: 'UNWIRED'/'UNOBSERVABLE'/int � a type cannot be forged by an increment) cost_model_inputs: ONNXRUNTIME_EP_VULKAN_PARTITION_MARGIN=unset ONNXRUNTIME_EP_VULKAN_PARTITION_MIN_NODES=unset ONNXRUNTIME_EP_VULKAN_PARTITION_FLOPS_PER_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_BYTES_PER_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION=unset
+  gpu_tracer: 28 trace event(s), ph_types=['C', 'M', 'X', 'i'], distinct_names=16; Phase variants emitted (6/10): ['Record', 'DescAlloc', 'PipelineLookup', 'CmdUpload', 'Submit', 'FenceWait']; NOT-EMITTED: ['Compile', 'Prepack', 'Upload', 'Readback'] (matched as ['vulkan.compile', 'vulkan.prepack']� � the trace spells the variants snake_case under a `vulkan.` prefix, per trace.rs::Phase::as_str; a matcher that looked for the Rust identifier reported 0/10 and was wrong, which is why R13 says a result confirming a prediction earns more scrutiny than one contradicting it); (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE=census-trace-devunset.json; ONNXRUNTIME_EP_VULKAN_TRACE_GPU=unset � the census does not arm device spans, because a device-clock reading under four-agent contention is Switch's exclusive claim and Niobe's admissibility frame, so any device-side phase above is UNOBSERVABLE in this frame rather than absent. No duration from this file is quoted � �10.0 obligation 8. A variant present in Rust and missing from this list is a name this census has never seen emitted, which is what Phase::Record was for fifty runs)
+  model_output_equivalence: census-child verdict='UNMEASURED' executed_by=None (this lane runs an elementwise chain, not the criterion-10 model; the attributed MATCH belongs to test_criterion10.py and is not claimed here)
+  retain_viable: viable_islands_retained=157 (the mechanism's own namesake counter, named here because a line that reports a bare number does not say which counter it read � this mechanism's extent against the independent whole was 0/1 for exactly that reason)
+  ledger_lookup: ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=131 unproven_declines=0 unproven_forms_claimed=0 unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int) | ledger frame: ONNXRUNTIME_EP_VULKAN_LEDGER_FILE=unset ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=unset (the ledger the lookup consulted is named by the first; the second is what would let an unproven form be claimed anyway, and a lookup reading observed without both is not replayable)
+  validation_messenger: ARMED probe_frame: ONNXRUNTIME_EP_VULKAN_VALIDATE='1' ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION=unset ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION=unset
+  layering_lint: PASS
+  broken_commitment_warn: planted: channel='ORT_SINK' broken_commitments=1 compute_failures=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 compute_failures=0 fault_injection='NONE' | armed by ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE=unset in this process, set to '1' in the planted arm's child environment only (the EP caches its environment at DLL load on Windows, so an in-process set would be read by nothing)
+  device_state_guard: INSTRUMENT-ERROR (planted control: DEVICE-STATE: ERROR(instrument=device_state_producer_absent))
+  instrument_census: exit=1 CENSUS VERDICT: FAIL(drift) | 
+  ep_entrypoints: COMPILED-AND-DISPATCHED compile_calls=1 compute_calls=1 subgraphs_stub=0 dispatches_executed=6 (counts are ENTRIES to the ORT entry points, not graph nodes and not islands; planted-failure polarity: compile_calls=1 compute_calls=1 subgraphs_stub=0 � CONSTANT-ACROSS-POLARITIES)
+  flag_frame: 9 switch(es) disclosed; 6 discriminated by an artifact this run produced, 3 UNOBSERVABLE in this frame with a reason. Disclosure is not discrimination: the first says which world the census observed in, only the second can fail. || ONNXRUNTIME_EP_VULKAN_GEMV_PACKED[census_frame='1'] UNOBSERVABLE(armed in arm A and no discriminator exists in this frame: the census graph is a six-node elementwise chain with no MatMulNBits, so the packed GEMV kernel is not reachable and a 'no difference' reading would be a 0 for an event that cannot occur (R12). The kernel-identity observation needs either a GEMV case in the census lane or a counter naming the selected kernel � requested from Mouse/Switch as `gemv_packed_dispatches`) | ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY[census_frame='1'] MOVED(alloc_device_frame/frames_declared/device_backed_spans unset=('OFF', 0, 0) armed=('SHARED', 1, 3) (device='llvmpipe (LLVM 22.1.8, 256 bits)')) | ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS[census_frame='8'] MOVED(alloc_quarantine_peak_spans/retired unset=(0, 0) armed=(3, 0)) | ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB[census_frame='1024'] UNOBSERVABLE(armed at '1024' in arm A and no counter publishes the reservation size, so no artifact this run produced could differ. Requested from Tank: an `alloc_va_reserved_bytes` field, after which this segment becomes a two-arm discriminator like DEVICE_MEMORY's) | ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE[census_frame='D:\\a\\onnxruntime-ep-vulkan\\onnxruntime-ep-vulkan\\bench\\results\\census\\census-backend-probe-devunset.txt'] MOVED(the probe file the EP wrote names backend='sync2' (an artifact the mechanism produced, whose content names its selection)) | ONNXRUNTIME_EP_VULKAN_CLAIM_LOG[census_frame='D:\\a\\onnxruntime-ep-vulkan\\onnxruntime-ep-vulkan\\bench\\results\\census\\census-claim-log-devunset.jsonl'] MOVED(6 claim-decision record(s), ops=['Add', 'Mul'] (the count is of DECISIONS, not of graph nodes and not of claimed nodes)) | ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES[census_frame='1'] MOVED('dispatch kernel[' marker lines unset=0 armed=6 � each names the shader the dispatch used, so this is the one line in the census that observes kernel IDENTITY rather than kernel count) | ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG[census_frame='1'] UNOBSERVABLE(armed in arm A at child log severity '0' and its only output is a DECLINE report (`ep.rs:605`, "unclaimed {op} x{n} ({why})"). The census graph is a six-node Add/Mul chain that the EP claims in full � the claim log for this arm recorded every decision as claimed � so the switch has nothing to report in this frame. That is an event that cannot occur here, not a switch that does nothing (R12). Making it discriminable needs a census graph carrying at least one declined op) | ONNXRUNTIME_EP_VULKAN_VERBOSE[census_frame='1'] MOVED(child log lines unset=1036 armed=1107 at child log severity '0' (arm B arms VERBOSE and nothing else, so a difference here is attributable to it alone))
+8 failed, 841 passed, 50 skipped, 3 xfailed, 58 warnings in 327.32s (0:05:27)

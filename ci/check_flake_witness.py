@@ -125,6 +125,17 @@ _LIBTEST_RESULT_RE = re.compile(
 
 FAILED = "FAILED"
 NOT_FAILED = "NOT_FAILED"
+#: One record per parsed log, carrying no test id.  It is what makes the pytest
+#: complement reconstructible: without it a run in which nothing failed leaves no trace
+#: at all in the ledger, and the run that exonerates a commit is exactly the run whose
+#: existence the join needs.  See `synthesise_not_failed`.
+RUN_SEEN = "RUN_SEEN"
+#: The id the run marker is filed under.  It is a NAME and not an empty string, because
+#: the ledger's key is a name in every other row and a blank one would read as a missing
+#: value rather than as a deliberate whole-run record — `ci/test_lane_checks.py`'s
+#: "no count without its text" arm is the screen that says so.  It cannot collide with a
+#: real test id: no libtest path and no pytest nodeid contains a space or angle brackets.
+RUN_SEEN_ID = "<the run itself — no test named>"
 
 
 @dataclass
@@ -149,6 +160,11 @@ class RunObservation:
             out.append(self._rec(tid, FAILED))
         for tid in self.not_failed:
             out.append(self._rec(tid, NOT_FAILED))
+        # The run itself, named once, with no test id.  Written even when nothing failed
+        # and nothing was named — a green run is a datum, and until 2026-08-04 it was the
+        # one datum this ledger threw away.
+        if self.parsed:
+            out.append(self._rec(RUN_SEEN_ID, RUN_SEEN))
         return out
 
     def _rec(self, tid: str, outcome: str) -> dict:
@@ -169,9 +185,12 @@ def parse_pytest(text: str) -> tuple[list[str], list[str], int, bool, str]:
     """Return (failed ids, not-failed ids, executed, parsed, note).
 
     pytest names only its failures without ``-v``, so ``not_failed`` is empty here and
-    the complement is reconstructed at query time from the union of ids the ledger has
-    ever seen for this (suite, lane). Saying so is the point: an empty ``not_failed``
-    is not a claim that nothing passed.
+    the complement is reconstructed at query time by ``synthesise_not_failed`` from the
+    union of ids the ledger has seen for this ``(commit, lane, suite)`` and the
+    ``RUN_SEEN`` marker each parsed run leaves.  Between 2026-08-03 and 2026-08-04 this
+    sentence described a function that did not exist and the pytest join could never
+    fire; it is now the name of a callable.  Saying so is the point: an empty
+    ``not_failed`` is not a claim that nothing passed.
     """
     failed: list[str] = []
     executed = 0
@@ -279,6 +298,79 @@ class Verdict:
     runs: int = 0
 
 
+def synthesise_not_failed(clean: list[dict]) -> list[dict]:
+    """Reconstruct the pytest complement, which the parser cannot observe.
+
+    THE DEFECT THIS CLOSES
+    ----------------------
+    ``parse_pytest``'s own docstring said "the complement is reconstructed at query time
+    from the union of ids the ledger has ever seen for this (suite, lane)".  Nothing in
+    this file did that.  ``parse_pytest`` returned ``[]`` for ``not_failed`` and ``join``
+    read the ledger as written, so for pytest every key had ``passes == []`` and the
+    ``if not fails or not passes: continue`` line took the branch **every time, at any
+    history depth**.  The parse defect Link fixed on 2026-08-04 stopped the check reading
+    its logs; this one stopped it concluding anything from them, and it was invisible for
+    the same reason — the file's second job has no positive state to notice the absence
+    of.  Verified on a real captured lane ledger (run 30974825118, 609 records): 8 pytest
+    FAILED records, 0 NOT_FAILED records, join necessarily empty.
+
+    THE RECONSTRUCTION, STATED
+    --------------------------
+    An id is ``NOT_FAILED`` in a run when **that run's log parsed**, the run belongs to
+    the same ``(commit, lane, suite)``, and the run did not name the id among its
+    failures.  ``RUN_SEEN`` is what makes "that run's log parsed" a fact in the ledger
+    rather than an assumption; a run with no ``RUN_SEEN`` record contributes nothing,
+    because a run that did not parse cannot be said to have not-failed anything.
+
+    This is an inference, not an observation, and the synthesised records say so with
+    ``"inferred": True`` so a reader can tell them from libtest's directly observed ones.
+    It stays inside the existing caveat: ``NOT_FAILED`` still includes skipped and
+    deselected, which is what ``join``'s executed-count tolerance is for.
+    """
+    runs: dict[tuple[str, str, str, str], dict] = {}
+    failed_in_run: dict[tuple[str, str, str, str], set[str]] = {}
+    ids_by_scope: dict[tuple[str, str, str], set[str]] = {}
+    observed: set[tuple[str, str, str, str, str]] = set()
+
+    for r in clean:
+        scope = (r["commit"], r["lane"], r["suite"])
+        run = (*scope, r["run_id"])
+        outcome = r.get("outcome")
+        if outcome == RUN_SEEN:
+            runs[run] = r
+            continue
+        tid = r.get("test_id") or ""
+        if not tid:
+            continue
+        ids_by_scope.setdefault(scope, set()).add(tid)
+        observed.add((*run, tid))
+        if outcome == FAILED:
+            failed_in_run.setdefault(run, set()).add(tid)
+
+    out: list[dict] = []
+    for run, marker in runs.items():
+        scope = run[:3]
+        named = failed_in_run.get(run, set())
+        for tid in ids_by_scope.get(scope, set()):
+            if tid in named or (*run, tid) in observed:
+                continue
+            out.append(
+                {
+                    "commit": run[0],
+                    "lane": run[1],
+                    "suite": run[2],
+                    "run_id": run[3],
+                    "harness": marker.get("harness", "pytest"),
+                    "test_id": tid,
+                    "outcome": NOT_FAILED,
+                    "executed": marker.get("executed", 0),
+                    "log": marker.get("log", ""),
+                    "inferred": True,
+                }
+            )
+    return out
+
+
 def join(records: list[dict], tolerance: float) -> Verdict:
     """The whole mechanism: did one id, at one commit, in one suite, both fail and not-fail?"""
     v = Verdict()
@@ -289,9 +381,12 @@ def join(records: list[dict], tolerance: float) -> Verdict:
         else:
             clean.append(r)
     v.runs = len({(r["commit"], r["lane"], r["suite"], r["run_id"]) for r in clean})
+    clean = clean + synthesise_not_failed(clean)
 
     by_key: dict[tuple[str, str, str, str], dict[str, list[dict]]] = {}
     for r in clean:
+        if r.get("outcome") == RUN_SEEN:
+            continue
         key = (r["commit"], r["lane"], r["suite"], r["test_id"])
         by_key.setdefault(key, {}).setdefault(r["outcome"], []).append(r)
 
@@ -314,6 +409,7 @@ def join(records: list[dict], tolerance: float) -> Verdict:
             "not_failed_runs": sorted({r["run_id"] for r in passes}),
             "executed_when_failed": fe,
             "executed_when_not_failed": pe,
+            "not_failed_inferred": all(r.get("inferred") for r in passes),
         }
         if hi and abs(fe - pe) / hi > tolerance:
             entry["why_incomparable"] = (

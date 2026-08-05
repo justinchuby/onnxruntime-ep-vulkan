@@ -839,6 +839,31 @@ def _observe_device_state_guard() -> str:
 
     Imported from ``ci/check_device_state.py`` — one mechanism, not two (§10.0.1 R10
     sub-rule).  Returns the census line.
+
+    2026-08-04 — WHY THE PLANTED ARM IS NO LONGER A SINGLE EXPECTED TOKEN
+    --------------------------------------------------------------------
+    The first version of this observation planted a companionless duration and required
+    ``FAIL(condition=STEADY_UNCERTIFIED)``.  That is the guard's answer *on a host with a
+    device-state producer*.  On a host with none — every GPU-free CI runner this project
+    has — the same input correctly yields
+    ``ERROR(instrument=device_state_producer_absent)``, because §10.0 obligation 8
+    amendment 2 says the absence of telemetry is an instrument error and never a waiver.
+    The census then reported ``INSTRUMENT-ERROR`` for the mechanism and went red on every
+    host-free lane with no path to green: it was reading the *host*, not the guard.
+
+    Reproduced on a GPU box on 2026-08-04 by suppressing the producers with
+    ``ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS=none``: the identical input flips from
+    ``FAIL(condition=STEADY_UNCERTIFIED)`` (exit 1) to
+    ``ERROR(instrument=device_state_producer_absent)`` (exit 4) with no file changed.
+
+    The repair is not "accept either token" — that would launder a genuinely broken guard
+    into a pass.  The census reads the host class from ``ci/device_state.py``'s own
+    ``host_producer_status()`` and **predicts** which token the planted arm must produce;
+    a token that does not match the host class is a failure of the guard, still.  And a
+    second planted arm carries the discrimination that a single arm cannot: a claim with
+    **no duration at all** must return ``PASS`` on every host.  Two inputs, two different
+    tokens, on any host — R10's falsifier, with the environment no longer supplying the
+    polarity.
     """
     import contextlib  # noqa: PLC0415
     import io  # noqa: PLC0415
@@ -884,6 +909,18 @@ def _observe_device_state_guard() -> str:
         )
         planted_code, planted_line = _run(Path(td))
 
+    with tempfile.TemporaryDirectory(prefix="census_device_state_nofig_") as td:
+        # The second arm.  Same shape of claim, same guard, one field removed: no
+        # duration figure at all.  Obligation 8 has nothing to require of it, so the
+        # guard must return PASS — on a telemetry host and on a host-free runner alike.
+        # This is what carries the discrimination when the first arm's token is decided
+        # by the host rather than by the input.
+        (Path(td) / "no_figure_lane_claim.json").write_text(
+            json.dumps({"claim": "gpu steady state", "nodes": 4}, indent=2),
+            encoding="utf-8",
+        )
+        nofigure_code, nofigure_line = _run(Path(td))
+
     ours = _REPO_ROOT / "bench" / "results" / "census"
     if not ours.is_dir():
         return (
@@ -892,13 +929,39 @@ def _observe_device_state_guard() -> str:
         )
     ours_code, ours_line = _run(ours)
 
-    if planted_code == guard.EXIT_ERROR_INSTRUMENT:
-        return f"INSTRUMENT-ERROR (planted control: {planted_line})"
-    if planted_code != guard.EXIT_FAIL_CONDITION:
+    # Which token the planted arm MUST produce is decided by the host class, read from
+    # the guard's own module.  Not "either token is fine": a producer-absent answer on a
+    # host that has a producer, or a FAIL on a host that has none, is the guard
+    # disagreeing with the machine it is running on, and that is a finding.
+    try:
+        ds = guard.ds  # the same module object the guard itself rules with
+        producers = list(ds.host_producer_status().get("available") or [])
+    except Exception as exc:  # noqa: BLE001
+        return f"INSTRUMENT-ERROR (ci/device_state.py host status unreadable: {exc})"
+    host_class = "producer_present" if producers else "producer_absent"
+    expected_code = (
+        guard.EXIT_FAIL_CONDITION if producers else guard.EXIT_ERROR_INSTRUMENT
+    )
+    expected_token = (
+        "FAIL(condition=STEADY_UNCERTIFIED)"
+        if producers
+        else "ERROR(instrument=device_state_producer_absent)"
+    )
+
+    if planted_code != expected_code or expected_token not in planted_line:
         return (
             f"UNWIRED (the planted companionless duration returned exit {planted_code} "
-            f"[{planted_line!r}] instead of FAIL(condition) — the negative control did "
-            "not fire, so this guard's green readings are unverified)"
+            f"[{planted_line!r}] on a {host_class} host, where obligation 8 requires "
+            f"exit {expected_code} [{expected_token}] — the negative control did not "
+            "fire as this host obliges it to, so this guard's green readings are "
+            f"unverified.  host producers: {producers or 'none'})"
+        )
+    if nofigure_code != guard.EXIT_PASS:
+        return (
+            f"UNWIRED (a lane claim carrying NO duration returned exit {nofigure_code} "
+            f"[{nofigure_line!r}] instead of PASS — the guard is answering something "
+            "other than 'was a figure published without its companion', so its "
+            "not-PASS answers do not mean what they say)"
         )
     if planted_line == ours_line:
         return (
@@ -906,8 +969,13 @@ def _observe_device_state_guard() -> str:
             "planted violation and for this run's own evidence)"
         )
     return (
-        f"FIRED planted_exit={planted_code} planted={planted_line!r} | "
-        f"lane_exit={ours_code} lane={ours_line!r}"
+        f"FIRED host={host_class} (producers: {','.join(producers) or 'none'}) "
+        f"planted_exit={planted_code} planted={planted_line!r} | "
+        f"no_figure_exit={nofigure_code} no_figure={nofigure_line!r} | "
+        f"lane_exit={ours_code} lane={ours_line!r} "
+        "(the planted arm's token is decided by the host class and is checked against "
+        "it; the no-figure arm is the host-independent half, so the pair discriminates "
+        "on a runner with no telemetry as well as on one with a GPU)"
     )
 
 
@@ -2729,6 +2797,204 @@ def test_device_memory_with_small_va_reservation(require_vulkan) -> None:
         "clean, so this is the interaction and not either flag.\n"
         f"child log (last 1500 chars):\n"
         f"{((result.stdout or '') + (result.stderr or '')).replace(chr(0), '')[-1500:]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# THE DEVICE-FREE FALSIFIERS FOR MECHANISM 10'S OWN CONTROL
+#
+# `_observe_device_state_guard` is the census's reading of Link's obligation-8 guard.
+# Until 2026-08-04 its planted arm required one token — the one a GPU host produces —
+# and on a host with no telemetry producer the SAME input correctly returns
+# ERROR(instrument=device_state_producer_absent).  The census then reported that it
+# could not observe the mechanism, and every GPU-free lane was red with no path to
+# green.  It was reading the host, not the guard.
+#
+# These arms hold the repair from both ends: the observation must still REFUSE a guard
+# that does not fire, that answers the same thing to every input, or that disagrees with
+# the host class it is running on.  None of them opens a device.
+# ---------------------------------------------------------------------------
+
+_DS_PRODUCER_ABSENT = "ERROR(instrument=device_state_producer_absent)"
+_DS_FAIL = "FAIL(condition=STEADY_UNCERTIFIED)"
+
+
+def _ds_guard_module():
+    """The same module object `_observe_device_state_guard` imports."""
+    ci_dir = _REPO_ROOT / "ci"
+    if str(ci_dir) not in sys.path:
+        sys.path.insert(0, str(ci_dir))
+    import check_device_state as guard  # noqa: PLC0415
+
+    return guard
+
+
+def _ds_stub(answers, guard):
+    """Return a `main(argv)` that answers by the scan directory's file names.
+
+    `answers` maps a substring of the planted file name to `(exit_code, printed_line)`.
+    """
+
+    def main(argv):
+        scan = Path(argv[argv.index("--scan") + 1])
+        names = " ".join(p.name for p in scan.glob("*.json")) if scan.is_dir() else ""
+        for needle, (code, line) in answers.items():
+            if needle in names:
+                print(f"{guard.LABEL}: {line}")
+                return code
+        print(f"{guard.LABEL}: PASS")
+        return guard.EXIT_PASS
+
+    return main
+
+
+def test_device_state_observation_fires_on_this_host() -> None:
+    """The live arm: on THIS machine, whatever its telemetry, the pair must discriminate.
+
+    This is the arm that was red on every GPU-free CI runner.  It carries no device and
+    no skip: a host with a producer and a host without one both have to reach FIRED, and
+    the line says which host class it read so the reading travels with its frame.
+    """
+    line = _observe_device_state_guard()
+    assert line.startswith("FIRED"), (
+        "the census cannot observe Link's device-state guard on this host.\n"
+        f"{line}\n"
+        "Before 2026-08-04 this was an ERROR(instrument) on every runner with no GPU "
+        "telemetry, because the planted arm required the token only a telemetry host "
+        "produces.  If it is red again, read WHICH arm the line names before changing a "
+        "threshold."
+    )
+    assert ("host=producer_present" in line) or ("host=producer_absent" in line), (
+        f"the observation must name the host class it ruled under: {line}"
+    )
+
+
+def test_device_state_observation_is_host_class_dependent_and_says_so() -> None:
+    """Same input, both host classes, two tokens — and FIRED under each.
+
+    `ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS=none` is `ci/device_state.py`'s own
+    suppression switch, so this reproduces the GPU-free runner on a GPU box without
+    touching the machine.  It is the reading that showed the CI red was a property of
+    the host and not of the code.
+    """
+    guard = _ds_guard_module()
+    seen = {}
+    for label, forced in (("producer_absent", "none"), ("host", None)):
+        old = os.environ.get("ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS")
+        if forced is None:
+            os.environ.pop("ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS", None)
+        else:
+            os.environ["ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS"] = forced
+        try:
+            seen[label] = _observe_device_state_guard()
+        finally:
+            if old is None:
+                os.environ.pop("ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS", None)
+            else:
+                os.environ["ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS"] = old
+
+    assert seen["producer_absent"].startswith("FIRED"), (
+        "with the producers suppressed — the CI runner's condition, reproduced — the "
+        "census must still reach a reading of the guard.\n"
+        f"{seen['producer_absent']}"
+    )
+    assert _DS_PRODUCER_ABSENT in seen["producer_absent"], (
+        "with no producer the planted companionless duration must return obligation 8 "
+        f"amendment 2's own token: {seen['producer_absent']}"
+    )
+    assert "no_figure='DEVICE-STATE: PASS'" in seen["producer_absent"], (
+        "the host-independent half must be a PASS on a claim carrying no figure — that "
+        f"is what makes the pair discriminate with no telemetry: {seen['producer_absent']}"
+    )
+    assert seen["host"].startswith("FIRED"), seen["host"]
+    # Whatever this host is, `guard.ds` decides, and the observation must agree with it.
+    producers = list(guard.ds.host_producer_status().get("available") or [])
+    expect = _DS_FAIL if producers else _DS_PRODUCER_ABSENT
+    assert expect in seen["host"], (
+        f"host reports producers={producers or 'none'}, so the planted arm owes "
+        f"{expect!r}: {seen['host']}"
+    )
+
+
+def test_device_state_observation_refuses_a_guard_that_never_fires(monkeypatch) -> None:
+    """A guard that passes a companionless duration is UNWIRED, not FIRED."""
+    guard = _ds_guard_module()
+    monkeypatch.setattr(guard, "main", _ds_stub({}, guard))
+    line = _observe_device_state_guard()
+    assert line.startswith("UNWIRED"), (
+        f"a guard that answers PASS to every input must be refused: {line}"
+    )
+    assert "negative control did not fire" in line, line
+
+
+def test_device_state_observation_refuses_a_constant_guard(monkeypatch) -> None:
+    """One token for every input is a constant, whichever token it is.
+
+    Written expecting the `planted_line == nofigure_line` branch to catch this, and it
+    did not: the no-figure arm gets there first and names a better reason.  Which makes
+    that branch unreachable once both arms are checked — it is now removed rather than
+    left as a comforting line that can never execute, and this arm asserts the refusal
+    that the code actually produces.
+    """
+    guard = _ds_guard_module()
+    producers = list(guard.ds.host_producer_status().get("available") or [])
+    code = guard.EXIT_FAIL_CONDITION if producers else guard.EXIT_ERROR_INSTRUMENT
+    token = _DS_FAIL if producers else _DS_PRODUCER_ABSENT
+    monkeypatch.setattr(guard, "main", _ds_stub({".json": (code, token)}, guard))
+    line = _observe_device_state_guard()
+    assert line.startswith("UNWIRED") and "NO duration" in line, (
+        "a guard returning the obliged token for the companionless plant AND for a claim "
+        f"with no figure at all is a constant and must be refused: {line}"
+    )
+
+
+def test_device_state_observation_refuses_a_guard_that_disagrees_with_its_host(
+    monkeypatch,
+) -> None:
+    """The host class decides which token is owed; the wrong one is still a finding.
+
+    This is the arm that keeps the repair from being "accept either token".  The host is
+    told it has no producer while the guard keeps answering FAIL(condition) — the answer
+    a telemetry host owes — and the observation must refuse it.
+    """
+    guard = _ds_guard_module()
+    monkeypatch.setenv("ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS", "none")
+    monkeypatch.setattr(
+        guard,
+        "main",
+        _ds_stub({"planted_lane_claim": (guard.EXIT_FAIL_CONDITION, _DS_FAIL)}, guard),
+    )
+    line = _observe_device_state_guard()
+    assert line.startswith("UNWIRED"), (
+        "a guard answering the telemetry-host token on a host with no producer is "
+        f"disagreeing with the machine it runs on, and that is not a FIRED: {line}"
+    )
+    assert "producer_absent host" in line, line
+
+
+def test_device_state_observation_refuses_a_broken_no_figure_arm(monkeypatch) -> None:
+    """If a claim with no duration is not a PASS, the guard answers another question."""
+    guard = _ds_guard_module()
+    producers = list(guard.ds.host_producer_status().get("available") or [])
+    code = guard.EXIT_FAIL_CONDITION if producers else guard.EXIT_ERROR_INSTRUMENT
+    token = _DS_FAIL if producers else _DS_PRODUCER_ABSENT
+    monkeypatch.setattr(
+        guard,
+        "main",
+        _ds_stub(
+            {
+                "planted_lane_claim": (code, token),
+                "no_figure_lane_claim": (
+                    guard.EXIT_FAIL_CONDITION,
+                    "FAIL(condition=SOMETHING_ELSE)",
+                ),
+            },
+            guard,
+        ),
+    )
+    line = _observe_device_state_guard()
+    assert line.startswith("UNWIRED") and "NO duration" in line, (
+        f"a not-PASS on a claim carrying no figure must be refused: {line}"
     )
 
 
