@@ -401,6 +401,60 @@ def guarded_call(
     return box.get("value")
 
 
+#: How many entries a single progress-witness scan may look at.  A witness that walked a
+#: whole `target/` tree would itself become the slow thing the guard is watching.
+_PROGRESS_SCAN_CAP: int = 20000
+
+#: How deep the witness descends.  MEASURED, not chosen: during a cold `cargo test --test
+#: layering` of the EP crate (311s), the longest interval with no visible change was
+#: 195.5s at depth 1, 178.6s at depth 2, **18.6s at depth 3**, and 18.6s at depth 4.  The
+#: churn is `target/debug/incremental/<crate-hash>/s-*-working/`, which is three levels
+#: down, so a depth-1 witness watches the one place a compiling rustc does not touch.  A
+#: shallower number here does not make the guard stricter, it makes it blind.
+_PROGRESS_SCAN_DEPTH: int = 3
+
+
+def filesystem_progress(paths: "list", *, depth: int = _PROGRESS_SCAN_DEPTH) -> "tuple":
+    """A bounded fingerprint of what a toolchain child has *written*.
+
+    Returns ``(entries_seen, newest_mtime_ns)`` over a bounded scan of each path to
+    ``depth`` levels.  Two calls returning different tuples mean the child produced
+    something between them; two calls returning the same tuple mean it did not.
+
+    This is a *second* beat source, not a bigger budget.  The distinction matters:
+    a bigger budget makes a wedged child harder to catch, while a second beat source
+    leaves a wedged child exactly as catchable — it writes nothing either way — and only
+    stops a child that is demonstrably producing output from being called silent.
+    """
+    import os
+
+    seen = 0
+    newest = 0
+    stack = [str(p) for p in paths]
+    levels = {s: 0 for s in stack}
+    while stack and seen < _PROGRESS_SCAN_CAP:
+        cur = stack.pop()
+        d = levels.get(cur, 0)
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    seen += 1
+                    if seen >= _PROGRESS_SCAN_CAP:
+                        break
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if st.st_mtime_ns > newest:
+                        newest = st.st_mtime_ns
+                    if entry.is_dir(follow_symlinks=False) and d < depth:
+                        stack.append(entry.path)
+                        levels[entry.path] = d + 1
+        except OSError:
+            continue
+    return (seen, newest)
+
+
 def guarded_run(
     cmd: "list[str]",
     *,
@@ -409,6 +463,7 @@ def guarded_run(
     budget_units: int,
     kind: str = KIND_TOOLCHAIN,
     label: str | None = None,
+    progress_paths: "list | None" = None,
     **popen_kwargs,
 ) -> subprocess.CompletedProcess:
     """``subprocess.run`` with the wall clock taken out of the gate.
@@ -416,6 +471,22 @@ def guarded_run(
     Every line the child writes on either stream is a beat, so a `cargo` build that is
     crawling under load is *visibly alive* and a child that has wedged is *visibly not*,
     without either of them being compared to a number of seconds.
+
+    **The premise above has one hole and `progress_paths` is the patch.**  "Every line the
+    child writes is a beat" assumes the child writes lines while it works.  `cargo` prints
+    one line per *crate*, so a cold build of a single large crate emits `Compiling <crate>`
+    and then says nothing at all while `rustc` works — for minutes.  That silence is
+    indistinguishable, on the stream alone, from a wedge, and it fires the guard on a
+    child that is healthy.  Measured here: a cold `cargo test --test layering` for the EP
+    crate went silent for 12015 units against a budget far below it, and the same command
+    warm passed while taking *longer in wall time* — which is the proof that the failing
+    quantity was silence, not slowness.
+
+    When ``progress_paths`` is given and ``kind`` is :data:`KIND_TOOLCHAIN`, the guard
+    consults :func:`filesystem_progress` over those paths once the child is already
+    halfway to its budget, and beats when the fingerprint has moved.  A child that has
+    genuinely wedged writes nothing, so it is caught exactly as before; this is verified
+    by the planted-stall arm, which keeps the witness live and must still fire.
 
     Returns a ``CompletedProcess`` with ``stdout``/``stderr`` kept separate (callers parse
     them separately, and merging them here would silently change what several witnesses
@@ -490,9 +561,19 @@ def guarded_run(
 
     start_units = guard.clock.units
     guard.beat(f"{label}:spawn")
+    watch_fs = bool(progress_paths) and kind == KIND_TOOLCHAIN
+    fs_mark = filesystem_progress(progress_paths) if watch_fs else None
     try:
         while proc.poll() is None:
             time.sleep(POLL_S)
+            if watch_fs and guard.silent_units() >= max(1, budget_units // 2):
+                # Consulted only once the stream has already gone quiet for half the
+                # budget, so the scan cost is paid on the rare path and never on the
+                # normal one.
+                now_mark = filesystem_progress(progress_paths)
+                if now_mark != fs_mark:
+                    fs_mark = now_mark
+                    guard.beat(f"{label}:fs")
             guard.raise_if_stalled(budget_units=budget_units, kind=kind)
     except Stalled:
         _kill_tree(proc)

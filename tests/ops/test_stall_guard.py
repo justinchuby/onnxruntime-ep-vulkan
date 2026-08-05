@@ -15,11 +15,16 @@ real census lives in ``tests/ops/probe_stall_guard.py``.
 
 from __future__ import annotations
 
+import inspect
+import pathlib
+import shutil
+import sys
 import threading
 import time
 
 import pytest
 
+import _watchdog
 from _watchdog import (
     KIND_MECHANISM,
     KIND_TOOLCHAIN,
@@ -28,7 +33,9 @@ from _watchdog import (
     StallGuard,
     Stalled,
     WorkClock,
+    filesystem_progress,
     guarded_call,
+    guarded_run,
     injected_stall_target,
 )
 
@@ -390,3 +397,153 @@ def test_unknown_step_gets_a_budget_rather_than_a_keyerror():
     assert census._budget_for("counters_child_clean") == census._BUDGET_UNITS["counters_child_clean"]
     assert census._budget_for("a_step_from_some_other_branch") == census._DEFAULT_BUDGET_UNITS
     assert census._DEFAULT_BUDGET_UNITS > 0
+
+
+# ---------------------------------------------------------------------------
+# Round 38 — the toolchain progress witness, and its refusal arm
+# ---------------------------------------------------------------------------
+# `guarded_run`'s premise is "every line the child writes is a beat".  A cold `cargo`
+# build of ONE large crate writes a single line and then nothing for minutes, so the
+# premise fails on a healthy child and the census reported ERROR(instrument) against
+# nothing (measured: 12015 silent units, isolated; the same command warm PASSED while
+# taking LONGER in wall time, which is what proves the failing quantity was silence).
+#
+# The patch is a second beat source, not a bigger budget, and the difference is exactly
+# what arm B below has to show: a child that writes nothing must still be caught while
+# the witness is live.  A bigger budget could not pass arm B.
+
+_SCRATCH = pathlib.Path(__file__).resolve().parents[2] / "bench" / "scratch" / "fsbeat"
+
+
+def test_filesystem_progress_moves_only_when_something_is_written():
+    _SCRATCH.mkdir(parents=True, exist_ok=True)
+    d = _SCRATCH / "arm0"
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir()
+    before = filesystem_progress([d])
+    assert filesystem_progress([d]) == before, "an idle directory must read the same twice"
+    (d / "a.txt").write_text("x")
+    assert filesystem_progress([d]) != before, "a written file must move the fingerprint"
+    shutil.rmtree(d)
+
+
+def test_the_witness_sees_the_depth_a_cold_rustc_actually_writes_at():
+    """Depth 1 would have watched the one place a compiling rustc does not touch.
+
+    Measured on a cold `cargo test --test layering` (311s): longest interval with no
+    visible change was 195.5s at depth 1 and 18.6s at depth 3, because the churn is
+    `target/debug/incremental/<hash>/s-*-working/`.  A shallow witness is not a stricter
+    witness, it is a blind one — and a blind witness that never beats is indistinguishable
+    from not having one, which is how the first version of this patch failed.
+    """
+    _SCRATCH.mkdir(parents=True, exist_ok=True)
+    d = _SCRATCH / "depth"
+    if d.exists():
+        shutil.rmtree(d)
+    deep = d / "incremental" / "crate-hash" / "s-working"
+    deep.mkdir(parents=True)
+    before = filesystem_progress([d])
+    (deep / "x.o").write_bytes(b"0")
+    assert filesystem_progress([d]) != before, (
+        "a file three levels down must move the fingerprint"
+    )
+    assert filesystem_progress([d], depth=1) == filesystem_progress([d], depth=1)
+    assert _watchdog._PROGRESS_SCAN_DEPTH >= 3
+    shutil.rmtree(d)
+
+
+def test_a_silent_child_that_is_writing_files_is_not_called_stalled():
+    """Arm A — the healthy cold-build shape: no output, but visible production.
+
+    Run as a PAIR, because either half alone is satisfiable by the wrong thing: the
+    witness-off half proves the budget really is tight enough to fire on this child, and
+    the witness-on half proves the witness is what kept it alive.  Without the first half
+    "it passed" would be evidence about a generous budget and nothing else.
+    """
+    _SCRATCH.mkdir(parents=True, exist_ok=True)
+    d = _SCRATCH / "armA"
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir()
+    child = (
+        "import time,pathlib\n"
+        f"p=pathlib.Path(r'{d}')\n"
+        "for i in range(16):\n"
+        "    time.sleep(0.3)\n"
+        "    (p/f'f{i}.bin').write_bytes(b'0')\n"
+    )
+
+    def _budget(clock):
+        u0 = clock.units
+        time.sleep(1.0)
+        return max(4, clock.units - u0)
+
+    with WorkClock() as clock:
+        guard = StallGuard(clock=clock, what="fs witness arm A (witness off)")
+        with pytest.raises(Stalled):
+            guarded_run(
+                [sys.executable, "-c", child],
+                guard=guard,
+                what="fs witness arm A (witness off)",
+                budget_units=_budget(clock),
+                kind=KIND_TOOLCHAIN,
+                label="silent_but_producing",
+            )
+
+    shutil.rmtree(d)
+    d.mkdir()
+    with WorkClock() as clock:
+        guard = StallGuard(clock=clock, what="fs witness arm A")
+        r = guarded_run(
+            [sys.executable, "-c", child],
+            guard=guard,
+            what="fs witness arm A",
+            budget_units=_budget(clock),
+            kind=KIND_TOOLCHAIN,
+            label="silent_but_producing",
+            progress_paths=[d],
+        )
+    assert r.returncode == 0, "the same child must now be allowed to finish"
+    shutil.rmtree(d)
+
+
+def test_a_silent_child_that_writes_nothing_still_trips_with_the_witness_live():
+    """Arm B — the refusal arm.  The witness must not be a way of never firing.
+
+    Deliberately NOT run with the witness disabled: the point is that the patch leaves a
+    genuinely wedged child exactly as catchable as it was.
+    """
+    _SCRATCH.mkdir(parents=True, exist_ok=True)
+    d = _SCRATCH / "armB"
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir()
+    child = "import time,sys\ntime.sleep(600)\n"
+    with WorkClock() as clock:
+        guard = StallGuard(clock=clock, what="fs witness arm B")
+        u0 = clock.units
+        time.sleep(1.0)
+        budget = max(4, clock.units - u0)
+        with pytest.raises(Stalled) as ei:
+            guarded_run(
+                [sys.executable, "-c", child],
+                guard=guard,
+                what="fs witness arm B",
+                budget_units=budget,
+                kind=KIND_TOOLCHAIN,
+                label="silent_and_wedged",
+                progress_paths=[d],
+            )
+    assert ei.value.report.kind == KIND_TOOLCHAIN
+    assert "no forward progress" in str(ei.value)
+    shutil.rmtree(d)
+
+
+def test_the_witness_is_not_consulted_for_mechanism_spans():
+    """A mechanism stall is a DETECTION; a filesystem beat must not be able to mask one."""
+    src = inspect.getsource(_watchdog.guarded_run)
+    assert "kind == KIND_TOOLCHAIN" in src, (
+        "the progress witness must be scoped to toolchain spans, or it can rescue a "
+        "mechanism that produced no observation — which is the thing criterion 12 detects"
+    )

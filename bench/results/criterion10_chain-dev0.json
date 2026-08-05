@@ -1,0 +1,3753 @@
+{
+ "arm_chain": {
+  "class": "REFERENCE_CHAIN",
+  "elapsed_s": 160.9,
+  "embedding": {
+   "both_eps_tapped_embedding_bit_equal": true,
+   "note": "the chain starts from the initialiser row, not from either tap",
+   "reference_embedding_matches_the_initialiser_row": true,
+   "token_id": 1
+  },
+  "envelope": "every node in this chain is exact rational arithmetic in float64 except the MLP sigmoid, which carries float64's own ~1e-16 relative error (~1e-13 fp16 ULP). The chain is envelope-free to ~1e-10 fp16 ULP, not literally exact, and it is stated rather than rounded away",
+  "gate_errors": {},
+  "layers_expected": 32,
+  "layers_run": 32,
+  "lm_head_weight_witness": {
+   "rows_dequantised": 32064,
+   "rows_expected": 32064,
+   "weight_abs_sum": 3716883.630493164,
+   "weight_is_live": true
+  },
+  "nodes_evaluated_total": 355,
+  "nodes_expected_total": 355,
+  "peak_dequant_chunk_rows": 4096,
+  "per_layer": [
+   {
+    "all_finite": true,
+    "attn_out_l2": 0.9666515202162779,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 5.257748233984559,
+    "elapsed_s_cumulative": 4.8,
+    "layer": 0,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1560,
+        "max_ulp": 957.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 157,
+        "max_ulp": 64.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/embed_tokens/Gather/output_0",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 348,
+        "max_ulp": 45.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 1,
+        "max_ulp": 4.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/embed_tokens/Gather/output_0",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 2.3364802501224102,
+    "residual_out_l2": 2.7926146010792134,
+    "state_digest": "13630ecd4a0df02b",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 712735.8256835938,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 649900.096206665,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 122164.30049133301,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 419046.9844417572,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 641194.2106323242,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 2.228386620382812,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 5.748416894424765,
+    "elapsed_s_cumulative": 10.1,
+    "layer": 1,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 2036,
+        "max_ulp": 1234.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 1141,
+        "max_ulp": 640.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.1/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1994,
+        "max_ulp": 1478.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 1045,
+        "max_ulp": 512.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.1/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 6.891424166847057,
+    "residual_out_l2": 6.484291757012671,
+    "state_digest": "6b966ae83c1e0faa",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 760222.4349060059,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 750784.8513793945,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 171357.68061828613,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 639679.4480934143,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 733827.7191162109,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 6.961123752256844,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 2538.4582521149564,
+    "elapsed_s_cumulative": 15.4,
+    "layer": 2,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 2.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 2678,
+        "max_ulp": 16468.0,
+        "median_ulp": 2.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 2148,
+        "max_ulp": 1536.0,
+        "median_ulp": 1.0
+       }
+      },
+      "seed_tap": "/model/layers.2/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1700,
+        "max_ulp": 2316.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 1109,
+        "max_ulp": 1024.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.2/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 9.409803081918595,
+    "residual_out_l2": 12.152243590959145,
+    "state_digest": "57560cca90f86dbf",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 771096.4997253418,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 777387.1434631348,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 195912.04165649414,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 890481.5403747559,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 753854.9152832031,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 0.45469292960698215,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 5.87285798371078,
+    "elapsed_s_cumulative": 20.8,
+    "layer": 3,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1478,
+        "max_ulp": 512.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 156,
+        "max_ulp": 32.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.3/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 111,
+        "max_ulp": 14.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 171,
+        "max_ulp": 256.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.3/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 2541.50966257518,
+    "residual_out_l2": 2541.0920742283224,
+    "state_digest": "94ecfb1070dd17a9",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 777543.7877655029,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 787517.3809509277,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 227710.8635559082,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 914502.7942733765,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 766856.8548278809,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 0.7106268593048627,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 1919.658511156109,
+    "elapsed_s_cumulative": 26.0,
+    "layer": 4,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 783,
+        "max_ulp": 294.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 165,
+        "max_ulp": 256.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.4/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 59,
+        "max_ulp": 7.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 166,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.4/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 2541.7754918502287,
+    "residual_out_l2": 2541.090464119574,
+    "state_digest": "5adeab090b308aaf",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 776571.2844696045,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 792614.0644683838,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 216308.62799072266,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 908968.2556686401,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 770805.397064209,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 0.9203653960453392,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 2.7004623062114765,
+    "elapsed_s_cumulative": 30.8,
+    "layer": 5,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1842,
+        "max_ulp": 578.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 309,
+        "max_ulp": 96.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.5/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 252,
+        "max_ulp": 23.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 269,
+        "max_ulp": 64.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.5/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4448.219040932311,
+    "residual_out_l2": 4447.896553969669,
+    "state_digest": "70e342d1feb106b0",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 779299.5462493896,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 794839.6104431152,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 225935.6377105713,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 945702.1034317017,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 773166.228302002,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 1.1680848128791899,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 10.992235610693223,
+    "elapsed_s_cumulative": 35.4,
+    "layer": 6,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 2277,
+        "max_ulp": 407.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 197,
+        "max_ulp": 64.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.6/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 110,
+        "max_ulp": 28.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 178,
+        "max_ulp": 32.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.6/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4449.069004482106,
+    "residual_out_l2": 4448.302906849702,
+    "state_digest": "9028689eda51b524",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 773684.4121551514,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 805080.9102478027,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 224075.40928649902,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 927760.1770782471,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 771968.2963104248,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 1.7091985711962672,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 455.45000576029173,
+    "elapsed_s_cumulative": 39.9,
+    "layer": 7,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 585,
+        "max_ulp": 176.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 210,
+        "max_ulp": 16.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.7/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 58,
+        "max_ulp": 7.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 220,
+        "max_ulp": 512.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.7/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4452.655755976522,
+    "residual_out_l2": 4450.732596381646,
+    "state_digest": "94c618552cdc2b78",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 770496.876739502,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 806223.9530029297,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 219333.46643066406,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 924790.4153518677,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 773957.4241027832,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 2.30363065517898,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 3.118656876960526,
+    "elapsed_s_cumulative": 44.6,
+    "layer": 8,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1546,
+        "max_ulp": 341.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 216,
+        "max_ulp": 16.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.8/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 423,
+        "max_ulp": 79.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 335,
+        "max_ulp": 32.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.8/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4873.631306249161,
+    "residual_out_l2": 4872.712095011622,
+    "state_digest": "4802eec16cc28b8e",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 772793.4568939209,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 799458.5037689209,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 222370.482131958,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 917160.6299819946,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 777570.4131164551,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 3.7877763794532417,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 2.5824400760822206,
+    "elapsed_s_cumulative": 49.3,
+    "layer": 9,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1622,
+        "max_ulp": 273.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 271,
+        "max_ulp": 64.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.9/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 441,
+        "max_ulp": 57.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 260,
+        "max_ulp": 256.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.9/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4871.7157176804785,
+    "residual_out_l2": 4871.246159855439,
+    "state_digest": "79d33c908963336e",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 782467.0292663574,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 783350.6731872559,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 225865.630569458,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 935416.7463150024,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 788872.0833740234,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 3.9087547967472207,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 2.956917885464722,
+    "elapsed_s_cumulative": 54.0,
+    "layer": 10,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1913,
+        "max_ulp": 703.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 294,
+        "max_ulp": 56.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.10/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 401,
+        "max_ulp": 51.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 410,
+        "max_ulp": 64.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.10/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4872.041834960888,
+    "residual_out_l2": 4869.550040900615,
+    "state_digest": "23f654b0e8a4b86a",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 782997.7328491211,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 770234.5795135498,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 223255.94673156738,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 891179.7901000977,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 791110.0816345215,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 4.466385715762204,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 3.1114994856604095,
+    "elapsed_s_cumulative": 59.2,
+    "layer": 11,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1918,
+        "max_ulp": 940.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 597,
+        "max_ulp": 288.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.11/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 437,
+        "max_ulp": 72.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 200,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.11/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4870.621867065321,
+    "residual_out_l2": 4867.971043855811,
+    "state_digest": "24195acb6c0c5071",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 784434.2285614014,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 760954.6586914062,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 226070.03326416016,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 917307.3937988281,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 795099.0845336914,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 3.727725480481097,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 7.857488985251145,
+    "elapsed_s_cumulative": 64.1,
+    "layer": 12,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 874,
+        "max_ulp": 105.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 549,
+        "max_ulp": 512.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.12/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 231,
+        "max_ulp": 66.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 179,
+        "max_ulp": 256.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.12/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4867.288355652596,
+    "residual_out_l2": 4864.604007870565,
+    "state_digest": "8e8d57fb7437165b",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 785819.1065063477,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 751204.7327270508,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 236507.578125,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 901413.5831451416,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 795926.9594726562,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 4.372946423681868,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 88.76429137730877,
+    "elapsed_s_cumulative": 69.0,
+    "layer": 13,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1821,
+        "max_ulp": 595.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 293,
+        "max_ulp": 112.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.13/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 513,
+        "max_ulp": 67.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 300,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.13/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4864.922430441755,
+    "residual_out_l2": 4863.540521257852,
+    "state_digest": "fcf43c3264238fc7",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 793152.3382110596,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 745260.0459899902,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 236791.09802246094,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 880791.2863311768,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 807906.4569396973,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 4.743768747062448,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 6.907077615866921,
+    "elapsed_s_cumulative": 74.3,
+    "layer": 14,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1817,
+        "max_ulp": 528.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 479,
+        "max_ulp": 96.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.14/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 954,
+        "max_ulp": 198.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 354,
+        "max_ulp": 56.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.14/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4946.275799553537,
+    "residual_out_l2": 4944.011105006609,
+    "state_digest": "4c8a8c872641ecc7",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 793881.8711853027,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 740975.9828948975,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 245636.7077331543,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 915396.9690093994,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 809785.428894043,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 6.16490238935938,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 3.9934626952001415,
+    "elapsed_s_cumulative": 79.1,
+    "layer": 15,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1677,
+        "max_ulp": 441.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 551,
+        "max_ulp": 512.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.15/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 635,
+        "max_ulp": 76.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 516,
+        "max_ulp": 256.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.15/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4938.654978415787,
+    "residual_out_l2": 4935.761119951393,
+    "state_digest": "50c824629eef45a4",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 797446.6913452148,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 736970.5277709961,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 246523.46339416504,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 890422.3222045898,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 813368.5161743164,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 4.760768784762686,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 3.3222467590705764,
+    "elapsed_s_cumulative": 83.6,
+    "layer": 16,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1695,
+        "max_ulp": 676.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 268,
+        "max_ulp": 1024.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.16/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 658,
+        "max_ulp": 210.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 264,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.16/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4935.349605711594,
+    "residual_out_l2": 4933.669069935161,
+    "state_digest": "58222fd585733067",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 801434.1973876953,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 733443.1147003174,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 252732.34898376465,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 895900.0171127319,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 816564.4930114746,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 4.655584777160479,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 5.523344795760207,
+    "elapsed_s_cumulative": 88.3,
+    "layer": 17,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1405,
+        "max_ulp": 664.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 302,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.17/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 337,
+        "max_ulp": 27.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 294,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.17/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4933.553976829815,
+    "residual_out_l2": 4931.565769360731,
+    "state_digest": "1d3cf6bccae27c62",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 805600.5957183838,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 739542.7064361572,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 266627.7198486328,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 881859.6589202881,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 821282.9085693359,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 5.538009863259811,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 6.918474796973402,
+    "elapsed_s_cumulative": 93.5,
+    "layer": 18,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1948,
+        "max_ulp": 608.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 585,
+        "max_ulp": 512.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.18/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 667,
+        "max_ulp": 125.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 323,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.18/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4931.7617987549675,
+    "residual_out_l2": 4929.671675218147,
+    "state_digest": "7a3934482f13a67e",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 810290.4456939697,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 742627.9209594727,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 271326.72106933594,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 886058.7778015137,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 827251.6076049805,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 4.846345472727273,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 59.449691466789,
+    "elapsed_s_cumulative": 98.7,
+    "layer": 19,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 564,
+        "max_ulp": 116.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 429,
+        "max_ulp": 512.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.19/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 120,
+        "max_ulp": 56.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 336,
+        "max_ulp": 64.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.19/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4929.776982617754,
+    "residual_out_l2": 4928.66784570654,
+    "state_digest": "443962ed58995c69",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 814712.1556243896,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 742003.1775817871,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 271205.7107849121,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 870673.9831542969,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 829996.9620056152,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 4.431141664053824,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 9.93117421300016,
+    "elapsed_s_cumulative": 104.1,
+    "layer": 20,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1305,
+        "max_ulp": 317.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 348,
+        "max_ulp": 256.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.20/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 460,
+        "max_ulp": 38.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 304,
+        "max_ulp": 32.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.20/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4958.3759461890395,
+    "residual_out_l2": 4956.635924199383,
+    "state_digest": "7636fcfb018cf921",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 817215.6599273682,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 744080.4173583984,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 284445.5161590576,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 868283.4214630127,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 831761.2047729492,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 4.324431495067863,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 8.113196560921587,
+    "elapsed_s_cumulative": 109.9,
+    "layer": 21,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1550,
+        "max_ulp": 336.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 359,
+        "max_ulp": 2048.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.21/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 522,
+        "max_ulp": 129.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 421,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.21/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4956.867022696456,
+    "residual_out_l2": 4954.12531883734,
+    "state_digest": "54ddfde6a9735064",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 823620.830947876,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 744562.9788970947,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 288653.18492126465,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 864917.6864929199,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 834662.5541381836,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 3.797335912866883,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 6.611578386047543,
+    "elapsed_s_cumulative": 114.7,
+    "layer": 22,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1809,
+        "max_ulp": 533.5,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 417,
+        "max_ulp": 320.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.22/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 519,
+        "max_ulp": 99.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 317,
+        "max_ulp": 256.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.22/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4954.592319604939,
+    "residual_out_l2": 4952.26336662228,
+    "state_digest": "db21faa815f05a3a",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 831299.4363555908,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 745947.4186401367,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 300247.5117492676,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 866292.7341003418,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 839528.9401550293,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 3.588613787110431,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 8.163828374822621,
+    "elapsed_s_cumulative": 119.8,
+    "layer": 23,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1690,
+        "max_ulp": 987.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 273,
+        "max_ulp": 64.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.23/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 656,
+        "max_ulp": 366.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 437,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.23/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4952.171494647371,
+    "residual_out_l2": 4951.595373317766,
+    "state_digest": "de560811bd44012d",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 837077.9714508057,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 748393.8383178711,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 311278.2934265137,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 861902.1786193848,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 843082.2998962402,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 3.651792956819883,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 7.642304462056017,
+    "elapsed_s_cumulative": 125.4,
+    "layer": 24,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1768,
+        "max_ulp": 619.5,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 420,
+        "max_ulp": 256.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.24/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 740,
+        "max_ulp": 204.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 461,
+        "max_ulp": 32.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.24/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4952.027881495177,
+    "residual_out_l2": 4950.797485177956,
+    "state_digest": "a457a6395b7f937c",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 842949.8067932129,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 750553.8615722656,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 312090.6433105469,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 865949.9278869629,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 847452.5526428223,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 3.8065880251568895,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 15.478853231528145,
+    "elapsed_s_cumulative": 131.0,
+    "layer": 25,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1794,
+        "max_ulp": 2026.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 369,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.25/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 529,
+        "max_ulp": 121.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 334,
+        "max_ulp": 44.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.25/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4950.668360851212,
+    "residual_out_l2": 4948.828926285115,
+    "state_digest": "1e8ed5232ced5397",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 846535.15675354,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 751854.9537506104,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 320976.3244934082,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 861112.3589630127,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 850288.9046936035,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 3.3206622978074427,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 8.234061845056383,
+    "elapsed_s_cumulative": 136.0,
+    "layer": 26,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1608,
+        "max_ulp": 1424.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 383,
+        "max_ulp": 64.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.26/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 668,
+        "max_ulp": 135.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 536,
+        "max_ulp": 256.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.26/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4937.022601382551,
+    "residual_out_l2": 4935.659257947494,
+    "state_digest": "fc463f05d96dcbe0",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 851233.9896850586,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 752399.0595703125,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 323404.5643005371,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 864689.8156280518,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 854640.1909790039,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 4.475511766653181,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 48.557734608773174,
+    "elapsed_s_cumulative": 142.3,
+    "layer": 27,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 2495,
+        "max_ulp": 1263.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 555,
+        "max_ulp": 1024.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.27/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 347,
+        "max_ulp": 52.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 415,
+        "max_ulp": 512.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.27/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4935.717304234569,
+    "residual_out_l2": 4934.003430322323,
+    "state_digest": "0322fc2b7b652c26",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 854523.5667266846,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 753657.8459472656,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 333562.7121582031,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 857470.0754547119,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 858871.1098632812,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 5.345394890226627,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 33.83519382573174,
+    "elapsed_s_cumulative": 147.2,
+    "layer": 28,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1175,
+        "max_ulp": 253.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 382,
+        "max_ulp": 256.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.28/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 400,
+        "max_ulp": 181.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 499,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.28/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4897.738361707067,
+    "residual_out_l2": 4896.639782913455,
+    "state_digest": "8a402f33478f7f60",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 852904.696105957,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 754676.8332214355,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 351001.3147583008,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 872172.3053588867,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 860207.3167724609,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 7.1558596410900295,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 2795.1646611795077,
+    "elapsed_s_cumulative": 151.4,
+    "layer": 29,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 2182,
+        "max_ulp": 715.5,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 409,
+        "max_ulp": 512.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.29/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 104,
+        "max_ulp": 54.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 336,
+        "max_ulp": 512.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.29/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 4877.9829536547295,
+    "residual_out_l2": 4876.110749316878,
+    "state_digest": "e06f16a53c41f533",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 844308.1928405762,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 762822.7910614014,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 359095.9468383789,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 864223.6070404053,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 859545.3425292969,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 10.813885744129042,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 455.75176964835964,
+    "elapsed_s_cumulative": 155.6,
+    "layer": 30,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1374,
+        "max_ulp": 379.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 485,
+        "max_ulp": 704.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.30/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 0.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 942,
+        "max_ulp": 3272.0,
+        "median_ulp": 0.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 464,
+        "max_ulp": 512.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.30/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 2109.1567798475153,
+    "residual_out_l2": 2093.6319958182357,
+    "state_digest": "67113a3df86b655c",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 828610.7359924316,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 774181.2267150879,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 360086.7266845703,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 861004.1522064209,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 854920.9010009766,
+      "weight_is_live": true
+     }
+    }
+   },
+   {
+    "all_finite": true,
+    "attn_out_l2": 79.70544798896398,
+    "contribution_note": "a layer that contributed nothing adds 0 to the residual stream and every layer downstream still produces plausible numbers -- so nodes_evaluated, the weight witnesses and residual_changed are screened, not merely reported",
+    "delta_is_nonzero": true,
+    "delta_out_l2": 1245.813743872117,
+    "elapsed_s_cumulative": 159.7,
+    "layer": 31,
+    "local_liveness": {
+     "cpu": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 2371,
+        "max_ulp": 1771.25,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 644,
+        "max_ulp": 256.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.31/input_layernorm/output_3",
+      "seeded_from": "cpu",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     },
+     "vulkan": {
+      "live": true,
+      "median_ulp": 1.0,
+      "per_tensor": {
+       "delta_out": {
+        "elements": 3072,
+        "elements_differing": 1537,
+        "max_ulp": 5925.0,
+        "median_ulp": 1.0
+       },
+       "res_mid": {
+        "elements": 3072,
+        "elements_differing": 582,
+        "max_ulp": 128.0,
+        "median_ulp": 0.0
+       }
+      },
+      "seed_tap": "/model/layers.31/input_layernorm/output_3",
+      "seeded_from": "vulkan",
+      "threshold": 8.0,
+      "what_it_witnesses": "that this layer of the float64 reference is the layer the model actually contains. It is RE-SEEDED from an EP tap on purpose, and its result never reaches the chain"
+     }
+    },
+    "nodes_evaluated": 11,
+    "nodes_expected": 11,
+    "residual_changed": true,
+    "residual_in_l2": 1676.9448997607471,
+    "residual_out_l2": 704.1805132352381,
+    "state_digest": "44d5533cc9d5db58",
+    "weight_witnesses": {
+     "down": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 810912.5872192383,
+      "weight_is_live": true
+     },
+     "gate": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 803841.2043762207,
+      "weight_is_live": true
+     },
+     "o": {
+      "rows_dequantised": 3072,
+      "rows_expected": 3072,
+      "weight_abs_sum": 355121.86727905273,
+      "weight_is_live": true
+     },
+     "qkv": {
+      "rows_dequantised": 9216,
+      "rows_expected": 9216,
+      "weight_abs_sum": 859734.7260742188,
+      "weight_is_live": true
+     },
+     "up": {
+      "rows_dequantised": 8192,
+      "rows_expected": 8192,
+      "weight_abs_sum": 861355.2193603516,
+      "weight_is_live": true
+     }
+    }
+   }
+  ],
+  "rotary_caches": {
+   "cos_bit_equal_between_eps": true,
+   "note": "constants selected by /model/rotemb_caches_subgraph/If; read off the run rather than predicted, because predicting them is how round 37 nearly reported a rotation defect as a copy defect",
+   "sin_bit_equal_between_eps": true
+  },
+  "seam_check": "PASS (no chain state is byte-identical to an EP tap)",
+  "status": "MEASURED"
+ },
+ "arm_tapped": {
+  "attribution": "ATTRIBUTED",
+  "claimed_nodes_process_cumulative": 710,
+  "claimed_nodes_this_arm": 355,
+  "class": "TAPS",
+  "device_name": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+  "device_name_source": "counters alloc_device_frame_session_devices, off the run",
+  "dispatch_screen": "PASS",
+  "dispatches_executed_process_cumulative": 710,
+  "dispatches_executed_this_arm": 355,
+  "status": "MEASURED",
+  "tapping_is_non_perturbative": {
+   "logits": {
+    "cpu_tapped_equals_untapped": true,
+    "vulkan_tapped_equals_untapped": true
+   },
+   "present.31.key": {
+    "cpu_tapped_equals_untapped": true,
+    "vulkan_tapped_equals_untapped": true
+   },
+   "present.31.value": {
+    "cpu_tapped_equals_untapped": true,
+    "vulkan_tapped_equals_untapped": true
+   }
+  },
+  "taps_requested": 131,
+  "taps_returned": 131,
+  "why_this_screen": "adding 100+ graph outputs can change partitioning. The VERDICT is computed on the untapped run; the taps only feed the liveness bar. If a tapped output is not bit-identical to its untapped twin, the liveness bar is describing a different run and says so here"
+ },
+ "arm_untapped": {
+  "attribution": "ATTRIBUTED",
+  "claimed_nodes_process_cumulative": 355,
+  "claimed_nodes_this_arm": 355,
+  "class": "IN_SITU",
+  "device_name": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+  "device_name_source": "counters alloc_device_frame_session_devices, off the run",
+  "dispatch_screen": "PASS",
+  "dispatches_executed_process_cumulative": 355,
+  "dispatches_executed_this_arm": 355,
+  "note": "the graph criterion 10 actually runs, with no taps added",
+  "status": "MEASURED"
+ },
+ "device_selector_requested": "0",
+ "ep_registration": {
+  "lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-trinity\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+  "registered": true
+ },
+ "finished": "2026-08-04T12:52:46",
+ "not_done_here": [
+  "atol and rtol are not moved -- fifth round running",
+  "no criterion-10 row is closed; the verdict stays whatever the criterion says",
+  "nothing that follows from this answer is proposed"
+ ],
+ "predictions": {
+  "chain_vs_both_eps": "the chain should sit closer to both EPs than the EPs sit to each other only if their errors are uncorrelated; correlated rounding would put it outside them",
+  "note": "A PREDICTION IS NOT A READING (docs/DESIGN.md \u00a78.9.24(6)). Recorded so the measurements can contradict them. I was the specimen for this rule one round ago.",
+  "output_0": "the isolated lm_head put ORT's CPU EP further from true (2 vs 11 ULP). At model scale the Vulkan EP additionally carries 32 layers of its own drift, so I expect this to be able to reverse -- and if it does NOT reverse that is the more interesting reading",
+  "outputs_63_64": "round 37 established both EPs are BIT-EXACT on these with identical inputs, so at model scale their distance from true should be whatever their layer-31 QKV inputs already carried -- inherited, and I do not predict a direction",
+  "registered_before_measuring": true,
+  "what_would_make_this_inconclusive": "any layer failing its liveness bar, any arm with a zero dispatch or claim delta, or the two reference variants (f64 / f16r) disagreeing on direction"
+ },
+ "probe": "criterion10_chain",
+ "question": "for criterion 10's outputs 0, 63 and 64 AS THE CRITERION SEES THEM -- each EP's own in-situ output on the whole model -- which of the two is further from the true value?",
+ "reference_variants": {
+  "f16r": "each node's exact result rounded once to fp16 before the next node",
+  "f64": "exact real arithmetic of the composed graph, no intermediate rounding",
+  "why_both": "'true' has two defensible readings at fp16 and neither is privileged; where they agree on direction the answer is robust to the choice, and where they disagree the disagreement is the finding"
+ },
+ "ruling": "docs/DESIGN.md \u00a78.9.24(4), the half round 37 costed and did not run",
+ "seam_honesty": {
+  "chain_never_reads": "any EP-computed tensor, at any layer boundary",
+  "chain_reads": "initialisers, input_ids, and the rotary caches (constants, checked bit-equal between the two EPs' taps before use)",
+  "liveness_reads": "both EPs' taps, per layer, per side -- and its result never reaches the chain",
+  "why_this_is_the_answer_to_arm_f": "arm F was dishonest because a reference seeded from one side was compared against the other side's output. Here the reference is a function of the weights alone: neither side appears in its derivation, so neither side can be favoured by its construction"
+ },
+ "selector_caveat": "a selector is a request, not an identity; device_name is off the run",
+ "started": "2026-08-04T12:49:46",
+ "the_answer": {
+  "output_0_logits": {
+   "by_reference_variant": {
+    "f16r": {
+     "both_bit_exact_against_the_reference": false,
+     "cpu_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.0078125, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 34.268,
+      "allowance_in_ulps_at_scale_median": 7.038,
+      "allowance_in_ulps_at_scale_min": 0.128323486328125,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 32064,
+      "elements_differing": 32064,
+      "max_abs_diff": 0.63720703125,
+      "max_ulp_at_scale_diff": 81.5625,
+      "max_ulp_diff": 2608092.0,
+      "median_ulp_diff": 125.0,
+      "one_ulp_at_scale": 0.0078125,
+      "p99_ulp_diff": 6659.109999999997,
+      "tensor_scale": 13.3359375,
+      "ulp_element_basis_max": 2608092.0,
+      "ulp_element_basis_median": 125.0,
+      "ulp_element_basis_min": 1.0
+     },
+     "cpu_value": 2608092.0,
+     "discriminator": "max_ulp_diff",
+     "discriminators_conflict": false,
+     "discriminators_silent": [],
+     "discriminators_unmeasured": [],
+     "margin": 163840.0,
+     "reading": "a verdict of 'neither (equal)' on two zeros is a null result, not a measurement of agreement; read both_bit_exact_against_the_reference, unanimous_direction and verdict_by_discriminator before quoting this row. Where discriminators_conflict is true there is no single answer and the conflict is the finding.",
+     "unanimous_direction": "cpu",
+     "verdict_by_discriminator": {
+      "elements_differing": {
+       "cpu_value": 32064,
+       "margin": 1,
+       "verdict": "cpu",
+       "vulkan_value": 32063
+      },
+      "max_abs_diff": {
+       "cpu_value": 0.63720703125,
+       "margin": 0.003173828125,
+       "verdict": "cpu",
+       "vulkan_value": 0.634033203125
+      },
+      "max_ulp_diff": {
+       "cpu_value": 2608092.0,
+       "margin": 163840.0,
+       "verdict": "cpu",
+       "vulkan_value": 2444252.0
+      },
+      "median_ulp_diff": {
+       "cpu_value": 125.0,
+       "margin": 13.0,
+       "verdict": "cpu",
+       "vulkan_value": 112.0
+      },
+      "p99_ulp_diff": {
+       "cpu_value": 6659.109999999997,
+       "margin": 791.7800000000061,
+       "verdict": "cpu",
+       "vulkan_value": 5867.329999999991
+      }
+     },
+     "vulkan_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.0078125, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 34.268,
+      "allowance_in_ulps_at_scale_median": 7.038,
+      "allowance_in_ulps_at_scale_min": 0.128323486328125,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 32064,
+      "elements_differing": 32063,
+      "max_abs_diff": 0.634033203125,
+      "max_ulp_at_scale_diff": 81.15625,
+      "max_ulp_diff": 2444252.0,
+      "median_ulp_diff": 112.0,
+      "one_ulp_at_scale": 0.0078125,
+      "p99_ulp_diff": 5867.329999999991,
+      "tensor_scale": 13.3359375,
+      "ulp_element_basis_max": 2444252.0,
+      "ulp_element_basis_median": 112.0,
+      "ulp_element_basis_min": 0.0
+     },
+     "vulkan_value": 2444252.0,
+     "which_is_further_from_true": "cpu"
+    },
+    "f64": {
+     "both_bit_exact_against_the_reference": false,
+     "cpu_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.0078125, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 34.068,
+      "allowance_in_ulps_at_scale_median": 7.178,
+      "allowance_in_ulps_at_scale_min": 0.12846051025390626,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 32064,
+      "elements_differing": 32064,
+      "max_abs_diff": 0.38592529296875,
+      "max_ulp_at_scale_diff": 49.3984375,
+      "max_ulp_diff": 1551504.0,
+      "median_ulp_diff": 83.0,
+      "one_ulp_at_scale": 0.0078125,
+      "p99_ulp_diff": 4333.179999999986,
+      "tensor_scale": 13.2578125,
+      "ulp_element_basis_max": 1551504.0,
+      "ulp_element_basis_median": 83.0,
+      "ulp_element_basis_min": 2.0
+     },
+     "cpu_value": 1551504.0,
+     "discriminator": "max_ulp_diff",
+     "discriminators_conflict": false,
+     "discriminators_silent": [
+      "elements_differing"
+     ],
+     "discriminators_unmeasured": [],
+     "margin": 55296.0,
+     "reading": "a verdict of 'neither (equal)' on two zeros is a null result, not a measurement of agreement; read both_bit_exact_against_the_reference, unanimous_direction and verdict_by_discriminator before quoting this row. Where discriminators_conflict is true there is no single answer and the conflict is the finding.",
+     "unanimous_direction": "cpu",
+     "verdict_by_discriminator": {
+      "elements_differing": {
+       "cpu_value": 32064,
+       "margin": 0,
+       "verdict": "neither (equal)",
+       "vulkan_value": 32064
+      },
+      "max_abs_diff": {
+       "cpu_value": 0.38592529296875,
+       "margin": 0.003173828125,
+       "verdict": "cpu",
+       "vulkan_value": 0.38275146484375
+      },
+      "max_ulp_diff": {
+       "cpu_value": 1551504.0,
+       "margin": 55296.0,
+       "verdict": "cpu",
+       "vulkan_value": 1496208.0
+      },
+      "median_ulp_diff": {
+       "cpu_value": 83.0,
+       "margin": 13.0,
+       "verdict": "cpu",
+       "vulkan_value": 70.0
+      },
+      "p99_ulp_diff": {
+       "cpu_value": 4333.179999999986,
+       "margin": 689.9599999999919,
+       "verdict": "cpu",
+       "vulkan_value": 3643.219999999994
+      }
+     },
+     "vulkan_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.0078125, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 34.068,
+      "allowance_in_ulps_at_scale_median": 7.178,
+      "allowance_in_ulps_at_scale_min": 0.12846051025390626,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 32064,
+      "elements_differing": 32064,
+      "max_abs_diff": 0.38275146484375,
+      "max_ulp_at_scale_diff": 48.9921875,
+      "max_ulp_diff": 1496208.0,
+      "median_ulp_diff": 70.0,
+      "one_ulp_at_scale": 0.0078125,
+      "p99_ulp_diff": 3643.219999999994,
+      "tensor_scale": 13.2578125,
+      "ulp_element_basis_max": 1496208.0,
+      "ulp_element_basis_median": 70.0,
+      "ulp_element_basis_min": 1.0
+     },
+     "vulkan_value": 1496208.0,
+     "which_is_further_from_true": "cpu"
+    }
+   },
+   "class": "ORACLE_MODEL_SCALE",
+   "direction": "cpu",
+   "direction_note": "both reference variants are unanimous across all five discriminators and agree with each other",
+   "how_far_both_sides_are_from_true_vs_from_each_other": {
+    "cpu_median_ulp_from_reference": {
+     "f16r": 125.0,
+     "f64": 83.0
+    },
+    "reading": "where both sides sit much further from the true value than they sit from each other, their errors are largely COMMON, not opposed. That is a statement about where the error is, and it is not a statement about what any threshold should be -- \u00a78.9.24(4) forbids the second and this row must not be read as making it",
+    "the_two_eps_median_ulp_apart": 12.0,
+    "vulkan_median_ulp_from_reference": {
+     "f16r": 112.0,
+     "f64": 70.0
+    }
+   },
+   "output_index": 0,
+   "reading": "the reference here is a function of the model's weights alone; neither EP's tensors enter its derivation, so 'further from true' is not a statement either side's construction can win. Where variants_agree_on_direction is false, the choice of what 'true' means at fp16 decides the answer and there is no fact of the matter without making that choice explicit.",
+   "status": "MEASURED",
+   "variants_agree_on_direction": true,
+   "variants_without_a_direction": [],
+   "vk_vs_cpu": {
+    "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.0078125, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+    "allowance_in_ulps_at_scale_max": 33.628,
+    "allowance_in_ulps_at_scale_median": 7.488,
+    "allowance_in_ulps_at_scale_min": 0.1283955078125,
+    "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+    "bit_exact": false,
+    "elements": 32064,
+    "elements_differing": 31969,
+    "max_abs_diff": 0.0625,
+    "max_ulp_at_scale_diff": 8.0,
+    "max_ulp_diff": 255658.0,
+    "median_ulp_diff": 12.0,
+    "one_ulp_at_scale": 0.0078125,
+    "p99_ulp_diff": 587.5549999999985,
+    "tensor_scale": 13.0859375,
+    "ulp_element_basis_max": 255658.0,
+    "ulp_element_basis_median": 12.0,
+    "ulp_element_basis_min": 0.0
+   }
+  },
+  "output_63_present.31.key": {
+   "by_reference_variant": {
+    "f16r": {
+     "both_bit_exact_against_the_reference": false,
+     "conflict_note": "at least one statistic puts the Vulkan EP further from the float64 value and at least one puts ORT's CPU EP further; neither side is 'the wrong one' on this arm",
+     "cpu_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 29.796,
+      "allowance_in_ulps_at_scale_median": 1.1360000000000001,
+      "allowance_in_ulps_at_scale_min": 0.256030517578125,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 3072,
+      "elements_differing": 2996,
+      "max_abs_diff": 0.02001953125,
+      "max_ulp_at_scale_diff": 5.125,
+      "max_ulp_diff": 108380.0,
+      "median_ulp_diff": 20.0,
+      "one_ulp_at_scale": 0.00390625,
+      "p99_ulp_diff": 2100.8899999999985,
+      "tensor_scale": 5.76953125,
+      "ulp_element_basis_max": 108380.0,
+      "ulp_element_basis_median": 20.0,
+      "ulp_element_basis_min": 0.0
+     },
+     "cpu_value": 108380.0,
+     "discriminator": "max_ulp_diff",
+     "discriminators_conflict": true,
+     "discriminators_silent": [],
+     "discriminators_unmeasured": [],
+     "margin": 2944.0,
+     "reading": "a verdict of 'neither (equal)' on two zeros is a null result, not a measurement of agreement; read both_bit_exact_against_the_reference, unanimous_direction and verdict_by_discriminator before quoting this row. Where discriminators_conflict is true there is no single answer and the conflict is the finding.",
+     "unanimous_direction": null,
+     "verdict_by_discriminator": {
+      "elements_differing": {
+       "cpu_value": 2996,
+       "margin": 13,
+       "verdict": "vulkan",
+       "vulkan_value": 3009
+      },
+      "max_abs_diff": {
+       "cpu_value": 0.02001953125,
+       "margin": 0.001708984375,
+       "verdict": "cpu",
+       "vulkan_value": 0.018310546875
+      },
+      "max_ulp_diff": {
+       "cpu_value": 108380.0,
+       "margin": 2944.0,
+       "verdict": "cpu",
+       "vulkan_value": 105436.0
+      },
+      "median_ulp_diff": {
+       "cpu_value": 20.0,
+       "margin": 1.0,
+       "verdict": "cpu",
+       "vulkan_value": 19.0
+      },
+      "p99_ulp_diff": {
+       "cpu_value": 2100.8899999999985,
+       "margin": 248.0400000000045,
+       "verdict": "cpu",
+       "vulkan_value": 1852.849999999994
+      }
+     },
+     "vulkan_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 29.796,
+      "allowance_in_ulps_at_scale_median": 1.1360000000000001,
+      "allowance_in_ulps_at_scale_min": 0.256030517578125,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 3072,
+      "elements_differing": 3009,
+      "max_abs_diff": 0.018310546875,
+      "max_ulp_at_scale_diff": 4.6875,
+      "max_ulp_diff": 105436.0,
+      "median_ulp_diff": 19.0,
+      "one_ulp_at_scale": 0.00390625,
+      "p99_ulp_diff": 1852.849999999994,
+      "tensor_scale": 5.76953125,
+      "ulp_element_basis_max": 105436.0,
+      "ulp_element_basis_median": 19.0,
+      "ulp_element_basis_min": 0.0
+     },
+     "vulkan_value": 105436.0,
+     "which_is_further_from_true": "cpu"
+    },
+    "f64": {
+     "both_bit_exact_against_the_reference": false,
+     "conflict_note": "at least one statistic puts the Vulkan EP further from the float64 value and at least one puts ORT's CPU EP further; neither side is 'the wrong one' on this arm",
+     "cpu_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 29.816000000000003,
+      "allowance_in_ulps_at_scale_median": 1.136625,
+      "allowance_in_ulps_at_scale_min": 0.2562520751953125,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 3072,
+      "elements_differing": 2947,
+      "max_abs_diff": 0.013427734375,
+      "max_ulp_at_scale_diff": 3.4375,
+      "max_ulp_diff": 66554.0,
+      "median_ulp_diff": 12.0,
+      "one_ulp_at_scale": 0.00390625,
+      "p99_ulp_diff": 1158.9199999999983,
+      "tensor_scale": 5.7734375,
+      "ulp_element_basis_max": 66554.0,
+      "ulp_element_basis_median": 12.0,
+      "ulp_element_basis_min": 0.0
+     },
+     "cpu_value": 66554.0,
+     "discriminator": "max_ulp_diff",
+     "discriminators_conflict": true,
+     "discriminators_silent": [
+      "median_ulp_diff"
+     ],
+     "discriminators_unmeasured": [],
+     "margin": 6464.0,
+     "reading": "a verdict of 'neither (equal)' on two zeros is a null result, not a measurement of agreement; read both_bit_exact_against_the_reference, unanimous_direction and verdict_by_discriminator before quoting this row. Where discriminators_conflict is true there is no single answer and the conflict is the finding.",
+     "unanimous_direction": null,
+     "verdict_by_discriminator": {
+      "elements_differing": {
+       "cpu_value": 2947,
+       "margin": 16,
+       "verdict": "vulkan",
+       "vulkan_value": 2963
+      },
+      "max_abs_diff": {
+       "cpu_value": 0.013427734375,
+       "margin": 0.001708984375,
+       "verdict": "cpu",
+       "vulkan_value": 0.01171875
+      },
+      "max_ulp_diff": {
+       "cpu_value": 66554.0,
+       "margin": 6464.0,
+       "verdict": "vulkan",
+       "vulkan_value": 73018.0
+      },
+      "median_ulp_diff": {
+       "cpu_value": 12.0,
+       "margin": 0.0,
+       "verdict": "neither (equal)",
+       "vulkan_value": 12.0
+      },
+      "p99_ulp_diff": {
+       "cpu_value": 1158.9199999999983,
+       "margin": 47.79999999999927,
+       "verdict": "cpu",
+       "vulkan_value": 1111.119999999999
+      }
+     },
+     "vulkan_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 29.816000000000003,
+      "allowance_in_ulps_at_scale_median": 1.136625,
+      "allowance_in_ulps_at_scale_min": 0.2562520751953125,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 3072,
+      "elements_differing": 2963,
+      "max_abs_diff": 0.01171875,
+      "max_ulp_at_scale_diff": 3.0,
+      "max_ulp_diff": 73018.0,
+      "median_ulp_diff": 12.0,
+      "one_ulp_at_scale": 0.00390625,
+      "p99_ulp_diff": 1111.119999999999,
+      "tensor_scale": 5.7734375,
+      "ulp_element_basis_max": 73018.0,
+      "ulp_element_basis_median": 12.0,
+      "ulp_element_basis_min": 0.0
+     },
+     "vulkan_value": 73018.0,
+     "which_is_further_from_true": "vulkan"
+    }
+   },
+   "class": "ORACLE_MODEL_SCALE",
+   "direction": null,
+   "direction_note": "null because at least one reference variant's discriminators conflict, so that variant has no direction and cannot be spoken for by the other",
+   "how_far_both_sides_are_from_true_vs_from_each_other": {
+    "cpu_median_ulp_from_reference": {
+     "f16r": 20.0,
+     "f64": 12.0
+    },
+    "reading": "where both sides sit much further from the true value than they sit from each other, their errors are largely COMMON, not opposed. That is a statement about where the error is, and it is not a statement about what any threshold should be -- \u00a78.9.24(4) forbids the second and this row must not be read as making it",
+    "the_two_eps_median_ulp_apart": 4.0,
+    "vulkan_median_ulp_from_reference": {
+     "f16r": 19.0,
+     "f64": 12.0
+    }
+   },
+   "output_index": 63,
+   "reading": "the reference here is a function of the model's weights alone; neither EP's tensors enter its derivation, so 'further from true' is not a statement either side's construction can win. Where variants_agree_on_direction is false, the choice of what 'true' means at fp16 decides the answer and there is no fact of the matter without making that choice explicit.",
+   "status": "MEASURED",
+   "variants_agree_on_direction": false,
+   "variants_without_a_direction": [
+    "f16r",
+    "f64"
+   ],
+   "vk_vs_cpu": {
+    "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.00390625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+    "allowance_in_ulps_at_scale_max": 29.796,
+    "allowance_in_ulps_at_scale_median": 1.134125,
+    "allowance_in_ulps_at_scale_min": 0.2565413818359375,
+    "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+    "bit_exact": false,
+    "elements": 3072,
+    "elements_differing": 2722,
+    "max_abs_diff": 0.005859375,
+    "max_ulp_at_scale_diff": 1.5,
+    "max_ulp_diff": 2120.0,
+    "median_ulp_diff": 4.0,
+    "one_ulp_at_scale": 0.00390625,
+    "p99_ulp_diff": 218.3199999999997,
+    "tensor_scale": 5.76953125,
+    "ulp_element_basis_max": 2120.0,
+    "ulp_element_basis_median": 4.0,
+    "ulp_element_basis_min": 0.0
+   }
+  },
+  "output_64_present.31.value": {
+   "by_reference_variant": {
+    "f16r": {
+     "both_bit_exact_against_the_reference": false,
+     "cpu_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.015625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 32.364,
+      "allowance_in_ulps_at_scale_median": 0.230875,
+      "allowance_in_ulps_at_scale_min": 0.06411314392089844,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 3072,
+      "elements_differing": 2963,
+      "max_abs_diff": 0.03125,
+      "max_ulp_at_scale_diff": 2.0,
+      "max_ulp_diff": 12065.0,
+      "median_ulp_diff": 10.0,
+      "one_ulp_at_scale": 0.015625,
+      "p99_ulp_diff": 866.6574999999996,
+      "tensor_scale": 25.234375,
+      "ulp_element_basis_max": 12065.0,
+      "ulp_element_basis_median": 10.0,
+      "ulp_element_basis_min": 0.0
+     },
+     "cpu_value": 12065.0,
+     "discriminator": "max_ulp_diff",
+     "discriminators_conflict": false,
+     "discriminators_silent": [
+      "max_abs_diff",
+      "median_ulp_diff"
+     ],
+     "discriminators_unmeasured": [],
+     "margin": 2904.0,
+     "reading": "a verdict of 'neither (equal)' on two zeros is a null result, not a measurement of agreement; read both_bit_exact_against_the_reference, unanimous_direction and verdict_by_discriminator before quoting this row. Where discriminators_conflict is true there is no single answer and the conflict is the finding.",
+     "unanimous_direction": "cpu",
+     "verdict_by_discriminator": {
+      "elements_differing": {
+       "cpu_value": 2963,
+       "margin": 4,
+       "verdict": "cpu",
+       "vulkan_value": 2959
+      },
+      "max_abs_diff": {
+       "cpu_value": 0.03125,
+       "margin": 0.0,
+       "verdict": "neither (equal)",
+       "vulkan_value": 0.03125
+      },
+      "max_ulp_diff": {
+       "cpu_value": 12065.0,
+       "margin": 2904.0,
+       "verdict": "cpu",
+       "vulkan_value": 9161.0
+      },
+      "median_ulp_diff": {
+       "cpu_value": 10.0,
+       "margin": 0.0,
+       "verdict": "neither (equal)",
+       "vulkan_value": 10.0
+      },
+      "p99_ulp_diff": {
+       "cpu_value": 866.6574999999996,
+       "margin": 27.970000000001164,
+       "verdict": "cpu",
+       "vulkan_value": 838.6874999999984
+      }
+     },
+     "vulkan_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.015625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 32.364,
+      "allowance_in_ulps_at_scale_median": 0.230875,
+      "allowance_in_ulps_at_scale_min": 0.06411314392089844,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 3072,
+      "elements_differing": 2959,
+      "max_abs_diff": 0.03125,
+      "max_ulp_at_scale_diff": 2.0,
+      "max_ulp_diff": 9161.0,
+      "median_ulp_diff": 10.0,
+      "one_ulp_at_scale": 0.015625,
+      "p99_ulp_diff": 838.6874999999984,
+      "tensor_scale": 25.234375,
+      "ulp_element_basis_max": 9161.0,
+      "ulp_element_basis_median": 10.0,
+      "ulp_element_basis_min": 0.0
+     },
+     "vulkan_value": 9161.0,
+     "which_is_further_from_true": "cpu"
+    },
+    "f64": {
+     "both_bit_exact_against_the_reference": false,
+     "conflict_note": "at least one statistic puts the Vulkan EP further from the float64 value and at least one puts ORT's CPU EP further; neither side is 'the wrong one' on this arm",
+     "cpu_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.015625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 32.364,
+      "allowance_in_ulps_at_scale_median": 0.230640625,
+      "allowance_in_ulps_at_scale_min": 0.06411436462402344,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 3072,
+      "elements_differing": 2924,
+      "max_abs_diff": 0.03125,
+      "max_ulp_at_scale_diff": 2.0,
+      "max_ulp_diff": 15029.0,
+      "median_ulp_diff": 7.0,
+      "one_ulp_at_scale": 0.015625,
+      "p99_ulp_diff": 497.1899999999996,
+      "tensor_scale": 25.234375,
+      "ulp_element_basis_max": 15029.0,
+      "ulp_element_basis_median": 7.0,
+      "ulp_element_basis_min": 0.0
+     },
+     "cpu_value": 15029.0,
+     "discriminator": "max_ulp_diff",
+     "discriminators_conflict": true,
+     "discriminators_silent": [
+      "max_abs_diff"
+     ],
+     "discriminators_unmeasured": [],
+     "margin": 3948.0,
+     "reading": "a verdict of 'neither (equal)' on two zeros is a null result, not a measurement of agreement; read both_bit_exact_against_the_reference, unanimous_direction and verdict_by_discriminator before quoting this row. Where discriminators_conflict is true there is no single answer and the conflict is the finding.",
+     "unanimous_direction": null,
+     "verdict_by_discriminator": {
+      "elements_differing": {
+       "cpu_value": 2924,
+       "margin": 21,
+       "verdict": "cpu",
+       "vulkan_value": 2903
+      },
+      "max_abs_diff": {
+       "cpu_value": 0.03125,
+       "margin": 0.0,
+       "verdict": "neither (equal)",
+       "vulkan_value": 0.03125
+      },
+      "max_ulp_diff": {
+       "cpu_value": 15029.0,
+       "margin": 3948.0,
+       "verdict": "cpu",
+       "vulkan_value": 11081.0
+      },
+      "median_ulp_diff": {
+       "cpu_value": 7.0,
+       "margin": 1.0,
+       "verdict": "cpu",
+       "vulkan_value": 6.0
+      },
+      "p99_ulp_diff": {
+       "cpu_value": 497.1899999999996,
+       "margin": 43.710000000000036,
+       "verdict": "vulkan",
+       "vulkan_value": 540.8999999999996
+      }
+     },
+     "vulkan_ep_vs_reference": {
+      "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.015625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+      "allowance_in_ulps_at_scale_max": 32.364,
+      "allowance_in_ulps_at_scale_median": 0.230640625,
+      "allowance_in_ulps_at_scale_min": 0.06411436462402344,
+      "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+      "bit_exact": false,
+      "elements": 3072,
+      "elements_differing": 2903,
+      "max_abs_diff": 0.03125,
+      "max_ulp_at_scale_diff": 2.0,
+      "max_ulp_diff": 11081.0,
+      "median_ulp_diff": 6.0,
+      "one_ulp_at_scale": 0.015625,
+      "p99_ulp_diff": 540.8999999999996,
+      "tensor_scale": 25.234375,
+      "ulp_element_basis_max": 11081.0,
+      "ulp_element_basis_median": 6.0,
+      "ulp_element_basis_min": 0.0
+     },
+     "vulkan_value": 11081.0,
+     "which_is_further_from_true": "cpu"
+    }
+   },
+   "class": "ORACLE_MODEL_SCALE",
+   "direction": null,
+   "direction_note": "null because at least one reference variant's discriminators conflict, so that variant has no direction and cannot be spoken for by the other",
+   "how_far_both_sides_are_from_true_vs_from_each_other": {
+    "cpu_median_ulp_from_reference": {
+     "f16r": 10.0,
+     "f64": 7.0
+    },
+    "reading": "where both sides sit much further from the true value than they sit from each other, their errors are largely COMMON, not opposed. That is a statement about where the error is, and it is not a statement about what any threshold should be -- \u00a78.9.24(4) forbids the second and this row must not be read as making it",
+    "the_two_eps_median_ulp_apart": 4.0,
+    "vulkan_median_ulp_from_reference": {
+     "f16r": 10.0,
+     "f64": 6.0
+    }
+   },
+   "output_index": 64,
+   "reading": "the reference here is a function of the model's weights alone; neither EP's tensors enter its derivation, so 'further from true' is not a statement either side's construction can win. Where variants_agree_on_direction is false, the choice of what 'true' means at fp16 decides the answer and there is no fact of the matter without making that choice explicit.",
+   "status": "MEASURED",
+   "variants_agree_on_direction": false,
+   "variants_without_a_direction": [
+    "f64"
+   ],
+   "vk_vs_cpu": {
+    "allowance_in_ulps_at_scale_basis": "(atol=0.001 + rtol=0.02*|b|) / one_ulp_at_scale=0.015625, evaluated at each element's own reference over every element. This is the WHOLE predicate allowance; atol_in_ulps_at_scale is one term of it and must never be quoted as the tolerance (docs/DESIGN.md \u00a78.9.24(1)).",
+    "allowance_in_ulps_at_scale_max": 32.404,
+    "allowance_in_ulps_at_scale_median": 0.230875,
+    "allowance_in_ulps_at_scale_min": 0.06400007629394532,
+    "at_scale_basis_note": "max_ulp_at_scale_diff is None where the reference tensor has no finite nonzero scale: a residual divided by an undefined denominator is an absence, not a 0, and a 0 there would acquit",
+    "bit_exact": false,
+    "elements": 3072,
+    "elements_differing": 2835,
+    "max_abs_diff": 0.015625,
+    "max_ulp_at_scale_diff": 1.0,
+    "max_ulp_diff": 10127.0,
+    "median_ulp_diff": 4.0,
+    "one_ulp_at_scale": 0.015625,
+    "p99_ulp_diff": 210.95999999999913,
+    "tensor_scale": 25.265625,
+    "ulp_element_basis_max": 10127.0,
+    "ulp_element_basis_median": 4.0,
+    "ulp_element_basis_min": 0.0
+   }
+  }
+ },
+ "what_this_does_not_answer": {
+  "any_conclusion_about_tolerances": "\u00a78.9.24(4) forbids it and assert_record_proposes_no_motion enforces it on this artifact",
+  "whether_the_reference_is_the_only_defensible_one": "two variants are reported precisely because it is not. A third accumulation order for the MatMulNBits reductions would move the fp16-rounded reference by at most the reduction's own float64 error, ~1e-10 fp16 ULP, which is below every margin reported here -- but that is an argument, not a measurement, and it is labelled as one",
+  "why_a_residual_is_where_it_is": "this says which side is further from the true value of the whole model. It does not attribute the distance to a node, a kernel or a mechanism -- the per-hop arms in probe_criterion10_side.py do that, one node at a time"
+ }
+}

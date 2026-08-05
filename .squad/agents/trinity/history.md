@@ -504,6 +504,81 @@ red, none mine: criterion 10's known `DIVERGENT`, one unrelated binding test, an
 that pass in isolation and are red only under the full run. **Not run: `cargo test --lib`,
 clippy — no Rust moved, and I say so rather than implying coverage I do not have.**
 
+## Round 38 — 2026-08-04 — the model-scale answer, and an instrument that called a healthy build wedged
+
+**§8.9.24(4)'s remaining half is built and measured.** A float64 forward pass of all 355
+nodes, layer-at-a-time (~0.7 GB, not the ~30 GB dense pass), 32/32 layers live, both
+devices, both reference variants. **Output 0 `logits`: `cpu` — ORT's CPU EP is the further
+side, unanimous on all five separating discriminators, under both variants, on both
+devices.** Outputs 63 and 64: **`null` — no direction**. The discriminators conflict inside
+a variant and the variants disagree with each other, and that is the reading, not a gap in
+it. Round 37 established those two outputs carry **no locally-made error**; at model scale
+they still do not acquire a side.
+
+**What surprised me: at model scale both EPs are ~6× further from true than from each
+other.** Logits: Vulkan 70 and CPU 83 element-basis ULP from true, **12 apart**. Their error
+is largely **common**, not opposed — which is a fact about the composed graph and about
+fp16, and is recorded as `how_far_both_sides_are_from_true_vs_from_each_other` with an
+explicit note that **it is not a statement about any threshold.** It is exactly the number a
+loosening argument would want, which is why it is a reading and nothing else.
+
+**The seam is where arm F comes back, so it is structural.** The chain reads *initialisers
+and `input_ids` only*; layer L's input is layer L−1's **reference** output, never an EP tap,
+so neither EP appears anywhere in its derivation. `assert_chain_never_reseeded` digests
+every boundary and raises if any chain state equals an EP tap there. The **liveness bar** is
+re-seeded per layer per side from that side's own tap — and its result **never reaches the
+chain**. Re-seeding is what made arm F dishonest *when its output fed a verdict*; it is what
+makes a liveness bar mean anything. The distinction is which structure the number is allowed
+to reach, and it is enforced by data flow rather than by a comment.
+
+**Reading the first real run exposed a defect in my own aggregation — the R11 shape one
+level up, inside the code written to prevent it.** A variant whose discriminators *conflict*
+was being dropped so the *decisive* variant could speak for both, and output 64 printed
+`direction='cpu'` with `variants_agree_on_direction=True`. Dropping a `None` is
+single-discriminator reasoning wearing the multi-discriminator machinery.
+`direction_across_variants` now refuses it.
+
+**`union_check`'s `wiring_census` red was never contention, and I ran the experiment instead
+of arguing.** It reproduces **in isolation with nothing else running**. A cold `cargo test
+--test layering` prints `Compiling onnxruntime-ep-vulkan` and then **nothing at all** while
+rustc works: 12015 silent units against a 12000 budget. The guard's own stated premise —
+*cargo emits a line per crate, so a crawling build keeps beating* — is true of many crates
+and false of one big one. **`test_proof_ledger` is green under the full run**, so the
+"contention pair" was one instrument defect and one coincidence.
+
+**The repair is a second beat source, never a bigger number** — the file says the number is
+gone rather than bigger, and a bigger budget makes a wedged child *harder* to catch.
+`guarded_run` now watches what a `KIND_TOOLCHAIN` child has **written**, consulted only
+after half the budget of silence. **My first version of the fix was wrong and the run said
+so**: depth 1 beat 4098 times and the census **still stalled at 12011 units**. Sampling a
+cold build directly: longest blind interval **195.5 s at depth 1, 18.6 s at depth 3** —
+rustc touches `incremental/<hash>/s-*-working/` and almost nothing above it. Depth is now a
+measured constant.
+
+**Cold before: ERROR(instrument), 649 s. Cold depth-1: ERROR(instrument), 775 s. Cold
+depth-3: 7 passed, 957 s.** The green run is the **slowest of the three**. The failing
+quantity was silence, not slowness — which is precisely the property the work clock was
+built to have, defeated by a premise about stdout rather than by the clock. The refusal arm
+keeps the witness **live** and still requires `Stalled` on a child that writes nothing; a
+bigger budget could not pass that arm. A `KIND_MECHANISM` stall stays a **detection**.
+
+**What my verification established and what it did not.** It established which side is
+further from the true value at model scale, for the three outputs criterion 10 reads, with
+every layer proven to contribute and the reference proven never to be seeded from either EP.
+It did **not** establish that either EP is within any tolerance, that any tolerance should
+move, or that outputs 63/64 have a side — they do not, on this evidence. It says nothing
+about sequence positions beyond 0, nothing about batch or longer prompts, and nothing about
+what follows: **Morpheus rules on that**, and `assert_record_proposes_no_motion` gates both
+records so this one cannot smuggle a proposal into a reading.
+
+**`atol`/`rtol` untouched for the fifth round running.**
+
+**Verified:** chain probe selftest 10 arms; `test_criterion10_chain.py` 30 passed;
+`test_stall_guard.py` 21 passed including the two new refusal arms; `test_wiring_census.py`
+7 passed **cold**; contention gate **GREEN**, 0/20 red across all five pools (and it is a
+**cargo/libtest** gate, so it is *not* the instrument for a pytest pair — I say that rather
+than imply coverage I do not have). **Not run: `cargo test --lib` and clippy — no Rust
+moved this round.**
 📌 Team update (2026-08-04T12:25:00-07:00): Morpheus's ruling — the screening question for a
 criterion motion is not "is this true?", it is "what does it admit?" (the unsatisfiability finding
 was refuted without a run; the false premise was harmless, but relaxing the criterion on its
