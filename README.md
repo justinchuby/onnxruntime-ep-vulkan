@@ -78,9 +78,14 @@ once; the number quoted is the decision count, which is what the census counts.
 **Its op table is 94 rows, of which 76 carry a kernel.** Read from `epctl --dump-capabilities
 --json` (`rust/src/bin/epctl.rs`), not by counting `ops!` lines: **46 `live`, 30 `ready`, 18
 `staged`** — the staged rows are described and claim-tested and decline at runtime with a named
-blocker in the dump's own `staged_reason` field. **This count has been misstated more than once,
-including by earlier revisions of this file; the dump is the only reading of it that is not a hand
-tally.** `OpStatus::Live` is a **deprecated alias** of `OpStatus::Ready`
+blocker in the dump's own `staged_reason` field. **The 76 is the count of rows whose boolean `live`
+field is `true`, which is *not* `status == "live"` (46).** The dump row spells `live` twice with two
+meanings — a boolean for *this row has a kernel* and a status token that is the deprecated
+`OpStatus::Live` alias — so the derivation is written out here rather than left to a reader who
+would otherwise check the sentence against the wrong field and get 46
+([`docs/DESIGN.md`](docs/DESIGN.md) §8.9.25 renames the boolean `has_kernel`). **This count has been
+misstated more than once, including by earlier revisions of this file; the dump is the only reading
+of it that is not a hand tally.** `OpStatus::Live` is a **deprecated alias** of `OpStatus::Ready`
 (`rust/src/registry.rs::OpStatus`) and neither status grants a claim — **claimability is a ledger
 fact, not a table field** ([`docs/DESIGN.md`](docs/DESIGN.md) §8.9).
 
@@ -179,7 +184,7 @@ permanently contended by several agents.
 | Device requirement | **Vulkan 1.1 core + a compute queue.** No required extensions — see [`docs/DESIGN.md`](docs/DESIGN.md) §7. |
 | Target hardware | NVIDIA · AMD · Intel · Adreno · Mali — *none of these is covered by CI today; CI has no GPU hardware at all. The only executing lanes are two desktop GPUs on one development machine and the lavapipe software rasterizer.* |
 | Operator domains | `ai.onnx` and `com.microsoft` — the contrib domain is in scope because the ORT GenAI model builder emits contrib ops directly; see [`docs/DESIGN.md`](docs/DESIGN.md) §1.4 for the claim-safety constraints |
-| Op table | **94 rows — 46 `live`, 30 `ready`, 18 `staged`; 76 carry a kernel.** Status is not permission to claim: **claimability is a ledger fact** (`evidence/proof_ledger.jsonl`, 129 entries), not a table field. |
+| Op table | **94 rows — 46 `live`, 30 `ready`, 18 `staged`; 76 carry a kernel (`live == true` on the dump row, which is not `status == "live"`).** Status is not permission to claim: **claimability is a ledger fact** (`evidence/proof_ledger.jsonl`, 129 entries), not a table field. |
 
 ## How it works
 
