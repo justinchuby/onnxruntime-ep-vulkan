@@ -59,6 +59,18 @@ def _lib() -> str:
     )
 
 
+def _output_bind_disabled_by(v: str | None) -> bool:
+    """Mirror of `rust/src/vk/session.rs::output_bind_disabled_by`: tri-state, default ON.
+
+    Unset or an unrecognised value both mean "requested" (not disabled) -- only these exact,
+    case-varied tokens turn Step 1c off. Kept in lockstep with the Rust side by hand rather
+    than shared, since this probe has no build step that could import from `rust/`.
+    """
+    return v is not None and v.strip() in {
+        "0", "false", "FALSE", "off", "OFF", "no", "NO",
+    }
+
+
 def _ep_device(ort):
     for d in ort.get_ep_devices():
         if d.ep_name == "VulkanExecutionProvider":
@@ -275,7 +287,15 @@ def main() -> int:
             "first run"
         )
     doc["why"] = why
-    doc["ep_side_step1c_bind"] = os.environ.get("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS", "0")
+    # `rust/src/vk/session.rs::output_bind_disabled_by` is tri-state and the default arm is ON:
+    # unset or an unrecognised value both mean "requested"; only 0/false/off/no (any case)
+    # disable it. `os.environ.get(..., "0")` used to report the opposite of that default and
+    # would read "0" (not requested) on every process that never touched the env var, even
+    # though Step 1c was in fact requested -- the field's value did not track what happened.
+    # Mirrored here rather than imported so this probe stays a standalone script.
+    doc["ep_side_step1c_bind"] = "0" if _output_bind_disabled_by(
+        os.environ.get("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS")
+    ) else "1"
     lane = "epbind" if (doc["counters"] or {}).get("outputs_device_bound") else "callerbind"
     doc["lane"] = lane
     (HERE / f"kv_device_residency-{lane}.json").write_text(

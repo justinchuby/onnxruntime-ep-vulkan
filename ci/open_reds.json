@@ -4,7 +4,7 @@
   "how_to_add_an_entry": "An entry with expect=red is a LEASE, not a grant. It needs an owner who can actually close it, a `closes_when` that names the observable event, a `signature` that is the exact red being accepted (not a wildcard), and a `review_by` after which the lane fails until somebody re-reads it. If you cannot write `closes_when`, you do not have an accepted red, you have an unowned one, and the honest thing is to leave the lane failing. It also needs an `extent`: `signature` is a SUBSTRING test and a substring cannot notice a second subject joining an accepted red (Switch, 2026-08-03), so an entry must name the MEMBERS its acceptance is granted over. Growing the set is `extent_widened`; shrinking it is `extent_narrowed`, which is good news and must be re-read rather than left to cover something in principle.",
   "how_to_remove_an_entry": "DO NOT DELETE IT. Set `expect` to \"green\" and leave it running: that is what turns the next regression in that check into an unaccounted_red instead of a silence. The screen tells you when: an expect=red entry whose check has gone green is FAIL(condition=stale_acceptance). Deleting an entry outright removes the CHECK from the register, not just the acceptance, and on 2026-08-03 that is exactly what happened -- three entries were deleted, the denominator went from 8 to 5, and the screen printed PASS with a red check in the tree it had stopped looking at. If a subject really should stop being watched, move its id to `retired` with an owner, a date and a reason; `subjects` is append-only and every name in it must be in one list or the other.",
   "not_declared_here": {
-    "tests/union_check.py --run": "Its five reds are declared here INDIVIDUALLY (harness_census_drift, kv_caller_bind_reading, proof_ledger_writer_refuses x2, and the device-only matmulnbits one below) rather than as one entry, because `FAIL(condition=union_red)` is a returncode, and that returncode sums 3 FAIL(condition) with 2 ERROR(instrument). That is the same incommensurable-sum defect as the '48 failures' headline I carried for three sessions — 42 ledger + 4 instrument + 2 residual, three different kinds of thing behind one number. An entry for the sum would accept all five as one red and go on accepting a sixth. Tiers 1-2 of union_check are PRECONDITIONS and never render a colour at all, so there is nothing there for this screen to rule on.",
+    "tests/union_check.py --run": "Its four reds are declared here INDIVIDUALLY (harness_census_drift, proof_ledger_writer_refuses x2, and the device-only matmulnbits one below) rather than as one entry, because `FAIL(condition=union_red)` is a returncode, and that returncode sums 2 FAIL(condition) with 2 ERROR(instrument). That is the same incommensurable-sum defect as the '48 failures' headline I carried for three sessions — 42 ledger + 4 instrument + 2 residual, three different kinds of thing behind one number. An entry for the sum would accept all four as one red and go on accepting a fifth. Tiers 1-2 of union_check are PRECONDITIONS and never render a colour at all, so there is nothing there for this screen to rule on. (kv_caller_bind_reading was the fifth; retired 2026-08-05, see `retired`.)",
     "tests/ops/test_matmulnbits.py::test_layer_capture_mechanism": "Its colour depends on a device: it is red on a lane with a GPU (the run falls back to CPUExecutionProvider) and green-by-skip on a host-free runner. This screen runs host-free, so it cannot observe that check's colour, and a colour this screen cannot observe must not be declared here — UNOBSERVABLE is not green, and an entry that is satisfied by a skip is an acceptance granted by an absence. It belongs in a device-lane register when one exists. Named here so that its omission is a statement rather than a gap.",
     "the 12 Windows-only failures": "Collapsed to 1 after Mouse's two-digest schema landed, and the survivor is a device-only fp16 depth drift routed to Mouse/Switch. Same reason as above: not host-free.",
     "rust/tools/gen_proof_ledger.py --check": "Since 2832526 it asks the built artifact via OrtEpVulkanGetLedgerIdentity instead of comparing the file against itself, which is the right repair and makes its colour depend on a FRESH BUILD. On a host-free runner there is no DLL and it returns ERROR(instrument); against a stale one it returns FAIL(condition=LEDGER_DOES_NOT_DESCRIBE_THE_BUILD) -- which it did on this box today, correctly, naming one moved gqa_f16 kernel while noting 'the file is internally consistent: 103 entries, digest 94d994ba54821056 -- that was never the question'. A check whose colour needs a build cannot be declared in a host-free register: the green would be an artifact of the build step, not of the check. It belongs to the device lanes, which build before they test, and it is reached there through tests/ops/test_proof_ledger.py and tests/ops/test_wiring_census.py.",
@@ -101,33 +101,6 @@
       "reason": "Every gate step in the workflow must map to a declared Check. This screen rules on colour; that one rules on coverage. Kept as two tools over one tree on purpose — see ci/check_open_reds.py's frame note.",
       "closes_when": "n/a — expected green.",
       "timeout": 600
-    },
-    {
-      "id": "kv_caller_bind_reading",
-      "cmd": [
-        "python",
-        "-m",
-        "pytest",
-        "tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda",
-        "-q",
-        "-p",
-        "no:cacheprovider"
-      ],
-      "expect": "red",
-      "signature": "assert 'CUDA' in 'OK'",
-      "owner": "switch",
-      "opened": "2026-08-03",
-      "review_by": "2026-11-01",
-      "reason": "A test whose subject is a TRACKED ARTIFACT, `bench/results/kv_device_residency-callerbind.json`. The test asserts the reading contains 'CUDA' — i.e. that `device_type='gpu'` is routed to CUDA regardless of vendor and a plugin EP is therefore unaddressable by the documented spelling. The artifact was re-taken at 872d739 and now records `by_device_type_and_vendor: 'OK'`. So either the obstacle went away and the assertion is stale, or the re-take was made under conditions that do not answer the same question. Exactly one of the two readings is right and I cannot tell which from the artifact alone — which is why this is an owned red and not a fix.",
-      "closes_when": "Switch re-takes the caller-bind reading and either updates the assertion (the obstacle is gone) or restores the reading (the re-take answered a different question). Either way the entry is deleted and the screen reports stale_acceptance until it is.",
-      "timeout": 900,
-      "extent": {
-        "pattern": "^FAILED (\\S+)",
-        "members": [
-          "tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda"
-        ]
-      },
-      "extent_reason": "one node, and the cmd already selects it, so the set is trivially a singleton today. Declaring it is what makes a SECOND node joining the selection visible rather than absorbed, which is the whole of Switch's finding."
     },
     {
       "id": "audit_instruments_census",
@@ -335,6 +308,11 @@
       "owner": "mouse",
       "date": "2026-08-03",
       "reason": "Closed for real at 2832526. Both tests now pass: the writer no longer raises SystemExit on a synthetic run with no source_digest. Retired rather than kept as expect=green because the two node ids it named are a subset of the device lanes' own pytest run, which already rules on them -- keeping it would be a second census over one subject, which is the failure rust/tools/audit_instruments.py names."
+    },
+    "kv_caller_bind_reading": {
+      "owner": "switch",
+      "date": "2026-08-05",
+      "reason": "Restored, not updated: the re-take at 872d739 answered a different question. `git diff ed48f5b 872d739 -- bench/results/kv_device_residency-callerbind.json` shows the device metadata changing in the same edit as the reading -- vendor 0x10de (NVIDIA) to 0x8086 (Intel), device_index 1 to 0 -- so `by_device_type_and_vendor` going from the CUDA RuntimeError to 'OK' was a different vendor id argument to the same ORT call, not a re-answer of the original one. `bench/results/kv_device_residency-epbind.json` is still on record from the NVIDIA capture and still shows the RuntimeError, so `test_the_python_binding_hardcodes_gpu_to_cuda` now reads whichever committed artifact carries vendor 0x10de (today, epbind's) instead of a hardcoded filename, and a companion test (`test_the_cuda_hardcode_does_not_reproduce_on_intels_vendor_id`) records the Intel 'OK' finding as a kept fact rather than a discarded one. The docstring's 'regardless of the vendor id' claim is corrected to vendor-specific. Both tests pass against the currently-committed artifacts."
     }
   }
 }

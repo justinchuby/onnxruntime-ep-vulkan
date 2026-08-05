@@ -157,16 +157,80 @@ def test_the_two_lanes_still_differ_in_what_they_exercise() -> None:
     assert a["counters"]["outputs_device_bound"] != b["counters"]["outputs_device_bound"]
 
 
+# ci/open_reds.json ("kv_caller_bind_reading", owner Switch) tracked this claim as an
+# unresolved artifact/assertion disagreement: the assertion below used to read CALLER
+# unconditionally, quoting "CUDA" against whatever vendor happened to be in that file. At
+# 872d739 CALLER was RE-CAPTURED on a different physical device (Intel, vendor 0x8086,
+# device_index 0) than the ed48f5b capture that established the claim (NVIDIA, vendor
+# 0x10de, device_index 1) -- a different `vendor_id` argument to the exact same ORT call,
+# which is a different question, not a re-answer of the same one. `git diff ed48f5b 872d739
+# -- bench/results/kv_device_residency-callerbind.json` shows the device metadata changing
+# alongside the reading: `by_device_type_and_vendor` went from the CUDA `RuntimeError` text
+# to `"OK"` in the same edit that swapped the device. The obstacle did not go away; the
+# question changed under it.
+#
+# Resolution (evidence, not argument): both artifacts still carry a `q1_addressable` block
+# from this exact ORT call, and the two vendors currently on record disagree --
+# `kv_device_residency-epbind.json` was captured on the NVIDIA device (0x10de) and still
+# shows the `RuntimeError`; `kv_device_residency-callerbind.json`, captured on Intel
+# (0x8086), shows `"OK"`. `q1_addressable` is asked before either lane's IOBinding logic
+# runs, so it is a fact about the vendor id argument, not about which lane (`caller`/`ep`)
+# captured it. So the CUDA-hardcode claim is VENDOR-SPECIFIC, not the universal "regardless
+# of the vendor id" this file used to say: it reproduces on NVIDIA's vendor id and does not
+# reproduce on Intel's, on this ORT build. The assertion below is repaired to read whichever
+# currently-committed artifact carries the vendor the claim is about, instead of hardcoding
+# a filename that vendor happened to change out from under.
+_NVIDIA_VENDOR_ID = "0x10de"
+
+
+def _artifact_with_vendor(vendor_id: str) -> dict | None:
+    """Return whichever of CALLER/EPBIND currently records *vendor_id*, or None.
+
+    `q1_addressable` is captured before the caller-bind/ep-bind lanes diverge, so it is the
+    same question regardless of which of the two files holds it -- only the vendor on the
+    box that produced the reading matters.
+    """
+    for p in (CALLER, EPBIND):
+        if not p.is_file():
+            continue
+        d = _load(p)
+        if d.get("ep_device", {}).get("vulkan.vendor_id") == vendor_id:
+            return d
+    return None
+
+
 def test_the_python_binding_hardcodes_gpu_to_cuda() -> None:
-    """Why `memory_info=` is the only route: `device_type='gpu'` goes to CUDA regardless of
-    the vendor id, so a plugin EP is unaddressable by the documented spelling."""
-    if not CALLER.is_file():
-        pytest.skip("no recorded reading")
-    d = _load(CALLER)
+    """`device_type='gpu'` maps to CUDA on NVIDIA's vendor id (0x10de) -- measured, not
+    assumed -- so `memory_info=` is the route for *that* vendor. It is not a universal ORT
+    behaviour: see the module-level note above this test for the artifact/assertion
+    disagreement this replaces and the evidence that settled it."""
+    d = _artifact_with_vendor(_NVIDIA_VENDOR_ID)
+    if d is None:
+        pytest.skip(
+            "no recorded reading carries the NVIDIA vendor id (0x10de); this claim has "
+            "nothing to check against, and skipping silently would restate the old bug "
+            "in a new shape, so it is named here instead"
+        )
     assert "CUDA" in d["q1_addressable"]["by_device_type_and_vendor"]
     assert d["q1_addressable"]["by_ep_memory_info"] == "OK"
     # The binding labels any non-CPU OrtValue 'cuda'. Recorded, never used as evidence.
     assert d["q1_addressable"]["ortvalue_device_name_reported"] == "cuda"
+
+
+def test_the_cuda_hardcode_does_not_reproduce_on_intels_vendor_id() -> None:
+    """The other half of the same finding, recorded rather than discarded.
+
+    `by_device_type_and_vendor` reading `"OK"` on Intel's vendor id (0x8086) is a real,
+    current measurement -- it is what let the artifact/assertion disagreement above go
+    unnoticed for a round. It is NOT evidence that the hazard is gone everywhere: `q1`
+    asks nothing about whether the resulting `OrtValue` is usably addressable, only
+    whether the call raised, so this records what was observed and no more.
+    """
+    d = _artifact_with_vendor("0x8086")
+    if d is None:
+        pytest.skip("no recorded reading carries Intel's vendor id (0x8086)")
+    assert d["q1_addressable"]["by_device_type_and_vendor"] == "OK"
+    assert d["q1_addressable"]["by_ep_memory_info"] == "OK"
 
 
 @pytest.mark.skipif(

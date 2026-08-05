@@ -41,6 +41,8 @@ Pytest options
 
 from __future__ import annotations
 
+import ast
+import functools
 import json
 import os
 import struct
@@ -148,6 +150,137 @@ def pytest_configure(config: pytest.Config) -> None:
         "test that prints that line is a lane failure regardless of its own assertions.",
     )
     _assert_oracle_versions()
+
+
+# ---------------------------------------------------------------------------
+# Harness truth screen (Guard E) — a claim probe without an established EP proves nothing
+# ---------------------------------------------------------------------------
+# Morpheus (Round 37, .squad/agents/trinity/history.md §8.9.25): "the one test able to tell
+# a transpose from a relabelling lacks the require_vulkan fixture its fifteen neighbours
+# carry, silently falls back to CPU, and reports 'EP did not claim' when the EP was never
+# loaded." ``is_vulkan_claimed()`` is a deliberately non-asserting probe — its own docstring
+# in ``_models.py`` says it returns False BOTH when the EP declines a node form AND when the
+# EP is absent or crashes during session creation, because telling those two apart needs a
+# claim ATTEMPT to have actually happened. A test that reads a False from it and calls
+# ``pytest.skip("EP did not claim ...")`` without first establishing that the EP is even
+# registered (``require_vulkan`` / ``vulkan_device_available``) cannot tell a decline from
+# an absence, and reports the absence as though it were the more interesting finding.
+#
+# THIS IS A STRUCTURAL SCREEN, NOT FIVE DECORATORS. Five call sites had exactly this shape
+# when it was found (three in test_gemm_and_pool.py, two in test_conv.py); patching those
+# five and stopping there would leave the next one silent. So this walks every collected
+# test module's OWN source at collection time, and finds every function — test or helper —
+# whose body calls ``is_vulkan_claimed`` either directly or through a chain of calls to
+# OTHER functions defined in that same module (``_require_structurally_declined`` in
+# test_no_cpu_fallback.py is exactly this shape: none of ITS callers call the probe
+# directly, they call a helper that does — this screen has to see through that or it would
+# have missed a case that happens to already be correctly gated). If a test whose call
+# chain reaches the probe does not also depend on one of the two fixtures that establish
+# the EP first, collection FAILS — not a skip, not a warning: R13 applies here as much as
+# anywhere else in this file, and a harness precondition that quietly let its own violation
+# through would be the same defect one layer up.
+_CLAIM_PROBE_NAME = "is_vulkan_claimed"
+_ESTABLISHING_FIXTURES = frozenset({"require_vulkan", "vulkan_device_available"})
+
+
+def _called_name(call: ast.Call) -> str | None:
+    """The plain name a ``Call`` node invokes, whether bare (``f(...)``) or an attribute
+    (``m.f(...)``) — both are how ``is_vulkan_claimed`` is actually spelled in this suite."""
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+def _claim_probe_taint(tree: ast.Module) -> set[str]:
+    """Every top-level function in *tree* whose body calls the claim probe, directly or
+    through a chain of calls to other functions defined in the same module.
+
+    Module-local call-graph only, by construction: it cannot see a call to
+    ``is_vulkan_claimed`` that arrives through a fixture, a decorator, or a function
+    defined elsewhere. That is a stated limit, not a silent one — none of those shapes
+    exist for this probe in this suite today (grep-verified against every ``test_*.py``
+    under this directory), and a screen that hides its blind spots is worse than none
+    (the discipline ``rust/tools/audit_instruments.py`` states for its own text screen).
+    """
+    funcs = {
+        n.name: n
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    calls: dict[str, set[str]] = {}
+    tainted: set[str] = set()
+    for name, fn in funcs.items():
+        callees: set[str] = set()
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            called = _called_name(node)
+            if called == _CLAIM_PROBE_NAME:
+                tainted.add(name)
+            elif called in funcs:
+                callees.add(called)
+        calls[name] = callees
+    grew = True
+    while grew:
+        grew = False
+        for name, callees in calls.items():
+            if name not in tainted and callees & tainted:
+                tainted.add(name)
+                grew = True
+    return tainted
+
+
+@functools.lru_cache(maxsize=None)
+def _claim_probe_taint_for_file(path: str) -> frozenset[str]:
+    source = Path(path).read_text(encoding="utf-8")
+    return frozenset(_claim_probe_taint(ast.parse(source, filename=path)))
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
+    """Fail COLLECTION if a test reaches ``is_vulkan_claimed`` without establishing the EP.
+
+    Runs once, over every collected item, regardless of which test file asked for
+    collection — a class-level screen rather than a per-test decorator, so a sixth
+    violation (in a file that does not exist yet) is caught the same way the first five
+    were.
+    """
+    violations: list[str] = []
+    for item in items:
+        path = getattr(item, "path", None)
+        if path is None or path.suffix != ".py":
+            continue
+        try:
+            tainted = _claim_probe_taint_for_file(str(path))
+        except (SyntaxError, OSError):
+            # A file this screen cannot parse is a file it did not look at — not silence:
+            # any real syntax error will also fail plain collection, loudly, elsewhere.
+            continue
+        base_name = getattr(item, "originalname", None) or item.name.split("[", 1)[0]
+        if base_name not in tainted:
+            continue
+        if _ESTABLISHING_FIXTURES.isdisjoint(item.fixturenames):
+            violations.append(
+                f"{item.nodeid}  (reaches {_CLAIM_PROBE_NAME}() without require_vulkan "
+                "or vulkan_device_available)"
+            )
+    if violations:
+        listing = "\n".join(f"  - {v}" for v in sorted(violations))
+        raise pytest.UsageError(
+            "Guard E (harness truth screen, tests/ops/conftest.py): the following test(s) "
+            f"call `{_CLAIM_PROBE_NAME}()` — directly or through a helper defined in the "
+            "same module — without depending on `require_vulkan` or "
+            "`vulkan_device_available` first. `is_vulkan_claimed()` returns False both when "
+            "the EP declines a node form AND when the EP is absent or crashed during "
+            "session creation (see its docstring in _models.py); without one of those two "
+            "fixtures a missing EP reads as a decline. See "
+            ".squad/agents/trinity/history.md §8.9.25 (Morpheus).\n"
+            f"{listing}\n"
+            "Fix: add `require_vulkan` (or `vulkan_device_available`) as a parameter to "
+            "each test listed above, or stop calling the claim probe from it."
+        )
 
 
 # ---------------------------------------------------------------------------
