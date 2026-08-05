@@ -123,12 +123,16 @@ pytestmark = pytest.mark.slow
 
 
 def _model_present() -> bool:
-    return probe.MODEL.is_file()
+    return probe.MODEL is not None and probe.MODEL.is_file()
 
 
 _requires_lane = pytest.mark.skipif(
     not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB") or not _model_present(),
-    reason="needs ONNXRUNTIME_VULKAN_EP_LIB and the Phi-3.5 model to execute a real graph",
+    reason=(
+        "needs ONNXRUNTIME_VULKAN_EP_LIB and the Phi-3.5 model to execute a real graph"
+        if probe.MODEL_DISCOVERY_ERROR is None
+        else f"Phi-3.5 model not resolvable: {probe.MODEL_DISCOVERY_ERROR}"
+    ),
 )
 
 

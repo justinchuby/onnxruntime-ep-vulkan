@@ -266,20 +266,34 @@ Two C symbols are exported, and only two: `CreateEpFactories` and `ReleaseEpFact
 A plain `cargo build` from a PowerShell prompt that never ran a Visual Studio developer shell
 setup script will fail in the linker (`cl.exe`/`link.exe` not on `PATH`, `INCLUDE`/`LIB` unset).
 The standard fix — Visual Studio's own `vcvars64.bat` — is a **`cmd.exe` batch file**, and the
-naive way to combine it with a custom build in one line is wrong on this toolchain:
+naive way to combine it with a custom build in one line is fragile on this toolchain, for two
+distinct, verifiable reasons — **not** because a real child process fails to inherit variables
+`set` earlier in the same `cmd /c "..."` chain (it does; a `set X=1` followed later in the same
+chain by a genuine child process, e.g. another `cmd /c echo %X%` or `cargo build`, sees `X`
+correctly — confirmed by direct test on this toolchain):
 
 ```powershell
-# KNOWN-BAD — do not use. Environment mutations made after the first `&&` inside a single
-# `cmd /c "..."` invocation do not reliably reach a child process spawned later in the same
-# chain; a build invoked this way was observed to silently drop custom variables (VULKAN_SDK,
-# LIBCLANG_PATH) the build script needed, producing a confusing failure (or worse, a silent
-# fallback) rather than a clear "variable not set" error.
-cmd /c 'call vcvars64.bat && set VULKAN_SDK=... && cargo build --release'
+# FRAGILE — avoid. Two real hazards, neither of which is "child processes don't inherit
+# `set` mutations":
+#
+# 1. Parse-time %VAR% expansion: cmd.exe expands every %VAR% token in a single command line
+#    ONCE, before executing any part of that line. `set PATH=%VULKAN_SDK%\Bin;%PATH%` chained
+#    after `call vcvars64.bat` in the *same* line reads the pre-vcvars values of %VULKAN_SDK%/
+#    %PATH% (or a literal, unexpanded token if undefined) — confirmed: `set X=1 && echo %X%` in
+#    one line prints the literal text `%X%`, not `1`. Delayed expansion (`setlocal
+#    enabledelayedexpansion` + `!VAR!`) works around this but is easy to omit.
+# 2. PowerShell/cmd quoting: building a long `cmd /c "..."` argument from PowerShell requires
+#    getting nested double-quotes (for paths containing spaces) and `$`/backtick escaping (so
+#    PowerShell does not interpolate before cmd ever sees the string) exactly right; a small
+#    quoting mistake drops or corrupts arguments with no error message, only a confusing build
+#    failure or a wrong environment.
+cmd /c 'call vcvars64.bat && set PATH=%VULKAN_SDK%\Bin;%PATH% && cargo build --release'
 ```
 
 The proven recipe instead **captures** `vcvars64.bat`'s resulting environment and **applies it
-natively inside the current PowerShell process**, so every later command in that same session —
-including `cargo build` — actually sees it:
+natively inside the current PowerShell process**, using PowerShell's own `$env:`/
+`[System.Environment]` mechanisms instead of `%VAR%`/chained-`cmd` syntax — sidestepping both
+hazards above entirely, since nothing is expanded or quoted through `cmd.exe` more than once:
 
 ```powershell
 $vcvars = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
@@ -301,9 +315,12 @@ cargo build --release
 
 Adjust the `vcvars64.bat` and Vulkan SDK paths to the versions actually installed
 (`vswhere.exe -latest -property installationPath` finds the Visual Studio install path if it is
-not the default). This recipe is what CI and every local Windows build in this repo's history use;
-if a build fails with an MSVC toolchain error, verify with `$env:INCLUDE` / `$env:LIB` non-empty
-in the *same* shell that runs `cargo build` before assuming the code is at fault.
+not the default). This recipe is for a fresh interactive PowerShell session — a developer
+machine or a squad worktree — that never ran a VS developer shell; **CI's `windows-latest`
+runner does not run this recipe** (its images ship with the MSVC toolchain already reachable
+from a plain PowerShell session, so `.github/workflows/ci.yml` never calls `vcvars64.bat`). If a
+build fails with an MSVC toolchain error, verify with `$env:INCLUDE` / `$env:LIB` non-empty in
+the *same* shell that runs `cargo build` before assuming the code is at fault.
 
 ### Verify
 

@@ -238,11 +238,16 @@ class TestFilesystemFallback:
                 _SPEC, foundry_exe=_UNRESOLVABLE_FOUNDRY_EXE, cache_root=tmp_path
             )
 
-    def test_manifest_says_cached_but_file_absent_raises_stale(
+    def test_variant_directory_exists_but_onnx_file_absent_raises_stale(
         self, tmp_path: pathlib.Path
     ) -> None:
         # Directory exists (as Foundry would leave one mid-download or after a partial cleanup)
         # but the actual .onnx file inside it does not — must not be silently treated as present.
+        # This exercises the *filesystem-fallback* strategy's own on-disk check; the CLI-manifest
+        # strategy's equivalent "stale relative to disk" branch is exercised separately below by
+        # `TestResolveModelPathCliManifestStale`, since the two strategies verify presence via
+        # different code paths (`_variants_from_filesystem`'s `rglob` vs. `resolve_model_path`'s
+        # final `onnx_path.is_file()` re-check of a CLI-reported `cachePath`).
         d = tmp_path / "Microsoft" / _SPEC.variant_name / "v1"
         d.mkdir(parents=True, exist_ok=True)
         with pytest.raises(fd.FoundryDiscoveryError, match="no cached Foundry variant"):
@@ -273,6 +278,64 @@ def test_filesystem_fallback_wrong_provider_directory_reports_as_missing(
     _make_cache_file(tmp_path, "Widget-mini-instruct-cpu", _SPEC.onnx_filename)
     with pytest.raises(fd.FoundryDiscoveryError, match="no cached Foundry variant"):
         fd.resolve_model_path(_SPEC, foundry_exe=_UNRESOLVABLE_FOUNDRY_EXE, cache_root=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# `resolve_model_path`'s CLI-manifest branch of the final on-disk re-verification.
+#
+# `select_variant` only ever sees what a manifest (real or synthetic) claims; it has no
+# filesystem access and cannot itself detect that a `cached: true` / `cachePath` entry is lying
+# about what is actually on disk. That re-check lives in `resolve_model_path` itself, once,
+# after a variant has been chosen -- so it must be exercised through `resolve_model_path`, with
+# `_foundry_cache_list_json` monkeypatched to simulate a CLI manifest that is stale relative to
+# disk (the exact shape `foundry cache list` returns when a download was interrupted or a
+# cache directory was manually pruned without telling Foundry's own catalog).
+# ---------------------------------------------------------------------------
+
+
+class TestResolveModelPathCliManifestStale:
+    def test_cli_manifest_says_cached_but_onnx_file_absent_raises_stale(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        cache_dir = tmp_path / "cachePathDir"
+        cache_dir.mkdir()  # the directory the manifest points at exists...
+
+        def _fake_cli_manifest(foundry_exe: str, timeout: float = 30.0) -> "list[dict]":
+            return [_variant(cache_path=str(cache_dir))]
+
+        monkeypatch.setattr(fd, "_foundry_cache_list_json", _fake_cli_manifest)
+        # ...but the .onnx file itself was never written into it (or was pruned afterwards).
+        with pytest.raises(fd.FoundryDiscoveryError, match="stale relative to disk"):
+            fd.resolve_model_path(_SPEC, foundry_exe="irrelevant-once-monkeypatched")
+
+    def test_cli_manifest_stale_error_names_the_download_remedy(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        cache_dir = tmp_path / "cachePathDir"
+        cache_dir.mkdir()
+
+        def _fake_cli_manifest(foundry_exe: str, timeout: float = 30.0) -> "list[dict]":
+            return [_variant(cache_path=str(cache_dir))]
+
+        monkeypatch.setattr(fd, "_foundry_cache_list_json", _fake_cli_manifest)
+        with pytest.raises(fd.FoundryDiscoveryError, match=_SPEC.download_alias):
+            fd.resolve_model_path(_SPEC, foundry_exe="irrelevant-once-monkeypatched")
+
+    def test_cli_manifest_with_onnx_file_present_resolves_normally(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        # Sanity check alongside the two stale cases above: when the CLI-reported cachePath
+        # really does contain the file, resolution still succeeds through this same code path.
+        cache_dir = tmp_path / "cachePathDir"
+        cache_dir.mkdir()
+        (cache_dir / _SPEC.onnx_filename).write_bytes(b"marker")
+
+        def _fake_cli_manifest(foundry_exe: str, timeout: float = 30.0) -> "list[dict]":
+            return [_variant(cache_path=str(cache_dir))]
+
+        monkeypatch.setattr(fd, "_foundry_cache_list_json", _fake_cli_manifest)
+        resolved = fd.resolve_model_path(_SPEC, foundry_exe="irrelevant-once-monkeypatched")
+        assert resolved == cache_dir / _SPEC.onnx_filename
 
 
 # ---------------------------------------------------------------------------
