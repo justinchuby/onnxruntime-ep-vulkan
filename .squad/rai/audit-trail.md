@@ -4,6 +4,171 @@
 
 <!-- Rai appends findings below -->
 
+## Audit Entry — 2026-08-05T00:45:00-07:00
+
+**Review type:** First review of the shipping artifact — the `python/` package (`pyproject.toml`,
+`build_wheel.py`, `src/onnxruntime_ep_vulkan/`, `verify_cleanroom.py`, `tests/packaging/`). Requested
+by Justin Chu, via coordinator, after the coordinator's own clean-room install verification
+(`0a73d82`, against merged tree `61627d6`). **MAIN_COLOUR_ACK=red** — CI is red on `main`
+(Link/Trinity working it); this review is read-only advisory and does not route around that.
+**Files reviewed:** `python/README.md`, `python/build_wheel.py`, `python/verify_cleanroom.py`,
+`python/src/onnxruntime_ep_vulkan/{__init__.py,__main__.py}`, `tests/packaging/{test_python_shim.py,
+test_wheel_provenance.py}`, `bench/results/{consumption_surface_dev0.json,cleanroom_install_dev0.json}`,
+`docs/DESIGN.md` §7.8, root `README.md` (DEVICE_MEMORY/timing/criterion-10/BERT/Phi-3.5 rows).
+**Verification performed, not just read:** ran `tests/packaging/` live against a real built cdylib
+(`$ONNXRUNTIME_VULKAN_EP_LIB` set) — **28 passed, 0 failed, 0 skipped**, including the
+subprocess-registration tests (`needs_lib`); cross-checked every row of `python/README.md`'s
+four-case table against `consumption_surface_dev0.json` byte-for-byte (all four `match: true`);
+diffed `61627d6..0a73d82` to confirm the `tree_dirty: true` flag in the coordinator's own
+provenance record reflects no change under `rust/` (doc/history condensation only), so the shipped
+digest is trustworthy in this instance even though the flag itself does not certify that in general.
+
+### Item 1 — the §7.8 reconciliation (checked-in-binary hazard vs. a wheel): 🟢 Green, holds
+
+Niobe's three-part answer is not merely argued, it is instrumented, and I checked each part
+independently rather than crediting the argument on its own terms (RAI-008(a) standard):
+
+- **Nothing binary enters the tree** — `tests/packaging/test_staged_artifact_directory_is_ignored_by_git`
+  calls `git check-ignore -q` on the exact staged path, not a `.gitignore` read-by-eye; passed live.
+  `test_no_binary_artifact_is_tracked_in_the_python_package` scans `git ls-files python/` for binary
+  suffixes; empty, passed live.
+- **The binary names its own source** — `_provenance.json` carries commit, dirty flag, artifact
+  sha256, and a shader-source digest reported as **digest-plus-file-count** specifically so a
+  digest-over-zero-files cannot misread as a match (`test_provenance_reports_file_count_beside_digest`,
+  passed). The docstring's own limit — a digest proves bytes match a record, not that those bytes
+  were compiled from the named commit — is stated in both `build_wheel.py` and `verify_provenance()`'s
+  return value, not just in prose a user has to go find.
+- **An escape-hatch build cannot become a wheel** — the SPIR-V magic-word counter is observed in
+  **both polarities** (`test_spirv_detector_negative_control`: 4096 planted near-misses, one byte off,
+  count 0; `test_spirv_detector_positive_control`: 7 planted headers, count 7), exactly the
+  never-seen-firing standard this project already applies elsewhere. On the real artifact:
+  **210 SPIR-V modules counted in the shipped bytes** (coordinator's live build). This is a
+  measurement of the shipped bytes, not of whether an environment variable was set — correctly
+  answers §7.8 condition 4 rather than trusting the escape hatch's absence.
+
+**Can a user tell what they installed?** Yes — `python -m onnxruntime_ep_vulkan --json` surfaces
+`provenance.verdict`, `commit`, `tree_dirty`, `spirv_modules_embedded`, and the shader digest+count
+without the user needing to read source. This is a real, checkable answer, not an assertion.
+
+**One open wrinkle, 🟡 Advisory, non-blocking:** the coordinator's own provenance record reads
+`"tree_dirty": true` at the commit it names. I verified by hand (`git diff 61627d6 0a73d82 --stat`)
+that nothing under `rust/` changed between those two commits — the dirty flag traces to
+uncommitted build byproducts (`python/build`, `python/dist`, `__pycache__`), not source drift — so
+the shipped digest is trustworthy *in this specific instance*. But nothing in `build_wheel.py` gates
+on `tree_dirty` the way it gates on the SPIR-V count; a wheel built from a genuinely dirty `rust/`
+tree stages exactly as readily as a clean one, and the record's own note ("if tree_dirty is true,
+commit does not fully identify the source at all") is disclosed but not enforced. **Recommendation:**
+mirror the SPIR-V refusal — `build_wheel.py` should refuse (or require an explicit
+`--allow-dirty`-style flag, logged, per this project's own escape-hatch-friction convention) to stage
+an artifact when `tree_dirty` is true, at least for anything that will be called a release build.
+Owner: Tank/Trinity (release workflow), non-blocking — no dirty-tree wheel has shipped as a
+release yet, only as this evidence run.
+
+### Item 2 — silent CPU fallback at the consumption layer, the RAI-012 shape one layer out: 🟡 Advisory
+
+Confirmed live: `consumption_surface_dev0.json` case `unregistered_name_failure_mode` —
+`observed: "silent_cpu_fallback"`, `numerically_correct: true`, one `UserWarning`. This is
+structurally RAI-012 (a decline path that is technically observable but not loud enough to reach a
+user by default), relocated from the ledger-decline message to ORT's own provider-selection
+fallback — and per the coordinator's framing, **the fallback itself is ORT's behavior, not this
+project's**. What this package controls is the mitigation, and I judge it as far as a shim can go
+without breaking its own stated scope boundary ("does not create sessions, does not wrap
+`InferenceSession`," `__init__.py` docstring): `assert_ep_selected()` is on the line immediately
+after session construction in every example (`python/README.md`, module docstring,
+`__main__.py --check`), it reads only `session.get_providers()` (the one channel that cannot lie
+the way a filtered/swallowed warning can), and its error message names the exact remediation
+(register first, pass `providers=` correctly). `tests/packaging::test_assert_ep_selected_raises_on_silent_cpu_fallback`
+verifies the raise fires; passed live.
+
+**Where this falls short of "loud by default," and why I am not raising it past 🟡:** nothing
+distinguishes, at the point a real user's copy-pasted three-line example degrades to two lines (the
+exact edit Niobe performed — "delete the broken import"), a session that was checked from one that
+silently was not. The record contains a synthetic demonstration of the hazard (Niobe's probe) but,
+per Morpheus's self-witness-bound standard already applied elsewhere in this project, **no artifact
+yet shows the mitigation catching a real occurrence** — only that it can. That gap does not make the
+finding 🔴: unlike RAI-008/009 (silently wrong *inference output*, no channel available to a user at
+all), here a channel exists, is documented first, and is the one honest channel ORT itself exposes.
+It stays 🟡 because the enforcement is entirely on the user's discipline, with no default-on guard
+this package could add without exceeding its declared scope. **Recommendation, non-blocking:**
+(a) make the three-line example's warning-worthy line visually distinct in `python/README.md` (a
+callout, not inline prose, matching how §7.8's own binding conditions are set off); (b) document
+`python -m onnxruntime_ep_vulkan --check` explicitly as "run this once in CI after any change to
+provider setup" rather than leaving it as a general-purpose inspection command — a CI-run positive
+control is the closest this package can get to a default-on catch without violating its own
+"does not create sessions" boundary. Owner: whoever owns `python/README.md` (Niobe, by authorship).
+
+### Item 3 — package claims against artifacts: 🟢 Green on the table itself, 🟡 Advisory on scope
+
+`python/README.md`'s four-row measured table was checked cell-by-cell against
+`bench/results/consumption_surface_dev0.json`: relative-path anchor (`not_cwd`, match), arbitrary
+registration name (`arbitrary`, 2 device entries, match), double registration (`raises`, match),
+silent CPU fallback (`silent_cpu_fallback`, correct numbers, one warning, match). All four claims
+are true of the cited artifact — no overstatement found, unlike the three false (not stale) claims
+Morpheus found in the root README's prior draft. Root `README.md`'s own disclosures — `DEVICE_MEMORY`
+OFF (`factory::device_memory_enabled`), no timing (`PAIRING_FAILS`, refuted design), criterion 10
+`DIVERGENT`, Phi-3.5 355/366, BERT 480/1274 — are all present, current, and consistent with the
+cited artifacts; I did not find a stale or false claim in the sampled set this pass.
+
+**🟡 Advisory — `python/README.md` never carries forward any of the above capability caveats, and a
+user who meets this package first (e.g., on the `python/` folder, or a future PyPI page) has no path
+to them.** It does not state that only a Windows wheel exists today (`no Linux or macOS wheel
+exists` per the coordinator's own list), and it does not state that a Vulkan **loader** is a runtime
+requirement the wheel cannot carry — that limit is disclosed, but only in `verify_cleanroom.py`'s
+module docstring, which is not user-facing shipped documentation a `pip install` reader will ever
+open. This is the same shape as RAI-003 (still open, `README.md` platform table lacking a
+CI-coverage caveat) recurring one layer down, in a document that did not exist when RAI-003 was
+filed. **Recommendation:** add a short "Scope and current limitations" section to
+`python/README.md` — Windows-only wheel today; requires a working Vulkan loader/ICD already present
+on the target machine; link to root `README.md` for model-capability and performance claims (do not
+duplicate them, to avoid a second copy that can go stale independently). Owner: Niobe (authorship),
+non-blocking.
+
+### Item 4 — anything else a user is entitled to be told: folded into Item 3's scope gap above.
+
+I checked each candidate the coordinator listed against `python/`'s own artifacts specifically
+(as opposed to the root README, which already discloses all of them): `DEVICE_MEMORY` OFF,
+no-timing/refuted-design, criterion 10 `DIVERGENT`, BERT 481-claimed/4-executed, `Conv`'s
+`blind_axes` disclosure, and no Linux/macOS wheel are all root-README-scope facts the python
+package correctly does not attempt to restate (restating them in two places would itself be a new
+staleness hazard) — **except** the Windows-only-wheel and Vulkan-loader-is-not-shippable facts,
+which are specific to the *installation* experience this package owns and are not currently stated
+anywhere a `pip install` user would read. Same recommendation and owner as Item 3.
+
+### Verdict Summary
+
+- 🔴 Critical: 0 new. (RAI-008/009 remain open on their own unrelated track, untouched by this review.)
+- 🟡 Advisory: 3 new — **RAI-016** (`build_wheel.py` does not gate on `tree_dirty` the way it gates
+  on SPIR-V count; escalates to 🔴-eligible only if a dirty-tree wheel ships *as a release* and the
+  digest is later shown not to correspond to the named commit); **RAI-017** (silent-CPU-fallback
+  mitigation is fully user-discipline-dependent; the shim has done everything available to it
+  without exceeding its declared scope, so this stays advisory, not a trigger, unless a future
+  change removes `assert_ep_selected` from the documented example or the module docstring);
+  **RAI-018** (`python/README.md` omits the Windows-only-wheel and Vulkan-loader-is-a-separate-
+  runtime-requirement facts — the only two of the coordinator's disclosure candidates that are this
+  package's own scope rather than the root README's).
+- 🟢 Green: 2 — the §7.8 reconciliation (checked-in-binary hazard) holds under independent
+  verification, not merely on the strength of the argument; the four-row measured table in
+  `python/README.md` is accurate against its cited artifact, cell-by-cell.
+- **Overall: no 🔴 this pass.** The package is a genuine, honestly-scoped first for this project —
+  the coordinator's clean-room run is credited as real (28/28 packaging tests independently
+  re-run live, not merely re-read) — with three non-blocking hardening items, none of which block
+  shipping the wheel as it exists today.
+
+**What surprised me:** how cleanly the package's own stated boundary ("does not create sessions,
+does not wrap `InferenceSession`") explains why `assert_ep_selected` cannot be made a default-on
+guard without becoming a different, larger piece of software — the RAI question here was not "why
+didn't they make this louder" but "is the loudest available option, given the boundary they correctly
+drew, actually in the example," and it is. The scope gap in Item 3/4 was the one genuine miss: the
+python package's own README is more careful about its *registration* claims than about its
+*installation* claims, and the two are not the same audience question.
+
+**Falsifiers:** RAI-016 falsified upward (🔴) if a dirty-tree wheel ships as a tagged release and a
+rebuild-at-commit later fails to reproduce the shader digest; falsified closed (discharged) if
+`build_wheel.py` gates on `tree_dirty` for release builds. RAI-017 falsified upward (🔴) if
+`assert_ep_selected` is ever removed from the documented three-line example or the module
+docstring, since that is the one thing currently holding this at advisory. RAI-018 falsified closed
+by either fact being added to `python/README.md`.
+
 ## Audit Entry — 2026-08-04T03:00:00-07:00
 
 **Review type:** Recall via coordinator — rule on RAI-013 (Tank's Arm D/E measurement); verify RAI-012
