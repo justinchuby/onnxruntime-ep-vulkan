@@ -1,0 +1,75 @@
+{
+  "gate": "device_loss_gate",
+  "arm": {
+    "lanes": [
+      "resident"
+    ],
+    "interleaved": false,
+    "seed_past": 4096,
+    "steps": 2,
+    "env_common": {
+      "ONNXRUNTIME_EP_VULKAN_KV_ARENA": "0",
+      "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB": "<unset \u2014 UNCAPPED>"
+    },
+    "ep_lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\rust\\target\\release\\onnxruntime_vulkan_ep.dll"
+  },
+  "per_lane": {
+    "resident": {
+      "env": {
+        "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "1",
+        "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "1"
+      },
+      "probe_lane": "resident",
+      "reps": 1,
+      "nonvacuous": 1,
+      "vacuous": 0,
+      "losses": 0,
+      "computes_observed": 2,
+      "rate_per_run": 0.0,
+      "rate_per_compute": 0.0,
+      "loss_rep_indices": []
+    }
+  },
+  "separation": null,
+  "time_order": [
+    {
+      "rep": 0,
+      "lane": "resident",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 31.9
+    }
+  ],
+  "time_order_note": "Printed because Tank withdrew his own closes_when on this ground: the losses he saw were time-ordered, not treatment-ordered. With lanes interleaved, a run of losses that clusters in REP INDEX rather than in LANE is the box, not the flag \u2014 and this table is what makes those two distinguishable.",
+  "reps_requested": 1,
+  "reps_nonvacuous": 1,
+  "reps_vacuous": 0,
+  "losses": 0,
+  "rate_per_run": 0.0,
+  "rate_per_compute": 0.0,
+  "computes_observed": 2,
+  "basis_note": "rate_per_run is comparable to Switch's 1/8 ONLY at --steps 2; at any other --steps the exposure per run differs and rate_per_compute is the comparable quantity.",
+  "detection_power": {
+    "0.1250": 0.125,
+    "0.0500": 0.050000000000000044,
+    "0.0250": 0.025000000000000022,
+    "0.0100": 0.010000000000000009
+  },
+  "reps": [
+    {
+      "rep": 0,
+      "lane": "resident",
+      "exit_code": 0,
+      "elapsed_s": 31.9,
+      "dispatches_executed": 710,
+      "compute_calls": 2,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep000.capture.txt",
+      "faults": {},
+      "steps_recorded": 2,
+      "lost": false,
+      "vacuous": false
+    }
+  ]
+}
