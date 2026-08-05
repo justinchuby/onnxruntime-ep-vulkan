@@ -23,8 +23,27 @@ WHAT IT MEASURES
 ----------------
 The claimable set is read off a real claim log (`probe_model_op_census.py` writes one), never
 re-derived from the registry source -- there is one registry and it lives in the DLL.
-An op is "claimable" if the log shows at least one node of that op type claimed, or the op is
-named in `--add`.
+
+**It reports a bracket, not a number, and the bracket is the point (repaired 2026-08-04).**
+The first version of this instrument ranked *op types*: it assumed that registering `Reshape`
+made every `Reshape` node claimable. The EP claims *nodes*. Measured:
+
+    MatMul   95 nodes in BERT, ranked +135 -- registered, claimed 1  (94 declined unknown-rank)
+    Reshape  59 nodes in BERT, ranked +167 -- registered, claimed 0  (53 unknown-rank, 4 dtype,
+                                                                      2 shape)
+
+Both predictions were made by this file and both were wrong by two orders of magnitude, in the
+same direction, for the same reason. So it now reports two readings of every candidate:
+
+* **optimistic** -- every node of that op type becomes claimable. This is the old number, kept
+  because it is the ceiling and a ceiling is worth knowing.
+* **gated** -- only those nodes whose own claim-log row shows ORT resolved a rank for every
+  operand *and* for the output. That is not the EP's gate (dtype, attributes and per-op rules
+  are not modelled here) so it is not a floor either -- but it is the one precondition that
+  every op in this crate shares, and it is what both misses above were made of.
+
+The baseline is per-node too: a node counts as claimable only if the log says *that node* was
+claimed. The old baseline treated all 364 `Add` nodes as claimable when 182 were.
 
 Islands are connected components over the graph's data edges, restricted to claimable nodes.
 The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; `--anchors` mirrors its
@@ -52,11 +71,9 @@ import pathlib
 DEFAULT_ANCHORS = ("Conv", "Gemm", "MatMul", "MatMulNBits", "Attention", "GroupQueryAttention")
 
 
-def islands(nodes, claimable, producer) -> list[list[str]]:
+def islands(nodes, keepset: set[int], producer) -> list[list[str]]:
     """Connected components of claimable nodes, joined by a data edge between two of them."""
-    idx = {n.name or f"#{i}": i for i, n in enumerate(nodes)}
-    keep = [i for i, n in enumerate(nodes) if n.op_type in claimable]
-    keepset = set(keep)
+    keep = sorted(keepset)
     adj: dict[int, set[int]] = {i: set() for i in keep}
     for i in keep:
         for inp in nodes[i].input:
@@ -79,7 +96,6 @@ def islands(nodes, claimable, producer) -> list[list[str]]:
                     seen.add(k)
                     stack.append(k)
         out.append([nodes[j].op_type for j in comp])
-    assert idx is not None
     return out
 
 
@@ -92,6 +108,24 @@ def retained(comps, min_nodes: int, anchors: set[str]) -> tuple[int, int]:
             n += len(c)
             k += 1
     return n, k
+
+
+def ranks_resolved(row: dict) -> bool:
+    """Did ORT establish a rank for every operand and for the output of this node?
+
+    This is the one precondition every op in this crate shares, and it is what both of the
+    instrument's historical misses were made of: `claim::check_shape` is reached only with an
+    `EdgeType` that has dims, and `[]` -- which ORT emits both for a genuine scalar and for a
+    rank it never established -- fails every downstream rule that needs to index.
+
+    A missing key is not treated as resolved. An absent reading is not a passing reading; the
+    node is counted as *not* gated-claimable and the caller reports how many rows were absent.
+    """
+    ins = row.get("input_shapes")
+    outs = row.get("output_shapes")
+    if not isinstance(ins, list) or not isinstance(outs, list) or not outs:
+        return False
+    return all(isinstance(s, list) and len(s) > 0 for s in ins + outs)
 
 
 def main() -> int:
@@ -114,11 +148,20 @@ def main() -> int:
     if not rows:
         print("ERROR(instrument): the claim log is empty; nothing was measured")
         return 2
-    claimed_ops = {r["op"].split("::")[-1] for r in rows if r["claimed"]}
+
+    # Per node, not per op type. A node re-offered in a later pass keeps the *best* verdict it
+    # ever got, because that is the one the partitioner acted on.
+    claimed_node: dict[str, bool] = {}
+    gated_node: dict[str, bool] = {}
+    for r in rows:
+        name = r.get("node")
+        if not name:
+            continue
+        claimed_node[name] = claimed_node.get(name, False) or bool(r.get("claimed"))
+        gated_node[name] = gated_node.get(name, False) or ranks_resolved(r)
+
     all_ops = collections.Counter(r["op"].split("::")[-1] for r in rows)
-    unregistered = {
-        r["op"].split("::")[-1] for r in rows if r.get("code") == "not-registered"
-    }
+    unregistered = {r["op"].split("::")[-1] for r in rows if r.get("code") == "not-registered"}
 
     m = onnx.load(args.model, load_external_data=False)
     nodes = list(m.graph.node)
@@ -127,50 +170,126 @@ def main() -> int:
         for o in n.output:
             producer[o] = i
 
+    # How much of the graph the log can actually speak about. ORT runs its own graph
+    # transformers before `GetCapability`, so a node in the file need not be a node in the log.
+    # Reported rather than assumed away: a low match rate makes every delta below suspect, and
+    # an instrument that hides that is the "clean because it is not looking" failure again.
+    matched = sum(1 for n in nodes if n.name in claimed_node)
+    print(
+        f"claim log covers {matched}/{len(nodes)} graph nodes by name "
+        f"({100.0 * matched / max(1, len(nodes)):.1f}%); unmatched nodes are never claimable here"
+    )
+    if matched == 0:
+        print(
+            "ERROR(instrument): no graph node name appears in the claim log. The delta columns "
+            "would all be zero and would read as 'this op is worthless' rather than 'this "
+            "instrument could not see'."
+        )
+        return 2
+
     anchors = set(DEFAULT_ANCHORS)
-    base_comps = islands(nodes, claimed_ops, producer)
+    base_keep = {i for i, n in enumerate(nodes) if claimed_node.get(n.name)}
+    base_comps = islands(nodes, base_keep, producer)
     base_n, base_k = retained(base_comps, args.min_nodes, anchors)
-    print(f"baseline claimable ops: {len(claimed_ops)}")
-    print(f"baseline islands: {base_k} retained covering {base_n} nodes "
-          f"(of {len(base_comps)} components, {sum(len(c) for c in base_comps)} claimable nodes)")
+    print(
+        f"baseline islands: {base_k} retained covering {base_n} nodes "
+        f"(of {len(base_comps)} components, {len(base_keep)} claimed nodes)"
+    )
 
     candidates = sorted(unregistered, key=lambda o: -all_ops[o])
     if args.add:
         candidates = args.add
+
+    def add_set(op: str, gated: bool) -> set[int]:
+        out = set()
+        for i, n in enumerate(nodes):
+            if n.op_type != op:
+                continue
+            if gated and not gated_node.get(n.name, False):
+                continue
+            if not gated and n.name not in claimed_node:
+                continue
+            out.add(i)
+        return out
+
     results = []
     for op in candidates:
-        n, k = retained(islands(nodes, claimed_ops | {op}, producer), args.min_nodes, anchors)
+        opt_keep = base_keep | add_set(op, gated=False)
+        gat_keep = base_keep | add_set(op, gated=True)
+        opt_n, opt_k = retained(islands(nodes, opt_keep, producer), args.min_nodes, anchors)
+        gat_n, gat_k = retained(islands(nodes, gat_keep, producer), args.min_nodes, anchors)
         results.append(
-            {"op": op, "graph_count": all_ops.get(op, 0), "retained_nodes": n,
-             "retained_islands": k, "delta_nodes": n - base_n}
+            {
+                "op": op,
+                "graph_count": all_ops.get(op, 0),
+                "nodes_rank_resolved": len(add_set(op, gated=True)),
+                "retained_nodes": opt_n,
+                "retained_islands": opt_k,
+                "delta_nodes": opt_n - base_n,
+                "gated_retained_nodes": gat_n,
+                "gated_retained_islands": gat_k,
+                "gated_delta_nodes": gat_n - base_n,
+            }
         )
-    results.sort(key=lambda r: -r["delta_nodes"])
+    results.sort(key=lambda r: (-r["gated_delta_nodes"], -r["delta_nodes"]))
 
-    print(f"\n{'op':<20}{'in graph':>10}{'retained':>10}{'islands':>9}{'delta':>8}")
+    print(
+        f"\n{'op':<20}{'in graph':>9}{'ranked':>8}{'optimistic':>12}{'gated':>8}"
+        f"{'islands':>9}"
+    )
     for r in results[: args.top]:
-        print(f"{r['op']:<20}{r['graph_count']:>10}{r['retained_nodes']:>10}"
-              f"{r['retained_islands']:>9}{r['delta_nodes']:>+8}")
+        print(
+            f"{r['op']:<20}{r['graph_count']:>9}{r['nodes_rank_resolved']:>8}"
+            f"{r['delta_nodes']:>+12}{r['gated_delta_nodes']:>+8}"
+            f"{r['gated_retained_islands']:>9}"
+        )
+    print(
+        "  'ranked' = nodes of that op whose every operand and output has a rank in the claim "
+        "log.\n  'optimistic' is the ceiling; 'gated' is what survives the one precondition "
+        "every op shares.\n  Neither is a promise: dtype, attribute and per-op rules are not "
+        "modelled here."
+    )
 
     # The cumulative reading: adding the top op alone, then the top two together, and so on.
     # Fragmentation is not additive, and a set of ops can be worth far more than the sum of the
     # ops taken one at a time. Reporting only the singles is how "MatMul x95" got its ranking.
     cum = []
-    have = set(claimed_ops)
+    opt_have = set(base_keep)
+    gat_have = set(base_keep)
+    added: list[str] = []
     for r in results[: args.top]:
-        have = have | {r["op"]}
-        n, k = retained(islands(nodes, have, producer), args.min_nodes, anchors)
-        cum.append({"added": sorted(have - claimed_ops), "retained_nodes": n,
-                    "retained_islands": k, "delta_nodes": n - base_n})
-    print("\ncumulative, greedy in the order above:")
+        added.append(r["op"])
+        opt_have |= add_set(r["op"], gated=False)
+        gat_have |= add_set(r["op"], gated=True)
+        opt_n, opt_k = retained(islands(nodes, opt_have, producer), args.min_nodes, anchors)
+        gat_n, gat_k = retained(islands(nodes, gat_have, producer), args.min_nodes, anchors)
+        cum.append(
+            {
+                "added": sorted(added),
+                "retained_nodes": opt_n,
+                "retained_islands": opt_k,
+                "delta_nodes": opt_n - base_n,
+                "gated_retained_nodes": gat_n,
+                "gated_retained_islands": gat_k,
+                "gated_delta_nodes": gat_n - base_n,
+            }
+        )
+    print("\ncumulative, greedy in the order above (optimistic | gated):")
     for c in cum:
-        print(f"  +{','.join(c['added']):<58} {c['retained_nodes']:>5} nodes "
-              f"in {c['retained_islands']:>3} islands  ({c['delta_nodes']:+})")
+        print(
+            f"  +{','.join(c['added']):<44} "
+            f"{c['retained_nodes']:>5}n/{c['retained_islands']:>3}i ({c['delta_nodes']:+})"
+            f"  |  {c['gated_retained_nodes']:>5}n/{c['gated_retained_islands']:>3}i "
+            f"({c['gated_delta_nodes']:+})"
+        )
 
     report = {
         "model": args.model,
         "claim_log": args.claim_log,
         "min_nodes": args.min_nodes,
         "anchors": sorted(anchors),
+        "graph_nodes": len(nodes),
+        "claim_log_name_matches": matched,
         "baseline": {"retained_nodes": base_n, "retained_islands": base_k},
         "singles": results,
         "cumulative": cum,

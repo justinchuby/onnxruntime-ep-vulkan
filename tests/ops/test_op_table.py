@@ -450,47 +450,43 @@ _CASES: list[CaseSpec] = [
     _ew1("Identity-fp32", "Identity", _f32(_S), live=True),
 
     # ----------------------------------------------------------------------
-    # Flatten / Reshape — DECLINED, and the decline is the correct answer.
+    # Flatten — DECLINED.  Reshape — CLAIMED as of 2026-08-04, by the falsifier
+    # this comment named.
     #
     # These two rows asserted `claim=True` for three rounds and were red every
-    # time. The row comment below used to read "Row is present to mark the
-    # claimed op" — which is the tell: it asserted an *intention*, not a
-    # property, and no version of the EP has ever satisfied it.
+    # time. The row comment then read "Row is present to mark the claimed op" —
+    # which is the tell: it asserted an *intention*, not a property. They were
+    # flipped to `claim=False` with a ruling and, crucially, with the run that
+    # would overturn it.
     #
-    # The ruling, and the evidence for it. `Reshape` and `Flatten` perform no
-    # arithmetic: they are a copy with a different output descriptor. The only
-    # value a copy has on the device is *not breaking an island* — keeping a
-    # run of real work whole so its operands never round-trip to the host. So
-    # the question is entirely empirical: is there a graph in which one of
-    # these sits between two claimed nodes?
+    # THE RULING WAS: `Reshape` and `Flatten` perform no arithmetic, their only
+    # value is not breaking an island, and the Phi-3.5 claim log (363 node
+    # records, the whole graph) contains **zero** of either — so registering
+    # them would widen the claim table for this suite's benefit and no model's.
     #
-    # There is not. The Phi-3.5 claim log (bench/results/roofline_claimlog-dev0
-    # .jsonl, 363 node records, the whole graph) contains **zero** `Reshape` and
-    # **zero** `Flatten` nodes. Registering them would widen the claim table for
-    # this suite's benefit and no model's, and every widened row is a form that
-    # must then be proven and re-proven forever.
+    # THE FALSIFIER FIRED. The op census run on BERT-SQuAD-12 on 2026-08-04
+    # (bench/results/op_census_bert_r16.json) reports **71 `Reshape` nodes in
+    # the graph and 59 offered to the EP**. The premise "no real model asks"
+    # is false by name and by count, exactly as this comment said it would be,
+    # so the `Reshape` row flips back to `claim=True` and the row below is now
+    # a positive case with a CPU oracle behind it.
     #
-    # The obvious objection is `Identity`, directly above: it is also a pure
-    # copy, it is registered, and it is claimed in a one-node island. The
-    # difference is cost of entry, not principle. `Identity`'s output descriptor
-    # is its input's. `Reshape`'s is a *second input tensor* that may be
-    # computed at runtime, with `-1` and `0` wildcards and an `allowzero`
-    # attribute to honour; `Flatten` needs axis normalisation against a rank
-    # that may be symbolic. Both are shape machinery this EP does not have, for
-    # ops no graph asks for. If a graph ever asks, the argument reverses and
-    # these two rows flip back.
+    # `Flatten` stays declined, and the distinction is measured rather than
+    # inherited: BERT has 71 `Reshape` and **zero** `Flatten`; MobileNetV2 has
+    # 1 and zero; Phi-3.5 has zero and zero. The falsifier is unchanged for it.
     #
-    # THE RUN THAT WOULD FAIL IF THIS RULING WERE WRONG, and it is reachable:
-    #   python rust/tools/probe_phi35_claim_reading.py
-    # emits a claim log with one record per node. If a real model ever puts a
-    # `Reshape` or `Flatten` in it, the premise above is falsified by name and
-    # these rows go back to claim=True. That is a cheaper falsifier than the
-    # assertion it replaces, because the assertion it replaces could only ever
-    # be satisfied by changing the EP.
+    # WHAT THE CLAIM COSTS, so the flip is not read as free: `Reshape` is a
+    # copy — one full-tensor read and one full-tensor write through
+    # `ew_cast_f32_to_f32`. It is not an alias. `bind_aliased_output` exists but
+    # `dispatch_ort` honours a pair only when the output is an external plan
+    # output and the input an external plan input, and every `Reshape` worth
+    # claiming is an interior island edge.
     #
-    # What these rows now assert is not "the EP declines" for its own sake: the
-    # claim=False arm also runs the CPU oracle, so an accidental registration
-    # OR a wrong answer both fail here.
+    # AND WHAT IT DOES NOT BUY: on BERT the registered row claims **zero** of
+    # those 59 nodes — 53 have no rank on any operand, 4 are i64, 2 fail
+    # conservation of element count. The row is live and correct and the model
+    # it was written for does not use it. That is recorded in the decision file
+    # `mouse-reshape-claims-nothing.md`, not hidden behind this green test.
     # ----------------------------------------------------------------------
 
     # Flatten (axis=1 over [3, 4] → [3, 4])
@@ -515,7 +511,7 @@ _CASES: list[CaseSpec] = [
         },
         outputs=[("out", DT.FLOAT, [4, 3])],
         tol=dict(m.FP32_EXACT),
-        claim=False,
+        claim=True,
     ),
 
     # ======================================================================
