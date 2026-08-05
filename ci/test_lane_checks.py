@@ -2304,7 +2304,14 @@ def test_a_join_over_too_few_runs_refuses_a_verdict_rather_than_giving_a_green(t
 
 
 def test_the_flake_witness_names_no_counts_in_its_ledger(tmp_path):
-    """R13: no count without its text. The ledger's key is a NAME, never a number."""
+    """R13: no count without its text. The ledger's key is a NAME, never a number.
+
+    EXTENDED 2026-08-05 (trinity), when the ledger gained a whole-run marker so a green
+    run leaves a trace and the pytest complement can be reconstructed. The marker is a
+    record with no test behind it, which is exactly the shape this arm exists to refuse —
+    so it is filed under a NAME (`RUN_SEEN_ID`), and this arm now says so out loud rather
+    than being quietly satisfied by it.
+    """
     red = tmp_path / "red.log"
     red.write_text(_LIBTEST_RED, encoding="utf-8")
     led = tmp_path / "l.jsonl"
@@ -2313,7 +2320,11 @@ def test_the_flake_witness_names_no_counts_in_its_ledger(tmp_path):
     records = [json.loads(line) for line in led.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert records, "the ledger must be written"
     assert all(r["test_id"] for r in records)
+    assert not any(str(r["test_id"]).strip().isdigit() for r in records)
     assert any(r["outcome"] == "FAILED" for r in records)
+    markers = [r for r in records if r["outcome"] == "RUN_SEEN"]
+    assert len(markers) == 1, "one parsed log, one run marker"
+    assert markers[0]["test_id"].startswith("<"), markers[0]
 
 
 def _precondition(*args: str) -> tuple[int, str]:
@@ -2567,21 +2578,47 @@ def test_open_reds_accepts_a_red_whose_membership_is_unchanged(tmp_path):
 
 
 def test_open_reds_refuses_an_acceptance_with_no_extent(tmp_path):
-    e = _entry(id="r", expect="red", signature="x", _no_extent=True,
-               cmd=["python", "-c", "import sys; print('x'); sys.exit(1)"])
-    rc, out = _open_reds(tmp_path, [e])
-    assert rc == 2, out
+    """An acceptance with no declared extent is UNCOLOURED — and only that entry is.
+
+    REWRITTEN 2026-08-05 (trinity) BECAUSE THE RULE MOVED, NOT BECAUSE IT WAS DROPPED.
+    The refusal used to be a parse-time raise, which is exit 2 over the WHOLE FILE. That
+    is how ci/open_reds_device.json spent from 69ac222 onward: unloadable, so `--list`,
+    `--only` and a plain run all exited 2 having measured nothing, and ten entries — one
+    of them a lease that could have expired unnoticed — were reported on by a usage error
+    about an eleventh. The refusal is now per-entry: ERROR(instrument=extent_undeclared),
+    never accepted, never green, exit 4. Both halves are asserted here, and the second is
+    the one the old shape could not have: the OTHER entry in the same register is still
+    ruled on.
+    """
+    bad = _entry(id="r", expect="red", signature="x", _no_extent=True,
+                 cmd=["python", "-c", "import sys; print('x'); sys.exit(1)"])
+    good = _entry(id="g", expect="green", cmd=["python", "-c", "print('hello')"])
+    rc, out = _open_reds(tmp_path, [good, bad])
+    assert rc == 4, out
+    assert "extent_undeclared" in out
     assert "extent" in out and "SUBSTRING" in out
+    # The acceptance is not granted: the word ACCOUNTED must not appear against this id.
+    assert "ACCOUNTED   r" not in out, out
+    # ...and the sibling was measured rather than swallowed by the other entry's defect.
+    assert "PASS" in out and "g" in out, out
 
 
 def test_open_reds_refuses_an_extent_pattern_with_no_capture_group(tmp_path):
     """Zero groups makes `findall` return whole lines, and a set of whole lines is a
-    signature again — the arm would look like it was running and be measuring nothing."""
+    signature again — the arm would look like it was running and be measuring nothing.
+
+    Same move as the arm above (trinity, 2026-08-05): the refusal is now that ENTRY's
+    ERROR(instrument), exit 4, rather than a parse error over the whole register. What is
+    asserted is unchanged in substance — the malformed extent is refused and the reason
+    is named — plus that it is refused for the entry that carries it.
+    """
     e = _entry(id="r", expect="red", signature="x", extent={"pattern": "^x$", "members": []},
                cmd=["python", "-c", "import sys; print('x'); sys.exit(1)"])
     rc, out = _open_reds(tmp_path, [e])
-    assert rc == 2, out
+    assert rc == 4, out
     assert "capture group" in out
+    assert "extent_undeclared" in out
+    assert "ACCOUNTED" not in out, out
 
 
 @pytest.mark.parametrize("field", ["owner", "reason", "closes_when", "review_by", "opened"])

@@ -130,6 +130,12 @@ NOT_FAILED = "NOT_FAILED"
 #: at all in the ledger, and the run that exonerates a commit is exactly the run whose
 #: existence the join needs.  See `synthesise_not_failed`.
 RUN_SEEN = "RUN_SEEN"
+#: The id the run marker is filed under.  It is a NAME and not an empty string, because
+#: the ledger's key is a name in every other row and a blank one would read as a missing
+#: value rather than as a deliberate whole-run record — `ci/test_lane_checks.py`'s
+#: "no count without its text" arm is the screen that says so.  It cannot collide with a
+#: real test id: no libtest path and no pytest nodeid contains a space or angle brackets.
+RUN_SEEN_ID = "<the run itself — no test named>"
 
 
 @dataclass
@@ -158,7 +164,7 @@ class RunObservation:
         # and nothing was named — a green run is a datum, and until 2026-08-04 it was the
         # one datum this ledger threw away.
         if self.parsed:
-            out.append(self._rec("", RUN_SEEN))
+            out.append(self._rec(RUN_SEEN_ID, RUN_SEEN))
         return out
 
     def _rec(self, tid: str, outcome: str) -> dict:

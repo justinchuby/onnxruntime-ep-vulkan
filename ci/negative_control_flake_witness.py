@@ -470,6 +470,81 @@ def main() -> int:
                     tmp,
                 )
 
+        # ---- 13. LIVE, PYTEST: the first real pytest lane log this check has ever read -
+        # Every pytest arm above this line is planted, and until 2026-08-04 every pytest
+        # FIXTURE in this file was hand-typed from memory — which is how the check came to
+        # require `====` decoration that no lane emits, and how a control agreed with the
+        # code for weeks about a log neither had seen. The subject here is
+        # ci/fixtures/flake-witness/real-pytest-windows-run-30974825118.log: the Windows
+        # lane's ACTUAL captured pytest output, downloaded from the lane-evidence-windows
+        # artifact of run 30974825118 on main 3ede9c5, `-q`, no decoration, 8 real
+        # failures. It is tracked for the same reason the libtest captures are: an arm
+        # that depends on an untracked download is an arm that quietly stops existing.
+        pyfix = HERE / "fixtures" / "flake-witness" / "real-pytest-windows-run-30974825118.log"
+        if not pyfix.is_file():
+            failures.append(
+                f"[LIVE] {pyfix.name} is missing. It is the only pytest subject in this "
+                "file that was not typed by hand, which is exactly why it is tracked."
+            )
+        else:
+            live_py = tmp / "live-pytest.jsonl"
+            code, out = run(
+                ["--harness", "pytest", "--suite", "ops", "--lane", "windows",
+                 "--commit", "3ede9c5", "--run-id", "30974825118", "--ledger", str(live_py),
+                 str(pyfix)]
+            )
+            named = [
+                line for line in out.splitlines()
+                if "failing test" in line or "FLAKE-WITNESS" in line
+            ]
+            if code == 0 and "FLAKE-WITNESS: PASS" in out:
+                fired.append((
+                    LIVE,
+                    "a REAL captured pytest lane log parses and names its failures",
+                    " | ".join(named)[:200] or "exit 0",
+                ))
+            else:
+                failures.append(
+                    f"[{LIVE}] real pytest log: wanted exit 0 / PASS, got {code}.\n"
+                    f"{out.strip()[:2000]}\n"
+                )
+            recs = [
+                json.loads(line)
+                for line in live_py.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            failed_ids = {r["test_id"] for r in recs if r["outcome"] == "FAILED"}
+            if len(failed_ids) == 8:
+                fired.append((
+                    LIVE,
+                    "and it names 8 distinct failing ids off a bare `-q` summary",
+                    "the count the lane's own log carries",
+                ))
+            else:
+                failures.append(
+                    f"[{LIVE}] the real pytest log yielded {len(failed_ids)} failing id(s), "
+                    "not the 8 its summary lists. Either the parser regressed or the "
+                    f"fixture was replaced: {sorted(failed_ids)[:10]}"
+                )
+            # The complement, on the real subject: a SECOND run of the same lane in which
+            # those ids do not fail must make them intermittent — and no NOT_FAILED record
+            # is written by hand anywhere in this arm, because the parser cannot write one.
+            green = tmp / "real-pytest-green.log"
+            green.write_text("852 passed in 900.00s\n", encoding="utf-8")
+            run(["--harness", "pytest", "--suite", "ops", "--lane", "windows",
+                 "--commit", "3ede9c5", "--run-id", "30974825118#2", "--ledger", str(live_py),
+                 str(green)])
+            arm(
+                LIVE,
+                "and a later green run of the same lane makes the real ids intermittent",
+                ["--harness", "pytest", "--suite", "ops", "--lane", "windows",
+                 "--commit", "3ede9c5", "--run-id", "30974825118#q", "--ledger", str(live_py),
+                 "--no-append", "--require-history", "2", str(green)],
+                1,
+                "FLAKE-WITNESS: FAIL(condition=intermittent)",
+                tmp,
+            )
+
     print("FLAKE-WITNESS NEGATIVE CONTROL")
     print("=" * 78)
     for kind, name, detail in fired:

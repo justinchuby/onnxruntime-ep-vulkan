@@ -87,9 +87,16 @@ def green_entry(**over) -> dict:
 def red_entry(**over) -> dict:
     e = {
         "id": "always_red",
-        "cmd": ["python", "-c", "import sys; print('the accepted red'); sys.exit(1)"],
+        "cmd": ["python", "-c", "import sys; print('the accepted red over member alpha'); sys.exit(1)"],
         "expect": "red",
         "signature": "the accepted red",
+        # An expect=red entry has needed an `extent` since 69ac222, and this factory did
+        # not have one -- so from that commit every planted red arm below was really
+        # measuring "the register refuses to load at all" (exit 2) while its recorded
+        # question was about stale_acceptance, signature_changed or lease_expired. The
+        # arms did not go quiet; they went wrong, and the failure text they compared
+        # against was a usage error. Trinity, 2026-08-05.
+        "extent": {"pattern": r"over member (\w+)", "members": ["alpha"]},
         "owner": "link",
         "opened": "2026-01-01",
         "review_by": "2099-01-01",
@@ -174,6 +181,52 @@ def main() -> int:
         r = run_screen(w("lease-both.json", d), env={"OPEN_REDS_TODAY": "2026-06-02"})
         record("PLANTED", "the day after review_by -> lease_expired",
                r.returncode == 1 and "lease_expired" in (r.stdout + r.stderr))
+
+        print("\nPLANTED — `extent`: the members the acceptance is granted over")
+        # This feature landed in 69ac222 with NO arm in this control, and the register it
+        # was enforced over could not be loaded from that commit onward. Both facts are the
+        # same omission: a rule with no falsifier beside it is a rule nobody has run.
+        r = run_screen(w("extent-ok.json", minimal_doc(red_entry())))
+        record("PLANTED", "extent members match the run -> the red is ACCOUNTED",
+               r.returncode == 0 and "ACCOUNTED" in (r.stdout + r.stderr),
+               (r.stdout + r.stderr)[-800:])
+
+        d = minimal_doc(red_entry(cmd=["python", "-c", "import sys; "
+                                       "print('the accepted red over member alpha'); "
+                                       "print('the accepted red over member beta'); sys.exit(1)"]))
+        r = run_screen(w("extent-wide.json", d))
+        record("PLANTED", "a SECOND member joining the same red -> extent_widened",
+               r.returncode == 1 and "extent_widened" in (r.stdout + r.stderr),
+               (r.stdout + r.stderr)[-800:])
+        record("PLANTED", "and extent_widened names the newcomer, not just a count",
+               "beta" in (r.stdout + r.stderr))
+
+        d = minimal_doc(red_entry(extent={"pattern": r"over member (\w+)",
+                                          "members": ["alpha", "gamma"]}))
+        r = run_screen(w("extent-narrow.json", d))
+        record("PLANTED", "a member no longer failing -> extent_narrowed",
+               r.returncode == 1 and "extent_narrowed" in (r.stdout + r.stderr),
+               (r.stdout + r.stderr)[-800:])
+
+        d = minimal_doc(red_entry(extent={"pattern": r"over member \w+", "members": ["alpha"]}))
+        r = run_screen(w("extent-nogroup.json", d))
+        record("PLANTED", "extent.pattern with no capture group -> refused",
+               r.returncode != 0 and "capture group" in (r.stdout + r.stderr),
+               (r.stdout + r.stderr)[-600:])
+
+        # The arm this control was missing when the device register went dark. An entry
+        # with no extent is UNCOLOURED — ERROR(instrument), never accepted, never green —
+        # and, decisively, the OTHER entries in the same file are still ruled on.
+        no_ext = {k: v for k, v in red_entry(id="undeclared_extent").items() if k != "extent"}
+        doc = {"schema": 1, "purpose": "c",
+               "checks": [green_entry(), no_ext],
+               "subjects": ["always_green", "undeclared_extent"], "retired": {}}
+        r = run_screen(w("extent-undeclared.json", doc))
+        out = r.stdout + r.stderr
+        record("PLANTED", "expect=red with no extent -> ERROR(instrument=extent_undeclared)",
+               r.returncode == 4 and "extent_undeclared" in out, out[-900:])
+        record("PLANTED", "and the OTHER entry in that file is still ruled on, not silenced",
+               "always_green" in out and "PASS" in out, out[-900:])
 
         print("\nPLANTED — the register refuses a partial entry rather than accepting it")
         for field in ("owner", "reason", "closes_when", "review_by", "opened", "cmd", "expect"):

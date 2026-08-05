@@ -224,36 +224,9 @@ def load_register(path: Path) -> list[dict]:
                 "which is a deletion of the check wearing an acceptance's name."
             )
         if entry["expect"] == "red":
-            ext = entry.get("extent")
-            if not isinstance(ext, dict):
-                raise ValueError(
-                    f"{path}: entry {entry['id']!r} expects red but declares no `extent`. "
-                    "`signature` is a SUBSTRING test and a substring cannot notice a SECOND "
-                    "subject joining an accepted red (Switch, 2026-08-03). `extent` names the "
-                    "members the acceptance is granted over: "
-                    '{"pattern": "<regex with one capture group>", "members": [...]}.'
-                )
-            if not ext.get("pattern"):
-                raise ValueError(f"{path}: entry {entry['id']!r} extent is missing 'pattern'")
-            try:
-                if re.compile(ext["pattern"]).groups != 1:
-                    raise ValueError(
-                        f"{path}: entry {entry['id']!r} extent.pattern must have EXACTLY one "
-                        "capture group — the member name. Zero groups matches whole lines and "
-                        "a set of whole lines is a signature again; more than one is ambiguous."
-                    )
-            except re.error as exc:
-                raise ValueError(f"{path}: entry {entry['id']!r} extent.pattern: {exc}") from exc
-            if "members" not in ext or not isinstance(ext["members"], list):
-                # Presence and type, not truthiness: an EMPTY members list is legal and is
-                # the STRICTEST possible declaration — it says the acceptance is granted
-                # over nothing, so any member the pattern finds is extent_widened. Rejecting
-                # it as "missing" would have made the safest declaration unspellable.
-                raise ValueError(
-                    f"{path}: entry {entry['id']!r} extent.members must be present and a list"
-                )
-            if len(set(ext["members"])) != len(ext["members"]):
-                raise ValueError(f"{path}: entry {entry['id']!r} extent.members has duplicates")
+            defect = _extent_defect(path, entry)
+            if defect:
+                entry["_extent_defect"] = defect
         if entry["id"] in seen:
             raise ValueError(f"{path}: duplicate id {entry['id']!r}")
         seen.add(entry["id"])
@@ -263,6 +236,67 @@ def load_register(path: Path) -> list[dict]:
             except ValueError as exc:
                 raise ValueError(f"{path}: entry {entry['id']!r} has bad {key}: {exc}") from exc
     return checks
+
+
+def _extent_defect(path: Path, entry: dict) -> str:
+    """Read an expect=red entry's `extent` and say what is wrong with it, if anything.
+
+    WHY THIS RETURNS A STRING INSTEAD OF RAISING, AND WHY THAT IS NOT A WEAKENING.
+
+    `extent` became required in 69ac222 and the requirement was enforced by raising out of
+    `load_register`, which happens BEFORE any check runs. Three of the four accepted reds in
+    ci/open_reds_device.json predate the requirement, so from that commit onward the whole
+    device register was UNLOADABLE: `--list`, `--only`, `--summary` and a plain run all exited
+    2 having measured nothing. Ten entries, one of them a lease that could have expired
+    unnoticed, and the tool's answer about every one of them was a usage error about a
+    fourth. That is this repository's own `target_ran_nothing` shape appearing inside the
+    screen written to prevent it -- a guard that refuses before it measures reports nothing
+    about its subjects, and its silence reads exactly like their being fine.
+
+    So a malformed `extent` is now a DEFECT OF THAT ENTRY, carried on the entry and turned
+    into `ERROR(instrument=extent_undeclared)` when it is run. What does not change: the
+    entry is not accepted, the run is not green, and the exit code is non-zero -- an entry
+    with no declared extent gets NO acceptance, which is stricter than the raise was for
+    that entry, because the raise let the file's author believe the problem was the file.
+    What changes is that the other nine entries are ruled on. Two failures that are both
+    loud are better than one failure that hides nine silences.
+
+    A structural error in the file itself -- unreadable JSON, a missing `checks` list, a
+    duplicate id, a bad date -- still raises, because those are properties of the register
+    and not of one subject.
+    """
+    ident = entry.get("id", "<no id>")
+    ext = entry.get("extent")
+    if not isinstance(ext, dict):
+        return (
+            f"{path}: entry {ident!r} expects red but declares no `extent`. "
+            "`signature` is a SUBSTRING test and a substring cannot notice a SECOND "
+            "subject joining an accepted red (Switch, 2026-08-03). `extent` names the "
+            "members the acceptance is granted over: "
+            '{"pattern": "<regex with one capture group>", "members": [...]}. '
+            "Until it does, this entry is UNCOLOURED: its red is neither accepted nor "
+            "unaccounted, because nobody has said what the acceptance would be for."
+        )
+    if not ext.get("pattern"):
+        return f"{path}: entry {ident!r} extent is missing 'pattern'"
+    try:
+        if re.compile(ext["pattern"]).groups != 1:
+            return (
+                f"{path}: entry {ident!r} extent.pattern must have EXACTLY one "
+                "capture group — the member name. Zero groups matches whole lines and "
+                "a set of whole lines is a signature again; more than one is ambiguous."
+            )
+    except re.error as exc:
+        return f"{path}: entry {ident!r} extent.pattern: {exc}"
+    if "members" not in ext or not isinstance(ext["members"], list):
+        # Presence and type, not truthiness: an EMPTY members list is legal and is
+        # the STRICTEST possible declaration — it says the acceptance is granted
+        # over nothing, so any member the pattern finds is extent_widened. Rejecting
+        # it as "missing" would have made the safest declaration unspellable.
+        return f"{path}: entry {ident!r} extent.members must be present and a list"
+    if len(set(ext["members"])) != len(ext["members"]):
+        return f"{path}: entry {ident!r} extent.members has duplicates"
+    return ""
 
 
 def _check_subjects(path: Path, doc: dict, checks: list[dict]) -> None:
@@ -337,6 +371,20 @@ def _check_subjects(path: Path, doc: dict, checks: list[dict]) -> None:
 
 def run_entry(entry: dict, repo: Path) -> Outcome:
     ident = entry["id"]
+    defect = entry.get("_extent_defect")
+    if defect:
+        # Refused BEFORE the command runs, and said so: an entry whose acceptance has no
+        # declared extent cannot be granted one by any output, so running it would spend
+        # the time and still rule on nothing. `observed` is "?" and not "red", because
+        # this check's colour was not looked at.
+        return Outcome(
+            ident,
+            f"{STATE_ERROR}=extent_undeclared)",
+            entry["expect"],
+            "?",
+            defect,
+            entry,
+        )
     cmd = list(entry["cmd"])
     if cmd and cmd[0] == "python":
         cmd[0] = sys.executable

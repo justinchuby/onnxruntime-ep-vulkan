@@ -444,11 +444,23 @@ def test_the_witness_sees_the_depth_a_cold_rustc_actually_writes_at():
     deep = d / "incremental" / "crate-hash" / "s-working"
     deep.mkdir(parents=True)
     before = filesystem_progress([d])
+    shallow_before = filesystem_progress([d], depth=1)
     (deep / "x.o").write_bytes(b"0")
     assert filesystem_progress([d]) != before, (
         "a file three levels down must move the fingerprint"
     )
-    assert filesystem_progress([d], depth=1) == filesystem_progress([d], depth=1)
+    # The other polarity, and it is the whole point of the arm: the SAME write is
+    # invisible to a depth-1 witness. Until 2026-08-05 this line read
+    # `filesystem_progress([d], depth=1) == filesystem_progress([d], depth=1)` — two
+    # spellings of one call, which is true of every function ever written and could not
+    # have failed if depth-1 had seen the write. It was found by
+    # ci/check_assertion_quality.py, which had been red on main over exactly this line,
+    # and it was mine.
+    assert filesystem_progress([d], depth=1) == shallow_before, (
+        "a depth-1 witness must NOT see a write three levels down — if it does, the "
+        "measured 195.5s blind interval at depth 1 has no explanation and the depth "
+        "constant below is arbitrary"
+    )
     assert _watchdog._PROGRESS_SCAN_DEPTH >= 3
     shutil.rmtree(d)
 
