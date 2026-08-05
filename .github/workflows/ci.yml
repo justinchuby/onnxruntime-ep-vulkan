@@ -112,7 +112,22 @@ jobs:
     name: Lane-check self-test (two polarities, no GPU)
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 (full history), not the default depth-1 shallow clone.
+      # This job runs every REPLAYED negative-control arm that reads a historical
+      # commit with `git show <ref>:<path>` — 607056a (negative_control_build_
+      # precondition.py), 133b9fe (negative_control_open_reds.py), 8a851f8
+      # (negative_control_readme_usage.py), eb84364/26fd93f (negative_control_
+      # ledger_census.py). A depth-1 checkout makes every one of those commits
+      # unreachable, so `git show` fails, the REPLAYED arm reports UNOBSERVABLE
+      # rather than firing, and the negative control counts that as a failed arm
+      # (ci/negative_control_build_precondition.py:historical_workflow: "a control
+      # that cannot read its subject must say UNOBSERVABLE rather than quietly
+      # dropping an arm") — red for a reason that has nothing to do with the
+      # product. Full history costs nothing here: this job builds no code and
+      # needs no Vulkan SDK.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
