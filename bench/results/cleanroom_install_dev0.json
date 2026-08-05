@@ -2,17 +2,17 @@
   "probe": "cleanroom_install",
   "question": "Does a user who has never built this repository get a working Vulkan EP session from the wheel alone?",
   "wheel": "onnxruntime_ep_vulkan-0.28.0-py3-none-win_amd64.whl",
-  "wheel_sha256": "c48287462c4494cf3abd21979a47704825c3f3b7a1f12799e52bcd2fca0d5ee4",
+  "wheel_sha256": "781684b9361fd516e377c634e457614f420ecc66ebc04d0c9224fac1e396f597",
   "venv": "C:\\Users\\justinchu\\dev\\onnxruntime-ep-vulkan-cleanroom",
   "host": {
     "platform": "Windows-11-10.0.26220-SP0",
     "python": "3.12.7"
   },
-  "at": "2026-08-04T21:05:38-0700",
+  "at": "2026-08-04T22:58:55-0700",
   "pip_returncode": 0,
   "installed": [
     "@",
-    "file:///C:/Users/justinchu/dev/ep-vulkan-niobe/python/dist/onnxruntime_ep_vulkan-0.28.0-py3-none-win_amd64.whl#sha256=c48287462c4494cf3abd21979a47704825c3f3b7a1f12799e52bcd2fca0d5ee4",
+    "file:///C:/Users/justinchu/dev/onnxruntime-ep-vulkan/python/dist/onnxruntime_ep_vulkan-0.28.0-py3-none-win_amd64.whl#sha256=781684b9361fd516e377c634e457614f420ecc66ebc04d0c9224fac1e396f597",
     "flatbuffers==25.12.19",
     "ml_dtypes==0.5.4",
     "numpy==2.5.1",
@@ -29,11 +29,13 @@
   "artifact_inside_site_packages": true,
   "provenance": {
     "verdict": "MATCH",
-    "artifact_sha256": "dead388ed21b857caf555330b712b79e1b571cbe3e9d62de323120a20f97727b",
-    "recorded_sha256": "dead388ed21b857caf555330b712b79e1b571cbe3e9d62de323120a20f97727b",
-    "commit": "8a851f8f7db53ebdcbdcd59505f8e529cb28208a",
+    "artifact_sha256": "41931c6f15c32d75b334a160cc50735bc69713af5c0bb9831402752d580f4726",
+    "recorded_sha256": "41931c6f15c32d75b334a160cc50735bc69713af5c0bb9831402752d580f4726",
+    "commit": "61627d6db64ccfeb7f8ca96fe9a65b51caa3ee76",
     "tree_dirty": true,
-    "shader_source_digest": null,
+    "spirv_modules_embedded": 210,
+    "shader_source_digest": "eff99db0f945dfdecacb8c81c19082843eb3ea4101502a4a1a1b9a3c13eaff3b",
+    "shader_source_file_count": 17,
     "note": "A digest match proves the shipped bytes are the bytes that were recorded. It does not prove they were built from the named commit -- that is checked by rebuilding at that commit and comparing shader_source_digest."
   },
   "session_providers": [
