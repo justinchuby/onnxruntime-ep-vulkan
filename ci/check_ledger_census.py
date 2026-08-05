@@ -79,6 +79,16 @@ because "who withdrew this and when" is the part a bare reason cannot answer. `p
 is not merely unread now — its existence is an ERROR(instrument), so the ambiguity cannot come
 back by someone re-creating the file this screen used to want.
 
+ONE PATH IS NOT YET ONE REGISTER
+--------------------------------
+Pointing both tools at one filename left the *shape* of the defect standing: two independent
+parsers, this one requiring `owner`/`date`/`reason` and the producer's requiring only `reason`.
+A retirement missing an owner was therefore honoured by `gen_proof_ledger.py` and refused here —
+one file, two rules, and the exemption granted by whichever tool asked first. So the path, the
+required fields and the parse now live in `ci/proof_retirement.py`, which both readers import;
+this file re-exports the names it used to define and adds no rule of its own. A malformed
+register is `ERROR(instrument=unreadable_retirement_register)`, never "nothing is retired".
+
 A RETIREMENT IS A POSITIVE STATE, AND IT MUST HAVE AN ARM
 ---------------------------------------------------------
 `negative_control_ledger_census.py` had 13 arms and every one of them planted or replayed a
@@ -117,6 +127,21 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+# The register, its schema and its parse live in ONE module that the ledger's PRODUCER imports
+# too (`rust/tools/gen_proof_ledger.py`). Re-implementing the parse here is how this screen and
+# the producer came to disagree about the same 43 keys with one filename between them: one
+# required an owner and a date, the other did not, so a withdrawal one honoured the other refused.
+import proof_retirement  # noqa: E402
+from proof_retirement import (  # noqa: E402
+    RETIRED_FIELDS,
+    RETIRED_REL,
+    SUPERSEDED_RETIRED_REL,
+    RetirementError,
+)
+
 LEDGER_REL = "evidence/proof_ledger.jsonl"
 
 # WAS `--all`, AND `--all` WAS WRONG — found on 2026-08-04 by running this screen twice.
@@ -139,12 +164,7 @@ LEDGER_REL = "evidence/proof_ledger.jsonl"
 # made every comparison vacuous; and now too WIDE a scope convicted a branch for a proof it
 # never had. `--full-history` stays: that one is load-bearing and is separately asserted.
 DEFAULT_SCOPE = "HEAD"
-RETIRED_REL = "evidence/retired_proof_keys.json"
 RETIRED = REPO / RETIRED_REL
-# The filename this screen used to read. It never existed; if it ever does, two registers exist
-# again and the older defect is back. Named here so the guard cannot drift from the docstring.
-SUPERSEDED_RETIRED_REL = "evidence/proof_retired.json"
-RETIRED_FIELDS = ("owner", "date", "reason")
 FRAME_WITNESSES = ("source_digest", "toolchain")
 REWITNESS = REPO / "evidence" / "proof_rewitness.json"
 REWITNESS_FIELDS = ("revision", "field", "owner", "date", "reason")
@@ -458,59 +478,22 @@ def load_retired_at(repo: Path, rev: str | None) -> dict[str, dict]:
     genuinely was not.
     """
     if rev is None:
-        return load_retired(repo / RETIRED_REL)
+        return load_retired(proof_retirement.register_path(repo))
     blob = _git(["show", f"{rev}:{RETIRED_REL}"], repo)
     if blob.returncode != 0:
         return {}
-    return _parse_retired(f"{rev}:{RETIRED_REL}", json.loads(blob.stdout))
+    return proof_retirement.load_text(f"{rev}:{RETIRED_REL}", blob.stdout)
 
 
 def load_retired(path: Path) -> dict[str, dict]:
     """Read the one retirement register: `{"retired": [{key, owner, date, reason}, ...]}`.
 
-    Returned keyed by proof key so the rest of this screen can ask `key in retired`, but the
-    FILE's shape is a list, because that is the shape `gen_proof_ledger.py` already reads and a
-    second shape for one fact is how this screen came to disagree with the producer about the
-    same 43 keys. A duplicate key in the list is an error, not a last-one-wins: two retirements
-    of one proof means two people withdrew it for two reasons and only one of them is on record.
+    Thin by design. The shape, the required fields and the refusals are `ci/proof_retirement.py`,
+    which `rust/tools/gen_proof_ledger.py` also imports, so "what counts as a withdrawal" is
+    answered in exactly one place. A second answer here would be a second register with the first
+    one's filename.
     """
-    if not path.is_file():
-        return {}
-    return _parse_retired(str(path), json.loads(path.read_text(encoding="utf-8")))
-
-
-def _parse_retired(where: str, doc: object) -> dict[str, dict]:
-    rows = doc.get("retired", []) if isinstance(doc, dict) else None
-    if rows is None:
-        raise ValueError(f"{where}: expected an object with a `retired` list")
-    if isinstance(rows, dict):
-        raise ValueError(
-            f"{where}: `retired` is an object keyed by proof key. That was the shape of the "
-            "register this screen read before 2026-08-04, and it is not the shape "
-            "`rust/tools/gen_proof_ledger.py` reads. One register, one shape: a list of "
-            "{key, owner, date, reason}."
-        )
-    if not isinstance(rows, list):
-        raise ValueError(f"{where}: `retired` must be a list of {{key, owner, date, reason}}")
-    retired: dict[str, dict] = {}
-    for rec in rows:
-        if not isinstance(rec, dict) or not rec.get("key"):
-            raise ValueError(f"{where}: every retirement needs a `key`; got {rec!r}")
-        key = rec["key"]
-        if key in retired:
-            raise ValueError(
-                f"{where}: proof {key!r} is retired twice. Two withdrawal records for one "
-                "proof means only one of the two reasons survives being read, and nothing "
-                "says which."
-            )
-        missing = [f for f in RETIRED_FIELDS if not rec.get(f)]
-        if missing:
-            raise ValueError(
-                f"{where}: retired proof {key!r} is missing {missing}. Withdrawing a proof "
-                "needs a name and a reason for the same argument that accepting a red does."
-            )
-        retired[key] = rec
-    return retired
+    return proof_retirement.load(path)
 
 
 def guard_one_register(repo: Path) -> int:
@@ -520,7 +503,7 @@ def guard_one_register(repo: Path) -> int:
     so it has no observation to report — R13 makes that ERROR(instrument), never a detection
     and never a pass.
     """
-    superseded = repo / SUPERSEDED_RETIRED_REL
+    superseded = proof_retirement.superseded_path(repo)
     if not superseded.is_file():
         return 0
     print("LEDGER-CENSUS: ERROR(instrument=two_retirement_registers)")
@@ -605,7 +588,21 @@ def screen(argv: list[str] | None = None) -> int:
     rc = guard_one_register(repo)
     if rc:
         return rc
-    retired = load_retired_at(repo, args.at)
+    try:
+        retired = load_retired_at(repo, args.at)
+    except RetirementError as exc:
+        # R13: a screen that cannot read the register granting the exemption has not observed
+        # anything, so this is never a colour. It is the same class as two registers — and it is
+        # printed as a verdict rather than raised as a traceback, because a traceback is not a
+        # token and this lane rules on tokens.
+        print("LEDGER-CENSUS: ERROR(instrument=unreadable_retirement_register)")
+        print(f"  {exc}")
+        print(
+            f"  Every key withdrawn in {RETIRED_REL} would otherwise read as VANISHED, which is "
+            "the false positive this screen spent days producing when the register it read did "
+            "not exist. Repair the register; do not delete it to make this green."
+        )
+        return 2
     if args.list_retired:
         if not retired:
             print("no proofs are retired.")

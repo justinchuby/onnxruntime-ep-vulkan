@@ -52,17 +52,16 @@ Three outputs are outside: output 0 (the logits head) at a median of **12 ULP**,
 the measurement. The largest absolute logit disagreement is **0.0625** on a max logit of 13.14. The
 verdict on record is therefore `DIVERGENT`, on both devices, and it is honest — see §0.2.
 
-**Its op table is 94 rows, of which 76 carry a kernel.** Read from
+**Its op table is 96 rows, of which 78 carry a kernel.** Read from
 `epctl --dump-capabilities --json` (`rust/src/bin/epctl.rs`), not from counting `ops!` lines: 46
-rows report `live`, 30 report `ready` and **18 report `staged`** — described, claim-tested, and
-declined at runtime with a named blocker carried in the dump's own `staged_reason` field. **The 76
-is `live == true` on the dump row, which is *not* `status == "live"` (46).** The row carries the
-noun `live` twice with two denotations — a boolean meaning *this row has a kernel* and a status
-token that is the deprecated `OpStatus::Live` alias — so a reader checking the 76 against the field
-named `live` gets 46. §8.9.25 rules the boolean renamed **`has_kernel`**; until that lands the
-derivation is stated here rather than left to the reader, because a true sentence whose check
-requires knowing that one word means two things is checkable only by someone who already knows the
-answer. **This count has been misstated in this document and in status reports five times; the dump
+rows report `live`, 32 report `ready` and **18 report `staged`** — described, claim-tested, and
+declined at runtime with a named blocker carried in the dump's own `staged_reason` field. **The 78
+is `has_kernel == true` on the dump row, which is *not* `status == "live"` (46).** §8.9.25's rename
+has landed: the row used to spell the noun `live` twice with two denotations — a boolean meaning
+*this row has a kernel* and a status token that is the deprecated `OpStatus::Live` alias — so a
+reader checking the 78 against the field named `live` got 46. The boolean is now **`has_kernel`**
+and the `status` token keeps its three values, so the field name answers the question a reader is
+asking. **This count has been misstated in this document and in status reports five times; the dump
 is the only reading of it that is not a hand tally, and it does not stop being wrong until it stops
 being written by hand.** `OpStatus::Live` is a deprecated alias of `OpStatus::Ready`
 (`rust/src/registry.rs::OpStatus`); neither grants a claim. **Claimability is a ledger fact, not a
@@ -2811,7 +2810,11 @@ hand-written duplicate of a machine-known fact is a fork, and it drifts in the p
 5. **`epctl --dump-capabilities --json` is extended additively.** `status` keeps its current meaning
    and its current strings (*does a kernel exist*); a new per-form `claimable` boolean and `proof`
    object are **added**. Trinity's harness reads `claimable`. Compatibility outranks elegance — we do
-   not silently change the meaning of a field five consumers already parse.
+   not silently change the meaning of a field five consumers already parse. **The one field that has
+   been renamed since is the kernel boolean, `live` → `has_kernel` (§8.9.25 ruling 6, landed
+   2026-08-05):** that was not a change of meaning but the removal of one — the row spelled `live`
+   twice, as a boolean and as a `status` token, and a schema in which one noun denotes two things
+   has no compatibility to preserve.
 
 **The proof key — the granularity, chosen so that yesterday's mistake is unrepresentable rather than
 discouraged.** The key is the tuple that selects the dispatched code and the layout of what it reads:
@@ -4441,6 +4444,18 @@ as the second.
 >
 > **A true sentence whose check requires knowing that one word means two things is checkable only by
 > someone who already knows the answer.**
+
+**LANDED 2026-08-05 (Tank, issue #3).** `epctl --dump-capabilities --json` emits `has_kernel` and no
+longer emits `live` as a key; `status` is unchanged and still takes exactly `live`/`ready`/`staged`.
+The human summary carried the same collision one line down — it called the kernel-carrying count
+"live" while the status column beside it spelled `live` for a strict subset of those rows — and now
+reads `96 row(s): 78 with a kernel (46 live + 32 ready), 18 staged`, which is the decomposition
+rather than a number a reader has to trust. Two tests in `rust/tests/dump_capabilities.rs` hold it:
+one asserts the NAME (`"live":` must not appear as a key — a rename that left the old key beside the
+new one would satisfy every value assertion and none of this ruling) and the arithmetic
+`has_kernel == live + ready`, the other that the human summary names the predicate it counted. The
+rename moves no total: `has_kernel` is `OpSpec::is_live()`, the same predicate the boolean always
+serialised.
 
 **And the observation that opened this round lands harder here than where it was made.** *"45 op
 rows are `Live`"* now reads 46, so it looks nearly right, and §8.9 retired `Live` as a thing we

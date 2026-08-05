@@ -20,3 +20,13 @@
 # Shell scripts must stay LF-terminated: a CRLF .sh fails under WSL as
 #   cd: $'...\r': No such file or directory
 *.sh text eol=lf
+
+# `evidence/` deliberately has NO merge driver, and must not get `union`.
+# `evidence/retired_proof_keys.json` is the proof-retirement register: retiring
+# a key is a DELETION of a claim's exemption, and union merge cannot represent
+# a deletion -- it would resurrect a retired key the next time a branch that
+# forked before the retirement is merged, and the census would then read the
+# resurrected row as still-exempt with nobody having signed for it. This is the
+# same defect that forced `squad-history` on .squad/decisions.md, one directory
+# over. Evidence conflicts are meant to stop a merge and be resolved by the
+# owner named in the register's `owner` field (issue #3, 2026-08-05).

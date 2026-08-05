@@ -15,6 +15,14 @@ planting works:
 
 The REPLAYED arms are the ones that matter. `eb84364` is a real merge in this repository that
 really did drop three real `Cast` proofs, and nobody planted it.
+
+TWO OF THESE ARMS ARE ABOUT A SECOND TOOL, ON PURPOSE
+-----------------------------------------------------
+The retirement exemption is granted by this screen AND by `rust/tools/gen_proof_ledger.py`, and
+it is one exemption only if both answer from one register with one rule. They did not: one file,
+two parsers, and a withdrawal with no owner was an exemption in the producer and a refusal here.
+An arm that asks only this screen cannot see that, because a screen agreeing with itself is what
+the divergence looked like from either side.
 """
 
 from __future__ import annotations
@@ -39,12 +47,20 @@ def record(kind: str, name: str, ok: bool, detail: str = "") -> None:
 
 
 def run(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+    # PYTHONIOENCODING is not decoration. The retirement register carries `§` in its reasons, and
+    # on a Windows runner the child writes its stdout in the console codepage while this decodes
+    # utf-8 — the harness died in `_readerthread` before arm 1 recorded anything, which is a
+    # negative control that reports nothing rather than a screen that reports wrong. Pinning both
+    # ends to utf-8 makes the arms run on every lane instead of on the lanes with a friendly
+    # locale.
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     return subprocess.run(
         [sys.executable, str(SCREEN), *args],
         cwd=str(cwd or REPO),
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
 
@@ -149,12 +165,34 @@ def _plant_frames(tmp: Path, history: list[dict[str, str]]) -> Path:
     return repo
 
 
+def _both_readers():
+    """The two tools that grant the retirement exemption, imported in process.
+
+    `check_ledger_census.py` is the consumer and `rust/tools/gen_proof_ledger.py` is the
+    producer, and the exemption is only ONE exemption if they answer from one module. Imported
+    rather than shelled out because the claim under test is *which code reads the register* —
+    a subprocess could only show that the two agree on one input, which two divergent parsers
+    also do until the input separates them.
+    """
+    sys.path.insert(0, str(REPO / "ci"))
+    sys.path.insert(0, str(REPO / "rust" / "tools"))
+    import gen_proof_ledger  # noqa: PLC0415
+    import proof_retirement  # noqa: PLC0415
+
+    return gen_proof_ledger, proof_retirement
+
+
 def main() -> int:
     print("negative control: ci/check_ledger_census.py")
 
     # ── LIVE ────────────────────────────────────────────────────────────────────────
     r = run(["--json", os.devnull if os.name != "nt" else "NUL"])
-    record("LIVE", "today's tree is green", r.returncode == 0, r.stdout.strip().splitlines()[-1][:90])
+    record(
+        "LIVE",
+        "today's tree is green",
+        r.returncode == 0,
+        ((r.stdout or "").strip().splitlines() or ["<no output>"])[-1][:90],
+    )
 
     r = run(["--list-retired"])
     record("LIVE", "--list-retired never fails on a valid file", r.returncode == 0)
@@ -301,16 +339,77 @@ def main() -> int:
         )
 
         # A retirement is not a suppression list: it must carry the same three fields an
-        # accepted red carries. A withdrawal nobody has to sign is a blanket exemption.
+        # accepted red carries. A withdrawal nobody has to sign is a blanket exemption. The
+        # register is present and unreadable, which is ERROR(instrument) and never a colour:
+        # degrading it to "nothing is retired" would report every deliberate withdrawal in it
+        # as VANISHED, and that is the exact 43-key false positive this screen once produced.
         repo = _plant_repo(tmp / "5s", [["a", "b", "c"], ["a", "c"]])
         _retire(repo, [{"key": "b", "reason": "planted: no owner, no date"}])
         r = run(["--repo", str(repo)], cwd=repo)
         record(
             "PLANTED",
             "a retirement with no owner is REFUSED, not honoured",
-            r.returncode != 0 and "missing" in (r.stdout + r.stderr),
+            r.returncode == 2
+            and "unreadable_retirement_register" in r.stdout
+            and "missing" in r.stdout
+            and "ever proven" not in r.stdout,
             f"exit={r.returncode}",
         )
+
+        # ── the ONE-REGISTER arms ──────────────────────────────────────────────────
+        # Pointing both tools at one FILENAME is not one register. Until 2026-08-05 this
+        # screen and `rust/tools/gen_proof_ledger.py` — the ledger's producer, and the other
+        # tool that grants this exemption — each parsed that file with its own rule: this one
+        # required `owner`/`date`/`reason`, the producer required only `reason`. A withdrawal
+        # nobody signed was therefore an exemption in the producer and a refusal here, which is
+        # the same "two registers, one fact" shape as the 43 false positives, arriving through
+        # the schema instead of through the path. These arms plant ONE file and ask BOTH
+        # readers, because that is the only question that can tell one register from two.
+        producer, census_reader = _both_readers()
+        record(
+            "LIVE",
+            "the producer and this screen read the SAME register module",
+            producer.proof_retirement is census_reader
+            and Path(producer.RETIRED) == (REPO / census_reader.RETIRED_REL),
+            f"{Path(producer.RETIRED).name}",
+        )
+
+        signed = tmp / "one_register_signed.json"
+        signed.write_text(
+            json.dumps({"retired": [{"key": "b", "owner": "tank", "date": "2026-08-05",
+                                     "reason": "planted: withdrawn on purpose"}]}),
+            encoding="utf-8",
+        )
+        keys, err = producer._retired_keys(signed)
+        record(
+            "PLANTED",
+            "a signed withdrawal is honoured by BOTH readers",
+            not err and set(keys) == {"b"} and set(census_reader.load(signed)) == {"b"},
+            err or "b exempt in both",
+        )
+
+        unsigned = tmp / "one_register_unsigned.json"
+        unsigned.write_text(
+            json.dumps({"retired": [{"key": "b", "reason": "planted: no owner, no date"}]}),
+            encoding="utf-8",
+        )
+        keys, err = producer._retired_keys(unsigned)
+        refused_by_census = False
+        try:
+            census_reader.load(unsigned)
+        except census_reader.RetirementError:
+            refused_by_census = True
+        record(
+            "PLANTED",
+            "an UNSIGNED withdrawal is refused by BOTH, and exempts nothing in either",
+            bool(err) and "owner" in err and not keys and refused_by_census,
+            err[:70] or "the producer honoured it",
+        )
+
+        # And the producer's refusal must be an ERROR, never an empty exemption set: `{}` there
+        # would turn every withdrawal in a malformed register into a lost proof, which is the
+        # 43-VANISHED report with the polarity flipped. The census arm for the same register is
+        # `5s` above — one file, one rule, asserted from both ends.
 
         # A retirement that agrees with nothing is a false record of the file's contents.
         repo = _plant_repo(tmp / "5t", [["a", "b"], ["a", "b"]])

@@ -40,7 +40,9 @@ the plugin-EP C ABI — no ORT fork, no ORT rebuild, no link against `libonnxrun
 > first. [`docs/DESIGN.md`](docs/DESIGN.md) §0 is the same statement one level down, for a reader
 > who is going to work on the code.
 >
-> **Re-derived: 2026-08-04, at `4ee8c9c` (`main` = `b8679a4` plus one docs merge).** Sources:
+> **Re-derived: 2026-08-04, at `4ee8c9c` (`main` = `b8679a4` plus one docs merge); the op-table row
+> re-derived 2026-08-05 at `ba2da4c` from a fresh `epctl --dump-capabilities --json` run, which is
+> where 96/78 and the field name `has_kernel` come from.** Sources:
 > `epctl --dump-capabilities --json`; `bench/results/{op_census_phi35_r13_after,
 > op_census_mnv2_r14_final, op_census_bert_r14_final, op_census_gptoss20b_r13_after,
 > phi35_claim_reading_summary, criterion10-dev0, lane-identity-armA-arena0,
@@ -75,15 +77,15 @@ convolutional image classifier that was **0 of 105** before. The 7 declines are 
 BERT records more decisions than the graph has nodes because ORT calls `GetCapability` more than
 once; the number quoted is the decision count, which is what the census counts.
 
-**Its op table is 94 rows, of which 76 carry a kernel.** Read from `epctl --dump-capabilities
---json` (`rust/src/bin/epctl.rs`), not by counting `ops!` lines: **46 `live`, 30 `ready`, 18
+**Its op table is 96 rows, of which 78 carry a kernel.** Read from `epctl --dump-capabilities
+--json` (`rust/src/bin/epctl.rs`), not by counting `ops!` lines: **46 `live`, 32 `ready`, 18
 `staged`** — the staged rows are described and claim-tested and decline at runtime with a named
-blocker in the dump's own `staged_reason` field. **The 76 is the count of rows whose boolean `live`
-field is `true`, which is *not* `status == "live"` (46).** The dump row spells `live` twice with two
-meanings — a boolean for *this row has a kernel* and a status token that is the deprecated
-`OpStatus::Live` alias — so the derivation is written out here rather than left to a reader who
-would otherwise check the sentence against the wrong field and get 46
-([`docs/DESIGN.md`](docs/DESIGN.md) §8.9.25 renames the boolean `has_kernel`). **This count has been
+blocker in the dump's own `staged_reason` field. **The 78 is the count of rows whose boolean
+`has_kernel` field is `true`, which is *not* `status == "live"` (46).** The row used to spell `live`
+twice with two meanings — a boolean for *this row has a kernel* and a status token that is the
+deprecated `OpStatus::Live` alias — so a reader checking this sentence against the field named
+`live` got 46; the boolean is now `has_kernel` and the derivation is checkable against the field it
+names ([`docs/DESIGN.md`](docs/DESIGN.md) §8.9.25 ruling 6, landed). **This count has been
 misstated more than once, including by earlier revisions of this file; the dump is the only reading
 of it that is not a hand tally.** `OpStatus::Live` is a **deprecated alias** of `OpStatus::Ready`
 (`rust/src/registry.rs::OpStatus`) and neither status grants a claim — **claimability is a ledger
@@ -184,7 +186,7 @@ permanently contended by several agents.
 | Device requirement | **Vulkan 1.1 core + a compute queue.** No required extensions — see [`docs/DESIGN.md`](docs/DESIGN.md) §7. |
 | Target hardware | NVIDIA · AMD · Intel · Adreno · Mali — *none of these is covered by CI today; CI has no GPU hardware at all. The only executing lanes are two desktop GPUs on one development machine and the lavapipe software rasterizer.* |
 | Operator domains | `ai.onnx` and `com.microsoft` — the contrib domain is in scope because the ORT GenAI model builder emits contrib ops directly; see [`docs/DESIGN.md`](docs/DESIGN.md) §1.4 for the claim-safety constraints |
-| Op table | **94 rows — 46 `live`, 30 `ready`, 18 `staged`; 76 carry a kernel (`live == true` on the dump row, which is not `status == "live"`).** Status is not permission to claim: **claimability is a ledger fact** (`evidence/proof_ledger.jsonl`, 129 entries), not a table field. |
+| Op table | **96 rows — 46 `live`, 32 `ready`, 18 `staged`; 78 carry a kernel (`has_kernel == true` on the dump row, which is not `status == "live"`).** Status is not permission to claim: **claimability is a ledger fact** (`evidence/proof_ledger.jsonl`, 129 entries), not a table field. |
 
 ## How it works
 
