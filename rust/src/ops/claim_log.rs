@@ -401,7 +401,8 @@ mod tests {
             "n0",
             1,
             &a,
-        None,);
+            None,
+        );
         assert!(l.contains(r#""code":"staged""#), "{l}");
         assert!(l.contains(r#""claimed":false"#), "{l}");
     }
@@ -422,7 +423,8 @@ mod tests {
             "n0",
             1,
             &a,
-        None,);
+            None,
+        );
         assert!(l.contains(r#""codes":["staged","dynamic-shape"]"#), "{l}");
         assert!(l.contains(r#""shape_class":"extents-symbolic""#), "{l}");
         assert!(l.contains(r#""predicate_ok":false"#), "{l}");
@@ -500,7 +502,8 @@ mod tests {
     }
 
     #[test]
-    fn an_unregistered_op_records_what_could_not_be_evaluated() {        // Without a row there is no opset window, no schema, no status and no predicate. Saying
+    fn an_unregistered_op_records_what_could_not_be_evaluated() {
+        // Without a row there is no opset window, no schema, no status and no predicate. Saying
         // so is the difference between "these checks passed" and "these checks never ran", which
         // is the same distinction R8 is about, one level down.
         let mut a = audit(

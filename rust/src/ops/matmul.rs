@@ -428,12 +428,26 @@ pub fn translate_matmul(
     node: &NodeDesc,
     ctx: &mut dyn DispatchContext,
 ) -> EpResult<()> {
-    let a = node.inputs.first().and_then(|t| t.desc.as_ref()).ok_or_else(|| {
-        EpError::Unsupported(format!("`{}` input 0 has no shape at compile time", node.op_type))
-    })?;
-    let b = node.inputs.get(1).and_then(|t| t.desc.as_ref()).ok_or_else(|| {
-        EpError::Unsupported(format!("`{}` input 1 has no shape at compile time", node.op_type))
-    })?;
+    let a = node
+        .inputs
+        .first()
+        .and_then(|t| t.desc.as_ref())
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input 0 has no shape at compile time",
+                node.op_type
+            ))
+        })?;
+    let b = node
+        .inputs
+        .get(1)
+        .and_then(|t| t.desc.as_ref())
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input 1 has no shape at compile time",
+                node.op_type
+            ))
+        })?;
     if a.dtype != DType::F32 || b.dtype != DType::F32 {
         return Err(EpError::Unsupported(format!(
             "`{}` inputs are {:?}/{:?}; gemm_f32 reads one element per word",
@@ -466,7 +480,10 @@ pub fn translate_matmul(
     let out_buf = ctx.bind_output(&node.outputs[0], TensorDesc::new(DType::F32, out_shape))?;
 
     let total = u32::try_from(m * n).map_err(|_| {
-        EpError::Unsupported(format!("`{}` output element count overflows u32", node.op_type))
+        EpError::Unsupported(format!(
+            "`{}` output element count overflows u32",
+            node.op_type
+        ))
     })?;
 
     let mut push = Vec::with_capacity(11 * 4);
@@ -475,7 +492,10 @@ pub fn translate_matmul(
     // live `beta` for a dormant one.
     for v in [m, n, k, 0, 0, 0, 1, 1, i64::from(total)] {
         let v = u32::try_from(v).map_err(|_| {
-            EpError::Unsupported(format!("`{}` parameter {v} does not fit a u32", node.op_type))
+            EpError::Unsupported(format!(
+                "`{}` parameter {v} does not fit a u32",
+                node.op_type
+            ))
         })?;
         push.extend_from_slice(&v.to_le_bytes());
     }
@@ -485,7 +505,9 @@ pub fn translate_matmul(
     // `C` is absent, so its binding takes `A` as the inert placeholder — the same rule `Gemm`
     // and `Conv` use for an omitted optional input. The module declares four bindings whether or
     // not the fourth is read.
-    let groups = total.div_ceil(GEMM_LOCAL_SIZE).clamp(1, GEMM_MAX_WORKGROUPS);
+    let groups = total
+        .div_ceil(GEMM_LOCAL_SIZE)
+        .clamp(1, GEMM_MAX_WORKGROUPS);
     ctx.dispatch(KernelRequest {
         shader: "gemm_f32",
         spec_constants: vec![GEMM_LOCAL_SIZE],
@@ -771,7 +793,10 @@ mod tests {
 
     #[test]
     fn the_matmul_row_is_ready_and_points_at_its_own_handler() {
-        let row = OPS.iter().find(|s| s.op_type == "MatMul").expect("MatMul must be registered");
+        let row = OPS
+            .iter()
+            .find(|s| s.op_type == "MatMul")
+            .expect("MatMul must be registered");
         assert_eq!(row.status, OpStatus::Ready);
         assert!(std::ptr::fn_addr_eq(
             row.translate,
@@ -814,21 +839,39 @@ mod tests {
     fn matmul_opens_at_opset_one_and_gemm_does_not() {
         let mm = OPS.iter().find(|s| s.op_type == "MatMul").unwrap();
         assert_eq!(mm.min_opset, 1);
-        assert_eq!(OPS.iter().find(|s| s.op_type == "Gemm").unwrap().min_opset, 7);
+        assert_eq!(
+            OPS.iter().find(|s| s.op_type == "Gemm").unwrap().min_opset,
+            7
+        );
     }
 
     /// BERT-SQuAD-12's own shapes: the attention projections and the feed-forward layers.
     #[test]
     fn the_bert_projection_and_feed_forward_shapes_collapse_to_a_two_d_product() {
         // `[batch*seq, 768] x [768, 768]` — the Q/K/V and output projections, 45 of 95.
-        assert_eq!(matmul_2d_extents(&[256, 768], &[768, 768]).unwrap(), (256, 768, 768));
+        assert_eq!(
+            matmul_2d_extents(&[256, 768], &[768, 768]).unwrap(),
+            (256, 768, 768)
+        );
         // Rank 3, which is what the graph carries before the encoder's Reshape.
-        assert_eq!(matmul_2d_extents(&[1, 256, 768], &[768, 768]).unwrap(), (256, 768, 768));
+        assert_eq!(
+            matmul_2d_extents(&[1, 256, 768], &[768, 768]).unwrap(),
+            (256, 768, 768)
+        );
         // The feed-forward pair, 12 each.
-        assert_eq!(matmul_2d_extents(&[256, 768], &[768, 3072]).unwrap(), (256, 768, 3072));
-        assert_eq!(matmul_2d_extents(&[256, 3072], &[3072, 768]).unwrap(), (256, 3072, 768));
+        assert_eq!(
+            matmul_2d_extents(&[256, 768], &[768, 3072]).unwrap(),
+            (256, 768, 3072)
+        );
+        assert_eq!(
+            matmul_2d_extents(&[256, 3072], &[3072, 768]).unwrap(),
+            (256, 3072, 768)
+        );
         // The SQuAD head, 1 each.
-        assert_eq!(matmul_2d_extents(&[256, 768], &[768, 2]).unwrap(), (256, 768, 2));
+        assert_eq!(
+            matmul_2d_extents(&[256, 768], &[768, 2]).unwrap(),
+            (256, 768, 2)
+        );
     }
 
     /// The 24 batched attention products are declined **by name**, and the sentence says why it
