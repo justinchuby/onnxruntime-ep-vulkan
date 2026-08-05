@@ -246,10 +246,26 @@ def test_validation_messenger_armed() -> None:
       0  ARMED — layer loaded, messenger live.  Only state that licenses a clean-run claim.
       1  fail  — (reserved for future use)
       3  absent — no answer, not a bad answer.  Install the Vulkan SDK.
+
+    Neither "epctl was never built" nor "the validation layer is not installed" is a
+    finding about validation, and neither may report green: both are lane environment,
+    not a product defect, and this file's own `require_validation_armed` says exactly
+    why a `pytest.skip()` here would be wrong -- "a skip is green, and a green criterion-3
+    control on a machine that cannot run it is the exact silence the criterion was written
+    to remove."  This test is the one place criterion 3(a) is actually decided, so it
+    raises the same `_verdict.InstrumentError` every other test in this file already uses
+    for the identical two conditions, rather than the `pytest.skip()` this test used to
+    reach for instead (issue #1: a lane-inapplicable control must report an explicit
+    instrument/unobservable outcome, never a success-shaped skip).
     """
     epctl = _epctl_path()
     if epctl is None:
-        pytest.skip("epctl binary not found next to EP lib — build first: cargo build --release")
+        raise _verdict.InstrumentError(
+            "[criterion 3a instrument failure] ERROR(instrument): epctl was not found "
+            "next to ONNXRUNTIME_VULKAN_EP_LIB, so ARMED could not be probed. Build it: "
+            "cargo build --release. This is not a finding about validation and it is not "
+            "a pass."
+        )
 
     result = subprocess.run(
         [str(epctl), "--probe-validation"],
@@ -259,12 +275,16 @@ def test_validation_messenger_armed() -> None:
     output = result.stdout + result.stderr
     print(f"\n[CRITERION 3a] epctl --probe-validation output:\n{output}", file=sys.stderr)
 
-    if result.returncode == 3:
-        pytest.skip(
-            "VK_LAYER_KHRONOS_validation is not installed on this machine — "
-            "criterion 3 cannot be assessed here. "
-            "Install the Vulkan SDK validation layers (VulkanSDK/runtime/...) "
-            "or set VK_LAYER_PATH. Exit 3 means 'no answer', not 'pass'."
+    state, reason = _verdict.classify_validation_probe(result.returncode, output)
+    if state != _verdict.VALIDATION_ARMED:
+        raise _verdict.InstrumentError(
+            f"[criterion 3a instrument failure] ERROR(instrument): validation is not "
+            f"armed on this machine ({state} — {reason}).\n"
+            "R12: a lane that cannot install or enable VK_LAYER_KHRONOS_validation has "
+            "not observed 'no validation errors', it has observed nothing -- UNOBSERVABLE, "
+            "never a pass and never silently skipped. Install the Vulkan SDK validation "
+            "layers (VulkanSDK/runtime/...) or set VK_LAYER_PATH.\n"
+            f"epctl output:\n{output}"
         )
     assert result.returncode == 0, (
         "epctl --probe-validation did not exit 0 (ARMED).\n"
