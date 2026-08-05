@@ -795,3 +795,51 @@ instead of the PASS line caught it. `ci/check_ledger_census.py`'s new frame-witn
 `evidence/proof_rewitness.json` now require any deliberate `source_digest` move to be declared
 `{revision, who, keys, deliberate, why}` — an undeclared move is `FAIL(condition=undeclared_witness_move)`.
 The `eee65aa` record is entered permanently with `deliberate: false`. — decided by Rai, Link
+## Round 2026-08-04 (later still) — `MatMul` shipped, and the census number turned out not to be the one that matters
+**What I was sent to do:** register `MatMul` (95 nodes, the largest single unlock in the
+BERT-SQuAD-12 claim census), stating the selection criterion before picking variants; take the
+census after rather than accepting the claim; prove through the normal path; say which way the
+`Gemm` transpose reading went; and judge whether the `--check` mintability gap is urgent.
+**The finding, which is worth more than the kernel.** `MatMul` moved BERT from `claimed_nodes`
+480 to **481** and `dispatches_executed` 3 to **4**. Not 95 — one. BERT claims 481 of 1274 rows
+at `GetCapability` and executes four nodes; the partitioner's net-benefit gate sees 146 clusters
+and retains 4. **`claimed_nodes` is not what executes**, and last round's note that MobileNetV2's
+`partition` declines were "fragmentation, not coverage" was right about the cause and wrong about
+the significance — fragmentation is the whole gap. `probe_island_counterfactual.py` now ranks
+picks by delta in *retained island* nodes: `Reshape` +167 > `MatMul` +135 > `Concat` +110, and
+`MatMul`+`Reshape` together are 738 nodes in 17 islands where either alone is worth almost
+nothing. Coverage picks should be made in pairs from here.
+**My own falsifier fired.** `mouse-mobilenetv2-residual-declines.md` argued `Reshape` is shape
+metadata moving no float data, with a written falsifier. BERT's 59 `Reshape` nodes carry the
+attention tensors themselves. The distinction I should have drawn is not metadata-versus-data but
+**whether the op's output is the tensor or a description of it** — `Shape`'s decline survives on
+that basis; `Reshape`'s does not, and it is the next pick.
+**A latent instrument defect, mine to name.** ORT returns rank 0 for a genuine scalar *and* for
+an unresolved rank; `classify_shapes` returns `Static` because "all dims non-negative" is
+vacuously true over an empty list. **724 of BERT's 1274 claim rows read `static` on the strength
+of having read nothing, and `check_shape`'s `[unknown-rank]` branch is dead code on this whole
+class of model.** Not a correctness defect — BERT agrees with CPU to 1.1e-6, because ORT's
+`MatMulAddFusion` rewrites the graph between `GetCapability` and `Compile` and `Compile` has
+strictly better shape information. I repaired it for `MatMul` only, where the ONNX schema admits
+no rank-0 operand so the discriminator is sound; a general repair needs a per-op minimum-rank
+table and I did not build one uninstructed. The claim log now carries `input_shapes`/`output_shapes`
+— the EP's own reading — because the probe I wrote first had a *second* implementation of shape
+inference and got a materially wrong answer. That probe is deleted.
+**`Gemm` transpose extension:** it went in favour, but **BERT did not test it**. BERT's three
+`Gemm` nodes are `transB=0` against a `transB=0` proof case — the blind axis exercised at the
+value it was proven at, which tests nothing. What tested it is the CI suite (27 passed, 0
+skipped, including the non-vacuous `Y == B.T` identity test, which I checked did not skip). Since
+I have argued myself that twelve CI combinations is weaker than a key component, **the extension
+stands, un-falsified, and remains a reading for Morpheus to rule on.**
+**Judgement on the mintability gap:** it can wait behind `Reshape`, not behind a second model
+after that. My position moved because this round produced a second instance of the same family in
+my own area. What I would ask Tank for is not just a mintability predicate but the
+generalisation — **every screen that can PASS should state what it read to pass**, the way the
+subject arithmetic line does and the way `counters_abi.py --check` conspicuously does not.
+### What I did not run
+Debug build only, NVIDIA RTX 4060 only, Windows only. No release build, no Linux, no second
+vendor — `FP32_CONV` on Intel is still opened-not-measured. No clock and no timing of any kind.
+`DEVICE_MEMORY` and `KV_ARENA` never enabled. Phi-3.5 was censused but not run end-to-end. The
+94 `unknown-rank` `MatMul` declines are *asserted* to be unresolved rank from the ONNX schema,
+not observed to be — no positive control distinguishing a genuine rank-0 operand exists, because
+`MatMul` cannot have one.
