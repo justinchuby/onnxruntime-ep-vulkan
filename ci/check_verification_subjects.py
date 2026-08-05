@@ -101,6 +101,17 @@ TABLE: dict[str, dict[str, str]] = {
         "subject": "the wiring census output",
         "oracle": "criterion 12's three further requirements, declared outside the census",
     },
+    "ci/check_readme_usage.py": {
+        "verdict": "ARTIFACT",
+        "subject": "the import statements in README.md's fenced python blocks",
+        "oracle": "the tree itself, plus the declared dependency manifests",
+        "note": (
+            "The two sides were produced by different people for different reasons: the "
+            "README is written by whoever ships a feature, the package layout by whoever "
+            "builds it. That is exactly the pairing that drifted -- the README documented "
+            "`import onnxruntime_ep_vulkan` for months while no such package existed."
+        ),
+    },
     "ci/check_device_loss.py": {
         "verdict": "ARTIFACT",
         "subject": "a run's log",

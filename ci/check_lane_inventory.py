@@ -116,6 +116,9 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Tick-conversion screen", "hostfree.tick_conversion_screen"),
     ("Device-loss screen negative control", "hostfree.device_loss_negative_control"),
     ("Device-loss screen", "hostfree.device_loss_screen"),
+    # Order matters: the negative control's name contains the screen's name.
+    ("README usage screen negative control", "hostfree.readme_usage_negative_control"),
+    ("README usage screen", "hostfree.readme_usage"),
     ("Census extent negative control", "hostfree.census_completeness_negative_control"),
     ("Census extent and independent whole", "hostfree.census_completeness"),
     ("Verdict vocabulary preflight", "hostfree.verdict_vocabulary"),

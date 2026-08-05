@@ -36,6 +36,15 @@ env/
 build/
 dist/
 
+# Python packaging: the cdylib staged into the wheel by python/build_wheel.py, and its
+# provenance record. DESIGN.md §7.8 forbids a checked-in binary because silent drift from
+# its source changes what runs; a wheel is a binary from the consumer's point of view, so
+# it is a BUILD PRODUCT here and never a tree artifact. `git status` after a wheel build is
+# the check on that. The provenance record is what makes the drift detectable once the
+# binary has left the tree.
+python/src/onnxruntime_ep_vulkan/_lib/
+python/dist/
+
 # Squad: ignore runtime state (logs, inbox, sessions)
 # Note: .squad/casting/* is identity and MUST be committed to main, not ignored
 .squad/orchestration-log/
