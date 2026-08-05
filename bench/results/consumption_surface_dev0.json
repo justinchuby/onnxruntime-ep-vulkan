@@ -1,0 +1,120 @@
+{
+  "probe": "consumption_surface",
+  "question": "What does ORT's plugin-EP API require of a consumer, and how many ways can the single documented call go wrong?",
+  "method": "one fresh subprocess per case; registration is process-global state",
+  "host": {
+    "platform": "Windows-11-10.0.26220-SP0",
+    "python": "3.12.7"
+  },
+  "ort_version": "1.28.0",
+  "artifact": {
+    "path": "C:\\Users\\justinchu\\dev\\ep-vulkan-niobe\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+    "size_bytes": 2370048,
+    "sha256": "dead388ed21b857caf555330b712b79e1b571cbe3e9d62de323120a20f97727b"
+  },
+  "cases": [
+    {
+      "case": "relative_path_anchor",
+      "question": "A relative library path \u2014 is it resolved against the caller's CWD?",
+      "expect": "not_cwd",
+      "why": "If a relative path does not resolve against the CWD, then the README's one-liner is not merely inconvenient, it is a documented call a user cannot make portably: the absolute path is mandatory and nothing tells them so.",
+      "exit_code": 0,
+      "observed": "not_cwd",
+      "tried": "C:\\Users\\justinchu\\AppData\\Local\\anaconda3\\Lib\\site-packages\\onnxruntime\\capi\\definitely\\not\\here.dll",
+      "cwd": "C:\\Users\\justinchu\\dev\\ep-vulkan-niobe",
+      "match": true,
+      "verdict": "MATCH"
+    },
+    {
+      "case": "registration_name_is_arbitrary",
+      "question": "Does ORT check the registration name against anything in the library?",
+      "expect": "arbitrary",
+      "why": "If the name is a label chosen by the caller, then the string in providers=[...] and the string passed to register must agree, and nothing in either the library or ORT enforces that agreement. That is a coupling only the caller can get wrong, and only a shim can own on the caller's behalf.",
+      "exit_code": 0,
+      "observed": "arbitrary",
+      "registered_under": "NotOurNameAtAll",
+      "in_available_providers": true,
+      "ep_device_entries": 2,
+      "match": true,
+      "verdict": "MATCH"
+    },
+    {
+      "case": "double_registration",
+      "question": "Is registering the same name twice idempotent, or does it raise?",
+      "expect": "raises",
+      "why": "A raise means the documented call is not safe to run twice in one process \u2014 a notebook re-run, a pytest session that imports two modules, or any library that registers on import. A shim that is not idempotent reproduces this; a one-line README instruction cannot fix it at all.",
+      "exit_code": 0,
+      "observed": "raises",
+      "error": "[ONNXRuntimeError] : 1 : FAIL : library is already registered under VulkanExecutionProvider",
+      "match": true,
+      "verdict": "MATCH"
+    },
+    {
+      "case": "unregistered_name_failure_mode",
+      "question": "A user who never registers, but asks for the EP by name in providers=[...] \u2014 do they get an error, or a working session that silently never touches the GPU?",
+      "expect": "silent_cpu_fallback",
+      "why": "This is the failure the current README manufactures. A reader hits ModuleNotFoundError on the import line, deletes the import (the obvious fix), and keeps the providers list. If that path returns correct numbers with no error, the project's own 'silently wrong is worse than loudly broken' rule is being broken at the very first thing a user does.",
+      "exit_code": 0,
+      "observed": "silent_cpu_fallback",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "numerically_correct": true,
+      "warnings": [
+        "Specified provider 'VulkanExecutionProvider' is not in available provider names.Available providers: 'AzureExecutionProvider, CPUExecutionProvider'"
+      ],
+      "match": true,
+      "verdict": "MATCH"
+    },
+    {
+      "case": "artifact_link_dependencies",
+      "question": "What must be resolvable on the loader path for the artifact to load at all?",
+      "expect": "no_onnxruntime_import",
+      "why": "tests/ops/conftest.py's diagnostic protocol tells a failing user the cause is 'a missing DLL dependency (onnxruntime.dll, Vulkan loader, or MSVC runtime)'. Whether onnxruntime is in the import table decides how much a wheel has to carry: an import-table dependency on the host runtime means a wheel must locate ORT's own libraries; no such dependency means the wheel ships one file.",
+      "exit_code": 0,
+      "observed": "no_onnxruntime_import",
+      "shared_library_strings": [
+        "KERNEL32.dll",
+        "VCRUNTIME140.dll",
+        "api-ms-win-core-synch-l1-2-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "bcryptprimitives.dll",
+        "dbghelp.dll",
+        "kernel32.dll",
+        "ntdll.dll",
+        "onnxruntime_vulkan_ep.dll",
+        "vulkan-1.dll"
+      ],
+      "onnxruntime_referencing": [],
+      "match": true,
+      "verdict": "MATCH"
+    },
+    {
+      "case": "verified_registration_positive",
+      "question": "The positive state: register correctly and actually execute on the EP.",
+      "expect": "ep_selected",
+      "why": "A detector never seen in its positive state has no demonstrated positive state (docs/PERF.md \u00a722). Cases 1-4 are all negative readings; without this one the probe has only shown ways to fail and has not shown that the path it recommends works on this box.",
+      "exit_code": 0,
+      "observed": "ep_selected",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "numerically_correct": true,
+      "output": [
+        3.0,
+        3.0,
+        3.0,
+        3.0
+      ],
+      "match": true,
+      "verdict": "MATCH"
+    }
+  ],
+  "verdict": "MATCH",
+  "matched": 6,
+  "total": 6
+}

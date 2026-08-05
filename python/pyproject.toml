@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onnxruntime-ep-vulkan"
+version = "0.28.0"
+description = "Cross-platform Vulkan compute execution provider (plugin EP) for ONNX Runtime."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["onnx", "onnxruntime", "vulkan", "gpu", "compute", "execution-provider"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# ONNX Runtime is a genuine runtime requirement: this package calls
+# `ort.register_execution_provider_library`, which is the plugin-EP API added in 1.24.
+# The cdylib itself has no link-time dependency on ORT at all -- measured, case
+# `artifact_link_dependencies` in bench/results/consumption_surface_dev0.json -- so this
+# dependency is on the Python API and nothing else.
+dependencies = ["onnxruntime>=1.24"]
+
+[project.urls]
+Homepage = "https://github.com/justinchuby/onnxruntime-ep-vulkan"
+Source = "https://github.com/justinchuby/onnxruntime-ep-vulkan"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+onnxruntime_ep_vulkan = ["_lib/*", "py.typed"]

@@ -451,6 +451,79 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.readme_usage",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="README usage screen (does the documented import exist?)",
+        watches=(
+            "Every module imported by a fenced python block in README.md. The README told "
+            "readers to `import onnxruntime_ep_vulkan` for months while no such package "
+            "existed anywhere in the tree — no pyproject.toml, no setup.py, no "
+            "__init__.py. Nothing could have noticed: the test suite imports what exists, "
+            "so documentation drift is invisible to it by construction, and the first "
+            "thing any new user does produced ModuleNotFoundError."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "ci/negative_control_readme_usage.py, 7 arms. The strongest is not planted: "
+            "it runs the screen against the real README at 8a851f8 — the commit before "
+            "the shim landed — and demands exit 1. A defect that actually shipped, not a "
+            "shape somebody imagined."
+        ),
+        arm_healthy=(
+            "README-USAGE: PASS — 2 distinct import(s) across 2 python block(s), all "
+            "resolvable (onnxruntime installed/declared, onnxruntime_ep_vulkan "
+            "first-party at python/src/)"
+        ),
+        arm_broken=(
+            "README-USAGE: FAIL — 1 documented import(s) name nothing that exists: "
+            "onnxruntime_ep_vulkan"
+        ),
+        observed="2026-08-04",
+        misses=(
+            "It does not EXECUTE the blocks. Executing them needs a GPU, a built artifact "
+            "and a model; a check that can only run on one desk is not a check. So a "
+            "README whose imports all exist but whose calls are wrong passes here.",
+            "Import-resolvability is satisfied by a DECLARED dependency, not only an "
+            "installed one, so that the no-GPU lane (which installs pytest/onnx/numpy and "
+            "not onnxruntime) does not report a property of the lane as a finding about "
+            "the README. A dependency declared but unpublishable would pass.",
+            "It reads README.md only. Every other document in docs/ can drift freely.",
+            "A python block that does not parse is skipped, not reported. That is "
+            "deliberate — prose in a python fence is not this screen's business — but it "
+            "does mean a syntactically broken example is invisible here.",
+        ),
+    ),
+    Check(
+        id="hostfree.readme_usage_negative_control",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="README usage screen negative control (replay the shipped defect)",
+        watches=(
+            "The screen above. It is the only reason that screen may be called a "
+            "detector rather than a step that has been observed passing."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Its own instrument arms: a README with no python block, and a python block "
+            "importing nothing, must both report ERROR(instrument=...) and not PASS — a "
+            "check that verified nothing must not read like a check that passed."
+        ),
+        arm_healthy="7/7 arms, 2026-08-04, 4 of them PLANTED and counted as such",
+        arm_broken=(
+            "the real README at 8a851f8 judged against an empty tree: exit 1, naming "
+            "onnxruntime_ep_vulkan"
+        ),
+        observed="2026-08-04",
+        misses=(
+            "The historical arm needs the ref in the clone. actions/checkout defaults to "
+            "depth 1, so on a shallow checkout that arm reports UNOBSERVED and the "
+            "remaining four are PLANTED. The summary says so rather than reporting 6/6.",
+            "Four of seven arms are PLANTED. They prove each rule fires on an input built "
+            "to make it fire.",
+        ),
+    ),
+    Check(
         id="hostfree.tautological_assertions",
         lane=LANE_HOSTFREE,
         step="Tautological-assertion screen (no GPU, whole tree)",
