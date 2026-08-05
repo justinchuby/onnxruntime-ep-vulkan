@@ -90,16 +90,25 @@ import _models as m
 # The counter ABI mirror is generated from rust/src/counters.rs, never hand-written here.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "rust" / "tools"))
 import counters_abi as _counters_abi  # noqa: E402
+import foundry_discovery as _foundry_discovery  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Model location — Foundry cache, never committed to the repo.
+#
+# Resolved by identity (variant name + execution provider), not by a hardcoded path: Foundry
+# Local's own on-disk cache layout is versioned by its CLI's internal catalog revision (e.g.
+# "...-cuda-gpu" became "...-cuda-gpu-2", and "cuda-int4-rtn-block-32/" became "v2/" between
+# when this constant was first written and 2026-08-05), and a hardcoded path silently goes
+# stale when that happens with no code change on either side (issue #11). See
+# rust/tools/foundry_discovery.py for the full discovery contract and its negative-case
+# guarantees (missing / ambiguous / stale / wrong-provider all fail loudly, never guessed).
 # ---------------------------------------------------------------------------
-_MODEL_DIR = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models"
-    r"\Microsoft\Phi-3.5-mini-instruct-cuda-gpu"
-    r"\cuda-int4-rtn-block-32"
+_PHI35_SPEC = _foundry_discovery.FoundryModelSpec(
+    variant_name="Phi-3.5-mini-instruct-cuda-gpu",
+    execution_provider="CUDAExecutionProvider",
+    onnx_filename="phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    download_alias="phi-3.5-mini",
 )
-_ONNX_FILE = _MODEL_DIR / "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
 
 # Expected island count with current coverage (2026-07-30):
 # 161 MatMulNBits nodes, each in its own 1-node fused subgraph → 161 islands.
@@ -178,13 +187,14 @@ def _read_claim_log(path: pathlib.Path) -> list[dict[str, Any]]:
 
 @pytest.fixture(scope="module")
 def phi35_onnx_path() -> pathlib.Path:
-    if not _ONNX_FILE.exists():
+    try:
+        return _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+    except _foundry_discovery.FoundryDiscoveryError as exc:
         pytest.skip(
-            f"Phi-3.5 model not found at {_ONNX_FILE}. "
-            "This test requires the model to be present at the Foundry cache path. "
+            f"Phi-3.5 model not resolvable: {exc} "
+            "This test requires the model to be present in the Foundry cache. "
             "Do not commit the model to the repo."
         )
-    return _ONNX_FILE
 
 
 # ---------------------------------------------------------------------------
@@ -1339,11 +1349,15 @@ def test_phi35_vulkan_multirun_logits_stable(
     )
 
 
-_GPT_OSS_DIR = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models"
-    r"\Microsoft\gpt-oss-20b-cuda-gpu\v1"
+# See the _PHI35_SPEC comment above: resolved by identity, not by a hardcoded path. gpt-oss-20b
+# must never be downloaded by automation (explicit repo policy); this spec only ever resolves
+# an already-present cache entry a human fetched deliberately.
+_GPT_OSS_SPEC = _foundry_discovery.FoundryModelSpec(
+    variant_name="gpt-oss-20b-cuda-gpu",
+    execution_provider="CUDAExecutionProvider",
+    onnx_filename="model.onnx",
+    download_alias="gpt-oss-20b",
 )
-_GPT_OSS_ONNX = _GPT_OSS_DIR / "model.onnx"
 
 # gpt-oss-20b node composition (opset 21 + com.microsoft 1, measured 2026-07-29):
 #   Cast 100, MatMulNBits 73, Add 72, SkipSimplifiedLayerNorm 48,
@@ -1373,13 +1387,14 @@ def _build_gptoss_feeds(seq_len: int = 1) -> dict[str, np.ndarray]:
 
 @pytest.fixture(scope="module")
 def gptoss_onnx_path() -> pathlib.Path:
-    if not _GPT_OSS_ONNX.exists():
+    try:
+        return _foundry_discovery.resolve_model_path(_GPT_OSS_SPEC)
+    except _foundry_discovery.FoundryDiscoveryError as exc:
         pytest.skip(
-            f"gpt-oss-20b model not found at {_GPT_OSS_ONNX}. "
-            "This test requires the model to be present at the Foundry cache path. "
+            f"gpt-oss-20b model not resolvable: {exc} "
+            "This test requires the model to be present in the Foundry cache. "
             "Do not commit the model to the repo."
         )
-    return _GPT_OSS_ONNX
 
 
 @pytest.mark.slow

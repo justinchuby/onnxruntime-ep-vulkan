@@ -15,6 +15,14 @@
       "why": "the transformer-encoder class. Criterion stated before the pick: choose the class whose census (a) this EP cannot run at all today, (b) whose missing set is DISJOINT from the CNN's, so the census produces new information rather than re-confirming what Conv already answered, and (c) whose ops recur across the most other models in that class. A detection or segmentation model would have re-exercised Conv plus Resize/NMS, which overlaps what just landed; a BERT-class encoder's body is MatMul/ReduceMean/Transpose/Softmax/Reshape, of which the registry holds none.",
       "sha256": "5f0d96a9e6b8a4a2e59f9636f8bbad09ee8a0c58c8212027cc17c5fcc9659e55",
       "bytes": 435852736
+    },
+    {
+      "url": "https://github.com/onnx/models/raw/main/validated/vision/classification/mnist/model/mnist-12.onnx",
+      "name": "mnist-12",
+      "fetched": "2026-08-05",
+      "why": "the smallest real model this project runs: 12 nodes, 26KB, no external data. Verified end-to-end on a clean local Windows release build (2 executed dispatches -- Relu x2 -- Conv/MaxPool declined; exact CPU-vs-Vulkan agreement, max_abs=0, max_rel=0) immediately after `cargo build --release`, before MobileNetV2's ~14MB or BERT-SQuAD's ~436MB download cost. Intended as the fast post-build smoke gate: if this disagrees or dispatches nothing, nothing larger is worth running yet. No pinned SHA-256 existed anywhere upstream or in this repo before this entry (issue #11); the value below was computed directly from the downloaded artifact, not copied from an ONNX Model Zoo record.",
+      "sha256": "5c688690f8bacf667d4c2074af5ad0646ca328d7ab03eccf944a65b320171bdd",
+      "bytes": 26143
     }
   ]
 }

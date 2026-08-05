@@ -225,7 +225,7 @@ is the only thing that proves the second.
 | Rust ≥ 1.85 | **yes** | edition 2024 |
 | **libclang** (LLVM) | **yes** | `bindgen` parses the vendored ORT headers at build time |
 | ONNX Runtime install | no | the headers are vendored; nothing links against ORT |
-| Vulkan SDK / `glslc` | not yet | only needed once `shaders/glsl/` is non-empty |
+| Vulkan SDK / `glslc` | **yes** | `rust/shaders/glsl/` now has 10 `.comp` shaders; `build.rs` compiles them at build time |
 | Vulkan loader | at runtime only | absent loader ⇒ zero devices advertised, not an error |
 
 Install libclang:
@@ -260,6 +260,50 @@ Artifacts land in `target/{debug,release}/`:
 | macOS | `libonnxruntime_vulkan_ep.dylib` |
 
 Two C symbols are exported, and only two: `CreateEpFactories` and `ReleaseEpFactory`.
+
+### Windows: MSVC environment via `vcvars64.bat`
+
+A plain `cargo build` from a PowerShell prompt that never ran a Visual Studio developer shell
+setup script will fail in the linker (`cl.exe`/`link.exe` not on `PATH`, `INCLUDE`/`LIB` unset).
+The standard fix — Visual Studio's own `vcvars64.bat` — is a **`cmd.exe` batch file**, and the
+naive way to combine it with a custom build in one line is wrong on this toolchain:
+
+```powershell
+# KNOWN-BAD — do not use. Environment mutations made after the first `&&` inside a single
+# `cmd /c "..."` invocation do not reliably reach a child process spawned later in the same
+# chain; a build invoked this way was observed to silently drop custom variables (VULKAN_SDK,
+# LIBCLANG_PATH) the build script needed, producing a confusing failure (or worse, a silent
+# fallback) rather than a clear "variable not set" error.
+cmd /c 'call vcvars64.bat && set VULKAN_SDK=... && cargo build --release'
+```
+
+The proven recipe instead **captures** `vcvars64.bat`'s resulting environment and **applies it
+natively inside the current PowerShell process**, so every later command in that same session —
+including `cargo build` — actually sees it:
+
+```powershell
+$vcvars = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+$envDump = cmd /c "call `"$vcvars`" >nul 2>&1 && set"
+foreach ($line in $envDump) {
+    if ($line -match '^([^=]+)=(.*)$') {
+        [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
+    }
+}
+
+# Set anything project-specific the same way — natively in this process, never chained through cmd.
+$env:VULKAN_SDK    = "C:\VulkanSDK\1.4.350.0"
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+$env:PATH          = "$env:USERPROFILE\.cargo\bin;$env:VULKAN_SDK\Bin;$env:PATH"
+
+cd rust
+cargo build --release
+```
+
+Adjust the `vcvars64.bat` and Vulkan SDK paths to the versions actually installed
+(`vswhere.exe -latest -property installationPath` finds the Visual Studio install path if it is
+not the default). This recipe is what CI and every local Windows build in this repo's history use;
+if a build fails with an MSVC toolchain error, verify with `$env:INCLUDE` / `$env:LIB` non-empty
+in the *same* shell that runs `cargo build` before assuming the code is at fault.
 
 ### Verify
 
