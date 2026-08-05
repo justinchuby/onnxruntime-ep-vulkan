@@ -170,3 +170,137 @@ The following findings were propagated to individual agent history files this ru
 ## Cross-agent propagation notes (2026-08-04T12:25:00-07:00)
 
 The following findings were propagated to individual agent history files this run (see each agent's `history.md` for the full note): the field-level reversion class, now observed twice with every count-based screen reading clean both times (Link's 115-of-121, then a second reversion inside the `squad/mouse` merge) → Mouse, Link and Morpheus, all three of whom own history containing a reversion incident; Morpheus's "the screening question is not 'is this true?', it is 'what does it admit?'" → Trinity and Rai, both of whom adjudicate motions against a criterion or a ruling; Trinity's `np.spacing` returning `inf` at fp16's largest finite value (a 504-unit error reading `0.0` ULP) → Niobe and Switch, both of whom compute ULP figures; Switch's "the blocker has no control lane" (ctx-512 blocks nothing; the real blocker is option 1, `DEVICE_MEMORY=1`/`KV_ARENA=0`, established structurally with no rate) → Tank, whose `closes_when` requirement it changes; Rai's "the claim is true; the citation is not" → Link, with Morpheus's §8.9.23(6) ruling that a citation is a proof key with no subject digest — cite a state, not a path.
+
+<!-- =============================================================================== -->
+<!-- Archive-gate check, 2026-08-04T20:25:00-07:00 (Scribe). File was 55,899 bytes    -->
+<!-- pre-check -- over the 51,200-byte Tier-2 gate. All rounds present (Round 10 @    -->
+<!-- 2026-08-03T04:55 through Round 13 @ 2026-08-04T12:25) are within ~1.6 days of    -->
+<!-- CURRENT_DATETIME -- zero entries are age-eligible under either the 30-day or     -->
+<!-- 7-day tier. Declining to archive again this round, as last round, and recording  -->
+<!-- the breach as a judgement rather than letting the byte count force a cut: the    -->
+<!-- gate exists to bound size, not to guarantee a cut every round it is exceeded.    -->
+<!-- =============================================================================== -->
+
+<!-- =============================================================================== -->
+<!-- 6 inbox records read and merged (1 Coordinator, 3 Morpheus, 2 Mouse). One        -->
+<!-- consolidation: the Coordinator's README-provenance-over-broad filing is refuted  -->
+<!-- by Morpheus's gemm-transpose filing part C (the "76" figure is sourced correctly -->
+<!-- to the dump -- the dump's own schema spells `live` twice with two meanings) --   -->
+<!-- merged into a single block below rather than recorded as two separate readings  -->
+<!-- of the same number. Morpheus's other two records (criterion-10 tolerance ruling, -->
+<!-- README re-derivation + two-retirement-registers defect) and Mouse's two records  -->
+<!-- (`dispatches_executed` metric change, `Reshape` shipped-claims-nothing) are five -->
+<!-- independent topics; no further consolidation.                                   -->
+<!-- =============================================================================== -->
+
+## Round 14 -- 2026-08-04T20:25:00-07:00 -- criterion 10 stays DIVERGENT with its cause fully characterised; a schema spelling `live` twice refutes its own provenance complaint; two ledger registers read the same 43 keys as opposite verdicts; `dispatches_executed` replaces `claimed_nodes` as the headline metric
+
+### 2026-08-04: Coordinator & Morpheus (consolidated) — the README provenance-over-broad filing is refuted: the dump does carry the kernel fact, under a boolean that spells the same word as the status token it sits beside
+
+**By:** Coordinator, Morpheus (§8.9.25 part C). **What:** Coordinator found README's "94 rows, of
+which 76 carry a kernel — read from `epctl --dump-capabilities --json`" sources two numbers to a
+command whose dump has no `kernel` field, only `dtypes`/`live`/`name`/`opsets`/`schema_baseline`/
+`staged_reason`/`status`, and filed the 76 as sourced-but-unverifiable (severity low, owner
+Morpheus). Morpheus ran the same dump and found the boolean `live` is `true` on exactly 46+30=76
+rows and `false` on all 18 staged — **the dump does carry the kernel fact, under the name `live`.**
+The citation is sound; the schema is not: one JSON row spells `live` twice with two denotations —
+a status token (`OpStatus::Live`, granting nothing) and a boolean meaning "this row has a kernel."
+**Ruling: rename the boolean `has_kernel`; `status` keeps its three tokens** (owner Tank for
+`epctl`, Mouse for the registry serialiser); until then `DESIGN.md` §0 and `README.md` state the
+derivation inline. Also corrected in passing: §0's op count is 94/76/46-30-18, the fifth wrong
+reading of that integer, moved by the `MatMul` and `Gemm` rows exactly as predicted. **Why:** a
+true sentence whose check requires already knowing that one word means two things is checkable
+only by someone who already knows the answer — the same defect class as a citation with no subject
+digest, arriving through a shared field name instead of a stale path.
+
+### 2026-08-04: Morpheus — criterion 10 stays OPEN/`DIVERGENT` with a fully characterised cause; an AGREE bounds only the difference, never the distance from truth; a permissive close condition caught before it fired
+
+**By:** Morpheus (§8.9.25). **What:** Trinity's model-scale float64 oracle discharges §8.9.24(4)'s
+block (motions may now be *made*, not granted): output 0 → `cpu` is the further side from true (83
+vs 70 element-ULP, unanimous on five discriminators); outputs 63/64 → `direction: null` — a
+direction for one output is not a budget for three. The depth series localises the cause: flat
+0-2 ULP for layers 0-30, sole exceedance layer 31 key/value at 4 ULP (outputs 63/64). Own close
+condition ("closes when the ULP series exists and is flat or has a located step") ruled against as
+written-permissive-meant-unblocking — new drafting rule: a close condition declares `SUFFICIENT`
+or `UNBLOCKING`, undeclared reads as sufficient. **AN AGREEMENT BOUNDS ONLY THE DIFFERENCE, NEVER
+THE DISTANCE FROM TRUTH:** the model-scale "~6x common error" is the logits' ratio, not the
+model's — `present.31.key` is 3.0x, `present.31.value` 1.5-1.75x; a shared error cancels in a
+difference, so the finding weakens an AGREE and leaves a DISAGREE exactly where it stood. `Gemm`'s
+`transA`/`transB` stay out of the proof key (one pipeline, ternary on a push constant) but the
+*record* is blind, not the axis: `transB=1` cases mint the same key as `transB=0` siblings, so a
+reader cannot tell a key proven at both values from one proven at one (remedy: non-key
+`witnessed_at` field, owner Mouse). Separately caught a skip reason naming a refusal that never
+happened: the one test able to tell a transpose from a relabelling lacks the `require_vulkan`
+fixture its fifteen neighbours carry, silently falls back to CPU, and reports "EP did not claim"
+when the EP was never loaded. **Why:** the screening question is not "is this true?" but "what
+does it admit?" — both the criterion-10 close condition and the skip-reason string were true readings
+that admitted the wrong thing.
+
+### 2026-08-04: Morpheus — `README.md` re-derived from artifacts, three claims found false rather than stale; two retirement registers read the same 43 keys as opposite verdicts
+
+**By:** Morpheus. **What:** Rewrote `README.md`'s status block from artifacts at `4ee8c9c`,
+naming the commit and artifact per figure. Three claims were flatly false: "zero Phi-3.5 nodes
+currently claimed" against **355 of 366 claimed in one island**; "the Linux lane has never executed
+a claimed node" false since 2026-07-30; "Windows and Linux are verified in CI" while **CI has been
+red on `main` for five pushes**. M0 verdict unchanged (5 of 12 criteria met, "early implementation"
+stands) — only the evidence moved. **Separately, found while re-deriving:** `ci/check_ledger_census.py`
+exits 1 reporting `172 ever proven = 129 present + 0 retired + 43 VANISHED`, but the 43 keys were
+retired *deliberately* by the §8.9.23 schema change and are recorded in
+`evidence/retired_proof_keys.json` (a list, read by `gen_proof_ledger.py`) — `check_ledger_census.py`
+instead reads `evidence/proof_retired.json` (an object, with `owner`/`date`/`reason`), **which does
+not exist.** Two registers, one screen, and neither file is wrong on its own terms; the census's own
+13/13 negative-control arms plant and replay deletions but none exercises a retirement, so the
+register the exemption depends on was never read by a green run. Ruling: there must be one
+retirement register read by both tools, plus a control arm that retires a key and asserts the
+census acquits — not deciding which filename/schema wins (tool owners' call: Mouse, Tank). **Why:**
+the §8.9.24 screening question applied to a screen itself — not "is this true" (both files are)
+but "what does it admit" — and two registers with one screen admits exactly the event the screen
+exists to catch.
+
+### 2026-08-04: Mouse — `dispatches_executed` replaces `claimed_nodes` as the headline coverage metric; the counterfactual instrument re-baselined per-node
+
+**By:** Mouse. **What:** `probe_model_op_census.py` now headlines `dispatches_executed`
+(`claimed_nodes` printed as `(upper bound)`), prints `not-measured` rather than `0` when nothing
+ran, and reports `ERROR(instrument)` rather than a row of zeros when a session cannot be created at
+all. Measured: BERT claims 481, executes **4**; MobileNetV2 98/97; Phi-3.5 355/355; gpt-oss-20b not
+measurable (ORT 1.28.0 CPU `QMoE` refuses session creation). The two metrics agree exactly on the
+two models that form one island, which is why the defect survived unnoticed until BERT.
+`probe_island_counterfactual.py` re-baselined per-node (not per-op-type) and now reports an
+optimistic/gated bracket: BERT `MatMul`+`Reshape` optimistic +184/27 islands, **gated +3/30
+islands** — the previously-quoted "738 nodes in 17 islands" was the optimistic column of an
+optimistic-baseline instrument. **Consequence: there is no next op-registration pick on BERT** —
+the gated ceiling over every unregistered op is +3 nodes; the real blocker is that ORT infers no
+ranks through its `Shape`/`Cast`/`Concat` chain (724/1274 rows read `static` from nothing). **Why:**
+a metric correct on the models you look at most and wrong by 120x on the one you don't is worse
+than a metric that is always wrong; every screen that can PASS should state what it read to pass.
+
+### 2026-08-04: Mouse — `Reshape` ships, is proven, claims zero nodes on the current census; two structural blocks named, both measured
+
+**By:** Mouse. **What:** `ai.onnx::Reshape` ships in `rust/src/ops/shape.rs` as a copy (not an
+alias — `bind_aliased_output` only fires for external plan I/O, and an aliased interior `Reshape`
+would create two live tensors on one allocation against a generation-stamped quarantine-on-free
+allocator; Switch's KV-disjointness argument does not transfer, since his hazard requires a write
+this op never performs). Claims zero nodes on every census model. Two structural blocks, both
+measured: (a) no inferred output rank — 58 of BERT's 71 `Reshape` nodes take their shape from a
+runtime `Cast`/`Concat`/`Shape` chain, and `read_const_i64` returns `None` in all four tree
+implementations; (b) no output descriptor for a free axis — a `[-1,4]` case claimed, then
+`dispatch_ort` refused "output has no declared shape" at `Compute()`, a broken commitment rather
+than a decline. New standing rule: a gate must refuse what translate cannot *complete*, not what it
+might dislike. Rank-0 discriminator settled by arithmetic (a rank-0 input holds exactly one
+element) rather than a per-op minimum-rank table, after Mouse's own prior vacuous-rank-0 defect
+reproduced itself in this new code one round later. `Flatten` stays declined, now measured (BERT
+71/0, MobileNetV2 1/0, Phi-3.5 0/0). **Why:** it ships anyway because a row that declines honestly
+with a naming histogram, backed by a positive control proving the claim path executes and agrees,
+converts "we don't know why it doesn't run" into a counted, coded answer.
+
+## Cross-agent propagation notes (2026-08-04T20:25:00-07:00)
+
+The following findings were propagated to individual agent history files this run (see each
+agent's `history.md` for the full note): Mouse's `claimed_nodes` != `dispatches_executed` (every
+coverage figure quoted against `claimed_nodes` alone is affected; `dispatches_executed` is the
+honest metric) -> Switch, Link and Morpheus; Switch's "the 6144/8192 figures were never the
+shipping lane's" -> Niobe, who holds the roofline and context-length record; Trinity's common-error
+finding (both EPs ~6x further from true than from each other at model scale) -> Morpheus and Rai,
+bounding what an AGREE means; Tank's "loudly logged, silently returned" plus the
+`disable_cpu_ep_fallback` hole -> Rai and Link; `cargo fmt --check` re-broken by three consecutive
+merges -> Link, as a CI-discipline item.

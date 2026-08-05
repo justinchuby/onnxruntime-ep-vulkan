@@ -1,845 +1,121 @@
-# Mouse (Op-Coverage) — history.md
+# Mouse (Op-Coverage) -- history.md
+
+<!-- CONDENSED-AT: 31f277464ec6a2d7497b63a0384d9015557e05fe -->
 
 ## Learnings
 
-### [SUMMARY] Turns 1–19: registry, producers, proofs, runtime extents, and early execution (2026-07-28–2026-07-30)
+### [SUMMARY] Turns 1-26 (2026-07-28-2026-08-01): registry/claim discipline, producer truth, opset windows, zero-logit fix, island wiring, RAI-011, gate-arm attribution
+
+- Registry: 174 standard-domain rows + `com.microsoft` rows; claim log is JSONL; coverage always quoted as `(claimed_coverage, island_count, largest_island_flops)`, never bare percentage. Producer truth: authoritative producer is `onnxruntime/mobius@87fd878`; the emitted model file is the fact, not builder intent. Opset windows are part of claim logic (`ONNX_OPSET_LAST_RELEASED=26`, `REGISTERED=27`); `Attention` closes at opset 24 (input 6 changes semantics).
+- Evidence discipline: `Live | Staged(reason)`; `EXERCISED` is the only positive-evidence list; template similarity ruled insufficient for `Sub/Mul/Div/Pow`; a mechanism in a file but not a call graph counts absent until run. Unconditional 4-float push-constant tail unlocked 7 elementwise ops; `Clip` still declines (runtime bounds). `MatMulNBits` shipped Live all-`M` fp32/fp16 off a CPU oracle.
+- Shape/dtype: dynamic-shape Phi-3.5 was 356/363; static-gating staged kernels unlocked 0. Runtime-extent gating made 227 nodes predicate-clean, 161 immediately claimable -> first real model run. fp16 elementwise needed `only_proved_dtypes` (not `only_f32`) and packed integer half I/O; Intel exposed an odd-tail/subword bug the 4060 tolerated -> decline ORT subword tensors unless 4-byte-safe.
+- **R9 zero-logit (Session 20):** 161 `MatMulNBits` dispatched, `compute_failures=0`, all-zero logits -- green suite falsified. Root cause: dynamic path built a 4-binding descriptor for a 5-binding fp16 kernel, output slot never bound. Fixed via `ShapeOnlyRecorder` preserving `k.bindings`. From here every claim must name the instrument that would go red if false; `model_output_equivalence` mandatory beside counters.
+- **Session 23-24:** temp-token infra (`gpu_temps`/`free_all`) added; claiming 64 SkipNorm nodes moved islands 257->321 (node count != island-removal evidence). Multi-node dispatch fixed via island-wide name tokens (`compute_calls = islands x inferences` became the red falsifier for unwired partitioning). Last 10 nodes: only `SimplifiedLayerNormalization`+embed `Gather` claimed; final state **355 claimed / 1 island / 8 declines / 0 cuts**, boundary cost 399,376B upload + 457,344B readback.
+- **Session 25-26, RAI-011 + gate arms:** `GetCapability` was short-circuiting to `Verdict::Claim` on single-cluster Phi-3.5, gate unreachable. Fixed: `partition::gate_islands` sole entry point, `GateOutcome::SoleIslandOverride`. Real defect found: `ep.rs`'s boundary-cost estimator counted internal island edges as boundary and substituted 128 for every unknown dim -> **89,199,100,032B estimated vs 856,720B measured (104,116x miss)**. Anchor exemption is the deciding term (shipping keeps the island; disabling it flips to `TRANSFER_DOMINATED`).
+- Wall-clock figures withdrawn pending certified device-clock evidence (Intel later ruled permanently uncertifiable on this hardware); only counts/bytes/certified-companion-clock figures are quotable. 85.9% of inference wall-time is non-GPU (recording 68.3%, fence-wait 16.3%, kernels 14.1%) -> GPU-kernel tuning deprioritized behind command-buffer recording.
+
+### [SUMMARY] 2026-08-01T21:15-2026-08-02 (pre-Switch's round): criterion 11 closes then reopens, ledger 9->95, roofline split, reprove-path defects
+
+- Ledger wired end-to-end; two self-caught defects: `CLAIM_UNPROVEN` split keys on `,` (keys contain commas, moved to `;`); `ProofKey::validate` only checked for `/`, now requires `::` + 5 `/` + no empty component. Estimator miss (104,116x) split: internal-edge miscount fixed; `slot_bytes` substituting 128 for unknown runtime-extent dims left open and self-disclosed (~16,268x residual).
+- **Criterion 11 reopened:** Morpheus ruled the ledger was scaffolding indistinguishable from the claim table. Repaired: every entry carries `claimed_nodes`/`dispatches_executed`/`worst_rel`; header-vs-file digest refusal; `LedgerLookup::{Hit,KeyAbsent,Faulted,NeverAttempted}` (`LEDGER-FAULTED` outranks `KEY-ABSENT`). Economics bound converted to an assertion that survives a 16,268x adversarial inflation, with a standing falsifier (128 under-counts at long prefill).
+- Ledger populated 9->73: op suite 154 failed -> 37 failed; GQA entered `DIVERGENT worst_rel=16.726` (matches pre-existing xfail); non-MATCH verdicts go to `evidence/proof_attempts.jsonl`, never the ledger. Phi-3.5 runtime-extent 0->323/363 (GQA was the real remaining gap); `session.disable_cpu_ep_fallback` wired into `prove()` to distinguish ORT's own refusal from an instrument error.
+- **Roofline split:** CPU byte/FLOP share is a curve vs context (0.07%/0%->73.77%/30.2%), not a flat "~3%/~30%" figure; claiming GQA (323->355 nodes, 33 islands->1) is what collapses CPU share. `ep.rs`'s FLOP estimator reported a constant 16.58% at every context (a node-count ratio in FLOP's clothes).
+- **No re-proof path (Switch's find):** `--append` silently skipped already-claimed forms; GQA's ledger entry outlived two same-day shader rewrites uncaught. Fixed: per-entry `shader_digest` (FNV-1a/64 over dispatched SPIR-V), `--reprove`, demotion tokens `STALE-SHADER`/`NO-SUBJECT-WITNESS`; all 74 entries re-proved, key set byte-identical. Criterion 10 first reading: `DISAGREE` 65/65 -- a self-caught wrong-denominator tolerance-ratio bug had reported false 24.6x errors; honest ratio shows a smooth crossing (layer 30 pass at 0.85, layer 31 fail at 1.17).
+- Staged-op sweep: 21 promoted, 3 refused; harness hole fixed (bool-returning ops need a non-degenerate-reference guard, mutation-tested); two ledger-mechanics defects found by breaking things on purpose (non-`--append` silently discarding 94/95 entries while `--check` PASSed on the empty result; `--reprove` never re-measuring against a healthy ledger). Op-suite reds 43->18.
+- Team update (2026-08-02T02:03:46, Scribe): Morpheus's R12 "frame is the binary that ran it" drew partly on two of Mouse's self-caught near-misses (shared-worktree build linking a sibling's in-flight file; `Copy-Item` preserving `LastWriteTime` letting cargo silently re-run a mutated binary).
+- Team update (2026-08-02T14:42:30, Switch/Mouse): the re-proof-path fix landed in response to Switch finding the ledger could not be invalidated by changing its own subject.
+
+### [SUMMARY] 2026-08-02 (Switch's round through 8.9.18): ABI-mirror insertions, GEMV kernel identity, PROVEN-ELSEWHERE, compile-time layout guard
+
+- `--reprove` had been silently shrinking the ledger while printing PASS -- fixed, `write_ledger()` refuses any shrink and names dropped keys. **Real find:** `a52024f` inserted `device_losses` mid-struct without bumping `COUNTERS_ABI_VERSION`; three ctypes mirrors silently read every field below it 8 bytes off (`dispatches_executed` read `device_losses`, always a plausible 0). ABI bumped to 4, mirrors repaired, lane changed to `struct_size` equality (not `>=`, since append and insertion are indistinguishable to a `>=` reader). Three hand-maintained ctypes mirrors of one C ABI filed as a standing defect (not fixed).
+- Second hand-written `EXERCISED` evidence list (`Add-i32`/`Mul-i32`, consulted inside the claim predicate before any proof key existed) deleted; replaced by `only_loadable_variants` derived from SPIR-V capability requirements. Op suite 11red->6red, ledger 95->97.
+- GEMV kernel identity: no artifact recorded whether the packed kernel fired; added JSON-only `pipeline_variants`/`gemv_packed_spec_constant` from the effective (not requested) shader/spec pair, falsifier 5/5 both devices. Found while validating: the mid-struct-insertion defect recurred a third time.
+
+<!-- SUMMARIZED by Scribe 2026-08-04T20:25:00-07:00 -- entries from Round 10 §8.9.19 through the metadata-variant/blind_axes round (2026-08-02 through 2026-08-04, pre-MatMul) condensed below; full text lives in git history (blob 474e653c7cd77c39c6a4afefcd89ef6a41789957) -->
+
+### [SUMMARY] §8.9.19 through the metadata-variant round (2026-08-02–2026-08-04): digest identity, PROVEN-ELSEWHERE, gpt-oss-20b census, Conv/MobileNetV2, BERT first census, and the composite-key defect
+- **8.9.19-21:** one proof key now carries two digests (SPIR-V + host-side numeric params); dispatch-time frame witness closed a re-prove-against-stale-binary gap; `--check` widened to verify against the live DLL, not just its own prior output.
+- **8.10/8.9.22:** gpt-oss-20b first census, 1->293/374 (stale gating, not a real gap); "portable digest" was a checkout/line-ending fingerprint, not content -- repaired to normalized-content hash.
+- **8.11/8.12:** first Conv kernel landed, MobileNetV2 0->97/105; loss invariant formalized as a standing regression gate. BERT first census 473->480/1167, `MatMul` (95 nodes) flagged largest unclaimed op; proof key could not distinguish grouped-vs-dense `Conv` (open question for Morpheus); alloc/free-asymmetry panic found+fixed (root `allocator.rs` asymmetry still open/unowned).
+- **Round 2026-08-04 (metadata-variant defect, `#form` reversal, `blind_axes`, two censuses):** fixed the `metadata` placeholder ledger-key defect for all 7 affected row families -- every such row dispatches exactly one shader, 1:1 under `<prefix>_<dtype>`; the composite-dispatch escape hatch was never actually used. Morpheus's ruling (`cpg = c / pc.group` means grouped is the general form, dense is `group=1` inside it -- no separate dense branch) reversed Mouse's own prior `form.rs`, deleted. Latent defect found while fixing the reported one: `variant_stem()` returned the whole variant component, so `@sel`-/`#form`-suffixed keys fell into a permissive unknown-stem branch -- Mouse's own prior `#form` suffix had silently broken this. Census after: MobileNetV2 97->98/105 (form-collapse only, no new kernel), BERT full census 480/1167. `ONNXRUNTIME_EP_VULKAN_DEVICE=1` opens Intel Iris Xe correctly (`PROVEN-ELSEWHERE{device}`) but establishes device identity only, not `FP32_CONV` tolerance on Intel (opened, not measured). `--check` still does not verify ledger-key mintability (flagged again as Tank's ABI-addition to make).
+- Team update (2026-08-04T12:25:00-07:00, decided by Rai/Link): the field-level-reversion class (a `source_digest` moved inside a surviving ledger entry, with all count-based screens reading clean) happened twice; `ci/check_ledger_census.py`'s frame-witness arm now requires any deliberate `source_digest` move be declared, else `FAIL(condition=undeclared_witness_move)`.
 
-- Registry/claim discipline was built first: 174 standard-domain rows plus `com.microsoft` rows, per-decision JSONL claim logs, GQA fingerprint self-audit, and the rule that coverage is quoted as `(claimed_coverage, island_count, largest_island_flops)` / concentration, never percentage alone.
-- Producer truth was corrected and pinned: the authoritative producer is `onnxruntime/mobius@87fd878`, not the mirror repo; builder source is intent, but the emitted model file is the fact. This forced standard-domain rows (`ai.onnx::Attention`, `RMSNormalization`, `RotaryEmbedding`), recorded `SimplifiedLayerNormalization` as `domain=""`, and corrected real-graph facts like `do_rotary=1`, packed QKV presence, and QMoE top-4.
-- Opset windows became part of claim logic, not metadata: `ONNX_OPSET_LAST_RELEASED=26`, `ONNX_OPSET_REGISTERED=27`; windows key off schema version, not model opset; `Attention` had to close at opset 24 because optional input 6 (`nonpad_kv_seqlen`) changes semantics; `LinearAttention-27` and `CausalConvWithState-27` were added as standard ops.
-- Evidence rules tightened: row status stayed `Live | Staged(reason)`; `EXERCISED` became the positive evidence list; `Add` went Live for f32 only; template similarity was ruled insufficient evidence for `Sub/Mul/Div/Pow`; a mechanism that exists in a file but not in a call graph counts as absent until run.
-- Diagnostic plumbing itself was repaired: CLAIM_LOG stopped freezing its env-var path behind `OnceLock`; profiling JSON stayed only for `is_vulkan_claimed`; silent-pass guards were found because missing logs had been reading as ordinary negative results.
-- One mechanism unblocked many rows: an unconditional four-float push-constant tail unlocked `Selu`, `Elu`, `HardSigmoid`, `Shrink`, `ThresholdedRelu`, `LeakyRelu`, and `CeluAlpha`. `Clip` still declines when bounds are omitted/dynamic because those are runtime inputs or dispatch-shape differences, not baked parameters.
-- `com.microsoft::MatMulNBits` shipped Live for all `M`, fp32/fp16. Key facts were empirical: nibble order/layout came from a CPU oracle (`A = I`), all 161 Phi-3.5 nodes are fp16, and the prepack path is still a pass-through seam until `compile_hook_for` is wired.
-- The census repeatedly disproved first-match stories: full-set Phi-3.5 is `dynamic-shape=356/363`; landing all staged kernels under static-shape gating unlocks **0** nodes; the shape split became `extents-symbolic` vs structural, then claimable symbolic extents / unknown-rank decline / data-dependent decline; symbolic broadcast checking was fixed so runtime-extents admission would not silently skip compatibility checks.
-- Runtime extents then became measured rather than hypothetical: 227 Phi-3.5 nodes are predicate-clean under runtime extents, 161 were immediately claimable, and pinned-dims execution became the first real model run on the EP; the next blocker exposed by the same artifact was dtype (mostly fp16), not shape.
-- Operational facts recorded for later work: `.squad/decisions/inbox/` is authoritative only in `main` because it is gitignored in worktrees; `VULKAN_SDK` is `C:\VulkanSDK\1.4.350.0`; both local GPUs satisfy §7.2; Lavapipe is the CI/mobile-warp proxy; ORT's planner starts returning interior pointers only from run 2 onward; `ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE` with `dispatches_executed > 0` is the only reliable execution witness; `push_next` must rebind, never discard; ABI notes include borrowed `GetValueInfoTypeInfo`, nullable `CastTypeInfoToTensorInfo`/`Node_GetAttributeByName`, size-then-fill `ReadOpAttr`, and null `OrtValueInfo` for omitted optional inputs.
-- fp16 elementwise widened the real model only after two hidden bugs were closed: `only_f32` was replaced by `only_proved_dtypes`, and all fp16 modules stopped depending on unsupported 16-bit storage by using packed-`uint` half I/O. Intel then exposed the odd-tail/subword bug the 4060 tolerated; the durable rule is to decline ORT-sized subword tensors unless 4-byte safety is proved.
-- Capability and scratch rules were also turned into instruments: `GENERATED_CAPABILITIES` was split from live `ENGINE_ENABLED_CAPABILITIES` (`Shader` only), an `Int64` guard was deliberately fired to prove it rejects buildable-but-disabled modules, P6 scratchlessness was asserted structurally by `alloc_temp` count, and the harness-shape blind spot was named explicitly: one-inference-per-session evidence can never see run-2 planner failures.
-
-### [SUMMARY] Sessions 20–26: zero-logit fix, multi-run discipline, island wiring, last-ten-nodes closeout, RAI-011, and gate-arm attribution (2026-07-30–2026-08-01)
-
-- **R9 / containment:** a green suite was falsified when Phi-3.5 dispatched 161 `MatMulNBits` kernels with `compute_failures=0` yet produced all-zero logits. From then on every claim had to name the instrument that would go red if false; `model_output_equivalence` became mandatory beside counters; CPU-vs-CPU agreement had to be ruled out by asserting the EP is actually in `session.get_providers()`.
-- **Session 20 root cause:** dynamic `MatMulNBits` built a 4-binding descriptor from node counts while the fp16 kernel dispatches 5 bindings (`[a,b,scales,zp,y]`, with `zp=scales` when zero-points are absent). The output slot was never bound on the dynamic path, so the shader wrote nowhere and fresh GPU memory read back as zero. Fix: `ShapeOnlyRecorder` now preserves `k.bindings`, and `dispatch_ort` uses those captured bindings. Regression test: `test_matmulnbits_fp16_dynamic_batch`. Post-fix Phi-3.5 matched CPU at top-1/top-10 on both devices; `accuracy_level=0` vs oracle `1` was re-checked and ruled irrelevant.
-- **Session 21:** three-run session tests were added because run-1-only harnesses cannot distinguish clean unwritten buffers from real computation. Dynamic-batch `MatMulNBits` and full Phi-3.5 logits were proved non-zero and stable across repeated runs in one session, separating the fixed output-binding bug from Tank's distinct KV-cache/run-2 arena issue.
-- **Session 23 / SkipNorm + temps:** an fp16 `SkipSimplifiedLayerNormalization` shader landed, then the first real `alloc_temp` use exposed infrastructure debt: temp tokens above ORT outputs were being routed into `gpu_outputs`. `pending_temp_sizes`, `temp_byte_sizes`, `gpu_temps`, temp offsets, and `free_all` were extended accordingly. The code worked, but the hypothesis failed: claiming 64 SkipNorm nodes moved Phi-3.5 **257 -> 321 islands**, proving node count is not island-removal evidence. Proof-ledger scaffolding (`ProofKey`, validation, wildcard rejection) was recorded but not yet activated.
-- **Partition wiring / multi-node dispatch:** 33-island partitioning was already measured, but compute still panicked because intermediate outputs were tokenized positionally per kernel. Island-wide name-based tokens, `gpu_intermediates`, inter-kernel barriers, and pre-pass intermediate descriptor propagation fixed it. Result: `compute_calls = 1023 == 33 islands × 31 inferences`, `model_output_equivalence = MATCH`, and "island-count == claimed-count" became the red falsifier for unwired partitioning.
-- **Cross-agent performance lesson:** 85.9% of inference wall-time was measured as non-GPU work (recording 68.3%, fence-wait idle 16.3%, submit 0.3%, kernels 14.1%), so GPU-kernel tuning was explicitly deprioritized behind command-buffer recording. This sat beside the broader team rule: verify by running, not by reading.
-- **Session 24 (last 10 nodes):** graph-neighbourhood reading split the remaining gaps into a true data path (`Gather` -> `LayerNorm`), a tiny INT64 control plane, and `If` cache-control flow. Only `SimplifiedLayerNormalization` and embed `Gather` were claimed; the six-node control cluster, `Shape`, and `If` were declined permanently. Predictions were written first: islands stay 1; claimed `353 -> 355`; declines `10 -> 8`; first-inference upload `+187.9 MiB`; zero new cuts; host->device bytes drop `12,280 B` at `s=1`. All but the byte-drop magnitude confirmed; P3 missed high by 2× (actual upload drop `6,136 B`). Final measured state: **355 claimed / 1 island / 8 declines / 0 cuts**, 24 CPU nodes per run, byte-identical on both devices, with recalibrated boundary cost **399,376 B upload + 457,344 B readback = 856,720 B** and readback explicitly larger.
-- **R13 / admissibility:** all wall-clock figures, including headline speedups, were withdrawn pending certified device-clock evidence; Intel device-clock figures were later ruled permanently uncertifiable on this hardware; only counts, bytes, and certified companion-clock figures remained quotable.
-- **Session 25 / RAI-011:** Rai was right — the gate was unreachable on single-cluster Phi-3.5 because `GetCapability` short-circuited to `Verdict::Claim`. `partition::gate_islands` became the only entry point; evaluation always runs; single-island keep-alive is represented as `GateOutcome::SoleIslandOverride(RejectReason)`; `retain_viable` became a projection of the same function; counters split `viable_islands_retained`, `net_benefit_sole_island_overrides`, and `net_benefit_gate_bypasses`.
-- **R10 / R11 artifacts from Sessions 25–26:** with shipping settings the gate evaluates once and keeps Phi-3.5; with anchor exemption off it overrides at every tested `fixed_ns`; removing the byte term restores a real flip at ~`3,836,739.6 ns`, proving `fixed_ns` is not the critical uncertainty. The real defect was Mouse's own estimator: `ep.rs` counted internal island edges as boundary and substituted `128` for every unknown dim, yielding **89,199,100,032 B** against the measured **856,720 B** — a **104,116×** disagreement. Session 26 then sharpened the question from "was the gate evaluated" to "which arm kept the island" and showed: shipping uses the gate's own claim verdict (`retained=1`, `overrides=0`), but disabling the exemption flips the same graph to `TRANSFER_DOMINATED`; the deciding term is the anchor exemption, and the economics arm is wrong, not merely untested. To stop override provenance dying at the counter boundary, `net_benefit_override_reason` was added with `UNOBSERVABLE` / `TOO_SMALL` / `TRANSFER_DOMINATED` / `MIXED` / `UNRECORDED`. Session 26 also recorded the worktree hazard explicitly: shared-worktree builds and diffs can attribute a sibling's uncommitted file state to you and manufacture false findings.
-- **Remaining declines / late pre-ledger state:** the eight post-Session-24 declines were re-attributed as `DETACHED ×5` and `EDGE_ENTRY ×3`, with no `INTERIOR` declines; the post-merge R10 probe re-confirmed the gate artifact byte-identically; one unreproduced failing lib-test run was recorded as `ERROR(instrument)` rather than a detection; and `ledger_lookup` was left as the final named `UNWIRED` mechanism before the verbatim entries below close and then reopen criterion 11.
-
----
-
-<!-- SUMMARIZED by Scribe 2026-08-02T02:34:23-07:00 -- older entries condensed below; full text lives in git history -->
-
-
-<!-- SUMMARIZED by Scribe 2026-08-02T22:37:04-07:00 -- entries from 2026-08-01T21:15:16 through the roofline-split and re-proof-path/staged-op-sweep sessions condensed below; full text lives in git history -->
-
-### [SUMMARY] 2026-08-01T21:15:16 through 2026-08-02 (pre-Switch's-round): criterion 11 closes then reopens, the ledger is populated 9->95, runtime extents, roofline split, and the reprove-path defects
-
-- **Criterion 11, first close (2026-08-01T21:15:16):** proof ledger wired end-to-end (`ledger_lookup` ALL-PROVEN, 9 entries, digest baked in via `include_str!`). Two real defects self-caught: `CLAIM_UNPROVEN`'s hatch split proof keys on `,` (keys contain commas), shredding them — separator moved to `;`; and a truncated key fragment (`ai.onnx::Add/7+/f32`) passed `ProofKey::validate`, which only checked for a `/` — validate now requires `::`, five `/`, no empty component. `sqrt_f32` false-DIVERGENT (NaN≠NaN vs `max(0,nan)=0`) fixed with an `INPUT_DOMAIN` table and an ERROR-on-non-finite-reference rule. Estimator defect (89.2 GB vs measured 856,720 B, a 104,116× miss) split into a closed half (internal island edges wrongly counted as boundary, fixed) and an open, self-disclosing half (`slot_bytes` substitutes 128 for every unknown runtime-extent dim — a fabricated input, not an over-broad one, ~16,268× residual).
-- **Criterion 11 reopened (2026-08-02):** Morpheus ruled MET was wrong — the ledger was scaffolding, indistinguishable in the artifact from one derived from the claim table itself (R11 on Mouse's own mechanism). Repaired: every entry now carries `claimed_nodes`/`dispatches_executed`/`worst_rel` (absent treated like zero, quoted-zero treated like absent); a header-vs-file digest refusal (`Ledger::faults` on any mismatch or unreadable file); and a three-token `LedgerLookup::{Hit,KeyAbsent,Faulted,NeverAttempted}` replacing a bool, with `LEDGER-FAULTED` outranking `KEY-ABSENT`. The economics bound was converted from prose ("concurs with") to an assertion (`the_claim_survives_an_adversarial_inflation_of_the_term_opposing_it`) — the claim survives even a 16,268× adversarial inflation of the opposing term, with a standing falsifier where the substituted 128 under-counts at long prefill and the bound evaporates.
-- **Populating the ledger (9->73 entries):** op suite 154 failed -> 37 failed. GQA entered as `DIVERGENT worst_rel=16.726`, reproducible to the digit, corroborating the pre-existing `xfail`. A non-MATCH verdict cannot enter `proof_ledger.jsonl` (would fault the whole ledger) — added `evidence/proof_attempts.jsonl` as a no-grant append log. Self-caught an enumeration instrument that silently truncated the claim log when read whole-suite vs per-file (786 vs 3,140 records) — read per file from then on. 3 of 5 pre-written predictions falsified, all on second-order effects of a decline, none on the key algebra itself.
-- **Phi-3.5 at runtime extent (0->323/363):** the "0/363" premise being escalated was already stale (four of five runtime-extent keys were already proven); GQA was the only real gap. Unblocking further claims exposed the actual remaining blocker: `vk/session.rs`'s island-output-consumed-internally branch (an `else` left as `None` under a comment calling the case "unusual") — Switch's, not the ledger's. `session.disable_cpu_ep_fallback` wired into `prove()` so ORT's own refusal (`CpuFallbackRefusal`) is distinguished from an instrument error, mutation-tested to differ from `UNATTRIBUTED`.
-- **Roofline split (Session 27):** CPU share of bytes/FLOPs as a function of context (0.07%/0%→73.77%/30.2%, both devices identical) is a curve, not the flat "~3%"/"~30%" figures previously quoted at ctx=0. Claiming GQA (323->355 nodes, 33 islands->1) is what collapses the CPU share, not a separate lever. `ep.rs`'s FLOP estimator was found to report a constant 16.58% at every context — a node-count ratio wearing a FLOP's clothes. A first cut mis-flagged fabricated-extent share at exactly the CPU-byte share (an identity with no reason to hold) — fifth time this week the alarming number was the broken instrument.
-- **The ledger had no re-proof path (Switch's find):** `--append` silently skipped already-claimed forms, so GQA's ledger entry outlived two same-day shader rewrites with nothing catching it. Fixed with per-entry `shader_digest` (FNV-1a/64 over dispatched SPIR-V) recomputed at parse, `--reprove`, and demotion tokens `STALE-SHADER`/`NO-SUBJECT-WITNESS` — frame stated explicitly: covers dispatched SPIR-V bytes only, not host-side numeric changes (named residual). No grandfathering: all 74 shipped entries re-proved from scratch, key set byte-identical. Criterion 10's first real reading: `DISAGREE`, 65/65 compared, 0 degenerate — a self-caught tolerance-ratio bug (dividing by the wrong denominator) had been reporting false 24.6× errors on outputs that actually passed; honest ratio shows a smooth mid-curve crossing (layer 30 passing at 0.85, layer 31 failing at 1.17), not a discontinuity.
-- **Staged-op sweep (21 promoted, 3 refused):** census found 5 staging reasons, not 4; only 22 of 41 staged rows were dischargeable by proof (19 need code, the 13 `XL_KERNEL`/contrib rows cannot be advanced by proof runs at all). Found a harness hole before using it: 12 of 22 ops return bool and `compare()` had no non-degenerate-reference guard, so `Equal`/`IsNaN` could have reported false MATCH having tested nothing — fixed as `ERROR(instrument)`, mutation-tested both polarities. `Sum`/`Mean`/`Max`/`Min` 3-input case caught a real claim/lowering-arity mismatch (predicate allowed 1..8, lowering handled <=2) before it could have shipped as a claim-then-crash. `Swish` blocked by the first `EXERCISED` hand-written evidence list (not added by hand — would assert something unmeasured). Two ledger-mechanics defects found by breaking things on purpose: default (non-`--append`) write silently discarded 94 of 95 entries while `--check` reported PASS on the empty result ("the same defect Scribe's health report had, one level out" — entries now always carried forward, `--rebuild` required to discard); and `--reprove` never re-measured against a healthy ledger (`unproven_forms_enabled` only fires on a ledger *miss*, so an already-proven key offered through the hatch produced nothing) — yesterday's reported 74-entry re-proof only worked because the on-disk ledger had drifted from the DLL's baked copy, an accident of state rather than a real path; fixed with a distinct `reproof_forms_admitted` witness. Op-suite reds 43->18, all attributed to pre-existing or documented refusals, none to the ledger.
-- 📌 Team update (2026-08-02T02:03:46-07:00, from Scribe): Morpheus's R12 fourth generalisation — for a test result, the frame is the binary that ran it — drawn partly from two of Mouse's self-caught near-misses this session (a shared-worktree build linking a sibling's in-flight file; `Copy-Item` preserving `LastWriteTime` letting cargo silently re-run a mutated binary after a restore).
-- 📌 Team update (2026-08-02T14:42:30-07:00, from Switch/Mouse): the re-proof-path fix above (`shader_digest`, `--reprove`, `STALE-SHADER`/`NO-SUBJECT-WITNESS`) landed in response to Switch's finding that the ledger could not be invalidated by changing its own subject; all 74 entries re-proved under the new scheme.
-
----
-
-### [SUMMARY] 2026-08-02 (Switch's round through §8.9.18): four ABI-mirror insertions, GEMV kernel identity, `PROVEN-ELSEWHERE` proposed-withdrawn-replaced, and the layout guard going compile-time
-
-- **Switch's round:** `--reprove` had been silently shrinking the ledger while printing `PASS` — fixed, `write_ledger()` now refuses any shrink and names the dropped keys. `NO-SUBJECT-WITNESS` was already reachable via three existing guards; both shapes planted in the lane with healthy controls. Stale input cache ruled out for all 95 entries (`compute_calls` now recorded and enforced at 1). **The real find:** `a52024f` inserted `device_losses` mid-struct without bumping `COUNTERS_ABI_VERSION`; three ctypes mirrors silently read every field below it eight bytes off (`dispatches_executed` read `device_losses`, always a plausible 0). ABI bumped to 4, mirrors repaired, lane changed to `struct_size` equality (not `>=`) since an append and an insertion are indistinguishable to a `>=` reader. Filed but not fixed: three hand-maintained ctypes mirrors of one C ABI is the standing defect.
-- **§8.9.16, second evidence list:** `Add-i32`/`Mul-i32` declined via a hand-written `EXERCISED` list consulted *inside* the claim predicate, before any proof key existed — unfixable by proof by construction, a gate satisfiable only by hand. Deleted; replaced with `only_loadable_variants` derived from SPIR-V capability requirements (`Int64`/`shaderInt64`). Op suite 11 red → 6 red, ledger 95 → 97.
-- **Session 28, GEMV kernel identity:** `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED` selected a kernel with no artifact recording whether it fired. Added JSON-only `pipeline_variants`/`gemv_packed_spec_constant`, recorded from the effective (not requested) shader/spec pair. Falsifier 5/5 both devices. **Found while validating:** `898a2ba` repeated the exact same mid-struct-insertion defect a third time (three fields this time), caught by the same equality guard — not Mouse's diff. Built `counters_abi.py` (derives the mirror from `counters.rs` directly) but did not wire it into the three call sites, routing the work to Trinity instead — judged in the next session to have been the wrong call.
-- **"The mirrors are gone" session:** self-corrected the previous routing decision — "a generator that co-exists with the thing it replaces is a fourth mirror." Deleted all three ctypes mirrors for real; layout discipline is now a compile-time `const _` assertion via a FNV-1a hash over `name:offset:size` registered in `COUNTERS_LAYOUT_REGISTRY`, verified by replaying the exact `898a2ba` insertion and getting `error[E0080]`. Also found the build error additionally required `E0063` (missing-field) fixes in five places — appends were already compiler-checked; only the version *numbering* wasn't. `PROVEN-ELSEWHERE` observed in both polarities on real hardware (`device0`=ALL-PROVEN, `device1`=PROVEN-ELSEWHERE-PRESENT, 355 claims, per-form `proved-on`/`running-on` disclosure).
-- **`PROVEN-ELSEWHERE` withdrawn, then replaced:** Fact Checker's audit found model-level ULP evidence cannot promote unexercised per-form keys — the premise the implementation rested on. Replaced with a four-state `device_state` classifier (`PROVEN`/`DEVICE-UNATTRIBUTED`/`PROVEN-ON-ANOTHER-DEVICE`/`UNPROVEN`) keyed on the device *name* read off the run, not the selector ordinal — validated by the very run that would have produced a false-positive match had it been keyed on the ordinal (`DEVICE=0` opened a different physical GPU than expected). `parse_ledger` was found faulting all 103 proofs on one stale entry; split into whole-file vs per-entry fault tracking.
-- **§8.9.18 alignment:** Morpheus upheld the refutation and withdrew his own promotion paragraph — `PROVEN-ELSEWHERE` keeps disclosure, loses promotion. The layout guard fired correctly on a pure rename (`device_mismatch_*` → `proven_elsewhere_*`, identical offsets/sizes) because the hash covers name too, demonstrating the mechanism working on a case that wasn't about layout. Fault-scope boundary corrected per Morpheus's rule (scope is set by what you cannot locate, not by severity) — unparseable lines moved back to whole-file faults.
-- 📌 Team update (2026-08-02T02:03:46-07:00, from Scribe): Morpheus's R12 fourth generalisation — for a test result, the frame is the binary that ran it — drawn partly from two of Mouse's self-caught near-misses this session (a shared-worktree build linking a sibling's in-flight file; `Copy-Item` preserving `LastWriteTime` letting cargo silently re-run a mutated binary after a restore).
-- 📌 Team update (2026-08-02T14:42:30-07:00, from Switch/Mouse): the re-proof-path fix above (`shader_digest`, `--reprove`, `STALE-SHADER`/`NO-SUBJECT-WITNESS`) landed in response to Switch's finding that the ledger could not be invalidated by changing its own subject; all 74 entries re-proved under the new scheme.
-
-<!-- SUMMARIZED by Scribe 2026-08-03T19-55-00-07-00 -- entries from Switch's round (2026-08-02) through §8.9.18 alignment condensed above; full text lives in git history at 8566ce4 and earlier -->
-
----
-
-- 📌 Team update (2026-08-02T22:37:04-07:00): Link's `link-ledger-toolchain-not-device` finding — it's your ledger, and Morpheus's ruling is pending. `registry::shader_digest_for` hashes SPIR-V bytes, so Ubuntu's `glslc` faults all 74 entries with no kernel change; meanwhile `"device": "device0"` is recorded on 74 of 75 entries and no predicate reads it. Morpheus ruled a three-state remedy (`PROVEN`/`PROVEN-ELSEWHERE`/`UNPROVEN`, plus `SUBJECT-CHANGED` vs `TOOLCHAIN-CHANGED` demotion) — decided by Link, Morpheus. (Superseded by the device-state classifier and §8.9.19/§8.9.22 work below.)
-- 📌 Team update (2026-08-03T04-55-00-07-00): Link found the eleven Linux `cargo test --lib` failures are a representational difference in bindgen typing (MSVC `c_int` vs. GCC `c_uint`), not a signedness bug. More load-bearing: Ubuntu shaderc 2023.8 vs. Windows SDK v2026.2 compile different SPIR-V bytes from identical GLSL, faulting the ledger on Linux — this is the keying decision resolved by §8.9.19's two-digest split below. — decided by Link
-- 📌 Team update (2026-08-03T04-55-00-07-00): Trinity measured that at the final RMSNorm, Vulkan is bit-exact against a float64 reference while ORT's CPU EP is the side carrying 1 ULP of error — the residual criterion 10 flags is not evidence of a Vulkan defect. — decided by Trinity
-
----
-
-## Round 10 (cont.) — §8.9.19: one key, two digests, and an entry that survives its frame
-
-**The defect was one `continue`, and Morpheus named the line.** `parse_ledger` skipped past a
-`shader_digest` mismatch, so the entry never entered `Ledger::entries` and `Ledger::get` returned
-the **same `None`** it returns for a form nobody ever proved. A frame mismatch and a key absence
-were one observation with two repairs, only one of them actionable. That is the entire Linux
-symptom, and it is my own §8.9.18 part 3 edit one level up: I had moved *demotion* off the artifact
-and left *deletion* in place.
-
-**Two digests.** `source_digest` hashes the tree — variant row, resolved `#include` closure, argv
-minus version **and minus absolute paths** — so it is the same number on both platforms. That
-cross-platform property is the whole design; hashing the raw `-I`/`-o` paths would have turned it
-into a machine fingerprint.
-
-**Five rows, not four.** The ruling's table has no row for "SPIR-V differs and the entry records no
-source digest", which is every entry written before today. Guessing `toolchain` there grants every
-legacy entry a claim on a possibly-rewritten kernel, so it is `SUBJECT-CHANGED{source_comparable:
-false}` and the decline names `--backfill-frame`.
-
-### What surprised me
-
-**A single-valued state can silence a row the ruling requires to be named.** I ran the row-4
-acceptance instead of reasoning about it — comment-only edit to `ew_binary.comp` — and the entries
-went `SOURCE-COSMETIC` on the subject axis while the disclosure printed `DEVICE-UNATTRIBUTED` and
-nothing else, because the frame verdict outranks a cosmetic subject move and *every entry in the
-shipped ledger is device-unattributed*. So the row §8.9.19 calls "the row that proves the pair does
-work" would have been unobservable in the only ledger that exists, and `source_cosmetic` would have
-been a counter whose only possible value is zero — the exact defect class I spent the week removing,
-re-created by me, one axis over. Subject and frame are different axes and one token carries one;
-the subject verdict is now counted and printed beside the state.
-
-**`disclose_demotions_of` was reading the wrong two numbers the moment entry survival landed.** It
-took `live = entries.len()` and `demoted = entry_faults.len()`. Entry survival moves the demoted
-population *into* `entries`, so §8.9.18's obligation would have been satisfied on paper while
-reporting every drifted entry as live. Fixed to `demotion_count()`. It was a stale test that found
-it, which is the argument for tests that encode behaviour rather than shape.
-
-**The include closure had a positive state I nearly missed.** `Select-String` on `*.comp` reported
-no `#include` and I briefly believed it; the file has two at lines 11–12. Editing a comment inside
-`shaders/include/indexing.glsl` moved `ew_binary_add_f32`'s source digest `c96284de → c7edca19`
-with SPIR-V unchanged — the transitive closure demonstrated, not assumed.
-
-**All 103 entries backfilled with zero skips.** The refusal condition is "recorded `shader_digest`
-must equal this build's", and nothing tripped it. That is a fact worth stating: the shipped ledger
-is subject-consistent with the shipped binary.
-
-### Readings
-
-Phi-3.5 claim probe, device 0, release build: **355 claimed / 355 hits / 3 unproven declines,
-`DEVICE-UNATTRIBUTED-PRESENT`, 103 entries — every reading identical to `c1d2a63`.** Nothing moved,
-and that is the correct outcome: on Windows the toolchain matches, so §8.9.19 changes nothing about
-what claims *here*. It changes what happens on Linux. `cargo test --lib` 513 passed / 0 failed,
-clippy `--all-targets -D warnings` clean, `counters_abi.py --check` PASS at v8
-`(8, 0xdf71f4e6a59271b3)` including against the built DLL, `gen_proof_ledger.py --check` PASS.
-
-**Residual I did not close and am not absorbing:** runtime-chosen specialisation values sit outside
-both digests. The observing instrument already exists (`pipeline_variants`,
-`gemv_packed_spec_constant` record the effective `(stem, spec_constants)` pair); the digest does not
-consume it. Closing it is a dispatch-time frame witness, not a third build-time digest. Cost
-comparable to `source_digest`, smaller because the collection exists. Nobody owns it, and it
-interacts with Switch's selectors.
-
-## Session: §8.9.20 — the dispatch-time frame witness (2026-08-03)
-
-Closed the residual I named last round: runtime-chosen specialisation values sat outside both
-digests. `spec_digest` is a digest over the sorted `(stem, spec_constants)` set the run actually
-bound, computed from the `pipeline_variants` collection that already existed, and audited from the
-**dispatch** path — never the claim path, because a claim is decided before any pipeline exists and
-a witness read there could only ever say `SPEC-UNOBSERVED`. That is my own defect class from last
-round, and I refused to rebuild it a third time. `SpecWitness` has five states; `PARTIAL` exists so
-a part-set digest can never be compared against a recorded full-set one and invent a delta.
-
-`SPEC-UNRECORDED` **claims**, deliberately unlike §8.9.19 row 5: a missing `source_digest` is
-repairable from the tree, a missing `spec_digest` is a fact about a run that has ended. All 103
-entries are `SPEC-UNRECORDED`; their meaning has narrowed to "this kernel's bytes, under a pipeline
-nobody recorded", and that narrowing is disclosed on every session and by `--check`.
-
-Also: whole-file ledger faults are re-emitted at session-disclosure time rather than once from a
-`OnceLock` that fires before the ORT logger attaches (Link's finding — the mechanism half was
-mine); and the decline text no longer claims "nothing has proven it correct" when the ledger merely
-could not be read.
-
-### The positive state, demonstrated
-
-`probe_specialisation_witness.py`: unset and forced-off `GEMV_PACKED` share `shader_digest`
-`4be613c24634ec9e` and `source_digest` `270e8086408f69a4` and differ only in `spec_digest`
-(`776968369d964eb4` vs `776cce369d9931dd`). Forced-on matches unset — the instrument does not move
-when nothing moved. Six checks, PASS.
-
-### Readings
-
-Phi-3.5 claim probe, device 0, release build: **355 claimed / 355 hits / 5 unproven declines**,
-`DEVICE-UNATTRIBUTED-PRESENT`, 103 entries. **A reading moved** — declines 3 → 5. It is not mine: I
-reproduced 5 on unmodified `main` (`d46327b`) in a detached worktree with its own release build.
-The two additions are `ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32`, static and runtime-extent —
-Tank's Cast kernel arriving ahead of its proof. **A fix behaving**, and Tank's to prove.
-
-Establishing that cost a second worktree and a second release build, because `unproven_declines`
-was a bare count with no key list while `subject_changed_forms` has carried its keys since
-§8.9.19. Added `unproven_decline_forms`; it answered the question on its first run.
-
-`cargo test --lib` 527 passed / 0 failed, clippy `--all-targets -D warnings` clean,
-`counters_abi.py --check` PASS at v8 `(8, 0xdf71f4e6a59271b3)` — unchanged, all new fields are
-JSON-only — `gen_proof_ledger.py --check` PASS at 103 entries, digest `493616a874425910`.
-
-**Touched that others own:** one line in `vk/session.rs` (Switch) for the dispatch hook, and the
-claim decline text (Link/Morpheus). If Switch's selector work wants a shared structure for selector
-identity, that is the better answer and mine should fold into it.
-
-📌 Team update (2026-08-03T10-35-00-07-00): Switch found `gen_proof_ledger.py --check` checks the file against itself, not against the running build — the subject comparison only happens at runtime against *this build's* embedded digests, and the ledger is `include_str!`'d (`registry.rs:1890`), so `--reprove` has no effect until a rebuild. The coordinator has quoted `--check` as merge evidence six times; you own the repair. — decided by Switch
-
-📌 Team update (2026-08-03T10-35-00-07-00): Rai opened RAI-012 🟡 — a decline message names the wrong subject (verified in-tree at 0× true-cause WARN against 42× a message false in both clauses, `ledger_faults: 97`). You are the named owner. — decided by Rai
-## §8.9.21 — `--check` was verifying the ledger against itself
-Switch found it: a shader edit moved the SPIR-V, the EP declined all 32 GQA nodes, and
-`gen_proof_ledger.py --check` said `PASS: 103 entries` throughout. It checked the file's header
-count, its fnv1a64 and each entry's shape — all true statements about the wrong subject. The
-entry directly above this one in this file quotes that PASS as merge evidence. So did six other
-places today. Not broken; it resolves anyway.
-`--check` now asks the artifact. `registry::baked_ledger_identity()` + FFI
-`OrtEpVulkanGetLedgerIdentity` join the existing `OrtEpVulkanGetShaderSubject`; Python re-derives
-nothing, so there is still exactly one implementation of the hashing rule. The red/green line
-mirrors `registry::subject_verdict` deliberately — moved SPIR-V FAILs and names the entries,
-`SOURCE-COSMETIC` and toolchain-only are NOTE. When no build can be found the verdict is
-`ERROR(instrument)`, not PASS. That is the whole repair in one sentence: a check that cannot see
-its subject must say so rather than answer about something else.
-`include_str!`: I chose **refuse**, not read-from-disk. Reading the on-disk copy at run time hands
-back the exact property baking exists to deny. `--reprove` refuses before measuring when baked and
-disk differ; a generation run passes `expect_rebuild=True` so the by-construction difference prints
-as `NOTE: REBUILD REQUIRED` instead of failing every successful proof run — failing the happy path
-is how a gate gets switched off.
-`rust/tools/probe_ledger_subject_check.py` is the positive control, 5 arms, predictions written
-first, 5/5. Arm 2 *is* Switch's case. `ci/check_verification_subjects.py` is the sweep:
-**CHECKED 22, classified 22, FOUND 0 SELF** (13 ARTIFACT, 9 EXTERNAL).
-**Three things surprised me.**
-The first run of the new `--check` went red on its own — `_find_lib` preferred the release DLL by
-name and the release artifact in this worktree is stale w.r.t. main's `gqa_f16`. A genuine positive
-control I did not have to build, and it changed the selection rule to newest-by-mtime plus always
-naming the artifact in the verdict.
-`clear_session_devices` was never an uninvoked instrument. `audit_instruments.py` split production
-from test *positionally* at the `#[cfg(test)] mod tests` marker, so a `#[cfg(test)]` item declared
-beside its subject scored uninvoked forever — mis-scoring in the dead direction, the one thing that
-file's own doctrine forbids. I fixed the screen, not the code it accused.
-`proof_ledger_writer_refuses` unwound one refusal at a time: `source_digest`, then `toolchain`,
-then `spec_digest`. The fixture was defective in three independent ways and had collapsed three
-distinct refusal tests into one red.
-**What my verification established:** `cargo test --lib` 532/0, clippy clean, `counters_abi.py
---check` PASS v8 against the DLL, `--check` PASS with all 103 entries' `shader_digest` agreeing
-with the debug `onnxruntime_vulkan_ep.dll` and baked == on-disk. **What it did not:** anything
-about the release artifact (stale here), anything about another device, and anything about
-`spec_digest` — all 103 remain `SPEC-UNRECORDED`. No claim probe or Phi-3.5 session was run, so
-there is no claimed/hits/declines reading this round. And one of my gates is the thing under
-repair: the PASS I am quoting is produced by the code I just wrote. Its only independent
-corroboration is the 5-arm falsifier.
-**Touched that others own:** `ci/open_reds.json` (Link) — deleted only my three entries, by hand,
-because `json.dumps` reformatted his whole file the first time. `audit_instruments.py` (Link) —
-`survey()` now skips `#[cfg(test)]` items.
-
-## §8.10 — coverage measured from two models: gpt-oss-20b was at 1 claimed node of 374 (2026-08-03)
-The task was "raise op coverage, cheaply, via the templates". I started from evidence rather than
-a list, and the evidence said the cheapest coverage available was not a new op at all.
-**The registry census first, because I have miscounted this three times on the record.**
-`epctl --dump-capabilities --json`: **91 rows / 73 kernel-carrying (46 `live` + 27 `ready`) /
-18 staged**. Morpheus's artifact-derived 91/71/20 is the same file two rows later — two rows moved
-staged->live since. Nothing here is derived by reading registry source.
-**The instrument.** `rust/tools/probe_model_op_census.py` joins the ONNX graph
-(`load_external_data=False`, so gpt-oss-20b's 11.8 GB of external data never loads) against
-`ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` from a real session and reports claimed / declined /
-no-decision per op type with decline codes and proof keys. It re-derives nothing — registry,
-ledger lookup and shape classifier all stay in the DLL, same rule as `--check` asking the
-artifact. No claim log is `ERROR(instrument)`, never a prediction.
-**Criterion, stated before I picked:** expected coverage gain = nodes in a *real shipped model*
-that decline today and would claim after the change, weighted by whether it unblocks a model
-class, divided by kernel cost. Forms already backed by a generated template variant — proof-only
-work — rank above new kernels. That criterion is what produced the pick, not a taxonomy.
-**Phi-3.5 read 355/366, which everyone including me has been quoting. gpt-oss-20b read 1/374.**
-Nobody had asked a second model. 292 of its 370 declines were `[unproven]` — not missing kernels.
-Every one was the `runtime-extent` sibling of a form the ledger already proved `static`:
-`Add/f16` (72), `Cast/f16>f32` (49), `Cast/f32>f16` (49), `MatMulNBits/f16+zero_points` (73),
-`SkipSimplifiedLayerNorm/f32` both arities (48), `SimplifiedLayerNormalization/f32` (1). All 36
-`ew_cast_*` modules were already generated. **The ledger read full while a whole model declined**,
-which is correct behaviour and precisely why it was invisible. Standing rule now written into
-`ledger_case_models.py`: prove both shape classes of a module in the same run.
-**Then the generator went red and found a broken commitment.** `cast_f16_to_f32_dyn` failed with
-`Unsupported("Cast output has no element type at compile time")` -> `EP_FAIL` -> BROKEN COMMITMENT.
-`ep::tensor_desc` returns `None` for an edge with any symbolic dim and drops the **dtype** with the
-shape. `claim::cast` reads the destination off the live `OrtValueInfo`, so `Compile` is fine;
-`templates::ew_cast` read it off `OutRef.desc`, which the Compute-time dynamic re-translate rebuilds
-from `NodeDesc`. So every dynamic `Cast` was claimed and then failed — 98 real nodes. **A Cast's
-destination type is a node attribute, and a node attribute does not stop existing because an extent
-is unknown.** `cast_destination()` prefers the resolved edge, falls back to `to`, and **refuses**
-when they disagree; resolving that would put an unannounced reinterpretation of the model inside a
-dispatch. I did not repair `tensor_desc` — handing every handler a desc with unusable shapes is a
-worse trade than one helper.
-**No grandfathering.** `proof_attempts.jsonl` had 106 MATCHed keys against the ledger's 103; the
-difference was exactly `Cast f32>bool`, `Cast f32>i32`, `Cast i32>f32`, static — proven once and
-lost. I re-measured them through `--append` rather than pasting them forward, the same rule I held
-myself to on `--backfill-frame`.
-### The delta, as a measurement
-| model | before | after |
-|---|---|---|
-| gpt-oss-20b | **1 / 374 claimed** | **293 / 374** |
-| Phi-3.5-mini-int4 | 355 / 366 | 355 / 366 |
-Ledger **103 -> 115**, digest `94d994ba54821056` -> `0eef01359c467110`, 12/12 MATCH. **Frame the
-new entries were proven under:** debug `onnxruntime_vulkan_ep.dll`, device0 = NVIDIA GeForce RTX
-4060 Laptop GPU, ORT 1.28.0, `toolchain = shaderc v2026.2 v2026.2`, tolerance `rtol=1e-3,
-atol=1e-5`, and — unlike the 103 older entries — a **recorded `spec_digest`**. No tolerance was
-widened and no proof skipped; the 12 entries went through the ordinary three-pass path.
-**What it unblocks, honestly.** 293 nodes on one model, which is the difference between gpt-oss-20b
-being unrunnable on this EP and being mostly-claimed. It unblocks **no new op**: zero kernels were
-written. What still blocks gpt-oss-20b is `QMoE` x24 (staged), `Reshape` x24 (unregistered) and
-`GroupQueryAttention` x24 — the last declining on `[attribute]` with an **8-input** signature
-(`f16,f16,f16,i32,i32,f16,f16,f16`) against the proven 7-input form. That is attention sinks, a
-kernel-semantics question, and it is the largest single remaining item on either model.
-**`shaderInt64`: stopped, as instructed.** Every remaining kernel-carrying Phi-3.5 decline is an
-i64 form — `Cast/i64>i32` (both shape classes), `Sub/i64`, `Greater/i64`, `Gather/i64,i64>i64`.
-Their SPIR-V declares `OpCapability Int64`, absent from `ENGINE_ENABLED_CAPABILITIES`, so they
-decline `[dtype]`, not `[unproven]`. That extends Tank's "4 of 5 declines are one device feature"
-to the full 8: **5 of 8 are one feature**; the other 3 are `Shape`, `ReduceSum`, `If`, unregistered,
-one node each. I did not enable it and did not work around it.
-### What surprised me
-**The cheapest coverage in the project was not an op.** I expected to be picking between contrib
-ops. The answer was a schema axis: the ledger had proven the `static` arm of nearly everything and
-the `runtime-extent` arm of almost nothing, and Phi-3.5 is static-friendly enough that no
-instrument we had could see it. The apparatus was not wrong — `unproven_decline_forms` named these
-exactly — it was that nobody had pointed it at a second model.
-**A form can be proven and still be lost.** Three Cast forms had MATCH rows and no ledger entry.
-Whatever dropped them was silent, and only comparing the attempt log to the ledger showed it. I did
-not find the cause and am not claiming one.
-**`--reprove`'s refusal-before-measuring caught me being sloppy** exactly once: I regenerated the
-ledger and re-ran a probe without rebuilding, and `include_str!` meant the EP was still answering
-from 103 entries. The gate I wrote yesterday to protect somebody else caught me today.
-### What my verification established, and what it did not
-**Established:** `cargo test --lib` 540 passed / 0 failed; clippy `--all-targets -D warnings`
-clean; `counters_abi.py --check` PASS with `ONNXRUNTIME_VULKAN_EP_LIB` **set** (`ledger_entries =
-115`); `gen_proof_ledger.py --check` PASS, 115 entries, digest `0eef01359c467110`, every entry's
-`shader_digest` agreeing with the built DLL. `tests/ops` **3 failed / 655 passed / 33 skipped /
-3 xfailed** here, and the **same 3** — `test_criterion10`, `test_harness_census`
-(`+ counters.rs::unprovable_decline_forms`, byte-identical drift text), `test_kv_device_residency`
-— fail on a clean `85c57b2` worktree I built and ran separately. **My delta on `tests/ops` is
-zero.** I ran only those three files on the baseline; the full baseline suite ran >25 minutes with
-no output and I stopped it rather than report a number I did not watch finish, so I am **not**
-claiming a full-suite before-count and I am not contradicting Trinity's 8 at `3bac325`.
-**Did not:** anything about the **release** artifact — everything here is the debug build, and the
-release DLL in this worktree is stale. Anything about another device or another driver. Anything
-about `spec_digest` for the 103 older entries; they remain `SPEC-UNRECORDED`. Anything about
-whether the 293 newly-claimed gpt-oss-20b nodes produce *correct output on that model* — the ledger
-proves the **forms** against reference on small cases, and I did not run gpt-oss-20b end-to-end.
-And `probe_model_op_census.py` is a **new instrument reporting on itself**: its only independent
-corroboration is that it reproduced Phi-3.5's independently-known 355/366 without being told it.
-**One test is intermittently red and I did not fix it.**
-`registry::tests::the_digest_pair_separates_a_second_compiler_from_a_second_kernel` failed once in
-eight full-suite runs and passes in isolation. Hypothesis only — cross-test device-state
-interference through `state_for`'s device predicate. Unconfirmed, unexplained, reported rather than
-buried.
-
-## §8.9.22 — the portable digest was a checkout fingerprint (2026-08-03, later)
-Link took a fresh Linux `.so` to my two-digest schema and got **0 of 103 agreeing** where Windows
-got 102, with his probe showing **both** digests moved on all 103 and the build naming its own
-toolchain `UNKNOWN`. He filed two defects. There were three, and the third is the one that made the
-other two fixes matter.
-**Defect 3, which nobody had named: `source_digest` hashed line endings.**
-`build.rs::source_digest_for` hashed `fs::read` output raw. `core.autocrlf=true`, no
-`.gitattributes` rule for `*.comp`/`*.glsl`, so this checkout is CRLF (I counted: `gqa_f16.comp`
-CR=423 LF=423) and Linux checks out the same blob as LF. **The witness I added to be
-toolchain-independent was less portable than the SPIR-V digest it exists to be more portable
-than** — glslc emits byte-identical bytes from both. I had excluded the absolute `-I` path so the
-digest would not be a machine fingerprint, and then hashed bytes a git option chose. Same mistake,
-one level down. A digest that needs a version-control setting to be comparable is a machine
-fingerprint with extra steps.
-**Defect 1: `PROVEN-ELSEWHERE{toolchain}` could not be reached in the Python classifier.** Its
-condition is "SPIR-V differs, source same"; `check_against_build` tested `spirv_digest` first and
-unconditionally, so a condition tested earlier subsumed it and every Linux entry rendered as
-`SUBJECT-CHANGED` -- not the wrong token but the **strongest available accusation**, telling a user
-their source moved when their compiler moved. `registry.rs::subject_verdict` had the table right;
-the gate that mirrors it did not, which makes it a second disagreeing opinion about the same fact.
-It now mirrors the whole table in the same order, and FAILs on exactly what the runtime declines.
-**Defect 2: `cmd_check` computed the explanation and threw it away.** Notes printed only after the
-PASS line, four lines past the failure branch's `return 1`. In a Linux run where all 103 failures
-had a toolchain cause, the word "toolchain" appeared nowhere; on PASS, where nothing needs
-explaining, it printed in full. Present exactly when not needed, absent exactly when needed.
-**Also: the eighth uninvoked accessor was mine.** `counters::unprovable_decline_forms` returned
-`Vec<String>` via `unwrap_or_default()`, so a poisoned lock read as **"nothing is unprovable"** --
-mis-scoring in the dead direction -- and had no caller because the emitter read the static. Now
-`Option<Vec<String>>`, emitter goes through `forms_json`. That greened
-`tests/ops/test_harness_census.py::test_census_baseline_has_no_drift`, one of the three reds I
-reported as pre-existing this morning.
-### The measurement, and its negative control
-`rust/tools/probe_source_digest_eol.py`: two arms, predictions written first, tree restored and
-rebuilt afterwards. **215/215 modules moved under the old rule; 0/215 under the new; P1 (SPIR-V
-identical across arms) PASS in both.** I ran the negative control by reverting `normalize_shader_text`
-and rebuilding, because P2 passing on a tree I had just fixed proves nothing about whether P2 can
-fail. It can: it went `FAIL (215 moved)`. That reproduces Link's Linux reading on Windows without a
-Linux box, and it is the strongest thing I have -- I still cannot see his machine.
-`probe_ledger_subject_check.py` 5 arms -> 7 (8 assertions), **8/8**. Arm 6 plants a moved
-`spirv_digest` with a **correct** `source_digest` and requires `PROVEN-ELSEWHERE{toolchain}` in a run
-that FAILS for an unrelated reason -- one arm falsifying defects 1 and 2 together. Arm 7 moves both
-and requires `SUBJECT-CHANGED`, so arm 6 cannot be satisfied by a classifier that merely stopped
-failing. Arm 2 (Switch's real case) still fails and now says "both witnesses moved", which is the
-sentence I wanted: the classifier got more precise, not looser.
-`--rewitness-source`: 115 re-witnessed, 0 skipped. It carries `--backfill-frame`'s SPIR-V-equality
-refusal **plus** a toolchain-equality refusal, because identical SPIR-V from two compilers does not
-establish identical source. Ledger digest `0eef01359c467110` -> `f3bb172dffd6be28`; entry count
-unchanged at 115; **no proof was re-asserted, only the source witness recomputed under the
-corrected rule.**
-### Coverage, re-measured under the new build
-gpt-oss-20b **293 / 374 claimed**, unchanged from this morning -- the digest change and the
-re-witness moved nothing, which is what I wanted to know. The 78 declines are unchanged in
-composition: GQA x24 `[attribute]` (8-input, attention sinks), `Reshape` x24 `[not-registered]`,
-QMoE x24 `[staged]`, and 5 `shaderInt64` forms plus `ReduceSum`/`Shape`. **I added no new op this
-round and that is a real cost of taking the Linux defects first**, which was the right order:
-coverage measured by an instrument that misattributes every entry on the second platform is
-coverage nobody can bank.
-### What surprised me
-**The `UNKNOWN` toolchain is the more interesting half and I could not diagnose it.** I made the
-capture read stderr and tolerate a non-zero exit, warned at build time, and added a test that fails
-a build which embeds modules and cannot name its compiler -- but those are a gate and two guesses,
-not a diagnosis. I have no Linux machine and did not pretend otherwise.
-**A row can be unreachable three different ways and I have now shipped all three.** Unobservable
-because every entry was device-unattributed (SOURCE-COSMETIC, two rounds ago); mis-scored by a
-positional split (`clear_session_devices`, last round); and now unsatisfiable because an earlier
-test subsumes it. The common shape is a counter whose only possible value is zero, and I have not
-yet found a way to see it except by someone running the thing on a second machine.
-**Deleting an accepted red removes the check, not the acceptance** -- Link found that I did exactly
-that with his `how_to_remove_an_entry`, and the screen went from ruling on 8 subjects to 5 and
-printed PASS over a red it had stopped looking at. `BUILD_SKIPPED=1; exit 0` reproduced inside the
-tool built to make it impossible. I have not closed any red by deletion this round.
-### What my verification established, and what it did not
-**Established:** `cargo test --lib` **545 passed / 0 failed / 4 ignored**; clippy `--all-targets -D
-warnings` clean; `counters_abi.py --check` PASS with `ONNXRUNTIME_VULKAN_EP_LIB` **set**
-(`ledger_entries = 115`); `gen_proof_ledger.py --check` PASS, 115 entr(ies), digest
-`f3bb172dffd6be28`, arithmetic **115 = 115 identical + 0 + 0 + 0 + 0 + 0**; the eol probe 3/3 with a
-negative control that failed 215/215; the subject falsifier 8/8; `audit_instruments` census clean
-(8 -> 8 subjects, no drift); gpt-oss-20b census 293/374 reproduced.
-**Did not:** anything about Linux. Every arm above ran on Windows against the **debug** build; the
-release artifact in this worktree is stale and nothing here speaks for it. **The claim that these
-three repairs turn Linux's 0/103 into 103/103 is a PREDICTION, not a measurement** -- what I
-measured is that the same *cause* (differing line endings, identical SPIR-V) now produces the
-correct verdict here. Link's `.so` has to be rebuilt and re-checked before anyone quotes a Linux
-number, and its `source_digest` values will only agree once his build carries this `build.rs`.
-The 103 older entries remain `SPEC-UNRECORDED`. And the `UNKNOWN` toolchain cause is undiagnosed.
-
-📌 Team update (2026-08-03T19:55:00-07:00): the deleted-proof incident — Tank found three proofs a merge deleted (proven at 26fd93f, absent from main; the removal happened inside merge commit eb84364 and history simplification hid it from the file's own log), re-proved, ledger 103→106. The deleting merge was the coordinator's, and the op suite was the only instrument that saw it — a git log-visible loss that no ledger check, census, or CI lane flagged on its own. Bears on your ledger-mechanics work: a merge can silently remove entries the same way --reprove and mid-struct insertions have silently corrupted state before. — decided by Scribe, from Tank's finding
-📌 Team update (2026-08-03T19:55:00-07:00): Switch's refutation — "Phi-3.5 has never been a valid proof subject." Withholding one form and withholding nine from the graph produce the identical refusal (Shape, ReduceSum, If have no Vulkan handler), so no re-proof run on Phi-3.5 alone can distinguish a broken form from a form the model never reaches. Bears on your gpt-oss-20b second-model work and any future ledger claim that cites Phi-3.5 as the exercised subject. — decided by Switch
----
-
-## §8.11 — the first non-LLM model, `Conv`, and an invariant for proofs that go missing (2026-08-03)
-
-**Round brief:** coverage. Derive state from artifacts, state the criterion before selecting, use
-templates, prove everything through the normal path, report the delta as a measurement. The
-thesis under test: *the apparatus should make the next twenty kernels far cheaper than the first
-twelve.*
-
-### The state, derived from artifacts
-`epctl --dump-capabilities --json` -> **91 rows / 73 kernel-carrying (46 live + 27 ready) / 18
-staged**. Morpheus's 91/71/20 is the same file two rows earlier; two moved staged -> live. My own
-count of this figure had been wrong three times on the record, so I stopped quoting and started
-dumping.
-
-### The census that no instrument could have produced
-Two LLMs were the whole evidence base and **neither contains a convolution**. I fetched
-MobileNetV2-12 (provenance + sha256 in `bench/results/model_provenance.json`) and censused it:
-**0 / 105 claimed.** Zero. `Conv` x52 `[not-registered]`, and no `Gemm`, `MatMul`, `Softmax`,
-`Transpose`, `Concat`, `Slice`, `Reduce*`, or pooling anywhere in the registry. **No non-LLM model
-could run at all.** That is the 164-vs-12 shader ratio measured on a graph rather than counted.
-
-45 of the 104 declines were `[unproven]` on ops we ship **live** — `Clip` and `Add` at
-`runtime-extent`, forms no LLM case had ever produced at f32. §8.10's pattern one level out:
-point the census at a new model *class* and it finds compiled variants nobody had proven.
-
-### The criterion, and the op it rejected
-Stated first: *nodes in a real shipped model that decline today and would claim after the change,
-weighted by whether it unblocks a model class rather than completing a taxonomy, divided by
-kernel cost; proof-only forms rank above new kernels.*
-
-`Reshape` had 24 real declining nodes and opens the shape-family template — better on the count.
-**All 24 are `Add -> Reshape -> QMoE`**, and QMoE is staged, so claiming it moves the island
-boundary one node and unblocks nothing. That also re-tested my own `26fd93f` ruling, whose stated
-falsifier was "no model contains one" — **the falsifier fired** (24 now exist) and the conclusion
-survived for a reason the ruling never named. Recorded both halves.
-
-### What I built and what it cost
-One shader (`conv_f32.comp`, grouped as the general case so depthwise is free), one `op_table!`
-row, four named declines. **It compiled on the first attempt** — the only build error in the whole
-op was a missing `#[derive(Debug)]` on a struct a test called `.unwrap_err()` on.
-
-Six proofs, all through the normal path, no flag disabled, stock `--rtol 1e-3 --atol 1e-5`:
-the full `{bias, no bias} x {static, runtime-extent}` cross product for `Conv` (which is the
-*entire* key space — arity and `shape_class` are the only components a `Conv` varies in), plus
-`add_f32_dyn` and `clip_f32_dyn`. Ledger **115 -> 121**, `--check` PASS,
-`6 identical + 115 SOURCE-COSMETIC + 0` everything else.
-
-### The tolerance clause finally binding on something
-`_models.py` has reserved the accumulating ops since M0: *derive per vendor, do not guess, do not
-copy from fp32 elementwise*. `Conv` is the first accumulating op to land. `probe_conv_tolerance.py`
-measured worst `max_rel 1.858e-4 / max_abs 5.722e-6` over twelve cases on the 4060, and `FP32_CONV`
-is pinned at `rtol 1e-3 / atol 1e-5` — **exactly the ledger's own defaults**, so the conformance
-gate cannot be quoted as looser than the proof gate.
-
-**The probe's first run printed `0.000e+00` twelve times.** ORT had said `Unknown Provider Type:
-VulkanExecutionProvider`, fallen back, and compared the CPU against itself. I nearly pinned a
-tolerance to a number produced by an instrument that observed nothing. It now registers the EP and
-refuses to print for any case the EP did not claim.
-
-### The invariant, built before any op
-A merge deleted three proofs and `--check` said PASS, because it asks whether every entry agrees
-with the build and never whether one went *missing*. New check:
-
-    {keys ever MATCHed in proof_attempts.jsonl} - {ledger keys} - {retired keys} == empty
-
-It works only because `proof_attempts.jsonl` is append-only and merges **union** it: the two files
-fail differently, which is the sole reason one can check the other. Falsified 6/6 by
-`probe_ledger_loss.py`, whose third arm **replays the real `eb84364` incident from git** and names
-exactly the three lost `Cast` keys.
-
-That arm is also what caught a bug in my own instrument: `def f(path=ATTEMPTS)` binds at *import*
-time, so the probe's patching did nothing and the function read today's files while claiming to
-replay history. **2/6 on the first run.** A Python default argument is a snapshot; an instrument
-whose inputs are snapshots cannot be pointed at history.
-
-### The delta
-| | before | after |
-|---|---|---|
-| registry rows / kernel-carrying | 91 / 73 | 92 / 74 |
-| ledger entries | 115 | 121 |
-| **MobileNetV2-12** | **0 / 105** | **97 / 105** |
-| gpt-oss-20b | 293 / 374 | 293 / 374 |
-| Phi-3.5-mini | 355 / 366 | 355 / 366 |
-| `tests/ops` | 3 failed / 655 passed | 3 failed / 672 passed |
-| `cargo test --lib` | 545 | 551 |
-
-**What it unblocks: one new model class.** The remaining 7 are a single
-`Shape->Gather->Unsqueeze->Concat->Reshape` classifier tail plus `GlobalAveragePool` and `Gemm` —
-one contiguous island, not seven holes. Those two are the next picks by the same criterion.
-
-### On the thesis
-It holds, with an amendment. The kernel was cheap. The expensive parts were **choosing** the op
-(which needed a third model that did not exist in the cache), deriving a tolerance the file forbade
-guessing, and testing the attribute axes a proof key does not carry. Two of those three are
-one-time costs for the *category* of accumulating spatial ops. **The cost moved from the kernel to
-the selection** — and selection is a census, an instrument the project already owns.
-
-### What my verification established, and what it did not
-**Established:** on this Windows box, debug build, RTX 4060 Laptop GPU — `cargo test --lib`
-**551 passed / 0 failed / 4 ignored**; clippy `--all-targets -D warnings` clean; `counters_abi.py
---check` PASS with `ONNXRUNTIME_VULKAN_EP_LIB` **set**; `gen_proof_ledger.py --check` PASS, 121
-entries, digest `56c90131c5952a0d`, arithmetic **121 = 6 identical + 115 SOURCE-COSMETIC + 0 + 0 +
-0 + 0**, loss invariant **0 missing / 0 retired**; `probe_ledger_loss.py` **6/6**;
-`probe_phi35_claim_reading.py` unchanged at `claimed_nodes 355 / unproven_declines 5 /
-islands_offered 1`; `tests/ops` **3 failed / 672 passed** with the same three declared reds
-(`test_criterion10`, `test_census_baseline_has_no_drift` — bench-only drift, not mine —,
-`test_kv_device_residency`); MobileNetV2 **0/105 -> 97/105** from two censuses of the same file
-against two builds.
-
-**Did not:** anything about **f16 convolution** — `Conv` declines it and no f16 vision graph has
-been censused, so the packed-`uint` argument for a second module is reasoned, not measured.
-Anything about **`auto_pad`** beyond that we decline it; I did not verify ORT's optimizers actually
-rewrite it to explicit pads on producers other than this one. Anything about **any vendor but
-NVIDIA** — the pinned `FP32_CONV` is one GPU's accumulation order and `_models.py` says per vendor.
-Anything about **performance**: `conv_f32.comp` is a direct convolution with no tiling and no 1x1
-fast path, and I took no timings, by instruction. Anything about **release builds or Linux**.
-And the four `Conv` ledger entries establish **nothing** about `group`, `strides`, `dilations` or
-`pads` — those are not key components; `tests/ops/test_conv.py` is the only thing that speaks for
-them, on twelve combinations, which is not the space.
-
-**Untouched, as instructed:** `shaderInt64`. It still blocks 5 of Phi-3.5's 8 declines and 4 of
-gpt-oss's, and none of the ops I added needed it.
-
-
-## §8.12 — the proof key could not tell a grouped convolution from a dense one (2026-08-04)
-
-**Ask.** Finish MobileNetV2's 8 residual declines; census a *new* model class after stating the
-criterion first; **measure** the f16-`Conv` gap rather than reasoning about it; rule whether
-`Conv`'s `group`/`strides`/`dilations`/`pads` need a key component (mine) or a schema change
-(Morpheus's); two hazards — `FP32_CONV` is one GPU's accumulation order, and 102/121 ledger entries
-were `SPEC-UNRECORDED`.
-
-### The central finding: ask 4 answered itself by counting
-
-I parsed MobileNetV2's 52 `Conv` nodes into attribute forms and got four: `base` x34,
-`strided+padded` x1, `grouped+padded` x13, `grouped+strided+padded` x4. Then I read the four
-shipped `Conv` ledger entries. **All four were proved at the `padded` form — which is none of the
-four forms the model contains.** The six-component key could not say so, because it does not carry
-attributes: a grouped depthwise convolution and a dense one minted the *same* key, and the ledger
-answered "proven" to a question it had never been asked.
-
-**Ruling: key component, mine, no schema change.** `variant` already carries `@sel<n>` for
-selectors, so a `#<form>` suffix rides the existing field; `validate()`'s six-component invariant is
-untouched and Morpheus's schema is untouched. `rust/src/ops/common/form.rs` holds the `FORMS` table.
-**Row order in `FORMS` is part of the key** — reordering is a ledger migration, and that is written
-in the file.
-
-The mechanism confirmed itself the way I wanted it to: mid-change, MobileNetV2 fell **97 -> 45**
-with a per-form histogram of 34/1/13/4, matching the graph parse exactly. A key that suddenly stops
-claiming the right number of the right things is a key that started distinguishing something.
-
-Forms are **booleans, not values**: `group` is a push constant, so one module serves every group
-count; the form records *that* the node is grouped, not *which* grouping. The falsifier is written
-down — `stride > kernel_shape` would need a form class, because it changes which invocations read
-which memory.
-
-### The other five
-
-- **Ask 1, MobileNetV2 97 -> 98/105.** Added `GlobalAveragePool` and `Gemm` (with
-  `global_average_pool_f32.comp`, `gemm_f32.comp`). The residual 7 are argued one at a time in the
-  decision file. The one worth repeating: **`Gemm` is unclaimable here for a graph reason, not a
-  kernel reason.** `Reshape(464,471)`'s target is computed at runtime (`Concat` of a symbolic batch
-  with a literal `-1`), so node 472's rank is unknown to ORT *and* to `onnx.shape_inference`; the
-  predicate sees rank `Some(0)` and declines `[rank]`. The kernel exists and is proven. Relaxing the
-  predicate to claim it would be claim-then-fail, which the charter forbids. **98/105 is the honest
-  ceiling** and the remaining 7 are one contiguous classifier-tail island.
-- **Ask 2, criterion stated before the pick.** (a) the EP cannot run the class at all, (b) its
-  missing set is disjoint from the CNN's, (c) the ops recur most across the class. That selects
-  **BERT-class**, and I fetched `bertsquad-12.onnx` rather than reasoning about what a transformer
-  probably contains. Census **473/1167**; I proved the 4 `[unproven]` keys; re-census **480/1167**
-  with **zero `[unproven]` declines left**. That last number is the useful one: on this model **the
-  registry, not the proof gate, is now the binding constraint** — 794 declines and not one of them
-  is a missing proof. Largest single unclaimed op: `MatMul` x95.
-- **Ask 3, f16 `Conv` declined on evidence, not extended reasoning.** I did what was asked and
-  measured: no f16 convolution appears in any of the three censused graphs. The vision model is
-  fp32; the LLMs have no convolution at all. Declining a second packed-`uint` module is now a
-  measurement, and the decision file names the trigger that reverses it. The measurement also
-  pointed somewhere I did not expect — the vision evidence argues for **int8/QDQ** before f16.
-- **Hazard 1, second vendor.** `probe_conv_tolerance.py` now reads `running_device_names` back off
-  the counters, refuses when `dispatches_executed == 0`, and files per device name. Two surprises:
-  `--device 0` ran on **NVIDIA**, because `ONNXRUNTIME_EP_VULKAN_DEVICE` indexes the *best-first
-  sorted capables* list, not `vkEnumeratePhysicalDevices` order (where `vulkaninfo` calls Intel
-  GPU0) — the selector really is a request, not an identity, so read the name off the run.
-  `--device Intel` then opened `Intel(R) Iris(R) Xe Graphics`, and both devices produced
-  **bit-identical residuals** (worst `max_rel=1.858e-04`). That is expected, not lucky:
-  `conv_f32.comp` accumulates serially in a fixed order, and IEEE-754 fp32 is exactly specified. So
-  the constant measures **our accumulation order against ORT CPU's**, not a vendor property — and
-  it stops transferring the moment the kernel gains tiling or a subgroup reduction. That expiry is
-  now in `_models.py`.
-- **Hazard 2, `SPEC-UNRECORDED` 102 -> 0.** I was asked what a cheap pass would cost. I measured one
-  case at 18.6 s, wrote a per-case loop, and it failed **101/101** with `REFUSING --reprove: the EP
-  is not reading the ledger you are about to rewrite` — because the first write makes disk differ
-  from the baked `include_str!` ledger, so every subsequent case is refused by design. **The cost I
-  was asked to estimate was a cost I had invented.** `--model` is `action="append"`: all 101
-  artifacts in one invocation, one rebuild, ~30 min. And `--reprove` makes entries *stricter*, not
-  merely better documented — a recorded `spec_digest` lets the EP warn `PROVEN-ELSEWHERE`, and
-  subject arithmetic went from **27 identical + 115 cosmetic** to **136 identical + 13 cosmetic**.
-
-### The bug that was not where the failure was
-
-`tests/ops` went red on `test_shape_inference_delta[Add-fp32-dyn]`, which passes standalone. A
-baseline worktree off `main` proved the regression was mine. The log said the EP had **panicked** —
-`attempt to add with overflow` at `counters.rs:377`, inside `CreateEp`, caught at the ABI boundary,
-returned `ORT_EP_FAIL`, ORT fell back to CPU. `on_device_free` used `fetch_sub`, so an alloc/free
-asymmetry wrapped the in-use total and the *next* allocation died. **A counter aborted the session
-it was observing, and the symptom surfaced in a different test three files later.** The counters now
-saturate, with a regression test. The asymmetry itself lives in `allocator.rs`, is unexplained, and
-is referred, not fixed — see `mouse-counters-overflow.md`.
-
-### Two instruments I disarmed and repaired
-
-Proving `mul_f32_dyn` for BERT **disarmed a negative control** in `test_wiring_census.py` (control 2
-asserted a runtime-extent form was unproven). Moved to `Acosh`, following the file's own 2026-08-02
-precedent, and documented that I disarmed it. Separately, adding forms **orphaned every static
-`Conv` proof** — I had proved the dyn forms only, and `shape_class` is a key component. The
-tolerance probe found it by *refusing to run*. Both hazards were caught by instruments declining to
-measure, not by tests asserting values, which is the second time this round that has been the
-cheaper detector.
-
-### Before / after
-
-| | before | after |
-|---|---|---|
-| **MobileNetV2-12** | **97 / 105** | **98 / 105** |
-| **BERT-SQuAD-12** | n/a (new class) | **480 / 1167**, 0 `[unproven]` declines |
-| ledger entries | 121 | **149** |
-| `SPEC-UNRECORDED` | 102 (84%) | **0** |
-| subject arithmetic | 27 identical + 115 cosmetic | **136 identical + 13 cosmetic** |
-| `cargo test --lib` | 553 | **578 passed / 0 failed / 4 ignored** |
-| `tests/ops` | 3 failed / 672 passed | **3 failed / 737 passed / 34 skipped / 3 xfailed** |
-| Phi-3.5-mini | 355 / 366 | 355 / 366 (unchanged) |
-
-### What my verification established, and what it did not
-
-**Established:** on this Windows box, debug build, after merging `main` at `7a1aa34` —
-`cargo test --lib` **578 passed / 0 failed / 4 ignored**; clippy `--all-targets -D warnings` clean;
-`counters_abi.py --check` PASS; `gen_proof_ledger.py --check` PASS at **149 entries**, digest
-`7f88ffdb8af09cba`, loss invariant **149 / 149 / 0 missing / 0 retired**; `tests/ops`
-**3 failed / 737 passed**, and the three are exactly the declared reds (`test_criterion10`,
-`test_census_baseline_has_no_drift`, `test_kv_device_residency`) — the counters panic is gone, and
-that is a *reproduced-then-removed* symptom, not an absence I am inferring. Censuses re-run
-**after** the merge: MobileNetV2 **98/105**, BERT **480/1167**. `FP32_CONV` now rests on **two
-vendors**, each read back by device name off the run and each screened on `dispatches_executed > 0`.
-
-**Did not:** establish that the **alloc/free asymmetry** is fixed — it is not, it is referred, and I
-do not know whether it is triggered by my new ops' sessions or is latent on `main` (main's suite is
-a *different* test set, so main being green is not evidence). Establish anything about **f16
-convolution as a kernel** — I measured that no censused model needs it, which is an argument about
-demand, not about the packed-`uint` design. Establish anything about **`group` values**: forms are
-booleans, so `group=8` and `group=960` still mint one key, and only `test_conv.py` speaks for the
-values. Establish that **the two vendors agree on anything but this kernel's current accumulation
-order**. Establish anything about **release builds** (where the overflow would have wrapped
-silently and published a nonsense figure rather than panicking), **Linux**, or **any timing** —
-none taken, by instruction. And the **orphaned-key hazard has no guard**: I found no check that
-every ledger key is still mintable by the registry, which is why an entire `shape_class` of `Conv`
-proofs could go stale in silence.
-
-**Untouched, as instructed:** `shaderInt64`; `DEVICE_MEMORY` and `KV_ARENA` were never enabled in
-any lane of mine (Tank's blocker); no clock.
-
----
-
-## Round 2026-08-04 (later) — the `metadata` variant defect, the `#form` reversal, `blind_axes`, and two censuses
-
-**Order given, and kept:** the `metadata` variant defect first (blocking, Morpheus §8.9.23(3) /
-Rai RAI-015), then `blind_axes`, then coverage. **No second `Conv` variant landed**, which was
-the whole point of the ordering — a constant variant component is invisible while only one exists.
-
-### Gates
-
-| gate | result |
-|---|---|
-| `cargo build` | clean |
-| `cargo test --lib` | **574 passed / 0 failed / 4 ignored** |
-| `cargo clippy --all-targets` | clean |
-| `counters_abi.py --check` | PASS, layout `(8, 0xdf71f4e6a59271b3)`, mirror matches the DLL |
-| `gen_proof_ledger.py --check` | PASS — **129 entries**, digest `e2a5e721767e6ee1` |
-| loss invariant | **172 ever MATCHed / 129 in ledger / 0 missing / 43 retired** |
-| `tests/ops` | **738 passed / 3 failed / 33 skipped / 3 xfailed** |
-
-The 3 reds are the three pre-existing declared reds. I checked the one that could plausibly have
-been mine — `test_census_baseline_has_no_drift` — and its drift is `bench/test_paired_ratio.py`
-undeclared in the census frame, a bench file of Trinity's, not a registry change of mine. Baseline
-was 3 failed / 737 passed / 34 skipped; one test moved skipped → passed.
-
-### Census, before and after
-
-| model | before | after |
-|---|---|---|
-| MobileNetV2-12 | 97 / 105 | **98 / 105** |
-| BERT-SQuAD-12 | not censused | **480 / 1167** (first measurement) |
-| Phi-3.5 | `claimed_nodes 355 / islands_offered 1` | unchanged |
-
-MobileNetV2's +1 landed with **no kernel** — it is the form collapse returning nodes that had been
-declining against a suffixed key nobody proved.
-
-### What surprised me
-
-**The composite escape hatch was never once used for the case it exists for.** `metadata` is
-documented as "this row has no shader", for composite rows that dispatch several. I queried every
-plain-`metadata` ledger entry before deciding how wide the fix should be: **all 20 record exactly
-one shader.** Ten `.comp` files, seven row families, 1:1 under `<prefix>_<dtype>`. Not one row
-was ever composite. The placeholder existed only as the thing rows fell into when the kernel table
-was left unfilled — which is why the defect was seven rows wide and not one, and why I fixed all
-seven rather than the `Conv` I was asked for.
-
-**Morpheus's ruling reversed my own previous round's central artifact.** I built `form.rs` and
-handed up a two-option question; §8.9.23 answered *neither*, and on inspection it is plainly right —
-`cpg = c / pc.group` means grouped is the general form and dense is `group=1` inside it, so
-there is no dense branch to separate. My form bits were asserting a distinction the kernel does not
-draw. I deleted `form.rs`.
-
-**A latent hole nobody reported, found while fixing the reported one.** `variant_stem()` returned
-the *whole* variant component, so every `@sel`- or `#form`-suffixed key resolved to a string
-naming no module and fell into the permissive unknown-stem branch. **The suffixes were blinding the
-lookup.** My own `#form` suffix from last round had, among other things, silently broken this.
-
-**The live capture beat the unit tests twice.** The tests assert the `BLIND` clause renders; they
-assert on substrings. Running a real `Conv` showed the clause spliced into the `UNATTRIBUTED`
-group message rendering `...does.. The proofs are sound`. And running `DEVICE=1` is what
-established the second vendor's *name*.
-
-### The vendor hazard, half answered
-
-`ONNXRUNTIME_EP_VULKAN_DEVICE=1` opens **`Intel(R) Iris(R) Xe Graphics`** on this box, read off
-the run as instructed rather than off the selector. The EP names it itself and correctly reports
-`PROVEN-ELSEWHERE{device}` rather than repeating the ordinal back. That establishes the identity
-and that the instrument is honest about it. **It establishes nothing about `FP32_CONV` on Intel** —
-no tolerance was measured there.
-
-### What my verification established, and what it did not
-
-**Established.** That the seven affected row families now render the module they actually dispatch,
-in the key, verified on a live session line reading `.../conv_f32/static/n3` rather than
-`.../metadata/...`. That `form_is_provable` now answers *not provable* for a declared module the
-build did not produce — the shaderless positive control this predicate was built to have and
-previously failed, now an in-process test over the pure `form_provable_from`. That the `BLIND`
-clause reaches a reader's session on both devices and in both the `PROVEN` and
-`PROVEN-ELSEWHERE` branches. That 129 ledger entries agree with the DLL and that no proof went
-missing across a 43-key retirement. That MobileNetV2 and BERT claim 98/105 and 480/1167, counted off
-the graphs.
-
-**Not established.** That the blind axes are *correct* — the key is now silent about `group` and
-`strides` by design, and what speaks for them is a CI-time suite of twelve combinations, which is
-a **weaker** guarantee than a key component and I want that on the record as weaker. That the
-`Gemm` extension of §8.9.23 is sanctioned: **Morpheus named only `Conv`'s four axes; extending
-the argument to `transA`/`transB` is my reading and is reversible by him.** That narrowing
-`GroupQueryAttention` to `F16` declines an f32 GQA *at the gate* rather than at translate — I
-read `translate_gqa` and observed no `gqa_f32.comp`, but built no f32 GQA graph, so that
-specific positive control is unbuilt. That `FP32_CONV` holds on Intel — the device was opened, not
-measured. That f16 `Conv` is not needed: what I measured is only that **neither censused model is
-blocked by it** (MobileNetV2 is f32; BERT has zero convolutions), which is why it stays declined on
-a measurement rather than on the packed-`uint` reasoning I offered last round.
-
-### Still open, and not mine
-
-**`--check` does not verify that a ledger key is still mintable.** All 43 orphaned keys passed
-`--check` cleanly and would have surfaced only as `[unproven]` in a census. I flagged this last
-round and it is still true; the repair — ask the DLL for its mintable key set — is an ABI addition,
-so it is Tank's. The alloc/free asymmetry in `allocator.rs` also remains unexplained and unowned.
-
-**`SPEC-UNRECORDED`:** the re-prove of 39 artifacts this round was a `--reprove`-class pass in
-all but name and shrank this materially as a side effect. A full sweep is one `gen_proof_ledger.py`
-invocation with one `--model` per case and costs roughly the ten minutes this round's 39 took.
-
-**Untouched, as instructed:** `DEVICE_MEMORY` and `KV_ARENA` never enabled in any lane of mine
-(Tank's blocker); every proof arm screened on `dispatches_executed > 0` — 39/39; no clock, no
-timing, none offered.
-
-📌 Team update (2026-08-04T12:25:00-07:00): the field-level reversion class has now happened twice
-(Link's 115-of-121 `source_digest` restoration by `eee65aa`, then a second reversion inside a
-`squad/mouse` merge) and every count-based screen read clean both times — no key lost, file grew,
-census/loss-invariant/Windows `--check` all PASS — because the loss was a field inside a surviving
-entry, not a missing entry. Only a declining platform (Linux) or reading the subject arithmetic line
-instead of the PASS line caught it. `ci/check_ledger_census.py`'s new frame-witness arm and
-`evidence/proof_rewitness.json` now require any deliberate `source_digest` move to be declared
-`{revision, who, keys, deliberate, why}` — an undeclared move is `FAIL(condition=undeclared_witness_move)`.
-The `eee65aa` record is entered permanently with `deliberate: false`. — decided by Rai, Link
 ## Round 2026-08-04 (later still) — `MatMul` shipped, and the census number turned out not to be the one that matters
-**What I was sent to do:** register `MatMul` (95 nodes, the largest single unlock in the
-BERT-SQuAD-12 claim census), stating the selection criterion before picking variants; take the
-census after rather than accepting the claim; prove through the normal path; say which way the
-`Gemm` transpose reading went; and judge whether the `--check` mintability gap is urgent.
-**The finding, which is worth more than the kernel.** `MatMul` moved BERT from `claimed_nodes`
-480 to **481** and `dispatches_executed` 3 to **4**. Not 95 — one. BERT claims 481 of 1274 rows
-at `GetCapability` and executes four nodes; the partitioner's net-benefit gate sees 146 clusters
-and retains 4. **`claimed_nodes` is not what executes**, and last round's note that MobileNetV2's
-`partition` declines were "fragmentation, not coverage" was right about the cause and wrong about
-the significance — fragmentation is the whole gap. `probe_island_counterfactual.py` now ranks
-picks by delta in *retained island* nodes: `Reshape` +167 > `MatMul` +135 > `Concat` +110, and
-`MatMul`+`Reshape` together are 738 nodes in 17 islands where either alone is worth almost
-nothing. Coverage picks should be made in pairs from here.
-**My own falsifier fired.** `mouse-mobilenetv2-residual-declines.md` argued `Reshape` is shape
-metadata moving no float data, with a written falsifier. BERT's 59 `Reshape` nodes carry the
-attention tensors themselves. The distinction I should have drawn is not metadata-versus-data but
-**whether the op's output is the tensor or a description of it** — `Shape`'s decline survives on
-that basis; `Reshape`'s does not, and it is the next pick.
-**A latent instrument defect, mine to name.** ORT returns rank 0 for a genuine scalar *and* for
-an unresolved rank; `classify_shapes` returns `Static` because "all dims non-negative" is
-vacuously true over an empty list. **724 of BERT's 1274 claim rows read `static` on the strength
-of having read nothing, and `check_shape`'s `[unknown-rank]` branch is dead code on this whole
-class of model.** Not a correctness defect — BERT agrees with CPU to 1.1e-6, because ORT's
-`MatMulAddFusion` rewrites the graph between `GetCapability` and `Compile` and `Compile` has
-strictly better shape information. I repaired it for `MatMul` only, where the ONNX schema admits
-no rank-0 operand so the discriminator is sound; a general repair needs a per-op minimum-rank
-table and I did not build one uninstructed. The claim log now carries `input_shapes`/`output_shapes`
-— the EP's own reading — because the probe I wrote first had a *second* implementation of shape
-inference and got a materially wrong answer. That probe is deleted.
-**`Gemm` transpose extension:** it went in favour, but **BERT did not test it**. BERT's three
-`Gemm` nodes are `transB=0` against a `transB=0` proof case — the blind axis exercised at the
-value it was proven at, which tests nothing. What tested it is the CI suite (27 passed, 0
-skipped, including the non-vacuous `Y == B.T` identity test, which I checked did not skip). Since
-I have argued myself that twelve CI combinations is weaker than a key component, **the extension
-stands, un-falsified, and remains a reading for Morpheus to rule on.**
-**Judgement on the mintability gap:** it can wait behind `Reshape`, not behind a second model
-after that. My position moved because this round produced a second instance of the same family in
-my own area. What I would ask Tank for is not just a mintability predicate but the
-generalisation — **every screen that can PASS should state what it read to pass**, the way the
-subject arithmetic line does and the way `counters_abi.py --check` conspicuously does not.
-### What I did not run
-Debug build only, NVIDIA RTX 4060 only, Windows only. No release build, no Linux, no second
-vendor — `FP32_CONV` on Intel is still opened-not-measured. No clock and no timing of any kind.
-`DEVICE_MEMORY` and `KV_ARENA` never enabled. Phi-3.5 was censused but not run end-to-end. The
-94 `unknown-rank` `MatMul` declines are *asserted* to be unresolved rank from the ONNX schema,
-not observed to be — no positive control distinguishing a genuine rank-0 operand exists, because
-`MatMul` cannot have one.
+### [SUMMARY] Round 2026-08-04 (later still) — `MatMul` shipped: `claimed_nodes` is not `dispatches_executed`, and the rank-0 vacuity defect
+Registered `MatMul` (95 nodes, largest single BERT unlock). Result: `claimed_nodes` 480->481, but
+`dispatches_executed` only 3->4 -- BERT claims 481/1274 rows at `GetCapability` and executes four
+nodes; the partitioner's net-benefit gate sees 146 clusters and retains 4. **`claimed_nodes` is not
+what executes, and never was** -- last round's "fragmentation, not coverage" verdict on
+MobileNetV2 was right about cause, wrong about significance: fragmentation is the whole gap.
+`probe_island_counterfactual.py` (first pass, optimistic baseline) ranked picks by retained-island
+delta: `Reshape` +167 > `MatMul` +135 > `Concat` +110, with `MatMul`+`Reshape` = 738 nodes in 17
+islands vs either alone worth almost nothing -- picks made in pairs from here (later refined, see
+below). Own falsifier fired: BERT's 59 `Reshape` nodes carry the attention tensors themselves, so
+the real distinction is not metadata-vs-data but **whether the op's output is the tensor or a
+description of it**. Latent instrument defect found and named: ORT returns rank 0 for both a
+genuine scalar and an unresolved rank; `classify_shapes` returns `Static` because "all dims
+non-negative" is vacuously true over an empty list -- **724 of BERT's 1274 claim rows read
+`static` having read nothing.** Repaired for `MatMul` only (schema admits no rank-0 operand there);
+declined to build a general per-op minimum-rank table uninstructed. Deleted own second,
+materially-wrong shape-inference implementation rather than reconciling two readings. `Gemm`
+transpose extension ruled in favour but untested by BERT (`transB=0` proven at `transB=0`); stands
+on the CI suite alone, unfalsified, pending Morpheus. Mintability gap judged: can wait behind
+`Reshape`, not behind a second model.
+
+### [SUMMARY] Round 2026-08-04 (later still) — `Reshape` shipped, proven, claims zero nodes; corrects last round's island count
+Registered `Reshape` (predicted +167 top-ranked unlock). Ledger 131->133 (133 identical, 0
+missing, 43 retired, 133 mintable); `cargo test --lib` 590->607/0. **Cost stated first:**
+`bind_aliased_output` only fires for external plan I/O, not interior island edges, so aliasing
+`Reshape` is an engine change (two live tensors, one allocation, independent lifetimes vs a
+generation-stamped quarantine-on-free allocator) not an op change -- Switch's KV-disjointness
+argument does not transfer. **Prediction published before the build (`a842d57`) missed in both
+directions:** predicted 3 claimed nodes, got 0 -- the 3 named were i64 token-id reshapes declining
+`[dtype]` (read `output_shapes`, not `input_dtypes`); two predicted-decline nodes passed the first
+gate because the vacuous rank-0 defect (named last round) was reproduced in new code one round
+later. **Structurally blocked in two places:** no inferred output rank (58/71 BERT `Reshape` take
+their shape from a runtime `Cast`/`Concat`/`Shape` chain; `read_const_i64` returns `None` in all
+four tree implementations); no output descriptor for a free axis (`[-1,4]` claimed then
+`dispatch_ort` refused "output has no declared shape" at `Compute()` -- a broken commitment, not a
+decline; standing rule: a gate must refuse what translate cannot *complete*, not what it might
+dislike; `Slice`'s starts/ends carry the same trap). Rank-0 discriminator settled by arithmetic
+(a rank-0 input holds exactly one element) rather than a minimum-rank table. **`dispatches_executed`
+now the headlined metric**, `claimed_nodes` labelled "(upper bound)": BERT 481 claimed / **4**
+executed / 4 islands; MobileNetV2 98/97/1; Phi-3.5 355/355/1; gpt-oss-20b not measurable (ORT
+1.28.0 CPU `QMoE` refuses session creation, reported `ERROR(instrument)` not zero). **Corrects last
+round's headline:** the counterfactual instrument ranked op *types*, the EP claims *nodes* --
+re-run with a per-node gated baseline gives BERT `Reshape` optimistic +78/gated **+3**, `MatMul`
+optimistic +128/gated **+0**, `Concat` +0/+0; `MatMul`+`Reshape` cumulative optimistic +184 in 27
+islands, **gated +3 in 30 islands** -- "738 nodes in 17 islands" was the optimistic column of an
+optimistic-baseline instrument. **There is no next op-registration pick on BERT**: the gated
+ceiling over every unregistered op is three nodes; the real blocker is that ORT infers no ranks
+through its `Shape`/`Cast`/`Concat` chain (724/1274 rows read `static` from nothing; 94 `MatMul` +
+53 `Reshape` decline `[unknown-rank]`; `check_shape`'s `[unknown-rank]` branch is dead code on this
+model class) -- one problem, three symptoms, not another kernel. Old `Reshape`/`Flatten` decline
+ruling reversed by its own named falsifier (BERT has 71 `Reshape`, now `claim=True`, green vs CPU
+oracle); `Flatten` stays declined, now measured: BERT 71/0, MobileNetV2 1/0, Phi-3.5 0/0.
+
+### What my verification established, and what it did not
+**Established** (RTX 4060 Laptop GPU device 0, Windows, debug, ORT 1.28.0): `cargo test --lib`
+607/0; `cargo clippy` clean; **`cargo fmt --check` 0 diffs — RED when first run, in my own new
+file, two hunks**; `gen_proof_ledger.py --check` subject arithmetic `133 = 133 identical + 0
+SOURCE-COSMETIC + 0 PROVEN-ELSEWHERE + 0 SUBJECT-CHANGED + 0 SUBJECT-INDETERMINATE + 0
+no-module-in-build`, loss invariant `176 ever MATCHed / 133 in ledger / 0 missing / 43 retired`,
+mintability 133/133 and 43/43; `counters_abi.py --check` PASS; `probe_model_output_agreement.py`
+on BERT **AGREE, 0/3 outputs disagree** (max_rel 1.1e-06). `pytest tests/ops`: **5 failed / 861
+passed / 34 skipped / 3 xfailed** — 2 `FAIL(condition)` are pre-existing reds (`criterion10`
+DIVERGENT, `kv_device_residency` CUDA binding), 3 are `ERROR(instrument)` from `device_losses=1`
+in the phi35 lane (suite itself declares this not evidence about the EP).
+**Reported because otherwise invisible:** the *first* full-suite run after this change reported
+**44 failures in 51 minutes** — a device-loss cascade, not a regression; the immediately following
+identical run gave the 5 above in 12:45. I did not
+discover this by reasoning; I re-ran because the number was implausible. A single suite run on
+this box is not a gate.
+**NOT established / not run:** gpt-oss-20b entirely unmeasured (no session on this ORT build).
+No f16 `Reshape` anywhere — the row is F32-capped deliberately. **No second device**: Intel Iris
+Xe (device 1) never run, so nothing here bears on a UMA allocator or another driver's `ew_cast`
+codegen. No release build. **No CI run** — Link owns CI and it has been red on `main` for a dozen
+pushes; a green local gate is not a green CI. `DEVICE_MEMORY` and `KV_ARENA` never enabled, per
+instruction, so nothing here bears on Switch's `ctx-4096` `ep_inter_76` failure. `allowzero=1` is
+**declined, not handled** — no graph exists to test it on and an attribute claimed-but-untested is
+the `Gemm` transpose mistake. The 68% claim-log name-match rate on BERT is a real limit on the
+counterfactual table and biases every delta *downward*; the tool prints it.

@@ -292,3 +292,9 @@ criterion motion is not "is this true?", it is "what does it admit?" (the criter
 unsatisfiability finding was refuted without a run; the false premise was harmless, but relaxing the
 criterion on its strength would have admitted two of three real failures with no element moving).
 Applies to any motion you rule on against a criterion or a prior finding. — decided by Morpheus
+
+📌 
+
+📌 Team update (2026-08-04T20-25-00-07-00): Trinity's model-scale float64 oracle finding -- at model scale both EPs are ~6x further from true than from each other (common error, not opposed) -- this bounds what an AGREE between the two EPs can mean: consistency-with-each-other is not evidence of correctness against the reals. -- decided by Trinity
+
+📌 Team update (2026-08-04T20-25-00-07-00): Tank's "loudly logged, silently returned" finding -- `Compute()` is entered, the intermediate `ep_inter_76` allocation is refused (67108864 bytes), three disclosures fire at ORT's default severity, but exit 0 / finite logits / `get_providers()` all read as success. Also: `disable_cpu_ep_fallback=1` screens the partition, not the fallback -- arm D at ctx 1 with no island produces the identical refusal sentence. -- decided by Tank
