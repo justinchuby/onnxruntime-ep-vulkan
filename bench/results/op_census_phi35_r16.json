@@ -1,0 +1,189 @@
+{
+ "model": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu\\cuda-int4-rtn-block-32\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+ "tag": "phi35_r16",
+ "graph": {
+  "nodes": 366,
+  "opset_import": {
+   "ai.onnx": 14,
+   "com.microsoft": 1
+  },
+  "ir_version": 7
+ },
+ "dispatches_executed": 355,
+ "counters": {
+  "claimed_nodes": 355,
+  "islands_offered": 1,
+  "viable_islands_retained": 1,
+  "dispatches_executed": 355,
+  "net_benefit_gate_clusters_seen": 1,
+  "_status": "measured"
+ },
+ "inference_run": true,
+ "graph_op_counts": {
+  "Constant": 3,
+  "Greater": 1,
+  "If": 1,
+  "ReduceSum": 1,
+  "Sub": 1,
+  "Cast": 2,
+  "Shape": 1,
+  "Gather": 2,
+  "SimplifiedLayerNormalization": 1,
+  "com.microsoft::MatMulNBits": 161,
+  "com.microsoft::GroupQueryAttention": 32,
+  "com.microsoft::SkipSimplifiedLayerNormalization": 64,
+  "Sigmoid": 32,
+  "Mul": 64
+ },
+ "decisions_recorded": 363,
+ "claimed_nodes": 355,
+ "declined_nodes": 8,
+ "no_decision_nodes": 3,
+ "no_decision_ops": {
+  "Constant": 3
+ },
+ "per_op": {
+  "Cast": {
+   "seen": 2,
+   "claimed": 0,
+   "declined": 2,
+   "codes": {
+    "dtype": 2
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1": 1,
+    "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1": 1
+   }
+  },
+  "Gather": {
+   "seen": 2,
+   "claimed": 1,
+   "declined": 1,
+   "codes": {
+    "dtype": 1
+   },
+   "ledger_hits": 1,
+   "proof_keys": {
+    "ai.onnx::Gather/1+/f16,i64>f16/gather_f16/runtime-extent/n2": 1,
+    "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2": 1
+   }
+  },
+  "Greater": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "unproven": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2": 1
+   }
+  },
+  "If": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Mul": {
+   "seen": 64,
+   "claimed": 64,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 64,
+   "proof_keys": {
+    "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2": 64
+   }
+  },
+  "ReduceSum": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Shape": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Sigmoid": {
+   "seen": 32,
+   "claimed": 32,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 32,
+   "proof_keys": {
+    "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1": 32
+   }
+  },
+  "SimplifiedLayerNormalization": {
+   "seen": 1,
+   "claimed": 1,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 1,
+   "proof_keys": {
+    "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/simplified_layer_norm_f16/runtime-extent/n2": 1
+   }
+  },
+  "Sub": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "dtype": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2": 1
+   }
+  },
+  "com.microsoft::GroupQueryAttention": {
+   "seen": 32,
+   "claimed": 32,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 32,
+   "proof_keys": {
+    "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/gqa_f16/runtime-extent/past_key+past_value+cos_cache+sin_cache": 32
+   }
+  },
+  "com.microsoft::MatMulNBits": {
+   "seen": 161,
+   "claimed": 161,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 161,
+   "proof_keys": {
+    "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales": 161
+   }
+  },
+  "com.microsoft::SkipSimplifiedLayerNormalization": {
+   "seen": 64,
+   "claimed": 64,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 64,
+   "proof_keys": {
+    "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/skip_simplified_layer_norm_f16/runtime-extent/none": 63,
+    "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/skip_simplified_layer_norm_f16/runtime-extent/none": 1
+   }
+  }
+ },
+ "ep_lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-mouse\\rust\\target\\debug\\onnxruntime_vulkan_ep.dll"
+}

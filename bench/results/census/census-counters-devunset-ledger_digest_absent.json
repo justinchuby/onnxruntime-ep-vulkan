@@ -31,7 +31,7 @@
   "ledger_hits": 0,
   "ledger_gate": "FAULTED",
   "ledger_miss": "LEDGER-FAULTED",
-  "ledger_entries": 131,
+  "ledger_entries": 133,
   "ledger_faults": 1,
   "ledger_entry_faults": 0,
   "unproven_declines": 1,

@@ -16,12 +16,13 @@
       "\u0000[vulkan-ep] WARN: [Vulkan validation] vkCreateComputePipelines(): pCreateInfos[0].stage is using the SPIR-V Workgroup built-in which SPIR-V 1.6 deprecated. When using VK_KHR_maintenance4 or Vulkan 1.3+, the new SPIR-V LocalSizeId execution mode should be used instead. This can be done by recompiling your shader and targeting Vulkan 1.3+.",
       "\u0000[vulkan-ep] WARN: [Vulkan validation] vkCreateComputePipelines(): pCreateInfos[0].stage is using the SPIR-V Workgroup built-in which SPIR-V 1.6 deprecated. When using VK_KHR_maintenance4 or Vulkan 1.3+, the new SPIR-V LocalSizeId execution mode should be used instead. This can be done by recompiling your shader and targeting Vulkan 1.3+.",
       "\u0000[vulkan-ep] WARN: [Vulkan validation] vkCreateComputePipelines(): pCreateInfos[0].stage is using the SPIR-V Workgroup built-in which SPIR-V 1.6 deprecated. When using VK_KHR_maintenance4 or Vulkan 1.3+, the new SPIR-V LocalSizeId execution mode should be used instead. This can be done by recompiling your shader and targeting Vulkan 1.3+.",
-      "\u0000[vulkan-ep] WARN: [Vulkan validation] vkCreateComputePipelines(): pCreateInfos[0].stage is using the SPIR-V Workgroup built-in which SPIR-V 1.6 deprecated. When using VK_KHR_maintenance4 or Vulkan 1.3+, the new SPIR-V LocalSizeId execution mode should be used instead. This can be done by recompiling your shader and targeting Vulkan 1.3+."
+      "\u0000[vulkan-ep] WARN: [Vulkan validation] vkCreateComputePipelines(): pCreateInfos[0].stage is using the SPIR-V Workgroup built-in which SPIR-V 1.6 deprecated. When using VK_KHR_maintenance4 or Vulkan 1.3+, the new SPIR-V LocalSizeId execution mode should be used instead. This can be done by recompiling your shader and targeting Vulkan 1.3+.",
+      "\u0000[vulkan-ep] WARN: [Vulkan validation] vkWaitForFences(): Returned error VK_ERROR_DEVICE_LOST."
     ]
   },
   "in_frame_vuid_count": 0,
   "teardown_vuid_count": 0,
-  "messenger_lines_in_frame_count": 8,
+  "messenger_lines_in_frame_count": 9,
   "counters": {
     "claimed_nodes": 355,
     "islands_offered": 1,
@@ -29,8 +30,8 @@
     "ledger_gate": "MIXED",
     "ledger_hits": 355,
     "unproven_declines": 5,
-    "device_losses": 0,
-    "dispatches_executed": 355,
+    "device_losses": 1,
+    "dispatches_executed": 0,
     "model_output_equivalence": "UNMEASURED",
     "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU"
   }

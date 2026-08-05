@@ -308,6 +308,53 @@ def _cast_dyn(in_elem: int, to_elem: int, opset: int = 21) -> onnx.ModelProto:
     return model
 
 
+def _reshape(elem: int, *, dynamic: bool = False, opset: int = 21) -> onnx.ModelProto:
+    """`Reshape` with the target as an **initializer**, which is the only form this EP claims.
+
+    The row dispatches `ew_cast_f32_to_f32` — an identity copy — so the proof it needs is not
+    "does the arithmetic hold" but "does the *reshaped* tensor come back with the right extents
+    and the right bytes in the right order". A copy that silently transposed would pass an
+    element-wise reference and fail here, because the reference is computed against the declared
+    output shape.
+
+    Two cases, because `shape_class` is a component of the proof key and BERT wants both: the
+    static form (48 of its 59 `Reshape` nodes key to `static`) and the runtime-extent form (7).
+    Neither is minted by any other case — `Reshape` is the first row whose kernel is borrowed
+    from `Cast`'s module but whose *op* differs, and the proof key carries the op.
+
+    The dynamic case has a **symbolic input extent and a fully-resolved target**, which is the
+    only runtime-extent form this row claims. A target with a free axis (`[-1, 4]`) was built
+    first and had to be withdrawn: ORT reports no output descriptor at all for an output whose
+    extents it could not resolve, so the translate handler has nothing to reshape *to* and the
+    island breaks its commitment at `Compute()`. The gate now declines that form, and this case
+    is what the gate does admit.
+
+    The shape operand is an initializer on purpose. 58 of BERT's 71 `Reshape` nodes take theirs
+    from a runtime `Cast`/`Concat`/`Shape` chain, and **no proof case can be built for that
+    form**, because the EP declines it at the gate for want of an inferred output rank. The
+    ledger should not pretend to cover what the gate never reaches.
+    """
+    if dynamic:
+        in_dims: list = [_DYN, 3, 4]
+        target = [6, 4]
+        out_dims: list = [6, 4]
+    else:
+        in_dims = [2, 3, 4]
+        target = [6, 4]
+        out_dims = [6, 4]
+    x = helper.make_tensor_value_info("X", elem, in_dims)
+    y = helper.make_tensor_value_info("Y", elem, out_dims)
+    shape_init = onnx.numpy_helper.from_array(np.array(target, dtype=np.int64), "shape")
+    node = helper.make_node("Reshape", ["X", "shape"], ["Y"], name="reshape0")
+    graph = helper.make_graph(
+        [node], "reshape_graph", [x], [y], initializer=[shape_init]
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
 def _isinf(elem: int, opset: int = 21, **attrs) -> onnx.ModelProto:
     """`IsInf`, whose two `detect_*` attributes select four different predicates.
 
@@ -930,8 +977,12 @@ BUILDERS.update({
     "isinf_f32": lambda: _isinf(TensorProto.FLOAT),
     "isinf_f32_pos_only": lambda: _isinf(TensorProto.FLOAT, detect_negative=0),
     "isinf_f32_neg_only": lambda: _isinf(TensorProto.FLOAT, detect_positive=0),
-    # The three Cast pairs the op suite exercises. Each is a different compiled module.
-    "cast_f32_to_i32": lambda: _cast(TensorProto.FLOAT, TensorProto.INT32),
+    # `Reshape` borrows `Cast`'s identity module but is its own op, so it is its own proof key.
+    # Both shape classes, because BERT's nodes key to both and a `static` proof does not
+    # describe the `runtime-extent` specialisation.
+    "reshape_f32": lambda: _reshape(TensorProto.FLOAT),
+    "reshape_f32_dyn": lambda: _reshape(TensorProto.FLOAT, dynamic=True),
+    # The three Cast pairs the op suite exercises. Each is a different compiled module.    "cast_f32_to_i32": lambda: _cast(TensorProto.FLOAT, TensorProto.INT32),
     "cast_i32_to_f32": lambda: _cast(TensorProto.INT32, TensorProto.FLOAT),
     "cast_f32_to_bool": lambda: _cast(TensorProto.FLOAT, TensorProto.BOOL),
     # `i64 -> i32` is the pair a real graph carries and the op suite did not: Phi-3.5 casts its
