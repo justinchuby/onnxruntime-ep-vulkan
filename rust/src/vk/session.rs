@@ -15,7 +15,7 @@ use std::sync::Arc;
 use ash::vk;
 
 use super::{
-    alloc::{Allocator, GpuBuffer, MemClass, record_download, record_upload},
+    alloc::{Allocator, GpuBuffer, MemClass, record_download, record_upload, record_upload_blocked},
     barrier::{Access, BufferDep},
     cmd::{CommandPool, create_and_submit, wait_fence_then_destroy},
     device::{Device, register_ep_device},
@@ -278,6 +278,16 @@ impl DispatchContext for CompileRecorder {
         crate::factory::kv_arena_enabled()
     }
 
+    /// Same answer as [`ShapeOnlyRecorder`]'s, from the same parser.
+    ///
+    /// Both passes must take the same branch inside a handler or the compile-time binding list
+    /// and the Compute-time one disagree about which token sits in a slot. The default
+    /// `bind_prefix_output` returns the *output* token, which is exactly what the alias means,
+    /// so the compile pass records the relation correctly without knowing about it.
+    fn kv_growing_alias(&self) -> bool {
+        crate::factory::kv_prefix_alias_enabled()
+    }
+
     fn bind_output(&mut self, o: &OutRef, desc: TensorDesc) -> EpResult<BufferView> {
         let size = desc.byte_size().unwrap_or(0) as u64;
         Ok(BufferView::from_raw(self.bind_token(&o.name, size)))
@@ -372,6 +382,10 @@ struct ShapeOnlyRecorder {
     /// `dispatch_ort` uses this to borrow an input buffer for the matching output slot,
     /// avoiding a redundant device allocation for in-place KV cache updates.
     pub aliased_pairs: Vec<(u64, u64)>,
+    /// Prefix-aliased output pairs: (out_token, in_token, layout). Populated by
+    /// `bind_prefix_output`. `dispatch_ort` uses this to skip the input's device allocation
+    /// entirely and stage its bytes into the output buffer's prefix instead.
+    pub prefix_pairs: Vec<(u64, u64, crate::engine::PrefixLayout)>,
 }
 
 impl ShapeOnlyRecorder {
@@ -389,6 +403,7 @@ impl ShapeOnlyRecorder {
             output_desc_by_token: Vec::new(),
             temp_descs: Vec::new(),
             aliased_pairs: Vec::new(),
+            prefix_pairs: Vec::new(),
         }
     }
 
@@ -410,6 +425,7 @@ impl ShapeOnlyRecorder {
             output_desc_by_token: Vec::new(),
             temp_descs: Vec::new(),
             aliased_pairs: Vec::new(),
+            prefix_pairs: Vec::new(),
         }
     }
 
@@ -477,6 +493,29 @@ impl DispatchContext for ShapeOnlyRecorder {
         let in_token = self.resolve_token(&input.name);
         self.aliased_pairs.push((out_token, in_token));
         Ok(BufferView::from_raw(in_token))
+    }
+
+    /// Read through the single crate-wide parser, for the same reason `kv_arena` does.
+    fn kv_growing_alias(&self) -> bool {
+        crate::factory::kv_prefix_alias_enabled()
+    }
+
+    /// Register a prefix-aliased output (growing KV cache staged into `present`'s prefix).
+    ///
+    /// Returns the **output's** token — the mirror image of `bind_aliased_output`, which
+    /// returns the input's. The handler binds this for both slots; `dispatch_ort` then finds
+    /// the input token bound by no kernel, skips its device allocation, and stages its host
+    /// bytes into the output buffer at `layout`'s strides.
+    fn bind_prefix_output(
+        &mut self,
+        input: BufferView,
+        out: &OutRef,
+        desc: TensorDesc,
+        layout: crate::engine::PrefixLayout,
+    ) -> EpResult<BufferView> {
+        let out_token = self.bind_token(&out.name, desc);
+        self.prefix_pairs.push((out_token, input.as_raw(), layout));
+        Ok(BufferView::from_raw(out_token))
     }
 
     fn alloc_temp(&mut self, desc: TensorDesc) -> EpResult<BufferView> {
@@ -1135,6 +1174,11 @@ impl VulkanSession {
         // Used in the output allocation loop to borrow an input buffer instead of allocating
         // a new device buffer for in-place KV cache outputs.
         let mut aliased_output_to_input: HashMap<usize, usize> = HashMap::new();
+        // Prefix-aliased output → (input_index, layout). Populated from `bind_prefix_output`.
+        // Used to skip the input's device allocation entirely and stage its host bytes into the
+        // output buffer's prefix instead.
+        let mut prefix_output_to_input: HashMap<usize, (usize, crate::engine::PrefixLayout)> =
+            HashMap::new();
 
         for (ki, kernel) in kernels.iter().enumerate() {
             let recipe = match &kernel.dyn_recipe {
@@ -1288,6 +1332,19 @@ impl VulkanSession {
                         aliased_output_to_input.insert(j, in_tok as usize);
                     }
                 }
+                // Prefix-aliased pairs: the input's bytes are staged into the output buffer's
+                // prefix, so the input needs no device buffer of its own. Same range check as
+                // above — a token outside the plan's input/output ranges names an intermediate
+                // or a temp, and neither can be a subgraph tensor.
+                for (out_tok, in_tok, layout) in sor.prefix_pairs {
+                    if out_tok >= n_plan_inputs as u64
+                        && out_tok < (n_plan_inputs + n_plan_outputs) as u64
+                        && in_tok < n_plan_inputs as u64
+                    {
+                        let j = (out_tok - n_plan_inputs as u64) as usize;
+                        prefix_output_to_input.insert(j, (in_tok as usize, layout));
+                    }
+                }
             } else {
                 log::error!(
                     "dispatch_ort: dynamic re-run of translate for op '{}' failed: {:?}",
@@ -1309,6 +1366,31 @@ impl VulkanSession {
 
         // ── Step 1a: bind the EP's own device buffers where ORT placed an input in them ──
         //
+        // Which subgraph inputs does any kernel in this island actually bind a descriptor to?
+        //
+        // Asked here, before a byte is allocated, because the allocation loop below is a loop over
+        // **all** inputs — the same shape as the `host_backing_for` defect on the input side of
+        // the KV round trip, which downloaded a device-authoritative span to return a staging
+        // address nothing read. `eff_bindings` is the authoritative descriptor-slot list and it is
+        // fully known at this point: static kernels carry `kernel.bindings` from Compile, and the
+        // dynamic pre-pass above has already filled `dyn_captured`. Resolving it twice (here and
+        // in the record loop) is not a duplication of *truth* — it is the same list read at the
+        // only two points that need it.
+        let input_referenced: Vec<bool> = {
+            let mut seen = vec![false; input_cpu_ptrs.len()];
+            for (ki, kernel) in kernels.iter().enumerate() {
+                let bindings: &[u64] = match dyn_captured[ki].as_ref() {
+                    Some((_, _, _, _, bi)) => bi.as_slice(),
+                    None => kernel.bindings.as_slice(),
+                };
+                for &token in bindings {
+                    if (token as usize) < seen.len() {
+                        seen[token as usize] = true;
+                    }
+                }
+            }
+            seen
+        };
         // §6.5's payoff. When `alloc_device_frame` is `SHARED`, an input ORT placed in this EP's
         // device memory already lives in a `VkBuffer` on the device we are about to dispatch on.
         // Binding it directly skips a fresh `DeviceLocal` allocation and a full re-upload per
@@ -1381,6 +1463,9 @@ impl VulkanSession {
         // We allocate everything upfront so cleanup is a single loop on error.
         let mut gpu_inputs: Vec<GpuBuffer> = Vec::new();
         let mut staging_ups: Vec<GpuBuffer> = Vec::new();
+        // Upload staging for the KV prefix copies. Deliberately NOT part of `staging_ups`:
+        // that vector's index *is* an input index, and three separate loops rely on it.
+        let mut staging_prefix: Vec<GpuBuffer> = Vec::new();
         let mut gpu_outputs: Vec<GpuBuffer> = Vec::new();
         let mut staging_dls: Vec<GpuBuffer> = Vec::new();
         // Intermediate buffers: one per inter-node edge in multi-node islands.
@@ -1389,14 +1474,15 @@ impl VulkanSession {
 
         macro_rules! bail {
             ($msg:literal) => {{
-                self.free_all(
+                self.free_all([
                     &mut gpu_inputs,
                     &mut staging_ups,
+                    &mut staging_prefix,
                     &mut gpu_outputs,
                     &mut staging_dls,
                     &mut gpu_intermediates,
                     &mut gpu_temps,
-                );
+                    ]);
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and `$msg` is
                 // a 'static NUL-terminated literal. `free_all` above has already released every
                 // buffer, so nothing owned by this frame outlives the return.
@@ -1406,6 +1492,18 @@ impl VulkanSession {
             }};
         }
 
+        let mut transient_input_bytes: u64 = 0;
+        let mut unreferenced_input_bytes: u64 = 0;
+        let mut unreferenced_input_count: usize = 0;
+        // The set of inputs a prefix alias claims. Built from the map, not from
+        // `input_referenced`: "no kernel binds it" is a *symptom* of the prefix alias, and
+        // acting on the symptom would also silently drop the staging of an input that went
+        // unbound for some other reason. The relation is declared; the skip follows the
+        // declaration.
+        let prefix_aliased_inputs: std::collections::HashSet<usize> = prefix_output_to_input
+            .values()
+            .map(|&(in_i, _)| in_i)
+            .collect();
         for (i, &sz) in actual_input_byte_sizes.iter().enumerate() {
             // Zero-element tensor (e.g., Phi-3.5 KV-cache on first-token prefill: shape
             // [1, H, 0, D]).  A zero-byte VkBuffer is invalid; Vulkan also requires
@@ -1430,6 +1528,27 @@ impl VulkanSession {
                     0,
                     MemClass::DeviceLocal,
                 ));
+                continue;
+            }
+            // Prefix-aliased: this input's bytes belong in an output buffer's prefix, and the
+            // output loop below allocates that buffer. Nothing is allocated here and nothing is
+            // uploaded here — the staged copy is recorded after the output loop, once the
+            // destination exists. `gpu_inputs[i]` stays a null sentinel, which is safe **only**
+            // because no kernel binds this token: the handler rebound the slot to the output's
+            // view when it declared the relation. Checked, not assumed — the sweep after the
+            // output loop refuses the Compute if the token turns out to be bound.
+            if prefix_aliased_inputs.contains(&i) {
+                gpu_inputs.push(GpuBuffer::borrowed_ref(
+                    vk::Buffer::null(),
+                    0,
+                    MemClass::DeviceLocal,
+                ));
+                staging_ups.push(GpuBuffer::borrowed_ref(
+                    vk::Buffer::null(),
+                    0,
+                    MemClass::DeviceLocal,
+                ));
+                crate::counters::transient_inputs::on_reuse(sz);
                 continue;
             }
             // Bound to the EP's own device buffer in Step 1a: no allocation, no upload. The bytes
@@ -1498,6 +1617,12 @@ impl VulkanSession {
             let Some(buf) = (unsafe { self.alloc.alloc_device(&format!("ep_in_{i}"), sz) }) else {
                 bail!("alloc_device failed for input buffer");
             };
+            if !input_referenced.get(i).copied().unwrap_or(true) {
+                unreferenced_input_count += 1;
+                unreferenced_input_bytes += sz;
+            }
+            transient_input_bytes += buf.size;
+            crate::counters::transient_inputs::on_alloc(buf.size);
             // SAFETY: same allocator, same live device, same non-zero size.
             let Some(stg) = (unsafe { self.alloc.alloc_upload(&format!("ep_stg_in_{i}"), sz) })
             else {
@@ -1508,6 +1633,14 @@ impl VulkanSession {
             };
             gpu_inputs.push(buf);
             staging_ups.push(stg);
+        }
+        crate::counters::transient_inputs::on_compute_peak(transient_input_bytes);
+        if unreferenced_input_count > 0 {
+            log::debug!(
+                "[VulkanEP] {unreferenced_input_count} subgraph input(s) totalling \
+                 {unreferenced_input_bytes} B were staged to the device but bound by no kernel \
+                 in this island"
+            );
         }
 
         // ── Step 1c: bind ORT's own output tensors where ORT placed them in this EP's memory ──
@@ -1627,6 +1760,7 @@ impl VulkanSession {
             }
         }
 
+
         // One sweep, after every path above, rather than a check at each of them: an aliased
         // output that is not bound to its input's buffer is a wrong answer whatever unbound it
         // — a declined span, a failed authority mark, or `BIND_OUTPUTS=0`, which skips the
@@ -1740,6 +1874,50 @@ impl VulkanSession {
             staging_dls.push(stg);
         }
 
+        // The prefix alias makes the same kind of claim and gets the same kind of sweep, before
+        // anything is recorded. The claim is: *no kernel binds the aliased input's token*, so
+        // leaving `gpu_inputs[i]` a null handle cannot be observed. If that is false, a
+        // descriptor write would name `VK_NULL_HANDLE` and the dispatch would read nothing — a
+        // wrong answer, which is the one outcome this must not produce. `input_referenced` was
+        // computed from the same `eff_bindings` list the record loop resolves, so this is the
+        // condition the record loop will actually meet, not a restatement of it.
+        for (&j, &(in_i, layout)) in prefix_output_to_input.iter() {
+            if input_referenced.get(in_i).copied().unwrap_or(true) {
+                log::error!(
+                    "[VulkanEP] prefix alias: output[{j}] claims input[{in_i}] as its prefix, \
+                     but input[{in_i}] is still bound by a kernel in this island; refusing."
+                );
+                bail!(
+                    "an output was declared a growing superset of an input (the KV prefix \
+                     alias: `present`'s first tokens are `past`'s bytes, so `past` is staged \
+                     into `present` and never allocated) but the input slot is still bound by \
+                     a kernel, which would read a null buffer. Set \
+                     ONNXRUNTIME_EP_VULKAN_KV_PREFIX_ALIAS=0 to take the two-buffer path."
+                );
+            }
+            // Geometry is declared by the handler and checked here, where the byte sizes live.
+            // `outer_blocks * src_block_bytes` must be the whole input, and the last block must
+            // land inside the output buffer. Neither is inferable from a rank at this layer.
+            let in_sz = actual_input_byte_sizes.get(in_i).copied().unwrap_or(0);
+            let out_sz = gpu_outputs.get(j).map(|b| b.size).unwrap_or(0);
+            if !layout.fits(in_sz, out_sz) {
+                log::error!(
+                    "[VulkanEP] prefix alias: output[{j}] <- input[{in_i}] geometry does not \
+                     check out: outer={} src_block={} dst_block={} input_bytes={in_sz} \
+                     output_bytes={out_sz}",
+                    layout.outer_blocks,
+                    layout.src_block_bytes,
+                    layout.dst_block_bytes
+                );
+                bail!(
+                    "the KV prefix alias declared a block geometry that does not account for \
+                     the input's bytes or does not fit inside the output buffer. Staging it \
+                     anyway would write past the end of a device allocation or leave part of \
+                     the past unwritten, so this EP refuses. Set \
+                     ONNXRUNTIME_EP_VULKAN_KV_PREFIX_ALIAS=0 to take the two-buffer path."
+                );
+            }
+        }
         // Allocate intermediate buffers for multi-node islands.
         // These are STORAGE_BUFFER only — a prior kernel writes them and a later kernel reads them;
         // they never need to be transferred to/from staging.
@@ -1825,7 +2003,24 @@ impl VulkanSession {
         let _cmd_upload_guard = t.phase(Phase::CmdUpload);
         let upload_t0 = std::time::Instant::now();
         let mut uploaded_bytes: u64 = 0;
-        for (i, (stg, &cpu_ptr)) in staging_ups.iter().zip(input_cpu_ptrs.iter()).enumerate() {
+        // `staging_ups` is index-parallel to `input_cpu_ptrs`, `gpu_inputs`,
+        // `actual_input_byte_sizes` and `input_is_constant`. Three loops in this function depend
+        // on that — this one, the `up_deps` builder, and the weight-cache insertion after the
+        // fence — and only the third would notice if it stopped being true, by panicking. So it
+        // is asserted once, here, where the vector is finished being built.
+        debug_assert_eq!(
+            staging_ups.len(),
+            input_cpu_ptrs.len(),
+            "staging_ups must stay index-parallel to the plan inputs; anything else belongs in \
+             its own vector"
+        );
+        let n_input_stagings = input_cpu_ptrs.len();
+        for (i, (stg, &cpu_ptr)) in staging_ups
+            .iter()
+            .take(n_input_stagings)
+            .zip(input_cpu_ptrs.iter())
+            .enumerate()
+        {
             // Skip cache hits — sentinel staging buffers are `borrowed` (size 0, null handle).
             if stg.borrowed {
                 continue;
@@ -1838,6 +2033,53 @@ impl VulkanSession {
             unsafe { record_upload(self.device.ash(), cmd, stg, &gpu_inputs[i], data) };
             uploaded_bytes += sz as u64;
         }
+        // Prefix-alias staging: the past tokens go straight into `present`'s prefix, blocked by
+        // the geometry the handler declared and this function already checked. Recorded in the
+        // same upload phase as everything else, so the barrier below covers it.
+        //
+        // Deterministic order: `prefix_output_to_input` is a `HashMap`, and two prefix pairs can
+        // name the same output only if the handler declared them so, which it cannot — one
+        // `bind_prefix_output` per output. Order is therefore immaterial to the result, and the
+        // sort is here so the *recorded command stream* is the same on every run, which is what
+        // makes a mismatch attributable.
+        let mut prefix_targets: Vec<(usize, usize, crate::engine::PrefixLayout)> =
+            prefix_output_to_input
+                .iter()
+                .map(|(&j, &(in_i, layout))| (j, in_i, layout))
+                .collect();
+        prefix_targets.sort_unstable_by_key(|&(j, _, _)| j);
+        let mut prefix_staged_bytes: u64 = 0;
+        for (j, in_i, layout) in prefix_targets.iter().copied() {
+            let sz = actual_input_byte_sizes[in_i] as usize;
+            // SAFETY: same contract as the input loop above — `input_cpu_ptrs[in_i]` is the
+            // pointer ORT gave us for that input and is valid for `sz` bytes for this call.
+            let data = unsafe { std::slice::from_raw_parts(input_cpu_ptrs[in_i], sz) };
+            let Some(stg) =
+                // SAFETY: the allocator is live for the duration of this session, and the name is
+                // a plain diagnostic string with no lifetime relationship to the buffer.
+                (unsafe { self.alloc.alloc_upload(&format!("ep_stg_prefix_{in_i}"), sz as u64) })
+            else {
+                drop(_cmd_upload_guard);
+                // SAFETY: `recorder` owns the command buffer begun above and has not been
+                // submitted, so ending it cannot race any GPU work.
+                let _ = unsafe { recorder.finish() };
+                bail!("alloc_upload failed for KV prefix staging");
+            };
+            // SAFETY: cmd is recording; `stg` is Upload and was just allocated at `sz` bytes;
+            // `gpu_outputs[j]` is DeviceLocal and the geometry was checked against its size.
+            prefix_staged_bytes += unsafe {
+                record_upload_blocked(
+                    self.device.ash(),
+                    cmd,
+                    &stg,
+                    &gpu_outputs[j],
+                    data,
+                    layout,
+                )
+            };
+            staging_prefix.push(stg);
+        }
+        uploaded_bytes += prefix_staged_bytes;
         // Record upload bytes + duration in the tracer summary.
         // record_transfer (not phase(Phase::Upload)) so the byte/bandwidth counters are emitted
         // without double-counting the duration in phase_us[Upload].
@@ -1858,6 +2100,7 @@ impl VulkanSession {
         // last use; read-after-read across queue submissions needs no barrier.
         let up_deps: Vec<BufferDep> = staging_ups
             .iter()
+            .take(n_input_stagings)
             .zip(gpu_inputs.iter())
             .filter(|(stg, _)| !stg.borrowed)
             .map(|(_, b)| BufferDep {
@@ -1868,6 +2111,22 @@ impl VulkanSession {
                 dst: Access::ShaderRead,
             })
             .collect();
+        // The prefix-alias destinations are `present` outputs, not inputs, so they are not in the
+        // zip above. Two dependencies each, because the shader both *reads* the staged prefix
+        // (past tokens) and *writes* past it (the new token): a TransferWrite→ShaderWrite WAW is
+        // a hazard in its own right and is not implied by the RAW.
+        let mut up_deps = up_deps;
+        for (j, _, _) in prefix_targets.iter().copied() {
+            for dst in [Access::ShaderRead, Access::ShaderWrite] {
+                up_deps.push(BufferDep {
+                    buffer: gpu_outputs[j].buffer,
+                    offset: 0,
+                    size: vk::WHOLE_SIZE,
+                    src: Access::TransferWrite,
+                    dst,
+                });
+            }
+        }
         // SAFETY: cmd is recording; all buffers are live.
         unsafe { self.device.barriers().buffer_deps(cmd, &up_deps) };
 
@@ -1944,14 +2203,15 @@ impl VulkanSession {
                 // been submitted, so ending it cannot race any GPU work. We discard the
                 // result because we are already on the error path.
                 let _ = unsafe { recorder.finish() };
-                self.free_all(
+                self.free_all([
                     &mut gpu_inputs,
                     &mut staging_ups,
+                    &mut staging_prefix,
                     &mut gpu_outputs,
                     &mut staging_dls,
                     &mut gpu_intermediates,
                     &mut gpu_temps,
-                );
+                    ]);
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
                 // this frame has been released above, so nothing outlives the return.
@@ -1981,14 +2241,15 @@ impl VulkanSession {
                 // been submitted, so ending it cannot race any GPU work. We discard the
                 // result because we are already on the error path.
                 let _ = unsafe { recorder.finish() };
-                self.free_all(
+                self.free_all([
                     &mut gpu_inputs,
                     &mut staging_ups,
+                    &mut staging_prefix,
                     &mut gpu_outputs,
                     &mut staging_dls,
                     &mut gpu_intermediates,
                     &mut gpu_temps,
-                );
+                    ]);
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
                 // this frame has been released above, so nothing outlives the return.
@@ -2015,14 +2276,15 @@ impl VulkanSession {
                 // been submitted, so ending it cannot race any GPU work. We discard the
                 // result because we are already on the error path.
                 let _ = unsafe { recorder.finish() };
-                self.free_all(
+                self.free_all([
                     &mut gpu_inputs,
                     &mut staging_ups,
+                    &mut staging_prefix,
                     &mut gpu_outputs,
                     &mut staging_dls,
                     &mut gpu_intermediates,
                     &mut gpu_temps,
-                );
+                    ]);
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
                 // this frame has been released above, so nothing outlives the return.
@@ -2081,14 +2343,15 @@ impl VulkanSession {
                 // been submitted, so ending it cannot race any GPU work. We discard the
                 // result because we are already on the error path.
                 let _ = unsafe { recorder.finish() };
-                self.free_all(
+                self.free_all([
                     &mut gpu_inputs,
                     &mut staging_ups,
+                    &mut staging_prefix,
                     &mut gpu_outputs,
                     &mut staging_dls,
                     &mut gpu_intermediates,
                     &mut gpu_temps,
-                );
+                    ]);
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
                 // this frame has been released above, so nothing outlives the return.
@@ -2296,14 +2559,15 @@ impl VulkanSession {
         // SAFETY: `recorder` owns the command buffer begun above; recording is complete and it
         // has not been submitted, so ending it cannot race any GPU work.
         let Some(cmd_buf) = (unsafe { recorder.finish() }) else {
-            self.free_all(
+            self.free_all([
                 &mut gpu_inputs,
                 &mut staging_ups,
+                &mut staging_prefix,
                 &mut gpu_outputs,
                 &mut staging_dls,
                 &mut gpu_intermediates,
                 &mut gpu_temps,
-            );
+                ]);
             // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
             // message is a 'static NUL-terminated literal. Every buffer allocated by
             // this frame has been released above, so nothing outlives the return.
@@ -2336,14 +2600,15 @@ impl VulkanSession {
             fence_opt
         };
         let Some(fence) = fence else {
-            self.free_all(
+            self.free_all([
                 &mut gpu_inputs,
                 &mut staging_ups,
+                &mut staging_prefix,
                 &mut gpu_outputs,
                 &mut staging_dls,
                 &mut gpu_intermediates,
                 &mut gpu_temps,
-            );
+                ]);
             // SAFETY: `api` is a valid ORT API pointer for this EP invocation.
             return unsafe {
                 crate::sys::make_status(api, ort::OrtErrorCode_ORT_EP_FAIL, "vkQueueSubmit failed")
@@ -2363,14 +2628,15 @@ impl VulkanSession {
         let host_t1 = onnx_runtime_tracer::absolute_now_us();
 
         if !fence_ok {
-            self.free_all(
+            self.free_all([
                 &mut gpu_inputs,
                 &mut staging_ups,
+                &mut staging_prefix,
                 &mut gpu_outputs,
                 &mut staging_dls,
                 &mut gpu_intermediates,
                 &mut gpu_temps,
-            );
+                ]);
             // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
             // message is a 'static NUL-terminated literal. Every buffer allocated by
             // this frame has been released above, so nothing outlives the return.
@@ -2523,14 +2789,15 @@ impl VulkanSession {
                 }
             }
         }
-        self.free_all(
+        self.free_all([
             &mut gpu_inputs,
             &mut staging_ups,
+            &mut staging_prefix,
             &mut gpu_outputs,
             &mut staging_dls,
             &mut gpu_intermediates,
             &mut gpu_temps,
-        );
+            ]);
         status
     }
 
@@ -2696,44 +2963,26 @@ impl VulkanSession {
         std::ptr::null_mut() // success
     }
 
-    /// Free all GPU buffers in all five pools, draining them.
+    /// Free all GPU buffers in every pool, draining them.
     ///
     /// Called on every error path. `GpuBuffer` has no `Drop` impl, so this must be explicit.
-    fn free_all(
-        &mut self,
-        gpu_inputs: &mut Vec<GpuBuffer>,
-        staging_ups: &mut Vec<GpuBuffer>,
-        gpu_outputs: &mut Vec<GpuBuffer>,
-        staging_dls: &mut Vec<GpuBuffer>,
-        gpu_intermediates: &mut Vec<GpuBuffer>,
-        gpu_temps: &mut Vec<GpuBuffer>,
-    ) {
+    ///
+    /// The doc used to say "all five pools" while the signature took six. That drift is the
+    /// reason this now takes a fixed-size array: the count lives in one place.
+    fn free_all(&mut self, pools: [&mut Vec<GpuBuffer>; 7]) {
         // Each buffer was produced by `self.alloc` and has not been freed. Every caller reaches
         // here either before submission or after `vkWaitForFences`, so no GPU work references
         // them. `GpuBuffer` has no `Drop`, which is why the frees are explicit.
-        for b in gpu_inputs.drain(..) {
-            // SAFETY: as above — owned by this allocator, unfreed, not in flight.
-            unsafe { self.alloc.free(b) };
-        }
-        for b in staging_ups.drain(..) {
-            // SAFETY: as above.
-            unsafe { self.alloc.free(b) };
-        }
-        for b in gpu_outputs.drain(..) {
-            // SAFETY: as above.
-            unsafe { self.alloc.free(b) };
-        }
-        for b in staging_dls.drain(..) {
-            // SAFETY: as above.
-            unsafe { self.alloc.free(b) };
-        }
-        for b in gpu_intermediates.drain(..) {
-            // SAFETY: as above.
-            unsafe { self.alloc.free(b) };
-        }
-        for b in gpu_temps.drain(..) {
-            // SAFETY: as above.
-            unsafe { self.alloc.free(b) };
+        //
+        // Taken as one array rather than seven parameters so that adding a pool is one edit at
+        // each call site and cannot silently omit a pool: a fixed-size array will not compile
+        // short. The order is inputs, input staging, KV prefix staging, outputs, download
+        // staging, intermediates, temps.
+        for pool in pools {
+            for b in pool.drain(..) {
+                // SAFETY: as above — owned by this allocator, unfreed, not in flight.
+                unsafe { self.alloc.free(b) };
+            }
         }
     }
 }

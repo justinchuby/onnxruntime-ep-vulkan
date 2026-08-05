@@ -3491,6 +3491,71 @@ mod tests {
         );
     }
 
+    /// The KV-prefix-alias flag reads the same twelve spellings — with the polarity **reversed**,
+    /// which is the whole point of the test.
+    ///
+    /// Every other flag in `factory.rs` ships OFF and fails towards the shipping path. This one
+    /// ships ON, because what it changes is not what the caller must do but whether the shipping
+    /// lane runs at all, and a fix behind an off-by-default flag does not fix the defect. The
+    /// consequence is that the "typo fails safe" argument runs the *other* way here: a misspelled
+    /// `ONNXRUNTIME_EP_VULKAN_KV_PREFIX_ALIAS=of` must leave the alias ON, not silently take the
+    /// two-buffer path, because the two-buffer path is the one that cannot allocate. Asserted
+    /// explicitly below rather than left as a comment, since it is the opposite of the habit
+    /// every other flag in this file trains.
+    ///
+    /// The second assertion is the one-parser claim: `DispatchContext::kv_growing_alias` — the
+    /// value an op handler actually sees — is that same function's answer and not a second
+    /// reading of the variable.
+    #[test]
+    fn every_spelling_of_the_kv_prefix_alias_flag_reads_the_same_at_both_ends() {
+        use crate::engine::DispatchContext;
+        let _g = ledger::test_lock();
+        let saved = std::env::var(crate::factory::ENV_KV_PREFIX_ALIAS).ok();
+        for (value, expected) in [
+            ("0", false),
+            ("off", false),
+            ("false", false),
+            ("no", false),
+            (" OFF ", false),
+            ("1", true),
+            ("true", true),
+            ("", true),
+            ("of", true),
+            ("disabled", true),
+            ("2", true),
+            ("yes", true),
+        ] {
+            // SAFETY: single-threaded test holding the process-global test lock; the variable is
+            // restored before returning.
+            unsafe { std::env::set_var(crate::factory::ENV_KV_PREFIX_ALIAS, value) };
+            let parser_side = crate::factory::kv_prefix_alias_enabled();
+            let context_side = crate::vk::session::CompileRecorder::new(0).kv_growing_alias();
+            assert_eq!(
+                parser_side, context_side,
+                "ONNXRUNTIME_EP_VULKAN_KV_PREFIX_ALIAS={value:?}: the parser says {parser_side} \
+                 and the dispatch context says {context_side}. A second reader is how the \
+                 device-memory flag came to half-arm the EP."
+            );
+            assert_eq!(
+                parser_side, expected,
+                "ONNXRUNTIME_EP_VULKAN_KV_PREFIX_ALIAS={value:?} must read {expected}"
+            );
+        }
+        // The unset case is the shipping case and is asserted separately: absence must read ON.
+        // SAFETY: see above.
+        unsafe { std::env::remove_var(crate::factory::ENV_KV_PREFIX_ALIAS) };
+        assert!(
+            crate::factory::kv_prefix_alias_enabled(),
+            "with the variable unset the prefix alias must be ON — that is the shipping lane"
+        );
+        // SAFETY: see above.
+        unsafe {
+            if let Some(v) = saved {
+                std::env::set_var(crate::factory::ENV_KV_PREFIX_ALIAS, v);
+            }
+        }
+    }
+
     /// The KV-arena flag reads the same twelve spellings the device-memory flag does, and
     /// reaches the dispatch context through the **one** parser.
     ///

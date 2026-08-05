@@ -178,6 +178,48 @@ impl BufferView {
     }
 }
 
+/// The geometry of a **prefix alias** — see [`DispatchContext::bind_prefix_output`].
+///
+/// The relation is stated by the handler, which knows the tensor's semantics, and *checked* by
+/// the engine, which knows the byte sizes. Nothing about it is inferred from a shape at the
+/// engine end: the axis a KV cache grows along is not a fact `vk/` can read off a rank.
+///
+/// The declared copy is `outer_blocks` regions of `src_block_bytes`, region `k` running from
+/// `k * src_block_bytes` in the source to `k * dst_block_bytes` in the destination. For
+/// `[B, Nkv, P, D]` fp16 into `[B, Nkv, P+S, D]` fp16 that is `B*Nkv` blocks of `P*D*2` bytes
+/// at a destination stride of `(P+S)*D*2`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrefixLayout {
+    /// Number of contiguous source regions, i.e. the product of the dimensions outside the axis
+    /// the tensor grows along.
+    pub outer_blocks: u64,
+    /// Bytes per source block. `outer_blocks * src_block_bytes` must equal the input's size.
+    pub src_block_bytes: u64,
+    /// Destination stride in bytes. Must be `>= src_block_bytes`.
+    pub dst_block_bytes: u64,
+}
+
+impl PrefixLayout {
+    /// Does this geometry account for exactly `in_bytes` of source and land entirely inside
+    /// `out_bytes` of destination?
+    ///
+    /// Every arithmetic step is checked: the geometry arrives from a translate handler that
+    /// computed it from ONNX shapes, and a shape that overflows `u64` must refuse rather than
+    /// wrap into a plausible-looking offset.
+    pub fn fits(&self, in_bytes: u64, out_bytes: u64) -> bool {
+        let last_end = self
+            .outer_blocks
+            .checked_sub(1)
+            .and_then(|k| k.checked_mul(self.dst_block_bytes))
+            .and_then(|off| off.checked_add(self.src_block_bytes));
+        self.outer_blocks > 0
+            && self.src_block_bytes > 0
+            && self.src_block_bytes <= self.dst_block_bytes
+            && self.outer_blocks.checked_mul(self.src_block_bytes) == Some(in_bytes)
+            && last_end.is_some_and(|e| e <= out_bytes)
+    }
+}
+
 // -------------------------------------------------------------------------------------------
 // Device memory for ORT-owned tensors
 // -------------------------------------------------------------------------------------------
@@ -590,6 +632,57 @@ pub trait DispatchContext {
         false
     }
 
+    // ── Seam 3b: the growing-cache PREFIX alias ────────────────────────────────────────
+
+    /// Does this engine implement [`DispatchContext::bind_prefix_output`]?
+    ///
+    /// The **growing** KV convention (`present` is `[B, Nkv, P+S, D]`, `past` is
+    /// `[B, Nkv, P, D]`) is not an alias in the arena sense — the extents differ, so one buffer
+    /// cannot *be* the other. But `present`'s first `P` tokens are, per outer block, exactly
+    /// `past`'s bytes: the kernel's own first act is to copy them across. Under the prefix
+    /// alias the engine stages `past` **into `present`'s prefix** instead, binds `present` for
+    /// the `past_*` slots too, and never allocates a `past` buffer at all.
+    ///
+    /// MEASURED 2026-08-04 (`bench/results/ctx4096_BEFORE.json`), which is why this exists: on
+    /// Phi-3.5 the shipping lane's device-local peak is the resident weight cache
+    /// (2,290,839,552 B) plus **two** copies of the KV extent — `past` inputs and `present`
+    /// outputs, 393,216 B per past token each. The second copy is thrown away at the end of
+    /// every `Compute`, and it is what puts the peak over this device's budget somewhere
+    /// between `past_len` 2048 and 3072.
+    ///
+    /// **Default:** `false`. A handler that does not consult it keeps shipping behaviour, and a
+    /// stub context in a unit test can state the convention it is testing without a
+    /// process-wide variable — the same reason [`DispatchContext::kv_arena`] is here.
+    fn kv_growing_alias(&self) -> bool {
+        false
+    }
+
+    /// Declare that `out` is a **growing superset** of the already-resolved input `input`:
+    /// per outer block, `input`'s bytes are the head of `out`'s block.
+    ///
+    /// Returns the buffer to bind for `out` **and for `input`** — the caller must use the
+    /// returned view for both, and must tell its kernel to read the input at `out`'s stride
+    /// (for `gqa_f16` that is `past_stride == present_len`, which is exactly the condition its
+    /// `copy_leader` predicate already reads, so no shader changes).
+    ///
+    /// `input` is a [`BufferView`], not a [`TensorRef`], on purpose: resolving a name twice
+    /// advances the positional-mode token counter, so a seam that re-resolved would mint a
+    /// different token for a single-node island than the one the handler already holds.
+    ///
+    /// **Default:** ignores the relation and returns a plain [`DispatchContext::bind_output`],
+    /// which is the shipping path and is correct for any allocation.
+    fn bind_prefix_output(
+        &mut self,
+        input: BufferView,
+        out: &OutRef,
+        desc: TensorDesc,
+        layout: PrefixLayout,
+    ) -> EpResult<BufferView> {
+        let _ = input;
+        let _ = layout;
+        self.bind_output(out, desc)
+    }
+
     // ── Seam 4: indirect dispatch for QMoE (OP_COVERAGE.md §9.5 #2) ─────────────────────
 
     /// Record a dispatch with device-computed workgroup counts.
@@ -810,6 +903,107 @@ pub mod shaders {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Phi-3.5 decode step at past_len 2048: `past` is [1,32,2048,96] f16, `present` is
+    /// [1,32,2049,96] f16, so 32 blocks of 2048*96*2 bytes landing at a 2049*96*2 stride.
+    fn phi35_layout(past_len: u64) -> (PrefixLayout, u64, u64) {
+        let (blocks, head_dim, elem) = (32u64, 96u64, 2u64);
+        let src = past_len * head_dim * elem;
+        let dst = (past_len + 1) * head_dim * elem;
+        (
+            PrefixLayout {
+                outer_blocks: blocks,
+                src_block_bytes: src,
+                dst_block_bytes: dst,
+            },
+            blocks * src,
+            blocks * dst,
+        )
+    }
+
+    #[test]
+    fn a_prefix_layout_that_tiles_the_input_and_fits_the_output_is_accepted() {
+        let (layout, in_sz, out_sz) = phi35_layout(2048);
+        assert!(layout.fits(in_sz, out_sz));
+    }
+
+    #[test]
+    fn a_prefix_layout_is_accepted_when_the_last_block_ends_exactly_at_the_output_end() {
+        // The tightest legal case: equal strides, so the last region ends on the final byte.
+        let layout = PrefixLayout {
+            outer_blocks: 4,
+            src_block_bytes: 16,
+            dst_block_bytes: 16,
+        };
+        assert!(layout.fits(64, 64));
+        assert!(!layout.fits(64, 63));
+    }
+
+    #[test]
+    fn a_prefix_layout_that_does_not_account_for_every_source_byte_is_refused() {
+        let (mut layout, in_sz, out_sz) = phi35_layout(2048);
+        layout.outer_blocks = 31;
+        assert!(
+            !layout.fits(in_sz, out_sz),
+            "31 blocks leave a whole head's past unwritten; staging it would be a wrong answer"
+        );
+    }
+
+    #[test]
+    fn a_prefix_layout_wider_than_its_destination_stride_is_refused() {
+        // src > dst makes the regions overlap in the destination, which the spec forbids and
+        // which no amount of ordering makes well-defined.
+        let layout = PrefixLayout {
+            outer_blocks: 4,
+            src_block_bytes: 20,
+            dst_block_bytes: 16,
+        };
+        assert!(!layout.fits(80, 4096));
+    }
+
+    #[test]
+    fn a_prefix_layout_whose_last_block_runs_past_the_output_is_refused() {
+        let (layout, in_sz, _) = phi35_layout(2048);
+        // Note the arithmetic: the *natural* output size (blocks * dst_block_bytes) has
+        // `dst - src` bytes of slack past the last region, because the final block is a source
+        // block at a destination stride. The binding case is therefore one byte below the last
+        // region's end, not one byte below the buffer's nominal size — shaving the buffer by one
+        // byte is still legal, and a test that asserted otherwise would be asserting the wrong
+        // bound.
+        let last_end = (layout.outer_blocks - 1) * layout.dst_block_bytes + layout.src_block_bytes;
+        assert!(layout.fits(in_sz, last_end));
+        assert!(!layout.fits(in_sz, last_end - 1));
+    }
+
+    #[test]
+    fn a_degenerate_prefix_layout_is_refused_rather_than_treated_as_a_no_op() {
+        for layout in [
+            PrefixLayout {
+                outer_blocks: 0,
+                src_block_bytes: 16,
+                dst_block_bytes: 16,
+            },
+            PrefixLayout {
+                outer_blocks: 4,
+                src_block_bytes: 0,
+                dst_block_bytes: 16,
+            },
+        ] {
+            assert!(!layout.fits(0, 4096));
+            assert!(!layout.fits(64, 4096));
+        }
+    }
+
+    #[test]
+    fn a_prefix_layout_that_overflows_u64_refuses_instead_of_wrapping() {
+        let layout = PrefixLayout {
+            outer_blocks: u64::MAX,
+            src_block_bytes: 4,
+            dst_block_bytes: u64::MAX,
+        };
+        assert!(!layout.fits(0, u64::MAX));
+        assert!(!layout.fits(u64::MAX, u64::MAX));
+    }
 
     #[test]
     fn dtype_sizes() {

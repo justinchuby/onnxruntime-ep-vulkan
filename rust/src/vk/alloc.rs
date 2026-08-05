@@ -54,8 +54,7 @@
 //! `engine::BufferView` token side-table in `ep.rs`.
 
 use ash::vk;
-use gpu_allocator::MemoryLocation;
-use gpu_allocator::vulkan::{
+use gpu_allocator::MemoryLocation;use gpu_allocator::vulkan::{
     Allocation, AllocationCreateDesc, AllocationScheme, Allocator as GpuAllocator,
     AllocatorCreateDesc,
 };
@@ -452,6 +451,84 @@ pub(crate) unsafe fn record_upload(
     }];
     // SAFETY: cmd is in recording state; all buffers are valid handles from this device.
     unsafe { ash_device.cmd_copy_buffer(cmd, staging.buffer, dst.buffer, &copy_region) };
+}
+
+/// Record a **blocked** staging upload: `outer_blocks` contiguous source regions of
+/// `src_block_bytes`, region `k` landing at `k * dst_block_bytes` in `dst`.
+///
+/// This is [`record_upload`] with a destination stride. It exists for the KV prefix alias:
+/// `past` is `[B, Nkv, P, D]` contiguous and `present` is `[B, Nkv, P+S, D]`, so `past`'s bytes
+/// are `B*Nkv` runs that land at a wider stride. One `vkCmdCopyBuffer` with `B*Nkv` regions does
+/// it; the alternative — a device buffer for `past` and a shader copy — is the allocation this
+/// removes.
+///
+/// The regions are pairwise disjoint in `dst` because `src_block_bytes <= dst_block_bytes`
+/// (checked by the caller, which is the only place the byte sizes are known), so the copy is
+/// well-defined regardless of the order the driver executes the regions in — §7.5's
+/// "regions must not overlap" is satisfied by construction rather than by inspection.
+///
+/// Returns the number of bytes recorded.
+///
+/// The caller is responsible for the `TRANSFER_WRITE → SHADER_READ` barrier on `dst`.
+///
+/// # Safety
+/// - `cmd` must be in the recording state.
+/// - `staging` must be a [`MemClass::Upload`] buffer large enough to hold `src`.
+/// - `dst` must be a [`MemClass::DeviceLocal`] buffer with room for the last region.
+/// - `ash_device` must be the device that owns all three objects.
+pub(crate) unsafe fn record_upload_blocked(
+    ash_device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    staging: &GpuBuffer,
+    dst: &GpuBuffer,
+    src: &[u8],
+    layout: crate::engine::PrefixLayout,
+) -> u64 {
+    let crate::engine::PrefixLayout {
+        outer_blocks,
+        src_block_bytes,
+        dst_block_bytes,
+    } = layout;
+    debug_assert!(
+        staging.mem_class == MemClass::Upload,
+        "staging buffer must be MemClass::Upload"
+    );
+    debug_assert!(
+        src.len() as u64 <= staging.size,
+        "src ({} bytes) exceeds staging buffer size ({})",
+        src.len(),
+        staging.size,
+    );
+    debug_assert!(
+        src_block_bytes <= dst_block_bytes,
+        "a prefix copy cannot have a source block wider than its destination stride"
+    );
+    debug_assert_eq!(
+        outer_blocks * src_block_bytes,
+        src.len() as u64,
+        "the declared block geometry must account for every source byte"
+    );
+
+    if let Some(ptr) = staging.mapped_ptr() {
+        // SAFETY: ptr is a valid mapped pointer for at least staging.size bytes; src.len()
+        // <= staging.size (asserted above).
+        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), ptr, src.len()) };
+    } else {
+        log::error!("record_upload_blocked: Upload buffer has no mapped pointer — alloc bug");
+        return 0;
+    }
+
+    let regions: Vec<vk::BufferCopy> = (0..outer_blocks)
+        .map(|k| vk::BufferCopy {
+            src_offset: k * src_block_bytes,
+            dst_offset: k * dst_block_bytes,
+            size: src_block_bytes,
+        })
+        .collect();
+    // SAFETY: cmd is in recording state; all buffers are valid handles from this device; every
+    // region lies inside its buffer (the caller checked the geometry against both byte sizes).
+    unsafe { ash_device.cmd_copy_buffer(cmd, staging.buffer, dst.buffer, &regions) };
+    outer_blocks * src_block_bytes
 }
 
 /// Record a `vkCmdCopyBuffer` from a device-local buffer into a host-visible `Download` buffer.
