@@ -466,6 +466,112 @@ pub mod weights {
     }
 }
 
+/// The **transient per-`Compute` input allocation** — the thing that stops the shipping lane.
+///
+/// # Why this frame exists, and why it is not `session_device_high_water_bytes`
+///
+/// `weights::session_device_high_water_bytes` is the peak of *everything* the session allocator
+/// held: the weight cache (paid once, resident for the session) plus every transient buffer a
+/// `Compute` allocated and freed. It rises at ctx 4096 and it rises at ctx 512, and it cannot say
+/// which term moved. The defect
+/// `device_memory_ctx4096_shipping_lane_cannot_run` is specifically about the term that is
+/// allocated and freed **inside one `Compute` call**, on the **input** side, and grows with
+/// `past_len`. That term needs its own reading or "the fix worked" is inferred from a total.
+///
+/// This frame closes the defect on a **counter**, not on a green exit. A run that silently
+/// rebuilds on the CPU EP also has a small transient total — because it executed nothing — so
+/// every reading here is only admissible alongside `dispatches_executed > 0`.
+///
+/// * `transient_input_device_bytes` — cumulative device-local bytes the per-`Compute` input loop
+///   allocated across the run. Grows linearly in `past_len` when the KV inputs are staged.
+/// * `transient_input_device_peak_bytes` — the largest simultaneous total the input loop held
+///   inside a single `Compute`. This is the figure that has to fit next to the weight cache.
+/// * `transient_input_reused_bytes` — bytes the input loop did **not** allocate because the
+///   session's per-slot arena already held a buffer of at least that size. The complement of
+///   `transient_input_device_bytes`: the two together are what a naive loop would have allocated.
+/// * `transient_input_arena_resident_bytes` — what the arena holds right now. It is not free: it
+///   trades a per-call peak for a resident floor, and quoting the peak drop without this number
+///   would be quoting one side of a trade.
+pub mod transient_inputs {
+    use super::ORD;
+    use std::sync::atomic::AtomicU64;
+
+    static ALLOCS: AtomicU64 = AtomicU64::new(0);
+    static BYTES: AtomicU64 = AtomicU64::new(0);
+    static PEAK: AtomicU64 = AtomicU64::new(0);
+    static REUSES: AtomicU64 = AtomicU64::new(0);
+    static REUSED_BYTES: AtomicU64 = AtomicU64::new(0);
+    static ARENA_BYTES: AtomicU64 = AtomicU64::new(0);
+    static ARENA_BUFFERS: AtomicU64 = AtomicU64::new(0);
+    static ARENA_RELEASES: AtomicU64 = AtomicU64::new(0);
+
+    /// One device-local buffer was allocated by the per-`Compute` input loop.
+    pub fn on_alloc(bytes: u64) {
+        ALLOCS.fetch_add(1, ORD);
+        let _ = BYTES.fetch_update(ORD, ORD, |c| Some(c.saturating_add(bytes)));
+    }
+
+    /// The input loop finished one `Compute` holding `bytes` transient device-local bytes.
+    pub fn on_compute_peak(bytes: u64) {
+        PEAK.fetch_max(bytes, ORD);
+    }
+
+    /// The input loop reused an arena slot instead of allocating.
+    pub fn on_reuse(bytes: u64) {
+        REUSES.fetch_add(1, ORD);
+        let _ = REUSED_BYTES.fetch_update(ORD, ORD, |c| Some(c.saturating_add(bytes)));
+    }
+
+    /// The arena's resident footprint changed. Saturating for the same reason as
+    /// `weights::on_device_alloc`: a counter must never be able to abort the thing it observes.
+    pub fn on_arena_insert(bytes: u64) {
+        ARENA_BUFFERS.fetch_add(1, ORD);
+        let _ = ARENA_BYTES.fetch_update(ORD, ORD, |c| Some(c.saturating_add(bytes)));
+    }
+
+    /// An arena slot was released (grown out of, or torn down with the session).
+    pub fn on_arena_remove(bytes: u64) {
+        let _ = ARENA_BUFFERS.fetch_update(ORD, ORD, |c| Some(c.saturating_sub(1)));
+        let _ = ARENA_BYTES.fetch_update(ORD, ORD, |c| Some(c.saturating_sub(bytes)));
+    }
+
+    /// `release_input_arena` ran for one subgraph. The **call count** is the wiring artifact: it
+    /// is 0 on a run where the release path never executes, whatever the source tree says.
+    pub fn on_arena_release() {
+        ARENA_RELEASES.fetch_add(1, ORD);
+    }
+
+    /// `(allocs, bytes, peak, reuses, reused_bytes, arena_bytes, arena_buffers, arena_releases)`.
+    #[allow(clippy::type_complexity)]
+    pub fn snapshot() -> (u64, u64, u64, u64, u64, u64, u64, u64) {
+        (
+            ALLOCS.load(ORD),
+            BYTES.load(ORD),
+            PEAK.load(ORD),
+            REUSES.load(ORD),
+            REUSED_BYTES.load(ORD),
+            ARENA_BYTES.load(ORD),
+            ARENA_BUFFERS.load(ORD),
+            ARENA_RELEASES.load(ORD),
+        )
+    }
+
+    pub fn reset() {
+        for c in [
+            &ALLOCS,
+            &BYTES,
+            &PEAK,
+            &REUSES,
+            &REUSED_BYTES,
+            &ARENA_BYTES,
+            &ARENA_BUFFERS,
+            &ARENA_RELEASES,
+        ] {
+            c.store(0, ORD);
+        }
+    }
+}
+
 /// One field of [`VulkanEpCounters`], as the **compiler** sees it.
 ///
 /// `offset` is `std::mem::offset_of!`, not a number anyone typed. This is the manifest my
@@ -2377,6 +2483,7 @@ pub fn reset() {
     // other; a reset that clears one and not the other is how a test reads another test's traffic.
     staging::reset();
     weights::reset();
+    transient_inputs::reset();
     VIABLE_ISLANDS_RETAINED.store(0, ORD);
     NET_BENEFIT_CLUSTERS_SEEN.store(0, ORD);
     NET_BENEFIT_GATE_EVALUATIONS.store(0, ORD);
@@ -2716,6 +2823,7 @@ pub fn dump_observations_if_requested() {
     let t = crate::allocator::tally::snapshot();
     let st = staging::snapshot();
     let wc = weights::snapshot();
+    let ti = transient_inputs::snapshot();
     // §10.0.1 R12 — frame provenance. `alloc_device_authoritative_spans` can only ever be non-zero
     // when the provider's buffers are on the device the engine dispatches on (§6.5). In any other
     // frame the event it counts cannot occur, so the artifact prints the JSON *string*
@@ -2793,6 +2901,14 @@ pub fn dump_observations_if_requested() {
              \"weight_cache_release_buffers\": {},\n  \
              \"weight_cache_release_bytes\": {},\n  \
              \"weight_cache_bytes_resident\": {},\n  \
+             \"transient_input_device_allocs\": {},\n  \
+             \"transient_input_device_bytes\": {},\n  \
+             \"transient_input_device_peak_bytes\": {},\n  \
+             \"transient_input_reuses\": {},\n  \
+             \"transient_input_reused_bytes\": {},\n  \
+             \"transient_input_arena_resident_bytes\": {},\n  \
+             \"transient_input_arena_buffers\": {},\n  \
+             \"transient_input_arena_releases\": {},\n  \
              \"counters_snapshot_writes\": {},\n  \
              \"counters_snapshot_write_failures\": {}\n}}\n",
             o.observed,
@@ -2853,6 +2969,14 @@ pub fn dump_observations_if_requested() {
             wc.5,
             wc.6,
             wc.7,
+            ti.0,
+            ti.1,
+            ti.2,
+            ti.3,
+            ti.4,
+            ti.5,
+            ti.6,
+            ti.7,
             SNAPSHOT_WRITES.load(ORD),
             SNAPSHOT_WRITE_FAILURES.load(ORD),
         ));

@@ -612,6 +612,37 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     let arena = ctx.kv_arena() && declared_present_len.is_none() && past_len_max >= seq_len;
     let present_len = if arena { past_len_max } else { present_len };
     let shares_past_buffer = past_len_max > 0 && present_len == past_len_max;
+    // -- The prefix alias ---------------------------------------------------------------
+    //
+    // Under the growing convention `present[0..past_len_max]` is, per `(b, kv_h)` block,
+    // exactly `past`'s bytes — the shader's own first act (`copy_leader`) is to put them
+    // there. So `past` is a device allocation whose entire contents are copied into another
+    // device allocation we also made, and then discarded; both are live at once, and their
+    // sum is what the peak cannot afford. MEASURED 2026-08-04
+    // (`bench/results/ctx4096_BEFORE.json`): the shipping lane's device-local peak on Phi-3.5
+    // is the resident weight cache (2,290,839,552 B) plus **2 x** 393,216 B per past token,
+    // and it stops executing between `past_len` 2048 and 3072 — exit 0, zero EP dispatches.
+    //
+    // Two things make this the arena's own soundness argument rather than a new one:
+    //
+    //  1. **`past_stride` becomes `present_len`,** so the shader reads past token `t` at
+    //     `(b*Nkv + kv_h) * present_len * D + t*D` — where the staged copy put it — and
+    //     `copy_leader` (`present_len != past_stride`) goes false.
+    //  2. **The read and write sets stay disjoint,** by the identical argument: reads are
+    //     `t < past_len`, the write is `tok_pos = past_len + s_local >= past_len`, at a
+    //     common base. That is `gqa_f16.comp` step 3 vs step 4, unchanged. No shader changes.
+    //
+    // Declined — falling back to the two-buffer shipping path, which is correct for any
+    // allocation — whenever the relation is not provable here: the shared-buffer convention
+    // (already an alias), a non-growing declared extent, or an empty past (prefill, where
+    // there is nothing to stage and `past` is a zero-element placeholder).
+    let prefix_alias = !shares_past_buffer
+        && ctx.kv_growing_alias()
+        && past_len_max > 0
+        && present_len > past_len_max
+        && batch_size > 0
+        && kv_num_heads > 0
+        && head_dim > 0;
     let kv_desc = TensorDesc::new(
         dtype,
         vec![
@@ -628,6 +659,21 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
             ctx.bind_aliased_output(&node.inputs[3], pres_k_ref, kv_desc.clone())?,
             ctx.bind_aliased_output(&node.inputs[4], pres_v_ref, kv_desc)?,
         )
+    } else if prefix_alias {
+        // Growing cache, PREFIX alias: one buffer, not two. `bind_prefix_output` hands back
+        // the *present* buffer for the `past_*` slots as well; the engine stages `past`'s host
+        // bytes straight into `present`'s prefix at the strides declared here, and never
+        // allocates a `past` buffer at all.
+        let elem = dtype.byte_size() as u64;
+        let layout = crate::engine::PrefixLayout {
+            outer_blocks: batch_size as u64 * kv_num_heads as u64,
+            src_block_bytes: past_len_max as u64 * head_dim as u64 * elem,
+            dst_block_bytes: present_len as u64 * head_dim as u64 * elem,
+        };
+        (
+            ctx.bind_prefix_output(past_k_buf, pres_k_ref, kv_desc.clone(), layout)?,
+            ctx.bind_prefix_output(past_v_buf, pres_v_ref, kv_desc, layout)?,
+        )
     } else {
         // Growing cache: bind fresh present buffers. The shader copies the past tokens in
         // and appends the new ones, so the output is the whole cache ORT expects.
@@ -636,7 +682,20 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
             ctx.bind_output(pres_v_ref, kv_desc)?,
         )
     };
-
+    // Under the prefix alias the shader reads `past` out of the `present` buffer, so the two
+    // slots bind the same view and the past stride is the present stride. That second equality
+    // is also the condition that switches the shader's own past-copy off (`copy_leader`), which
+    // is correct: the copy it would have made has already happened, by `vkCmdCopyBuffer`.
+    let (past_k_buf, past_v_buf) = if prefix_alias {
+        (pres_k_buf, pres_v_buf)
+    } else {
+        (past_k_buf, past_v_buf)
+    };
+    let past_read_stride = if prefix_alias {
+        present_len
+    } else {
+        past_len_max
+    };
     // -- Push constants (36 bytes, matches shader PC struct) ---------------------------
     // Field 6 stays the KV *write* stride (the present buffer's S dimension); field 7 is
     // the past buffer's S dimension. They were one field while the two were assumed equal.
@@ -648,7 +707,7 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     push.extend_from_slice(&head_dim.to_le_bytes());
     push.extend_from_slice(&rotary_dim.to_le_bytes());
     push.extend_from_slice(&present_len.to_le_bytes());
-    push.extend_from_slice(&past_len_max.to_le_bytes());
+    push.extend_from_slice(&past_read_stride.to_le_bytes());
     push.extend_from_slice(&scale.to_bits().to_le_bytes());
 
     // -- Dispatch: one invocation per (batch, query_head, query_seq_pos) ---------------
@@ -1229,6 +1288,171 @@ mod tests {
             u32::from_le_bytes(pc[28..32].try_into().unwrap()),
             "the two strides coincide exactly when the buffer is shared — and the shader \
              uses that equality to skip the past->present copy"
+        );
+    }
+
+    /// A `Recorder` that declares the **growing prefix alias** convention.
+    ///
+    /// Like `ArenaRecorder`, the convention is stated on the context rather than through
+    /// `std::env`, so these arms cannot race the flag tests in the same binary. It records the
+    /// `(present_view, past_view, layout)` triples the engine would act on, which is the only
+    /// place a test can see the relation the handler declared.
+    #[derive(Default)]
+    struct PrefixRecorder {
+        inner: Recorder,
+        prefix_binds: Vec<(u64, u64, crate::engine::PrefixLayout)>,
+    }
+
+    impl DispatchContext for PrefixRecorder {
+        fn resolve(&mut self, r: &crate::engine::TensorRef) -> EpResult<BufferView> {
+            self.inner.resolve(r)
+        }
+        fn bind_output(
+            &mut self,
+            o: &crate::engine::OutRef,
+            desc: TensorDesc,
+        ) -> EpResult<BufferView> {
+            self.inner.bind_output(o, desc)
+        }
+        fn alloc_temp(&mut self, desc: TensorDesc) -> EpResult<BufferView> {
+            self.inner.alloc_temp(desc)
+        }
+        fn dispatch(&mut self, k: KernelRequest) -> EpResult<()> {
+            self.inner.dispatch(k)
+        }
+        fn read_const_i64(&self, r: &crate::engine::TensorRef) -> Option<Vec<i64>> {
+            self.inner.read_const_i64(r)
+        }
+        fn kv_growing_alias(&self) -> bool {
+            true
+        }
+        fn bind_prefix_output(
+            &mut self,
+            input: BufferView,
+            out: &crate::engine::OutRef,
+            desc: TensorDesc,
+            layout: crate::engine::PrefixLayout,
+        ) -> EpResult<BufferView> {
+            let view = self.inner.bind_output(out, desc)?;
+            self.prefix_binds
+                .push((view.as_raw(), input.as_raw(), layout));
+            Ok(view)
+        }
+    }
+
+    /// The prefix alias on the shape the shipping lane actually dies on: a growing cache with a
+    /// non-empty past.
+    ///
+    /// Three claims, and they are separate. (1) `present` is still bound at `past + S` — the
+    /// alias changes where `past` *lives*, not how big `present` is. (2) the two push-constant
+    /// strides now **coincide**, which is the condition `gqa_f16.comp` reads to skip its own
+    /// past→present copy — correct here because that copy has already happened, as a
+    /// `vkCmdCopyBuffer`. (3) the `past_*` bindings are the very same buffer as `present_*`, so
+    /// the engine has no reason to allocate a device buffer for `past` at all. That third one is
+    /// the defect: it is the allocation whose absence closes `device_memory_ctx4096_*`.
+    #[test]
+    fn translate_gqa_prefix_alias_stages_past_into_present_and_binds_one_buffer() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        // past 4 + S 1 = present 5, B=1, Nkv=2, D=32, f16.
+        let node = gqa_node(1, 1, 8, 2, 32, 4);
+        let mut ctx = PrefixRecorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+
+        for desc in &ctx.inner.outputs[1..] {
+            assert_eq!(
+                desc.shape,
+                vec![1, 2, 5, 32],
+                "the alias must not change present's extent"
+            );
+        }
+
+        let pc = &ctx.inner.dispatches[0].push_constants;
+        let present_len = u32::from_le_bytes(pc[24..28].try_into().unwrap());
+        let past_stride = u32::from_le_bytes(pc[28..32].try_into().unwrap());
+        assert_eq!(present_len, 5);
+        assert_eq!(
+            past_stride, present_len,
+            "past now lives inside present at present's stride, so the reads must use it — and \
+             the equality is exactly what switches the shader's own copy off"
+        );
+
+        assert_eq!(ctx.prefix_binds.len(), 2, "one for K, one for V");
+        let bindings = &ctx.inner.dispatches[0].bindings;
+        for (out_view, _, layout) in &ctx.prefix_binds {
+            // B*Nkv = 2 blocks of past_len*D*2 bytes, landing at present_len*D*2.
+            assert_eq!(layout.outer_blocks, 2);
+            assert_eq!(layout.src_block_bytes, 4 * 32 * 2);
+            assert_eq!(layout.dst_block_bytes, 5 * 32 * 2);
+            assert!(
+                layout.fits(2 * 4 * 32 * 2, 2 * 5 * 32 * 2),
+                "the geometry the handler declares must pass the engine's own refusal check; if \
+                 these two ever disagree the engine bails and the lane stops, which is the \
+                 failure mode this assertion exists to catch early"
+            );
+            assert!(
+                bindings.iter().any(|b| b.as_raw() == *out_view),
+                "the present buffer must be bound to the dispatch"
+            );
+        }
+        // binding 1/2 are past_key/past_value, 7/8 are present_key/present_value.
+        assert_eq!(
+            (bindings[1].as_raw(), bindings[2].as_raw()),
+            (bindings[7].as_raw(), bindings[8].as_raw()),
+            "past and present must be the *same* buffer under the prefix alias — that identity \
+             is the removed allocation"
+        );
+    }
+
+    /// Prefill: `past_len == 0`, so there is no prefix to stage and nothing to alias.
+    ///
+    /// This is a separating case rather than a corner case. A zero-block `PrefixLayout` would be
+    /// refused by the engine and stop the lane, so the handler must decline *before* declaring
+    /// one. Prefill and decode take different branches here and only a run can tell them apart.
+    #[test]
+    fn translate_gqa_prefix_alias_declines_an_empty_past() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        let node = gqa_node(1, 4, 8, 2, 32, 0);
+        let mut ctx = PrefixRecorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+
+        assert!(
+            ctx.prefix_binds.is_empty(),
+            "with no past tokens there is nothing to stage, so no alias may be declared"
+        );
+        let pc = &ctx.inner.dispatches[0].push_constants;
+        assert_eq!(
+            u32::from_le_bytes(pc[28..32].try_into().unwrap()),
+            0,
+            "prefill keeps the past stride at the past extent, which is zero"
+        );
+    }
+
+    /// The shared-buffer (fixed-capacity) convention outranks the prefix alias.
+    ///
+    /// When `present` and `past` are the same extent the buffer is already shared and there is
+    /// no prefix to stage: staging one would copy a buffer onto itself. The predicate excludes
+    /// it, and this asserts the exclusion rather than trusting the ordering of two `if`s.
+    #[test]
+    fn translate_gqa_prefix_alias_defers_to_the_shared_buffer_convention() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        let node = gqa_node_with_present(1, 1, 8, 2, 32, 256, 256, 16);
+        let mut ctx = PrefixRecorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+
+        assert!(
+            ctx.prefix_binds.is_empty(),
+            "a shared fixed-capacity cache has no prefix to stage"
+        );
+        assert_eq!(
+            ctx.inner.outputs.len(),
+            1,
+            "and it still aliases present onto past the old way"
         );
     }
 

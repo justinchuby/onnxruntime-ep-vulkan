@@ -531,6 +531,38 @@ pub(crate) fn kv_arena_enabled() -> bool {
     })
 }
 
+/// The **growing-cache prefix alias**: stage `past` into `present`'s prefix and never allocate
+/// a `past` buffer.
+///
+/// Unrelated to [`ENV_KV_ARENA`], which is about a convention the *caller* declares. This is a
+/// property of the EP's own staging and it needs nothing from the caller at all: the growing
+/// convention already says `present[0..P] == past[0..P]` per outer block, because the kernel
+/// copies it there.
+///
+/// # Why it defaults ON, unlike every other flag in this file
+///
+/// The flags above default OFF because turning them on changes what the *caller* must do (bind
+/// device memory; declare an arena) and a default must not require a caller to change. This one
+/// changes nothing a caller can see: same inputs, same outputs, same bytes, one fewer device
+/// allocation. What it changes is whether the shipping lane **runs at all** past a context
+/// length — MEASURED 2026-08-04, `bench/results/ctx4096_BEFORE.json`: the default shipping lane
+/// executes 355 dispatches at `past_len` 2048 and **zero** at 3072, exiting 0 both times.
+///
+/// So `=0` is the escape hatch and OFF is the thing that has to be asked for. Polarity is
+/// therefore reversed from the rest of this file — *unset* is ON — and, as everywhere else, an
+/// unrecognised value falls to the path that ships, which here is ON.
+pub const ENV_KV_PREFIX_ALIAS: &str = "ONNXRUNTIME_EP_VULKAN_KV_PREFIX_ALIAS";
+
+/// The **one** reader of [`ENV_KV_PREFIX_ALIAS`] in this crate.
+pub(crate) fn kv_prefix_alias_enabled() -> bool {
+    !std::env::var(ENV_KV_PREFIX_ALIAS).is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
+}
+
 /// Advertise device memory for one `OrtEpDevice`.
 ///
 /// This is what puts the allocator in ORT's path: ORT calls `CreateAllocator` only for an

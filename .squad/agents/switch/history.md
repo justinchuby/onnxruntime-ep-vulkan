@@ -481,3 +481,65 @@ Artifacts: `bench/results/runs_vs_does_not_run.json` (+ `build_runs_vs_not.py`),
 `phi35_kv_chain-ctx4096-BOTH-{dev0,retry1..4}.json`, `ctx_device_loss-lane_{shipping,resident}.json`.
 Register: 4 new entries in `ci/open_reds_device.json`; 2 new records in
 `ci/device_loss_incident_records.json`.
+## Session 50 — 2026-08-04 — the prefix alias: the growing KV cache stopped allocating `past`
+
+**Defect:** `device_memory_ctx4096_shipping_lane_cannot_run`. **Closed on the counter, not the exit.**
+
+**The arithmetic.** Phi-3.5 is 355 nodes in 1 island, so one `Compute` allocates everything. The
+shipping lane held **two** full-size KV buffers: `past_key_values.*` at `past_len x 393,216 B` and
+`present.*` at `(past_len+1) x 393,216 B`. The second copy is pure waste — under the growing GQA
+convention the shader's own first act (`copy_leader`) is to copy `past` into `present`'s prefix. The
+EP allocated a buffer, uploaded into it, had the shader copy it into another buffer the EP also
+allocated, and threw the first away. Same shape as the `host_backing_for` defect: a loop over *all*
+inputs doing expensive work for entries that do not need it.
+
+**The fix — the prefix alias.** `bind_prefix_output` hands the `present` buffer back for the `past_*`
+slots too; the engine stages `past`'s host bytes straight into `present`'s prefix with a
+multi-region `vkCmdCopyBuffer` (32 regions on Phi-3.5). **No `past` device buffer at all.** No shader
+change: setting `past_stride = present_len` makes past reads land where the copy put them *and*
+switches `copy_leader` off, because the copy already happened. Ledger confirms: 129 = **129 identical**.
+
+**What it bought** (RTX 4060 Laptop, device name off the run, one binary, one flag apart, no clock):
+the shipping lane ran to **2560** before and dies at 3072; with the alias it runs 3072, 4096, 5120,
+**6144**, all 355 dispatches. High-water delta is **exactly `past_len x 393,216`** at every point.
+`closes_when`: `transient_input_reuses = 64` (= 32 layers x 2) and `transient_input_reused_bytes =
+past_len x 393,216`; `transient_input_device_bytes` is now **flat in `past_len`**.
+
+**Correctness before bandwidth.** Bit-identical `logits_sha256` at past 0, 1, 512, 2048 — the lengths
+where **both** lanes executed on the EP, which is the condition that makes a pair comparable. 5-step
+decode chains on one session, seeded at past 0 and 512: identical **every step**, not just at the
+end. Zero leaks on every arm including the one where allocation fails partway. `check_device_loss.py`
+PASS over 54 artifacts. `counters_abi.py --check` PASS with the lib set, ABI still
+`(8, 0xdf71f4e6a59271b3)` — JSON-only. 585 lib tests (574 + 11), clippy clean.
+
+### What surprised me
+1. **The boundary was 2560, not 4096.** The defect is named after the string I found it by
+   (`alloc_device failed` at 4096). At 3072 the lane already fails, silently, printing nothing that
+   names it. Naming a defect after its symptom string puts the boundary in the wrong place — and the
+   6144/8192 figures this project quotes were never the shipping lane's.
+2. **The fix reproduced the defect before it fixed it.** I appended prefix staging to `staging_ups`.
+   Two loops that walk it are `zip`s, which stop short; a **third** is `enumerate()` + index and does
+   not. Index-out-of-bounds inside `Compute` -> ORT rebuilt all 355 nodes on CPU -> **exit 0, zero
+   dispatches at every length including 512**. The `dispatches_executed > 0` screen is the only
+   reason "the fix broke something" and "the fix did nothing" were distinguishable.
+3. **My own evidence-preservation fix failed on its first real use.** Last round I made stderr
+   unconditional. This round the run I needed had 1,096,775 bytes of it and the last 6,000 characters
+   were *entirely* allocator leak spam — the panic message was gone. Not discarded, **crowded out**.
+   Worse than the original, because a populated `stderr_tail` looks like the fix working. Third
+   instrument on this project to report a state it never observed.
+4. **The ceiling I inferred was wrong, and the counter cannot see it.** I inferred ~4.2 GiB of usable
+   device-local budget from two failing points; the fixed lane then reached **4,737,381,056 B** and
+   ran. `session_device_high_water_bytes` counts only `DeviceLocal|PackedWeights` and misses the
+   ~2.29 GiB of Upload staging held concurrently — so it is a **difference**-measuring instrument,
+   not an absolute-budget one. The deltas are exact; the absolutes are not a budget.
+
+**I did not flip `DEVICE_MEMORY`**, per the constraint. But the blocker now has the control lane it
+lacked: the shipping lane runs at ctx 4096.
+
+Decision records: `switch-kv-prefix-alias-removes-the-past-buffer.md`,
+`switch-shipping-lane-boundary-is-2560-not-4096.md`,
+`switch-parallel-vector-index-carries-meaning.md`,
+`switch-stderr-tail-can-be-crowded-out.md`,
+`switch-for-mouse-attention-touch-no-spec-constant.md`.
+Artifacts: `bench/results/ctx4096_{BEFORE,BEFORE_samebinary,AFTER,identity,separating,chain}.json`,
+`bench/results/_ctx4096_scratch/stderr_*.log` (full text, always).
