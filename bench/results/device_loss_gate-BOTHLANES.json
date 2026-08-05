@@ -1,0 +1,562 @@
+{
+  "gate": "device_loss_gate",
+  "arm": {
+    "lanes": [
+      "resident",
+      "shipping"
+    ],
+    "interleaved": true,
+    "seed_past": 4096,
+    "steps": 8,
+    "env_common": {
+      "ONNXRUNTIME_EP_VULKAN_KV_ARENA": "0",
+      "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB": "<unset \u2014 UNCAPPED>"
+    },
+    "ep_lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\rust\\target\\release\\onnxruntime_vulkan_ep.dll"
+  },
+  "per_lane": {
+    "resident": {
+      "env": {
+        "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "1",
+        "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "1"
+      },
+      "probe_lane": "resident",
+      "reps": 10,
+      "nonvacuous": 10,
+      "vacuous": 0,
+      "losses": 1,
+      "computes_observed": 77,
+      "rate_per_run": 0.1,
+      "rate_per_compute": 0.012987012987012988,
+      "loss_rep_indices": [
+        0
+      ]
+    },
+    "shipping": {
+      "env": {
+        "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "0",
+        "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "1"
+      },
+      "probe_lane": "host",
+      "reps": 10,
+      "nonvacuous": 10,
+      "vacuous": 0,
+      "losses": 0,
+      "computes_observed": 80,
+      "rate_per_run": 0.0,
+      "rate_per_compute": 0.0,
+      "loss_rep_indices": []
+    }
+  },
+  "separation": {
+    "verdict": "SEPARATES_UNDERPOWERED",
+    "lanes_hit": [
+      "resident"
+    ],
+    "lanes_clean": [
+      "shipping"
+    ],
+    "rate_per_run_in_hit_lane": 0.1,
+    "p_clean_lane_silent_at_that_rate": {
+      "shipping": 0.3486784401000001
+    },
+    "why": "the fault occurred in resident and not in shipping. If the clean lane's true rate equalled the hit lane's observed 0.1000, it would still show zero at probability 0.3487. That is NOT small, so the absence is what a clean lane run this few times looks like whether or not the flag matters. The blocker survives its own discriminator only in the weak sense that it has not yet been seen with the flag off."
+  },
+  "time_order": [
+    {
+      "rep": 0,
+      "lane": "resident",
+      "lost": true,
+      "vacuous": false,
+      "elapsed_s": 270.0
+    },
+    {
+      "rep": 1,
+      "lane": "shipping",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 491.4
+    },
+    {
+      "rep": 2,
+      "lane": "resident",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 517.1
+    },
+    {
+      "rep": 3,
+      "lane": "shipping",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 403.4
+    },
+    {
+      "rep": 4,
+      "lane": "resident",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 590.4
+    },
+    {
+      "rep": 5,
+      "lane": "shipping",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 675.8
+    },
+    {
+      "rep": 6,
+      "lane": "resident",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 365.9
+    },
+    {
+      "rep": 7,
+      "lane": "shipping",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 67.7
+    },
+    {
+      "rep": 8,
+      "lane": "resident",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 43.1
+    },
+    {
+      "rep": 9,
+      "lane": "shipping",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 45.0
+    },
+    {
+      "rep": 10,
+      "lane": "resident",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 41.3
+    },
+    {
+      "rep": 11,
+      "lane": "shipping",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 54.1
+    },
+    {
+      "rep": 12,
+      "lane": "resident",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 43.9
+    },
+    {
+      "rep": 13,
+      "lane": "shipping",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 65.0
+    },
+    {
+      "rep": 14,
+      "lane": "resident",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 209.2
+    },
+    {
+      "rep": 15,
+      "lane": "shipping",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 130.2
+    },
+    {
+      "rep": 16,
+      "lane": "resident",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 122.4
+    },
+    {
+      "rep": 17,
+      "lane": "shipping",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 119.0
+    },
+    {
+      "rep": 18,
+      "lane": "resident",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 57.4
+    },
+    {
+      "rep": 19,
+      "lane": "shipping",
+      "lost": false,
+      "vacuous": false,
+      "elapsed_s": 55.2
+    }
+  ],
+  "time_order_note": "Printed because Tank withdrew his own closes_when on this ground: the losses he saw were time-ordered, not treatment-ordered. With lanes interleaved, a run of losses that clusters in REP INDEX rather than in LANE is the box, not the flag \u2014 and this table is what makes those two distinguishable.",
+  "reps_requested": 20,
+  "reps_nonvacuous": 20,
+  "reps_vacuous": 0,
+  "losses": 1,
+  "rate_per_run": 0.05,
+  "rate_per_compute": 0.006369426751592357,
+  "computes_observed": 157,
+  "basis_note": "rate_per_run is comparable to Switch's 1/8 ONLY at --steps 2; at any other --steps the exposure per run differs and rate_per_compute is the comparable quantity.",
+  "detection_power": {
+    "0.1250": 0.9307912412260697,
+    "0.0500": 0.6415140775914581,
+    "0.0250": 0.39731231978089987,
+    "0.0100": 0.18209306240276923
+  },
+  "reps": [
+    {
+      "rep": 0,
+      "lane": "resident",
+      "exit_code": 1,
+      "elapsed_s": 270.0,
+      "dispatches_executed": 1420,
+      "compute_calls": 5,
+      "compute_failures": 1,
+      "device_losses": 1,
+      "capture": "bench\\results\\device_loss_gate\\rep000.capture.txt",
+      "faults": {
+        "device_lost_reported": [
+          "[vulkan-ep] ERROR: vkWaitForFences failed: The logical device has been lost. See <https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#devsandqueues-lost-device>",
+          "\u001b[1;31m2026-08-04 20:58:56.3666390 [E:onnxruntime:Default, cmd.rs:327 onnxruntime_vulkan_ep::vk::cmd] vkWaitForFences failed: The logical device has been lost. See <https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#devsandqueues-lost-device>\u001b[m",
+          "[vulkan-ep] WARN: VulkanExecutionProvider: BROKEN COMMITMENT \u2014 this EP claimed fused subgraph #1 (355 node(s): /model/embed_tokens/Gather(Gather), /model/layers.0/input_layernorm/LayerNorm(SimplifiedLayerNormalization), /model/layers.0/attn/qkv_proj/MatMul_Q4(com.microsoft::MatMulNBits), /model/layers.0/attn/GroupQueryAttention(com.microsoft::GroupQueryAttention), +351 more) and its Compute() then returned a non-OK status. condition=device-lost; error text: vkWaitForFences failed: the Vulkan device was lost (VK_ERROR_DEVICE_LOST). ONNX Runtime will now re-execute these node(s) on the CPU EP, so the answer this run produces is not this EP's \u2014 and get_providers() will still list VulkanExecutionProvider, because the provider list is fixed at session-create time. This is a claim the EP made and did not keep; it is not the planned fallback of a node this EP never claimed.",
+          "\u001b[0;93m2026-08-04 20:58:56.4227924 [W:onnxruntime:Default, <onnxruntime-ep-vulkan>:0 onnxruntime_ep_vulkan::compute] VulkanExecutionProvider: BROKEN COMMITMENT \u0014  this EP claimed fused subgraph #1 (355 node(s): /model/embed_tokens/Gather(Gather), /model/layers.0/input_layernorm/LayerNorm(SimplifiedLayerNormalization), /model/layers.0/attn/qkv_proj/MatMul_Q4(com.microsoft::MatMulNBits), /model/layers.0/attn/GroupQueryAttention(com.microsoft::GroupQueryAttention), +351 more) and its Compute() then returned a non-OK status. condition=device-lost; error text: vkWaitForFences failed: the Vulkan device was lost (VK_ERROR_DEVICE_LOST). ONNX Runtime will now re-execute these node(s) on the CPU EP, so the answer this run produces is not this EP's \u0014  and get_providers() will still list VulkanExecutionProvider, because the provider list is fixed at session-create time. This is a claim the EP made and did not keep; it is not the planned fallback of a node this EP never claimed.\u001b[m",
+          "\u001b[1;31m2026-08-04 20:58:56.5611386 [E:onnxruntime:, sequential_executor.cc:671 onnxruntime::ExecuteKernel] Non-zero status code returned while running VulkanExecutionProvider_13948954645276092517_0 node. Name:'VulkanExecutionProvider_VulkanExecutionProvider_13948954645276092517_0_0' Status Message: vkWaitForFences failed: the Vulkan device was lost (VK_ERROR_DEVICE_LOST)\u001b[m",
+          "RuntimeError: Error in execution: Non-zero status code returned while running VulkanExecutionProvider_13948954645276092517_0 node. Name:'VulkanExecutionProvider_VulkanExecutionProvider_13948954645276092517_0_0' Status Message: vkWaitForFences failed: the Vulkan device was lost (VK_ERROR_DEVICE_LOST)"
+        ],
+        "broken_commitment_reported": [
+          "[vulkan-ep] WARN: VulkanExecutionProvider: BROKEN COMMITMENT \u2014 this EP claimed fused subgraph #1 (355 node(s): /model/embed_tokens/Gather(Gather), /model/layers.0/input_layernorm/LayerNorm(SimplifiedLayerNormalization), /model/layers.0/attn/qkv_proj/MatMul_Q4(com.microsoft::MatMulNBits), /model/layers.0/attn/GroupQueryAttention(com.microsoft::GroupQueryAttention), +351 more) and its Compute() then returned a non-OK status. condition=device-lost; error text: vkWaitForFences failed: the Vulkan device was lost (VK_ERROR_DEVICE_LOST). ONNX Runtime will now re-execute these node(s) on the CPU EP, so the answer this run produces is not this EP's \u2014 and get_providers() will still list VulkanExecutionProvider, because the provider list is fixed at session-create time. This is a claim the EP made and did not keep; it is not the planned fallback of a node this EP never claimed.",
+          "\u001b[0;93m2026-08-04 20:58:56.4227924 [W:onnxruntime:Default, <onnxruntime-ep-vulkan>:0 onnxruntime_ep_vulkan::compute] VulkanExecutionProvider: BROKEN COMMITMENT \u0014  this EP claimed fused subgraph #1 (355 node(s): /model/embed_tokens/Gather(Gather), /model/layers.0/input_layernorm/LayerNorm(SimplifiedLayerNormalization), /model/layers.0/attn/qkv_proj/MatMul_Q4(com.microsoft::MatMulNBits), /model/layers.0/attn/GroupQueryAttention(com.microsoft::GroupQueryAttention), +351 more) and its Compute() then returned a non-OK status. condition=device-lost; error text: vkWaitForFences failed: the Vulkan device was lost (VK_ERROR_DEVICE_LOST). ONNX Runtime will now re-execute these node(s) on the CPU EP, so the answer this run produces is not this EP's \u0014  and get_providers() will still list VulkanExecutionProvider, because the provider list is fixed at session-create time. This is a claim the EP made and did not keep; it is not the planned fallback of a node this EP never claimed.\u001b[m"
+        ]
+      },
+      "steps_recorded": 0,
+      "lost": true,
+      "vacuous": false
+    },
+    {
+      "rep": 1,
+      "lane": "shipping",
+      "exit_code": 0,
+      "elapsed_s": 491.4,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep001.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 2,
+      "lane": "resident",
+      "exit_code": 0,
+      "elapsed_s": 517.1,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep002.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 3,
+      "lane": "shipping",
+      "exit_code": 0,
+      "elapsed_s": 403.4,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep003.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 4,
+      "lane": "resident",
+      "exit_code": 0,
+      "elapsed_s": 590.4,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep004.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 5,
+      "lane": "shipping",
+      "exit_code": 0,
+      "elapsed_s": 675.8,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep005.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 6,
+      "lane": "resident",
+      "exit_code": 0,
+      "elapsed_s": 365.9,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep006.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 7,
+      "lane": "shipping",
+      "exit_code": 0,
+      "elapsed_s": 67.7,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep007.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 8,
+      "lane": "resident",
+      "exit_code": 0,
+      "elapsed_s": 43.1,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep008.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 9,
+      "lane": "shipping",
+      "exit_code": 0,
+      "elapsed_s": 45.0,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep009.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 10,
+      "lane": "resident",
+      "exit_code": 0,
+      "elapsed_s": 41.3,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep010.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 11,
+      "lane": "shipping",
+      "exit_code": 0,
+      "elapsed_s": 54.1,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep011.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 12,
+      "lane": "resident",
+      "exit_code": 0,
+      "elapsed_s": 43.9,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep012.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 13,
+      "lane": "shipping",
+      "exit_code": 0,
+      "elapsed_s": 65.0,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep013.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 14,
+      "lane": "resident",
+      "exit_code": 0,
+      "elapsed_s": 209.2,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep014.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 15,
+      "lane": "shipping",
+      "exit_code": 0,
+      "elapsed_s": 130.2,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep015.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 16,
+      "lane": "resident",
+      "exit_code": 0,
+      "elapsed_s": 122.4,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep016.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 17,
+      "lane": "shipping",
+      "exit_code": 0,
+      "elapsed_s": 119.0,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep017.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 18,
+      "lane": "resident",
+      "exit_code": 0,
+      "elapsed_s": 57.4,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep018.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    },
+    {
+      "rep": 19,
+      "lane": "shipping",
+      "exit_code": 0,
+      "elapsed_s": 55.2,
+      "dispatches_executed": 2840,
+      "compute_calls": 8,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "capture": "bench\\results\\device_loss_gate\\rep019.capture.txt",
+      "faults": {},
+      "steps_recorded": 8,
+      "lost": false,
+      "vacuous": false
+    }
+  ],
+  "rescored": [
+    {
+      "from": {
+        "verdict": "SEPARATES",
+        "lanes_hit": [
+          "resident"
+        ],
+        "why": "the fault occurred in resident and not in the other lane(s) over this many observations. Read the per-lane detection power before calling that an absence."
+      },
+      "to": {
+        "verdict": "SEPARATES_UNDERPOWERED",
+        "lanes_hit": [
+          "resident"
+        ],
+        "lanes_clean": [
+          "shipping"
+        ],
+        "rate_per_run_in_hit_lane": 0.1,
+        "p_clean_lane_silent_at_that_rate": {
+          "shipping": 0.3486784401000001
+        },
+        "why": "the fault occurred in resident and not in shipping. If the clean lane's true rate equalled the hit lane's observed 0.1000, it would still show zero at probability 0.3487. That is NOT small, so the absence is what a clean lane run this few times looks like whether or not the flag matters. The blocker survives its own discriminator only in the weak sense that it has not yet been seen with the flag off."
+      }
+    }
+  ]
+}

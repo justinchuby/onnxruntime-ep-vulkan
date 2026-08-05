@@ -1542,6 +1542,7 @@ pub static REGISTRY: &[&[OpSpec]] = &[
     crate::ops::attention::OPS,
     crate::ops::norm::OPS,
     crate::ops::indexing::OPS,
+    crate::ops::shape::OPS,
     crate::ops::conv::OPS,
     crate::ops::pooling::OPS,
     crate::ops::matmul::OPS,

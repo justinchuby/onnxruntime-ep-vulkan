@@ -355,6 +355,22 @@ jobs:
         # reporting "14 passed", because those three are worth very different amounts.
         run: python ci/negative_control_device_loss.py
 
+      - name: README usage screen (does the documented import exist?)
+        # The README told every reader to `import onnxruntime_ep_vulkan` for months while
+        # that package did not exist anywhere in the tree. Nothing could have noticed: the
+        # test suite imports what exists, so documentation drift is invisible to it by
+        # construction. This reads the README's fenced python blocks as claims and
+        # requires every imported module to resolve — either installed, or actually in
+        # this tree. It does not execute the blocks; executing them needs a GPU, a built
+        # artifact and a model, and a check that can only run on one desk is not a check.
+        run: python ci/check_readme_usage.py
+
+      - name: README usage screen negative control (replay the shipped defect)
+        # The strongest arm is not planted: it runs the screen against the real README at
+        # the commit before the shim landed and demands red. The rest are planted, and the
+        # count of planted arms is printed so nobody reads them as if they were replays.
+        run: python ci/negative_control_readme_usage.py
+
       - name: Upload tick-screen inventory
         if: always()
         uses: actions/upload-artifact@v4

@@ -78,9 +78,14 @@ once; the number quoted is the decision count, which is what the census counts.
 **Its op table is 94 rows, of which 76 carry a kernel.** Read from `epctl --dump-capabilities
 --json` (`rust/src/bin/epctl.rs`), not by counting `ops!` lines: **46 `live`, 30 `ready`, 18
 `staged`** — the staged rows are described and claim-tested and decline at runtime with a named
-blocker in the dump's own `staged_reason` field. **This count has been misstated more than once,
-including by earlier revisions of this file; the dump is the only reading of it that is not a hand
-tally.** `OpStatus::Live` is a **deprecated alias** of `OpStatus::Ready`
+blocker in the dump's own `staged_reason` field. **The 76 is the count of rows whose boolean `live`
+field is `true`, which is *not* `status == "live"` (46).** The dump row spells `live` twice with two
+meanings — a boolean for *this row has a kernel* and a status token that is the deprecated
+`OpStatus::Live` alias — so the derivation is written out here rather than left to a reader who
+would otherwise check the sentence against the wrong field and get 46
+([`docs/DESIGN.md`](docs/DESIGN.md) §8.9.25 renames the boolean `has_kernel`). **This count has been
+misstated more than once, including by earlier revisions of this file; the dump is the only reading
+of it that is not a hand tally.** `OpStatus::Live` is a **deprecated alias** of `OpStatus::Ready`
 (`rust/src/registry.rs::OpStatus`) and neither status grants a claim — **claimability is a ledger
 fact, not a table field** ([`docs/DESIGN.md`](docs/DESIGN.md) §8.9).
 
@@ -179,7 +184,7 @@ permanently contended by several agents.
 | Device requirement | **Vulkan 1.1 core + a compute queue.** No required extensions — see [`docs/DESIGN.md`](docs/DESIGN.md) §7. |
 | Target hardware | NVIDIA · AMD · Intel · Adreno · Mali — *none of these is covered by CI today; CI has no GPU hardware at all. The only executing lanes are two desktop GPUs on one development machine and the lavapipe software rasterizer.* |
 | Operator domains | `ai.onnx` and `com.microsoft` — the contrib domain is in scope because the ORT GenAI model builder emits contrib ops directly; see [`docs/DESIGN.md`](docs/DESIGN.md) §1.4 for the claim-safety constraints |
-| Op table | **94 rows — 46 `live`, 30 `ready`, 18 `staged`; 76 carry a kernel.** Status is not permission to claim: **claimability is a ledger fact** (`evidence/proof_ledger.jsonl`, 129 entries), not a table field. |
+| Op table | **94 rows — 46 `live`, 30 `ready`, 18 `staged`; 76 carry a kernel (`live == true` on the dump row, which is not `status == "live"`).** Status is not permission to claim: **claimability is a ledger fact** (`evidence/proof_ledger.jsonl`, 129 entries), not a table field. |
 
 ## How it works
 
@@ -212,18 +217,98 @@ cargo test                   # lib + layering + capability-dump tests
 docs-only lanes. It can create no compute pipeline, it advertises no device, and it must never be
 shipped.
 
-## Intended usage
+**A wheel is a checked-in binary from the consumer's point of view**, which is the same
+hazard §7.8 rules on, one level out. It is answered three ways, all in
+`python/build_wheel.py` and all tested in `tests/packaging/test_wheel_provenance.py`:
+nothing binary enters the tree (the staged directory is gitignored, and `git check-ignore`
+is the test's authority, not a reading of `.gitignore` by eye); the wheel carries a
+`_provenance.json` naming the commit, whether that tree was dirty, its own sha256, and a
+digest over all 17 shader sources with the file count beside it; and the packaging step
+**refuses an artifact containing zero SPIR-V modules**, which enforces §7.8 condition 4
+against the shipped bytes rather than against whichever shell happened to set the escape
+hatch. That detector is exercised in both states — 210 modules in the shipping artifact,
+0 in a shader-less one.
+
+A digest match proves the shipped bytes are the recorded bytes. It does **not** prove they
+were compiled from the named commit; only a rebuild at that commit does, which is why the
+digest and the commit are separate fields with separate meanings.
+
+## Installing and using it
+
+There are two consumption paths and both are tested. **Pick the first if you have the
+Vulkan SDK and want a wheel; pick the second if you already build this repository.**
+
+### 1. Build a wheel and install it
+
+```powershell
+cargo build --release                 # from rust/ — needs the Vulkan SDK / glslc
+python python/build_wheel.py          # stages the cdylib + a provenance record
+pip install python/dist/onnxruntime_ep_vulkan-*.whl
+```
 
 ```python
 import onnxruntime as ort
 import onnxruntime_ep_vulkan
 
 onnxruntime_ep_vulkan.register_execution_provider_library()
-sess = ort.InferenceSession(
-    model,
-    providers=["VulkanExecutionProvider", "CPUExecutionProvider"],
-)
+sess = ort.InferenceSession(model, providers=onnxruntime_ep_vulkan.providers())
+onnxruntime_ep_vulkan.assert_ep_selected(sess)   # ORT will not raise for you — see below
 ```
+
+`python -m onnxruntime_ep_vulkan --check` registers the EP, runs a four-element `Add` on
+it, and reports whether the EP was actually selected.
+
+**Nothing is published to PyPI, deliberately** — no release process is in scope, and a
+`pip install onnxruntime-ep-vulkan` from an index would not work today. The wheel is built
+locally from a source tree you control.
+
+**This path is demonstrated, not asserted.** `python/verify_cleanroom.py` creates a fresh
+venv *outside* this repository, installs only the wheel, and — with the repository
+unreachable — imports, registers, runs, and asserts the EP was selected.
+`bench/results/cleanroom_install_dev0.json` records the run: `verdict: PASS`,
+`session_providers: ["VulkanExecutionProvider", "CPUExecutionProvider"]`,
+`artifact_inside_site_packages: true`, on Windows / RTX 4060 / ORT 1.28.0. **It has been
+demonstrated on this platform and no other**; there is no wheel CI matrix and none is
+claimed.
+
+### 2. Use the ORT API directly, from a source checkout
+
+No package needed. This is what the repository's own 26 test files do:
+
+```python
+import onnxruntime as ort
+
+ort.register_execution_provider_library(
+    "VulkanExecutionProvider",
+    r"C:\path\to\rust\target\release\onnxruntime_vulkan_ep.dll",   # must be ABSOLUTE
+)
+sess = ort.InferenceSession(model, providers=["VulkanExecutionProvider", "CPUExecutionProvider"])
+assert "VulkanExecutionProvider" in sess.get_providers()          # ORT will not check this
+```
+
+### Four things about that one ORT call, all measured
+
+`bench/results/consumption_surface_dev0.json` — six cases, each in its own subprocess
+because plugin registration is process-global state. These are why path 1 exists; a wrapper
+around one call would otherwise not be worth a package.
+
+| Measured | Consequence |
+|---|---|
+| A relative library path resolves against ORT's own `capi` directory, **not** the caller's CWD | the absolute path is mandatory, and nothing tells you |
+| The registration name is never checked against the library — it registered fine as `"NotOurNameAtAll"` and advertised its GPUs under that name | the name at registration and the name in `providers=[...]` must agree, enforced by nobody |
+| Registering the same name twice **raises** | the call is not safe to run twice in one process |
+| **A session asking for an unregistered EP name does not raise.** It warns, falls back to CPU, and returns numerically correct results | the natural failure is a session that silently never touches the GPU |
+
+The last row is the one that matters. A reader of an earlier revision of this file was told
+to `import onnxruntime_ep_vulkan` — a package that did not exist — got `ModuleNotFoundError`,
+and the obvious fix (delete the import, keep the providers list) produced a working session
+running entirely on CPU with no error. `assert_ep_selected` and the bare `assert` above are
+the answer to that; both check the session's own `get_providers()`, which is the only
+reliable reading, because warnings are routinely filtered or lost.
+
+`assert_ep_selected` asserts the EP was *selected for the session*. It does not assert that
+any node was claimed or that any dispatch executed — ORT can select an EP that claims
+nothing, and `claimed_nodes` is not what executes (see the census caveat above).
 
 ## Documentation
 
@@ -234,6 +319,7 @@ sess = ort.InferenceSession(
 | [`docs/PLATFORMS.md`](docs/PLATFORMS.md) | Link | Platform and driver support matrix, Vulkan version reality per platform, capability detection, toolchains, CI lanes. |
 | [`docs/OP_COVERAGE.md`](docs/OP_COVERAGE.md) | Mouse | **Authoritative op-coverage plan** — 174 ops across 16 families, driven by model families (LLM/Qwen3.5 → int4 → MoE → multimodal → linear attention → conv), with model-level exit criteria per tier. Ratified by Morpheus 2026-07-28. |
 | `docs/THIRD_PARTY.md` | Rai | Third-party licence compliance and attribution requirements for adapted code. |
+| [`python/README.md`](python/README.md) | Niobe | The consumer-facing Python shim: what it does, why one ORT call needs a package, and how the wheel reconciles with §7.8's no-checked-in-binary rule. |
 | [`docs/PERF.md`](docs/PERF.md) | Niobe | Performance record and methodology. **No wall-clock ratio is published here**; every quantity carries a provenance class (SPECIFICATION, MEASUREMENT, or MODEL) and the paired-alternation apparatus that would produce a timing is refuted, not pending. |
 | `docs/OP_ARCHITECTURE.md` | Mouse | Op registry design and the per-op claim contract. *(does not exist)* |
 | `docs/BENCHMARKS.md` | Niobe | *(does not exist — superseded by `docs/PERF.md`)* |

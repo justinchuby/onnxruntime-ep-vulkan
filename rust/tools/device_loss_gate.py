@@ -75,7 +75,23 @@ STATES
 USAGE
     python rust/tools/device_loss_gate.py --reps 20
     python rust/tools/device_loss_gate.py --reps 8 --steps 2      # Switch's basis exactly
+    python rust/tools/device_loss_gate.py --reps 10 --lanes resident,shipping
     python rust/tools/device_loss_gate.py --dry-run               # power table only
+
+THE CONTROL LANE, ADDED 2026-08-04
+==================================
+
+Until the KV prefix alias landed, this gate had only one lane it could run.  The shipping
+lane could not execute Phi-3.5 at ``--seed-past 4096`` at all — 355 nodes claimed, first
+``Compute`` out of memory, whole graph rebuilt on CPU, **exit 0 with zero dispatches**.  A
+fault sought in one lane cannot be attributed to that lane.  ``--lanes resident,shipping``
+now runs both and **interleaves** them, because Tank withdrew his own ``closes_when`` on
+the finding that the losses were *time-ordered, not treatment-ordered*: with lanes
+alternating by repetition index, a cluster in time is visible as a cluster in time.
+
+The record carries a ``separation`` verdict computed from the counts rather than argued in
+prose — ``SEPARATES`` / ``DOES_NOT_SEPARATE`` / ``NO_LOSS_IN_EITHER_LANE`` / ``UNSCORABLE``
+— and ``UNSCORABLE`` is what a lane that executed nothing produces, never a clearance.
 """
 
 from __future__ import annotations
@@ -101,6 +117,36 @@ EXIT_PASS = 0
 EXIT_FAIL = 1
 EXIT_REFUSE = 2
 EXIT_ERROR = 4
+
+#: The two lanes the flip is scored on, and the ONE environment difference between them.
+#:
+#: Added 2026-08-04 (Switch). Until the KV prefix alias landed, this gate could only run
+#: ``resident``: the shipping lane could not execute Phi-3.5 at seed_past 4096 at all
+#: (``device_memory_ctx4096_shipping_lane_cannot_run`` — 0 dispatches, exit 0). A fault
+#: sought in one lane cannot be attributed to that lane, and Tank withdrew his own
+#: ``closes_when`` on exactly this ground: his losses were **time-ordered, not
+#: treatment-ordered**, so a clean streak on a quiet box is produced by the box.
+#:
+#: ``BIND_OUTPUTS`` is pinned to its shipped value (ON) in BOTH lanes on purpose, so the
+#: only pinned difference is ``DEVICE_MEMORY``. The caller-side difference — the resident
+#: lane binds device ``OrtValue``s, the shipping lane feeds numpy — is not a confound to be
+#: removed but the thing the flag exists to permit; it is what a user's code differs by.
+LANES: dict[str, dict] = {
+    "resident": {
+        "probe_lane": "resident",
+        "env": {
+            "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "1",
+            "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "1",
+        },
+    },
+    "shipping": {
+        "probe_lane": "host",
+        "env": {
+            "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "0",
+            "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "1",
+        },
+    },
+}
 
 #: Rates the power table is printed against. 1/8 is Switch's measured figure; the others
 #: are the rates this gate would still fail to rule out, printed so that a green is read
@@ -155,7 +201,8 @@ def _counters(path: pathlib.Path) -> dict:
         return {}
 
 
-def one_rep(i: int, steps: int, seed_past: int, arena: bool, budget_mb: int) -> dict:
+def one_rep(i: int, steps: int, seed_past: int, arena: bool, budget_mb: int,
+            lane: str = "resident") -> dict:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out = OUT_DIR / f"rep{i:03d}.json"
     counters = OUT_DIR / f"rep{i:03d}.counters.json"
@@ -163,14 +210,14 @@ def one_rep(i: int, steps: int, seed_past: int, arena: bool, budget_mb: int) -> 
     for p in (out, counters, capture):
         p.unlink(missing_ok=True)
 
+    spec = LANES[lane]
     env = dict(os.environ)
     env["ONNXRUNTIME_VULKAN_EP_LIB"] = _lib()
     env["ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"] = str(counters)
     # Pinned explicitly, never inherited: the shipped default is NOT flipped, and a lane
     # that reads its configuration from whatever the parent shell happened to carry is a
     # lane whose result cannot be attributed.
-    env["ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY"] = "1"
-    env["ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS"] = "1"
+    env.update(spec["env"])
     env["ONNXRUNTIME_EP_VULKAN_KV_ARENA"] = "1" if arena else "0"
     if budget_mb > 0:
         env["ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB"] = str(budget_mb)
@@ -178,7 +225,7 @@ def one_rep(i: int, steps: int, seed_past: int, arena: bool, budget_mb: int) -> 
         env.pop("ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB", None)
 
     cmd = [
-        sys.executable, str(PROBE), "--worker", "--lane", "resident",
+        sys.executable, str(PROBE), "--worker", "--lane", spec["probe_lane"],
         "--steps", str(steps), "--seed-past", str(seed_past), "--out", str(out),
     ]
     t0 = time.time()
@@ -195,6 +242,7 @@ def one_rep(i: int, steps: int, seed_past: int, arena: bool, budget_mb: int) -> 
     dispatches = int(c.get("dispatches_executed") or 0)
     rec = {
         "rep": i,
+        "lane": lane,
         "exit_code": proc.returncode,
         "elapsed_s": round(elapsed, 1),
         "dispatches_executed": dispatches,
@@ -219,6 +267,72 @@ def one_rep(i: int, steps: int, seed_past: int, arena: bool, budget_mb: int) -> 
     return rec
 
 
+def score_separation(lanes: list[str], per_lane: dict) -> dict | None:
+    """The discriminator, applied mechanically instead of in prose.
+
+    *A gate blocks the flip only if its failure SEPARATES the lanes.* Reported only when
+    both lanes were actually observed non-vacuously — a lane that executed nothing
+    separates nothing, and saying otherwise is how a broken control lane becomes evidence.
+
+    ``SEPARATES`` carries its own error bar. One loss in ten repetitions of lane A and none
+    in ten of lane B is *not* a separation: if B's true rate equalled A's observed 1/10, B
+    would still show zero in ten runs about 35% of the time. That probability is computed
+    and printed, and above 5% the verdict is downgraded to ``SEPARATES_UNDERPOWERED`` — the
+    honest reading of an absence in a clean lane that was never run often enough to speak.
+    """
+    if len(lanes) < 2:
+        return None
+    if any(per_lane[ln]["nonvacuous"] == 0 for ln in lanes):
+        return {
+            "verdict": "UNSCORABLE",
+            "why": "at least one lane produced no non-vacuous observation, so the lanes "
+                   "were never compared: "
+                   + ", ".join(f"{ln}={per_lane[ln]['nonvacuous']}nv" for ln in lanes),
+        }
+    if all(per_lane[ln]["losses"] == 0 for ln in lanes):
+        return {
+            "verdict": "NO_LOSS_IN_EITHER_LANE",
+            "why": "no lane lost the device, so this run separates nothing in either "
+                   "direction. Per the UNIFORM rule it is evidence about the mechanism "
+                   "only up to the detection power printed above; it is NOT a clearance.",
+        }
+    if all(per_lane[ln]["losses"] > 0 for ln in lanes):
+        return {
+            "verdict": "DOES_NOT_SEPARATE",
+            "why": "the fault occurred with the flag ON and with it OFF. Turning the flag "
+                   "off does not avoid it, so it is a project defect and NOT a reason to "
+                   "keep the default off.",
+        }
+    hit = [ln for ln in lanes if per_lane[ln]["losses"] > 0]
+    clean = [ln for ln in lanes if per_lane[ln]["losses"] == 0]
+    # Highest observed rate among the lanes that were hit, on the per-run basis the clean
+    # lanes' repetition counts are also on.
+    p_hat = max((per_lane[ln]["rate_per_run"] or 0.0) for ln in hit)
+    quiet = {
+        ln: (1.0 - p_hat) ** per_lane[ln]["nonvacuous"] for ln in clean
+    }
+    worst = max(quiet.values()) if quiet else 1.0
+    verdict = "SEPARATES" if worst <= 0.05 else "SEPARATES_UNDERPOWERED"
+    return {
+        "verdict": verdict,
+        "lanes_hit": hit,
+        "lanes_clean": clean,
+        "rate_per_run_in_hit_lane": p_hat,
+        "p_clean_lane_silent_at_that_rate": quiet,
+        "why": (
+            "the fault occurred in " + ",".join(hit) + " and not in " + ",".join(clean)
+            + f". If the clean lane's true rate equalled the hit lane's observed "
+              f"{p_hat:.4f}, it would still show zero at probability {worst:.4f}. "
+            + ("That is small enough to read the absence as a difference."
+               if worst <= 0.05 else
+               "That is NOT small, so the absence is what a clean lane run this few times "
+               "looks like whether or not the flag matters. The blocker survives its own "
+               "discriminator only in the weak sense that it has not yet been seen with "
+               "the flag off.")
+        ),
+    }
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--reps", type=int, default=20)
@@ -231,8 +345,44 @@ def main(argv=None) -> int:
                     help="pin ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB (0 = unset, "
                          "which is the shipped default and is UNCAPPED)")
     ap.add_argument("--dry-run", action="store_true", help="power table only, no runs")
+    ap.add_argument("--lanes", default="resident",
+                    help="comma-separated lanes from " + ",".join(LANES)
+                         + ". More than one INTERLEAVES them (rep i takes lane "
+                           "i %% len(lanes)), so lane assignment is orthogonal to time "
+                           "order — the confound that made Tank withdraw his closes_when.")
     ap.add_argument("--record", default="device_loss_gate.json")
+    ap.add_argument("--rescore", default="",
+                    help="recompute `separation` from an EXISTING record's per-lane counts "
+                         "and rewrite it in place. No runs. Exists so a scoring rule that "
+                         "was wrong is applied to the observations already paid for, "
+                         "instead of the observations being re-manufactured under the new "
+                         "rule.")
     args = ap.parse_args(argv)
+
+    if args.rescore:
+        path = REPO / "bench" / "results" / args.rescore
+        if not path.is_file():
+            print(f"{TAG}: ERROR(instrument=no_such_record) {path}")
+            return EXIT_ERROR
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        old = doc.get("separation")
+        doc["separation"] = score_separation(
+            list(doc.get("arm", {}).get("lanes") or []), doc.get("per_lane") or {}
+        )
+        doc.setdefault("rescored", []).append({"from": old, "to": doc["separation"]})
+        path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        print(f"{TAG}: rescored {path.relative_to(REPO)}")
+        print(f"  was: {(old or {}).get('verdict')}")
+        print(f"  now: {(doc['separation'] or {}).get('verdict')}")
+        print(f"  {(doc['separation'] or {}).get('why')}")
+        return EXIT_PASS
+
+    lanes = [s.strip() for s in args.lanes.split(",") if s.strip()]
+    unknown = [ln for ln in lanes if ln not in LANES]
+    if not lanes or unknown:
+        print(f"{TAG}: ERROR(instrument=unknown_lane) {unknown or '<empty>'}; "
+              f"known lanes: {','.join(LANES)}")
+        return EXIT_ERROR
 
     print_power(args.reps)
     if args.dry_run:
@@ -249,11 +399,12 @@ def main(argv=None) -> int:
 
     reps: list[dict] = []
     for i in range(args.reps):
-        rec = one_rep(i, args.steps, args.seed_past, args.arena, args.budget_mb)
+        lane = lanes[i % len(lanes)]
+        rec = one_rep(i, args.steps, args.seed_past, args.arena, args.budget_mb, lane)
         reps.append(rec)
         flag = "LOST" if rec["lost"] else ("VACUOUS" if rec["vacuous"] else "ok")
         print(
-            f"  rep {i:3d}  {flag:8s} exit={rec['exit_code']} "
+            f"  rep {i:3d}  {lane:9s} {flag:8s} exit={rec['exit_code']} "
             f"dispatches={rec['dispatches_executed']} "
             f"compute={rec['compute_calls']}/{rec['compute_failures']}f "
             f"losses={rec['device_losses']} {rec['elapsed_s']}s "
@@ -270,15 +421,36 @@ def main(argv=None) -> int:
     lost = [r for r in reps if r["lost"]]
     computes = sum(r["compute_calls"] for r in nonvacuous)
 
+    per_lane = {}
+    for ln in lanes:
+        lreps = [r for r in reps if r["lane"] == ln]
+        lnv = [r for r in lreps if not r["vacuous"]]
+        llost = [r for r in lreps if r["lost"]]
+        lcomp = sum(r["compute_calls"] for r in lnv)
+        per_lane[ln] = {
+            "env": LANES[ln]["env"],
+            "probe_lane": LANES[ln]["probe_lane"],
+            "reps": len(lreps),
+            "nonvacuous": len(lnv),
+            "vacuous": len(lreps) - len(lnv),
+            "losses": len(llost),
+            "computes_observed": lcomp,
+            "rate_per_run": (len(llost) / len(lnv)) if lnv else None,
+            "rate_per_compute": (len(llost) / lcomp) if lcomp else None,
+            "loss_rep_indices": [r["rep"] for r in llost],
+        }
+
+    # The discriminator, applied mechanically instead of in prose — see `score_separation`.
+    separation = score_separation(lanes, per_lane)
+
     doc = {
         "gate": "device_loss_gate",
         "arm": {
-            "lane": "resident",
+            "lanes": lanes,
+            "interleaved": len(lanes) > 1,
             "seed_past": args.seed_past,
             "steps": args.steps,
-            "env": {
-                "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "1",
-                "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS": "1",
+            "env_common": {
                 "ONNXRUNTIME_EP_VULKAN_KV_ARENA": "1" if args.arena else "0",
                 "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB": (
                     str(args.budget_mb) if args.budget_mb > 0 else "<unset — UNCAPPED>"
@@ -286,6 +458,19 @@ def main(argv=None) -> int:
             },
             "ep_lib": _lib(),
         },
+        "per_lane": per_lane,
+        "separation": separation,
+        "time_order": [
+            {"rep": r["rep"], "lane": r["lane"], "lost": r["lost"],
+             "vacuous": r["vacuous"], "elapsed_s": r["elapsed_s"]}
+            for r in reps
+        ],
+        "time_order_note": (
+            "Printed because Tank withdrew his own closes_when on this ground: the losses "
+            "he saw were time-ordered, not treatment-ordered. With lanes interleaved, a "
+            "run of losses that clusters in REP INDEX rather than in LANE is the box, not "
+            "the flag — and this table is what makes those two distinguishable."
+        ),
         "reps_requested": args.reps,
         "reps_nonvacuous": len(nonvacuous),
         "reps_vacuous": len(reps) - len(nonvacuous),
@@ -307,6 +492,13 @@ def main(argv=None) -> int:
 
     print(f"\n{TAG}: {len(nonvacuous)}/{len(reps)} non-vacuous, {computes} Compute() "
           f"call(s) observed, {len(lost)} device loss(es).")
+    for ln in lanes:
+        p = per_lane[ln]
+        print(f"    lane {ln:9s} {p['nonvacuous']}/{p['reps']} non-vacuous, "
+              f"{p['computes_observed']} Compute(), {p['losses']} loss(es)"
+              + (f" at reps {p['loss_rep_indices']}" if p["losses"] else ""))
+    if separation:
+        print(f"    SEPARATION: {separation['verdict']} — {separation['why']}")
     print(f"  record: {rec_path.relative_to(REPO)}")
     print_power(len(nonvacuous))
 
@@ -314,8 +506,20 @@ def main(argv=None) -> int:
         print(f"{TAG}: REFUSE — every repetition was vacuous (0 EP dispatches). A gate "
               "with no non-vacuous observation has observed nothing.")
         return EXIT_REFUSE
+    # A requested lane that produced NO non-vacuous observation has observed nothing, even
+    # when a sibling lane observed plenty. Without this, an interleaved run in which the
+    # resident lane crashed at every repetition and the shipping lane ran cleanly would exit
+    # PASS on the shipping lane's evidence — a green produced by the arm that was not the
+    # question. MEASURED 2026-08-04: that is exactly the state main was in.
+    starved = [ln for ln in lanes if per_lane[ln]["nonvacuous"] == 0]
+    if starved:
+        print(f"{TAG}: REFUSE — lane(s) {','.join(starved)} produced no non-vacuous "
+              "observation, so the comparison this gate exists to make was never made. "
+              "A lane that executed nothing is not a clean lane.")
+        return EXIT_REFUSE
     if lost:
-        print(f"{TAG}: FAIL — {len(lost)} loss(es); captures kept at "
+        print(f"{TAG}: FAIL — {len(lost)} loss(es) in lane(s) "
+              + ",".join(sorted({r["lane"] for r in lost})) + "; captures kept at "
               + ", ".join(r["capture"] for r in lost))
         return EXIT_FAIL
     print(f"{TAG}: PASS — no loss in {len(nonvacuous)} non-vacuous repetition(s). This is "

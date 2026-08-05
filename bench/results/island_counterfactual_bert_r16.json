@@ -1,0 +1,299 @@
+{
+  "model": ".scratch-models\\bertsquad-12.onnx",
+  "claim_log": "bench\\results\\_claim_log_bert_r16.jsonl",
+  "min_nodes": 2,
+  "anchors": [
+    "Attention",
+    "Conv",
+    "Gemm",
+    "GroupQueryAttention",
+    "MatMul",
+    "MatMulNBits"
+  ],
+  "graph_nodes": 1167,
+  "claim_log_name_matches": 794,
+  "baseline": {
+    "retained_nodes": 439,
+    "retained_islands": 29
+  },
+  "singles": [
+    {
+      "op": "ConstantOfShape",
+      "graph_count": 1,
+      "nodes_rank_resolved": 1,
+      "retained_nodes": 441,
+      "retained_islands": 30,
+      "delta_nodes": 2,
+      "gated_retained_nodes": 441,
+      "gated_retained_islands": 30,
+      "gated_delta_nodes": 2
+    },
+    {
+      "op": "OneHot",
+      "graph_count": 1,
+      "nodes_rank_resolved": 1,
+      "retained_nodes": 440,
+      "retained_islands": 29,
+      "delta_nodes": 1,
+      "gated_retained_nodes": 440,
+      "gated_retained_islands": 29,
+      "gated_delta_nodes": 1
+    },
+    {
+      "op": "ReduceMean",
+      "graph_count": 50,
+      "nodes_rank_resolved": 0,
+      "retained_nodes": 489,
+      "retained_islands": 29,
+      "delta_nodes": 50,
+      "gated_retained_nodes": 439,
+      "gated_retained_islands": 29,
+      "gated_delta_nodes": 0
+    },
+    {
+      "op": "Softmax",
+      "graph_count": 12,
+      "nodes_rank_resolved": 0,
+      "retained_nodes": 451,
+      "retained_islands": 29,
+      "delta_nodes": 12,
+      "gated_retained_nodes": 439,
+      "gated_retained_islands": 29,
+      "gated_delta_nodes": 0
+    },
+    {
+      "op": "Unsqueeze",
+      "graph_count": 7,
+      "nodes_rank_resolved": 0,
+      "retained_nodes": 449,
+      "retained_islands": 32,
+      "delta_nodes": 10,
+      "gated_retained_nodes": 439,
+      "gated_retained_islands": 29,
+      "gated_delta_nodes": 0
+    },
+    {
+      "op": "Squeeze",
+      "graph_count": 7,
+      "nodes_rank_resolved": 0,
+      "retained_nodes": 447,
+      "retained_islands": 32,
+      "delta_nodes": 8,
+      "gated_retained_nodes": 439,
+      "gated_retained_islands": 29,
+      "gated_delta_nodes": 0
+    },
+    {
+      "op": "Shape",
+      "graph_count": 5,
+      "nodes_rank_resolved": 2,
+      "retained_nodes": 440,
+      "retained_islands": 29,
+      "delta_nodes": 1,
+      "gated_retained_nodes": 439,
+      "gated_retained_islands": 29,
+      "gated_delta_nodes": 0
+    },
+    {
+      "op": "Transpose",
+      "graph_count": 49,
+      "nodes_rank_resolved": 0,
+      "retained_nodes": 439,
+      "retained_islands": 29,
+      "delta_nodes": 0,
+      "gated_retained_nodes": 439,
+      "gated_retained_islands": 29,
+      "gated_delta_nodes": 0
+    },
+    {
+      "op": "Concat",
+      "graph_count": 9,
+      "nodes_rank_resolved": 9,
+      "retained_nodes": 439,
+      "retained_islands": 29,
+      "delta_nodes": 0,
+      "gated_retained_nodes": 439,
+      "gated_retained_islands": 29,
+      "gated_delta_nodes": 0
+    },
+    {
+      "op": "Slice",
+      "graph_count": 5,
+      "nodes_rank_resolved": 5,
+      "retained_nodes": 439,
+      "retained_islands": 29,
+      "delta_nodes": 0,
+      "gated_retained_nodes": 439,
+      "gated_retained_islands": 29,
+      "gated_delta_nodes": 0
+    },
+    {
+      "op": "Split",
+      "graph_count": 1,
+      "nodes_rank_resolved": 0,
+      "retained_nodes": 439,
+      "retained_islands": 29,
+      "delta_nodes": 0,
+      "gated_retained_nodes": 439,
+      "gated_retained_islands": 29,
+      "gated_delta_nodes": 0
+    }
+  ],
+  "cumulative": [
+    {
+      "added": [
+        "ConstantOfShape"
+      ],
+      "retained_nodes": 441,
+      "retained_islands": 30,
+      "delta_nodes": 2,
+      "gated_retained_nodes": 441,
+      "gated_retained_islands": 30,
+      "gated_delta_nodes": 2
+    },
+    {
+      "added": [
+        "ConstantOfShape",
+        "OneHot"
+      ],
+      "retained_nodes": 442,
+      "retained_islands": 30,
+      "delta_nodes": 3,
+      "gated_retained_nodes": 442,
+      "gated_retained_islands": 30,
+      "gated_delta_nodes": 3
+    },
+    {
+      "added": [
+        "ConstantOfShape",
+        "OneHot",
+        "ReduceMean"
+      ],
+      "retained_nodes": 492,
+      "retained_islands": 30,
+      "delta_nodes": 53,
+      "gated_retained_nodes": 442,
+      "gated_retained_islands": 30,
+      "gated_delta_nodes": 3
+    },
+    {
+      "added": [
+        "ConstantOfShape",
+        "OneHot",
+        "ReduceMean",
+        "Softmax"
+      ],
+      "retained_nodes": 504,
+      "retained_islands": 30,
+      "delta_nodes": 65,
+      "gated_retained_nodes": 442,
+      "gated_retained_islands": 30,
+      "gated_delta_nodes": 3
+    },
+    {
+      "added": [
+        "ConstantOfShape",
+        "OneHot",
+        "ReduceMean",
+        "Softmax",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 514,
+      "retained_islands": 33,
+      "delta_nodes": 75,
+      "gated_retained_nodes": 442,
+      "gated_retained_islands": 30,
+      "gated_delta_nodes": 3
+    },
+    {
+      "added": [
+        "ConstantOfShape",
+        "OneHot",
+        "ReduceMean",
+        "Softmax",
+        "Squeeze",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 519,
+      "retained_islands": 33,
+      "delta_nodes": 80,
+      "gated_retained_nodes": 442,
+      "gated_retained_islands": 30,
+      "gated_delta_nodes": 3
+    },
+    {
+      "added": [
+        "ConstantOfShape",
+        "OneHot",
+        "ReduceMean",
+        "Shape",
+        "Softmax",
+        "Squeeze",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 520,
+      "retained_islands": 33,
+      "delta_nodes": 81,
+      "gated_retained_nodes": 442,
+      "gated_retained_islands": 30,
+      "gated_delta_nodes": 3
+    },
+    {
+      "added": [
+        "ConstantOfShape",
+        "OneHot",
+        "ReduceMean",
+        "Shape",
+        "Softmax",
+        "Squeeze",
+        "Transpose",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 520,
+      "retained_islands": 33,
+      "delta_nodes": 81,
+      "gated_retained_nodes": 442,
+      "gated_retained_islands": 30,
+      "gated_delta_nodes": 3
+    },
+    {
+      "added": [
+        "Concat",
+        "ConstantOfShape",
+        "OneHot",
+        "ReduceMean",
+        "Shape",
+        "Softmax",
+        "Squeeze",
+        "Transpose",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 527,
+      "retained_islands": 33,
+      "delta_nodes": 88,
+      "gated_retained_nodes": 442,
+      "gated_retained_islands": 30,
+      "gated_delta_nodes": 3
+    },
+    {
+      "added": [
+        "Concat",
+        "ConstantOfShape",
+        "OneHot",
+        "ReduceMean",
+        "Shape",
+        "Slice",
+        "Softmax",
+        "Squeeze",
+        "Transpose",
+        "Unsqueeze"
+      ],
+      "retained_nodes": 532,
+      "retained_islands": 33,
+      "delta_nodes": 93,
+      "gated_retained_nodes": 442,
+      "gated_retained_islands": 30,
+      "gated_delta_nodes": 3
+    }
+  ]
+}

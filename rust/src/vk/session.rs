@@ -388,6 +388,17 @@ struct ShapeOnlyRecorder {
     /// `bind_prefix_output`. `dispatch_ort` uses this to skip the input's device allocation
     /// entirely and stage its bytes into the output buffer's prefix instead.
     pub prefix_pairs: Vec<(u64, u64, crate::engine::PrefixLayout)>,
+    /// Is the growing-KV prefix alias available for THIS `Compute`?
+    ///
+    /// The flag alone is not enough. The alias stages the aliased input's **host bytes**, and an
+    /// input that ORT placed in this EP's device memory has no readable host bytes — its pointer
+    /// is a reserved address that faults on touch (`vk/session.rs` Step 1b). `dispatch_ort` sets
+    /// this to `false` for such a Compute; the handler then takes the two-buffer path and the
+    /// shader's own `copy_leader` performs the past→present copy on the device.
+    ///
+    /// Defaults to `true` so the crate-wide parser stays the only *policy* input; this field is
+    /// a per-call *capability*.
+    pub growing_alias_available: bool,
 }
 
 impl ShapeOnlyRecorder {
@@ -406,6 +417,7 @@ impl ShapeOnlyRecorder {
             temp_descs: Vec::new(),
             aliased_pairs: Vec::new(),
             prefix_pairs: Vec::new(),
+            growing_alias_available: true,
         }
     }
 
@@ -428,6 +440,7 @@ impl ShapeOnlyRecorder {
             temp_descs: Vec::new(),
             aliased_pairs: Vec::new(),
             prefix_pairs: Vec::new(),
+            growing_alias_available: true,
         }
     }
 
@@ -497,9 +510,15 @@ impl DispatchContext for ShapeOnlyRecorder {
         Ok(BufferView::from_raw(in_token))
     }
 
-    /// Read through the single crate-wide parser, for the same reason `kv_arena` does.
+    /// Read through the single crate-wide parser, for the same reason `kv_arena` does — and
+    /// then ANDed with a per-call capability.
+    ///
+    /// The flag is policy; `growing_alias_available` is whether the alias can be executed at all
+    /// for this `Compute`. It is false when an input lives in this EP's device memory, because
+    /// the alias stages host bytes and such an input has none. See `dispatch_ort`'s
+    /// `alias_source_readable`.
     fn kv_growing_alias(&self) -> bool {
-        crate::factory::kv_prefix_alias_enabled()
+        self.growing_alias_available && crate::factory::kv_prefix_alias_enabled()
     }
 
     /// Register a prefix-aliased output (growing KV cache staged into `present`'s prefix).
@@ -1182,6 +1201,57 @@ impl VulkanSession {
         let mut prefix_output_to_input: HashMap<usize, (usize, crate::engine::PrefixLayout)> =
             HashMap::new();
 
+        // ── Step 1a (hoisted): which inputs already live in this EP's device memory? ──
+        //
+        // §6.5's payoff. When `alloc_device_frame` is `SHARED`, an input ORT placed in this EP's
+        // device memory already lives in a `VkBuffer` on the device we are about to dispatch on.
+        // Binding it directly skips a fresh `DeviceLocal` allocation and a full re-upload per
+        // Compute call. `bind_target_for` declines — returning `None` — for every case it cannot
+        // prove: host memory, a `SPLIT-DEVICE` frame, or an interior offset the descriptor cannot
+        // express. Declining costs one upload; assuming would read a neighbouring tensor.
+        //
+        // Must run BEFORE Step 1b, which overwrites `input_cpu_ptrs[i]` with the *staging* address
+        // and would leave nothing to classify as a handle.
+        //
+        // HOISTED above the translate pre-pass 2026-08-04, because the pre-pass is where the KV
+        // prefix alias is DECIDED and the decision needs this answer. See `alias_source_readable`
+        // immediately below.
+        let mut bound_inputs: Vec<Option<(vk::Buffer, u64)>> = vec![None; input_cpu_ptrs.len()];
+        for (i, p) in input_cpu_ptrs.iter().enumerate() {
+            let want = actual_input_byte_sizes.get(i).copied().unwrap_or(0) as usize;
+            bound_inputs[i] =
+                crate::vk::host_device_memory::bind_target_for(p.cast_mut().cast::<u8>(), want);
+        }
+
+        // **The prefix alias needs its source's bytes to be HOST-READABLE, and under
+        // `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` they are not.**
+        //
+        // MEASURED 2026-08-04: with the alias on (its shipped default) the device-resident lane
+        // died with an access violation at the first `Compute`, 0 dispatches, no Vulkan error and
+        // no message — 3 of 3 at seed_past 4096 and 1 of 1 at 512, while the same binary with
+        // `ONNXRUNTIME_EP_VULKAN_KV_PREFIX_ALIAS=0` completed 710 dispatches. The mechanism is
+        // written in Step 1b's own comment: an input ORT placed in this EP's device memory has an
+        // opaque pointer that is *a reserved, inaccessible address, by design*. Step 1b converts
+        // such a pointer into readable bytes — but only for inputs Step 1a did NOT bind, because a
+        // bound input's host bytes are never touched. The prefix staging loop touches them anyway:
+        // `std::slice::from_raw_parts(input_cpu_ptrs[in_i], sz)` on a reserved address. The guard
+        // worked exactly as designed (it faulted rather than reading a neighbour); what was
+        // missing was anyone asking it the question.
+        //
+        // The alias is therefore declined, per Compute, whenever ANY plan input is device-bound.
+        // Whole-island rather than per-input on purpose: the handler asks this ONCE, before it
+        // knows which tensor it is about to bind, and it sets `past_stride = present_len` on the
+        // strength of the answer. A per-input refusal inside `bind_prefix_output` would leave the
+        // push constants saying "the copy already happened" for a copy that did not.
+        //
+        // Nothing is lost by declining. The alias exists to stop the EP allocating a `past` buffer
+        // it only ever copies out of; when `past` is already a device buffer the caller owns,
+        // there is no such allocation to save and the shader's own `copy_leader` does the
+        // past→present copy on the device, with no host round trip at all.
+        let alias_source_readable = !bound_inputs.iter().any(|b| b.is_some());
+        let growing_alias_armed =
+            crate::factory::kv_prefix_alias_enabled() && alias_source_readable;
+
         for (ki, kernel) in kernels.iter().enumerate() {
             let recipe = match &kernel.dyn_recipe {
                 Some(r) => r,
@@ -1266,6 +1336,7 @@ impl VulkanSession {
                 ),
                 None => ShapeOnlyRecorder::new(kernel.n_plan_inputs),
             };
+            sor.growing_alias_available = growing_alias_armed;
             // The `Err` is bound rather than discarded by `is_ok()`. R13: a broken commitment
             // whose message is "translate failed" tells a reader that something failed, which
             // they already knew from the WARN. The handler's own text is the only thing here
@@ -1393,21 +1464,10 @@ impl VulkanSession {
             }
             seen
         };
-        // §6.5's payoff. When `alloc_device_frame` is `SHARED`, an input ORT placed in this EP's
-        // device memory already lives in a `VkBuffer` on the device we are about to dispatch on.
-        // Binding it directly skips a fresh `DeviceLocal` allocation and a full re-upload per
-        // Compute call. `bind_target_for` declines — returning `None` — for every case it cannot
-        // prove: host memory, a `SPLIT-DEVICE` frame, or an interior offset the descriptor cannot
-        // express. Declining costs one upload; assuming would read a neighbouring tensor.
-        //
-        // Must run BEFORE Step 1b, which overwrites `input_cpu_ptrs[i]` with the *staging* address
-        // and would leave nothing to classify as a handle.
-        let mut bound_inputs: Vec<Option<(vk::Buffer, u64)>> = vec![None; input_cpu_ptrs.len()];
-        for (i, p) in input_cpu_ptrs.iter().enumerate() {
-            let want = actual_input_byte_sizes.get(i).copied().unwrap_or(0) as usize;
-            bound_inputs[i] =
-                crate::vk::host_device_memory::bind_target_for(p.cast_mut().cast::<u8>(), want);
-        }
+        // §6.5's payoff: computed above, hoisted so the translate pre-pass can read it. This
+        // comment is kept at the original site because Step 1b's precondition lives here: the
+        // classification must have happened before `input_cpu_ptrs[i]` is overwritten with the
+        // staging address, and it did.
 
         // ── Step 1b: resolve any input that lives in the EP's own device memory ──
         //
@@ -1883,6 +1943,26 @@ impl VulkanSession {
         // computed from the same `eff_bindings` list the record loop resolves, so this is the
         // condition the record loop will actually meet, not a restatement of it.
         for (&j, &(in_i, layout)) in prefix_output_to_input.iter() {
+            // The alias stages HOST bytes. An input Step 1a bound to a device buffer has no
+            // readable host bytes — its pointer is a reserved address that access-violates on
+            // touch — so staging it would kill the process with no Vulkan error and no message,
+            // which is exactly what it did on 2026-08-04 before `alias_source_readable` was
+            // added. That gate should mean this branch is unreachable; it is checked anyway,
+            // because the failure it prevents is a hard crash rather than a wrong answer, and a
+            // crash is the one outcome that cannot leave a diagnostic behind.
+            if bound_inputs.get(in_i).copied().flatten().is_some() {
+                log::error!(
+                    "[VulkanEP] prefix alias: output[{j}] claims input[{in_i}] as its prefix, \
+                     but input[{in_i}] lives in this EP's device memory and has no host bytes \
+                     to stage; refusing."
+                );
+                bail!(
+                    "the KV prefix alias would stage an input that lives in device memory, \
+                     whose host pointer is a reserved address by design. Reading it would \
+                     fault. This EP refuses instead. Set \
+                     ONNXRUNTIME_EP_VULKAN_KV_PREFIX_ALIAS=0 to take the two-buffer path."
+                );
+            }
             if input_referenced.get(in_i).copied().unwrap_or(true) {
                 log::error!(
                     "[VulkanEP] prefix alias: output[{j}] claims input[{in_i}] as its prefix, \
@@ -3003,6 +3083,49 @@ impl Drop for VulkanSession {
         // drain, so the artifact carries the post-release truth (release_calls > 0, device
         // bytes drained). Counters are cumulative atomics, so this can only add information.
         crate::counters::dump_if_requested();
+    }
+}
+
+#[cfg(test)]
+mod prefix_alias_capability_tests {
+    use super::{DispatchContext, ShapeOnlyRecorder};
+
+    /// The alias is `policy AND capability`, and the capability side is not optional.
+    ///
+    /// MEASURED 2026-08-04: with `ONNXRUNTIME_EP_VULKAN_KV_PREFIX_ALIAS` at its shipped default
+    /// (ON) and `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1`, the EP died with an access violation on
+    /// the first `Compute` — 0 dispatches, no Vulkan error, no message — because the prefix
+    /// staging loop read an input whose host pointer is a **reserved, inaccessible address by
+    /// design**. The flag was on and the operation was impossible; nothing in between said so.
+    ///
+    /// This test is written as an implication rather than against a fixed expected value so it
+    /// cannot be defeated by whatever the ambient environment happens to hold: the environment
+    /// decides policy, and this asserts only that policy never overrides capability.
+    #[test]
+    fn an_unavailable_prefix_alias_stays_off_whatever_the_flag_says() {
+        let mut sor = ShapeOnlyRecorder::new(4);
+
+        sor.growing_alias_available = false;
+        assert!(
+            !sor.kv_growing_alias(),
+            "an input in device memory has no host bytes to stage; the alias must be OFF \
+             regardless of the flag, or the staging loop dereferences a reserved address"
+        );
+
+        sor.growing_alias_available = true;
+        assert_eq!(
+            sor.kv_growing_alias(),
+            crate::factory::kv_prefix_alias_enabled(),
+            "when the alias IS available the flag is the only remaining input — the capability \
+             must not become a second, quieter policy"
+        );
+    }
+
+    /// A fresh recorder is available by default, so the capability is something `dispatch_ort`
+    /// *withdraws* on evidence rather than something every caller must remember to grant.
+    #[test]
+    fn a_fresh_recorder_is_available_by_default() {
+        assert!(ShapeOnlyRecorder::new(1).growing_alias_available);
     }
 }
 

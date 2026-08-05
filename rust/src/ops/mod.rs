@@ -64,6 +64,9 @@ pub mod norm;
 /// Indexing — `Gather` and the ops that read a tensor through another tensor's values.
 pub mod indexing;
 
+/// Shape — `Reshape`, the ops whose output is the input's bytes under a different description.
+pub mod shape;
+
 /// Convolution — `Conv`, the spatial-window op the CNN model class rests on.
 pub mod conv;
 
