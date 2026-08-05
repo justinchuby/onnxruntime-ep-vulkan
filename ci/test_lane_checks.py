@@ -2412,26 +2412,63 @@ def test_a_dormant_guard_is_not_inert_and_the_screen_says_why(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# ci/negative_control_build_precondition.py's REPLAYED arm — is 607056a actually
-# reachable from THIS checkout?  Issue #1: `actions/checkout@v4` defaults to a depth-1
-# shallow clone, which makes `git show 607056a:<path>` fail, and the negative control
-# correctly counts that as a failed arm (UNOBSERVABLE, never a silent pass) rather than
-# skipping it — but a checkout that cannot reach its own history turns that correct
-# behaviour into a permanent, uninformative red. The fix is `fetch-depth: 0` on the
-# `lane-checks` job's checkout step; these two tests are the positive/negative pair that
-# proves the fix is real rather than assumed: one shows the subject is reachable in a
-# normal (unshallowed) checkout, the other reproduces the CI defect in a scratch shallow
-# clone and requires the control to still report it loudly, never green.
+# ci/negative_control_build_precondition.py's REPLAYED arms — is 607056a actually
+# reachable from THIS checkout, and do BOTH arms pinned to it actually execute?
+# Issue #1: `actions/checkout@v4` defaults to a depth-1 shallow clone, which makes
+# `git show 607056a:<path>` fail, and the negative control correctly counts that as a
+# failed arm (UNOBSERVABLE, never a silent pass) rather than skipping it — but a
+# checkout that cannot reach its own history turns that correct behaviour into a
+# permanent, uninformative red. The fix is `fetch-depth: 0` on the `lane-checks` job's
+# checkout step; these two tests are the positive/negative pair that proves the fix is
+# real rather than assumed: one shows the subject is reachable in a normal (unshallowed)
+# checkout and both REPLAYED arms fire, the other reproduces the CI defect in a scratch
+# shallow clone and requires the control to still report it loudly, never green.
+#
+# NOTE ON THE FIRST CUT OF THIS TEST (fixed after a real CI red, PR #6): it called the
+# `_precondition()` helper above, which runs `check_build_precondition.py` — the
+# production screen `negative_control_build_precondition.py` is a meta-test *of*. That
+# produces a `BUILD-PRECONDITION: PASS` line, never the `NEGATIVE-CONTROL: ... N LIVE /
+# M REPLAYED / K PLANTED` summary this test actually needs, so the count assertion could
+# never pass no matter how many REPLAYED arms fired. The fix is to invoke
+# `negative_control_build_precondition.py` itself (it takes no CLI arguments — see
+# ``main()``), and to assert the REPLAYED arm *count* parsed out of its own summary line
+# rather than a full literal string, so a change to the number of PLANTED arms (which
+# says nothing about REPLAYED reachability) cannot make this test's real subject —
+# "did both REPLAYED arms execute" — silently untestable again.
 # ---------------------------------------------------------------------------
+
+def _run_negative_control_build_precondition(repo_root: Path) -> tuple[int, str]:
+    """Invoke ``<repo_root>/ci/negative_control_build_precondition.py`` (no CLI args).
+
+    The script computes its own ``REPO_ROOT`` from ``Path(__file__).resolve().parent.
+    parent`` -- it does NOT read the process's current working directory -- so running
+    it against a *different* checkout (e.g. the scratch shallow clone below) means
+    invoking the copy of the script that lives inside that checkout, not this
+    worktree's copy with a different ``cwd``. Passing the wrong ``repo_root`` here would
+    silently re-run this worktree's own (unshallowed) script and could never observe the
+    shallow clone's REPLAYED arm at all -- the exact defect this helper exists to avoid.
+    """
+    script = repo_root / "ci" / "negative_control_build_precondition.py"
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True, text=True, cwd=str(repo_root),
+    )
+    return proc.returncode, proc.stdout + proc.stderr
 
 
 def test_the_replayed_subjects_are_reachable_from_this_checkout():
-    """POSITIVE arm: this checkout can `git show` every commit a REPLAYED arm depends on.
+    """POSITIVE arm: this checkout can `git show` every commit a REPLAYED arm depends on,
+    and both of ``negative_control_build_precondition.py``'s own REPLAYED arms execute.
 
-    If this test is red, no REPLAYED arm anywhere in ci/ can fire here, regardless of
-    what ``negative_control_build_precondition.py`` (or any of its siblings) reports --
-    a shallow clone is exactly the shape that makes `git show <ref>:<path>` fail, which
-    is indistinguishable, one arm at a time, from the defect itself having gone missing.
+    If the ``git show`` loop below is red, no REPLAYED arm anywhere in ci/ can fire here
+    -- a shallow clone is exactly the shape that makes `git show <ref>:<path>` fail,
+    which is indistinguishable, one arm at a time, from the defect itself having gone
+    missing. The count assertion below is the control's *own* declared inventory, not a
+    number chosen here: ``negative_control_build_precondition.py`` appends exactly one
+    REPLAYED arm when its historical ref is unreadable (UNOBSERVABLE) and exactly two
+    when it is readable (the exact historical bytes, and that BP1 -- not BP2 -- is what
+    catches them). Asserting `== 2` is asserting "every declared REPLAYED arm for this
+    control actually executed", the real invariant issue #1 asks for, not a guess.
     """
     for ref, rel_path in (
         ("607056a", ".github/workflows/ci.yml"),  # negative_control_build_precondition.py
@@ -2450,16 +2487,19 @@ def test_the_replayed_subjects_are_reachable_from_this_checkout():
             f"stderr: {proc.stderr.strip()}"
         )
 
-    rc, out = _precondition(
-        str(REPO_ROOT / ".github" / "workflows" / "ci.yml"),
-        str(REPO_ROOT / ".github" / "workflows" / "conformance.yml"),
-    )
+    rc, out = _run_negative_control_build_precondition(REPO_ROOT)
     assert rc == 0, out
-    assert "1 LIVE / 2 REPLAYED / 13 PLANTED" in out, (
-        "both REPLAYED arms must fire -- a checkout that can reach 607056a but reports "
-        "fewer than 2 REPLAYED arms has regressed silently, not gone shallow"
+    assert "NEGATIVE-CONTROL: PASS" in out, (
+        "every declared arm must fire once its historical refs are reachable\n" + out
     )
-    assert "NEGATIVE-CONTROL: PASS" in out
+    counts = re.search(r"(\d+) LIVE / (\d+) REPLAYED / (\d+) PLANTED", out)
+    assert counts is not None, f"could not find the control's own arm-count line:\n{out}"
+    replayed = int(counts.group(2))
+    assert replayed == 2, (
+        f"only {replayed} of the control's 2 declared REPLAYED arms fired -- a checkout "
+        "that can reach 607056a but still reports fewer than both REPLAYED arms has "
+        f"regressed silently, not gone shallow.\n{out}"
+    )
 
 
 def test_negative_control_reports_unobservable_not_a_pass_on_a_shallow_clone(tmp_path):
@@ -2468,7 +2508,7 @@ def test_negative_control_reports_unobservable_not_a_pass_on_a_shallow_clone(tmp
     A `--depth 1` clone of this repository cannot reach 607056a (it long predates HEAD),
     so the REPLAYED arm must FAIL loudly -- UNOBSERVABLE, per
     ``negative_control_build_precondition.historical_workflow`` -- and the control's exit
-    code must stay non-zero.  It must NOT skip the arm and it must NOT report PASS: a
+    code must stay non-zero. It must NOT skip the arm and it must NOT report PASS: a
     negative control that goes quietly green the moment its subject becomes unreachable
     is indistinguishable, from the outside, from one that was never wired at all.
     """
@@ -2489,12 +2529,8 @@ def test_negative_control_reports_unobservable_not_a_pass_on_a_shallow_clone(tmp
         "test exists to replay -- widen the clone or pick a more recent HISTORICAL_REF"
     )
 
-    proc = subprocess.run(
-        [sys.executable, str(shallow / "ci" / "negative_control_build_precondition.py")],
-        capture_output=True, text=True, cwd=str(shallow),
-    )
-    out = proc.stdout + proc.stderr
-    assert proc.returncode == 1, (
+    rc, out = _run_negative_control_build_precondition(shallow)
+    assert rc == 1, (
         f"a shallow checkout must fail the control, not pass it silently.\nOutput:\n{out}"
     )
     assert "UNOBSERVABLE" in out, "the reason must be named, not just a bare non-zero exit"
