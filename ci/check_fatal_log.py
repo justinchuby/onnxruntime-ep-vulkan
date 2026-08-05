@@ -54,14 +54,23 @@ def main(argv: list[str]) -> int:
     # step that tees its output, and this check added a second ERROR(instrument) on top of
     # a failure it had nothing to do with. The marker is written by the lane's own log
     # producer, so it cannot be absent on a run that did produce a log.
-    lane_marker = ""
-    rest: list[str] = []
+    #
+    # REPEATABLE, and scoped to the logs that FOLLOW it. One marker for several logs is
+    # a marker for whichever producer happens to run first: on 2026-08-04 the Windows lane
+    # passed `.lane-reached` (written by the pytest step) together with
+    # `gate_chain_fp32_ort_stderr.log` (written by a LATER step), so when the pytest step
+    # failed and the gate step never ran, the marker was present, the log was absent, and
+    # this check reported an instrument failure for a step that had simply not happened.
+    # A marker only speaks for the producer that writes it.
+    pairs: list[tuple[str, str]] = []
+    current_marker = ""
     for a in argv:
         if a.startswith("--lane-marker="):
-            lane_marker = a.split("=", 1)[1]
+            current_marker = a.split("=", 1)[1]
         else:
-            rest.append(a)
-    argv = rest
+            pairs.append((a, current_marker))
+    argv = [name for name, _ in pairs]
+    marker_of = dict(pairs)
     if not argv:
         print(__doc__, flush=True)
         return EXIT_USAGE
@@ -106,6 +115,7 @@ def main(argv: list[str]) -> int:
     scanned = 0
     for name in argv:
         path = Path(name)
+        lane_marker = marker_of.get(name, "")
         if not path.exists():
             if lane_marker and not Path(lane_marker).exists():
                 print("FATAL-LOG-CHECK: ERROR(instrument=lane_did_not_reach_evidence)", flush=True)

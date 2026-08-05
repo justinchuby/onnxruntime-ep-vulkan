@@ -1,0 +1,65 @@
+#!/bin/sh
+# Read the colour of `main` before a merge commit is written.
+#
+# WHY THIS HOOK EXISTS. CI was red on `main` for at least ten consecutive pushes and
+# nobody noticed. Every one of those merges was verified locally — lib tests, clippy,
+# rustfmt, the ledger — and every report quoted those numbers. The README says a red
+# badge blocks all merges "by team discipline enforced by this notice", and a notice is
+# not an instrument: it is read once, at a moment when nobody is merging.
+#
+# So the reading is moved to the one moment it is about. `git merge` runs this hook
+# before it writes the merge commit — after the merger has decided and before the
+# decision is recorded, the only point where the answer can still change anything.
+#
+# THREE OUTCOMES, AND NONE OF THEM IS A SILENCE:
+#   main is green   -> the merge proceeds, and the sentence with the run URL is printed
+#                      so it can be pasted into the report instead of remembered.
+#   main is red     -> the merge is REFUSED. Override with MAIN_COLOUR_ACK=red, which
+#                      is deliberately a thing you have to type: you may still merge
+#                      into a red branch, you may not do it without saying so.
+#   colour unread   -> the merge is REFUSED with ERROR(instrument). Override with
+#                      MAIN_COLOUR_ACK=unread. Offline is UNOBSERVABLE, not green, and
+#                      the ten-push window was made entirely of people who had not asked.
+#
+# Install with:  python ci/install_hooks.py   (sets core.hooksPath to .githooks)
+
+if [ -n "$MAIN_COLOUR_SKIP" ]; then
+  echo "pre-merge-commit: MAIN_COLOUR_SKIP set — the colour of main was NOT read." >&2
+  exit 0
+fi
+
+PY="${PYTHON:-python}"
+command -v "$PY" >/dev/null 2>&1 || PY=python3
+
+"$PY" ci/check_main_is_green.py --branch main --limit 10 --for-merge
+rc=$?
+
+case "$rc" in
+  0) exit 0 ;;
+  1)
+    if [ "$MAIN_COLOUR_ACK" = "red" ]; then
+      echo "" >&2
+      echo "pre-merge-commit: MAIN_COLOUR_ACK=red — merging into a RED main, on the record." >&2
+      exit 0
+    fi
+    echo "" >&2
+    echo "pre-merge-commit: REFUSED. \`main\` is red and this repository's README blocks" >&2
+    echo "merges on a red badge. Either close the red, declare it in ci/open_reds.json" >&2
+    echo "with an owner and a closes_when, or re-run with MAIN_COLOUR_ACK=red to merge" >&2
+    echo "into it deliberately. A green local gate set is not a second opinion about" >&2
+    echo "this; it is an answer to a different question." >&2
+    exit 1
+    ;;
+  *)
+    if [ "$MAIN_COLOUR_ACK" = "unread" ]; then
+      echo "" >&2
+      echo "pre-merge-commit: MAIN_COLOUR_ACK=unread — merging without knowing main's colour." >&2
+      exit 0
+    fi
+    echo "" >&2
+    echo "pre-merge-commit: REFUSED. The colour of \`main\` was not read (exit $rc), so it" >&2
+    echo "is UNOBSERVABLE — which is not green. Authenticate gh, or re-run with" >&2
+    echo "MAIN_COLOUR_ACK=unread to merge while not knowing." >&2
+    exit 1
+    ;;
+esac

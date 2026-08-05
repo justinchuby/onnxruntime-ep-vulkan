@@ -94,6 +94,44 @@ def planted(tmp: Path) -> None:
            out.returncode == 1 and "artifact_predates_subject" in out.stdout,
            f"rc={out.returncode}")
 
+    # 2b. THE ARM FOR THE EXEMPTION, WHICH IS THE ARM THAT WAS MISSING FROM THE OTHER
+    # REGISTER TOO. `historical` lets an old reading be KEPT on purpose. Every arm in
+    # this control plants a defect; none exercised a declared-legitimate state, and one
+    # register over that is exactly how 43 deliberate proof retirements spent days being
+    # reported as deletions. So: the acquittal has a positive arm, and the acquittal is
+    # refused when it is not signed.
+    def _historical(repo, block):
+        frame = repo / "art" / "artifact-frame.json"
+        doc = json.loads(frame.read_text(encoding="utf-8"))
+        if block is None:
+            doc.pop("historical", None)
+        else:
+            doc["historical"] = block
+        frame.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+
+    _historical(r1, {"owner": "link", "date": "2026-08-04",
+                     "reason": "planted: kept deliberately",
+                     "superseded_by": "planted: the lane that answers this now"})
+    out = run_screen("art", r1)
+    record("PLANTED", "a DECLARED historical reading is acquitted",
+           out.returncode == 0 and "PASS (historical)" in out.stdout,
+           f"rc={out.returncode}")
+    record("PLANTED", "and its age is still PRINTED, not excused away",
+           "commit(s) have touched" in out.stdout and "HISTORICAL:" in out.stdout,
+           "the moved commits must stay on screen or the declaration is a mute button")
+
+    _historical(r1, {"owner": "link", "date": "2026-08-04",
+                     "reason": "planted: no superseded_by"})
+    out = run_screen("art", r1)
+    record("PLANTED", "an UNSIGNED historical declaration is refused, not honoured",
+           out.returncode == 2 and "incomplete_historical_declaration" in out.stdout,
+           f"rc={out.returncode}")
+    _historical(r1, None)
+    out = run_screen("art", r1)
+    record("PLANTED", "and removing the declaration restores the conviction",
+           out.returncode == 1 and "artifact_predates_subject" in out.stdout,
+           f"rc={out.returncode}")
+
     # 3. artifact bytes edited without re-stamping
     r2 = tmp / "edited"
     r2.mkdir()

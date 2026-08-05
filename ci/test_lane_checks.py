@@ -2808,3 +2808,96 @@ def test_the_shipped_register_tells_you_to_flip_not_delete():
     assert set(doc["subjects"]) == live | set(doc.get("retired", {})), (
         "every subject must be live or retired"
     )
+
+
+# ---------------------------------------------------------------------------
+# check_main_is_green.py
+#
+# THE SECOND-ORDER ARM. Everything else in this file screens a lane; this screens
+# whether anybody READ a lane. CI was red on `main` for ten consecutive pushes while
+# every merge report quoted a green local gate set, because nothing in the workflow
+# asked GitHub. `--from-json` exists so both polarities are exercised with no network:
+# a screen that can only be tried against the real branch has exactly one polarity on
+# any given day, which is the condition it was built to abolish.
+# ---------------------------------------------------------------------------
+
+
+def _runs(*rows) -> list:
+    out = []
+    for i, (status, conclusion) in enumerate(rows):
+        out.append({
+            "status": status,
+            "conclusion": conclusion,
+            "headSha": f"{i:040x}",
+            "displayTitle": f"run {i}",
+            "url": f"https://example.invalid/runs/{i}",
+            "workflowName": "CI",
+            "createdAt": "2026-08-04T00:00:00Z",
+        })
+    return out
+
+
+def _main_green(tmp_path, rows, *args: str):
+    p = write(tmp_path, "runs.json", rows)
+    r = run_check("check_main_is_green.py", "--from-json", str(p), *args)
+    return r.returncode, r.stdout + r.stderr
+
+
+def test_main_green_all_succeeded_passes(tmp_path):
+    """The positive pole. A screen with no green state is a screen nobody can satisfy."""
+    rc, out = _main_green(tmp_path, _runs(("completed", "success"), ("completed", "success")))
+    assert rc == EXIT_PASS, out
+    assert "0 RED" in out
+    assert "PASS: every completed run" in out
+
+
+def test_main_green_one_failure_is_a_condition_and_names_the_url(tmp_path):
+    """The red must arrive with a URL: an unlocatable red is the one nobody opens."""
+    rc, out = _main_green(tmp_path, _runs(("completed", "success"), ("completed", "failure")))
+    assert rc == EXIT_FAIL_CONDITION, out
+    assert "FAIL(condition=main_is_red)" in out
+    assert "https://example.invalid/runs/1" in out
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "timed_out", "cancelled", "startup_failure"])
+def test_main_green_every_non_success_conclusion_is_red(tmp_path, conclusion):
+    """`cancelled` is not `success`. A screen that only knows the word `failure` is an
+    allowlist of one word, and the next word through is invisible."""
+    rc, out = _main_green(tmp_path, _runs(("completed", conclusion)))
+    assert rc == EXIT_FAIL_CONDITION, out
+    assert conclusion in out
+
+
+def test_main_green_in_progress_is_not_counted_red_but_is_declared(tmp_path):
+    """A run that has not finished has not failed; saying so is not the same as ignoring it."""
+    rc, out = _main_green(tmp_path, _runs(("completed", "success"), ("in_progress", None)))
+    assert rc == EXIT_PASS, out
+    assert "1 run(s) have not finished" in out
+    assert "1 still running" in out
+
+
+def test_main_green_an_unreadable_answer_is_an_instrument_error_not_a_green(tmp_path):
+    """The whole point. `I could not ask` must never render as `the answer was yes` —
+    the ten red pushes all happened to people holding a green local transcript."""
+    r = run_check("check_main_is_green.py", "--from-json", str(tmp_path / "absent.json"))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
+    assert "ERROR(instrument=github_unreachable)" in r.stdout
+    assert "UNOBSERVABLE, not" in r.stdout
+
+
+def test_main_green_zero_runs_is_unscreened_not_clean(tmp_path):
+    """A branch with no runs has not passed; an empty list is a denominator of zero."""
+    rc, out = _main_green(tmp_path, [])
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "no_runs_listed" in out
+
+
+def test_main_green_merge_sentence_carries_the_sha_and_url_in_both_colours(tmp_path):
+    """`--for-merge` exists so the sentence in a merge report cannot be written from
+    memory. If it can be paraphrased without a URL, we are back where we started."""
+    rc, out = _main_green(tmp_path, _runs(("completed", "success")), "--for-merge")
+    assert rc == EXIT_PASS and "MERGE REPORT SENTENCE: `main` is GREEN" in out
+    assert "https://example.invalid/runs/0" in out
+    rc, out = _main_green(tmp_path, _runs(("completed", "failure")), "--for-merge")
+    assert rc == EXIT_FAIL_CONDITION and "is RED" in out
+    assert "https://example.invalid/runs/0" in out

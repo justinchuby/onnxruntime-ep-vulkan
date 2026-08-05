@@ -147,6 +147,12 @@ TABLE: dict[str, dict[str, str]] = {
         "oracle": "git log over the source paths the frame names, since the commit it names",
         "note": "the frame is written by the producer and read by the screen; the oracle is git, not the artifact. Rai found the case it exists for: a log committed three hours BEFORE the fix it was cited as evidence for.",
     },
+    "ci/check_main_is_green.py": {
+        "verdict": "EXTERNAL",
+        "subject": "the belief, held locally, that `main`'s CI is green",
+        "oracle": "github.com's own run list for the branch, fetched over the network",
+        "note": "the only screen here whose oracle is outside the machine, which is the point: every other check in this table can be satisfied by a tree that has never been pushed. Its subject is not the tree at all — it is what the person merging thinks the badge says, and the ten-push red window happened entirely inside correct local readings.",
+    },
     "ci/check_open_reds.py": {        "verdict": "ARTIFACT",
         "subject": "ci/open_reds.json's accepted reds",
         "oracle": "the guards themselves, executed",

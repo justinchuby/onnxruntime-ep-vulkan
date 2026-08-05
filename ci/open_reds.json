@@ -9,7 +9,9 @@
     "the 12 Windows-only failures": "Collapsed to 1 after Mouse's two-digest schema landed, and the survivor is a device-only fp16 depth drift routed to Mouse/Switch. Same reason as above: not host-free.",
     "rust/tools/gen_proof_ledger.py --check": "Since 2832526 it asks the built artifact via OrtEpVulkanGetLedgerIdentity instead of comparing the file against itself, which is the right repair and makes its colour depend on a FRESH BUILD. On a host-free runner there is no DLL and it returns ERROR(instrument); against a stale one it returns FAIL(condition=LEDGER_DOES_NOT_DESCRIBE_THE_BUILD) -- which it did on this box today, correctly, naming one moved gqa_f16 kernel while noting 'the file is internally consistent: 103 entries, digest 94d994ba54821056 -- that was never the question'. A check whose colour needs a build cannot be declared in a host-free register: the green would be an artifact of the build step, not of the check. It belongs to the device lanes, which build before they test, and it is reached there through tests/ops/test_proof_ledger.py and tests/ops/test_wiring_census.py.",
     "the proof ledger is Windows-shaped (Linux: 0 of 103 agree)": "OBSERVED 2026-08-03 on a FRESH Linux release build (libonnxruntime_vulkan_ep.so, built by the lane run itself, exporting both OrtEpVulkanGetShaderSubject and OrtEpVulkanGetLedgerIdentity): `gen_proof_ledger.py --check` reports 103 entries describe moved kernels, 0 name shaders this build has no module for, 0 AGREE. On Windows the same file and the same checkout give 102 agree / 1 moved. Both digests move: a scratch probe (ci/link-linux-repro/probe_subject_frame.py) says 103/103 have BOTH a different spirv_digest AND a different source_digest, and the Linux build reports its own toolchain as 'UNKNOWN' against the ledger's 'shaderc v2026.2 v2026.2'. So this is not one moved kernel and it is not 103 moved kernels either -- it is a FRAME difference that the check has no state for. Not declared here for the same reason as the entry above (host-free register cannot see a colour that needs a build), and named here so the omission is a statement. Owner: mouse. Two separate defects are behind it, both filed in .squad/decisions/inbox/link-the-ledger-is-windows-shaped.md.",
-    "gen_proof_ledger.py --check discards its notes on the FAIL path": "The same run computes the note that would explain itself and then does not print it. `check_against_build` returns (failures, notes) and appends a note naming the toolchain difference whenever the build's toolchain differs from the entries'; `cmd_check` prints notes ONLY after the PASS line and returns 1 from the failure branch before reaching them (gen_proof_ledger.py:1088-1100 vs :1105). On PASS, where nothing needs explaining, the notes are printed in full. That is the session's shape one more time: the explanation exists, is computed, and reaches nobody. Verified by grepping a live Linux --check run for 'toolchain' -- zero hits, in a run where all 103 failures have a toolchain cause. Owner: mouse. One-line repair: move the `for n in notes` loop above the `if build_failures:` block."
+    "gen_proof_ledger.py --check discards its notes on the FAIL path": "The same run computes the note that would explain itself and then does not print it. `check_against_build` returns (failures, notes) and appends a note naming the toolchain difference whenever the build's toolchain differs from the entries'; `cmd_check` prints notes ONLY after the PASS line and returns 1 from the failure branch before reaching them (gen_proof_ledger.py:1088-1100 vs :1105). On PASS, where nothing needs explaining, the notes are printed in full. That is the session's shape one more time: the explanation exists, is computed, and reaches nobody. Verified by grepping a live Linux --check run for 'toolchain' -- zero hits, in a run where all 103 failures have a toolchain cause. Owner: mouse. One-line repair: move the `for n in notes` loop above the `if build_failures:` block.",
+    "tests/ops/test_op_table.py::test_op_table[Asin-fp32] and [Acos-fp32]": "OBSERVED on the Windows lavapipe lane in run 30945568152: 6 failed / 805 passed, of which these two are max abs diff 3.4e-4 (Asin) and 1.6e-4 (Acos) against the table's rtol=atol=1e-5. This is a PORTABILITY finding, not a kernel bug: SPIR-V GLSL.std.450 specifies Asin/Acos to about 2^-11 absolute (4.88e-4), so lavapipe is conformant and the tolerance is the thing that is wrong — it was written for arithmetic and applied to transcendentals. Not declared in this register because this register is host-free and this colour needs a Vulkan device; declaring it here would accept it on the evidence of a skip. Owner: mouse (the op table's per-op tolerance policy is his). Closes when the table carries a transcendental tolerance band citing the GLSL.std.450 accuracy table, rather than one number for every op.",
+    "the three Windows device-lane ERROR(instrument) arms in run 30945568152": "tests/ops/test_criterion_4_5_witness.py::test_criterion4_icd_polarity_witness (probe_report_unreadable), tests/ops/test_validation.py::test_the_armed_gate_changes_its_answer_when_the_layer_is_removed (the VK_LAYER_PATH redirect still reports ARMED, so the unarmed pole was never reached), and tests/ops/test_wiring_census.py::test_wiring_census (device_state_producer_absent). All three are ERROR(instrument), not FAIL(condition): none of them observed its subject, so none is a detection and none is a pass. They are named here rather than declared above for the same reason as the entry above — each needs a device, and this register runs host-free, where their colour would be granted by an absence. Owner: link for the first and third (they are lane-plumbing: a probe report the lane did not produce and a device-state producer the lane did not run), trinity for the second (the validation-layer arm is hers and its unarmed pole has never been exercised on any lane). Closes when the Windows lane either produces the two missing artifacts or declines with a lane marker, so that a missing producer stops wearing the name of the check that wanted its output."
   },
   "checks": [
     {
@@ -231,6 +233,32 @@
       "reason": "11 arms, 1 LIVE / 2 REPLAYED / 8 PLANTED, ratio printed. The REPLAYED arms are the load-bearing ones: they run against the real RAI-012 citation gap, unplanted. Two planted arms encode defects this session actually produced in a sibling screen rather than imagined — an unresolvable boundary commit that makes every comparison vacuous and prints PASS having read nothing, and a frame stamped while its subject was dirty, which pins a tree nobody has.",
       "closes_when": "n/a — this is expected green and must stay green.",
       "timeout": 600
+    },
+    {
+      "id": "main_is_green",
+      "cmd": [
+        "python",
+        "ci/check_main_is_green.py",
+        "--branch",
+        "main",
+        "--limit",
+        "10"
+      ],
+      "expect": "red",
+      "owner": "morpheus (coordinator — the merge that lands a green main is his to make; the individual reds behind it are owned by their own entries and by the not_declared_here notes)",
+      "opened": "2026-08-04",
+      "review_by": "2026-11-01",
+      "reason": "The second-order entry. Every other subject in this register is a screen that reads the tree; this one reads whether anybody read a screen. CI was red on `main` for at least ten consecutive pushes and no report mentioned it, because every merge was verified locally and a green local transcript is a complete-looking answer to a different question. The four registers in ci/ all take an implicit thing and make it a file something reads; the implicit thing here was `main is green`, asserted from memory by whoever was merging. Declared expect=green so that a red `main` makes check_open_reds.py itself red — by the README's stated discipline a red badge blocks merges, so a branch that cannot see the blockage is a branch merging into one. ERROR(instrument=github_unreachable) when gh is missing or offline: `I could not ask` must never render as `the answer was yes`, which is exactly the state that held for ten pushes. DECLARED RED 2026-08-04 rather than green, because it is red: `main` is red at 03e6e459 and has been for at least ten consecutive pushes. An entry that says green while the thing is red is the register making the same claim the merge reports made.",
+      "closes_when": "A push to `main` whose CI run completes green. At that moment this entry becomes FAIL(condition=stale_acceptance) and must be flipped back to expect=green — which is the point: the register asks for the flip rather than waiting for someone to remember. Do not delete it; an expect=green main_is_green is what turns the ELEVENTH unnoticed red push into an unaccounted_red instead of a silence.",
+      "timeout": 120,
+      "signature": "FAIL(condition=main_is_red)",
+      "extent": {
+        "pattern": "^  - \\w+  (\\S+)",
+        "members": [
+          "CI"
+        ]
+      },
+      "extent_reason": "The members are WORKFLOWS, not runs. One workflow (CI) is red on `main` today; if `conformance.yml` joins it, that is a second subject arriving inside an acceptance granted over one, and the substring 'FAIL(condition=main_is_red)' would absorb it without a word. The count of red runs is deliberately NOT the extent — ten red pushes of one workflow is one problem, and one red push of two workflows is two."
     }
   ],
   "known_limits": [
@@ -268,6 +296,22 @@
       "limit": "The census walks every revision that touched evidence/proof_ledger.jsonl. In a shallow clone most of those revisions are not present, so the walk is short and the screen would have reported PASS over history it cannot see — the exact defect it exists to catch, arriving through the checkout rather than through a merge. I declared this in prose in session 18 and did not guard it. It is now GUARDED — history_is_complete() reports ERROR(instrument=truncated_history) and exits 2 — but a guard is not a fix: in a shallow CI checkout the census still rules on nothing, and a lane that only tests for exit 1 would read that as tolerable.",
       "closes_when": "The workflow that runs ci/check_ledger_census.py declares fetch-depth 0 (or its equivalent) AND a lane test asserts that exit 2 fails the lane. Then the guard becomes unreachable in CI rather than merely loud, and this entry is retired with owner, date and reason like any other.",
       "timeout": 900
+    },
+    {
+      "id": "main_is_green_cannot_be_read_without_a_network",
+      "screen": "ci/check_main_is_green.py",
+      "cmd": [
+        "python",
+        "ci/check_main_is_green.py",
+        "--assert-known-limit",
+        "github_unreachable_is_unobservable_not_green"
+      ],
+      "admits": "github_unreachable_is_unobservable_not_green",
+      "owner": "link",
+      "opened": "2026-08-04",
+      "review_by": "2026-11-01",
+      "limit": "This screen's subject lives on github.com. Offline, unauthenticated, or with `gh` absent it returns ERROR(instrument=github_unreachable), exit 4 — never a pass — so on a disconnected box the honest reading is `the colour of main is unknown to me`, and every gate depending on it is UNOBSERVABLE rather than clean. That is the correct answer and it is still a gap: a reader who cannot reach GitHub gets no colour, and the failure mode this screen exists to prevent is precisely a reader proceeding without one. It is bounded (one API call, ~1s, `repo` read scope) and it cannot silently invert into a green.",
+      "closes_when": "A cached last-known colour with its own age would narrow it — an answer of `main was green as of 3 days ago` is weaker than a live read but strictly stronger than nothing. Not built, because a stale cache that is read as current is the same defect one layer down, and the cheap honest version had to exist first."
     }
   ],
   "subjects": [
@@ -283,7 +327,8 @@
     "ledger_census",
     "ledger_census_negative_control",
     "artifact_frame",
-    "artifact_frame_negative_control"
+    "artifact_frame_negative_control",
+    "main_is_green"
   ],
   "retired": {
     "proof_ledger_writer_refuses": {

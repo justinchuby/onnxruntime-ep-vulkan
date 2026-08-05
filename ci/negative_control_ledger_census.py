@@ -77,6 +77,20 @@ def _plant_repo(tmp: Path, history: list[list[str]]) -> Path:
     return repo
 
 
+def _retire(repo: Path, rows: list[dict]) -> None:
+    """Write the ONE retirement register into a planted repo, and commit it.
+
+    Committed and not merely written, because the census walks committed history: a
+    register left in the worktree would be read but its arrival would not be, and the
+    difference matters for the same reason the frame-witness arms exist.
+    """
+    (repo / "evidence" / "retired_proof_keys.json").write_text(
+        json.dumps({"retired": rows}, indent=2), encoding="utf-8"
+    )
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "retire by name and reason"], repo)
+
+
 def _write_rewitness(repo: Path, doc: dict) -> None:
     (repo / "evidence" / "proof_rewitness.json").write_text(
         json.dumps(doc, indent=2), encoding="utf-8"
@@ -260,6 +274,108 @@ def main() -> int:
             "PLANTED",
             "a MISSING ledger is an error, not a PASS",
             r.returncode != 0 and "UNOBSERVABLE" in (r.stdout + r.stderr),
+        )
+
+        # ── the retirement arms ────────────────────────────────────────────────────
+        # THE GAP THIS CLOSES. Every arm above and below plants or replays a DELETION.
+        # Not one of them exercised the EXEMPTION: key gone, withdrawal recorded, screen
+        # stays green and names it. So `evidence/retired_proof_keys.json` had 43 entries
+        # that no green run had ever read — and when the screen was pointed at a register
+        # filename that did not exist, all 43 came back as VANISHED and nothing here
+        # noticed, because nothing here had a positive state for a retirement. A branch
+        # with no positive state, in the tool built to have positive states.
+        repo = _plant_repo(tmp / "5r", [["a", "b", "c"], ["a", "c"]])
+        _retire(repo, [{"key": "b", "owner": "link", "date": "2026-08-04",
+                        "reason": "planted: the form was withdrawn on purpose"}])
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "a retirement ACQUITS the same deletion arm 1 convicts",
+            r.returncode == 0 and "0 VANISHED" in r.stdout and "1 retired" in r.stdout,
+            f"exit={r.returncode}",
+        )
+        record(
+            "PLANTED",
+            "and the acquitted key is NAMED, not silently absorbed",
+            "- b  [link 2026-08-04:" in r.stdout,
+        )
+
+        # A retirement is not a suppression list: it must carry the same three fields an
+        # accepted red carries. A withdrawal nobody has to sign is a blanket exemption.
+        repo = _plant_repo(tmp / "5s", [["a", "b", "c"], ["a", "c"]])
+        _retire(repo, [{"key": "b", "reason": "planted: no owner, no date"}])
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "a retirement with no owner is REFUSED, not honoured",
+            r.returncode != 0 and "missing" in (r.stdout + r.stderr),
+            f"exit={r.returncode}",
+        )
+
+        # A retirement that agrees with nothing is a false record of the file's contents.
+        repo = _plant_repo(tmp / "5t", [["a", "b"], ["a", "b"]])
+        _retire(repo, [{"key": "b", "owner": "link", "date": "2026-08-04",
+                        "reason": "planted: withdrawn, and yet here it is"}])
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "a key recorded as withdrawn and STILL PRESENT is convicted",
+            r.returncode == 1 and "retired_but_present" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # Two registers for one fact is the defect the 43 false positives came from, and
+        # it is an instrument failure rather than a finding: with both files present the
+        # screen cannot say which one is the record, so it has observed nothing.
+        repo = _plant_repo(tmp / "5u", [["a", "b", "c"], ["a", "c"]])
+        _retire(repo, [{"key": "b", "owner": "link", "date": "2026-08-04",
+                        "reason": "planted"}])
+        (repo / "evidence" / "proof_retired.json").write_text(
+            json.dumps({"retired": {"b": {"owner": "someone", "date": "2026-08-04",
+                                          "reason": "the register that never existed"}}}),
+            encoding="utf-8",
+        )
+        _git(["add", "-A"], repo)
+        _git(["commit", "-q", "-m", "second register"], repo)
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "TWO retirement registers is an instrument ERROR, never a colour",
+            r.returncode == 2 and "two_retirement_registers" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # A retirement written TODAY cannot govern a deletion that happened BEFORE it.
+        # This is the arm that made the replay honest: with the register read from the
+        # worktree, `--at eb84364` exited 1 for `retired_but_present` — today's 43
+        # withdrawals applied to a revision where those keys were still present — and
+        # returned before the three real vanished Cast forms were ever printed. Convicting
+        # the right revision for the wrong reason is the same defect as acquitting it, so
+        # `--at` now reads the register at the same revision as the ledger, exactly as
+        # `screened_since` refuses to rule on history a screen predates.
+        repo = _plant_repo(tmp / "5w", [["a", "b", "c"], ["a", "c"]])
+        before = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+        _retire(repo, [{"key": "b", "owner": "link", "date": "2026-08-04",
+                        "reason": "planted: withdrawn AFTER the revision under test"}])
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "the retirement acquits the revision that FOLLOWS it",
+            r.returncode == 0 and "0 VANISHED" in r.stdout,
+            f"exit={r.returncode}",
+        )
+        r = run(["--repo", str(repo), "--at", before], cwd=repo)
+        record(
+            "PLANTED",
+            "and does NOT reach back to acquit the revision that precedes it",
+            r.returncode == 1 and "proof_vanished" in r.stdout
+            and "retired_but_present" not in r.stdout,
+            f"exit={r.returncode}",
+        )
+        record(
+            "PLANTED",
+            "and the replay SAYS which moment's register it read",
+            f"read at {before} (0 record(s))" in r.stdout,
         )
 
         # ── the frame-witness arm ──────────────────────────────────────────────────

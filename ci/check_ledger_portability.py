@@ -193,6 +193,21 @@ def main(argv=None) -> int:
         "it is what makes `device_absence_misnamed` observable; without it the screen "
         "cannot tell a real absent device from a misnamed EP decision.",
     )
+    ap.add_argument(
+        "--lane-marker",
+        default="",
+        metavar="PATH",
+        help="a file the run-log's own producing step writes before it starts. When the "
+        "marker is ABSENT and the run log is absent, the lane died before it could "
+        "produce evidence: this screen then DECLINES (exit 0, annotated as a warning) "
+        "rather than adding a second red to a first one it did not cause. When the "
+        "marker is PRESENT and the log is not, the producing step ran and captured "
+        "nothing — that is an instrument failure and stays exit 4. Same convention as "
+        "check_fatal_log.py and check_suite_productivity.py; this screen was the one "
+        "member of the family that never got it, and on 2026-08-04 a single Linux clippy "
+        "lint produced its ERROR(instrument=artifact_unreadable) as one of five "
+        "downstream reds.",
+    )
     args = ap.parse_args(argv)
 
     if not args.run_log:
@@ -202,6 +217,23 @@ def main(argv=None) -> int:
             "when pointed at nothing, because 'I was not given a run' and 'the run was\n"
             "clean' are different facts (§10.0.1 R12) and only one of them is evidence.",
         )
+
+    if args.lane_marker and not Path(args.lane_marker).exists():
+        missing = [r for r in args.run_log if not Path(r).exists()]
+        if missing:
+            print("LEDGER-PORTABILITY: DECLINED(lane_did_not_reach_evidence)")
+            print(
+                f"  {', '.join(missing)} absent and the lane marker {args.lane_marker} was "
+                "never written, so the lane failed before it produced a run log at all. "
+                "This is NOT a pass and NOT a detection: there is no run to screen. The "
+                "lane is already red for the reason that stopped it, and one cause "
+                "wearing five step names is how a triage loses count."
+            )
+            print(
+                "::warning::LEDGER-PORTABILITY declined: the lane did not reach its run "
+                "log. Fix the earlier failure and re-read this step."
+            )
+            return EXIT_PASS
 
     texts: list[tuple[Path, str]] = []
     for raw in args.run_log:
