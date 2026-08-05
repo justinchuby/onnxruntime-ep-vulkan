@@ -568,16 +568,57 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
     armed_state, armed_reason = _probe_validation_frame()
     print(f"\n[CRITERION 3d] real frame: {armed_state} — {armed_reason}", file=sys.stderr)
 
-    no_layer_env = _cargo_env()
-    no_layer_env["VK_LAYER_PATH"] = str(_REPO_ROOT / "rust")
-    no_layer_env["VK_ADD_LAYER_PATH"] = str(_REPO_ROOT / "rust")
-    no_layer_env.pop("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION", None)
-    stripped_state, stripped_reason = _probe_validation_frame(no_layer_env)
-    print(
-        f"[CRITERION 3d] frame with VK_LAYER_PATH stripped: {stripped_state} — "
-        f"{stripped_reason}",
-        file=sys.stderr,
-    )
+    # Two ways to take the layer away, tried in order, because they are neutralised by
+    # different things and the ORDER is itself the reading.
+    #
+    #   1. VK_LAYER_PATH / VK_ADD_LAYER_PATH — how `rust/tests/validation_control.rs`
+    #      does it.  The Vulkan loader documents BOTH as "ignored when running a Vulkan
+    #      application with elevated privileges", the same caveat PLATFORMS.md §7.4.1
+    #      records for VK_DRIVER_FILES.  On an elevated runner this arm cannot take.
+    #   2. VK_LOADER_LAYERS_DISABLE — a filter, not a search path.  It carries no
+    #      elevation caveat in the loader's table of environment variables (loader
+    #      1.3.234+), because it can only remove a layer, never point the loader at code
+    #      of the caller's choosing.
+    #
+    # Verified on an unelevated GPU box on 2026-08-04: arm 1 alone takes here, so this
+    # test PASSES on this machine and the CI red it was raised for does not reproduce on
+    # a real device.  What could NOT be read here is an elevated process — this box's
+    # account has a UAC-split token and consenting to elevation is interactive.  So the
+    # test does not assert which arm took; it RECORDS it, and the next elevated lane run
+    # answers the question in its own log instead of being predicted from here.
+    attempts: list[tuple[str, str, str]] = []
+    stripped_state = stripped_reason = ""
+    mechanism = "none"
+    for mechanism_name, overrides in (
+        (
+            "layer_search_path",
+            {
+                "VK_LAYER_PATH": str(_REPO_ROOT / "rust"),
+                "VK_ADD_LAYER_PATH": str(_REPO_ROOT / "rust"),
+            },
+        ),
+        (
+            "loader_layer_filter",
+            {
+                "VK_LAYER_PATH": str(_REPO_ROOT / "rust"),
+                "VK_ADD_LAYER_PATH": str(_REPO_ROOT / "rust"),
+                "VK_LOADER_LAYERS_DISABLE": "*",
+            },
+        ),
+    ):
+        no_layer_env = _cargo_env()
+        no_layer_env.update(overrides)
+        no_layer_env.pop("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION", None)
+        stripped_state, stripped_reason = _probe_validation_frame(no_layer_env)
+        attempts.append((mechanism_name, stripped_state, stripped_reason))
+        print(
+            f"[CRITERION 3d] frame with {mechanism_name} applied: {stripped_state} — "
+            f"{stripped_reason}",
+            file=sys.stderr,
+        )
+        if stripped_state != _verdict.VALIDATION_ARMED:
+            mechanism = mechanism_name
+            break
 
     assert stripped_state != _verdict.VALIDATION_PROBE_ERROR, (
         "removing the layer manifests must produce a *classified* unavailability, not a "
@@ -592,11 +633,15 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
         # `rust/tests/validation_control.rs` accepts the same two outcomes for the same
         # reason; the difference is that this branch is not green.
         raise _verdict.InstrumentError(
-            "[criterion 3d instrument failure] ERROR(instrument): VK_LAYER_PATH was "
-            "redirected to a directory with no layer manifests and this loader still "
-            "reports ARMED, so the unarmed branch of the gate could not be exercised on "
-            "this machine. The gate's classification is still falsified without a machine "
-            "in tests/ops/test_r13_lane.py; what is missing here is the on-hardware half."
+            "[criterion 3d instrument failure] ERROR(instrument): the layer could not be "
+            "taken away from a real epctl process by EITHER mechanism, so the unarmed "
+            "branch of the gate could not be exercised on this machine.\n"
+            + "\n".join(f"  {name}: {state} — {why}" for name, state, why in attempts)
+            + "\nThe gate's classification is still falsified without a machine in "
+            "tests/ops/test_r13_lane.py; what is missing here is the on-hardware half.\n"
+            "VK_LOADER_LAYERS_DISABLE carries no elevation caveat in the loader's own "
+            "table, so if it too failed to take, the cause is NOT elevation and "
+            "PLATFORMS.md §7.4.1 is the wrong explanation for this run."
         )
 
     # The gate must let the real frame through and refuse the stripped one.
@@ -610,6 +655,8 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
     print(
         f"[CRITERION 3d] PASS: the gate answers ARMED->run and {stripped_state}->"
         "ERROR(instrument) on this machine, so criterion 3's control can no longer be "
-        "satisfied by a machine incapable of running it.",
+        f"satisfied by a machine incapable of running it.\n"
+        f"[CRITERION 3d] mechanism that took: {mechanism} "
+        f"(attempts: {[(n, s) for n, s, _ in attempts]})",
         file=sys.stderr,
     )

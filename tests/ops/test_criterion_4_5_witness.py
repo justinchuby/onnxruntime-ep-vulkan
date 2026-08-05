@@ -228,18 +228,59 @@ def test_criterion4_icd_polarity_witness() -> None:
     lib = Path(os.environ["ONNXRUNTIME_VULKAN_EP_LIB"]).resolve()
 
     nonexistent = str(REPO / "does_not_exist" / "no_such_icd.json")
-    rows = {
-        "icd_present": {},
-        "icd_suppressed": {
-            "VK_ICD_FILENAMES": nonexistent,
-            "VK_DRIVER_FILES": nonexistent,
-            "VK_ADD_DRIVER_FILES": "",
-        },
-    }
+    # Two ways to take the ICD away, tried in order.  They are neutralised by different
+    # things, and which one takes is itself the reading.
+    #
+    #   driver_search_path — VK_ICD_FILENAMES / VK_DRIVER_FILES / VK_ADD_DRIVER_FILES.
+    #     The Vulkan loader documents all three as "ignored when running a Vulkan
+    #     application with elevated privileges" (PLATFORMS.md §7.4.1).  On an elevated
+    #     runner this arm cannot take, and the failure mode is not a bad answer but a
+    #     control that never reached its subject.
+    #   loader_driver_filter — VK_LOADER_DRIVERS_DISABLE, a filter rather than a search
+    #     path (loader 1.3.234+).  The loader's own table attaches no elevation caveat to
+    #     it: it can only remove a driver, never name one for the loader to load.
+    #
+    # Verified unelevated on a GPU box, 2026-08-04: the first arm takes there and this
+    # test passes, so the Windows-lane red does not reproduce on a real device.  Whether
+    # the second arm is what rescues an ELEVATED runner is not read here — that box could
+    # not be elevated non-interactively — so the mechanism that took is RECORDED in the
+    # artifact rather than predicted.
+    suppression_arms = [
+        (
+            "driver_search_path",
+            {
+                "VK_ICD_FILENAMES": nonexistent,
+                "VK_DRIVER_FILES": nonexistent,
+                "VK_ADD_DRIVER_FILES": "",
+            },
+        ),
+        (
+            "loader_driver_filter",
+            {
+                "VK_ICD_FILENAMES": nonexistent,
+                "VK_DRIVER_FILES": nonexistent,
+                "VK_ADD_DRIVER_FILES": "",
+                "VK_LOADER_DRIVERS_DISABLE": "*",
+            },
+        ),
+    ]
 
     records: dict[str, dict] = {}
-    for row, extra in rows.items():
-        record = _run_row(row=row, lib=lib, extra_env=extra, quiet_seconds=90)
+    suppression_attempts: list[dict] = []
+
+    record = _run_row(row="icd_present", lib=lib, extra_env={}, quiet_seconds=90)
+    records["icd_present"] = record
+
+    for arm_name, extra in suppression_arms:
+        record = _run_row(row="icd_suppressed", lib=lib, extra_env=extra, quiet_seconds=90)
+        record["suppression_mechanism"] = arm_name
+        state = link.classify(record["loader_probe_report"])["state"]
+        suppression_attempts.append({"mechanism": arm_name, "state": state})
+        records["icd_suppressed"] = record
+        if state == link.STATE_SUPPRESSED:
+            break
+
+    for row, record in records.items():
         verdict = link.classify(record["loader_probe_report"])
         record["icd_suppression_state"] = verdict["state"]
         record["icd_suppression_detail"] = verdict.get("detail", "")
@@ -270,6 +311,8 @@ def test_criterion4_icd_polarity_witness() -> None:
         "library": str(lib),
         "library_sha_prefix": _sha_prefix(lib),
         "negative_control_fired": neg["icd_suppression_state"] == link.STATE_SUPPRESSED,
+        "suppression_mechanism": neg.get("suppression_mechanism"),
+        "suppression_attempts": suppression_attempts,
         "classifier": "ci/check_icd_suppression.py::classify (Link's; not re-implemented)",
         "rows": records,
         "no_duration_quoted": (
@@ -286,11 +329,18 @@ def test_criterion4_icd_polarity_witness() -> None:
             "[criterion 4 instrument failure] ERROR(instrument): the ICD-removal negative "
             f"control did not fire — classifier says {neg['icd_suppression_state']!r}.\n"
             f"{neg['icd_suppression_detail']}\n"
+            "attempts: "
+            + "; ".join(f"{a['mechanism']}={a['state']}" for a in suppression_attempts)
+            + "\n"
             "The control did not reach its observation, so THIS IS NOT A CRITERION-4 "
             "FAILURE and it is not a pass either (R13).  On Windows the usual cause is "
             "PLATFORMS.md §7.4.1: the LunarG loader ignores VK_DRIVER_FILES / "
             "VK_ICD_FILENAMES in elevated processes.  Run the lane unelevated, or "
             "unregister the ICD from HKLM\\SOFTWARE\\Khronos\\Vulkan\\Drivers.\n"
+            "If `loader_driver_filter` is among the attempts above and also failed, then "
+            "elevation is NOT the explanation: VK_LOADER_DRIVERS_DISABLE is a filter, not "
+            "a search path, and the loader's own table attaches no elevation caveat to "
+            "it.  Read the attempt list before reaching for §7.4.1.\n"
             f"artifact: {path}"
         )
 

@@ -366,6 +366,62 @@ def main() -> int:
             tmp,
         )
 
+        # ---- 11b. THE SAME CLAIM WITH NOTHING HAND-TYPED IN THE LEDGER -------------
+        # Arm 11 above supplies the NOT_FAILED record by writing it into the ledger by
+        # hand.  `parse_pytest` never produces that record — it returns `[]` for
+        # `not_failed` on every pytest log there has ever been — so arm 11 was green
+        # while the pytest half of the join could not fire at any history depth.  The
+        # control agreed with its fixtures and the fixtures were typed from the
+        # docstring.
+        #
+        # This arm writes NOTHING by hand.  Both runs go through the tool's own append
+        # path, so every record in the ledger is a record the parser can actually emit,
+        # and the second run is a GREEN log — the run that exonerates a commit, which
+        # until 2026-08-04 left no trace in the ledger at all.
+        led11b = tmp / "l11b.jsonl"
+        run(["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "HHHB",
+             "--run-id", "r1", "--ledger", str(led11b), str(tmp / "pytest-red.log")])
+        run(["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "HHHB",
+             "--run-id", "r2", "--ledger", str(led11b), str(tmp / "pytest-green.log")])
+        typed_by_hand = [
+            ln for ln in led11b.read_text(encoding="utf-8").splitlines()
+            if ln.strip() and json.loads(ln).get("outcome") == "NOT_FAILED"
+        ]
+        if typed_by_hand:
+            failures.append(
+                "[PLANTED] arm 11b's ledger contains a written NOT_FAILED record. The "
+                "whole point of this arm is that the parser cannot write one, so if it "
+                "now can, the inference is no longer an inference and this arm is not "
+                "the control it claims to be."
+            )
+        arm(
+            PLANTED,
+            "a pytest flake is found with NO hand-written ledger record (the arm 11 gap)",
+            ["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "HHHB",
+             "--run-id", "r3", "--ledger", str(led11b), "--no-append", "--require-history", "2",
+             str(tmp / "pytest-green.log")],
+            1,
+            "THE COMMIT IS EXONERATED AND THE TEST IS NOT",
+            tmp,
+        )
+
+        # ---- 11c. and the inference does not manufacture a flake out of one run -----
+        # If a single failing run were enough, every red would be reported as a flake.
+        # One run cannot be a rate — the same sentence this file's header makes.
+        led11c = tmp / "l11c.jsonl"
+        run(["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "HHHC",
+             "--run-id", "r1", "--ledger", str(led11c), str(tmp / "pytest-red.log")])
+        arm(
+            PLANTED,
+            "one failing pytest run alone is NOT an intermittent, inference or not",
+            ["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "HHHC",
+             "--run-id", "r2", "--ledger", str(led11c), "--no-append",
+             str(tmp / "pytest-red.log")],
+            0,
+            "FLAKE-WITNESS: PASS",
+            tmp,
+        )
+
         # ---- 12. LIVE: real captured runs must NOT claim an intermittent -----------
         # Two of the forty runs are TRACKED under ci/fixtures/flake-witness/ so this arm
         # exists on a hosted runner and not only on the box that produced them. The other
