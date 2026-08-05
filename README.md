@@ -3,13 +3,28 @@
 [![CI](https://github.com/justinchuby/onnxruntime-ep-vulkan/actions/workflows/ci.yml/badge.svg)](https://github.com/justinchuby/onnxruntime-ep-vulkan/actions/workflows/ci.yml)
 
 > **CI is the only place shaders execute.** A red CI lane means we have zero empirical
-> evidence that the EP works. Before landing a commit: run `gh run list --limit 5` and
-> confirm the badge above is green. A red badge blocks all merges — not by a GitHub branch
-> protection rule (not yet configured), but by team discipline enforced by this notice.
+> evidence that the EP works. A red badge blocks all merges — not by a GitHub branch
+> protection rule (not yet configured), but by a hook that reads the badge for you.
 > See [`.github/CI_POLICY.md`](.github/CI_POLICY.md) for the full policy.
 >
-> **The badge is red as of this writing, and has been for the last five pushes to `main`**
-> (`gh run list --limit 5`, all `completed / failure`). Read the notice above as a rule the
+> **Install the hook once per clone: `python ci/install_hooks.py`.** It points
+> `core.hooksPath` at the tracked [`.githooks/`](.githooks) directory, whose
+> `pre-merge-commit` runs [`ci/check_main_is_green.py`](ci/check_main_is_green.py) and
+> refuses the merge when `main` is red, or when the colour could not be read at all —
+> because "I could not ask" is UNOBSERVABLE, not green. `MAIN_COLOUR_ACK=red` and
+> `MAIN_COLOUR_ACK=unread` let you merge anyway; neither is silent, and both have to be
+> typed. `python ci/install_hooks.py --check` says whether the hook is live in this clone.
+>
+> **Why this replaced "run `gh run list --limit 5` before landing a commit".** That
+> instruction was correct and it was followed zero times in a window where `main` was red
+> for at least ten consecutive pushes. Every merge in that window was verified locally —
+> lib tests, clippy, `cargo fmt --check`, the proof ledger — and every report quoted those
+> green numbers, which are a complete-looking answer to a different question. A notice is
+> read once, at a moment when nobody is merging. The reading now happens at the moment it
+> is about.
+>
+> **The badge is red as of this writing, and has been for at least the last ten pushes to
+> `main`** (`python ci/check_main_is_green.py`). Read the notice above as a rule the
 > project is currently in violation of, not as a description of its state.
 
 A **cross-platform Vulkan compute execution provider for ONNX Runtime**, written in Rust and

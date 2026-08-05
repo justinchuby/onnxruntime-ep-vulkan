@@ -1850,8 +1850,17 @@ pub fn record_session_disclosure(d: SessionDisclosure) {
     SESSION_DISCLOSURES.fetch_add(1, ORD);
     // Sample ORT's threshold while a logger is certainly attached. `+ 1` keeps `VERBOSE` (0)
     // distinguishable from "never sampled"; `6` is the unreadable case.
+    //
+    // `i64::from` and not `u64::from`, and not `as u32`: `ort::OrtLoggingLevel` is a bindgen
+    // type alias for the C enum's underlying integer, and that type is chosen by the TARGET's
+    // enum ABI — `c_int` under MSVC, `c_uint` under GCC/Clang. Any expression whose validity
+    // depends on the signedness is a lint on exactly one platform and clean on the other, which
+    // is how `s.max(0) as u32` stayed green on Windows for as long as it was red on Linux.
+    // `i64` is the one width both aliases convert into losslessly and infallibly, so `.max(0)`
+    // remains meaningful where the alias is signed and is not a no-op the compiler can see
+    // through where it is not.
     ORT_SINK_SEVERITY_SAMPLED.store(
-        crate::logging::ort_sink_severity().map_or(6, |s| u64::from(s.max(0) as u32) + 1),
+        crate::logging::ort_sink_severity().map_or(6, |s| i64::from(s).max(0) as u64 + 1),
         ORD,
     );
     CLAIMED_FORMS_PROVEN.fetch_add(proven as u64, ORD);

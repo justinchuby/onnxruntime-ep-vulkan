@@ -81,9 +81,37 @@ DEFAULT_LEDGER = Path("bench/results/link-flake-witness/ledger.jsonl")
 
 # pytest short-test-summary lines: `FAILED tests/ops/test_x.py::test_y - AssertionError`
 _PYTEST_FAILED_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+?)(?:\s+-\s.*)?$")
-# pytest terminal summary: `8 failed, 624 passed, 28 skipped, 3 xfailed in ...`
-_PYTEST_SUMMARY_RE = re.compile(r"^=+\s*(?P<body>.*?\b(?:passed|failed|error|no tests ran).*?)\s*=+\s*$")
+# pytest terminal summary. TWO spellings, and the second one is the one this project
+# actually produces. Non-quiet pytest decorates it — `=== 8 failed, 624 passed in 1.2s ===`
+# — and that is what this regex was written against. Under `-q`, which BOTH device lanes
+# and the lane-check job use, the same line is emitted UNDECORATED:
+#     6 failed, 805 passed, 49 skipped, 3 xfailed, 58 warnings in 410.23s (0:06:50)
+# So for every pytest log this repository has ever captured, `saw_summary` was False and
+# this check reported ERROR(instrument=log_unparsed). It declined rather than lying, which
+# is why it is a repairable defect and not a false green — but a witness that has never
+# parsed a single real subject is a witness with no demonstrated positive state, and it
+# went unnoticed because it only reaches this branch on a run that got as far as pytest.
+# The undecorated form is anchored on the trailing ` in <n>s`, which pytest always emits
+# and which no ordinary output line carries, and it must START with a count so that a test
+# name or an assertion message mentioning "passed" cannot be mistaken for a summary.
+_PYTEST_SUMMARY_DECORATED_RE = re.compile(
+    r"^=+\s*(?P<body>.*?\b(?:passed|failed|error|no tests ran).*?)\s*=+\s*$"
+)
+_PYTEST_SUMMARY_BARE_RE = re.compile(
+    r"^(?P<body>(?:\d+\s+\w+(?:,\s*)?)+|no tests ran)\s+in\s+\d+(?:\.\d+)?s(?:\s+\(.*\))?$"
+)
 _PYTEST_COUNT_RE = re.compile(r"(\d+)\s+(passed|failed|xpassed|xfailed|skipped|error|errors|deselected)")
+
+
+def _pytest_summary(line: str) -> re.Match | None:
+    """Either spelling. Decorated first: a decorated line also matches nothing else."""
+    m = _PYTEST_SUMMARY_DECORATED_RE.match(line)
+    if m:
+        return m
+    m = _PYTEST_SUMMARY_BARE_RE.match(line)
+    if m and re.search(r"\b(?:passed|failed|error|errors|no tests ran)\b", m.group("body")):
+        return m
+    return None
 
 # libtest: `test vk::barrier::tests::backend_probe_writes_legacy_token ... FAILED`
 _LIBTEST_OUTCOME_RE = re.compile(r"^test\s+(?P<name>\S+)\s+\.\.\.\s+(?P<outcome>ok|FAILED|ignored)\b")
@@ -156,7 +184,7 @@ def parse_pytest(text: str) -> tuple[list[str], list[str], int, bool, str]:
             if tid not in failed:
                 failed.append(tid)
             continue
-        s = _PYTEST_SUMMARY_RE.match(line.strip())
+        s = _pytest_summary(line.strip())
         if s:
             saw_summary = True
             for count, kind in _PYTEST_COUNT_RE.findall(s.group("body")):

@@ -181,9 +181,11 @@ def check(repo: Path, directory: Path, subject: Path | None) -> int:
     ).stdout.strip()
     if later:
         rows = later.splitlines()
+        hist = doc.get("historical")
         print("")
         print(
-            f"FAIL(condition=artifact_predates_subject): {len(rows)} commit(s) have touched "
+            f"{'HISTORICAL' if hist else 'FAIL(condition=artifact_predates_subject)'}: "
+            f"{len(rows)} commit(s) have touched "
             "the source this reading is about since the reading was taken. The artifact may "
             "still be TRUE — but it is not evidence about the tree it is being cited in, and "
             "on 2026-08-03 exactly that gap put a pre-fix log under a post-fix claim."
@@ -192,11 +194,46 @@ def check(repo: Path, directory: Path, subject: Path | None) -> int:
             print(f"  - {row[:100]}")
         if len(rows) > 10:
             print(f"  ... and {len(rows) - 10} more")
+        if hist:
+            # A DECLARED HISTORICAL READING IS A POSITIVE STATE, NOT AN ABSENCE.
+            # The screen's own advice used to be "move it out of the cited set and say so
+            # in `note`" — i.e. empty `subject_paths` and write prose. That is a DELETION:
+            # the staleness stops being printed, nobody owns it, and the same file goes on
+            # being cited. It is the shape that put 43 deliberate retirements into the
+            # proof census as VANISHED, one register over. So a deliberately old reading is
+            # declared the way a retired proof is: owner, date, reason, and the moved
+            # commits still listed above every single run, so the age is visible rather
+            # than excused away.
+            missing = [f for f in ("owner", "date", "reason", "superseded_by") if not hist.get(f)]
+            if missing:
+                print("")
+                print(
+                    f"ERROR(instrument=incomplete_historical_declaration): `historical` is "
+                    f"missing {missing}. A reading kept on purpose needs a name, a date, a "
+                    "reason and the thing that now answers the question it used to — "
+                    "otherwise it is not a declaration, it is the absence of one with a key."
+                )
+                return 2
+            print("")
+            print(
+                f"  DECLARED HISTORICAL by {hist['owner']} on {hist['date']}: "
+                f"{hist['reason']}"
+            )
+            print(f"  The current answer to this reading's question is: {hist['superseded_by']}")
+            print(
+                "\nPASS (historical): the age above is real, declared, owned and printed. "
+                "This artifact is NOT evidence about HEAD and must not be cited as if it "
+                "were; it is kept because deleting a reading is how a measurement stops "
+                "being falsifiable."
+            )
+            return 0
         print(
             f"\n  Repair: re-run the producer and re-stamp "
             f"(`python ci/check_artifact_frame.py --stamp {rel} ...`). If the reading is "
-            "deliberately historical, move it out of the cited set and say so in `note` — "
-            "an old reading is not a defect, an old reading cited as a current one is."
+            "deliberately historical, declare it: add a `historical` block to "
+            f"{FRAME_NAME} with `owner`, `date`, `reason` and `superseded_by`. Declaring it "
+            "keeps the age printed on every run; emptying `subject_paths` would only stop "
+            "the screen asking."
         )
         return 1
 

@@ -153,11 +153,19 @@ jobs:
         run: python ci/check_vocabulary.py --github-summary
 
       - name: Two-polarity tests for ci/ lane checks
+        # The command is ASKED FOR, not written here. It was written here once, and that
+        # copy did not carry the three `--deselect`s that `lane_checks_suite` carries in
+        # ci/open_reds.json — so the three census-extent tests, which the register accepts
+        # as red with named owners (Mouse, Switch, Tank) and a closes_when, failed this
+        # step on every push to main for ten consecutive pushes. The register had done its
+        # job; a second, register-blind spelling of the same command undid it. `--emit-cmd`
+        # makes the register the only place that command exists.
         run: |
           set -o pipefail
           mkdir -p bench/results/ci-lane
-          python -m pytest ci/test_lane_checks.py -q -p no:randomly \
-            2>&1 | tee bench/results/ci-lane/lane-checks.log
+          cmd="$(python ci/check_open_reds.py --emit-cmd lane_checks_suite)"
+          echo "register-declared command: $cmd"
+          eval "$cmd" -p no:randomly 2>&1 | tee bench/results/ci-lane/lane-checks.log
 
       - name: Two-polarity suite asserted something (productivity floor)
         # always(): the value of this step is highest exactly when the step above went
@@ -279,6 +287,12 @@ jobs:
         # would close it -- where a reviewer sees it and a truncated log cannot eat it.
         #
         # There is no flag that suppresses a failure. Adding one would recreate the void.
+        env:
+          # `main_is_green` asks github.com for the colour of the default branch, so this
+          # step needs a token. Without one it returns ERROR(instrument=github_unreachable),
+          # exit 4, which is honest but useless -- and "the instrument could not reach its
+          # subject" is exactly the state that let ten red pushes go unremarked.
+          GH_TOKEN: ${{ github.token }}
         run: python ci/check_open_reds.py --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Tautological-assertion screen (no GPU, whole tree)
@@ -583,14 +597,25 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p bench/results/ci-lane
+          touch bench/results/ci-lane/.reached-layering-linux
           ORT_INCLUDE_DIR="$ORT_HOME/include" \
             cargo test --test layering --manifest-path rust/Cargo.toml \
             2>&1 | tee bench/results/ci-lane/cargo-test-layering-linux.log
 
       - name: Layering lint asserted something (productivity floor, libtest)
+        # --lane-marker, and a marker written by THIS suite's own step. Without it the
+        # floor cannot tell "the suite ran and asserted nothing" from "an earlier step in
+        # this job failed and the suite never started", and reports the second as
+        # ERROR(instrument=log_not_captured) — exit 4, a red. On 2026-08-04 one clippy
+        # lint on Linux produced five red steps that way: one cause and four reporters,
+        # which is exactly the mixture this lane's own vocabulary exists to keep apart.
+        # The pytest floor in this same job has had the marker since it was written; the
+        # four libtest floors did not, and the difference was invisible until a build
+        # actually failed.
         if: always()
         run: python ci/check_suite_productivity.py
           --suite "cargo test --test layering" --harness libtest --lane build-test-linux
+          --lane-marker=bench/results/ci-lane/.reached-layering-linux
           bench/results/ci-lane/cargo-test-layering-linux.log
 
       # -------------------------------------------------------
@@ -620,6 +645,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p bench/results/ci-lane
+          touch bench/results/ci-lane/.reached-lib-linux
           ORT_INCLUDE_DIR="$ORT_HOME/include" \
             cargo test --lib --release --manifest-path rust/Cargo.toml \
             2>&1 | tee bench/results/ci-lane/cargo-test-lib-linux.log
@@ -633,6 +659,7 @@ jobs:
         if: always()
         run: python ci/check_suite_productivity.py
           --suite "cargo test --lib" --harness libtest --lane build-test-linux
+          --lane-marker=bench/results/ci-lane/.reached-lib-linux
           bench/results/ci-lane/cargo-test-lib-linux.log
 
       # -------------------------------------------------------
@@ -681,6 +708,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p bench/results/ci-lane
+          touch bench/results/ci-lane/.reached-portability-linux
           ORT_INCLUDE_DIR="$ORT_HOME/include" \
             cargo test --test portability --release --manifest-path rust/Cargo.toml \
             2>&1 | tee bench/results/ci-lane/cargo-test-portability-linux.log
@@ -693,6 +721,7 @@ jobs:
         if: always()
         run: python ci/check_suite_productivity.py
           --suite "cargo test --test portability" --harness libtest --lane build-test-linux
+          --lane-marker=bench/results/ci-lane/.reached-portability-linux
           bench/results/ci-lane/cargo-test-portability-linux.log
 
       # -------------------------------------------------------
@@ -707,6 +736,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p bench/results/ci-lane
+          touch bench/results/ci-lane/.reached-integration-linux
           ORT_INCLUDE_DIR="$ORT_HOME/include" \
             cargo test --release --manifest-path rust/Cargo.toml \
             --test cdylib_load --test dump_capabilities \
@@ -718,6 +748,7 @@ jobs:
         run: python ci/check_suite_productivity.py
           --suite "cargo test --test cdylib_load,dump_capabilities,host_registration,validation_control"
           --harness libtest --lane build-test-linux
+          --lane-marker=bench/results/ci-lane/.reached-integration-linux
           bench/results/ci-lane/cargo-test-integration-linux.log
 
       # -------------------------------------------------------
@@ -867,6 +898,7 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           mkdir -p bench/results/ci-lane
+          touch bench/results/ci-lane/.reached-gatechain-linux
           python ci/gate_chain_fp32.py \
             --verdict-out bench/results/ci-lane/verdict-linux.json \
             --workdir bench/results/ci-lane
@@ -888,6 +920,7 @@ jobs:
           python ci/check_fatal_log.py \
             --lane-marker=bench/results/ci-lane/.lane-reached \
             bench/results/ci-lane/pytest-linux.log \
+            --lane-marker=bench/results/ci-lane/.reached-gatechain-linux \
             bench/results/ci-lane/gate_chain_fp32_ort_stderr.log
 
       - name: Device-loss screen on this lane's own evidence (Linux)
@@ -924,6 +957,7 @@ jobs:
         run: |
           python ci/check_ledger_portability.py \
             --device-lane \
+            --lane-marker=bench/results/ci-lane/.lane-reached \
             --loader-artifact bench/results/ci-lane/loader-probe.log \
             --run-log bench/results/ci-lane/pytest-linux.log
 
@@ -1214,6 +1248,7 @@ jobs:
         run: |
           $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
           New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          New-Item -ItemType File -Force -Path bench\results\ci-lane\.reached-lib-windows | Out-Null
           cargo test --lib --release --manifest-path rust\Cargo.toml 2>&1 |
             Tee-Object -FilePath bench\results\ci-lane\cargo-test-lib-windows.log
           exit $LASTEXITCODE
@@ -1225,6 +1260,7 @@ jobs:
         run: |
           python ci\check_suite_productivity.py `
             --suite "cargo test --lib" --harness libtest --lane build-test-windows `
+            --lane-marker=bench\results\ci-lane\.reached-lib-windows `
             bench\results\ci-lane\cargo-test-lib-windows.log
           exit $LASTEXITCODE
 
@@ -1256,6 +1292,7 @@ jobs:
         run: |
           $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
           New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          New-Item -ItemType File -Force -Path bench\results\ci-lane\.reached-portability-windows | Out-Null
           cargo test --test portability --release --manifest-path rust\Cargo.toml 2>&1 |
             Tee-Object -FilePath bench\results\ci-lane\cargo-test-portability-windows.log
           exit $LASTEXITCODE
@@ -1268,6 +1305,7 @@ jobs:
         run: |
           python ci\check_suite_productivity.py `
             --suite "cargo test --test portability" --harness libtest --lane build-test-windows `
+            --lane-marker=bench\results\ci-lane\.reached-portability-windows `
             bench\results\ci-lane\cargo-test-portability-windows.log
           exit $LASTEXITCODE
 
@@ -1275,6 +1313,7 @@ jobs:
         run: |
           $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
           New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          New-Item -ItemType File -Force -Path bench\results\ci-lane\.reached-layering-windows | Out-Null
           cargo test --test layering --release --manifest-path rust\Cargo.toml 2>&1 |
             Tee-Object -FilePath bench\results\ci-lane\cargo-test-layering-windows.log
           exit $LASTEXITCODE
@@ -1284,6 +1323,7 @@ jobs:
         run: |
           python ci\check_suite_productivity.py `
             --suite "cargo test --test layering" --harness libtest --lane build-test-windows `
+            --lane-marker=bench\results\ci-lane\.reached-layering-windows `
             bench\results\ci-lane\cargo-test-layering-windows.log
           exit $LASTEXITCODE
 
@@ -1291,6 +1331,7 @@ jobs:
         run: |
           $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
           New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          New-Item -ItemType File -Force -Path bench\results\ci-lane\.reached-integration-windows | Out-Null
           cargo test --release --manifest-path rust\Cargo.toml `
             --test cdylib_load --test dump_capabilities `
             --test host_registration --test validation_control 2>&1 |
@@ -1306,6 +1347,7 @@ jobs:
           python ci\check_suite_productivity.py `
             --suite "cargo test --test cdylib_load,dump_capabilities,host_registration,validation_control" `
             --harness libtest --lane build-test-windows `
+            --lane-marker=bench\results\ci-lane\.reached-integration-windows `
             bench\results\ci-lane\cargo-test-integration-windows.log
           exit $LASTEXITCODE
 
@@ -1481,6 +1523,7 @@ jobs:
         run: |
           $env:PATH = "$env:ORT_HOME\lib;$env:PATH"
           New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          New-Item -ItemType File -Force -Path bench\results\ci-lane\.reached-gatechain-windows | Out-Null
           python ci\gate_chain_fp32.py `
             --verdict-out bench\results\ci-lane\verdict-windows.json `
             --workdir bench\results\ci-lane
@@ -1498,11 +1541,17 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Known-fatal log line is a lane failure (R13 second witness)
+        # One marker per PRODUCER, not one per step. `.lane-reached` is written by the
+        # pytest step; `gate_chain_fp32_ort_stderr.log` is written by a later step, so
+        # `.lane-reached` says nothing about whether THAT step ran. Passing one marker for
+        # both is how this step reported ERROR(instrument=log_not_captured) on 2026-08-04
+        # for a gate step that had simply never started.
         if: always()
         run: |
           python ci\check_fatal_log.py `
             --lane-marker=bench\results\ci-lane\.lane-reached `
             bench\results\ci-lane\pytest-windows.log `
+            --lane-marker=bench\results\ci-lane\.reached-gatechain-windows `
             bench\results\ci-lane\gate_chain_fp32_ort_stderr.log
           exit $LASTEXITCODE
 
@@ -1531,6 +1580,7 @@ jobs:
           $env:VK_ICD_FILENAMES = "C:\nonexistent\lvp_icd.json"
           $env:VK_DRIVER_FILES  = "C:\nonexistent\lvp_icd.json"
           New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          New-Item -ItemType File -Force -Path bench\results\ci-lane\.reached-noicd-windows | Out-Null
           if (Test-Path "rust\target\release\onnxruntime_vulkan_ep.dll") {
             $env:ONNXRUNTIME_VULKAN_EP_LIB = "$env:GITHUB_WORKSPACE\rust\target\release\onnxruntime_vulkan_ep.dll"
           }
@@ -1549,6 +1599,7 @@ jobs:
           python ci\check_suite_productivity.py `
             --suite "tests/ops/test_claim_diagnostics.py::test_no_vulkan_icd_falls_back_to_cpu" `
             --lane build-test-windows `
+            --lane-marker=bench\results\ci-lane\.reached-noicd-windows `
             bench\results\ci-lane\pytest-no-icd-windows.log
           exit $LASTEXITCODE
 

@@ -113,6 +113,7 @@ import datetime as _dt
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -514,6 +515,18 @@ def screen(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", action="append", default=[], help="run one id (repeatable)")
     ap.add_argument("--list", action="store_true", help="print the register; run nothing")
     ap.add_argument("--summary", help="append a markdown table to this file")
+    ap.add_argument(
+        "--emit-cmd",
+        metavar="ID",
+        help="print the declared command line for ID and exit, shell-quoted, running "
+             "nothing. This exists because the workflow used to spell one register "
+             "entry's command out a second time by hand: `lane_checks_suite` deselects "
+             "the three census-extent nodes that `lane_checks_census_extent` accepts as "
+             "red, and the CI step ran the same suite WITHOUT the deselects — so a red "
+             "the register had accepted, with an owner and a closes_when, still failed "
+             "main, every push, for days. Two spellings of one command is the same defect "
+             "as two registers for one fact.",
+    )
     args = ap.parse_args(argv)
 
     register = Path(args.register).resolve()
@@ -527,6 +540,19 @@ def screen(argv: list[str] | None = None) -> int:
     except (ValueError, json.JSONDecodeError) as exc:
         print(f"OPEN-REDS: usage: {exc}", file=sys.stderr)
         return EXIT_USAGE
+
+    if args.emit_cmd:
+        match = [c for c in checks if c["id"] == args.emit_cmd]
+        if not match:
+            print(
+                f"OPEN-REDS: usage: no such id: {args.emit_cmd!r}. A workflow step asking "
+                "the register for a command it does not declare must fail loudly; falling "
+                "back to a hand-written command is how the two spellings diverged.",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+        print(shlex.join(match[0]["cmd"]))
+        return EXIT_PASS
 
     print(_frame(checks, register, doc))
     print()

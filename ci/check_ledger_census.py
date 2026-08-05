@@ -53,10 +53,39 @@ history simplification is precisely what hid `26fd93f` from the file's own log.
 RETIREMENT
 ==========
 A proof may legitimately go away: a form is removed from the EP, an op is withdrawn, a
-duplicate key is collapsed. That is a written act, in `evidence/proof_retired.json`, with an
-owner, a date and a reason — the same three fields `check_open_reds.py` requires to retire a
+duplicate key is collapsed. That is a written act, in `evidence/retired_proof_keys.json`, with
+an owner, a date and a reason — the same three fields `check_open_reds.py` requires to retire a
 subject, for the same argument. Retiring is not suppression: a retired key is *named* in the
 output every run.
+
+ONE REGISTER, AND WHY IT IS THIS FILENAME
+-----------------------------------------
+Until 2026-08-04 this screen read `evidence/proof_retired.json` — an object keyed by proof key
+— while `rust/tools/gen_proof_ledger.py`, the tool that PRODUCES the ledger, read
+`evidence/retired_proof_keys.json`, a list of `{key, reason}`. Both readers were internally
+correct. Only one of the two files was ever written. §8.9.23 retired 43 keys into the list, the
+producer honoured them, and this screen — which cannot see a file that does not exist — read
+zero retirements and reported all 43 as VANISHED, exit 1, on every run since.
+
+Two registers for one fact is the defect, not the filename. The list wins for one reason that
+is not taste: it is the register that EXISTS and that a live reader consumes. Renaming a file
+a producer reads has a silent failure mode — a reader left pointing at the old name reads an
+absent file as "nothing is retired", which is exactly the 43-false-positive shape, inverted and
+harder to see. Pointing the consumer at the producer's register has no such mode: if it is
+wrong, it is wrong loudly and immediately.
+
+The schema is the list's, extended: `owner` and `date` are now REQUIRED alongside `reason`,
+because "who withdrew this and when" is the part a bare reason cannot answer. `proof_retired.json`
+is not merely unread now — its existence is an ERROR(instrument), so the ambiguity cannot come
+back by someone re-creating the file this screen used to want.
+
+A RETIREMENT IS A POSITIVE STATE, AND IT MUST HAVE AN ARM
+---------------------------------------------------------
+`negative_control_ledger_census.py` had 13 arms and every one of them planted or replayed a
+DELETION. The exemption branch — key gone, retirement recorded, screen stays green and names it
+— had never been executed by a green run. A branch with no positive state, in the tool built to
+have positive states. `retirement_acquits_a_deletion` and `retirement_without_owner_is_refused`
+are that arm and its polarity.
 
 WHAT THIS DOES NOT CLAIM
 ========================
@@ -110,7 +139,11 @@ LEDGER_REL = "evidence/proof_ledger.jsonl"
 # made every comparison vacuous; and now too WIDE a scope convicted a branch for a proof it
 # never had. `--full-history` stays: that one is load-bearing and is separately asserted.
 DEFAULT_SCOPE = "HEAD"
-RETIRED = REPO / "evidence" / "proof_retired.json"
+RETIRED_REL = "evidence/retired_proof_keys.json"
+RETIRED = REPO / RETIRED_REL
+# The filename this screen used to read. It never existed; if it ever does, two registers exist
+# again and the older defect is back. Named here so the guard cannot drift from the docstring.
+SUPERSEDED_RETIRED_REL = "evidence/proof_retired.json"
 RETIRED_FIELDS = ("owner", "date", "reason")
 FRAME_WITNESSES = ("source_digest", "toolchain")
 REWITNESS = REPO / "evidence" / "proof_rewitness.json"
@@ -408,21 +441,97 @@ def present_entries(repo: Path, rev: str | None) -> dict[str, dict]:
     return _entries_of(blob.stdout)
 
 
+def load_retired_at(repo: Path, rev: str | None) -> dict[str, dict]:
+    """Read the retirement register AS OF the revision under test.
+
+    A retirement written today cannot govern a deletion that predates it. `--at` replays a
+    historical revision, and reading the *worktree's* register while screening a *historical*
+    ledger mixes two moments: the 43 keys retired on 2026-08-04 were, at `eb84364`, still in
+    the ledger — so today's register applied to that revision reports them
+    `retired_but_present` and returns 1 before the real `proof_vanished` finding is ever
+    printed. The replay then convicts the right revision for the wrong reason, which is the
+    same defect as acquitting it.
+
+    This is the argument `screened_since` already encodes for frame witnesses: adopting a
+    screen must not retroactively rule on history. If the register does not exist at `rev`,
+    nothing was retired then — `{}`, not "the file is missing", because at that revision it
+    genuinely was not.
+    """
+    if rev is None:
+        return load_retired(repo / RETIRED_REL)
+    blob = _git(["show", f"{rev}:{RETIRED_REL}"], repo)
+    if blob.returncode != 0:
+        return {}
+    return _parse_retired(f"{rev}:{RETIRED_REL}", json.loads(blob.stdout))
+
+
 def load_retired(path: Path) -> dict[str, dict]:
+    """Read the one retirement register: `{"retired": [{key, owner, date, reason}, ...]}`.
+
+    Returned keyed by proof key so the rest of this screen can ask `key in retired`, but the
+    FILE's shape is a list, because that is the shape `gen_proof_ledger.py` already reads and a
+    second shape for one fact is how this screen came to disagree with the producer about the
+    same 43 keys. A duplicate key in the list is an error, not a last-one-wins: two retirements
+    of one proof means two people withdrew it for two reasons and only one of them is on record.
+    """
     if not path.is_file():
         return {}
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    retired = doc.get("retired", {})
-    if not isinstance(retired, dict):
-        raise ValueError(f"{path}: `retired` must be an object keyed by proof key")
-    for key, rec in retired.items():
-        missing = [f for f in RETIRED_FIELDS if not (isinstance(rec, dict) and rec.get(f))]
+    return _parse_retired(str(path), json.loads(path.read_text(encoding="utf-8")))
+
+
+def _parse_retired(where: str, doc: object) -> dict[str, dict]:
+    rows = doc.get("retired", []) if isinstance(doc, dict) else None
+    if rows is None:
+        raise ValueError(f"{where}: expected an object with a `retired` list")
+    if isinstance(rows, dict):
+        raise ValueError(
+            f"{where}: `retired` is an object keyed by proof key. That was the shape of the "
+            "register this screen read before 2026-08-04, and it is not the shape "
+            "`rust/tools/gen_proof_ledger.py` reads. One register, one shape: a list of "
+            "{key, owner, date, reason}."
+        )
+    if not isinstance(rows, list):
+        raise ValueError(f"{where}: `retired` must be a list of {{key, owner, date, reason}}")
+    retired: dict[str, dict] = {}
+    for rec in rows:
+        if not isinstance(rec, dict) or not rec.get("key"):
+            raise ValueError(f"{where}: every retirement needs a `key`; got {rec!r}")
+        key = rec["key"]
+        if key in retired:
+            raise ValueError(
+                f"{where}: proof {key!r} is retired twice. Two withdrawal records for one "
+                "proof means only one of the two reasons survives being read, and nothing "
+                "says which."
+            )
+        missing = [f for f in RETIRED_FIELDS if not rec.get(f)]
         if missing:
             raise ValueError(
-                f"{path}: retired proof {key!r} is missing {missing}. Withdrawing a proof "
+                f"{where}: retired proof {key!r} is missing {missing}. Withdrawing a proof "
                 "needs a name and a reason for the same argument that accepting a red does."
             )
+        retired[key] = rec
     return retired
+
+
+def guard_one_register(repo: Path) -> int:
+    """Refuse to run while two retirement registers exist.
+
+    Not a FAIL(condition): with two registers this screen cannot say which one is the record,
+    so it has no observation to report — R13 makes that ERROR(instrument), never a detection
+    and never a pass.
+    """
+    superseded = repo / SUPERSEDED_RETIRED_REL
+    if not superseded.is_file():
+        return 0
+    print("LEDGER-CENSUS: ERROR(instrument=two_retirement_registers)")
+    print(
+        f"  {SUPERSEDED_RETIRED_REL} exists alongside {RETIRED_REL}. These are two registers "
+        "for one fact, which is the arrangement that made this screen report 43 deliberate "
+        "retirements as VANISHED on every run for days: it read one file, the ledger's "
+        "producer read the other, and each was internally correct. Fold it into "
+        f"{RETIRED.name} and delete it."
+    )
+    return 2
 
 
 KNOWN_LIMITS = {
@@ -493,7 +602,10 @@ def screen(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    retired = load_retired(repo / "evidence" / "proof_retired.json")
+    rc = guard_one_register(repo)
+    if rc:
+        return rc
+    retired = load_retired_at(repo, args.at)
     if args.list_retired:
         if not retired:
             print("no proofs are retired.")
@@ -517,6 +629,10 @@ def screen(argv: list[str] | None = None) -> int:
 
     n, m, k, d = len(ever), len(now), len([x for x in retired if x not in now]), len(vanished)
     print(f"LEDGER CENSUS of {LEDGER_REL} at {where}")
+    print(
+        f"  retirement register {RETIRED_REL} read at {where}"
+        f" ({len(retired)} record(s))"
+    )
     print(
         f"  {n} ever proven = {m - len(unhistoried)} present now + {k} retired + {d} VANISHED"
         + (f" (+{len(unhistoried)} present but not yet in history — uncommitted)" if unhistoried else "")
@@ -564,7 +680,7 @@ def screen(argv: list[str] | None = None) -> int:
                   f"`git log -S {key!r} -- {LEDGER_REL}` finds the addition")
         print(
             "\n  A proof does not leave this ledger by being absent. If the form is genuinely "
-            f"withdrawn, record it in {RETIRED.relative_to(REPO).as_posix()} with an owner, a "
+            f"withdrawn, record it in {RETIRED_REL} with an owner, a "
             "date and a reason. If it is not, this is a deletion — most likely inside a merge "
             "conflict resolution, which is the one write neither `--check` nor the "
             "shrinking-write guard can see."

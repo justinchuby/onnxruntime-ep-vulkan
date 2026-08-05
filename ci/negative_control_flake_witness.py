@@ -106,6 +106,34 @@ collecting ...
 tests/ops/test_thing.py ....
 """
 
+# THE SHAPE EVERY REAL LANE ACTUALLY PRODUCES, AND THE ONE THIS WITNESS COULD NOT READ
+# UNTIL 2026-08-04. All three fixtures above are DECORATED — `====== N passed ======` —
+# because they were typed by hand from memory of a default pytest run. Every lane in
+# .github/workflows/ci.yml invokes pytest with `-q`, whose terminal summary carries no
+# decoration at all:
+#
+#     6 failed, 805 passed, 49 skipped, 3 xfailed in 410.23s (0:06:50)
+#
+# The witness's summary regex required the `=` rules, so on every real log it reported
+# ERROR(instrument=log_unparsed) — honest, and therefore not a false green, but it means
+# this screen had never once parsed a log from the lane it screens. A negative control
+# whose fixtures are all hand-typed proves the code agrees with the fixtures.
+PYTEST_BARE_RED = """\
+tests/ops/test_op_table.py FFss....
+=========================== short test summary info ============================
+FAILED tests/ops/test_op_table.py::test_op_table[Asin-fp32] - AssertionError: 3.4e-4
+6 failed, 805 passed, 49 skipped, 3 xfailed in 410.23s (0:06:50)
+"""
+
+PYTEST_BARE_GREEN = """\
+tests/ops/test_op_table.py ........
+811 passed, 49 skipped, 3 xfailed in 402.10s (0:06:42)
+"""
+
+PYTEST_BARE_EMPTY = """\
+no tests ran in 0.01s
+"""
+
 
 def _scratch_root() -> Path:
     """Scratch stays inside the checkout, never in a system temp dir.
@@ -210,6 +238,44 @@ def main() -> int:
              str(write(tmp, "no-summary.log", PYTEST_NO_SUMMARY))],
             4,
             "FLAKE-WITNESS: ERROR(instrument=log_unparsed)",
+            tmp,
+        )
+
+        # ---- 5b. THE ARM THAT WAS MISSING: the summary shape the lanes really emit ---
+        # Every arm above and below feeds this witness a DECORATED pytest summary, and
+        # every lane in ci.yml runs pytest with `-q`, which emits none. So the screen had
+        # a positive state for a summary nobody produces and no state at all for the one
+        # everybody produces — and it spent the whole red window reporting
+        # ERROR(instrument=log_unparsed) on the Windows lane while looking, from the arm
+        # list, fully exercised.
+        arm(
+            PLANTED,
+            "a BARE `-q` summary parses (the shape every lane in ci.yml actually emits)",
+            ["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "QQQQ",
+             "--run-id", "r1", "--ledger", str(tmp / "l5b.jsonl"),
+             str(write(tmp, "pytest-bare-red.log", PYTEST_BARE_RED))],
+            0,
+            "FLAKE-WITNESS: PASS",
+            tmp,
+        )
+        arm(
+            PLANTED,
+            "and a bare all-green summary parses too, so the arm above is not a lucky FAILED line",
+            ["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "QQQQ",
+             "--run-id", "r2", "--ledger", str(tmp / "l5c.jsonl"),
+             str(write(tmp, "pytest-bare-green.log", PYTEST_BARE_GREEN))],
+            0,
+            "FLAKE-WITNESS: PASS",
+            tmp,
+        )
+        arm(
+            PLANTED,
+            "`no tests ran` is a parsed summary of zero, not an unparsed log",
+            ["--harness", "pytest", "--suite", "ops", "--lane", "windows", "--commit", "QQQQ",
+             "--run-id", "r3", "--ledger", str(tmp / "l5d.jsonl"),
+             str(write(tmp, "pytest-bare-empty.log", PYTEST_BARE_EMPTY))],
+            0,
+            "FLAKE-WITNESS",
             tmp,
         )
 
