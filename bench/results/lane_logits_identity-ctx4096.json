@@ -1,0 +1,152 @@
+{
+  "probe": "lane_logits_identity",
+  "source_record": "device_loss_gate-BOTHLANES.json",
+  "excluded": [
+    {
+      "rep": 0,
+      "lane": "resident",
+      "sha256_16": "6544a569f75ce364",
+      "dispatches": 1420,
+      "excluded_because": "device_lost"
+    }
+  ],
+  "per_lane": {
+    "resident": {
+      "reps_compared": 9,
+      "distinct_digests": [
+        "4b22538156133781"
+      ],
+      "within_lane": "IDENTICAL",
+      "reps": [
+        {
+          "rep": 2,
+          "lane": "resident",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 4,
+          "lane": "resident",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 6,
+          "lane": "resident",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 8,
+          "lane": "resident",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 10,
+          "lane": "resident",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 12,
+          "lane": "resident",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 14,
+          "lane": "resident",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 16,
+          "lane": "resident",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 18,
+          "lane": "resident",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        }
+      ]
+    },
+    "shipping": {
+      "reps_compared": 10,
+      "distinct_digests": [
+        "4b22538156133781"
+      ],
+      "within_lane": "IDENTICAL",
+      "reps": [
+        {
+          "rep": 1,
+          "lane": "shipping",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 3,
+          "lane": "shipping",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 5,
+          "lane": "shipping",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 7,
+          "lane": "shipping",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 9,
+          "lane": "shipping",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 11,
+          "lane": "shipping",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 13,
+          "lane": "shipping",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 15,
+          "lane": "shipping",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 17,
+          "lane": "shipping",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        },
+        {
+          "rep": 19,
+          "lane": "shipping",
+          "sha256_16": "4b22538156133781",
+          "dispatches": 2840
+        }
+      ]
+    }
+  },
+  "cross_lane": "IDENTICAL",
+  "cross_lane_digests": {
+    "resident": "4b22538156133781",
+    "shipping": "4b22538156133781"
+  }
+}
