@@ -2412,6 +2412,99 @@ def test_a_dormant_guard_is_not_inert_and_the_screen_says_why(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# ci/negative_control_build_precondition.py's REPLAYED arm — is 607056a actually
+# reachable from THIS checkout?  Issue #1: `actions/checkout@v4` defaults to a depth-1
+# shallow clone, which makes `git show 607056a:<path>` fail, and the negative control
+# correctly counts that as a failed arm (UNOBSERVABLE, never a silent pass) rather than
+# skipping it — but a checkout that cannot reach its own history turns that correct
+# behaviour into a permanent, uninformative red. The fix is `fetch-depth: 0` on the
+# `lane-checks` job's checkout step; these two tests are the positive/negative pair that
+# proves the fix is real rather than assumed: one shows the subject is reachable in a
+# normal (unshallowed) checkout, the other reproduces the CI defect in a scratch shallow
+# clone and requires the control to still report it loudly, never green.
+# ---------------------------------------------------------------------------
+
+
+def test_the_replayed_subjects_are_reachable_from_this_checkout():
+    """POSITIVE arm: this checkout can `git show` every commit a REPLAYED arm depends on.
+
+    If this test is red, no REPLAYED arm anywhere in ci/ can fire here, regardless of
+    what ``negative_control_build_precondition.py`` (or any of its siblings) reports --
+    a shallow clone is exactly the shape that makes `git show <ref>:<path>` fail, which
+    is indistinguishable, one arm at a time, from the defect itself having gone missing.
+    """
+    for ref, rel_path in (
+        ("607056a", ".github/workflows/ci.yml"),  # negative_control_build_precondition.py
+        ("133b9fe", ".github/workflows/ci.yml"),  # negative_control_open_reds.py
+        ("8a851f8", "README.md"),  # negative_control_readme_usage.py
+        ("eb84364", "evidence/proof_ledger.jsonl"),  # negative_control_ledger_census.py
+        ("26fd93f", "evidence/proof_ledger.jsonl"),  # negative_control_ledger_census.py
+    ):
+        proc = subprocess.run(
+            ["git", "show", f"{ref}:{rel_path}"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        assert proc.returncode == 0, (
+            f"`git show {ref}:{rel_path}` failed in this checkout -- every REPLAYED arm "
+            f"pinned to {ref} is UNOBSERVABLE here, not merely untested.\n"
+            f"stderr: {proc.stderr.strip()}"
+        )
+
+    rc, out = _precondition(
+        str(REPO_ROOT / ".github" / "workflows" / "ci.yml"),
+        str(REPO_ROOT / ".github" / "workflows" / "conformance.yml"),
+    )
+    assert rc == 0, out
+    assert "1 LIVE / 2 REPLAYED / 13 PLANTED" in out, (
+        "both REPLAYED arms must fire -- a checkout that can reach 607056a but reports "
+        "fewer than 2 REPLAYED arms has regressed silently, not gone shallow"
+    )
+    assert "NEGATIVE-CONTROL: PASS" in out
+
+
+def test_negative_control_reports_unobservable_not_a_pass_on_a_shallow_clone(tmp_path):
+    """NEGATIVE arm: reproduce the actual CI defect in a scratch clone, on purpose.
+
+    A `--depth 1` clone of this repository cannot reach 607056a (it long predates HEAD),
+    so the REPLAYED arm must FAIL loudly -- UNOBSERVABLE, per
+    ``negative_control_build_precondition.historical_workflow`` -- and the control's exit
+    code must stay non-zero.  It must NOT skip the arm and it must NOT report PASS: a
+    negative control that goes quietly green the moment its subject becomes unreachable
+    is indistinguishable, from the outside, from one that was never wired at all.
+    """
+    shallow = tmp_path / "shallow"
+    clone = subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", "--no-local",
+         REPO_ROOT.as_uri(), str(shallow)],
+        capture_output=True, text=True,
+    )
+    assert clone.returncode == 0, f"scratch shallow clone failed: {clone.stderr}"
+
+    show = subprocess.run(
+        ["git", "show", "607056a:.github/workflows/ci.yml"],
+        capture_output=True, text=True, cwd=str(shallow),
+    )
+    assert show.returncode != 0, (
+        "a depth-1 clone that CAN reach 607056a does not reproduce the CI defect this "
+        "test exists to replay -- widen the clone or pick a more recent HISTORICAL_REF"
+    )
+
+    proc = subprocess.run(
+        [sys.executable, str(shallow / "ci" / "negative_control_build_precondition.py")],
+        capture_output=True, text=True, cwd=str(shallow),
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1, (
+        f"a shallow checkout must fail the control, not pass it silently.\nOutput:\n{out}"
+    )
+    assert "UNOBSERVABLE" in out, "the reason must be named, not just a bare non-zero exit"
+    assert "NEGATIVE-CONTROL: FAIL(condition=arm_did_not_fire)" in out
+    assert "NEGATIVE-CONTROL: PASS" not in out, (
+        "an unreachable REPLAYED subject must never be reported as every arm firing"
+    )
+
+
+# ---------------------------------------------------------------------------
 # ci/check_open_reds.py — the register that tells an accepted red from a new one.
 #
 # These tests never point the screen at the SHIPPED register. ci/check_open_reds.py
