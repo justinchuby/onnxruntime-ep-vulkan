@@ -597,9 +597,19 @@ def _child_main(row: str, lib_path: str) -> int:
 
     epctl = _epctl_for(lib)
     if epctl.is_file():
+        # encoding="utf-8" is not a style choice: `instance.rs` prints the gate-verdict
+        # line through a literal "§" (U+00A7, 2 UTF-8 bytes: 0xC2 0xA7), and Python's
+        # `text=True` with no explicit encoding decodes child stdout with
+        # `locale.getpreferredencoding()` — cp1252 on an English Windows runner, which
+        # turns those two bytes into "Â§" and breaks every regex in
+        # `ci/check_icd_suppression.py` that looks for "§7.2 capability gate", on BOTH
+        # polarities (see run 31094738484, job 92593900456: both suppression arms came
+        # back `probe_report_unreadable`, not because suppression failed but because the
+        # healthy report was silently mis-decoded). `errors="replace"` keeps this an
+        # instrument-error rather than a hard crash on any other undecodable byte.
         probe = subprocess.run(
             [str(epctl), "--probe-loader"],
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=180,
         )
         record["loader_probe_report"] = (probe.stdout or "") + (probe.stderr or "")
         record["epctl_exit_code"] = probe.returncode
