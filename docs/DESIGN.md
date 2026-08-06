@@ -3447,6 +3447,106 @@ was not in this conversation, they get numbered then, and Fact Checker is the on
 
 ---
 
+**PART 5 — THE DECLARATION REGISTER, AND WHY IT IS CONTENT-ADDRESSED (added 2026-08-06, issue #43).**
+
+A frame witness may move; it may not move *silently*. `evidence/proof_rewitness.json` is the register
+where a move is declared, and `ci/check_ledger_census.py` is the screen that reads it. The register's
+first schema (**`rewitness/1`**, still valid, still read) matched a declaration to a move by
+**revision**: one record per `(revision, field)`, matched against the walk of commits that touched the
+ledger.
+
+**That is unsatisfiable under squash-merge, and not as an edge case — as the normal path.** A
+declaration must exist *in the commit that carries the ledger edit*, so at writing time the only
+revision an author can name is a branch commit. A squash merge replays the change under a brand-new
+sha and leaves every branch commit permanently un-ancestored. The declaration is then stale **and** the
+move it correctly described is undeclared: one event, two failures, and the register reports a red for
+a move that was declared in advance and in good faith. This repository has produced that state twice —
+`601ddcf` (named by a #35 declaration, erased by #35's own squash, surfaced as issue #43's fourth red)
+and the first draft of #43's own 55-key record, which named `a7deb38` and would have repeated it. The
+"repair" — re-point at the squash sha in a follow-up — is not one: it requires a human to notice, and
+it cannot be done before the merge, so the register is guaranteed wrong in the window where it matters.
+
+**`rewitness/2` removes the revision from the matching rule.** A move *is* its content:
+
+```
+(field, key, old, new)
+```
+
+That tuple is identical on the branch commit, on a squash commit, on a rebase, on a cherry-pick and in
+the working tree, because it is a fact about the ledger's own bytes and not about the commit that
+carried them. A v2 record therefore has **no `revision`** and needs no follow-up re-point, ever.
+
+| field | meaning |
+|---|---|
+| `schema` | literally `"rewitness/2"`. An unknown value is **refused**, never read as v1 — a checker that treats an unrecognised schema as the oldest one it knows screens a record it has not understood and prints PASS. |
+| `field` | the frame witness that moved (`source_digest` or `toolchain`). |
+| `caused_by` | the **landed** commit whose *source* change made the re-witness necessary. Evidence, not an index: it is already in `main` at writing time, and it is the one field still checked for ancestry, so a branch-only sha fails as `unlanded_rewitness_cause` instead of being quietly accepted. |
+| `transitions` | every key that moved, enumerated as `{key, old, new}`. |
+| `owner`, `date`, `reason` | unchanged from v1. |
+
+**Enumerated, not counted, and that is the second half of the ruling.** A bare `keys: 55` declares a
+*number*, and a number matches any 55 moves — including 55 nobody intended. The enumeration is the
+declaration; an optional `keys` may accompany it only if it equals the list's length. Two conditions
+exist because of this and neither is reachable from a count:
+
+* **`overdeclared_witness_move`** — a transition inside an otherwise-matching record that matches no
+  move in the history. A partially-matching declaration is worse than a wholly stale one because it
+  *looks live*: a wrong `old`, a typo'd key or a row copied from another move rides along and is never
+  read.
+* **`unlanded_rewitness_cause`** — `caused_by` does not resolve, or resolves and is not an ancestor.
+  Only records that are doing work in the current scope are judged, so a replay bounded at an older
+  revision does not retroactively convict a declaration for a change that had not happened yet.
+
+**Migration is per record, not a flag day.** v1 and v2 coexist in one register and both are screened;
+existing v1 records stay valid and are not rewritten. **Do not write new v1 records** — they are the
+schema whose branch shas this repository's squash-merge erases.
+
+**Controls.** `ci/negative_control_ledger_census.py` holds both polarities: a v1 declaration naming its
+own branch commit self-invalidates on a simulated squash, and the *same* declaration in v2 form
+survives it. Then, one planted defect at a time — wrong `old`, wrong `new`, a missing key, an
+over-declared key, a duplicate transition across records, an unknown schema, a `keys` count that
+disagrees with its list, `old == new`, a malformed digest, an extra field inside a transition, a
+branch-only `caused_by`, an unresolvable `caused_by` — plus two backwards-compatibility arms proving an
+unmigrated v1 record stays green and that v1 and v2 coexist without shadowing each other. Schema
+defects are **exit 2** (`ERROR(instrument=register_unusable)`), never a colour: a register the checker
+could not parse has ruled on nothing. `ci/simulate_squash_rewitness.py` runs the same proof against the
+real repository — it squashes the current branch onto `origin/main` in a throwaway clone and screens
+the result, with the v1 form of the same record as the negative control.
+
+**PART 6 — `source_digest` IS DETERMINISTIC, AND THAT IS NOW TESTABLE (added 2026-08-06, issue #43).**
+
+A stale *record* and a wandering *function* look identical in a diff, and in 2026-08-06's review of
+PR #44 they were confused for each other: four inverse-trig entries moved their `source_digest` in a
+branch whose shader inputs were byte-identical to `main`, which reads as non-determinism. It was not.
+The recorded values had gone stale two commits earlier — 53 of them when Asin/Acos entered the shared
+`ew_unary.comp` template, and 2 more when that template gained the Cephes attribution header, a
+comment-only edit that is precisely the `same/differs` row above. **A diff against `main` cannot see a
+value that went stale *under* it rather than moving *in* it**, which is the same blindness §8.9.19's
+census arm has and the reason `test_no_entry_carries_a_stale_source_digest` exists.
+
+Proving that required rebuilding historical shader texts and querying the built EP, because a build
+script is not linkable from a test target — so nothing in the tree could answer the question. That is
+now fixed structurally: the digest and its helpers live in `rust/build_support/shader_source_digest.rs`,
+included by path from **both** `build.rs` and `rust/tests/shader_source_digest.rs`, so the controls
+cannot drift from the code that computes the ledger's values.
+
+The controls pin every property the function claims, **in both polarities** — a function returning a
+constant would pass every "does not move" assertion, so each is paired with a "does move":
+
+| must NOT move the digest | must move it |
+|---|---|
+| repeated calls (64×) | any edit to the `.comp` source, **including a comment-only one** |
+| the same content at a different absolute path | an edit to a file the module actually includes |
+| CRLF, lone CR, and a UTF-8 BOM | the stem, a define's value, a dropped define, and define **order** |
+| include **order** within a file (the closure is sorted) | an include that stops resolving |
+| an edit to an include this module never includes | — |
+
+with framing (`tag\0len\0bytes\0`) checked against field-boundary collisions, a cyclic include checked
+for termination, and the shipped 96-module tree checked for reproducibility and path-independence
+rather than only a two-file fixture. Run: `cargo test -p onnxruntime-ep-vulkan --test shader_source_digest`.
+
+---
+
 #### 8.9.21 RULING — an optional device capability is a **frozen frame constant**, not a claim-time query; the claim path may read frame if and only if the component is resolved-before-first-claim, session-immutable, and passed in; and `shaderInt64` is `synchronization2` with a different name (2026-08-03)
 
 *Against `main` = `af408bf`. Tank declined this inside a merge window and was right to decline it. Three

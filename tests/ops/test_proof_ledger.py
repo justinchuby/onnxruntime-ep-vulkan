@@ -708,3 +708,109 @@ def test_a_shrinking_write_is_a_failure_not_a_footnote(tmp_path):
     assert g.write_ledger(p, lines[:2], allow_shrink=True) == 0
     kept = [l for l in p.read_text(encoding="utf-8").splitlines() if l.strip()][1:]
     assert len(kept) == 2
+
+
+# ── the §8.9.19 declaration register itself ────────────────────────────────────────────────
+
+
+def _rewitness_doc():
+    """The register, parsed by the CANONICAL parser rather than by `json.load`.
+
+    Reading it with `json.load` here would test that the file is JSON, which nothing disputes.
+    Reading it through `ci/check_ledger_census.py` tests the thing that matters: that the
+    register the lane screens is the register this suite is looking at, and that its schema
+    validation is reachable from the test lane and not only from a shell script CI runs.
+    """
+    sys.path.insert(0, str(REPO / "ci"))
+    import check_ledger_census as clc  # noqa: PLC0415
+
+    return clc, clc.load_rewitness(REPO / "evidence" / "proof_rewitness.json")
+
+
+def test_the_rewitness_register_parses_under_the_canonical_checker():
+    clc, doc = _rewitness_doc()
+    records = doc.get("rewitness", [])
+    assert records, "the register is empty; this test is UNOBSERVABLE, not passing"
+    for rec in records:
+        # Raises on an unknown schema — the fail-loud path, exercised on the real file.
+        assert clc._record_schema(rec) in clc.KNOWN_SCHEMAS
+
+
+def test_no_v2_record_names_a_revision():
+    """The whole point of `rewitness/2` is that it has nothing for a squash to erase.
+
+    A `revision` on a v2 record would be dead weight at best and, far more likely, the thing
+    a future reader trusts — reintroducing by habit the coupling the schema removed. It is
+    not merely unused; it must not be there.
+    """
+    clc, doc = _rewitness_doc()
+    offenders = [
+        (i, rec.get("revision"))
+        for i, rec in enumerate(doc.get("rewitness", []))
+        if clc._record_schema(rec) == clc.SCHEMA_V2 and "revision" in rec
+    ]
+    assert not offenders, (
+        f"{len(offenders)} rewitness/2 record(s) carry a `revision`: {offenders!r}. "
+        "Matching is (field, key, old, new); a revision here is a sha a squash will erase."
+    )
+
+
+def test_every_declared_transition_lands_on_the_digest_this_build_computes():
+    """A declaration is a claim about this ledger, so it is checkable against this build.
+
+    Each v2 transition says a key moved `old` -> `new`. `new` is what the ledger carries now,
+    and `test_no_entry_carries_a_stale_source_digest` already ties the ledger to the build —
+    but only in aggregate. This one is per declared row, so a record that enumerates a key
+    with a plausible-looking digest nobody computes is convicted HERE, in the file that
+    declares it, rather than showing up as a mystery decline on the other platform.
+
+    It also closes the `old == new` loophole from the other side: a row whose `new` is not the
+    current value is either a stale declaration or a wrong one, and both are defects.
+    """
+    clc, doc = _rewitness_doc()
+    entries = {json.loads(l)["key"]: json.loads(l) for l in _ledger_lines()[1:]}
+    wrong, checked = [], 0
+    for rec in doc.get("rewitness", []):
+        if clc._record_schema(rec) != clc.SCHEMA_V2:
+            continue
+        field = rec["field"]
+        for t in rec["transitions"]:
+            entry = entries.get(t["key"])
+            if entry is None:
+                wrong.append((t["key"], "declared but absent from the ledger", t["new"]))
+                continue
+            checked += 1
+            if entry.get(field) != t["new"]:
+                wrong.append((t["key"], entry.get(field), t["new"]))
+    if not checked:
+        pytest.skip("no rewitness/2 transitions to check against the ledger")
+    assert not wrong, (
+        f"{len(wrong)} declared transition(s) do not describe the shipped ledger:\n"
+        + "\n".join(f"  {k}: ledger has {a!r}, declaration says new={b!r}" for k, a, b in wrong[:20])
+    )
+
+
+def test_the_declaration_screen_survives_a_squash_of_this_branch():
+    """The end-to-end control for the squash-safety claim, run against the real repository.
+
+    `ci/simulate_squash_rewitness.py` clones this repo, replays HEAD's tree onto origin/main as
+    one brand-new commit (which is exactly what `gh pr merge --squash` produces), and screens
+    the result — then plants the v1 form of the same declaration and requires it to go red.
+    Both polarities, because a simulation that only shows green proves the simulation, not the
+    schema.
+
+    Skipped rather than failed when `origin/main` is not fetched: that is an unobservable
+    environment, not a defect in the register.
+    """
+    sim = REPO / "ci" / "simulate_squash_rewitness.py"
+    if not sim.is_file():
+        pytest.skip("simulator absent")
+    if subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "origin/main^{commit}"],
+        cwd=REPO, capture_output=True, text=True,
+    ).returncode != 0:
+        pytest.skip("origin/main is not present in this clone")
+    r = subprocess.run([sys.executable, str(sim)], cwd=REPO, capture_output=True, text=True)
+    assert r.returncode == 0, f"squash simulation failed:\n{r.stdout}\n{r.stderr}"
+    assert "rewitness/2 survives the squash" in r.stdout, r.stdout
+
