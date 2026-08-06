@@ -85,6 +85,65 @@ LANES = (
     ("armed", "1"),
 )
 
+#: The identity fields Niobe's probe stamps into every record it writes
+#: (`bench/results/probe_kv_bytes_earned.py::_result_identity`).
+IDENTITY_FIELDS = ("onnx_file", "onnx_sha256")
+
+
+def lane_identity(record: dict) -> dict:
+    """The model identity a child lane record carries, or an explicit statement that it has none.
+
+    Added 2026-08-05 (issue #19). This file already READ the child's record — it takes the
+    byte totals out of it — and then dropped `onnx_file`/`onnx_sha256` on the floor while
+    writing its own. That is the worst of the three shapes: the identity was in hand and
+    was discarded, so `device_memory_kv_lanes.json` asserted that arming the allocator does
+    not move the readback slope *of some model*, and a PHI35_MODEL override in either lane
+    would have been invisible in the output.
+    """
+    ident = {k: record.get(k) for k in IDENTITY_FIELDS}
+    if not ident["onnx_file"]:
+        ident["onnx_identity_error"] = (
+            "ERROR(identity=child_record_carried_no_model_identity): the lane record named "
+            "no onnx_file, so this lane cannot say which model it measured."
+        )
+    return ident
+
+
+def agreed_identity(lanes: list[dict], *, ran_lanes: bool) -> dict:
+    """One identity for the comparison, or a refusal — never a blank on a success path.
+
+    The lanes differ by exactly one environment variable on purpose; if they also differ by
+    the model, the readback-slope delta is not a measurement of the flag. That is the same
+    argument the DLL check above already makes about the binary, applied to the other input
+    the comparison depends on.
+    """
+    seen = sorted({(i.get("onnx_file"), i.get("onnx_sha256"))
+                   for i in (lane["identity"] for lane in lanes) if i.get("onnx_file")})
+    if len(seen) > 1:
+        raise SystemExit(
+            "ERROR(instrument): the lanes consumed different models "
+            + "; ".join(f"{f} sha256={s}" for f, s in seen)
+            + ". The comparison is between two different models and says nothing about "
+            + ENV_DEVICE_MEMORY + "."
+        )
+    if len(seen) == 1:
+        return {"onnx_file": seen[0][0], "onnx_sha256": seen[0][1]}
+    if ran_lanes:
+        raise SystemExit(
+            "ERROR(instrument): no lane record named a model, so the slope this run "
+            "reports is a slope of nothing identifiable. The runs happened; the "
+            "observation cannot be attributed."
+        )
+    return {
+        "onnx_file": None,
+        "onnx_sha256": None,
+        "onnx_identity_error": (
+            "ERROR(identity=reused_records_named_no_model): --reuse re-derived the verdict "
+            "from kept lane records that carry no onnx_file/onnx_sha256, and re-analysis "
+            "must not invent one. Re-run the lanes to obtain an attributable record."
+        ),
+    }
+
 
 def dll_sha256() -> dict:
     lib = os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB")
@@ -128,7 +187,8 @@ def run_lane(name: str, value: str | None, keep: Path) -> dict:
         frames.append({"point": cfile.stem, **{k: c.get(k, "<absent>") for k in FRAME_KEYS}})
         shutil.copy2(cfile, keep / f"{name}-{cfile.name}")
 
-    return {"lane": name, ENV_DEVICE_MEMORY: value or "<unset>", "record": record, "frames": frames}
+    return {"lane": name, ENV_DEVICE_MEMORY: value or "<unset>", "record": record,
+            "frames": frames, "identity": lane_identity(record)}
 
 
 def segments_of(lane: dict) -> list[dict]:
@@ -215,6 +275,7 @@ def main() -> int:
                 "record": json.loads(rec.read_text(encoding="utf-8")),
                 "frames": frames,
             })
+            lanes[-1]["identity"] = lane_identity(lanes[-1]["record"])
     else:
         dll = dll_sha256()
         lanes = []
@@ -254,6 +315,7 @@ def main() -> int:
             ],
             "upload_state": lane["record"].get("upload", {}).get("state", "<absent>"),
             "frames": lane["frames"],
+            **lane["identity"],
         }
 
     a = by_lane.get("default", {})
@@ -317,7 +379,12 @@ def main() -> int:
         "why": why,
         "no_clock": "counts only; no duration is quoted anywhere in this record",
     }
+    doc.update(agreed_identity(lanes, ran_lanes=not args.reuse))
     args.out.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    if doc.get("onnx_identity_error"):
+        print(doc["onnx_identity_error"])
+    else:
+        print(f"model: {doc['onnx_file']} sha256={(doc['onnx_sha256'] or '')[:16]}")
     print(json.dumps({k: doc[k] for k in (
         "verdict", "readback_slope_delta_armed_minus_default",
         "armed_lane_alloc_device_buffer_binds", "armed_lane_alloc_device_frame")}, indent=2))

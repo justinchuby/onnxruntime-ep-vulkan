@@ -5228,11 +5228,49 @@ deliberately:
   `_result_identity` directly rather than re-resolving, since its subprocess is spawned from
   this process's own `os.environ` after `probe_validation_phi35`'s module-level `MODEL` has
   already resolved against that identical environment — the two therefore always name the same
-  file. `ci/test_lane_checks.py`'s discovery walks the whole tree (not one directory's glob) for
-  both shapes — a direct `PHI35_MODEL` read, and a `subprocess.run([sys.executable, ...])` call
-  passing `dict(os.environ)` to a script that is itself a direct reader — and asserts every reader
-  or inheritor that writes JSON stamps or imports `_result_identity`; this is confirmed to fail
-  against the pre-fix tree for both files, so it is a real regression guard, not a decorative one.
+  file.
+
+  **Third review round (PR #31 rejected at `60f0ae7`): the discovery itself was the defect, and
+  is now semantic.** Discovery had been a set of source-text regexes in `ci/test_lane_checks.py`,
+  and `subprocess\.run\(\s*\[\s*sys\.executable` recognised exactly one spelling — the argv
+  written inline at the call site. Both remaining offenders build the argv into a variable first
+  (`cmd = [sys.executable, str(PROBE), ...]; subprocess.run(cmd, env=env, ...)`), so the screen
+  walked past `rust/tools/device_loss_gate.py`, which spawned `probe_kv_chain_phi35.py` and wrote
+  `bench/results/device_loss_gate.json` with no model identity, and
+  `bench/results/probe_device_memory_kv.py`, which spawned `probe_kv_bytes_earned.py`, *read* the
+  child's record for its byte totals, and discarded the `onnx_file`/`onnx_sha256` in it while
+  writing `device_memory_kv_lanes.json`. The same regexes could match their own source text, and
+  `dict(os.environ)` as the inheritance test missed `os.environ.copy()` and scored the strongest
+  case — passing no `env=` at all — as no inheritance.
+
+  Discovery now lives in **`ci/phi35_identity_audit.py`**, which parses every `*.py` file in the
+  tree and reasons over the AST: environment reads through any alias (`os.environ.get`,
+  `os.environ[...]`, `os.getenv`, `from os import environ`, `import os as o`), subprocess argv and
+  `env=` built inline *or* through variables, script targets named through module-level path
+  constants, and JSON *records written to disk* distinguished from a `json.dumps` merely printed.
+  The "the model reaches this file" relation is closed to a **fixed point**, not one hop, so a
+  wrapper of a wrapper is caught by construction. It is a module rather than a `ci/check_*.py`
+  entry point on purpose — it is driven from the already-registered `lane_checks_suite` and adds
+  no new verification subject. It reports **25 identity-bearing producers**, all clean; it exits
+  `4 ERROR(instrument)` on an unparseable file rather than skipping it into a green.
+
+  Both offenders now **propagate** the child's identity rather than re-deriving it — the child is
+  the process that opened the file, so its hash is of the bytes that actually ran. Neither writes
+  a blank on a success path: `device_loss_gate.py` stamps per-repetition identity, refuses with
+  `ERROR(identity=children_disagree)` when repetitions consumed different models (a pooled loss
+  rate over two models is not a rate) and exits `ERROR(instrument=model_identity_unknown)` rather
+  than publish an unattributable rate; `probe_device_memory_kv.py` refuses lanes that measured
+  different models by the same argument its existing DLL check makes about the binary, and its
+  `--reuse` path records `ERROR(identity=reused_records_named_no_model)` instead of inventing one.
+  `bench/results/probe_lane_logits_identity.py`, which is derived entirely from the gate's record,
+  propagates the identity forward; record-consumption is a **stated limit** of the audit (its
+  relations are environment read and spawn), declared in the module rather than left implicit.
+  `ci/test_lane_checks.py` drives the audit LIVE over the real tree and pairs it with planted arms
+  for every shape — inline and variable-built argv, all four `env=` spellings including its
+  absence, the alias/import variants, child-output field discarding, two-hop reachability, a
+  `json.dumps` that is only printed, and source that merely *describes* the defect — each asserted
+  against the rejected regex as well, so "the new screen is green" is not the only evidence that
+  it works.
 
 ### 9.2 Benchmarking — Niobe
 

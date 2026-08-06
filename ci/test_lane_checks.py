@@ -3312,70 +3312,83 @@ def test_hardcoded_foundry_paths_negative_control_all_arms_pass():
 # file silently sitting at the historical default path -- can never be silently absorbed
 # into the evidence: the record always names the exact bytes it was computed from.
 #
-# Discovery is repo-wide, not scoped to bench/results/*.py. The first pass at this
-# contract only glob-scanned bench/results/ and missed two siblings Morpheus's review
-# found: tests/ops/probe_validation_phi35.py reads PHI35_MODEL directly and writes its own
-# JSON record, and bench/results/probe_push_constants_written.py never reads PHI35_MODEL
-# itself but inherits it into a subprocess of probe_validation_phi35.py via
-# `dict(os.environ)` and writes its own JSON with no model identity at all. A glob scoped
-# to one directory cannot catch either shape; the scan below walks the whole tree and
-# separately detects the subprocess-inheritance shape.
+# Discovery is repo-wide and SEMANTIC (ci/phi35_identity_audit.py), not a source-text
+# regex. The regex screen this replaces was rejected on PR #31 for three failures that a
+# grep over source text cannot avoid, all of them found by Morpheus:
+#
+#   * `subprocess\.run\(\s*\[\s*sys\.executable` recognises ONE spelling. Both real
+#     spawners build their argv into a variable first
+#     (`cmd = [sys.executable, str(PROBE), ...]; subprocess.run(cmd, env=env)`), so the
+#     screen walked past rust/tools/device_loss_gate.py and
+#     bench/results/probe_device_memory_kv.py -- the two files that were actually writing
+#     unattributed records.
+#   * It matched its own source text: the pattern's own literal, and any prose quoting it,
+#     read as a hit, so a file could be "discovered" for containing a description of the
+#     defect rather than the defect.
+#   * `dict(os.environ)` as the test for inheritance misses `env=os.environ.copy()` and,
+#     worse, treats the STRONGEST inheritance -- passing no `env=` at all -- as no
+#     inheritance.
+#
+# The audit module parses each file and reasons over the tree: environment reads through
+# any alias (`os.environ.get`, `os.environ[...]`, `os.getenv`, `from os import environ`,
+# `import os as o`), argv/env built inline or through variables, script targets named
+# through module-level path constants, JSON *records* distinguished from `json.dumps`
+# printed to stdout, and the reachability closed to a fixed point rather than one hop.
 # ---------------------------------------------------------------------------
 
-_PHI35_MODEL_READ = re.compile(r'os\.environ\.get\(\s*["\']PHI35_MODEL["\']')
-_JSON_WRITE = re.compile(r'json\.dumps?\(')
-_SUBPROCESS_SPAWNS_A_SCRIPT = re.compile(r'subprocess\.run\(\s*\[\s*sys\.executable')
-_SUBPROCESS_INHERITS_FULL_ENV = re.compile(r'dict\(os\.environ\)')
+sys.path.insert(0, str(CI_DIR))
+import phi35_identity_audit as _identity_audit  # noqa: E402
 
-_SCAN_EXCLUDED_DIRS = (".git", ".venv", "venv", "target", "node_modules", "__pycache__", ".squad")
+
+def _repo_facts() -> dict:
+    """AST facts for every Python file in the repository, computed once per session."""
+    global _REPO_FACTS_CACHE
+    if _REPO_FACTS_CACHE is None:
+        _REPO_FACTS_CACHE = _identity_audit.analyze_tree(REPO_ROOT)
+    return _REPO_FACTS_CACHE
+
+
+_REPO_FACTS_CACHE = None
 
 
 def _iter_all_python_files() -> list[Path]:
-    out = []
-    for path in sorted(REPO_ROOT.rglob("*.py")):
-        rel = path.relative_to(REPO_ROOT)
-        if any(part in _SCAN_EXCLUDED_DIRS for part in rel.parts):
-            continue
-        out.append(path)
-    return out
+    return [REPO_ROOT / rel for rel in sorted(_repo_facts())]
 
 
 def _phi35_model_direct_readers() -> list[Path]:
     """Every *.py file anywhere in the repo that reads PHI35_MODEL from the environment
-    directly -- discovered by walking the whole tree, not a single directory's glob, so a
-    sibling reader anywhere else cannot evade this the way the bench/results/-only first
-    pass did."""
-    out = []
-    for path in _iter_all_python_files():
-        text = path.read_text(encoding="utf-8")
-        if _PHI35_MODEL_READ.search(text):
-            out.append(path)
-    return out
+    directly -- by AST, so an alias spelling (`os.getenv`, `environ[...]`, an aliased
+    `import os as o`) counts and a mention inside a docstring does not."""
+    return [REPO_ROOT / rel for rel, f in sorted(_repo_facts().items()) if f.reads_model_env]
 
 
 def _phi35_subprocess_inheritors(direct_readers: list[Path]) -> list[Path]:
     """A file need not read PHI35_MODEL itself to inherit the same silent-substitution
-    gap: spawning `sys.executable` against another script while handing it
-    `dict(os.environ)` passes that child whatever override is set with no code in the
-    parent ever naming PHI35_MODEL literally. Flagged only when the file also names one of
-    the direct readers by module stem (an import or a literal path), so an unrelated
-    subprocess call is not mistaken for this shape."""
-    reader_stems = {p.stem for p in direct_readers}
+    gap: spawning `sys.executable` against a model-bearing script while handing it the
+    parent environment passes that child whatever override is set, with no code in the
+    parent ever naming PHI35_MODEL. Reachability is closed to a FIXED POINT, so a wrapper
+    of a wrapper is included by construction rather than by luck of being one hop away."""
+    direct = {p.relative_to(REPO_ROOT).as_posix() for p in direct_readers}
+    facts = _repo_facts()
+    reached = _identity_audit.model_bearing_scripts(facts)
     out = []
-    for path in _iter_all_python_files():
-        if path in direct_readers:
+    for rel, f in sorted(facts.items()):
+        if rel in direct:
             continue
-        text = path.read_text(encoding="utf-8")
-        if not (_SUBPROCESS_SPAWNS_A_SCRIPT.search(text)
-                and _SUBPROCESS_INHERITS_FULL_ENV.search(text)):
-            continue
-        if any(stem in text for stem in reader_stems):
-            out.append(path)
+        for spawn in f.spawns:
+            named = [s for s in spawn.scripts if s in reached and reached[s] != rel]
+            if spawn.inherits_env and named:
+                out.append(REPO_ROOT / rel)
+                break
     return out
 
 
 def _writes_json_output(path: Path) -> bool:
-    return bool(_JSON_WRITE.search(path.read_text(encoding="utf-8")))
+    """Writes a JSON *record* -- a file on disk. `json.dumps(...)` printed to stdout is a
+    report, not an artifact anybody replays, and conflating the two is how the old regex
+    counted `print(json.dumps(doc))` as an evidence write."""
+    rel = path.relative_to(REPO_ROOT).as_posix()
+    return _repo_facts()[rel].writes_json_record
 
 
 def test_phi35_model_reader_discovery_is_repo_wide_not_bench_results_only():
@@ -3405,17 +3418,14 @@ def test_every_phi35_model_reader_that_writes_json_stamps_result_identity():
     reads PHI35_MODEL only to decide a pytest skip and never writes JSON itself, so it is
     exempt from this one; discovery still finds it above, it just is not a writer)."""
     readers = _phi35_model_direct_readers()
+    facts = _repo_facts()
     missing = []
     for path in readers:
-        if not _writes_json_output(path):
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        if not facts[rel].writes_json_record:
             continue
-        text = path.read_text(encoding="utf-8")
-        defines_own = (
-            "_result_identity" in text and '"onnx_file"' in text and '"onnx_sha256"' in text
-        )
-        imports_one = bool(re.search(r'import[^\n]*\b_result_identity\b', text))
-        if not (defines_own or imports_one):
-            missing.append(path.relative_to(REPO_ROOT).as_posix())
+        if not facts[rel].names_the_model:
+            missing.append(rel)
     assert not missing, (
         f"{len(missing)} PHI35_MODEL reader(s) write JSON but do not stamp "
         f"onnx_file/onnx_sha256: {missing}"
@@ -3432,36 +3442,49 @@ def test_phi35_model_subprocess_inheritors_are_discovered_and_stamp_result_ident
     and missed this wrapper would leave the exact gap Morpheus found standing."""
     readers = _phi35_model_direct_readers()
     inheritors = _phi35_subprocess_inheritors(readers)
+    facts = _repo_facts()
     names = {p.relative_to(REPO_ROOT).as_posix() for p in inheritors}
     assert "bench/results/probe_push_constants_written.py" in names, sorted(names)
+    # One of the two the regex screen walked past: it builds argv into a variable before
+    # spawning -- the exact shape Morpheus's rejection of PR #31 named.
+    assert "bench/results/probe_device_memory_kv.py" in names, sorted(names)
     missing = []
     for path in inheritors:
-        if not _writes_json_output(path):
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        if not facts[rel].writes_json_record:
             continue
-        text = path.read_text(encoding="utf-8")
-        if "_result_identity" not in text:
-            missing.append(path.relative_to(REPO_ROOT).as_posix())
+        if not facts[rel].names_the_model:
+            missing.append(rel)
     assert not missing, (
-        f"{len(missing)} subprocess-inheritor(s) write JSON but never reference "
-        f"_result_identity: {missing}"
+        f"{len(missing)} subprocess-inheritor(s) write JSON but never name the model: "
+        f"{missing}"
     )
 
 
 def test_every_archival_phi35_probe_reuses_the_shared_hasher():
     """The stamping helper must reuse `model_provenance.sha256_of` (already a streaming
     SHA-256, already exercised by tests/ops/test_small_model_provenance.py) rather than
-    each reader/inheritor defining its own divergent hasher for this field. Scoped to
-    files that define `_result_identity()` themselves (an importer of another module's
-    helper has nothing local to check here)."""
+    each reader/inheritor defining its own divergent hasher for this field.
+
+    Scoped by AST to files that DEFINE `_result_identity()` themselves. A file that only
+    PROPAGATES a child's identity (rust/tools/device_loss_gate.py's `gate_identity`,
+    bench/results/probe_device_memory_kv.py's `lane_identity`) must NOT re-hash: the child
+    is the process that opened the file, so its hash is the hash of the bytes that were
+    actually executed, not of whatever is at that path once the parent finishes. Scoping
+    this by source text -- the previous spelling -- also caught any file that merely
+    MENTIONED `_result_identity` in a comment, which is the same defect as the regex
+    discovery this suite replaced."""
+    facts = _repo_facts()
     readers = _phi35_model_direct_readers()
     inheritors = _phi35_subprocess_inheritors(readers)
-    missing = [
-        p.relative_to(REPO_ROOT).as_posix()
-        for p in (*readers, *inheritors)
-        if "_result_identity" in (text := p.read_text(encoding="utf-8"))
-        and '"onnx_file"' in text
-        and "_model_provenance.sha256_of" not in text
-    ]
+    missing = []
+    for p in (*readers, *inheritors):
+        rel = p.relative_to(REPO_ROOT).as_posix()
+        if not facts[rel].defines_result_identity:
+            continue
+        text = p.read_text(encoding="utf-8")
+        if '"onnx_file"' in text and "_model_provenance.sha256_of" not in text:
+            missing.append(rel)
     assert not missing, (
         f"{len(missing)} file(s) define _result_identity and stamp a hash without "
         f"reusing model_provenance.sha256_of: {missing}"
@@ -3583,6 +3606,425 @@ def test_live_phi35_tools_still_fail_loud_on_an_unresolvable_model():
         text = path.read_text(encoding="utf-8")
         assert "except _foundry_discovery.FoundryDiscoveryError as exc:" in text
         assert "ERROR(instrument): Phi-3.5 model not resolvable" in text
+
+
+# ---------------------------------------------------------------------------
+# The semantic audit itself (ci/phi35_identity_audit.py) -- independent revision of PR #31
+# after rejection (Tank, 2026-08-05).
+#
+# The arms below are PLANTED: each one is the smallest source that carries a shape, so a
+# green here says the rule fires on the shape rather than on the repository happening to
+# be clean today. The two shapes the rejected regex walked past are replayed first, and
+# every one of them is checked BOTH ways -- the old pattern must miss it and the audit
+# must catch it -- because "the new screen is green" is also what the broken screen said.
+# ---------------------------------------------------------------------------
+
+#: The exact pattern that shipped in the rejected revision, kept only as a control.
+_REJECTED_INLINE_ONLY_REGEX = re.compile(r'subprocess\.run\(\s*\[\s*sys\.executable')
+
+_PLANTED_READER = '''\
+import json, os, pathlib, sys
+ONNX_FILE = pathlib.Path(os.environ.get("PHI35_MODEL", "default.onnx"))
+def _result_identity():
+    return {"onnx_file": str(ONNX_FILE), "onnx_sha256": _model_provenance.sha256_of(ONNX_FILE)}
+def main():
+    pathlib.Path("child.json").write_text(json.dumps({**{}, **_result_identity()}))
+'''
+
+
+def _plant(**sources: str) -> dict:
+    """Analyze planted sources with the production analyzer, keyed by relative path."""
+    return {
+        rel.replace("__", "/") + ".py": _identity_audit.analyze_source(
+            rel.replace("__", "/") + ".py", src
+        )
+        for rel, src in sources.items()
+    }
+
+
+def test_planted_variable_built_argv_is_caught_and_the_rejected_regex_misses_it():
+    """THE rejection finding. `cmd = [sys.executable, str(PROBE), ...]` then
+    `subprocess.run(cmd, env=env)` is the shape both rust/tools/device_loss_gate.py and
+    bench/results/probe_device_memory_kv.py actually use, and the inline-only regex
+    cannot see it. Both halves are asserted: the old pattern misses, the audit catches."""
+    spawner = '''\
+import json, os, pathlib, subprocess, sys
+PROBE = pathlib.Path(__file__).parent / "probe_reader.py"
+def go():
+    env = dict(os.environ)
+    cmd = [sys.executable, str(PROBE), "--out", "x.json"]
+    subprocess.run(cmd, env=env, capture_output=True)
+    pathlib.Path("gate.json").write_text(json.dumps({"reps": 1}))
+'''
+    assert not _REJECTED_INLINE_ONLY_REGEX.search(spawner), (
+        "the planted source must be one the REJECTED regex misses, or this arm proves "
+        "nothing about the defect"
+    )
+    facts = _plant(probe_reader=_PLANTED_READER, tools__gate=spawner)
+    violations, found = _identity_audit.violations_in(facts)
+    assert "tools/gate.py" in found, found
+    assert [v.rel for v in violations] == ["tools/gate.py"], found
+
+
+def test_planted_inline_argv_is_still_caught_after_the_regex_is_gone():
+    """The shape the old regex DID catch must not regress: replacing a screen is only an
+    improvement if it still covers what the old one covered."""
+    spawner = '''\
+import json, os, pathlib, subprocess, sys
+def go():
+    subprocess.run([sys.executable, "probe_reader.py"], env=dict(os.environ))
+    pathlib.Path("wrap.json").write_text(json.dumps({"n": 1}))
+'''
+    assert _REJECTED_INLINE_ONLY_REGEX.search(spawner)
+    facts = _plant(probe_reader=_PLANTED_READER, wrap=spawner)
+    violations, found = _identity_audit.violations_in(facts)
+    assert "wrap.py" in found
+    assert [v.rel for v in violations] == ["wrap.py"]
+
+
+@pytest.mark.parametrize("env_kwarg, why", [
+    ("env=env", "environment copied into a variable first"),
+    ("env=os.environ.copy()", "the .copy() spelling `dict(os.environ)` never matched"),
+    ("env=dict(os.environ)", "the one spelling the old screen knew"),
+    ("", "NO env= at all -- the child inherits everything, the strongest case, which the "
+         "old screen scored as no inheritance"),
+])
+def test_planted_env_inheritance_spellings_all_count_as_inheritance(env_kwarg, why):
+    spawner = f'''\
+import json, os, pathlib, subprocess, sys
+def go():
+    env = dict(os.environ)
+    cmd = [sys.executable, "probe_reader.py"]
+    subprocess.run(cmd, {env_kwarg})
+    pathlib.Path("w.json").write_text(json.dumps({{"n": 1}}))
+'''
+    facts = _plant(probe_reader=_PLANTED_READER, w=spawner)
+    violations, _ = _identity_audit.violations_in(facts)
+    assert [v.rel for v in violations] == ["w.py"], why
+
+
+def test_planted_env_explicitly_scrubbed_is_not_inheritance():
+    """The other polarity: a child handed a hand-built environment does NOT inherit
+    PHI35_MODEL, and calling that a violation would make the screen cry wolf until it is
+    switched off."""
+    spawner = '''\
+import json, os, pathlib, subprocess, sys
+def go():
+    subprocess.run([sys.executable, "probe_reader.py"], env={"PATH": os.environ["PATH"]})
+    pathlib.Path("w.json").write_text(json.dumps({"n": 1}))
+'''
+    facts = _plant(probe_reader=_PLANTED_READER, w=spawner)
+    violations, found = _identity_audit.violations_in(facts)
+    assert "w.py" not in found, found
+    assert not violations
+
+
+@pytest.mark.parametrize("read_line", [
+    'M = os.environ.get("PHI35_MODEL", "d.onnx")',
+    'M = os.environ["PHI35_MODEL"]',
+    'M = os.getenv("PHI35_MODEL", "d.onnx")',
+])
+def test_planted_direct_read_alias_spellings_are_all_discovered(read_line):
+    """`os.environ.get(...)` was the only spelling the old regex knew. Subscript and
+    `os.getenv` read the same variable and were invisible."""
+    src = f'''\
+import json, os, pathlib
+{read_line}
+def go():
+    pathlib.Path("o.json").write_text(json.dumps({{"m": M}}))
+'''
+    facts = _plant(r=src)
+    violations, found = _identity_audit.violations_in(facts)
+    assert "r.py" in found, found
+    assert [v.rel for v in violations] == ["r.py"]
+
+
+@pytest.mark.parametrize("preamble, read_line", [
+    ("import os as o", 'M = o.environ.get("PHI35_MODEL", "d.onnx")'),
+    ("from os import environ", 'M = environ.get("PHI35_MODEL", "d.onnx")'),
+    ("from os import getenv", 'M = getenv("PHI35_MODEL", "d.onnx")'),
+    ("from os import environ as E", 'M = E["PHI35_MODEL"]'),
+])
+def test_planted_import_alias_variants_are_discovered(preamble, read_line):
+    """Import aliasing defeats any pattern anchored on the literal text `os.environ`."""
+    src = f'''\
+import json, pathlib
+{preamble}
+{read_line}
+def go():
+    pathlib.Path("o.json").write_text(json.dumps({{"m": M}}))
+'''
+    facts = _plant(r=src)
+    violations, _ = _identity_audit.violations_in(facts)
+    assert [v.rel for v in violations] == ["r.py"], read_line
+
+
+def test_planted_child_output_field_discarding_is_the_violation_not_the_absence_of_a_read():
+    """bench/results/probe_device_memory_kv.py's exact shape: it READ the child record --
+    it takes its byte totals from there -- and dropped `onnx_file`/`onnx_sha256` while
+    writing its own. Having the identity in hand and discarding it is the failure; the
+    fixed shape, which copies those two fields through, is clean."""
+    discards = '''\
+import json, os, pathlib, subprocess, sys
+def go():
+    cmd = [sys.executable, "probe_reader.py", "--out", "c.json"]
+    env = dict(os.environ)
+    subprocess.run(cmd, env=env)
+    record = json.loads(pathlib.Path("c.json").read_text())
+    pathlib.Path("mine.json").write_text(json.dumps({"bytes": record["bytes"]}))
+'''
+    propagates = '''\
+import json, os, pathlib, subprocess, sys
+def go():
+    cmd = [sys.executable, "probe_reader.py", "--out", "c.json"]
+    env = dict(os.environ)
+    subprocess.run(cmd, env=env)
+    record = json.loads(pathlib.Path("c.json").read_text())
+    ident = {"onnx_file": record.get("onnx_file"), "onnx_sha256": record.get("onnx_sha256")}
+    pathlib.Path("mine.json").write_text(json.dumps({"bytes": record["bytes"], **ident}))
+'''
+    bad = _plant(probe_reader=_PLANTED_READER, mine=discards)
+    good = _plant(probe_reader=_PLANTED_READER, mine=propagates)
+    assert [v.rel for v in _identity_audit.violations_in(bad)[0]] == ["mine.py"]
+    assert not _identity_audit.violations_in(good)[0]
+
+
+def test_a_json_report_printed_to_stdout_is_not_an_evidence_record():
+    """`print(json.dumps(doc))` leaves nothing behind to be replayed or contradicted, and
+    counting it as a record write is how a screen accumulates the false positives that get
+    it deleted. Only a write to a file is an artifact."""
+    prints_only = '''\
+import json, os
+M = os.environ.get("PHI35_MODEL", "d.onnx")
+def go():
+    print(json.dumps({"m": M}))
+'''
+    facts = _plant(p=prints_only)
+    _, found = _identity_audit.violations_in(facts)
+    assert "p.py" not in found, found
+
+
+def test_the_audit_does_not_match_source_that_only_describes_the_defect():
+    """The rejected regex matched the text of its own pattern, so a file could be
+    'discovered' for DESCRIBING the defect rather than containing it.
+
+    Arm 1 re-analyzes ci/phi35_identity_audit.py under an invented path -- which takes its
+    declared exclusion out of play -- and it must be clean: every occurrence of the shapes
+    it hunts is prose or a string, and prose is not code.
+
+    Arm 2 plants a file whose entire body is a docstring plus a string constant holding a
+    perfect copy of a violating program. A screen over source text calls that a violation;
+    an analyzer over the tree sees a string.
+
+    ci/test_lane_checks.py itself is deliberately NOT asserted clean here: unlike the
+    audit module it really does read PHI35_MODEL (the functional override arms above set
+    and restore it) and really does write JSON files (synthetic registers in tmp_path), so
+    it is a declared exclusion with a stated reason rather than a file that happens to
+    look innocent."""
+    audit_src = (CI_DIR / "phi35_identity_audit.py").read_text(encoding="utf-8")
+    facts = {"elsewhere/copy_of_audit.py": _identity_audit.analyze_source(
+        "elsewhere/copy_of_audit.py", audit_src)}
+    _, found = _identity_audit.violations_in(facts)
+    assert not found, f"the audit reported source that only DESCRIBES the defect: {found}"
+
+    prose_only = '"""' + "\n" + _PLANTED_READER + '\n"""\n' + "SAMPLE = " + repr(
+        'import os, json, pathlib, subprocess, sys\n'
+        'M = os.environ.get("PHI35_MODEL", "d.onnx")\n'
+        'pathlib.Path("o.json").write_text(json.dumps({"m": M}))\n'
+    ) + "\n"
+    _, found_prose = _identity_audit.violations_in(_plant(doc=prose_only))
+    assert not found_prose, found_prose
+
+    assert "ci/test_lane_checks.py" in _identity_audit.NOT_A_PRODUCER
+
+    # ...while the same shape planted as real code IS reported, so the arms above are not
+    # green merely because the analyzer reports nothing at all.
+    planted = _plant(probe_reader=_PLANTED_READER, real=(
+        'import json, os, pathlib, subprocess, sys\n'
+        'def go():\n'
+        '    cmd = [sys.executable, "probe_reader.py"]\n'
+        '    subprocess.run(cmd, env=dict(os.environ))\n'
+        '    pathlib.Path("r.json").write_text(json.dumps({"n": 1}))\n'
+    ))
+    assert [v.rel for v in _identity_audit.violations_in(planted)[0]] == ["real.py"]
+
+
+def test_reachability_is_a_fixed_point_not_one_hop():
+    """A wrapper of a wrapper. The old screen looked exactly one hop from a direct reader,
+    and the two files it missed happened to be one hop away -- which made a hard limit look
+    like a scoping decision. Two hops must be reported."""
+    mid = '''\
+import json, os, pathlib, subprocess, sys
+def go():
+    cmd = [sys.executable, "probe_reader.py"]
+    subprocess.run(cmd, env=dict(os.environ))
+    pathlib.Path("mid.json").write_text(json.dumps({"onnx_file": "x", "onnx_sha256": "y"}))
+'''
+    outer = '''\
+import json, os, pathlib, subprocess, sys
+def go():
+    cmd = [sys.executable, "mid.py"]
+    subprocess.run(cmd, env=dict(os.environ))
+    pathlib.Path("outer.json").write_text(json.dumps({"n": 1}))
+'''
+    facts = _plant(probe_reader=_PLANTED_READER, mid=mid, outer=outer)
+    violations, found = _identity_audit.violations_in(facts)
+    assert "outer.py" in found, found
+    assert [v.rel for v in violations] == ["outer.py"]
+
+
+def test_the_pre_fix_shape_of_device_loss_gate_is_reported():
+    """REPLAYED: `rust/tools/device_loss_gate.py` as it stood at 60f0ae7 -- reduced to the
+    lines that carry the shape, verbatim in structure: build env, build cmd, spawn the
+    model-bearing probe, read the child's record for counters, write the gate record with
+    no identity in it."""
+    pre_fix = '''\
+import json, os, pathlib, subprocess, sys, time
+REPO = pathlib.Path(__file__).resolve().parent.parent.parent
+PROBE = REPO / "bench" / "results" / "probe_reader.py"
+def one_rep(i, steps, lane):
+    env = dict(os.environ)
+    env["ONNXRUNTIME_VULKAN_EP_LIB"] = "x"
+    cmd = [sys.executable, str(PROBE), "--worker", "--steps", str(steps)]
+    proc = subprocess.run(cmd, env=env, capture_output=True)
+    doc = json.loads(pathlib.Path("rep.json").read_text())
+    return {"rep": i, "exit_code": proc.returncode, "steps_recorded": len(doc["per_step"])}
+def main():
+    reps = [one_rep(i, 2, "resident") for i in range(8)]
+    doc = {"gate": "device_loss_gate", "reps": reps}
+    (REPO / "bench" / "results" / "device_loss_gate.json").write_text(json.dumps(doc, indent=2))
+'''
+    facts = _plant(probe_reader=_PLANTED_READER, rust__tools__gate=pre_fix)
+    violations, found = _identity_audit.violations_in(facts)
+    assert [v.rel for v in violations] == ["rust/tools/gate.py"], found
+    assert "argv from variable:cmd" in found["rust/tools/gate.py"]
+
+
+def test_the_real_source_tree_has_no_unattributed_phi35_evidence_producer():
+    """LIVE: the whole repository, by AST. This is the arm that actually gates the lane;
+    every planted arm above exists to show that a green here is a fact about the tree and
+    not about the screen being blind."""
+    violations, found, _ = _identity_audit.audit(REPO_ROOT)
+    assert not violations, "\n".join(f"{v.rel}: {v.why} ({v.reached_via})" for v in violations)
+    assert len(found) >= 25, (
+        f"the audit found only {len(found)} producer(s); a discovery set that shrank is "
+        f"how a screen goes quiet without anyone deciding it should: {sorted(found)}"
+    )
+
+
+def test_the_two_tools_named_in_the_rejection_now_name_their_model():
+    """The specific files Morpheus's rejection named must be discovered as producers by
+    the audit AND must name the model. Named literally so a future refactor that stops
+    reaching them fails here rather than reporting a smaller clean set."""
+    violations, found, facts = _identity_audit.audit(REPO_ROOT)
+    for rel in ("rust/tools/device_loss_gate.py", "bench/results/probe_device_memory_kv.py"):
+        assert rel in found, sorted(found)
+        assert facts[rel].names_the_model, rel
+    assert not violations
+
+
+def test_the_two_fixed_tools_record_an_explicit_identity_error_rather_than_a_blank():
+    """A success path that writes `onnx_file: null` and says nothing else is worse than no
+    field at all: it looks stamped. Both tools must carry an explicit
+    `onnx_identity_error` on every path where the identity could not be established, and
+    the gate must exit non-zero rather than publish an unattributable rate."""
+    gate = (REPO_ROOT / "rust" / "tools" / "device_loss_gate.py").read_text(encoding="utf-8")
+    kv = (REPO_ROOT / "bench" / "results" / "probe_device_memory_kv.py").read_text(
+        encoding="utf-8")
+    for text, name in ((gate, "device_loss_gate.py"), (kv, "probe_device_memory_kv.py")):
+        assert "onnx_identity_error" in text, name
+        assert "child_record_carried_no_model_identity" in text, name
+    assert "ERROR(instrument=model_identity_unknown)" in gate
+    assert "children_disagree" in gate
+    assert "the lanes consumed different models" in kv
+
+
+def test_device_loss_gate_propagates_one_identity_and_refuses_disagreement():
+    """FUNCTIONAL: the gate's aggregation rule, exercised directly. Repetitions of two
+    different models do not pool into one loss rate, and saying so in the record is the
+    only thing that makes the pooling falsifiable."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "device_loss_gate_under_test", REPO_ROOT / "rust" / "tools" / "device_loss_gate.py")
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)  # type: ignore[union-attr]
+
+    agreed = gate.gate_identity([
+        {"onnx_file": "m.onnx", "onnx_sha256": "aa"},
+        {"onnx_file": "m.onnx", "onnx_sha256": "aa"},
+    ])
+    assert agreed == {"onnx_file": "m.onnx", "onnx_sha256": "aa"}
+
+    disagreed = gate.gate_identity([
+        {"onnx_file": "m.onnx", "onnx_sha256": "aa"},
+        {"onnx_file": "other.onnx", "onnx_sha256": "bb"},
+    ])
+    assert "children_disagree" in disagreed["onnx_identity_error"]
+    assert disagreed["onnx_file"] is None
+    assert len(disagreed["onnx_identities_seen"]) == 2
+
+    silent = gate.gate_identity([{"rep": 0}, {"rep": 1}])
+    assert silent["onnx_file"] is None
+    assert "no_child_record_named_a_model" in silent["onnx_identity_error"]
+
+
+def test_device_memory_kv_refuses_lanes_that_measured_different_models():
+    """FUNCTIONAL: the two lanes differ by exactly one environment variable on purpose. If
+    they also differ by the model, the readback-slope delta is not a measurement of the
+    flag -- the same argument the existing DLL check makes about the binary."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "probe_device_memory_kv_under_test",
+        REPO_ROOT / "bench" / "results" / "probe_device_memory_kv.py")
+    kv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kv)  # type: ignore[union-attr]
+
+    lanes_same = [
+        {"identity": {"onnx_file": "m.onnx", "onnx_sha256": "aa"}},
+        {"identity": {"onnx_file": "m.onnx", "onnx_sha256": "aa"}},
+    ]
+    assert kv.agreed_identity(lanes_same, ran_lanes=True) == {
+        "onnx_file": "m.onnx", "onnx_sha256": "aa"}
+
+    lanes_differ = [
+        {"identity": {"onnx_file": "m.onnx", "onnx_sha256": "aa"}},
+        {"identity": {"onnx_file": "other.onnx", "onnx_sha256": "bb"}},
+    ]
+    with pytest.raises(SystemExit) as exc:
+        kv.agreed_identity(lanes_differ, ran_lanes=True)
+    assert "different models" in str(exc.value)
+
+    # A live run that produced no identity at all is an instrument fault, not a record.
+    with pytest.raises(SystemExit):
+        kv.agreed_identity([{"identity": kv.lane_identity({})}], ran_lanes=True)
+
+    # --reuse of records written before stamping says so instead of inventing one.
+    reused = kv.agreed_identity([{"identity": kv.lane_identity({})}], ran_lanes=False)
+    assert "reused_records_named_no_model" in reused["onnx_identity_error"]
+    assert reused["onnx_file"] is None
+
+
+def test_the_audit_fails_loud_on_an_unparseable_source_instead_of_skipping_it():
+    """A file the analyzer cannot parse is an instrument outage, not a clean file. Silently
+    skipping it is how a screen reports green over the one file nobody could read."""
+    with pytest.raises(_identity_audit.AuditError):
+        _identity_audit.analyze_source("broken.py", "def (:\n")
+
+
+def test_the_one_record_derived_reader_propagates_the_gate_identity():
+    """The audit's stated limit, backed by a check rather than left as a caveat.
+    bench/results/probe_lane_logits_identity.py is derived entirely from the device-loss
+    gate's record -- a relation this module does not screen for -- so its propagation is
+    asserted here explicitly. A derived comparison that cannot name its model is exactly as
+    unfalsifiable as an undeclared one."""
+    text = (REPO_ROOT / "bench" / "results" / "probe_lane_logits_identity.py").read_text(
+        encoding="utf-8")
+    assert 'doc["onnx_file"] = rec.get("onnx_file")' in text
+    assert 'doc["onnx_sha256"] = rec.get("onnx_sha256")' in text
+    assert "source_record_named_no_model" in text
+    assert "STATED LIMITS" in (CI_DIR / "phi35_identity_audit.py").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
