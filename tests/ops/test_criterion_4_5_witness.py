@@ -228,6 +228,13 @@ def test_criterion4_icd_polarity_witness() -> None:
     """
     link = _load_link_classifier()
     lib = Path(os.environ["ONNXRUNTIME_VULKAN_EP_LIB"]).resolve()
+    # Morpheus's Blocker 2 (PR #45): a High-integrity process is exactly the condition
+    # under which every env-var arm below is silently dropped by the loader (this file's
+    # own root-cause comment, `is_high_integrity()`/`loader_secure_getenv`), so an env
+    # arm's apparent success there would be indistinguishable from `registry_disable`'s —
+    # except that only one of them is actually trustworthy under those conditions. Stamped
+    # into the payload and checked below once `suppression_mechanism` is known.
+    high_integrity_process = _registry_suppression.is_high_integrity()
 
     nonexistent = str(REPO / "does_not_exist" / "no_such_icd.json")
     # Three ways to take the ICD away, tried in order.  They are neutralised by different
@@ -365,6 +372,7 @@ def test_criterion4_icd_polarity_witness() -> None:
         "negative_control_fired": neg["icd_suppression_state"] == link.STATE_SUPPRESSED,
         "suppression_mechanism": neg.get("suppression_mechanism"),
         "suppression_attempts": suppression_attempts,
+        "high_integrity_process": high_integrity_process,
         "classifier": "ci/check_icd_suppression.py::classify (Link's; not re-implemented)",
         "rows": records,
         "no_duration_quoted": (
@@ -396,6 +404,28 @@ def test_criterion4_icd_polarity_witness() -> None:
             "step writes to (HKLM\\SOFTWARE\\Khronos\\Vulkan\\Drivers) was not writable "
             "or not found — see its `mechanism_unavailable` detail.\n"
             f"artifact: {path}"
+        )
+
+    # ── 1.5. On a High-integrity process, only `registry_disable` is trustworthy
+    #        evidence — Morpheus's Blocker 2 (PR #45). Every env-var arm above is read
+    #        through `loader_secure_getenv`, which this file's own root-cause comment
+    #        proves returns NULL whenever `is_high_integrity()` is true; an env arm that
+    #        nonetheless reported STATE_SUPPRESSED there would be a false positive this
+    #        project cannot distinguish from a real one without this check. ───────────
+    if high_integrity_process and neg.get("suppression_mechanism") != "registry_disable":
+        raise _verdict.InstrumentError(
+            "[criterion 4 instrument failure] ERROR(instrument): this process is "
+            "High integrity (is_high_integrity() == True), so every VK_* env var arm "
+            "is silently dropped by the loader's own loader_secure_getenv gate — yet the "
+            f"arm that reported suppressed was {neg.get('suppression_mechanism')!r}, not "
+            "'registry_disable'. That is not trustworthy evidence: either the "
+            "high-integrity detection is wrong, or an env arm coincidentally looked "
+            "suppressed for an unrelated reason. Only 'registry_disable' is proven not "
+            "to be gated by process integrity (LoaderDriverInterface.md, 'regardless of "
+            "elevation').\n"
+            "attempts: "
+            + "; ".join(f"{a['mechanism']}={a['state']}" for a in suppression_attempts)
+            + f"\nartifact: {path}"
         )
 
     # ── 2. And it is not a constant.  Same classifier, other input, other token. ─────

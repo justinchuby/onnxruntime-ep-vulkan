@@ -101,6 +101,107 @@ KEY_PATH_EXPLICIT_LAYERS = r"SOFTWARE\Khronos\Vulkan\ExplicitLayers"
 #: and an unrelated layer with a similar filename is not.
 VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation"
 
+#: Windows' own threshold for "this process token counts as elevated"
+#: (``SECURITY_MANDATORY_HIGH_RID``, ``winnt.h``) -- the exact constant the Vulkan
+#: loader's own ``is_high_integrity()`` in ``loader_environment.c`` compares against
+#: (see this module's docstring for the citation).
+SECURITY_MANDATORY_HIGH_RID = 0x3000
+
+_TOKEN_QUERY = 0x0008
+_TOKEN_INTEGRITY_LEVEL = 25  # TOKEN_INFORMATION_CLASS.TokenIntegrityLevel (winnt.h)
+
+
+def is_high_integrity() -> bool:
+    """True if this process's own token integrity level is >= High (Windows only).
+
+    This is the exact gate the Vulkan loader's ``loader_secure_getenv`` checks (module
+    docstring, "THE PROVEN ROOT CAUSE"): a process at High integrity or above has every
+    ``VK_*`` env var this project's negative controls try silently dropped by the
+    loader. A caller trying several suppression arms must not accept an env-var arm's
+    apparent success as evidence on a High-integrity process -- only ``registry_disable``
+    (not gated by ``is_high_integrity()`` at all) is trustworthy there; this function is
+    how a caller detects that it must require exactly that arm.
+
+    Returns ``False`` on any non-Windows platform (the concept does not apply there, and
+    this project's env-var arms are not known to be gated the same way on Linux).
+    Raises ``OSError`` (via ``ctypes.WinError``) if the underlying Win32 token calls
+    themselves fail on Windows -- silently returning ``False`` on a real failure would
+    let an env-var arm's accidental "success" pass the very acceptance check this
+    function exists to close.
+    """
+    if sys.platform != "win32":
+        return False
+    import ctypes  # noqa: PLC0415 — Windows-only import, guarded above
+    from ctypes import wintypes  # noqa: PLC0415
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Explicit argtypes/restype throughout: ctypes' default int-sized argument guessing
+    # silently truncates the 64-bit HANDLE values these calls pass on x64, which raised
+    # `OverflowError: int too long to convert` here before these were added.
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetSidSubAuthorityCount.restype = ctypes.c_void_p
+    advapi32.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
+    advapi32.GetSidSubAuthority.restype = ctypes.c_void_p
+    advapi32.GetSidSubAuthority.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+
+    h_token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(), _TOKEN_QUERY, ctypes.byref(h_token)
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        size = wintypes.DWORD(0)
+        advapi32.GetTokenInformation(h_token, _TOKEN_INTEGRITY_LEVEL, None, 0, ctypes.byref(size))
+        if size.value == 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buf = ctypes.create_string_buffer(size.value)
+        if not advapi32.GetTokenInformation(
+            h_token, _TOKEN_INTEGRITY_LEVEL, buf, size, ctypes.byref(size)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        # TOKEN_MANDATORY_LABEL is { SID_AND_ATTRIBUTES Label }; Label.Sid is the first
+        # pointer-sized field of the returned buffer.
+        sid = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]
+        sub_authority_count_ptr = advapi32.GetSidSubAuthorityCount(sid)
+        sub_authority_count = ctypes.cast(sub_authority_count_ptr, ctypes.POINTER(ctypes.c_ubyte))[0]
+        rid_ptr = advapi32.GetSidSubAuthority(sid, sub_authority_count - 1)
+        rid = ctypes.cast(rid_ptr, ctypes.POINTER(wintypes.DWORD))[0]
+        return rid >= SECURITY_MANDATORY_HIGH_RID
+    finally:
+        kernel32.CloseHandle(h_token)
+
+
+def _hive_label(hive: int) -> str:
+    """Best-effort short name for a registry hive constant, for error messages only.
+
+    Only ever called after a caller's own ``import winreg`` has already succeeded (the
+    platform guard has already run), so this does not need its own guard.
+    """
+    import winreg  # noqa: PLC0415
+
+    return {
+        winreg.HKEY_LOCAL_MACHINE: "HKLM",
+        winreg.HKEY_CURRENT_USER: "HKCU",
+    }.get(hive, hex(hive))
+
 
 def _manifest_declares_validation_layer(manifest_path: str) -> bool:
     """True if the JSON at ``manifest_path`` declares ``VK_LAYER_KHRONOS_validation``.
@@ -121,25 +222,34 @@ def _manifest_declares_validation_layer(manifest_path: str) -> bool:
 
 
 @contextlib.contextmanager
-def _open_key_all_access(key_path: str):
-    """Open ``HKEY_LOCAL_MACHINE\\key_path`` for read/write, or raise unavailable."""
+def _open_key_all_access(key_path: str, *, hive: "int | None" = None):
+    """Open ``hive\\key_path`` for read/write, or raise unavailable.
+
+    ``hive`` defaults to ``HKEY_LOCAL_MACHINE`` -- the only hive the production
+    suppression wrappers (``suppress_icd_registry``, ``suppress_validation_layer_registry``)
+    ever pass, since that is where the Vulkan loader actually looks. Tests needing a
+    real round trip writable without elevation pass ``hive=winreg.HKEY_CURRENT_USER``
+    against a disposable scratch key; production code never supplies this parameter.
+    """
     if sys.platform != "win32":
         raise RegistryMechanismUnavailable(
             f"registry-based suppression only applies on Windows (platform={sys.platform!r})"
         )
     import winreg  # noqa: PLC0415 — Windows-only import, guarded above
 
+    resolved_hive = winreg.HKEY_LOCAL_MACHINE if hive is None else hive
+    label = _hive_label(resolved_hive)
     try:
         key = winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_ALL_ACCESS | winreg.KEY_WOW64_64KEY
+            resolved_hive, key_path, 0, winreg.KEY_ALL_ACCESS | winreg.KEY_WOW64_64KEY
         )
     except FileNotFoundError as exc:
         raise RegistryMechanismUnavailable(
-            f"HKLM\\{key_path} does not exist — nothing is registered there to suppress"
+            f"{label}\\{key_path} does not exist — nothing is registered there to suppress"
         ) from exc
     except PermissionError as exc:
         raise RegistryMechanismUnavailable(
-            f"no write access to HKLM\\{key_path} (need admin rights on this machine); "
+            f"no write access to {label}\\{key_path} (need admin rights on this machine); "
             "the environment-variable arms are the fallback here"
         ) from exc
     try:
@@ -150,9 +260,12 @@ def _open_key_all_access(key_path: str):
 
 @contextlib.contextmanager
 def suppress_registry_entries(
-    key_path: str, *, name_filter: "callable[[str], bool] | None" = None
+    key_path: str,
+    *,
+    name_filter: "callable[[str], bool] | None" = None,
+    hive: "int | None" = None,
 ) -> "Iterator[list[str]]":
-    """Temporarily set matching HKLM registry driver/layer values to disabled (1).
+    """Temporarily set matching registry driver/layer values to disabled (1).
 
     ``name_filter`` receives each value name (a manifest path) and decides whether that
     entry should be disabled; ``None`` disables every DWORD value under the key (used for
@@ -160,6 +273,10 @@ def suppress_registry_entries(
     entry). Restoration is unconditional (``finally``) and verified by reading each value
     back; a value that fails to restore raises loudly rather than leaving the runner's
     Vulkan registration mutated for whatever runs after this test.
+
+    ``hive`` defaults to ``HKEY_LOCAL_MACHINE`` (production's only hive; see
+    ``_open_key_all_access``). Tests pass ``winreg.HKEY_CURRENT_USER`` against a scratch
+    key to exercise the real enumerate/disable/restore cycle without elevation.
 
     Raises ``RegistryMechanismUnavailable`` (not ``_verdict.InstrumentError``) when the
     key is absent, unwritable, or matches nothing — callers trying several suppression
@@ -177,7 +294,10 @@ def suppress_registry_entries(
         )
     import winreg  # noqa: PLC0415 — Windows-only import, guarded immediately above
 
-    with _open_key_all_access(key_path) as key:
+    resolved_hive = winreg.HKEY_LOCAL_MACHINE if hive is None else hive
+    label = _hive_label(resolved_hive)
+
+    with _open_key_all_access(key_path, hive=resolved_hive) as key:
         originals: dict[str, tuple[int, int]] = {}
         index = 0
         while True:
@@ -194,7 +314,7 @@ def suppress_registry_entries(
 
         if not originals:
             raise RegistryMechanismUnavailable(
-                f"no matching DWORD value under HKLM\\{key_path} — nothing registered "
+                f"no matching DWORD value under {label}\\{key_path} — nothing registered "
                 "there for this mechanism to disable (checked "
                 f"{index} value(s) total)"
             )
@@ -214,7 +334,7 @@ def suppress_registry_entries(
             if failures:
                 raise RuntimeError(
                     "registry restoration FAILED after suppression — the runner's Vulkan "
-                    f"registration under HKLM\\{key_path} is left mutated: "
+                    f"registration under {label}\\{key_path} is left mutated: "
                     + "; ".join(failures)
                 )
 

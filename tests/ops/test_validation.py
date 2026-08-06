@@ -169,6 +169,23 @@ def _write_criterion3_artifact(record: dict) -> Path:
     return path
 
 
+def _write_criterion3d_artifact(record: dict) -> Path:
+    """Stamp the criterion-3d layer-removal witness (Morpheus's Blocker 2, PR #45): which
+    mechanism actually took the layer away, and whether this process was High integrity
+    at the time — the evidence a caller needs to confirm `registry_disable` (not an
+    env-var arm that the loader silently ignores under High integrity) is what suppressed
+    the layer on a High-integrity runner. This test previously wrote no artifact at all.
+    """
+    _RESULTS.mkdir(parents=True, exist_ok=True)
+    selector = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "unset")
+    path = _RESULTS / f"criterion3d_layer_witness-dev{selector}.json"
+    import json
+
+    path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"[CRITERION 3d] wrote {path}", file=sys.stderr)
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -683,6 +700,26 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
         f"{stripped_reason}"
     )
 
+    # Morpheus's Blocker 2 (PR #45): stamp which mechanism took AND whether this process
+    # was High integrity, into a real artifact — this test previously wrote no artifact
+    # at all, so a caller had no durable record of `mechanism` beyond stderr.
+    high_integrity_process = _registry_suppression.is_high_integrity()
+    artifact_path = _write_criterion3d_artifact(
+        {
+            "criterion": "3d",
+            "criterion_text": (
+                "The armed gate changes its answer when the validation layer is removed."
+            ),
+            "armed_state": armed_state,
+            "armed_reason": armed_reason,
+            "stripped_state": stripped_state,
+            "stripped_reason": stripped_reason,
+            "mechanism": mechanism,
+            "attempts": [{"mechanism": n, "state": s, "detail": d} for n, s, d in attempts],
+            "high_integrity_process": high_integrity_process,
+        }
+    )
+
     if stripped_state == _verdict.VALIDATION_ARMED:
         # Some loaders find the layer through registry entries VK_LAYER_PATH does not
         # override.  Then the simulation did not take, and this test has established
@@ -705,6 +742,24 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
             "project's own SDK install populates "
             "(HKLM\\SOFTWARE\\Khronos\\Vulkan\\ExplicitLayers) was not writable or the "
             "validation layer manifest was not found there — see its detail above."
+        )
+
+    # High-integrity requires registry_disable — Morpheus's Blocker 2 (PR #45). Same
+    # reasoning as criterion 4's analogous check: on a High-integrity process every
+    # env-var arm above is silently dropped by loader_secure_getenv, so an env arm's
+    # apparent success there is not trustworthy evidence.
+    if high_integrity_process and mechanism != "registry_disable":
+        raise _verdict.InstrumentError(
+            "[criterion 3d instrument failure] ERROR(instrument): this process is High "
+            "integrity (is_high_integrity() == True), so every VK_* env var arm is "
+            "silently dropped by the loader's own loader_secure_getenv gate — yet the "
+            f"arm that took was {mechanism!r}, not 'registry_disable'. That is not "
+            "trustworthy evidence: either the high-integrity detection is wrong, or an "
+            "env arm coincidentally looked like it took for an unrelated reason. Only "
+            "'registry_disable' is proven not to be gated by process integrity "
+            "(LoaderDriverInterface.md, 'regardless of elevation').\n"
+            + "\n".join(f"  {name}: {state} — {why}" for name, state, why in attempts)
+            + f"\nartifact: {artifact_path}"
         )
 
     # The gate must let the real frame through and refuse the stripped one.
