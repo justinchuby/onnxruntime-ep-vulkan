@@ -182,6 +182,42 @@ def _both_readers():
     return gen_proof_ledger, proof_retirement
 
 
+def _synthetic_pr_merge(tmp: Path) -> tuple[Path, str]:
+    """Build a repo whose HEAD is a GitHub-style two-parent `pull/N/merge` preview:
+    the current tip of `main` merged with a PR head, full history reachable from HEAD.
+
+    THIS IS ISSUE #28. A real `refs/pull/N/merge` ref is GitHub's synthetic merge of a PR
+    branch INTO THE CURRENT TIP OF THE BASE BRANCH, so its first parent is always exactly
+    whatever `origin/main` resolves to at fetch time. `git fetch --depth=1 origin main`,
+    run later in the same CI job for an unrelated lookup, grafts that exact commit —
+    regardless of the job's own `fetch-depth: 0` checkout already holding its full
+    history — because a depth-limited fetch marks its own boundary unconditionally. Since
+    the graft point is one of HEAD's own two parents, `git rev-parse
+    --is-shallow-repository` goes true for the WHOLE repository, not just that one ref.
+
+    Returns `(repo, main_tip)` so a caller can replay the exact poisoning fetch against
+    `main_tip` and prove two things at once: a genuine, unpoisoned synthetic merge is
+    OBSERVABLE and green (the merge shape itself is not the defect); the identical tree,
+    incidentally shallow-marked the way the real CI job shallow-marks it, is refused
+    rather than guessed at (the shallow guard is not weakened to accommodate the fix).
+    """
+    repo = _plant_repo(tmp, [["a"], ["a", "b"]])  # c1: [a]; c2 (main tip): [a, b]
+    main_tip = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    _git(["checkout", "-q", "-b", "prhead", "HEAD~1"], repo)
+    (repo / "evidence" / "proof_ledger.jsonl").write_text(
+        "".join(_entry(k) for k in ["a", "c"]), encoding="utf-8"
+    )
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "pr proves c"], repo)
+    pr_head = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    _git(["checkout", "-q", "main"], repo)
+    _git(
+        ["merge", "-q", "--no-ff", "--no-edit", "-m", f"Merge {pr_head} into {main_tip}", "prhead"],
+        repo,
+    )
+    return repo, main_tip
+
+
 def main() -> int:
     print("negative control: ci/check_ledger_census.py")
 
@@ -590,6 +626,32 @@ def main() -> int:
             "PLANTED",
             "but a proof dropped INSIDE a merge is still convicted after the scope fix",
             r.returncode == 1 and "proof_vanished" in r.stdout and "\n  - z\n" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # ISSUE #28: a valid `pull/N/merge` synthetic preview, distinguished from the same
+        # tree incidentally shallow-marked the way the real CI job shallow-marked it.
+        repo, main_tip = _synthetic_pr_merge(tmp / "14")
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "a genuine GitHub pull/N/merge preview (full history) is OBSERVABLE and green",
+            r.returncode == 0 and "0 VANISHED" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # The exact mechanism from the workflow: an UNRELATED depth-1 fetch of a ref that
+        # happens to be one of HEAD's own merge parents (`origin/main`'s tip is always the
+        # base parent of a real `pull/N/merge`). This must not become a false PASS: the
+        # census cannot tell that the graft is incidental, so it must still refuse to
+        # answer rather than trust a walk it cannot prove is complete.
+        _git(["fetch", "--no-tags", "--depth=1", repo.as_uri(), main_tip], repo)
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "issue #28: the SAME tree, shallow-marked by an unrelated fetch of its own "
+            "base parent, still refuses rather than guesses",
+            r.returncode == 2 and "SHALLOW" in r.stdout,
             f"exit={r.returncode}",
         )
 
