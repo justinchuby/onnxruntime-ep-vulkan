@@ -5006,6 +5006,108 @@ treated as `UNMEASURED` until a positive control or a differential comparison co
 is criterion 3's ruling (§10 M0) and §7.9 rule 1, applied a third time, on the execution path
 rather than on the validation layer or the capability probe.
 
+#### 9.1.4 Model discovery must never guess, and provenance must be a contract, not prose (issue #11)
+
+`tests/ops/test_phi35.py` hardcoded the Foundry Local cache path for Phi-3.5-mini:
+`Microsoft\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32\...`. By 2026-08-05 the real
+cache held the same model at `Microsoft\Phi-3.5-mini-instruct-cuda-gpu-2\v2\...` — Foundry's own
+on-disk naming is versioned by its CLI's internal catalog revision, which is not something this
+repo controls or is notified of. Nothing in the test noticed; the fixture just skipped, and the
+day's investigation ended with a manually-created directory junction bridging the two paths as a
+workaround. A hand-made junction that papers over a version mismatch is exactly the kind of
+undocumented, single-machine fix that reappears as a mystery the next time someone clones the
+repo, and it is now deleted — the discovery mechanism below finds the real path without it.
+
+**The fix is `rust/tools/foundry_discovery.py`, and its one rule is that it is never allowed to
+guess.** `resolve_model_path(spec)` tries the Foundry CLI's own bookkeeping first —
+`foundry cache list --verbose --variants -o json`, which reports `variantName`,
+`executionProvider`, `cached`, and `cachePath` per cached variant — and falls back to a
+constrained filesystem search only if the CLI itself could not be asked. The search is restricted
+to an *exact* `<variant_name>` or `<variant_name>-<suffix>` prefix under
+`<cache_root>/Microsoft/`, so a hit is guaranteed to be a different **version** of the requested
+model, never a different **model**, and Foundry's own convention of folding the execution
+provider into the variant directory name (e.g. the `-cuda-gpu` suffix) means a provider mismatch
+at this layer surfaces as "missing," not as a silent substitution. There are exactly four ways
+`select_variant`/`resolve_model_path` refuse to proceed, each raising `FoundryDiscoveryError`
+with the exact identity requested and the remedy command, never a bare `None` or an arbitrary
+pick: **missing** (nothing matches the variant name at all), **ambiguous/duplicate** (more than
+one cached entry matches — the error lists every candidate rather than picking the first or the
+newest), **stale** (the catalog says `cached: true` but the file the manifest points at is not on
+disk, or the catalog entry itself is not `cached`), and **wrong execution provider** (the variant
+name is cached, but under a different `executionProvider` than the one requested — checked as an
+explicit field on the CLI-manifest path, since the manifest could in principle report any
+provider string against any name). Negative tests for all four cases, at both the pure
+CLI-manifest layer (synthetic JSON, no Foundry install needed) and the filesystem-fallback layer
+(real `tmp_path` trees), live in `tests/ops/test_foundry_discovery.py`. `test_phi35.py`'s
+Phi-3.5 and gpt-oss-20b fixtures now build a `FoundryModelSpec` (variant name, execution
+provider, onnx filename, download alias) and call `resolve_model_path`, catching
+`FoundryDiscoveryError` and converting it to `pytest.skip(str(exc))` — the resolver's job is to
+fail loudly when asked directly; the fixture's job is the ordinary "this environment doesn't have
+a confidently-known-good model" skip semantics every other model-gated test already has.
+
+**Provenance became an enforced contract, not prose.** `bench/results/model_provenance.json` had
+recorded MobileNetV2-12's and BERT-SQuAD-12's URL/SHA-256/byte-count since 2026-08-03/04, but
+nothing read it programmatically — it was cited in `docs/OP_COVERAGE.md` and nowhere else. A
+downloaded model file and its provenance record could silently diverge and nothing would notice.
+`rust/tools/model_provenance.py` makes it a contract: `load_provenance()` reads the JSON,
+`verify_file(path, entry)` streams a SHA-256 (chunked, not slurped — BERT-SQuAD-12 is ~436MB) and
+raises `ProvenanceMismatch` with the expected-vs-actual size and hash on any disagreement, size
+checked first so a truncated download is reported as a truncated download rather than waiting on
+a full hash pass. The contract now also carries **MNIST-12**: URL
+`https://github.com/onnx/models/raw/main/validated/vision/classification/mnist/model/mnist-12.onnx`
+(the `github.com/.../raw/<branch>/...` form, not `raw.githubusercontent.com`, is required for
+every LFS-tracked entry in this file — the latter serves a ~130-byte pointer, not the model),
+26,143 bytes, SHA-256
+`5c688690f8bacf667d4c2074af5ad0646ca328d7ab03eccf944a65b320171bdd` — computed directly from the
+downloaded artifact, since no pinned hash for this exact file existed anywhere upstream or in
+this repo before this entry. MNIST-12 is the smallest real model this project validates against:
+12 nodes, 26KB, no external data, and it is the intended fast post-build smoke gate — if it
+disagrees or dispatches nothing, nothing larger (MobileNetV2-12's ~14MB, BERT-SQuAD-12's ~436MB)
+is worth running yet.
+
+**The non-vacuous dispatch/agreement gates are now automated, not manual.**
+`tests/ops/test_small_model_provenance.py` promotes the differential validation this section has
+always required into a repeatable pytest suite rather than a one-off manual run: a fast tier
+pins the exact provenance-contract content and verifies any locally-cached model file against it
+(skips cleanly if the file is not present — this suite never downloads anything), and a
+`@pytest.mark.slow` tier shells out to the **existing** `probe_model_op_census.py --run` and
+`probe_model_output_agreement.py` — never reimplementing their guards — asserting
+`dispatches_executed > 0` and `verdict == "AGREE"` (with `VulkanExecutionProvider` re-confirmed
+present in the session's providers, so a weakening of the probe's own guard would still be
+caught here). Output is written to pytest's own `tmp_path`, never into the tracked
+`bench/results/` directory: re-running `probe_model_op_census.py` with the same `--name` was
+found, during this same investigation, to silently overwrite two already-committed tracked
+artifacts (`op_census_mobilenetv2.json`, `_claim_log_mobilenetv2.jsonl`) — a test suite that
+writes there by default would reintroduce that exact defect on every CI run.
+
+**The proven Windows build recipe is now documented** (`rust/README.md`, "Building" →
+"Windows: MSVC environment via `vcvars64.bat`"): capture `vcvars64.bat`'s environment with
+`cmd /c "call vcvars64.bat >nul && set"`, apply every `KEY=value` line natively in the *same*
+PowerShell process via `[System.Environment]::SetEnvironmentVariable(..., 'Process')`, then set
+`VULKAN_SDK`/`LIBCLANG_PATH` the same way, then invoke `cargo build --release` directly from that
+PowerShell session. Chaining `vcvars64.bat && set X=... && cargo build` inside one `cmd /c "..."`
+string is fragile on this toolchain, but **not** because a later child process fails to inherit a
+`set` mutation made earlier in the same chain — it does; a `set X=1` followed later in the same
+`cmd /c "..."` invocation by a genuine child process (another `cmd /c echo %X%`, or `cargo
+build`) sees `X` correctly, confirmed by direct test. The two real, verifiable hazards are
+parse-time `%VAR%` expansion and PowerShell/cmd quoting. `cmd.exe` expands every `%VAR%` token in
+a single command line once, before executing any part of that line, so `set
+PATH=%VULKAN_SDK%\Bin;%PATH%` chained after `call vcvars64.bat` in the same line reads the
+pre-vcvars values of `%VULKAN_SDK%`/`%PATH%` (or a literal, unexpanded token if undefined) —
+confirmed: `set X=1 && echo %X%` in one line prints the literal text `%X%`, not `1`. Delayed
+expansion (`setlocal enabledelayedexpansion` + `!VAR!`) works around this but is easy to omit.
+Separately, building a long `cmd /c "..."` argument from PowerShell requires getting nested
+double-quotes (for paths containing spaces) and `$`/backtick escaping exactly right, so PowerShell
+does not interpolate before `cmd` ever sees the string; a small quoting mistake drops or corrupts
+arguments with no error message, only a confusing build failure or a wrong environment. Capturing
+vcvars' output and applying it natively inside the current PowerShell process — using
+PowerShell's own `$env:`/`[System.Environment]` mechanisms instead of `%VAR%`/chained-`cmd`
+syntax — sidesteps both hazards entirely, since nothing is expanded or quoted through `cmd.exe`
+more than once, and every applied variable is inspectable (`$env:INCLUDE`/`$env:LIB`) in the same
+shell that runs `cargo build`. That determinism and inspectability, not a false claim about child
+processes losing `set` mutations, is why it is the only recipe this document recommends for
+Windows.
+
 ### 9.2 Benchmarking — Niobe
 
 - **Baselines are versus the ORT CPU EP on the same machine, same model, same ORT build.** Any

@@ -357,7 +357,7 @@ def main() -> int:
 
     import onnxruntime as ort  # noqa: PLC0415
 
-    from test_phi35 import _ONNX_FILE, _build_phi35_feeds  # noqa: PLC0415
+    from test_phi35 import _PHI35_SPEC, _build_phi35_feeds, _foundry_discovery  # noqa: PLC0415
 
     lib = os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB")
     if not lib:
@@ -376,7 +376,11 @@ def main() -> int:
 
     device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
     counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
-    model = pathlib.Path(_ONNX_FILE)
+    try:
+        model = _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+    except _foundry_discovery.FoundryDiscoveryError as exc:
+        print(f"ERROR(instrument): Phi-3.5 model not resolvable: {exc}")
+        return 2
     feeds = _build_phi35_feeds()
 
     opts = ort.SessionOptions()
