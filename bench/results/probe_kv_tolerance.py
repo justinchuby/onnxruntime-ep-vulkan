@@ -27,6 +27,7 @@ Writes bench/results/kv_tolerance_mechanism.json.
 
 import hashlib
 import json
+import os
 import pathlib
 import sys
 
@@ -35,11 +36,22 @@ import onnxruntime as ort
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[1]
+# ARCHIVAL: pinned to the exact Foundry cache layout this investigation measured against
+# (the pre-2026-08-05 "...-cuda-gpu/cuda-int4-rtn-block-32/..." catalog revision, issue
+# #11). Intentionally NOT auto-resolved against the live cache: a live resolver could
+# silently pick a *different* cached revision than the one this result was measured
+# against, which would misattribute a new run to an old artifact. Override PHI35_MODEL to
+# replay against a different artifact explicitly (issue #19).
 MODEL_DIR = pathlib.Path(
     r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
     r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
 )
-ONNX_FILE = MODEL_DIR / "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+ONNX_FILE = pathlib.Path(
+    os.environ.get(
+        "PHI35_MODEL",
+        str(MODEL_DIR / "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"),
+    )
+)
 LIB = REPO / "rust" / "target" / "release" / "onnxruntime_vulkan_ep.dll"
 OUT = HERE / "kv_tolerance_mechanism.json"
 EP = "VulkanExecutionProvider"

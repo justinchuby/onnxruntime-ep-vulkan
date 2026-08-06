@@ -55,11 +55,24 @@ import subprocess
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-MODEL = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
-    r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-    r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+
+# Resolved by identity (variant name + execution provider), not by a hardcoded path: Foundry
+# Local's own on-disk cache layout is versioned by its CLI's internal catalog revision (issue
+# #11), and a hardcoded path silently goes stale when that happens with no code change on either
+# side. See foundry_discovery.py for the full discovery contract (fail-loud, never guessed).
+import foundry_discovery as _foundry_discovery  # noqa: E402
+
+_PHI35_SPEC = _foundry_discovery.FoundryModelSpec(
+    variant_name="Phi-3.5-mini-instruct-cuda-gpu",
+    execution_provider="CUDAExecutionProvider",
+    onnx_filename="phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    download_alias="phi-3.5-mini",
 )
+try:
+    MODEL = _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+except _foundry_discovery.FoundryDiscoveryError as exc:
+    raise SystemExit(f"ERROR(instrument): Phi-3.5 model not resolvable: {exc}")
+
 EP_NAME = "VulkanExecutionProvider"
 
 

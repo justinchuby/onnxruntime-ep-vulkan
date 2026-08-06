@@ -5108,6 +5108,48 @@ shell that runs `cargo build`. That determinism and inspectability, not a false 
 processes losing `set` mutations, is why it is the only recipe this document recommends for
 Windows.
 
+**Issue #19 closed the remaining gap: every hardcoded cache path outside the fixture PR #15
+migrated, and a standing guard against a new one.** PR #15's resolver reached `test_phi35.py`
+alone; a repo-wide inventory found ~31 more sites — 11 live tools (`bench/exec_census.py`,
+`bench/island_attribution.py`, and nine `rust/tools/probe_*.py`/`roofline_split.py` scripts) that
+called a hardcoded path directly, and 22 archived one-off investigation scripts under
+`bench/results/` whose default path is the exact historical artifact the recorded result was
+actually measured against. These two groups are migrated differently, deliberately:
+
+  - **Live tools** now build a `FoundryModelSpec` and call `resolve_model_path`, exactly like
+    `test_phi35.py` — the same fail-loud four-way `FoundryDiscoveryError` from §9.1.4 applies,
+    surfaced as each tool's own pre-existing error-handling idiom (`SystemExit`, a printed
+    `ERROR(instrument)` plus non-zero return, or a graceful `SKIP` for tools that already
+    tolerated an absent model).
+  - **Archival scripts are never pointed at the live resolver.** A resolver call picks whatever
+    is cached *today*; an archived script's job is to reproduce what was measured on the day it
+    ran, which may be a different cache revision than the one currently installed. Each archival
+    script instead reads `os.environ.get("PHI35_MODEL", <the exact historical literal path>)` —
+    the override lets a maintainer point it at a different cache layout on purpose, but the
+    default keeps failing loudly against the one specific path the archived numbers came from,
+    never silently substituting a newer cache revision's model. `bench/results/probe_planted_kv.py`
+    was found to name the same fragment only in prose (a narrative docstring, not executable
+    code) and needed no change.
+
+  No dead duplicates were found among these ~31 sites: every file's content is unique (no two
+  hash-identical, and no pair scores above a 0.55 line-similarity ratio against any other), so
+  issue #19's "delete dead duplicates" acceptance criterion is satisfied vacuously here rather
+  than by a deletion.
+
+  **The standing guard is `ci/check_hardcoded_foundry_paths.py`.** It is a static, source-text
+  screen — no GPU, no Foundry install, no cached model required — that greps every `*.py` file
+  for the literal fragment `.foundry/cache/models` (either path-separator spelling) and fails on
+  any hit outside an explicit allowlist (`bench/results/**`, `rust/tools/foundry_discovery.py`'s
+  own defect-documentation, and the check's own test surface). Deliberately narrow: it does not
+  match a model *identity* string used as a resolver key, nor a `pathlib` join built from
+  separate literal segments, only a single literal that already spells out the on-disk
+  hierarchy — the shape a hardcoded lookup takes, and the shape a resolver call does not.
+  `ci/negative_control_hardcoded_foundry_paths.py` proves the screen is load-bearing with a
+  REPLAYED arm (the real `bench/exec_census.py` as it stood at `ea427fd`, immediately before
+  this migration — the actual defect, not an invented shape) alongside PLANTED and LIVE arms.
+  Both are registered in `ci/lane_inventory.py` under `hostfree.hardcoded_foundry_paths` /
+  `hostfree.hardcoded_foundry_paths_negative_control`.
+
 ### 9.2 Benchmarking — Niobe
 
 - **Baselines are versus the ORT CPU EP on the same machine, same model, same ORT build.** Any

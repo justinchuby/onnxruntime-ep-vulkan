@@ -3039,6 +3039,7 @@ def test_the_replayed_subjects_are_reachable_from_this_checkout():
         ("8a851f8", "README.md"),  # negative_control_readme_usage.py
         ("eb84364", "evidence/proof_ledger.jsonl"),  # negative_control_ledger_census.py
         ("26fd93f", "evidence/proof_ledger.jsonl"),  # negative_control_ledger_census.py
+        ("ea427fd", "bench/exec_census.py"),  # negative_control_hardcoded_foundry_paths.py
     ):
         proc = subprocess.run(
             ["git", "show", f"{ref}:{rel_path}"],
@@ -3211,6 +3212,97 @@ def test_live_failure_note_falls_back_to_a_bounded_tail_when_the_marker_is_missi
     assert note == stdout[-4000:] + stderr[-1500:], "must fall back to the bounded tail exactly"
     assert note, "a missing marker must still produce a non-empty, fail-loud diagnostic"
     assert len(note) <= 4000 + 1500
+
+
+# ---------------------------------------------------------------------------
+# ci/check_hardcoded_foundry_paths.py -- static screen against reintroducing issue #11's
+# defect class (a Foundry cache path spelled out literally, going stale silently whenever
+# Foundry Local's own catalog revision changes) in any live tool issue #19 migrated to the
+# rust/tools/foundry_discovery.py resolver, while still allowing the bench/results/
+# archival scripts issue #19 gave an explicit PHI35_MODEL override instead.
+# ---------------------------------------------------------------------------
+
+def _write_tree(root: Path, files: dict) -> None:
+    for rel, content in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+
+
+def test_hardcoded_foundry_paths_passes_on_a_clean_tree(tmp_path):
+    """POSITIVE: no occurrence of the pattern anywhere -> PASS."""
+    _write_tree(tmp_path, {"bench/tool.py": "print('nothing to see here')\n"})
+    proc = run_check("check_hardcoded_foundry_paths.py", "--root", str(tmp_path))
+    assert proc.returncode == EXIT_PASS, proc.stdout + proc.stderr
+    assert "FOUNDRY-PATHS: PASS" in proc.stdout
+
+
+def test_hardcoded_foundry_paths_reds_on_a_live_tool_outside_the_allowlist(tmp_path):
+    """NEGATIVE: a fresh live tool pasting the hardcoded pattern back in must be named and
+    must fail, not silently pass -- this is the actual defect class issue #11/#19 exist
+    for."""
+    _write_tree(tmp_path, {
+        "rust/tools/probe_x.py": (
+            'MODEL = r"C:\\Users\\x\\.foundry\\cache\\models\\Microsoft\\Foo"\n'
+        ),
+    })
+    proc = run_check("check_hardcoded_foundry_paths.py", "--root", str(tmp_path))
+    assert proc.returncode == EXIT_FAIL_CONDITION, proc.stdout + proc.stderr
+    assert "rust/tools/probe_x.py" in proc.stdout
+
+
+def test_hardcoded_foundry_paths_allows_archival_scripts_under_bench_results(tmp_path):
+    """The bench/results/ allowlist exists specifically so an archived investigation
+    script's deliberately-preserved historical default path is not mistaken for a live
+    hardcode."""
+    _write_tree(tmp_path, {
+        "bench/results/probe_x.py": (
+            'MODEL = r"C:\\Users\\x\\.foundry\\cache\\models\\Microsoft\\Foo"\n'
+        ),
+    })
+    proc = run_check("check_hardcoded_foundry_paths.py", "--root", str(tmp_path))
+    assert proc.returncode == EXIT_PASS, proc.stdout + proc.stderr
+    assert "FOUNDRY-PATHS: PASS" in proc.stdout
+
+
+def test_hardcoded_foundry_paths_missing_root_is_an_instrument_error(tmp_path):
+    """An absent --root is an instrument outage, not a clean lane: ERROR(instrument), not
+    0."""
+    missing = tmp_path / "does-not-exist"
+    proc = run_check("check_hardcoded_foundry_paths.py", "--root", str(missing))
+    assert proc.returncode == EXIT_ERROR_INSTRUMENT, proc.stdout + proc.stderr
+    assert "ERROR(instrument=root_absent)" in proc.stdout
+
+
+def test_hardcoded_foundry_paths_does_not_match_identity_strings_or_pathlib_joins(tmp_path):
+    """NEGATIVE (of the negative): a resolver-style model *identity* string and a pathlib
+    join built from separate literal segments are exactly the shape the migrated live
+    tools now use, and must not be mistaken for the hardcoded-path shape this screen
+    exists to catch."""
+    _write_tree(tmp_path, {
+        "rust/tools/ok.py": (
+            'import pathlib\n'
+            'variant_name = "Phi-3.5-mini-instruct-cuda-gpu"\n'
+            'root = pathlib.Path.home() / ".foundry" / "cache" / "models"\n'
+        ),
+    })
+    proc = run_check("check_hardcoded_foundry_paths.py", "--root", str(tmp_path))
+    assert proc.returncode == EXIT_PASS, proc.stdout + proc.stderr
+
+
+def test_the_real_source_tree_has_no_new_hardcoded_foundry_paths():
+    """LIVE: run the screen against the real repository tree (default --root), not a
+    synthesized fixture -- this is what actually gates the lane."""
+    proc = run_check("check_hardcoded_foundry_paths.py")
+    assert proc.returncode == EXIT_PASS, proc.stdout + proc.stderr
+
+
+def test_hardcoded_foundry_paths_negative_control_all_arms_pass():
+    """The negative control's own REPLAYED/PLANTED/LIVE arms must all be green; a FAIL
+    here means the screen no longer catches the historical defect it was written for."""
+    proc = run_check("negative_control_hardcoded_foundry_paths.py")
+    assert proc.returncode == EXIT_PASS, proc.stdout + proc.stderr
+    assert "/5 arms pass" in proc.stdout
 
 
 # ---------------------------------------------------------------------------
