@@ -70,11 +70,36 @@ REPO = HERE.parent.parent
 COUNTERS_ENV = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
 EP_NAME = "VulkanExecutionProvider"
 
+# ARCHIVAL: pinned to the exact Foundry cache layout this investigation measured against
+# (the pre-2026-08-05 "...-cuda-gpu/cuda-int4-rtn-block-32/..." catalog revision, issue
+# #11). Intentionally NOT auto-resolved against the live cache: a live resolver could
+# silently pick a *different* cached revision than the one this result was measured
+# against, which would misattribute a new run to an old artifact. Override PHI35_MODEL to
+# replay against a different artifact explicitly (issue #19).
 ONNX_FILE = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
-    r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-    r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+    os.environ.get(
+        "PHI35_MODEL",
+        r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
+        r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
+        r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    )
 )
+
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved
+# model path and its exact content hash are stamped into every output record below,
+# computed lazily (only once the model has already been used successfully) so a
+# PHI35_MODEL override or a stale/wrong cached file can never be silently absorbed into the
+# evidence. Reuses the streaming SHA-256 helper `model_provenance.sha256_of` rather than a
+# 23rd divergent hasher.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(ONNX_FILE),
+        "onnx_sha256": _model_provenance.sha256_of(ONNX_FILE),
+    }
 
 LAYERS = 32
 KV_HEADS = 32
@@ -225,7 +250,7 @@ def graph_main(args) -> int:
     doc["lanes"] = lanes
 
     out = pathlib.Path(args.out or str(HERE / "kv_arena_graph_accepts.json"))
-    out.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in doc.items() if k != "lanes"}, indent=2))
     print(f"[wrote] {out}")
     return 0 if doc.get("verdict", "").startswith("ARENA_SHAPE_HONOURED") else 1
@@ -288,7 +313,7 @@ def _chain_worker(args) -> int:
         if ep_device is None:
             doc["verdict"] = "ERROR(instrument)"
             doc["why"] = ["the Vulkan EP is not among ORT's EP devices"]
-            out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+            out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
             return 2
         # The device is read off the run, never off the selector.
         doc["ep_device"] = {
@@ -304,7 +329,7 @@ def _chain_worker(args) -> int:
     if lane not in ("host", "cpu") and EP_NAME not in sess.get_providers():
         doc["verdict"] = "ERROR(instrument)"
         doc["why"] = [f"{EP_NAME} absent from {sess.get_providers()}"]
-        out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
         return 2
 
     logits_dtype = np.float16 if "float16" in sess.get_outputs()[0].type else np.float32
@@ -317,7 +342,7 @@ def _chain_worker(args) -> int:
         if mi is None:
             doc["verdict"] = "ERROR(instrument)"
             doc["why"] = ["the EP registered no DEFAULT allocator"]
-            out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+            out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
             return 2
 
     rng = np.random.default_rng(20260803)
@@ -464,7 +489,7 @@ def _chain_worker(args) -> int:
         "alloc_device_attach_failures", "alloc_device_attach_attempts",
         "claimed_nodes", "subject_changed_declines",
     )}
-    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
     return 0
 
 
@@ -673,7 +698,7 @@ def chain_main(args) -> int:
         doc["verdict"] = "ARENA_TAKEN_AND_BIT_IDENTICAL"
 
     out = pathlib.Path(args.out or str(HERE / f"kv_arena_chain-A{args.arena}.json"))
-    out.write_text(json.dumps(doc, indent=2, default=str), encoding="utf-8")
+    out.write_text(json.dumps({**doc, **_result_identity()}, indent=2, default=str), encoding="utf-8")
     print(json.dumps(doc, indent=2, default=str))
     print(f"[wrote] {out}")
     return 0 if doc["verdict"].startswith(

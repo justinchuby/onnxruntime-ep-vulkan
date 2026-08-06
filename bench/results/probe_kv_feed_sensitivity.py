@@ -20,6 +20,7 @@ Writes bench/results/kv_feed_sensitivity.json.
 
 import hashlib
 import json
+import os
 import pathlib
 import sys
 
@@ -28,15 +29,41 @@ import onnxruntime as ort
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[1]
+# ARCHIVAL: pinned to the exact Foundry cache layout this investigation measured against
+# (the pre-2026-08-05 "...-cuda-gpu/cuda-int4-rtn-block-32/..." catalog revision, issue
+# #11). Intentionally NOT auto-resolved against the live cache: a live resolver could
+# silently pick a *different* cached revision than the one this result was measured
+# against, which would misattribute a new run to an old artifact. Override PHI35_MODEL to
+# replay against a different artifact explicitly (issue #19).
 MODEL_DIR = pathlib.Path(
     r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
     r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
 )
-ONNX_FILE = MODEL_DIR / "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+ONNX_FILE = pathlib.Path(
+    os.environ.get(
+        "PHI35_MODEL",
+        str(MODEL_DIR / "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"),
+    )
+)
 LIB = REPO / "rust" / "target" / "release" / "onnxruntime_vulkan_ep.dll"
 OUT = HERE / "kv_feed_sensitivity.json"
 EP = "VulkanExecutionProvider"
 ATOL, RTOL = 0.001, 0.02
+
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been opened successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(REPO / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(ONNX_FILE),
+        "onnx_sha256": _model_provenance.sha256_of(ONNX_FILE),
+    }
 
 
 def sha256(p):
@@ -126,6 +153,7 @@ def main():
     print(f"\n  VERDICT: {verdict}")
 
     OUT.write_text(json.dumps({
+        **_result_identity(),
         "dll_sha256": sha256(LIB),
         "atol": ATOL, "rtol": RTOL,
         "note": "binary and tolerance held fixed; only input_ids varied",

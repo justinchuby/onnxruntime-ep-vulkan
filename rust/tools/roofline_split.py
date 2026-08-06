@@ -45,14 +45,28 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parents[2]
 RESULTS = REPO / "bench" / "results"
 
-MODEL = pathlib.Path(
-    os.environ.get(
-        "PHI35_MODEL",
-        r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
-        r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-        r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
-    )
+# Resolved by identity (variant name + execution provider), not by a hardcoded path: Foundry
+# Local's own on-disk cache layout is versioned by its CLI's internal catalog revision (issue
+# #11), and a hardcoded path silently goes stale when that happens with no code change on either
+# side. See foundry_discovery.py for the full discovery contract (fail-loud, never guessed).
+# No PHI35_MODEL pre-resolver override here: this is a LIVE tool (issue #19), and a raw path
+# consulted before the resolver would bypass the exact variant+execution-provider validation the
+# resolver exists to enforce, silently accepting a different model/provider than the one this
+# probe claims to measure. Archival bench/results/ scripts are the ones with the explicit
+# override, because their job is to replay a specific historical artifact by design.
+import foundry_discovery as _foundry_discovery  # noqa: E402
+
+_PHI35_SPEC = _foundry_discovery.FoundryModelSpec(
+    variant_name="Phi-3.5-mini-instruct-cuda-gpu",
+    execution_provider="CUDAExecutionProvider",
+    onnx_filename="phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    download_alias="phi-3.5-mini",
 )
+
+try:
+    MODEL = _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+except _foundry_discovery.FoundryDiscoveryError as exc:
+    raise SystemExit(f"ERROR(instrument): Phi-3.5 model not resolvable: {exc}")
 
 #: Context lengths to report at. 0 is included precisely because it is the regime that understates
 #: attention the most — it is the trap, not the answer, and leaving it out would hide that the

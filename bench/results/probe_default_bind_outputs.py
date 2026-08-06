@@ -77,11 +77,36 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 
+# ARCHIVAL: pinned to the exact Foundry cache layout this investigation measured against
+# (the pre-2026-08-05 "...-cuda-gpu/cuda-int4-rtn-block-32/..." catalog revision, issue
+# #11). Intentionally NOT auto-resolved against the live cache: a live resolver could
+# silently pick a *different* cached revision than the one this result was measured
+# against, which would misattribute a new run to an old artifact. Override PHI35_MODEL to
+# replay against a different artifact explicitly (issue #19).
 ONNX_FILE = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
-    r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-    r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+    os.environ.get(
+        "PHI35_MODEL",
+        r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
+        r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
+        r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    )
 )
+
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved
+# model path and its exact content hash are stamped into every output record below,
+# computed lazily (only once the model has already been used successfully) so a
+# PHI35_MODEL override or a stale/wrong cached file can never be silently absorbed into the
+# evidence. Reuses the streaming SHA-256 helper `model_provenance.sha256_of` rather than a
+# 23rd divergent hasher.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(ONNX_FILE),
+        "onnx_sha256": _model_provenance.sha256_of(ONNX_FILE),
+    }
 EP_NAME = "VulkanExecutionProvider"
 COUNTERS_ENV = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
 
@@ -172,7 +197,7 @@ def _worker(lane: str, out_path: pathlib.Path) -> int:
     if ep_device is None:
         doc["verdict"] = "ERROR(instrument)"
         doc["why"] = ["the Vulkan EP is not among ORT's EP devices"]
-        out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
         return 2
     # The device is read off the run. `DEVICE=0` has run on `1=NVIDIA` on this box.
     doc["ep_device"] = {
@@ -189,7 +214,7 @@ def _worker(lane: str, out_path: pathlib.Path) -> int:
     if EP_NAME not in sess.get_providers():
         doc["verdict"] = "ERROR(instrument)"
         doc["why"] = [f"{EP_NAME} absent from {sess.get_providers()}"]
-        out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
         return 2
 
     out_names = [o.name for o in sess.get_outputs()]
@@ -201,7 +226,7 @@ def _worker(lane: str, out_path: pathlib.Path) -> int:
     if out_names[0] != "logits" or len(out_names) != 1 + 2 * LAYERS:
         doc["verdict"] = "ERROR(instrument)"
         doc["why"] = [f"unexpected output set: {len(out_names)} names, first is {out_names[0]!r}"]
-        out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
         return 2
 
     def _kv(past_len: int) -> dict:
@@ -305,7 +330,7 @@ def _worker(lane: str, out_path: pathlib.Path) -> int:
         del sess  # the complete document lands at teardown
         final = _counters(counters_path)
         doc["final_counters"] = {k: final.get(k) for k in COUNTER_KEYS}
-    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
     return 0
 
 
@@ -502,7 +527,7 @@ def main() -> int:
 
 def _emit(report: dict) -> None:
     path = HERE / "default_bind_outputs.json"
-    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    path.write_text(json.dumps({**report, **_result_identity()}, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in report.items() if k != "lanes"}, indent=2))
     print(f"\nwrote {path}")
 

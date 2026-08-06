@@ -59,11 +59,17 @@ _ROOT = _HERE.parent.parent
 _RESULTS = _ROOT / "bench" / "results"
 _RESULTS.mkdir(parents=True, exist_ok=True)
 
-_MODEL = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models"
-    r"\Microsoft\Phi-3.5-mini-instruct-cuda-gpu"
-    r"\cuda-int4-rtn-block-32"
-    r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+# Resolved by identity (variant name + execution provider), not by a hardcoded path: Foundry
+# Local's own on-disk cache layout is versioned by its CLI's internal catalog revision (issue
+# #11), and a hardcoded path silently goes stale when that happens with no code change on either
+# side. See foundry_discovery.py for the full discovery contract (fail-loud, never guessed).
+import foundry_discovery as _foundry_discovery  # noqa: E402
+
+_PHI35_SPEC = _foundry_discovery.FoundryModelSpec(
+    variant_name="Phi-3.5-mini-instruct-cuda-gpu",
+    execution_provider="CUDAExecutionProvider",
+    onnx_filename="phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    download_alias="phi-3.5-mini",
 )
 EP_LIB = _ROOT / "rust" / "target" / "release" / "onnxruntime_vulkan_ep.dll"
 EP_NAME = "VulkanExecutionProvider"
@@ -130,8 +136,9 @@ def run_child(config: str, counters_path: pathlib.Path) -> None:
         if "already registered" not in str(exc):
             raise
 
+    onnx_path = _foundry_discovery.resolve_model_path(_PHI35_SPEC)
     sess = ort.InferenceSession(
-        str(_MODEL),
+        str(onnx_path),
         sess_options=ort.SessionOptions(),
         providers=[EP_NAME, "CPUExecutionProvider"],
         free_dimension_overrides_by_name={"batch_size": "1", "sequence_length": "1"},

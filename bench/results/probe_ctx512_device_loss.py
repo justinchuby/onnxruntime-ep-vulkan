@@ -76,10 +76,34 @@ GQA_KEY = (
     "/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
 )
 
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been used successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(ROOT / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(PHI),
+        "onnx_sha256": _model_provenance.sha256_of(PHI),
+    }
+
+# ARCHIVAL: pinned to the exact Foundry cache layout this investigation measured against
+# (the pre-2026-08-05 "...-cuda-gpu/cuda-int4-rtn-block-32/..." catalog revision, issue
+# #11). Intentionally NOT auto-resolved against the live cache: a live resolver could
+# silently pick a *different* cached revision than the one this result was measured
+# against, which would misattribute a new run to an old artifact. Override PHI35_MODEL to
+# replay against a different artifact explicitly (issue #19).
 PHI = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
-    r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-    r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+    os.environ.get(
+        "PHI35_MODEL",
+        r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
+        r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
+        r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    )
 )
 
 # Phi-3.5's own attention geometry, so the isolation arm is the same kernel shape the model
@@ -407,6 +431,7 @@ def main() -> int:
     rec.write_text(
         json.dumps(
             {
+                **_result_identity(),
                 # The lane is read off the environment the run actually had, never off a
                 # command-line label: a label says what was intended, `os.environ` says what
                 # the worker inherited. `device_memory_env` is the exact spelling, unparsed.

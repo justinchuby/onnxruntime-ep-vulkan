@@ -66,16 +66,40 @@ sys.path.insert(0, str(ROOT / "bench" / "results"))
 
 from spirv_simt import Dispatch, InstrumentError, SpirvModule  # noqa: E402
 
+# ARCHIVAL: pinned to the exact Foundry cache layout this investigation measured against
+# (the pre-2026-08-05 "...-cuda-gpu/cuda-int4-rtn-block-32/..." catalog revision, issue
+# #11). Intentionally NOT auto-resolved against the live cache: a live resolver could
+# silently pick a *different* cached revision than the one this result was measured
+# against, which would misattribute a new run to an old artifact. Override PHI35_MODEL to
+# replay against a different artifact explicitly (issue #19).
 MODEL = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
-    r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-    r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+    os.environ.get(
+        "PHI35_MODEL",
+        r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
+        r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
+        r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    )
 )
 
 LEDGER = ROOT / "evidence" / "proof_ledger.jsonl"
 SHADER_STEM = "q_gemv_matmul_nbits_f16"
 SHADER_SRC = ROOT / "rust" / "shaders" / "glsl" / "templates" / "q_gemv.comp"
 SHADER_INC = ROOT / "rust" / "shaders" / "include"
+
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been used successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(ROOT / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(MODEL),
+        "onnx_sha256": _model_provenance.sha256_of(MODEL),
+    }
 
 #: Mirrors of `ops::quant`. Checked against the Rust unit tests' own expectations in
 #: `bench/test_weight_reread.py`.
@@ -477,6 +501,7 @@ def main() -> int:
             )
 
         report = {
+            **_result_identity(),
             "probe": "weight_reread_amplification_phi35_executed",
             "no_clock": "Every number here is a count of instructions or of bytes.",
             "subject": {
