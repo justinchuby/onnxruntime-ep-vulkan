@@ -25,6 +25,7 @@ Exit 0 when every arm fired as declared, 1 otherwise.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -51,11 +52,36 @@ jobs:
 
 
 def run(args: list[str]) -> tuple[int, str]:
+    # This needs BOTH halves of the encoding pin, not just one:
+    #
+    # 1. The PARENT decode: this process's own PYTHONIOENCODING does not govern how
+    #    *this* subprocess.run() call decodes a child's captured stdout -- that decode
+    #    falls back to locale.getpreferredencoding(), which is cp1252 on a default
+    #    Windows shell. Pinning encoding="utf-8" below fixes the decode side.
+    #
+    # 2. The CHILD's own encode: pinning only the parent-side decode is not enough,
+    #    because the CHILD (check_build_precondition.py) picks its own stdout encoding
+    #    the same way -- from locale.getpreferredencoding() -- unless PYTHONIOENCODING
+    #    is present in *its* environment. Whether that happens to be set depends on
+    #    whatever shell launched *this* script, which is exactly the "flips which arm
+    #    fails depending on shell" bug: on a plain Windows shell with neither
+    #    PYTHONIOENCODING nor PYTHONUTF8 set, the child would encode its own em-dash as
+    #    cp1252 bytes, and no encoding= kwarg on this end can recover text that was
+    #    never UTF-8 to begin with (errors="replace" would silently swap it for U+FFFD
+    #    instead of mangling it -- a different failure shape, same missing content).
+    #    Forcing PYTHONIOENCODING=utf-8 into the CHILD's environment here -- regardless
+    #    of what this process itself inherited -- makes the child's own encode side
+    #    independent of the invoking shell, the same way encoding="utf-8" below makes
+    #    the decode side independent of it.
+    child_env = dict(os.environ)
+    child_env["PYTHONIOENCODING"] = "utf-8"
     proc = subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=str(REPO_ROOT),
+        env=child_env,
     )
     return proc.returncode, proc.stdout + proc.stderr
 
@@ -77,7 +103,8 @@ def historical_workflow() -> str | None:
     proc = subprocess.run(
         ["git", "show", f"{HISTORICAL_REF}:{WORKFLOW_REL}"],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=str(REPO_ROOT),
     )
     if proc.returncode != 0:

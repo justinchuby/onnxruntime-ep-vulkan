@@ -51,10 +51,28 @@ EXIT_ERROR_INSTRUMENT = 4
 
 
 def run_check(script: str, *args: str) -> subprocess.CompletedProcess:
+    # Complete encoding pair, same reasoning as
+    # negative_control_build_precondition.py's run(): pinning only the PARENT-side
+    # decode (encoding="utf-8" below) is not enough on its own, because the CHILD
+    # screen picks its OWN stdout/stderr encoding from locale.getpreferredencoding()
+    # -- cp1252 on a default Windows shell -- unless PYTHONIOENCODING is present in
+    # its environment. Several of these screens print literal Unicode (em-dashes,
+    # arrows) in their frame/report lines; under a stock Windows env with neither
+    # PYTHONIOENCODING nor PYTHONUTF8 set, the child's own print() raises
+    # UnicodeEncodeError on those characters before ever emitting the assertion text
+    # this suite's tests check for (e.g. check_tick_conversions.py's `->` arrow),
+    # turning a real screen PASS/FAIL into an unrelated Windows-local instrument
+    # crash. Forcing PYTHONIOENCODING=utf-8 into the child's env makes its own
+    # encode side independent of the invoking shell; encoding="utf-8" below makes
+    # this process's decode side independent of it too.
+    child_env = dict(os.environ)
+    child_env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run(
         [sys.executable, str(CI_DIR / script), *args],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=child_env,
     )
 
 
@@ -3000,6 +3018,116 @@ def test_negative_control_reports_unobservable_not_a_pass_on_a_shallow_clone(tmp
     assert "NEGATIVE-CONTROL: PASS" not in out, (
         "an unreachable REPLAYED subject must never be reported as every arm firing"
     )
+
+
+def _run_negative_control_build_precondition_with_env(extra_env: dict) -> tuple[int, str]:
+    """Like ``_run_negative_control_build_precondition``, but with a caller-controlled
+    parent environment instead of this test process's own inherited one.
+
+    ``PYTHONIOENCODING``, ``PYTHONUTF8`` and ``PYTHONLEGACYWINDOWSSTDIO`` are stripped
+    from the base environment before ``extra_env`` is applied, so a value this pytest
+    process happens to have picked up (from a CI job env, a dev shell profile, etc.)
+    cannot quietly stand in for the polarity a given call is trying to exercise.
+    """
+    env = dict(os.environ)
+    for var in ("PYTHONIOENCODING", "PYTHONUTF8", "PYTHONLEGACYWINDOWSSTDIO"):
+        env.pop(var, None)
+    env.update(extra_env)
+    script = REPO_ROOT / "ci" / "negative_control_build_precondition.py"
+    proc = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True,
+        cwd=str(REPO_ROOT), env=env,
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_negative_control_build_precondition_passes_under_both_encoding_polarities():
+    """``run()``'s child-encoding pin must make the control's own PASS independent of
+    the *parent* shell that launched ``negative_control_build_precondition.py``, not
+    merely reproduce whatever this dev machine already has configured.
+
+    Before this fix, only the PARENT-side decode was pinned (``encoding="utf-8"`` on
+    ``subprocess.run``); the CHILD (``check_build_precondition.py``) still picked its
+    own stdout encoding from ``locale.getpreferredencoding()``, so which BP arm's
+    assertion tripped depended on whatever the invoking shell had (or had not) set --
+    exactly the "parent-only pin flips which BP arm fails depending on shell" defect.
+    ``run()`` now forces ``PYTHONIOENCODING=utf-8`` into the CHILD's own environment
+    unconditionally, so both polarities below must PASS identically:
+
+    * a stock/legacy parent env -- neither ``PYTHONIOENCODING`` nor ``PYTHONUTF8`` set,
+      the shape of a default Windows shell (cp1252-preferred-encoding) and, on POSIX,
+      forced further with ``LC_ALL=C``/``LANG=C`` to remove the usual UTF-8 locale
+      safety net so the same "nothing declares UTF-8" condition is reproduced there too;
+    * an explicit UTF-8 parent env -- proving the fix isn't a coincidence of whichever
+      polarity this box already happened to have.
+    """
+    polarities = {
+        "stock/legacy (no PYTHONIOENCODING/PYTHONUTF8, C locale)": {
+            "LC_ALL": "C", "LANG": "C",
+        },
+        "explicit UTF-8": {
+            "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "LC_ALL": "en_US.UTF-8",
+        },
+    }
+    for label, extra_env in polarities.items():
+        rc, out = _run_negative_control_build_precondition_with_env(extra_env)
+        assert rc == 0, f"[{label}] must PASS regardless of the parent shell's own encoding:\n{out}"
+        assert "NEGATIVE-CONTROL: PASS" in out, f"[{label}]:\n{out}"
+        # This is the one arm whose `ok` is computed from `"BP1 \u2014" in out` inside
+        # negative_control_build_precondition.py's own check_build_precondition.py
+        # subprocess call -- the exact literal substring match the mojibake bug broke.
+        # The raw captured text isn't echoed verbatim by the outer script, so the arm's
+        # own printed verdict ("ok " vs "FAIL") is the observable proxy for whether that
+        # decode round-tripped correctly under this parent env.
+        assert "[REPLAYED] ok    and it is BP1 that catches it, not BP2 by accident" in out, (
+            f"[{label}] the em-dash-dependent REPLAYED arm did not fire cleanly -- the "
+            f"child-encoding pin did not hold under this parent env:\n{out}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# ci/negative_control_open_reds.py's _live_failure_note() -- the helper that anchors a
+# failing LIVE arm's diagnostic on check_open_reds.py's own state-table header instead
+# of a blind [-1500:] stdout tail (see its own docstring for the CI-log-truncation bug
+# this replaced). Two polarities: the marker is present (anchor on it, don't blindly
+# truncate before it), and the marker is absent/malformed (fall back to a bounded tail
+# that still carries content -- fail-loud, never silently empty).
+# ---------------------------------------------------------------------------
+
+def _load_live_failure_note():
+    import importlib
+    mod = importlib.import_module("negative_control_open_reds")
+    return mod._live_failure_note
+
+
+def test_live_failure_note_anchors_on_the_state_table_when_the_marker_is_present():
+    """POSITIVE: with the marker present, the note starts at the marker, not at a fixed
+    byte offset that could land anywhere relative to it."""
+    live_failure_note = _load_live_failure_note()
+    preamble = "pytest collection noise\n" * 400  # long enough to defeat a [-1500:] tail
+    table = "OPEN-REDS: frame\nstate                            check\nFAIL(...) something_unaccounted\n"
+    note = live_failure_note(preamble + table, "")
+    assert note.startswith("OPEN-REDS: frame"), (
+        f"note must anchor on the table header, not a blind tail:\n{note[:200]!r}"
+    )
+    assert "something_unaccounted" in note, "the named failing check must survive into the note"
+    assert "pytest collection noise" not in note, (
+        "the preamble before the marker must not leak into the anchored note"
+    )
+
+
+def test_live_failure_note_falls_back_to_a_bounded_tail_when_the_marker_is_missing():
+    """NEGATIVE: marker absent (e.g. an older/malformed check_open_reds.py that never
+    printed the header, or output truncated before the header was ever written) must
+    still produce a non-empty, bounded diagnostic -- never blank, and never raise --
+    so a missing marker degrades to "the same tail as before" rather than to nothing."""
+    live_failure_note = _load_live_failure_note()
+    stdout = "z" * 5000  # no "OPEN-REDS: frame" anywhere
+    stderr = "w" * 3000
+    note = live_failure_note(stdout, stderr)
+    assert note == stdout[-4000:] + stderr[-1500:], "must fall back to the bounded tail exactly"
+    assert note, "a missing marker must still produce a non-empty, fail-loud diagnostic"
+    assert len(note) <= 4000 + 1500
 
 
 # ---------------------------------------------------------------------------
