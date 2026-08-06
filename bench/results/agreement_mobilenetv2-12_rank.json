@@ -1,0 +1,23 @@
+{
+  "model": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\models\\mobilenetv2-12.onnx",
+  "providers": [
+    "VulkanExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "outputs": [
+    {
+      "name": "output",
+      "shape": [
+        1,
+        1000
+      ],
+      "dtype": "float32",
+      "max_abs": 9.5367431640625e-06,
+      "max_rel": 0.0015990249593733072,
+      "all_zero_vk": false,
+      "verdict": "AGREE"
+    }
+  ],
+  "worst_max_rel": 0.0015990249593733072,
+  "verdict": "AGREE"
+}

@@ -417,6 +417,27 @@ pub fn claim_debug_enabled() -> bool {
     std::env::var_os(ENV_CLAIM_DEBUG).is_some_and(|v| v != "0")
 }
 
+/// True when the §8.11 graph-level rank inference pass should be skipped entirely.
+///
+/// Set `ONNXRUNTIME_EP_VULKAN_RANK_INFERENCE=0` to restore the pre-inference reading, in which
+/// every predicate sees exactly what ORT reported. Exists for two reasons and no others:
+///
+/// * **A/B measurement from one binary.** Reporting "claims went up" needs a before and an after
+///   that differ in one thing. Two builds differ in more than one thing.
+/// * **A kill switch.** The pass proves only what ONNX guarantees, but if it is ever wrong the
+///   remedy has to be reachable without a rebuild.
+///
+/// Absent, empty and any value other than `0`/`false`/`off` mean enabled.
+pub fn rank_inference_enabled() -> bool {
+    match std::env::var("ONNXRUNTIME_EP_VULKAN_RANK_INFERENCE") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
 /// Resolve the max log level from the environment.
 fn resolve_level() -> LevelFilter {
     if let Ok(val) = std::env::var("RUST_LOG") {

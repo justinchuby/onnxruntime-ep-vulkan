@@ -38,8 +38,9 @@
 //! | `predicate_ok_runtime_extents` | bool | the row's predicate accepts it if extents arrive at `Compute` |
 //! | `proof_key` | string \| null | the §8.9 proof key for this node; `null` when the op has no registry row at all |
 //! | `ledger_hit` | bool           | whether the proof ledger held an entry under that key |
-//! | `input_shapes` | array \| null | per-input shape **as ORT reported it**; a negative entry is symbolic, an entry is `null` when ORT gave no shape |
+//! | `input_shapes` | array \| null | per-input shape **as the claim path read it** — ORT's own answer unless `rank_inferred` is true; a negative entry is symbolic, an entry is `null` when no shape was available |
 //! | `output_shapes` | array \| null | the same, per output |
+//! | `rank_inferred` | bool | whether any of this node's edges was refined by the §8.11 graph-level rank overlay rather than read from ORT directly |
 //!
 //! # `proof_key` is what makes the ledger bootstrappable
 //!
@@ -292,7 +293,7 @@ pub(crate) fn audit_line(
     format!(
         "{},\"codes\":{},\"reasons\":{},\"unevaluated\":{},\"shape_class\":\"{}\",\
          \"predicate_ok\":{},\"predicate_ok_runtime_extents\":{},\"proof_key\":{},\
-         \"ledger_hit\":{},\"input_shapes\":{},\"output_shapes\":{}}}",
+         \"ledger_hit\":{},\"input_shapes\":{},\"output_shapes\":{},\"rank_inferred\":{}}}",
         base.trim_end_matches('}'),
         codes,
         reasons,
@@ -307,6 +308,7 @@ pub(crate) fn audit_line(
         audit.ledger_hit,
         inputs,
         outputs,
+        audit.rank_inferred,
     )
 }
 
@@ -382,6 +384,7 @@ mod tests {
             proof_key: None,
             ledger_hit: false,
             proof_state: crate::registry::ProofState::Unproven,
+            rank_inferred: false,
         }
     }
 

@@ -55,6 +55,7 @@ pub mod factory;
 pub mod logging;
 pub mod ops;
 pub mod registry;
+pub mod shape_infer;
 pub mod sys;
 pub mod transfer;
 // Observability (Niobe). Env-gated Chrome-Trace tracing + the GPU-timestamp ingest seam; inert

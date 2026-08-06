@@ -5037,6 +5037,126 @@ proof register working, and was observed doing exactly that during this work.
 
 ---
 
+### 8.11 Conservative rank inference through `Shape`/`Cast`/`Concat` chains — RULING
+
+*Decided 2026-08-06, on issue #8, against `origin/main` at `fa39a69`.*
+
+#### (1) The defect
+
+ORT hands this EP one `OrtValueInfo` per edge and we read its rank from
+`GetDimensionsCount`. On BERT-SQuAD-12 that reading is **absent for 1,773 edges**, and the
+absence is not noise — it is structural. BERT computes its reshape targets at runtime:
+
+```
+Shape(x) → Cast(to=FLOAT) → Slice → Squeeze → Cast(to=INT32) → Unsqueeze → Concat → Cast(to=INT64) → Reshape(x, ·)
+```
+
+ORT's own partial-data propagation tracks *integral* tensors only. The `Cast` to `FLOAT` is
+therefore load-bearing in the worst way: it destroys ORT's knowledge of the shape tensor's
+**values**, so ORT can no longer fold the `Concat` and can no longer say what rank the
+`Reshape` produces. 58 of BERT's 71 `Reshape` outputs are unranked for this reason, and all
+98 `MatMul` A-inputs inherit the unranked-ness from them. Every claim predicate that needs a
+rank then declines with `unknown-rank`, and the EP executed **4 dispatches** on a
+797-node graph.
+
+But a cast does not change a tensor's *shape*. The **length** of the shape tensor survives
+the round trip through `FLOAT` untouched — and the length is exactly and only what fixes the
+`Reshape` output's rank. The values were never needed.
+
+#### (2) The contract — three rules, and what each one forbids
+
+`rust/src/shape_infer.rs` is a pure-Rust, ORT-free, fail-closed pass run once per
+`GetCapability`, before any claim decision. It obeys three rules:
+
+1. **Only facts ONNX guarantees.** Every rule is a transcription of the operator spec. A
+   dimension that is symbolic stays symbolic; a dimension that is unknown stays unknown. The
+   pass never interpolates, never assumes a batch size, never reads a default. Where the spec
+   admits a case the pass does not handle, the answer is "unknown", not a guess.
+2. **Length is not value.** The pass distinguishes a tensor's *rank* (how many axes) from its
+   *extents* (how long each axis is) and from a shape tensor's *elements* (the numbers inside
+   it, which are a different kind of thing again). `Shape`'s output is a rank-1 tensor whose
+   *length* is the input's rank — a fact about the graph. Its *contents* are the input's
+   extents — facts about the feed. Proving the first without the second is the whole idea.
+3. **Never contradict ORT.** `InferredShapes::refine` may fill in a reading ORT left absent,
+   and may fill ORT's `-1` axes when the ranks agree. It may not overwrite a concrete
+   dimension ORT gave, and on a rank disagreement it keeps ORT's reading whole and discards
+   its own. A fact that is ever contradicted is **poisoned**: withdrawn permanently and
+   counted in `Stats::contradictions` (measured **0** on BERT).
+
+Consequences worth stating explicitly, because each was a bug before it was a rule:
+
+- **`Cast` preserves shape, not meaning.** The shape and rank propagate across any `Cast`.
+  The *values* propagate only when both source and destination are integral, because that is
+  the only case in which a shape tensor's numbers survive exactly.
+- **`Concat` validates before it combines.** All inputs must be present and rank-compatible;
+  the axis is normalised against the rank and a negative or out-of-range axis yields no fact
+  at all. Lengths combine only when *every* input's length along the axis is known — a
+  single unknown piece makes the sum unknown, never "at least".
+- **Rank 0 is not a fact.** ORT reports dimension-count 0 both for a genuine scalar and for a
+  value whose shape was never established, and the C API cannot tell them apart. The pass
+  therefore ignores a rank-0 *reading* entirely (only a real constant may introduce a rank-0
+  fact), and `ep.rs::tensor_desc` refuses to build a static scalar `TensorDesc` from an
+  uncorroborated rank-0 reading. See (4).
+- **Bounded and defensive.** `MAX_INFER_RANK = 8`, `MAX_INFER_INTS = 128`,
+  `MAX_CONSTANT_RANK = 1`, `SWEEP_LIMIT = 64`. Arithmetic is checked; an overflow yields no
+  fact. Cycles and fan-out are handled by iterating to a fixed point rather than walking a
+  chain, so a shape tensor feeding four attention projections unlocks all four or none.
+
+#### (3) Why the facts travel with the EP, and not with the pass
+
+`GetCapability` and `Compile` are different calls with different graphs. `Compile` is handed a
+*fused subgraph* whose boundary producers are outside it, so re-running inference there would
+prove strictly **less** than the pass that justified the claim — and a `Compile` that plans
+from a weaker fact set than the one that claimed is the definition of a broken commitment.
+The overlay is therefore absorbed into `VulkanEp::inferred_shapes` (a `Mutex`, because ORT
+hands us `*const OrtEp` on both paths) and read back when building each `NodeDesc`.
+
+One predicate opts out. `Reshape`'s output rank is a property of a runtime *value*, so a rank
+this pass proved is not a shape `Compute()` can bind; `Reshape` gates on
+`output_type_as_reported`, which bypasses the overlay. Every other row reasons about ranks
+that follow from input shapes, which the dynamic-kernel path re-reads from ORT at `Compute()`.
+
+#### (4) The rank-0 broken commitment this exposed — and fixed
+
+Investigating a converse test surfaced a **pre-existing** defect, reproducible with the pass
+disabled: a `Mul` whose two inputs ORT reported as rank 0 was claimed, planned as a 4-byte
+scalar, and then handed a 1,024-byte tensor at `Compute()` — a BROKEN COMMITMENT and a
+silent CPU re-execution. The cause is rule 3's ambiguity read from the other end: `Compile`
+was treating "ORT said nothing" as "ORT said scalar". `tensor_desc` now returns `None` for
+any rank-0 reading that is not backed by a constant initializer (whose dimensions ORT takes
+from the stored tensor and which therefore really is a scalar), routing the node to the
+dynamic-kernel path that re-reads the real shape at `Compute()`. Slower for a true scalar,
+correct for both.
+
+#### (5) What it bought, measured
+
+`NVIDIA RTX A1000`, release build, `bertsquad-12.onnx`
+(sha256 `5f0d96a9…9659e55`), ORT 1.28.0. A/B by
+`ONNXRUNTIME_EP_VULKAN_RANK_INFERENCE=0` against default:
+
+| | inference OFF | inference ON |
+|---|---|---|
+| dispatches actually executed | 4 | **367** |
+| claimed nodes | 481 | 489 |
+| fused islands | 4 | 52 |
+
+The headline is **dispatches executed**, not `claimed_nodes`: a claim that ends in CPU
+re-execution is not coverage. CPU-vs-Vulkan agreement on all three BERT outputs:
+`unstack:0` max-abs `6.676e-06` / max-rel `2.186e-06`, `unstack:1` max-abs `6.199e-06` /
+max-rel `1.654e-06`, `unique_ids:0` bit-exact. Regressions: MNIST-12 2→2 dispatches
+(bit-exact), MobileNetV2-12 97→97 dispatches (max-abs `9.537e-06`). **No timing claim is made
+here**; none was measured to a standard worth writing down.
+
+#### (6) The kill switch
+
+`ONNXRUNTIME_EP_VULKAN_RANK_INFERENCE=0` disables the pass entirely and restores the previous
+claim decisions exactly. It exists so the A/B above is reproducible by anyone, and so a
+suspected mis-inference can be bisected without a rebuild. The claim log carries a
+`rank_inferred` field per row, so "this row was claimed on a rank this EP worked out" is
+visible rather than inferred.
+
+---
+
 ## 9. Testing and benchmarking strategy
 
 ### 9.1 Differential testing against the ORT CPU EP — Trinity
