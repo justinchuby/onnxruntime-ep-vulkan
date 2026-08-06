@@ -965,9 +965,14 @@ CHECKS: tuple[Check, ...] = (
             "register end to end while that register still has a live entry pointing at "
             "a `gh`-shelling script — must have `GH_TOKEN` or `GITHUB_TOKEN` declared in "
             "an `env:` block it can see (its own, its job's, or the workflow's), in "
-            "either supported YAML shape: block (`env:` then indented keys) or inline "
-            "(`env: {KEY: value}` on one line), parsed semantically rather than by line "
-            "shape (issue #21)."
+            "either supported YAML shape: block (`env:` then indented keys, quoted or "
+            "unquoted) or inline/flow (`env: {KEY: value}`, on one physical line or "
+            "split across several), classified by a YAML-STRUCTURAL parser — an "
+            "indentation-based stack of frames giving exact ancestor-path visibility — "
+            "rather than by line shape or indent thresholds (issue #21; frame-stack "
+            "rewrite issue #25). A duplicate key inside one `env:` mapping is an "
+            "unsupported/ambiguous construct and is ERROR, never a silent last-wins "
+            "guess."
         ),
         status=DEMONSTRATED,
         mutation=(
@@ -990,12 +995,37 @@ CHECKS: tuple[Check, ...] = (
             "screen is also now wired against the whole `.github/workflows` directory "
             "(expanded recursively), not two files named on a command line, so a new "
             "workflow — or one moved into a subdirectory — is screened without anyone "
-            "having to remember to add its name."
+            "having to remember to add its name. An adversarial review of PR #22 (issue "
+            "#25) then found that the two-indent-threshold approach behind issue #21's "
+            "fix could still be fooled: text resembling `env:`/`GH_TOKEN:` inside a "
+            "`run: |` block scalar (a step's own shell script) was structurally "
+            "indistinguishable from a real declaration by indent alone, and a real "
+            "`env` mapping nested under `services.<id>` or `with:` (one level deeper "
+            "than job/step) would have been misattributed to job scope by the same "
+            "two-threshold logic. `parse_workflow()` was rewritten around a generic "
+            "indentation-based stack of frames (exact ancestor-path visibility at any "
+            "depth) rather than two fixed thresholds: a `run: |` (or `>`) block-scalar "
+            "frame's body is never re-interpreted as YAML structure; `env:` is only "
+            "attributed to workflow/job/step scope when the frame stack matches one of "
+            "those three exact ancestor paths, so `services.<id>.env`, `with: env:`, "
+            "and `container: env:` are all excluded generically rather than by special "
+            "case. Quoted block keys (`\"GH_TOKEN\":`), multi-line flow mappings split "
+            "across several physical lines, and trailing `# comment`s after an inline "
+            "`env: {...}` (which the old anchored-regex approach could not match) are "
+            "now all correctly recognised, and a duplicate key within one `env:` "
+            "mapping (block or flow form) raises ERROR(instrument="
+            "unsupported_yaml_construct) rather than silently picking a winner."
         ),
         arm_healthy=(
-            "GH-AUTH: PASS — 2 `gh`-reaching step(s) across 6 workflow file(s), every "
-            "one with GH_TOKEN or GITHUB_TOKEN declared in scope. 3 ci/*.py script(s) "
-            "classified as reaching `gh` (directly or through ci/open_reds.json)."
+            "GH-AUTH: PASS — N `gh`-reaching step(s) across every workflow file under "
+            ".github/workflows, every one with GH_TOKEN or GITHUB_TOKEN declared in "
+            "scope. The file/subject counts are derived at check-time from the real "
+            "directory listing and the real YAML, not hardcoded in this table — as of "
+            "2026-08-05 that reads `PASS — 2 gh-reaching step(s) across 6 workflow "
+            "file(s)`, but the exact figures are expected to drift as workflows are "
+            "added; read the check's own stdout for the current count, not this line. "
+            "3 ci/*.py script(s) classified as reaching `gh` (directly or through "
+            "ci/open_reds.json)."
         ),
         arm_broken=(
             "GH-AUTH: FAIL(condition=missing_token_path) — REPLAYED against the real "
@@ -1022,11 +1052,29 @@ CHECKS: tuple[Check, ...] = (
             "ci/negative_control_open_reds.py's real run of the register from "
             "ci/test_lane_checks.py's synthetic one without producing exactly that "
             "false positive.",
-            "The inline-mapping key scan (`_flow_mapping_keys`) is a regex over flow "
-            "syntax, not a real YAML flow-mapping parser — a token value containing an "
-            "unbalanced quoted comma could in principle confuse it, a shape this "
-            "repository's own workflows never produce (values are `${{ ... }}` "
-            "expressions with no embedded commas or quotes).",
+            "The inline/flow-mapping key scan (`_flow_mapping_key_list`) is a bracket-"
+            "balance/regex scan over flow syntax, not a real YAML flow-mapping parser "
+            "— it is quote-aware and multi-line-aware (issue #25) but a value "
+            "containing an escaped quote adjacent to an unbalanced brace could in "
+            "principle still confuse it, a shape this repository's own workflows never "
+            "produce (values are `${{ ... }}` expressions with no embedded escaped "
+            "quotes).",
+            "Issue #25 fixed three named blind spots (`run: |` block-scalar text, "
+            "`services.<id>.env`, `with: env:`) plus quoted block keys, duplicate-key "
+            "detection, and multi-line flow mappings. The same exact-ancestor-path "
+            "mechanism also now excludes `container: env:` as a side effect, though "
+            "that shape is not separately named in either issue and has no dedicated "
+            "negative-control arm of its own.",
+            "The parser is a constrained, hand-rolled indentation walker, not a "
+            "general-purpose YAML implementation (deliberately — this repository's "
+            "lane-checks CI job installs only `pytest onnx numpy`, no PyYAML, and "
+            "PyYAML's own default duplicate-key behaviour is a silent last-wins rather "
+            "than an error, which would have reopened exactly the ambiguity this fix "
+            "closes). Constructs this repository's own workflows do not use — YAML "
+            "anchors/aliases (`&`/`*`), tag directives, flow sequences nested inside a "
+            "flow mapping's value, multi-document files (`---`) — are unsupported and "
+            "will either be misread or raise ERROR(instrument=unsupported_yaml_"
+            "construct) rather than being silently approximated.",
         ),
     ),
     Check(
@@ -1044,18 +1092,27 @@ CHECKS: tuple[Check, ...] = (
             "check; a wrongly-named env key does not; a zero-gh-reaching-subject frame "
             "is ERROR by default and PASS only with --allow-empty-frame; an empty or "
             "mis-scoped directory is ERROR; and directory expansion recurses into "
-            "subdirectories so a nested workflow cannot hide from a broader invocation."
+            "subdirectories so a nested workflow cannot hide from a broader invocation. "
+            "Issue #25 added: text resembling `env:`/`GH_TOKEN:` inside a `run: |` "
+            "block scalar, and a real `env` mapping nested under `services.<id>` or "
+            "`with:`, must NOT satisfy the check; a quoted block key and a multi-line "
+            "flow mapping MUST satisfy it; a duplicate key within one `env:` mapping "
+            "(either YAML shape) is ERROR(instrument=unsupported_yaml_construct); and "
+            "ci.yml's real production invocation is pinned to the `.github/workflows` "
+            "directory form, not two files named on a command line."
         ),
         status=DEMONSTRATED,
         mutation=(
-            "24 arms: 7 LIVE (today's workflows and the whole workflows directory pass "
+            "33 arms: 8 LIVE (today's workflows and the whole workflows directory pass "
             "the screen; screening only conformance.yml — genuinely 0 gh-reaching steps "
             "— is ERROR(instrument=zero_gh_reaching_subjects), never a silent PASS; "
             "check_main_is_green.py with GH_TOKEN/GITHUB_TOKEN/GH_ENTERPRISE_TOKEN "
             "removed and GH_CONFIG_DIR pointed at an empty throwaway directory must "
-            "exit 4 with ERROR(instrument=github_unreachable) and never PASS or SKIP), "
+            "exit 4 with ERROR(instrument=github_unreachable) and never PASS or SKIP; "
+            "ci.yml's own text is read and its real check_gh_auth.py invocation is "
+            "asserted to be the single `.github/workflows` directory form), "
             "2 REPLAYED (the real ci.yml at b1886d99 convicts on `Open-reds negative "
-            "control`; the same rule over today's bytes is green), 15 PLANTED (no-token "
+            "control`; the same rule over today's bytes is green), 23 PLANTED (no-token "
             "API call; non-API `gh --version` with no token of its own is NOT counted; "
             "a token in a different job does not satisfy this one; a job-level token "
             "satisfies every step in that job; block-form and inline-form `env:` at "
@@ -1066,9 +1123,15 @@ CHECKS: tuple[Check, ...] = (
             "through the real open-reds register is still caught; a missing workflow "
             "file is ERROR(instrument), not a red; an empty workflow is "
             "ERROR(instrument=no_steps_parsed); a comment that merely quotes `gh run "
-            "list` as prose is not mistaken for the command)."
+            "list` as prose is not mistaken for the command; env-like text inside a "
+            "`run: |` block scalar does not satisfy the check; `services.<id>.env` and "
+            "`with: env:` do not satisfy job/step scope; a quoted block key satisfies "
+            "the check exactly like an unquoted one; a duplicate key in block-form or "
+            "flow-form `env:` is ERROR, never a silent guess; a trailing comment after "
+            "an inline `env: {...}` does not hide it; a flow mapping split across "
+            "several physical lines is still read as one declaration)."
         ),
-        arm_healthy="24/24 arms fire as specified, exit 0",
+        arm_healthy="33/33 arms fire as specified, exit 0",
         arm_broken=(
             "Each arm is red by construction with its defect genuinely present: the "
             "screen convicts the real pre-fix ci.yml bytes; check_main_is_green.py with "
@@ -1077,7 +1140,7 @@ CHECKS: tuple[Check, ...] = (
         ),
         observed="2026-08-05",
         misses=(
-            "15 of 24 arms are PLANTED and this control prints that ratio itself. A "
+            "23 of 33 arms are PLANTED and this control prints that ratio itself. A "
             "planted arm proves the rule fires on the shape it was written for; it does "
             "not show the rule is load-bearing. The LIVE and REPLAYED arms are the ones "
             "that do.",

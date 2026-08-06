@@ -5,6 +5,13 @@ an instrument error, never a PASS and never a skip. Extended for issue #21 with 
 blind spots PR #17's review found: inline `env: {GH_TOKEN: ...}` being falsely convicted,
 and a zero-`gh`-reaching-subject frame (e.g. the screen pointed at the wrong scope, a
 subdirectory, or a file that genuinely has nothing to check) reporting a silent PASS.
+Extended again for issue #25 with the YAML-STRUCTURAL blind spots an adversarial review
+of #22 found: text resembling `env:`/`GH_TOKEN:` inside a `run: |` block scalar, and a
+real `env` mapping nested under something else entirely (`services.<id>.env`, `with:
+env:`) — both of which a purely line-oriented "more indented than X" check cannot tell
+apart from a real declaration. Plus: quoted block keys and multi-line flow mappings must
+still be RECOGNISED as valid declarations, and a duplicate key in one `env:` mapping must
+fail loudly rather than silently pick a winner.
 
 A screen that has only ever been observed green is indistinguishable from a constant that
 returns green. Every rule below is therefore exercised with the defect GENUINELY PRESENT,
@@ -24,6 +31,7 @@ Run:  python ci/negative_control_gh_auth.py
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -389,6 +397,162 @@ def main() -> int:
             "command (only the file's one real `gh api` call is counted)",
             r.returncode == EXIT_PASS and "PASS — 1 `gh`-reaching step" in r.stdout,
             (r.stdout or "")[-600:],
+        )
+
+        print("\nPLANTED — issue #25: YAML-structural shapes a line-oriented scan cannot tell apart")
+
+        r = plant(
+            "run-block-scalar-trap.yml",
+            # Text that resembles a real `env:`/`GH_TOKEN:` declaration, but sitting
+            # inside a `run: |` block scalar -- a step's own shell script, not YAML
+            # structure. A line-oriented "is this line more indented than X" check
+            # cannot tell this apart from a real declaration; a structural parser must.
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        run: |\n"
+            "          echo \"this text is not yaml:\"\n"
+            "          echo \"env:\"\n"
+            "          echo \"  GH_TOKEN: fake\"\n"
+            "          gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "text resembling `env:`/`GH_TOKEN:` inside a `run: |` block scalar is "
+            "literal script text, not a real token declaration -- still convicted",
+            r.returncode == EXIT_FAIL_CONDITION and "missing_token_path" in r.stdout,
+            (r.stdout or "")[-600:],
+        )
+
+        r = plant(
+            "services-env-trap.yml",
+            # `services.<id>.env` is a real YAML mapping named `env`, but it is the
+            # SERVICE CONTAINER's environment, not the job's/step's -- a nested
+            # unrelated map, not a token path any step here can see.
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    services:\n      redis:\n        image: redis\n"
+            "        env:\n          GH_TOKEN: fake\n"
+            "    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "`services.<id>.env` does not satisfy the check -- it is the service "
+            "container's environment, not the job's",
+            r.returncode == EXIT_FAIL_CONDITION and "missing_token_path" in r.stdout,
+            (r.stdout or "")[-600:],
+        )
+
+        r = plant(
+            "with-env-trap.yml",
+            # `with: env:` is a real YAML mapping named `env`, but it is an ACTION
+            # INPUT that happens to be called `env` -- not the step's own execution
+            # environment.
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        uses: some/action@v1\n"
+            "        with:\n          env:\n            GH_TOKEN: fake\n"
+            "      - name: real\n        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "`with: env:` does not satisfy the check -- it is an action input named "
+            "`env`, not the step's own environment",
+            r.returncode == EXIT_FAIL_CONDITION and "missing_token_path" in r.stdout,
+            (r.stdout or "")[-600:],
+        )
+
+        r = plant(
+            "quoted-block-key.yml",
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        env:\n"
+            '          "GH_TOKEN": ${{ github.token }}\n'
+            "        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "a quoted block-form key (`\"GH_TOKEN\":`) satisfies the check exactly "
+            "like an unquoted one",
+            r.returncode == EXIT_PASS,
+            (r.stdout or "")[-600:],
+        )
+
+        r = plant(
+            "duplicate-block-key.yml",
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        env:\n"
+            "          GH_TOKEN: one\n          GH_TOKEN: two\n"
+            "        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "a key declared twice in one BLOCK-form `env:` mapping is an "
+            "unsupported/ambiguous construct -- ERROR, never a silent guess",
+            r.returncode == EXIT_ERROR_INSTRUMENT
+            and "unsupported_yaml_construct" in r.stdout
+            and "declared twice" in r.stdout,
+            (r.stdout or "")[-600:],
+        )
+
+        r = plant(
+            "duplicate-flow-key.yml",
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n"
+            "        env: {GH_TOKEN: one, GH_TOKEN: two}\n"
+            "        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "a key declared twice in one FLOW-form `env: {...}` mapping is the same "
+            "unsupported/ambiguous construct -- ERROR, never a silent guess",
+            r.returncode == EXIT_ERROR_INSTRUMENT
+            and "unsupported_yaml_construct" in r.stdout
+            and "declared twice" in r.stdout,
+            (r.stdout or "")[-600:],
+        )
+
+        r = plant(
+            "trailing-comment-on-inline-env.yml",
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n"
+            "        env: {GH_TOKEN: ${{ github.token }}}  # ci: token lives here\n"
+            "        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "a trailing `# comment` after a real inline `env: {...}` declaration "
+            "does not stop it from being read as a declaration",
+            r.returncode == EXIT_PASS,
+            (r.stdout or "")[-600:],
+        )
+
+        r = plant(
+            "multiline-flow-mapping.yml",
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        env: {\n"
+            "          GH_TOKEN: ${{ github.token }},\n"
+            "          OTHER: value\n        }\n"
+            "        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "a flow mapping `env: {...}` split across several physical lines is "
+            "still read as one declaration, not missed the way a single-line-only "
+            "regex would miss it",
+            r.returncode == EXIT_PASS,
+            (r.stdout or "")[-600:],
+        )
+
+        print("\nLIVE — issue #25: ci.yml's production invocation is pinned to the directory form")
+        # The wiring concern issue #25 (and #21 before it) exists to close: naming
+        # files one at a time on the command line is exactly how a new/relocated
+        # workflow keeps going unscreened. Read the real step's `run:` text and prove
+        # it is the single-directory form, not two (or more) named files -- reverting
+        # this wiring is exactly the regression this arm exists to catch.
+        ci_text = CI_YML.read_text(encoding="utf-8")
+        invocations = re.findall(r"run: python ci/check_gh_auth\.py ([^\n]+)", ci_text)
+        record(
+            "LIVE",
+            "the real ci.yml invokes check_gh_auth.py with the whole "
+            ".github/workflows directory, not named files",
+            len(invocations) == 1 and invocations[0].strip() == ".github/workflows",
+            f"invocation(s) found: {invocations!r}",
         )
 
     finally:
