@@ -90,6 +90,24 @@ TABLE: dict[str, dict[str, str]] = {
         "subject": "a claim about what a run did",
         "oracle": "the loaded EP's live counters",
     },
+    # ---- rust/modelrunner: the Rust-native real-model runner ---------------------------------
+    "ort-model-runner --check-model-agreement": {
+        "verdict": "ARTIFACT",
+        "subject": "a real ONNX model's outputs from the Vulkan EP, and the claim that the "
+                   "Vulkan EP is what produced them",
+        "oracle": "three sides this EP does not write: ONNX Runtime's own profile JSON, which "
+                  "attributes each executed node to a provider; the CPU EP's outputs for the "
+                  "same pinned bytes; and bench/results/model_provenance.json's SHA-256 pin",
+        "note": (
+            "The EP's own dispatch counter is the CORROBORATING witness only, never the "
+            "primary one — it is inside the frame under question. ORT's profile is outside "
+            "it, so the profile decides and a disagreement between the two is recorded as a "
+            "split frame rather than resolved in the EP's favour. This is the guard "
+            "rust/tools/probe_model_output_agreement.py documents and does not implement: "
+            "`VulkanExecutionProvider in get_providers()` is true whenever the EP was merely "
+            "REQUESTED, so a run that fell back to CPU for every node passes it."
+        ),
+    },
     # ---- ci/: the lane checks ----------------------------------------------------------------
     "ci/check_build_precondition.py": {
         "verdict": "EXTERNAL",
@@ -252,6 +270,13 @@ def discovered() -> list[str]:
     if epctl.is_file():
         for m in re.finditer(r'"(--check-[a-z-]+)"', epctl.read_text(encoding="utf-8")):
             found.append(f"epctl {m.group(1)}")
+    # The Rust-native model runner is a second compiled entry point, discovered the same way as
+    # epctl and for the same reason: a check that lives in a binary is still a check, and a sweep
+    # that only reads *.py would report a complete table while a whole verifier sat outside it.
+    runner = REPO / "rust" / "modelrunner" / "src" / "main.rs"
+    if runner.is_file():
+        for m in re.finditer(r'"(--check-[a-z-]+)"', runner.read_text(encoding="utf-8")):
+            found.append(f"ort-model-runner {m.group(1)}")
     return sorted(set(found))
 
 

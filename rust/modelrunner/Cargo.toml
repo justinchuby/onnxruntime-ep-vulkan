@@ -1,0 +1,48 @@
+# The Rust-native real-model validation runner (issue #5).
+#
+# WHY THIS IS A SEPARATE CRATE AND NOT A `[[bin]]` IN THE EP CRATE
+# ----------------------------------------------------------------
+# The runner is a *host*: it loads ONNX Runtime, registers the plugin EP, and runs models. The EP
+# is a *plugin*: it is loaded by someone else's process. Their dependency sets must not merge. A
+# `[[bin]]` here would put `libloading` (a host-only need) into the shipped cdylib's dependency
+# graph, which is exactly the packaging hygiene that crate's own manifest argues for at length.
+# `xtask` set the precedent: workspace member, not a default member, so a bare `cargo build` /
+# `cargo test` in `rust/` still means "the EP crate and nothing else".
+#
+# IT REUSES THE EP CRATE'S BINDINGS RATHER THAN GENERATING ITS OWN
+# ----------------------------------------------------------------
+# `onnxruntime-ep-vulkan` is a path dependency for exactly one reason: `sys::ort` (the bindgen
+# output from the vendored ORT headers) and the version gate that sits on top of it. A second
+# bindgen invocation over the same headers would be a second source of truth for a struct whose
+# field *order* is load-bearing -- the failure mode `rust/src/sys.rs` was written to prevent.
+[package]
+name = "ort-model-runner"
+version = "0.28.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Python-free host that runs real ONNX models on the CPU and Vulkan execution providers and compares them."
+license = "MIT"
+publish = false
+
+[lib]
+name = "ort_model_runner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ort-model-runner"
+path = "src/main.rs"
+
+[dependencies]
+# The bindings and the version gate. See the manifest note above.
+onnxruntime-ep-vulkan = { path = ".." }
+
+# The only third-party dependency, and it is the one ONNX Runtime's own C API requires of any
+# host that does not link against it: `dlopen`/`LoadLibraryExW` plus `dlsym`. Already in this
+# workspace's lockfile as the EP crate's dev-dependency (`tests/cdylib_load.rs`), so adding the
+# runner pulls nothing new from the network.
+libloading = "0.8"
+
+# NOTHING ELSE, ON PURPOSE. Issue #5 exists because this machine cannot reach PyPI; a runner that
+# answered that by reaching for six crates instead would have moved the dependency, not removed
+# it. SHA-256 (`sha256.rs`), JSON (`json.rs`) and the deterministic PRNG (`feeds.rs`) are in-tree
+# and unit-tested against published vectors.

@@ -2,8 +2,15 @@
 # `cargo run --package xtask` resolves without a `--manifest-path`, and it is excluded from
 # `default-members` so that a bare `cargo build` / `cargo test` here still means "the EP crate"
 # and nothing else — including in CI, which invokes `--manifest-path rust/Cargo.toml`.
+#
+# `modelrunner` (the Python-free real-model validation host, issue #5) is a member on the same
+# terms and for a second reason: it depends on `libloading`, which is a *host* need. Keeping it
+# out of `default-members` keeps that dependency out of the shipped plugin's graph, and keeps the
+# meaning of every `cargo build`/`cargo test`/`cargo clippy` command already written down in
+# `rust/README.md` and in `.github/workflows/ci.yml` exactly what it was. Its own gates are
+# explicit: `cargo test -p ort-model-runner`, `cargo clippy -p ort-model-runner`.
 [workspace]
-members = ["xtask"]
+members = ["xtask", "modelrunner"]
 default-members = ["."]
 
 [package]

@@ -801,6 +801,34 @@ jobs:
           bench/results/ci-lane/cargo-test-lib-linux.log
 
       # -------------------------------------------------------
+      # Model runner — rust/modelrunner is a workspace member and NOT a
+      # default member, so `cargo check --all-targets` and `cargo clippy`
+      # above do not touch it. Without this step the crate would compile
+      # only on the developer machine that wrote it: a Rust-native runner
+      # whose whole reason to exist is "works where PyPI is blocked" would
+      # be the one thing CI never built.
+      #
+      # -p is therefore not an optimisation here, it is the coverage.
+      # Its unit tests are pure (SHA-256 vectors, JSON round-trips, the
+      # pinned PRNG stream, tolerance policy, comparator NaN asymmetry,
+      # library-discovery arbitration) and its integration tests drive the
+      # real binary with planted-negative caches. Neither needs a GPU, an
+      # ONNX Runtime, or a network. This lane is also the only place the
+      # Linux half of the path/loader code is exercised at all.
+      # -------------------------------------------------------
+      - name: Model runner (cargo test -p ort-model-runner, no device needed)
+        run: |
+          set -o pipefail
+          mkdir -p bench/results/ci-lane
+          touch bench/results/ci-lane/.reached-modelrunner-linux
+          ORT_INCLUDE_DIR="$ORT_HOME/include" \
+            cargo clippy --release --manifest-path rust/Cargo.toml \
+            -p ort-model-runner --all-targets -- -D warnings
+          ORT_INCLUDE_DIR="$ORT_HOME/include" \
+            cargo test --release --manifest-path rust/Cargo.toml -p ort-model-runner \
+            2>&1 | tee bench/results/ci-lane/cargo-test-modelrunner-linux.log
+
+      # -------------------------------------------------------
       # Contention gate — the step above runs ONCE, and once is not
       # enough to see an intermittent.
       #
@@ -1400,6 +1428,32 @@ jobs:
             --suite "cargo test --lib" --harness libtest --lane build-test-windows `
             --lane-marker=bench\results\ci-lane\.reached-lib-windows `
             bench\results\ci-lane\cargo-test-lib-windows.log
+          exit $LASTEXITCODE
+
+      # -------------------------------------------------------
+      # Model runner — rust/modelrunner is a workspace member and NOT a
+      # default member, so `cargo check --all-targets` and `cargo clippy`
+      # above do not touch it. Without this step the crate would compile
+      # only on the developer machine that wrote it: a Rust-native runner
+      # whose whole reason to exist is "works where PyPI is blocked" would
+      # be the one thing CI never built.
+      #
+      # -p is therefore not an optimisation here, it is the coverage.
+      # Its unit tests are pure (SHA-256 vectors, JSON round-trips, the
+      # pinned PRNG stream, tolerance policy, comparator NaN asymmetry,
+      # library-discovery arbitration) and its integration tests drive the
+      # real binary with planted-negative caches. Neither needs a GPU, an
+      # ONNX Runtime, or a network.
+      # -------------------------------------------------------
+      - name: Model runner (cargo test -p ort-model-runner, no device needed)
+        run: |
+          $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
+          New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          New-Item -ItemType File -Force -Path bench\results\ci-lane\.reached-modelrunner-windows | Out-Null
+          cargo clippy --release --manifest-path rust\Cargo.toml -p ort-model-runner --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --release --manifest-path rust\Cargo.toml -p ort-model-runner 2>&1 |
+            Tee-Object -FilePath bench\results\ci-lane\cargo-test-modelrunner-windows.log
           exit $LASTEXITCODE
 
       # -------------------------------------------------------

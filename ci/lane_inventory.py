@@ -733,6 +733,50 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="build.model_runner",
+        falsifier=FALSIFIER_PLANTED,
+        lane="both",
+        step="Model runner (cargo test -p ort-model-runner, no device needed)",
+        watches=(
+            "The Rust-native real-model runner's host-free half: SHA-256 against NIST "
+            "vectors, JSON round-trips, the pinned deterministic input stream, the "
+            "per-model tolerance policy, the comparator's NaN asymmetry, ONNX Runtime "
+            "library arbitration (absent / ambiguous / version-gated), model-pin refusal "
+            "on both size and hash, and the rule that a missing counters snapshot is "
+            "ABSENT rather than zero. Also that the crate compiles and lints at all: "
+            "rust/modelrunner is a workspace member and NOT a default member, so the "
+            "`Compile all targets` and `Clippy` steps in the same job do not reach it."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "In rust/modelrunner/src/evidence.rs, make `Counters::read` report "
+            "`present: true` when the snapshot file does not exist — i.e. collapse "
+            "\"the instrument did not report\" into \"the EP dispatched nothing\", "
+            "which is the exact shape that lets a run with no EP loaded read as a run "
+            "that legitimately did no work."
+        ),
+        arm_healthy="98 passed; 0 failed (84 lib + 14 integration), clippy -D warnings clean",
+        arm_broken=(
+            "evidence::tests::a_missing_counters_file_is_absent_not_zero FAILED — "
+            "panicked at modelrunner/src/evidence.rs:218 'assertion failed: !c.present'; "
+            "test result: FAILED. 83 passed; 1 failed"
+        ),
+        observed="2026-08-06",
+        misses=(
+            "Everything that needs a device. This step never opens a Vulkan queue, never "
+            "loads ONNX Runtime and never runs a model, so it cannot see the guard the "
+            "runner exists for — that ORT's profile attributed executed nodes to "
+            "VulkanExecutionProvider. That claim is only made by a real "
+            "`--check-model-agreement` run on a machine with a device; the evidence for "
+            "it lives in bench/results/rust-model-runner/ with an artifact frame, and it "
+            "is a READING, not a lane.",
+            "It cannot see the Linux half of the loader/path code any better than the "
+            "Windows half sees the Windows one — each lane compiles and exercises only "
+            "its own #[cfg] branch. The cfg-gated arms of ortlib.rs and ortapi.rs are "
+            "each proven on exactly one of the two lanes.",
+        ),
+    ),
+    Check(
         id="build.layering_lint_productivity",
         falsifier=FALSIFIER_PLANTED,
         lane="both",
