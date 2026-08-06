@@ -1410,6 +1410,166 @@ def _observe_ep_entrypoints(clean_doc: dict, inject_doc: dict) -> str:
     )
 
 
+def _gpu_tracer_observation(trace_path: "Path") -> str:
+    """Build the `gpu_tracer` mechanism's NAME-AGAINST-CONTENT observation from one
+    census arm's Chrome-trace JSON at *trace_path*.
+
+    ISSUE #24 (2026-08-06): this used to end its string with
+    ``armed by this census via {_ENV_TRACE}={trace_path.name}``.  The census's own three
+    arms each write to `census-trace-dev{0,1,unset}.json` — a name derived from
+    `ONNXRUNTIME_EP_VULKAN_DEVICE`, the very thing that DEFINES an arm — so that fragment
+    differed across every arm BY CONSTRUCTION, regardless of what tracing found.
+    Criterion 12's NAME-AGAINST-CONTENT check (`ci/check_census_completeness.py`)
+    compares this string verbatim across arms to ask whether `gpu_tracer`'s claim would
+    have read differently had it been wrong; with the per-arm path folded in, the answer
+    was `VARIES` on every run ever taken, even though the three arms never toggle
+    `ONNXRUNTIME_EP_VULKAN_TRACE_GPU` and emit the identical phase set — a permanent
+    false positive that made it impossible to ever catch someone marking `gpu_tracer`
+    `name_verified: true` on the strength of nothing (the exact defect
+    `ci/negative_control_census_completeness.py::arm_name_claim_contradicted` plants and
+    checks for, using this real function and the real map).
+
+    The env var NAME below (`{_ENV_TRACE}`, no `=path`) is real content — it says the
+    tracer was armed for this run at all.  The specific file it happened to write to is
+    bookkeeping the census needed to avoid three arms clobbering one file, not a claim
+    about tracing, and is intentionally left out of this string.
+    """
+    trace_data = json.loads(trace_path.read_text(encoding="utf-8"))
+    events = (
+        trace_data if isinstance(trace_data, list)
+        else trace_data.get("traceEvents", []) if isinstance(trace_data, dict)
+        else []
+    )
+    if not events:
+        return f"UNWIRED (armed via {_ENV_TRACE} and the file it wrote contains no events)"
+
+    phases = sorted({e.get("ph") for e in events if isinstance(e, dict)})
+    names = sorted({e.get("name") for e in events if isinstance(e, dict)})
+    # WHICH of Niobe's ten `Phase` variants did this trace carry?
+    #
+    # The line used to report `distinct_names=<n>` and no names at all, so its
+    # extent against the tracer's own surface was 1/12: it named the switch that
+    # armed it and not one of the phases it was supposed to have traced.  A count
+    # of distinct names would certify `Phase::Record` — wired, invoked, correct,
+    # input-varying, and wrong by 50x in what it was called — exactly as it stood.
+    #
+    # The absent variants are reported as NOT-EMITTED, not as 0, and the device
+    # switch's in-force state is printed beside them so a reader can tell "this
+    # phase did not occur" from "this phase could not occur in this frame" (R12).
+    blob = json.dumps(events)[:2_000_000]
+    emitted = [
+        p for p in _TRACE_PHASES
+        if _phase_event_name(p) in names or f'"{_phase_event_name(p)}"' in blob
+    ]
+    absent = [p for p in _TRACE_PHASES if p not in emitted]
+    return (
+        f"{len(events)} trace event(s), ph_types={phases}, "
+        f"distinct_names={len(names)}; "
+        f"Phase variants emitted ({len(emitted)}/{len(_TRACE_PHASES)}): "
+        f"{emitted or 'none'}; NOT-EMITTED: {absent or 'none'} "
+        f"(matched as {[_phase_event_name(p) for p in _TRACE_PHASES[:2]]}… — "
+        "the trace spells the variants snake_case under a `vulkan.` prefix, "
+        "per trace.rs::Phase::as_str; a matcher that looked for the Rust "
+        "identifier reported 0/10 and was wrong, which is why R13 says a "
+        "result confirming a prediction earns more scrutiny than one "
+        "contradicting it); "
+        f"(armed by this census via {_ENV_TRACE}; "
+        f"{_ENV_TRACE_GPU}={_in_force(_ENV_TRACE_GPU)} — the census does not "
+        "arm device spans, because a device-clock reading under four-agent "
+        "contention is Switch's exclusive claim and Niobe's admissibility "
+        "frame, so any device-side phase above is UNOBSERVABLE in this frame "
+        "rather than absent. No duration from this file is quoted — §10.0 "
+        "obligation 8. A variant present in Rust and missing from this list "
+        "is a name this census has never seen emitted, which is what "
+        "Phase::Record was for fifty runs. The per-arm trace FILE this ran "
+        "wrote to is deliberately not named above — see issue #24)"
+    )
+
+
+def test_gpu_tracer_observation_does_not_vary_with_the_arms_own_device_selector(
+    tmp_path,
+) -> None:
+    """CONVERSE/POSITIVE control for issue #24's fix.
+
+    Builds three fixture trace files under the EXACT names the census's own three real
+    arms write to — `census-trace-dev0.json`, `census-trace-dev1.json`,
+    `census-trace-devunset.json` (`ONNXRUNTIME_EP_VULKAN_DEVICE`'s three values) — with
+    byte-identical trace content in each, and asserts `_gpu_tracer_observation` reads
+    identically across all three. This does not depend on a live Vulkan run having
+    already populated `bench/results/census/`: it reproduces the exact defect (an
+    arm-identifying file name, not a content difference) deterministically, so the
+    control does not silently pass or skip depending on what ambient scratch happens to
+    exist on the machine running it.
+    """
+    same_events = json.dumps(
+        [
+            {"ph": "X", "name": "vulkan.record"},
+            {"ph": "X", "name": "vulkan.submit"},
+        ]
+    )
+    names = ("census-trace-dev0.json", "census-trace-dev1.json", "census-trace-devunset.json")
+    observed = {}
+    for name in names:
+        path = tmp_path / name
+        path.write_text(same_events, encoding="utf-8")
+        observed[name] = _gpu_tracer_observation(path)
+
+    distinct = set(observed.values())
+    assert len(distinct) == 1, (
+        "three trace files differing ONLY in the arm-identifying name the census's own "
+        "device selector produces, with byte-identical events, must read identically -- "
+        "if this fails, the per-arm file name has leaked back into the compared string:\n"
+        + "\n".join(f"  {name}: {text}" for name, text in observed.items())
+    )
+
+    real_traces = sorted(_CENSUS_OUT.glob("census-trace-dev*.json"))
+    if len(real_traces) >= 2:
+        # Best-effort extra evidence when a prior live Vulkan run has left the real
+        # per-arm trace files on this machine: the same invariance must hold on them too.
+        real_observed = {p.name: _gpu_tracer_observation(p) for p in real_traces}
+        assert len(set(real_observed.values())) == 1, (
+            "the real census arms on this machine differ only by "
+            "ONNXRUNTIME_EP_VULKAN_DEVICE and none of them toggle "
+            "ONNXRUNTIME_EP_VULKAN_TRACE_GPU or emit a different phase set, so "
+            "gpu_tracer's observation must read identically across all of them:\n"
+            + "\n".join(f"  {name}: {text}" for name, text in real_observed.items())
+        )
+
+
+def test_gpu_tracer_observation_still_varies_when_trace_content_genuinely_differs(
+    tmp_path,
+) -> None:
+    """PLANTED-RED control: the fix above must not collapse this into a constant.
+
+    Two synthetic trace files differing in which Phase variants they actually emitted
+    must still produce different `_gpu_tracer_observation` text — proving the function
+    still reports genuine content variation, not just "whatever the fix hides".
+    """
+    sparse = tmp_path / "census-trace-sparse.json"
+    sparse.write_text(
+        json.dumps([{"ph": "X", "name": "vulkan.record"}]), encoding="utf-8"
+    )
+    richer = tmp_path / "census-trace-richer.json"
+    richer.write_text(
+        json.dumps(
+            [
+                {"ph": "X", "name": "vulkan.record"},
+                {"ph": "X", "name": "vulkan.submit"},
+                {"ph": "X", "name": "vulkan.fence_wait"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    a = _gpu_tracer_observation(sparse)
+    b = _gpu_tracer_observation(richer)
+    assert a != b, (
+        "a trace emitting one Phase variant and a trace emitting three must not read "
+        f"identically:\n  sparse: {a}\n  richer: {b}"
+    )
+    assert "Phase variants emitted (1/" in a, a
+    assert "Phase variants emitted (3/" in b, b
+
+
 def _print_census(observations: dict, guard) -> "Path":
     """Emit the census lines and write the artifact.  Called on every exit path.
 
@@ -1729,64 +1889,13 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
     # someone else's environment, so the line carries a span count this run produced.
     if _CENSUS_TRACE_PATH.is_file():
         try:
-            trace_data = json.loads(_CENSUS_TRACE_PATH.read_text(encoding="utf-8"))
-            events = (
-                trace_data if isinstance(trace_data, list)
-                else trace_data.get("traceEvents", []) if isinstance(trace_data, dict)
-                else []
-            )
-            phases = sorted({e.get("ph") for e in events if isinstance(e, dict)})
-            names = sorted({e.get("name") for e in events if isinstance(e, dict)})
-            # WHICH of Niobe's ten `Phase` variants did this trace carry?
-            #
-            # The line used to report `distinct_names=<n>` and no names at all, so its
-            # extent against the tracer's own surface was 1/12: it named the switch that
-            # armed it and not one of the phases it was supposed to have traced.  A count
-            # of distinct names would certify `Phase::Record` — wired, invoked, correct,
-            # input-varying, and wrong by 50x in what it was called — exactly as it stood.
-            #
-            # The absent variants are reported as NOT-EMITTED, not as 0, and the device
-            # switch's in-force state is printed beside them so a reader can tell "this
-            # phase did not occur" from "this phase could not occur in this frame" (R12).
-            blob = json.dumps(events)[:2_000_000]
-            emitted = [
-                p for p in _TRACE_PHASES
-                if _phase_event_name(p) in names or f'"{_phase_event_name(p)}"' in blob
-            ]
-            absent = [p for p in _TRACE_PHASES if p not in emitted]
-            if not events:
-                observations["gpu_tracer"] = (
-                    f"UNWIRED (armed via {_ENV_TRACE}={_CENSUS_TRACE_PATH.name} and the "
-                    "file it wrote contains no events)"
-                )
-            else:
-                observations["gpu_tracer"] = (
-                    f"{len(events)} trace event(s), ph_types={phases}, "
-                    f"distinct_names={len(names)}; "
-                    f"Phase variants emitted ({len(emitted)}/{len(_TRACE_PHASES)}): "
-                    f"{emitted or 'none'}; NOT-EMITTED: {absent or 'none'} "
-                    f"(matched as {[_phase_event_name(p) for p in _TRACE_PHASES[:2]]}… — "
-                    "the trace spells the variants snake_case under a `vulkan.` prefix, "
-                    "per trace.rs::Phase::as_str; a matcher that looked for the Rust "
-                    "identifier reported 0/10 and was wrong, which is why R13 says a "
-                    "result confirming a prediction earns more scrutiny than one "
-                    "contradicting it); "
-                    f"(armed by this census via {_ENV_TRACE}={_CENSUS_TRACE_PATH.name}; "
-                    f"{_ENV_TRACE_GPU}={_in_force(_ENV_TRACE_GPU)} — the census does not "
-                    "arm device spans, because a device-clock reading under four-agent "
-                    "contention is Switch's exclusive claim and Niobe's admissibility "
-                    "frame, so any device-side phase above is UNOBSERVABLE in this frame "
-                    "rather than absent. No duration from this file is quoted — §10.0 "
-                    "obligation 8. A variant present in Rust and missing from this list "
-                    "is a name this census has never seen emitted, which is what "
-                    "Phase::Record was for fifty runs)"
-                )
+            observations["gpu_tracer"] = _gpu_tracer_observation(_CENSUS_TRACE_PATH)
         except Exception as exc:  # noqa: BLE001
             observations["gpu_tracer"] = f"INSTRUMENT-ERROR (trace file unreadable: {exc})"
     else:
         observations["gpu_tracer"] = (
-            f"UNWIRED ({_ENV_TRACE} was set to {_CENSUS_TRACE_PATH} for the counters "
-            "child and no trace file was written on EP teardown)"
+            f"UNWIRED ({_ENV_TRACE} was set for the counters child and no trace file "
+            "was written on EP teardown)"
         )
 
     # ── Mechanism 4: model_output_equivalence ────────────────────────────

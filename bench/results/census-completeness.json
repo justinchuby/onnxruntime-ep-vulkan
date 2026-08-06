@@ -178,11 +178,11 @@
     },
     {
       "mechanism": "gpu_tracer",
-      "state": "VARIES",
+      "state": "INVARIANT",
       "arms": 3,
-      "distinct_observations": 3,
+      "distinct_observations": 1,
       "not_enumerated_in": [],
-      "specimen": "28 trace event(s), ph_types=['C', 'M', 'X', 'i'], distinct_names=16; Phase variants emitted (6/10): ['Record', 'DescAlloc', 'PipelineLookup', 'CmdUpload', 'Submit', 'FenceWait']; NOT-EMITTED: ['Compile', 'Prepack', 'Upload', 'Readback'] (matched as ['vulkan.compile', 'vulkan.prepack']\u2026 \u2014 the trace spells the variants snake_case under a `vulkan.` prefix, per trace.rs::Phase::as_str; a matcher that looked for the Rust identifier reported 0/10 and was wrong, which is why R13 says a result confirming a prediction earns more scrutiny than one contradicting it); (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE=census-trace-dev0.json; ONNXRUNTIME_EP_VULKAN_TRACE_GPU=unset \u2014 the census does not arm device spans, because a device-clock reading under four-agent contention is Switch's exclusive claim and Niobe's admissibility frame, so any device-side phase above is UNOBSERVABLE in this frame rather than absent. No duration from this file is quoted \u2014 \u00a710.0 obligation 8. A variant present in Rust and missing from this list is a name this census has never seen emitted, which is what Phase::Record was for fifty runs)"
+      "specimen": "28 trace event(s), ph_types=['C', 'M', 'X', 'i'], distinct_names=16; Phase variants emitted (6/10): ['Record', 'DescAlloc', 'PipelineLookup', 'CmdUpload', 'Submit', 'FenceWait']; NOT-EMITTED: ['Compile', 'Prepack', 'Upload', 'Readback'] (matched as ['vulkan.compile', 'vulkan.prepack']\u2026 \u2014 the trace spells the variants snake_case under a `vulkan.` prefix, per trace.rs::Phase::as_str; a matcher that looked for the Rust identifier reported 0/10 and was wrong, which is why R13 says a result confirming a prediction earns more scrutiny than one contradicting it); (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE; ONNXRUNTIME_EP_VULKAN_TRACE_GPU=unset \u2014 the census does not arm device spans, because a device-clock reading under four-agent contention is Switch's exclusive claim and Niobe's admissibility frame, so any device-side phase above is UNOBSERVABLE in this frame rather than absent. No duration from this file is quoted \u2014 \u00a710.0 obligation 8. A variant present in Rust and missing from this list is a name this census has never seen emitted, which is what Phase::Record was for fifty runs. The per-arm trace FILE this ran wrote to is deliberately not named above \u2014 see issue #24)"
     },
     {
       "mechanism": "model_output_equivalence",
