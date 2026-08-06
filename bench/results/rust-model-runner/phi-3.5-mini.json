@@ -3,7 +3,7 @@
   "tool": "rust/modelrunner (ort-model-runner)",
   "pass": false,
   "outcome": "UNSUPPORTED",
-  "model": "phi-3.5-mini",
+  "model": "Phi-3.5-mini-instruct-cuda-gpu",
   "onnx_file": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu-2\\v2\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
   "onnx_sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
   "onnx_bytes": 26180848,
@@ -18,7 +18,7 @@
     "version": "1.28.0"
   },
   "refusal_token": "UNSUPPORTED(reason=reference_run_unsupported)",
-  "refusal": "the CPU reference arm could not run phi-3.5-mini with generated inputs, so there is no reference to compare a Vulkan run against. This is a limit of the runner's input generation, not a result about the execution provider. Supply real inputs with --input <name>=<file.raw>, or pin the free dimensions with --free-dim, if this model's inputs are interdependent (KV cache, attention sequence lengths, tokenised text).\nUnderlying: ERROR(instrument=ort_call_failed): Run: ORT error 2: Non-zero status code returned while running GroupQueryAttention node. Name:'/model/layers.0/attn/GroupQueryAttention' Status Message: seqlens_k[0] = 7 is out of range [0, 1)",
+  "refusal": "the CPU reference arm could not run Phi-3.5-mini-instruct-cuda-gpu with generated inputs, so there is no reference to compare a Vulkan run against. This is a limit of the runner's input generation, not a result about the execution provider. Supply real inputs with --input <name>=<file.raw>, or pin the free dimensions with --free-dim, if this model's inputs are interdependent (KV cache, attention sequence lengths, tokenised text).\nUnderlying: ERROR(instrument=ort_call_failed): Run: ORT error 2: Non-zero status code returned while running GroupQueryAttention node. Name:'/model/layers.0/attn/GroupQueryAttention' Status Message: seqlens_k[0] = 7 is out of range [0, 1)",
   "guards": [
     {
       "name": "model_identity_pinned",
@@ -28,7 +28,7 @@
     {
       "name": "reference_arm_ran",
       "held": false,
-      "detail": "the CPU reference arm could not run phi-3.5-mini with generated inputs, so there is no reference to compare a Vulkan run against. This is a limit of the runner's input generation, not a result about the execution provider. Supply real inputs with --input <name>=<file.raw>, or pin the free dimensions with --free-dim, if this model's inputs are interdependent (KV cache, attention sequence lengths, tokenised text).\nUnderlying: ERROR(instrument=ort_call_failed): Run: ORT error 2: Non-zero status code returned while running GroupQueryAttention node. Name:'/model/layers.0/attn/GroupQueryAttention' Status Message: seqlens_k[0] = 7 is out of range [0, 1)"
+      "detail": "the CPU reference arm could not run Phi-3.5-mini-instruct-cuda-gpu with generated inputs, so there is no reference to compare a Vulkan run against. This is a limit of the runner's input generation, not a result about the execution provider. Supply real inputs with --input <name>=<file.raw>, or pin the free dimensions with --free-dim, if this model's inputs are interdependent (KV cache, attention sequence lengths, tokenised text).\nUnderlying: ERROR(instrument=ort_call_failed): Run: ORT error 2: Non-zero status code returned while running GroupQueryAttention node. Name:'/model/layers.0/attn/GroupQueryAttention' Status Message: seqlens_k[0] = 7 is out of range [0, 1)"
     }
   ]
 }
