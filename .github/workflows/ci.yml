@@ -164,8 +164,23 @@ jobs:
         # --union-required, deliberately: if the reference cannot be read, the check
         # silently degrades to the branch-only view it exists to replace, which would be
         # green for exactly the reason it was written to stop being green for.
+        #
+        # NO `--depth` HERE — ISSUE #28. This used to be `git fetch --no-tags --depth=1
+        # origin main`. That single flag reads as "keep this one lookup cheap", and on a
+        # job that already declares `fetch-depth: 0` above it should be a no-op — but a
+        # depth-limited fetch marks its OWN graft boundary regardless of what history the
+        # repository already holds, so it shallow-marked `origin/main`'s tip anyway. On a
+        # `pull_request` event the checkout IS `refs/remotes/pull/N/merge`, GitHub's
+        # synthetic two-parent merge of the PR head into the CURRENT tip of `main` — so
+        # that graft point was always exactly one of HEAD's own two parents, and
+        # `git rev-parse --is-shallow-repository` went true for the WHOLE checkout.
+        # `ci/check_ledger_census.py`'s own history-completeness guard (correctly, and
+        # deliberately not weakened here) then refused to answer at all, and the register
+        # in `ci/open_reds.json` reported it `FAIL(condition=unaccounted_red)` on every
+        # PR. The lookup this step needs is one already-known ref, so a plain fetch (no
+        # depth) costs nothing new to download and grafts nothing.
         run: |
-          git fetch --no-tags --depth=1 origin main
+          git fetch --no-tags origin main
           python ci/check_lane_inventory.py \
             --workflow .github/workflows/ci.yml \
             --union-with FETCH_HEAD \
