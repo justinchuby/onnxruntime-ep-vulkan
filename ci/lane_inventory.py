@@ -972,7 +972,13 @@ CHECKS: tuple[Check, ...] = (
             "rather than by line shape or indent thresholds (issue #21; frame-stack "
             "rewrite issue #25). A duplicate key inside one `env:` mapping is an "
             "unsupported/ambiguous construct and is ERROR, never a silent last-wins "
-            "guess."
+            "guess, and so is a duplicate SIBLING `env:` key at the same scope (two "
+            "`env:` blocks under one job) — the parser also rejects a `steps:` frame "
+            "unless its ancestor path is EXACTLY `jobs.<job>.steps` (not any frame "
+            "merely named `steps`, e.g. a `with: steps:` action input), an anchor/tag/"
+            "alias value followed by more-indented content, a multi-document `---` "
+            "file, and a nested flow collection or quoted-brace value inside `env: "
+            "{...}` (PR #27 review of issue #25)."
         ),
         status=DEMONSTRATED,
         mutation=(
@@ -1014,7 +1020,34 @@ CHECKS: tuple[Check, ...] = (
             "`env: {...}` (which the old anchored-regex approach could not match) are "
             "now all correctly recognised, and a duplicate key within one `env:` "
             "mapping (block or flow form) raises ERROR(instrument="
-            "unsupported_yaml_construct) rather than silently picking a winner."
+            "unsupported_yaml_construct) rather than silently picking a winner. PR #27's "
+            "review of that rewrite then found five more blind spots IN the frame-stack "
+            "parser itself, each fixed the same way — raise rather than guess: (R1) a "
+            "`with: steps:` action input (a legal frame whose leaf key merely happens "
+            "to be \"steps\") reset step-minting the same as a real `jobs.<job>.steps` "
+            "list, orphaning the real step and silently dropping whatever ran after the "
+            "trap from body capture — a false PASS by omission, closed by tagging a "
+            "`steps:` frame `is_real_steps` only when its exact ancestor path is "
+            "`jobs.<job>.steps`; (R2) a scalar value this parser does not structurally "
+            "understand (`&anchor`, `!!tag`, `*alias`) pushed no frame at all, so more-"
+            "indented content that followed it (e.g. a nested `env:`) was silently "
+            "attributed to the grandparent frame instead — closed by raising when the "
+            "next content line is more indented than such a value; (R3a) a multi-"
+            "document `---` file was read straight through as if it were one document; "
+            "(R3b) a nested flow collection as an `env: {...}` value (`{FOO: {GH_TOKEN: "
+            "x}}`) and a quoted value containing a literal brace (`{FOO: '{\"GH_TOKEN\": "
+            "\"1\"}'}`) both risked a misread rather than a refusal — `_flow_mapping_"
+            "key_list` now tracks quote state and nesting depth char-by-char and raises "
+            "on either shape, while still recognising `${{ github.token }}`-style GH "
+            "Actions expressions as internally-balanced opaque text, not nesting; (N1) "
+            "two sibling `env:` keys at the same scope (two `env:` blocks under one "
+            "job) were silently unioned via `set.update()`; closed with `claim_env_slot"
+            "()`, which raises on a second `env:` at a scope already claimed; (N2) a "
+            "dash-inline `- env:` block's redispatch used a synthetic `dash_indent + 1` "
+            "column that undershot `env:`'s true column, letting a later true sibling "
+            "field at that real column be swallowed as one of `env:`'s own children — "
+            "closed by computing the real column from the actual whitespace after the "
+            "dash."
         ),
         arm_healthy=(
             "GH-AUTH: PASS — N `gh`-reaching step(s) across every workflow file under "
@@ -1052,13 +1085,17 @@ CHECKS: tuple[Check, ...] = (
             "ci/negative_control_open_reds.py's real run of the register from "
             "ci/test_lane_checks.py's synthetic one without producing exactly that "
             "false positive.",
-            "The inline/flow-mapping key scan (`_flow_mapping_key_list`) is a bracket-"
-            "balance/regex scan over flow syntax, not a real YAML flow-mapping parser "
-            "— it is quote-aware and multi-line-aware (issue #25) but a value "
-            "containing an escaped quote adjacent to an unbalanced brace could in "
-            "principle still confuse it, a shape this repository's own workflows never "
-            "produce (values are `${{ ... }}` expressions with no embedded escaped "
-            "quotes).",
+            "The inline/flow-mapping key scan (`_flow_mapping_key_list`) is a quote-"
+            "and-depth-aware char-by-char scan over flow syntax, not a real YAML flow-"
+            "mapping parser. As of the PR #27 review fix, it no longer merely 'could in "
+            "principle' be confused by a nested flow collection as a value (`{FOO: "
+            "{GH_TOKEN: x}}`) or a quoted value containing a literal brace (`{FOO: "
+            "'{\"GH_TOKEN\": \"1\"}'}`): both now raise ERROR(instrument="
+            "unsupported_yaml_construct) rather than being silently read either "
+            "correctly or incorrectly — the prior prose describing these as merely "
+            "theoretical risks was itself inaccurate once the char-by-char rewrite "
+            "landed, since the rewrite could tell them apart correctly but the review "
+            "asked for a loud refusal over a silent (even if correct) resolution.",
             "Issue #25 fixed three named blind spots (`run: |` block-scalar text, "
             "`services.<id>.env`, `with: env:`) plus quoted block keys, duplicate-key "
             "detection, and multi-line flow mappings. The same exact-ancestor-path "
@@ -1070,11 +1107,12 @@ CHECKS: tuple[Check, ...] = (
             "lane-checks CI job installs only `pytest onnx numpy`, no PyYAML, and "
             "PyYAML's own default duplicate-key behaviour is a silent last-wins rather "
             "than an error, which would have reopened exactly the ambiguity this fix "
-            "closes). Constructs this repository's own workflows do not use — YAML "
-            "anchors/aliases (`&`/`*`), tag directives, flow sequences nested inside a "
-            "flow mapping's value, multi-document files (`---`) — are unsupported and "
-            "will either be misread or raise ERROR(instrument=unsupported_yaml_"
-            "construct) rather than being silently approximated.",
+            "closes). YAML anchors/aliases (`&`/`*`), tag directives (`!!tag`), and "
+            "multi-document files (`---`) now reliably raise ERROR(instrument="
+            "unsupported_yaml_construct) (PR #27 review of issue #25) rather than being "
+            "silently misread or misattributed — this is a loud, deliberate refusal, "
+            "not merely 'unsupported and either misread or raised' as earlier prose "
+            "here claimed before that fix landed.",
         ),
     ),
     Check(
@@ -1099,11 +1137,20 @@ CHECKS: tuple[Check, ...] = (
             "flow mapping MUST satisfy it; a duplicate key within one `env:` mapping "
             "(either YAML shape) is ERROR(instrument=unsupported_yaml_construct); and "
             "ci.yml's real production invocation is pinned to the `.github/workflows` "
-            "directory form, not two files named on a command line."
+            "directory form, not two files named on a command line. PR #27's review of "
+            "the frame-stack parser added: a `with: steps:` action input does not "
+            "orphan the real step's own trailing command (R1); an anchor/tag/alias "
+            "value followed by more-indented content is ERROR, not attributed to the "
+            "grandparent frame (R2); a multi-document `---` file is ERROR (R3a); a "
+            "nested flow collection or quoted-brace value inside `env: {...}` is "
+            "ERROR, while a `${{ github.token }}` GH Actions expression in the same "
+            "position is NOT mistaken for either (R3b); a duplicate SIBLING `env:` key "
+            "at the same scope is ERROR (N1); and a dash-inline `- env:` block does not "
+            "swallow a true sibling field at its real column (N2)."
         ),
         status=DEMONSTRATED,
         mutation=(
-            "33 arms: 8 LIVE (today's workflows and the whole workflows directory pass "
+            "42 arms: 8 LIVE (today's workflows and the whole workflows directory pass "
             "the screen; screening only conformance.yml — genuinely 0 gh-reaching steps "
             "— is ERROR(instrument=zero_gh_reaching_subjects), never a silent PASS; "
             "check_main_is_green.py with GH_TOKEN/GITHUB_TOKEN/GH_ENTERPRISE_TOKEN "
@@ -1112,7 +1159,7 @@ CHECKS: tuple[Check, ...] = (
             "ci.yml's own text is read and its real check_gh_auth.py invocation is "
             "asserted to be the single `.github/workflows` directory form), "
             "2 REPLAYED (the real ci.yml at b1886d99 convicts on `Open-reds negative "
-            "control`; the same rule over today's bytes is green), 23 PLANTED (no-token "
+            "control`; the same rule over today's bytes is green), 32 PLANTED (no-token "
             "API call; non-API `gh --version` with no token of its own is NOT counted; "
             "a token in a different job does not satisfy this one; a job-level token "
             "satisfies every step in that job; block-form and inline-form `env:` at "
@@ -1129,9 +1176,17 @@ CHECKS: tuple[Check, ...] = (
             "the check exactly like an unquoted one; a duplicate key in block-form or "
             "flow-form `env:` is ERROR, never a silent guess; a trailing comment after "
             "an inline `env: {...}` does not hide it; a flow mapping split across "
-            "several physical lines is still read as one declaration)."
+            "several physical lines is still read as one declaration; a `with: steps:` "
+            "list does not orphan the real step (R1); `with: &a` and `with: !!map` "
+            "followed by nested content are ERROR (R2, two arms); a multi-document "
+            "`---` file is ERROR (R3a); a nested flow-collection value and a quoted-"
+            "brace value inside `env: {...}` are each ERROR (R3b, two arms); a "
+            "`${{ ... }}` GH Actions expression inside `env: {...}` is NOT mistaken "
+            "for the R3b shape (regression guard); a duplicate sibling `env:` key at "
+            "job scope is ERROR (N1); a dash-inline `- env:` block does not swallow a "
+            "true sibling field (N2))."
         ),
-        arm_healthy="33/33 arms fire as specified, exit 0",
+        arm_healthy="42/42 arms fire as specified, exit 0",
         arm_broken=(
             "Each arm is red by construction with its defect genuinely present: the "
             "screen convicts the real pre-fix ci.yml bytes; check_main_is_green.py with "
@@ -1140,7 +1195,7 @@ CHECKS: tuple[Check, ...] = (
         ),
         observed="2026-08-05",
         misses=(
-            "23 of 33 arms are PLANTED and this control prints that ratio itself. A "
+            "32 of 42 arms are PLANTED and this control prints that ratio itself. A "
             "planted arm proves the rule fires on the shape it was written for; it does "
             "not show the rule is load-bearing. The LIVE and REPLAYED arms are the ones "
             "that do.",

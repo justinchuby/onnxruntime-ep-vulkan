@@ -539,6 +539,202 @@ def main() -> int:
             (r.stdout or "")[-600:],
         )
 
+        print("\nPLANTED — issue #25 (PR #27 review): R1/R2/R3/N1/N2 fixes")
+
+        r = plant(
+            "r1-with-steps-trap.yml",
+            # A legal action input happens to be named `steps` and holds its own list
+            # of maps (`with: steps: [...]`, e.g. a matrix-generating action). Before
+            # R1, ANY frame whose key is literally "steps" reset step-minting, so this
+            # nested list's own dash orphaned the REAL step: its `run: gh api ...`
+            # line (after the `with:` block) was silently dropped from body capture
+            # and never became a checked subject at all -- a false PASS by omission,
+            # not by misjudging a token that was actually there. A second, unrelated,
+            # correctly-tokened `gh` step keeps the file's total gh-reaching count
+            # above zero, so this isolates the omission itself rather than tripping
+            # issue #21's separate zero-subject rule.
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        uses: some/action@v1\n"
+            "        with:\n          steps:\n            - name: fake\n"
+            "              run: echo hi\n"
+            "        run: gh api repos/x/y\n"
+            "      - name: real\n        env:\n          GH_TOKEN: x\n"
+            "        run: gh api repos/a/b\n",
+        )
+        record(
+            "PLANTED",
+            "R1: a `with: steps:` list does not reset/orphan the real step -- its "
+            "own `run: gh api ...` (untokened) is still convicted, not silently "
+            "dropped from the count",
+            r.returncode == EXIT_FAIL_CONDITION
+            and "missing_token_path" in r.stdout
+            and "PASS — 1 `gh`-reaching step" not in r.stdout,
+            (r.stdout or "")[-700:],
+        )
+
+        r = plant(
+            "r2-anchor-with-nested-env.yml",
+            # `with: &a` is a scalar-ish value this parser does not structurally
+            # understand (an anchor). Before R2, no frame was pushed for it at all,
+            # so the indented `env:` mapping that actually belongs to the anchored
+            # `with:` value got silently attributed to the enclosing step frame
+            # instead -- exactly the false "step-level env" reading R2 forbids.
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        uses: some/action@v1\n"
+            "        with: &anchor\n          env:\n            GH_TOKEN: x\n"
+            "        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "R2: an anchor/tag/alias value (`with: &a`) followed by more-indented "
+            "content is ERROR(instrument), not silently attributed to the "
+            "grandparent frame",
+            r.returncode == EXIT_ERROR_INSTRUMENT
+            and "unsupported_yaml_construct" in r.stdout
+            and "anchor, tag, or alias" in r.stdout,
+            (r.stdout or "")[-700:],
+        )
+
+        r = plant(
+            "r2-tag-with-nested-env.yml",
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        uses: some/action@v1\n"
+            "        with: !!map\n          env:\n            GH_TOKEN: x\n"
+            "        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "R2: the same shape with an explicit `!!tag` instead of an anchor is "
+            "caught the same way",
+            r.returncode == EXIT_ERROR_INSTRUMENT
+            and "unsupported_yaml_construct" in r.stdout
+            and "anchor, tag, or alias" in r.stdout,
+            (r.stdout or "")[-700:],
+        )
+
+        r = plant(
+            "r3a-multi-document.yml",
+            # A `---` document-separator line. This screen reads one YAML document
+            # per file; silently continuing past it would misattribute the second
+            # document's steps/env to whatever frame was open at the end of the first.
+            "name: p\non: push\n---\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "R3a: a multi-document `---` separator is ERROR(instrument), never read "
+            "past silently",
+            r.returncode == EXIT_ERROR_INSTRUMENT
+            and "unsupported_yaml_construct" in r.stdout
+            and "document-separator" in r.stdout,
+            (r.stdout or "")[-700:],
+        )
+
+        r = plant(
+            "r3b-nested-flow-value.yml",
+            # `env: {FOO: {GH_TOKEN: x}}` -- GH_TOKEN is nested INSIDE FOO's own
+            # value, not a sibling key of this mapping. The prior known-limits prose
+            # claimed this "could in principle" confuse the screen; it must now be a
+            # loud refusal, not a silent maybe-right guess either way.
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n"
+            "        env: {FOO: {GH_TOKEN: x}}\n        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "R3b: a nested flow collection as an `env: {...}` value "
+            "(`{FOO: {GH_TOKEN: x}}`) is ERROR(instrument), not a guess at whether "
+            "the nested key counts",
+            r.returncode == EXIT_ERROR_INSTRUMENT
+            and "unsupported_yaml_construct" in r.stdout
+            and "nested flow collection" in r.stdout,
+            (r.stdout or "")[-700:],
+        )
+
+        r = plant(
+            "r3b-quoted-brace-value.yml",
+            # `env: {FOO: '{"GH_TOKEN": "1"}'}` -- a quoted value that itself
+            # contains literal braces. The quote-tracking scan can in fact tell this
+            # is opaque text, but the review asked for a loud refusal here too rather
+            # than trusting its own reading of an ambiguous-looking shape.
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n"
+            '        env: {FOO: \'{"GH_TOKEN": "1"}\'}\n        run: gh api repos/x/y\n',
+        )
+        record(
+            "PLANTED",
+            "R3b: a quoted value containing a literal brace inside `env: {...}` is "
+            "ERROR(instrument), not silently trusted as inert text",
+            r.returncode == EXIT_ERROR_INSTRUMENT
+            and "unsupported_yaml_construct" in r.stdout
+            and "quoted value" in r.stdout,
+            (r.stdout or "")[-700:],
+        )
+
+        r = plant(
+            "r3b-gh-expression-still-passes.yml",
+            # Guard against a regression the R3b fix could easily introduce: a
+            # `${{ github.token }}` GitHub Actions expression is internally balanced
+            # `{`/`}` text, not YAML flow-collection nesting, and must NOT be
+            # mistaken for the R3b nested-value shape above -- this is, after all,
+            # the exact remediation text this screen's own FAIL message recommends.
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n"
+            "        env: {GH_TOKEN: ${{ github.token }}, OTHER: ${{ secrets.X }}}\n"
+            "        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "R3b regression guard: a `${{ ... }}` GH Actions expression inside "
+            "`env: {...}` is NOT mistaken for nested flow-collection value braces",
+            r.returncode == EXIT_PASS,
+            (r.stdout or "")[-700:],
+        )
+
+        r = plant(
+            "n1-duplicate-sibling-block-env.yml",
+            # Two SIBLING `env:` block keys at the same job scope. Before N1 these
+            # were silently unioned (`set.update`), so a job with two `env:` blocks
+            # -- one of which happens to declare GH_TOKEN -- satisfied the check even
+            # though this is itself invalid/ambiguous YAML (a duplicate mapping key)
+            # that no single reading should be trusted to resolve.
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    env:\n      GH_TOKEN: x\n    env:\n      GITHUB_TOKEN: y\n"
+            "    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "N1: a duplicate sibling `env:` key at job scope is ERROR(instrument), "
+            "not silently unioned with the first one",
+            r.returncode == EXIT_ERROR_INSTRUMENT
+            and "unsupported_yaml_construct" in r.stdout
+            and "second `env:` key" in r.stdout,
+            (r.stdout or "")[-700:],
+        )
+
+        r = plant(
+            "n2-dash-inline-env-sibling-field.yml",
+            # `- env:` opens a block-form env inline with the dash. Before N2, the
+            # redispatch used a synthetic `dash_indent + 1` column for `env:` itself,
+            # which undershoots its TRUE column (`dash_indent + 2`, one space after
+            # the dash) -- so a later TRUE SIBLING field at that same real column
+            # (here a bogus step-level `GH_TOKEN:` key that is NOT actually inside
+            # `env:`) was wrongly swallowed as one of env's own children, letting a
+            # coincidentally-named sibling satisfy the token check it should not.
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - env:\n          NOT_A_TOKEN: x\n"
+            "        GH_TOKEN: this-is-not-really-an-env-declaration\n"
+            "        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "N2: a dash-inline `- env:` block correctly stops at its own real "
+            "column -- a step-level sibling key that merely LOOKS like a token "
+            "declaration does not satisfy the check",
+            r.returncode == EXIT_FAIL_CONDITION and "missing_token_path" in r.stdout,
+            (r.stdout or "")[-700:],
+        )
+
         print("\nLIVE — issue #25: ci.yml's production invocation is pinned to the directory form")
         # The wiring concern issue #25 (and #21 before it) exists to close: naming
         # files one at a time on the command line is exactly how a new/relocated

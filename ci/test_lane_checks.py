@@ -1242,6 +1242,166 @@ def test_a_multiline_flow_mapping_is_read_as_one_declaration(tmp_path):
     assert r.returncode == EXIT_PASS, r.stdout
 
 
+def test_a_with_steps_list_does_not_orphan_the_real_step(tmp_path):
+    """`with: steps:` is a legal action input that happens to be named `steps` and
+    holds its own nested list. Before R1, ANY frame whose key was literally "steps"
+    reset step-minting, so this nested list's own dash orphaned the REAL step: its
+    `run: gh api ...` line (after the `with:` block) was silently dropped from body
+    capture and never became a checked subject at all -- a false PASS by omission. A
+    second, unrelated, correctly-tokened `gh` step keeps the file's total gh-reaching
+    count above zero, isolating the omission from issue #21's separate zero-subject
+    rule."""
+    wf = tmp_path / "with-steps-trap.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        uses: some/action@v1\n"
+        "        with:\n          steps:\n            - name: fake\n"
+        "              run: echo hi\n"
+        "        run: gh api repos/x/y\n"
+        "      - name: real\n        env:\n          GH_TOKEN: x\n"
+        "        run: gh api repos/a/b\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+    assert "PASS — 1 `gh`-reaching step" not in r.stdout
+
+
+@pytest.mark.parametrize(
+    "with_value",
+    ["&anchor", "!!map"],
+    ids=["anchor", "tag"],
+)
+def test_an_unrecognised_scalar_value_followed_by_deeper_content_is_an_error(tmp_path, with_value):
+    """When a key's value is a bare scalar this parser does not structurally
+    understand (`&anchor`, `!!tag`, `*alias`), and the NEXT line is MORE indented
+    (its real nested payload), that content must not be silently attributed to the
+    grandparent frame -- it must raise, because the grandparent's own `env:` scope is
+    NOT actually where that nested `env:` lives."""
+    wf = tmp_path / "unrecognised-scalar-trap.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        uses: some/action@v1\n"
+        f"        with: {with_value}\n          env:\n            GH_TOKEN: x\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "unsupported_yaml_construct" in r.stdout
+    assert "anchor, tag, or alias" in r.stdout
+
+
+def test_a_multi_document_separator_is_an_error(tmp_path):
+    """A `---` YAML document-separator line. This screen reads one YAML document per
+    file; silently continuing past it would misattribute the second document's
+    steps/env to whatever frame was still open at the end of the first."""
+    wf = tmp_path / "multi-doc.yml"
+    wf.write_text(
+        "name: p\non: push\n---\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "unsupported_yaml_construct" in r.stdout
+    assert "document-separator" in r.stdout
+
+
+def test_a_nested_flow_collection_as_an_env_value_is_an_error(tmp_path):
+    """`env: {FOO: {GH_TOKEN: x}}` -- GH_TOKEN is nested INSIDE FOO's own value, not a
+    sibling key of the mapping itself. This must never be silently read either way;
+    it is ambiguous input that raises."""
+    wf = tmp_path / "nested-flow-value.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n"
+        "        env: {FOO: {GH_TOKEN: x}}\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "unsupported_yaml_construct" in r.stdout
+    assert "nested flow collection" in r.stdout
+
+
+def test_a_quoted_value_containing_a_literal_brace_is_an_error(tmp_path):
+    """`env: {FOO: '{"GH_TOKEN": "1"}'}` -- a quoted value that itself contains
+    literal braces. The quote-tracking scan can in fact tell this is opaque text, but
+    this screen deliberately refuses rather than trusting its own reading of an
+    ambiguous-looking shape."""
+    wf = tmp_path / "quoted-brace-value.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n"
+        '        env: {FOO: \'{"GH_TOKEN": "1"}\'}\n        run: gh api repos/x/y\n',
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "unsupported_yaml_construct" in r.stdout
+    assert "quoted value" in r.stdout
+
+
+def test_a_gh_expression_inside_flow_env_is_not_mistaken_for_nested_value_braces(tmp_path):
+    """Regression guard for the nested-flow-collection check above: a
+    `${{ github.token }}` GitHub Actions expression is internally-balanced `{`/`}`
+    text, not YAML flow-collection nesting, and must not itself be convicted -- this
+    is, after all, the exact remediation text this screen's own FAIL message
+    recommends."""
+    wf = tmp_path / "gh-expression-in-flow-env.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n"
+        "        env: {GH_TOKEN: ${{ github.token }}, OTHER: ${{ secrets.X }}}\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+
+def test_a_duplicate_sibling_env_key_at_job_scope_is_an_error(tmp_path):
+    """Two SIBLING `env:` block keys at the same job scope. Before N1 these were
+    silently unioned (`set.update`), so a job with two `env:` blocks -- one of which
+    happens to declare GH_TOKEN -- satisfied the check even though a duplicate
+    mapping key is itself invalid/ambiguous YAML that no single reading should
+    resolve silently."""
+    wf = tmp_path / "dup-sibling-env.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    env:\n      GH_TOKEN: x\n    env:\n      GITHUB_TOKEN: y\n"
+        "    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "unsupported_yaml_construct" in r.stdout
+    assert "second `env:` key" in r.stdout
+
+
+def test_a_dash_inline_env_block_does_not_swallow_a_true_sibling_field(tmp_path):
+    """`- env:` opens a block-form env inline with the dash. Before N2, the
+    redispatch used a synthetic `dash_indent + 1` column, which undershoots `env:`'s
+    TRUE column (`dash_indent + 2`, one space after the dash) -- so a later TRUE
+    SIBLING field at that real column (here a bogus step-level `GH_TOKEN:` key that
+    is NOT actually inside `env:`) was wrongly swallowed as one of env's own
+    children, letting a coincidentally-named sibling satisfy the token check it
+    should not."""
+    wf = tmp_path / "dash-inline-env-sibling.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - env:\n          NOT_A_TOKEN: x\n"
+        "        GH_TOKEN: this-is-not-really-an-env-declaration\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+
+
 def test_ci_yml_production_invocation_is_pinned_to_the_directory_form():
     """The wiring concern issue #21 (and #25 after it) exists to close: a real
     regression here is exactly reverting `.github/workflows` back to two named files,
