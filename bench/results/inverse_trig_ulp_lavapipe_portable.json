@@ -1,0 +1,164 @@
+{
+  "claimed_by_vulkan_ep": {
+    "Acos": true,
+    "Asin": true
+  },
+  "device": {
+    "devices": [
+      "llvmpipe (LLVM 22.1.8, 256 bits)"
+    ],
+    "ep_lib": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-4\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+    "gate_pass": true,
+    "vk_driver_files": "",
+    "vk_icd_filenames": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-4\\_tools\\x64\\lvp_icd.x86_64.json"
+  },
+  "domain": "[-1, 1] closed; seams at +-1/2 and +-1 with representable neighbours; signed zero; out-of-domain and non-finite inputs in edge_cases",
+  "generated_at": "2026-08-06T04:05:33-07:00",
+  "label": "portable ew_asin/ew_acos (squad/4-portable-inverse-trig)",
+  "ops": {
+    "Acos": {
+      "bit_identical_to_cpu": false,
+      "cpu_max_ulp_vs_float64": 4.0,
+      "disagreements_at_non_finite": 0,
+      "dispatched_chunks": 2,
+      "edge_cases": {
+        "agree": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "all_agree": true,
+        "cpu_hex": [
+          "0x40490fdb",
+          "0x3fc90fdb",
+          "0x3fc90fdb",
+          "0x00000000",
+          "0xffc00000",
+          "0xffc00000",
+          "0xffc00000",
+          "0xffc00000",
+          "0x7fc00000",
+          "0xffc00000",
+          "0xffc00000"
+        ],
+        "inputs_hex": [
+          "0xbf800000",
+          "0x80000000",
+          "0x00000000",
+          "0x3f800000",
+          "0x3f800001",
+          "0xbf800001",
+          "0x40000000",
+          "0xc0000000",
+          "0x7fc00000",
+          "0x7f800000",
+          "0xff800000"
+        ],
+        "vulkan_hex": [
+          "0x40490fdb",
+          "0x3fc90fdb",
+          "0x3fc90fdb",
+          "0x00000000",
+          "0x7fc00000",
+          "0x7fc00000",
+          "0x7fc00000",
+          "0x7fc00000",
+          "0x7fc00000",
+          "0x7fc00000",
+          "0x7fc00000"
+        ]
+      },
+      "max_abs_err_vs_float64": 3.038351197304223e-07,
+      "max_ulp_vs_cpu": 5.0,
+      "max_ulp_vs_float64": 1.0,
+      "op": "Acos",
+      "p99_9_ulp_vs_cpu": 3.0,
+      "p99_9_ulp_vs_float64": 1.0,
+      "p99_ulp_vs_cpu": 3.0,
+      "points": 2000010
+    },
+    "Asin": {
+      "bit_identical_to_cpu": false,
+      "cpu_max_ulp_vs_float64": 4.0,
+      "disagreements_at_non_finite": 0,
+      "dispatched_chunks": 2,
+      "edge_cases": {
+        "agree": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "all_agree": true,
+        "cpu_hex": [
+          "0xbfc90fdb",
+          "0x80000000",
+          "0x00000000",
+          "0x3fc90fdb",
+          "0xffffffff",
+          "0xffffffff",
+          "0xffffffff",
+          "0xffffffff",
+          "0x7fc00000",
+          "0xffc00000",
+          "0xffc00000"
+        ],
+        "inputs_hex": [
+          "0xbf800000",
+          "0x80000000",
+          "0x00000000",
+          "0x3f800000",
+          "0x3f800001",
+          "0xbf800001",
+          "0x40000000",
+          "0xc0000000",
+          "0x7fc00000",
+          "0x7f800000",
+          "0xff800000"
+        ],
+        "vulkan_hex": [
+          "0xbfc90fdb",
+          "0x80000000",
+          "0x00000000",
+          "0x3fc90fdb",
+          "0x7fc00000",
+          "0x7fc00000",
+          "0x7fc00000",
+          "0x7fc00000",
+          "0x7fc00000",
+          "0x7fc00000",
+          "0x7fc00000"
+        ]
+      },
+      "max_abs_err_vs_float64": 1.646033194191432e-07,
+      "max_ulp_vs_cpu": 4.0,
+      "max_ulp_vs_float64": 2.0,
+      "op": "Asin",
+      "p99_9_ulp_vs_cpu": 3.0,
+      "p99_9_ulp_vs_float64": 2.0,
+      "p99_ulp_vs_cpu": 2.0,
+      "points": 2000010
+    }
+  },
+  "providers": [
+    "VulkanExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "sweep_points": 2000010,
+  "verdict": "MEASURED"
+}

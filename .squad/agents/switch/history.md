@@ -110,3 +110,39 @@ negative control — the pre-fix blob still flags line 428 through `audit_text`,
 not merely quiet; `contention_gate.py --selftest` 5/5 and the full gate GREEN, 0/20 red on all 5
 pools including `counters` (32 tests) and `all-contended` (49); `cargo test --lib` 620 passed,
 0 failed; `cargo fmt --check` and `cargo clippy --all-targets` clean.
+
+## Session 52 — 2026-08-06 — issue #4: the driver was conformant and the test was right
+
+**Defect:** `test_op_table.py::[Asin-fp32]`/`[Acos-fp32]` red on lavapipe at 1.56e-4 against a
+1e-5 tolerance, green on NVIDIA. The tempting reading — "lavapipe is buggy, widen the tolerance"
+— is wrong in a way worth remembering: Vulkan's precision table gives `asin`/`acos` **no bound of
+their own**, defining each by inheritance from `atan2`, which is allowed **4096 ULP** in single
+precision. Measured 3831/3903 ULP: lavapipe was inside its allowance with room to spare. NVIDIA's
+4/5 ULP is goodwill, not contract. A first web search told me Vulkan gives these "no accuracy
+requirement" at all; fetching the actual spec table corrected it. Fetch the table.
+
+**Fix:** shared minimax core in `ew_unary.comp` — `ew_asin_core` (Cephes `asinf`, degree-4 in s²)
++ `ew_asin_abs` (range reduction at s=1/2), with `ew_asin`/`ew_acos` on top. Both ops share the
+core so they cannot drift. Bitwise sign copy (`sign(-0.0)` is `+0.0`, which would break
+`asin(-0) = -0`), bit-pattern quiet NaN (`0.0/0.0` is not dependable under fast-math), clamped
+radicand (`sqrt` of a negative is undefined in GLSL). Bound is **derived** (16 ULP, from Vulkan's
+own guarantees) not fitted — 5x wider than anything measured, deliberately.
+
+**Evidence:** 2,000,010-point sweep vs the ORT CPU EP. Built-in: lavapipe 3831/3903 ULP, NVIDIA
+4/5. Portable: **4/5 on both**. CPU EP is itself 4 ULP from float64, so this is at the oracle's
+noise floor. 91/91 `test_op_table.py` on both devices; 23/23 new `test_inverse_trig.py`; full
+`tests/ops` 933 passed / 5 failed NVIDIA, 931 / 7 lavapipe — every failure reproduced identically
+on a rebuild of `94a4bd6`, so none is mine. `cargo ci` ALL CHECKS PASSED.
+
+**Cost me an hour, twice:** (1) `evidence/proof_ledger.jsonl` is `include_str!`'d — `--reprove`
+does nothing until you rebuild, and until you do, the EP correctly declines the ops as
+`SUBJECT-CHANGED`. (2) I wrote a restore script that backed up the working shader to the same
+filename it had backed up on the previous run, and the second run overwrote my only copy of the
+implementation with the version I was benchmarking against. Recovered by rewriting from the
+design notes; the rewrite reproduced the measurements to every digit, which is the one good thing
+about having written the derivation down first. Back up to a distinct path, and verify the backup
+contains what you think before destroying the original.
+
+**Left open:** `Sin`/`Cos`/`Tan`/`Atan` carry the same exposure (`sin`/`cos` allowed an absolute
+2^-11 = 4.9e-4, 49x our atol) and are on the RoPE path. Not fixed here — second body of math,
+would make the change unreviewable. Recorded in `BUILTIN_SCREEN` and §8.9.28(6).

@@ -52,8 +52,8 @@ EW_DEFINE_STORE(store_out, outb)
 
 #ifdef EW_FLOAT
 // Abramowitz & Stegun 7.1.26. Max absolute error ~1.5e-7, which is inside the f32 conformance
-// tolerance and far inside f16's. `Erf` is on the LLM path via the exact `Gelu`, so this is the
-// one approximation in this file whose accuracy is load-bearing.
+// tolerance and far inside f16's. `Erf` is on the LLM path via the exact `Gelu`, so this is one
+// of the two approximations in this file whose accuracy is load-bearing (see `ew_asin_core`).
 float ew_erf(float x) {
     const float p  =  0.3275911;
     const float a1 =  0.254829592;
@@ -80,6 +80,83 @@ float ew_sigmoid(float x) {
 // log(1 + exp(x)), evaluated so the positive tail does not overflow.
 float ew_softplus(float x) {
     return max(x, 0.0) + log(1.0 + exp(-abs(x)));
+}
+
+// -- portable inverse trigonometry (§8.9.28) ---------------------------------------------------
+//
+// Why this exists instead of GLSL's `asin()`/`acos()`. Vulkan's "Precision of GLSL.std.450
+// Instructions" table does not give `asin`/`acos` a bound of their own: it defines each one *by
+// inheritance*, `asin(x)` from `atan2(x, sqrt(1 - x*x))` and `acos(x)` from
+// `atan2(sqrt(1 - x*x), x)`. `atan`/`atan2` is then allowed **4096 ULP** in single precision,
+// roughly 2.4e-4 relative. So a driver may miss our 1e-5 op tolerance by more than an order of
+// magnitude and still be perfectly conformant, and a green result on one vendor says nothing
+// about any other. Measured on this repo's own lavapipe lane, the built-in path was 3831 ULP
+// (Asin) and 3903 ULP (Acos) from the ORT CPU EP -- inside the driver's allowance, outside ours.
+// See docs/DESIGN.md §8.9.28 and issue #4; the fix is ours to own, not the driver's to fix.
+//
+// The algorithm is Cephes `asinf` (Moshier), an established f32 minimax, evaluated entirely in
+// operations the same spec table requires to be correctly rounded (OpFMul/OpFAdd/OpFSub) plus one
+// `sqrt`. Range reduction folds [0,1] onto the core's [0,1/2] via
+// asin(a) = pi/2 - 2*asin(sqrt((1-a)/2)) for a > 1/2.
+//
+// Derived (not driver-fitted) bound: the core polynomial is <= 2.42 ULP for asin and <= 1.28 ULP
+// for acos, measured in exact float32 over 4,000,001 points; on the reflected branch `sqrt`'s
+// <= 4.5 ULP (itself inherited, from `1.0 / inversesqrt()`) is doubled by the `2*r` and amplified
+// by 1/sqrt(1-s^2), worst at the s = 1/2 seam, for <= ~10.4 ULP. 2.42 + 10.4 rounds up to the
+// 16 ULP (~1.9e-6 relative) this shader claims, which is 5x inside FP32_TRANSCENDENTAL. Measured
+// end to end: 4 ULP (Asin) / 5 ULP (Acos) on *both* lavapipe and NVIDIA -- the point is not that
+// the number got smaller on one device, it is that it is now the same number on every device.
+//
+// `Asin` and `Acos` deliberately share `ew_asin_abs` so the two cannot drift into different
+// approximations of the same function.
+
+// asin(s) for s in [0, 1/2], as the odd series s + s^3 * P(s^2). Cephes `asinf` coefficients.
+float ew_asin_core(float s) {
+    float z = s * s;
+    float p = 4.2163199048e-2;
+    p = p * z + 2.4181311049e-2;
+    p = p * z + 4.5470025998e-2;
+    p = p * z + 7.4953002686e-2;
+    p = p * z + 1.6666752422e-1;
+    return (p * z) * s + s;
+}
+
+// Quiet NaN by bit pattern. `0.0 / 0.0` is not dependable here: the driver may be compiling under
+// fast-math assumptions, and `shaderSignedZeroInfNanPreserveFloat32` is a property we may read,
+// not a guarantee we may require of every device we run on.
+#define EW_QNAN uintBitsToFloat(0x7fc00000u)
+
+// asin(|x|) for a = |x| in [0, 1]. Shared by both ops; callers own the sign and the domain check.
+float ew_asin_abs(float a) {
+    bool refl = a > 0.5;
+    // `max(..., 0.0)`: GLSL leaves sqrt of a negative operand undefined, and rounding in
+    // `0.5 - 0.5*a` can land a hair below zero at a == 1.
+    float z = refl ? max(0.5 - 0.5 * a, 0.0) : a * a;
+    float s = refl ? sqrt(z) : a;
+    float r = ew_asin_core(s);
+    return refl ? (1.5707963267948966 - 2.0 * r) : r;
+}
+
+float ew_asin(float x) {
+    float m = ew_asin_abs(abs(x));
+    // Copy the sign bit rather than multiplying by `sign(x)`: sign(-0.0) is +0.0 in GLSL, which
+    // would turn ONNX's required asin(-0) = -0 into +0.
+    m = uintBitsToFloat((floatBitsToUint(x) & 0x80000000u) | floatBitsToUint(m));
+    // False for NaN as well as for |x| > 1, so out-of-domain and NaN-in-NaN-out are one test.
+    return (x >= -1.0 && x <= 1.0) ? m : EW_QNAN;
+}
+
+float ew_acos(float x) {
+    float a = abs(x);
+    bool refl = a > 0.5;
+    float z = refl ? max(0.5 - 0.5 * a, 0.0) : a * a;
+    float s = refl ? sqrt(z) : a;
+    float r = ew_asin_core(s);
+    // On the reflected branch acos(a) = 2*asin(sqrt((1-a)/2)) directly, which avoids forming
+    // pi/2 - asin(x) out of two nearly equal quantities where the result is near zero.
+    float m = refl ? (x > 0.0 ? (2.0 * r) : (3.14159265358979324 - 2.0 * r))
+                   : (1.5707963267948966 - (x < 0.0 ? -r : r));
+    return (x >= -1.0 && x <= 1.0) ? m : EW_QNAN;
 }
 #endif
 
@@ -155,9 +232,9 @@ COMPUTE_T apply(COMPUTE_T x) {
 #elif EW_OP == OP_TAN
     return tan(x);
 #elif EW_OP == OP_ASIN
-    return asin(x);
+    return ew_asin(x);
 #elif EW_OP == OP_ACOS
-    return acos(x);
+    return ew_acos(x);
 #elif EW_OP == OP_ATAN
     return atan(x);
 #elif EW_OP == OP_SINH
