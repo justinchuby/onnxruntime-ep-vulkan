@@ -40,6 +40,21 @@ MODEL = (
     )
 )
 
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been opened successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(ROOT / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(MODEL),
+        "onnx_sha256": _model_provenance.sha256_of(pathlib.Path(MODEL)),
+    }
+
 
 def main() -> int:
     os.environ.setdefault("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
@@ -110,6 +125,7 @@ def main() -> int:
 
     out = ROOT / "bench" / "results" / "island15_execution.json"
     out.write_text(json.dumps({
+        **_result_identity(),
         "probe": "phi35_node_executions_by_provider",
         "ep_library_sha256": digest,
         "by_provider": dict(by_provider),

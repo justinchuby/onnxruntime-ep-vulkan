@@ -72,6 +72,21 @@ LAYERS, KV_HEADS, HEAD_DIM = 32, 32, 96
 PAST_LEN = 8
 ITERS = 2
 
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been used successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(ROOT / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(PHI),
+        "onnx_sha256": _model_provenance.sha256_of(PHI),
+    }
+
 
 def feeds(past_len: int) -> dict:
     rng = np.random.default_rng(7)
@@ -265,6 +280,7 @@ def main() -> int:
 
     rec = HERE / "bound_output_correctness.json"
     rec.write_text(json.dumps({
+        **_result_identity(),
         "verdict": verdict, "detail": detail,
         "worst_rel_cpu_vs_ep": worst_ep, "worst_rel_cpu_vs_bound": worst_bound,
         "per_output": [

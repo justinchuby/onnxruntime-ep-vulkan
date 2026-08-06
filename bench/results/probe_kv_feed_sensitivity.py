@@ -50,6 +50,21 @@ OUT = HERE / "kv_feed_sensitivity.json"
 EP = "VulkanExecutionProvider"
 ATOL, RTOL = 0.001, 0.02
 
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been opened successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(REPO / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(ONNX_FILE),
+        "onnx_sha256": _model_provenance.sha256_of(ONNX_FILE),
+    }
+
 
 def sha256(p):
     h = hashlib.sha256()
@@ -138,6 +153,7 @@ def main():
     print(f"\n  VERDICT: {verdict}")
 
     OUT.write_text(json.dumps({
+        **_result_identity(),
         "dll_sha256": sha256(LIB),
         "atol": ATOL, "rtol": RTOL,
         "note": "binary and tolerance held fixed; only input_ids varied",

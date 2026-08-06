@@ -59,6 +59,21 @@ EP = "VulkanExecutionProvider"
 ATOL, RTOL = 0.001, 0.02          # incumbent, from criterion10-dev0.json
 K_ULP = 6.0                        # proposal: k ULP of the tensor's own scale
 
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been opened successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(REPO / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(ONNX_FILE),
+        "onnx_sha256": _model_provenance.sha256_of(ONNX_FILE),
+    }
+
 
 def sha256(p):
     h = hashlib.sha256()
@@ -218,6 +233,7 @@ def main():
     print("  because a gate's blind spots decay out of memory faster than its successes.")
 
     OUT.write_text(json.dumps({
+        **_result_identity(),
         "dll_sha256": sha256(LIB),
         "incumbent": {"atol": ATOL, "rtol": RTOL,
                       "justified_for_max_abs": 3.6e-3,

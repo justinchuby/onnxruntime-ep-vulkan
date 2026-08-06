@@ -84,6 +84,21 @@ PHI = pathlib.Path(
 
 LAYERS, KV_HEADS, HEAD_DIM = 32, 32, 96
 
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been used successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(ROOT / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(PHI),
+        "onnx_sha256": _model_provenance.sha256_of(PHI),
+    }
+
 
 def worker(past_len: int, iters: int) -> int:
     ort.register_execution_provider_library(EP_NAME, os.environ["ONNXRUNTIME_VULKAN_EP_LIB"])
@@ -236,7 +251,10 @@ def main() -> int:
 
     rec = HERE / "output_residency.json"
     rec.write_text(
-        json.dumps({"lanes": lanes, "verdict": verdict, "detail": detail}, indent=2),
+        json.dumps(
+            {**_result_identity(), "lanes": lanes, "verdict": verdict, "detail": detail},
+            indent=2,
+        ),
         encoding="utf-8",
     )
     print(f"\n  record: {rec}")

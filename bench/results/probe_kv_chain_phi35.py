@@ -76,6 +76,22 @@ ONNX_FILE = pathlib.Path(
         r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
     )
 )
+
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved
+# model path and its exact content hash are stamped into every output record below,
+# computed lazily (only once the model has already been used successfully) so a
+# PHI35_MODEL override or a stale/wrong cached file can never be silently absorbed into the
+# evidence. Reuses the streaming SHA-256 helper `model_provenance.sha256_of` rather than a
+# 23rd divergent hasher.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(ONNX_FILE),
+        "onnx_sha256": _model_provenance.sha256_of(ONNX_FILE),
+    }
 EP_NAME = "VulkanExecutionProvider"
 COUNTERS_ENV = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
 
@@ -156,7 +172,7 @@ def _worker(lane: str, steps: int, seed_past: int, out_path: pathlib.Path) -> in
         if ep_device is None:
             doc["verdict"] = "ERROR(instrument)"
             doc["why"] = ["the Vulkan EP is not among ORT's EP devices"]
-            out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+            out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
             return 2
         # Read the device off the run, never off the selector: DEVICE=0 has run on 1=NVIDIA.
         doc["ep_device"] = {
@@ -176,7 +192,7 @@ def _worker(lane: str, steps: int, seed_past: int, out_path: pathlib.Path) -> in
     if lane != "cpu" and EP_NAME not in sess.get_providers():
         doc["verdict"] = "ERROR(instrument)"
         doc["why"] = [f"{EP_NAME} absent from {sess.get_providers()}"]
-        out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
         return 2
 
     logits_dtype = np.float16 if "float16" in sess.get_outputs()[0].type else np.float32
@@ -194,7 +210,7 @@ def _worker(lane: str, steps: int, seed_past: int, out_path: pathlib.Path) -> in
                 "KV cache in and the question was never put",
                 f"ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY={os.environ.get('ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY', '<unset>')}",
             ]
-            out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+            out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
             return 2
 
     # The seed past. Identical bytes in every lane (same rng seed, same draw order), so the three
@@ -241,7 +257,7 @@ def _worker(lane: str, steps: int, seed_past: int, out_path: pathlib.Path) -> in
 
     if lane == "separating":
         rc = _separating(sess, ort, np, mi, past_host, seed_past, doc, counters_path)
-        out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
         return rc
 
     token = 1  # bos
@@ -412,7 +428,7 @@ def _worker(lane: str, steps: int, seed_past: int, out_path: pathlib.Path) -> in
                 "alloc_high_water_bytes",
             )
         }
-    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
     return 0
 
 
@@ -733,7 +749,7 @@ def main() -> int:
     # contents of the last invocation. Observed: a ctx-512 run on the UMA device replaced the
     # committed RTX 4060 seed_past=4 record.
     out_path = pathlib.Path(args.out) if args.out else (HERE / "phi35_kv_chain.json")
-    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
     print(json.dumps(doc, indent=2))
     return rc
 

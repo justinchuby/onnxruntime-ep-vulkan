@@ -547,9 +547,12 @@ CHECKS: tuple[Check, ...] = (
             "archival allowlist exactly as it shipped, and demands exit 1."
         ),
         arm_healthy=(
-            "FOUNDRY-PATHS: PASS — 28 allowlisted occurrence(s), 0 outside the allowlist "
+            "FOUNDRY-PATHS: PASS — 33 allowlisted occurrence(s), 0 outside the allowlist "
             "(24 archival bench/results/*.py scripts + rust/tools/foundry_discovery.py's "
-            "own defect-documentation + this screen's own docstring)"
+            "own defect-documentation (1) + the screen's own files naming the pattern in "
+            "prose/fixtures — ci/check_hardcoded_foundry_paths.py (3), "
+            "ci/negative_control_hardcoded_foundry_paths.py (2), ci/test_lane_checks.py "
+            "(2) and ci/lane_inventory.py (1))"
         ),
         arm_broken=(
             "FOUNDRY-PATHS: FAIL — 1 hardcoded Foundry cache path(s) outside the "

@@ -5125,11 +5125,15 @@ Windows.
 
 **Issue #19 closed the remaining gap: every hardcoded cache path outside the fixture PR #15
 migrated, and a standing guard against a new one.** PR #15's resolver reached `test_phi35.py`
-alone; a repo-wide inventory found ~31 more sites — 11 live tools (`bench/exec_census.py`,
+alone; a repo-wide inventory found ~34 more sites — 11 live tools (`bench/exec_census.py`,
 `bench/island_attribution.py`, and nine `rust/tools/probe_*.py`/`roofline_split.py` scripts) that
-called a hardcoded path directly, and 22 archived one-off investigation scripts under
+called a hardcoded path directly, and 23 archived one-off investigation scripts under
 `bench/results/` whose default path is the exact historical artifact the recorded result was
-actually measured against. These two groups are migrated differently, deliberately:
+actually measured against (an earlier pass through this inventory undercounted the archival group
+at 22; a precise grep for the `os.environ.get("PHI35_MODEL"` pattern during PR #31 review found
+the exhaustive, verified count is 23 — `bench/results/probe_planted_kv.py` names the path fragment
+only in a docstring and is neither of these groups). These two groups are migrated differently,
+deliberately:
 
   - **Live tools** now build a `FoundryModelSpec` and call `resolve_model_path`, exactly like
     `test_phi35.py` — the same fail-loud four-way `FoundryDiscoveryError` from §9.1.4 applies,
@@ -5146,7 +5150,7 @@ actually measured against. These two groups are migrated differently, deliberate
     was found to name the same fragment only in prose (a narrative docstring, not executable
     code) and needed no change.
 
-  No dead duplicates were found among these ~31 sites: every file's content is unique (no two
+  No dead duplicates were found among these ~34 sites: every file's content is unique (no two
   hash-identical, and no pair scores above a 0.55 line-similarity ratio against any other), so
   issue #19's "delete dead duplicates" acceptance criterion is satisfied vacuously here rather
   than by a deletion.
@@ -5163,7 +5167,52 @@ actually measured against. These two groups are migrated differently, deliberate
   REPLAYED arm (the real `bench/exec_census.py` as it stood at `ea427fd`, immediately before
   this migration — the actual defect, not an invented shape) alongside PLANTED and LIVE arms.
   Both are registered in `ci/lane_inventory.py` under `hostfree.hardcoded_foundry_paths` /
-  `hostfree.hardcoded_foundry_paths_negative_control`.
+  `hostfree.hardcoded_foundry_paths_negative_control`. The allowlist stands at **33** occurrences
+  (24 archival `bench/results/*.py` files/lines, plus 3 in the check's own docstring/source, 1 in
+  `ci/lane_inventory.py`, 2 in `ci/negative_control_hardcoded_foundry_paths.py`, 2 in
+  `ci/test_lane_checks.py`, and 1 in `rust/tools/foundry_discovery.py`'s own defect-documentation)
+  — not the "28" an earlier revision of this migration's evidence quoted, corrected after review.
+
+  **The result-identity contract: every archival record names the exact bytes it was computed
+  from.** An `os.environ.get("PHI35_MODEL", ...)` override lets an archival script be pointed at
+  a different cache layout on purpose (the whole reason these scripts are not migrated onto the
+  live resolver, above) — but an override that changed *which file ran* while the emitted JSON
+  kept quoting only the historical default path string would let a maintainer silently swap in a
+  different artifact and misattribute the result to the one the archived numbers actually came
+  from. The same failure shape exists with no override at all, if a stale or corrupted re-download
+  ever lands at the exact historical path. Review of PR #31 (issue #19 follow-up) closed this: each
+  of the 23 archival scripts that accept `PHI35_MODEL` now also defines a lazily-evaluated
+  `_result_identity()` — computed only when a result record is actually written, never at import
+  time, so a script's existing graceful-missing-model behavior (an early `.exists()` return, or a
+  later `onnx.load`/ORT exception) is unchanged — returning
+
+  ```json
+  {"onnx_file": "<the exact path resolved for this run>",
+   "onnx_sha256": "<streaming SHA-256 of that exact file>"}
+  ```
+
+  merged into every JSON record the script writes. All 23 reuse one existing helper,
+  `rust/tools/model_provenance.py`'s `sha256_of(path)` (already exercised for the MobileNet/BERT
+  provenance contract), rather than each defining its own hasher. `ci/test_lane_checks.py` proves
+  both the structural contract (every script accepting `PHI35_MODEL` defines `_result_identity`
+  and stamps both keys, and reuses the shared hasher — not a hand-maintained file list, discovered
+  by the same override pattern the fix targets) and the functional one (pointing `PHI35_MODEL` at
+  a fixture file changes both `onnx_file` and `onnx_sha256` in lockstep; substituting different
+  bytes at the *same* path — no override — changes `onnx_sha256`, proving a silent substitution
+  cannot be invisible in the evidence).
+
+  **The three live tools flagged in the same review — `rust/tools/probe_phi35_claim_reading.py`,
+  `rust/tools/probe_silent_cpu_rebuild.py`, `rust/tools/roofline_split.py` — had each kept a
+  `PHI35_MODEL` environment check ahead of the resolver call**, left over from an earlier
+  migration pass; an override present in the environment (from an unrelated archival script run,
+  say) would silently skip `resolve_model_path`'s own exact variant+execution-provider validation
+  for what are otherwise live tools with no legitimate reason to replay a historical artifact.
+  All three now match the other 8 migrated live tools exactly: an unconditional
+  `resolve_model_path(_PHI35_SPEC)` at import time, with no environment override of any kind, and
+  the same fail-loud `FoundryDiscoveryError` → `SystemExit("ERROR(instrument): ...")` contract.
+  `ci/test_lane_checks.py` asserts both the absence of a functional `os.environ.get("PHI35_MODEL"`
+  read (a comment naming the variable to explain why there is deliberately no override is fine)
+  and the presence of the direct resolver call and its fail-loud exception handling.
 
 ### 9.2 Benchmarking — Niobe
 

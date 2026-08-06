@@ -101,6 +101,22 @@ ONNX_FILE = pathlib.Path(
         r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
     )
 )
+
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved
+# model path and its exact content hash are stamped into every output record below,
+# computed lazily (only once the model has already been used successfully) so a
+# PHI35_MODEL override or a stale/wrong cached file can never be silently absorbed into the
+# evidence. Reuses the streaming SHA-256 helper `model_provenance.sha256_of` rather than a
+# 23rd divergent hasher.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(ONNX_FILE),
+        "onnx_sha256": _model_provenance.sha256_of(ONNX_FILE),
+    }
 EP_NAME = "VulkanExecutionProvider"
 COUNTERS_ENV = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
 ENV_DEVICE_MEMORY = "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY"
@@ -253,7 +269,7 @@ def _worker(lane: str, out_path: pathlib.Path) -> int:
     def bail(why: str) -> int:
         doc["verdict"] = "ERROR(instrument)"
         doc.setdefault("why", []).append(why)
-        out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
         return 2
 
     try:
@@ -331,7 +347,7 @@ def _worker(lane: str, out_path: pathlib.Path) -> int:
     doc["max_concurrent_depth"] = depth.max
     doc["final_counters"] = {k: _counters(counters_path).get(k) for k in COUNTER_KEYS}
     doc["verdict"] = "LANE_RAN" if not errors else "LANE_RAISED"
-    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
     return 0 if not errors else 3
 
 
@@ -399,7 +415,7 @@ def main() -> int:  # noqa: C901
     if oracle.get("verdict") != "LANE_RAN" or not oracle.get("digests"):
         report["verdict"] = "ERROR(instrument): the oracle lane did not produce digests"
         print("  " + report["verdict"])
-        (HERE / args.record).write_text(json.dumps(report, indent=2), encoding="utf-8")
+        (HERE / args.record).write_text(json.dumps({**report, **_result_identity()}, indent=2), encoding="utf-8")
         return 2
     depth = lanes["res_threads"].get("max_concurrent_depth")
     if lanes["res_threads"].get("verdict") == "LANE_RAN" and (depth or 0) < SESSIONS:
@@ -559,7 +575,7 @@ def main() -> int:  # noqa: C901
         print("    into a state that only a race can produce.")
 
     rec = HERE / args.record
-    rec.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    rec.write_text(json.dumps({**report, **_result_identity()}, indent=2), encoding="utf-8")
     print(f"\n  record: {rec}")
     return 0 if verdict == "NO_LANE_SEPARATES_UNDER_CONCURRENCY" else 1
 

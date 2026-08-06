@@ -77,6 +77,22 @@ ONNX_FILE = pathlib.Path(
         r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
     )
 )
+
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved
+# model path and its exact content hash are stamped into every output record below,
+# computed lazily (only once the model has already been used successfully) so a
+# PHI35_MODEL override or a stale/wrong cached file can never be silently absorbed into the
+# evidence. Reuses the streaming SHA-256 helper `model_provenance.sha256_of` rather than a
+# 23rd divergent hasher.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(ONNX_FILE),
+        "onnx_sha256": _model_provenance.sha256_of(ONNX_FILE),
+    }
 EP_NAME = "VulkanExecutionProvider"
 COUNTERS_ENV = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
 
@@ -186,7 +202,7 @@ def _worker(lane: str, out_path: pathlib.Path) -> int:  # noqa: C901
     def bail(why: str, verdict: str = "ERROR(instrument)") -> int:
         doc["verdict"] = verdict
         doc.setdefault("why", []).append(why)
-        out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
         return 2
 
     try:
@@ -291,7 +307,7 @@ def _worker(lane: str, out_path: pathlib.Path) -> int:  # noqa: C901
     # Land the document BEFORE the risky part. `outlive` deliberately reads memory whose session
     # is gone; if that takes the process down, the evidence up to that point must survive, and a
     # crash then reads as a hazard rather than as a probe that produced nothing.
-    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
 
     if lane == "outlive":
         rc = _outlive_read(ort, np, sess_box, ep_device, past, names, doc, out_path, logits_dtype)
@@ -308,7 +324,7 @@ def _worker(lane: str, out_path: pathlib.Path) -> int:  # noqa: C901
     final = _counters(counters_path) if counters_path else {}
     doc["final_counters"] = {k: final.get(k) for k in COUNTER_KEYS}
     doc["verdict"] = "LANE_RAN"
-    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
     return 0
 
 
@@ -381,13 +397,13 @@ def _outlive_read(ort, np, sess_box, ep_device, past, names, doc, out_path, logi
     sess_box[0] = None
     gc.collect()
     doc["session_deleted_with_ortvalues_live"] = True
-    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
 
     try:
         after = {n: _digest(kept[n].numpy()) for n in names}
     except Exception as exc:  # noqa: BLE001
         doc["outlive"] = {"read_after_teardown": "raised", "error": str(exc)[:400]}
-        out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
         return 0
     changed = [n for n in names if before[n] != after[n]]
     doc["outlive"] = {
@@ -395,7 +411,7 @@ def _outlive_read(ort, np, sess_box, ep_device, past, names, doc, out_path, logi
         "outputs": len(names),
         "changed_after_teardown": changed,
     }
-    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
     return 0
 
 
@@ -576,7 +592,7 @@ def main() -> int:
     doc["lanes"] = lanes
     doc["device"] = (lanes.get("ship") or {}).get("ep_device")
     rc = _score(doc, lanes)
-    pathlib.Path(args.json).write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    pathlib.Path(args.json).write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in doc.items() if k != "lanes"}, indent=2))
     return rc
 

@@ -50,6 +50,21 @@ OUT = HERE / "gqa_attribution.json"
 
 EP = "VulkanExecutionProvider"
 
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been opened successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(REPO / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(ONNX_FILE),
+        "onnx_sha256": _model_provenance.sha256_of(ONNX_FILE),
+    }
+
 
 def sha256(p: pathlib.Path) -> str:
     h = hashlib.sha256()
@@ -181,6 +196,7 @@ def main() -> int:
         print("           the set that was claimed -- they are printed above.")
 
     rec = {
+        **_result_identity(),
         "dll_sha256": sha256(LIB),
         "gqa_nodes_in_graph": len(gqa_nodes),
         "gqa_by_layer": {str(k): v for k, v in sorted(gqa_by_layer.items())},

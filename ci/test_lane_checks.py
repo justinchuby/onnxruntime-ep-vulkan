@@ -3306,6 +3306,186 @@ def test_hardcoded_foundry_paths_negative_control_all_arms_pass():
 
 
 # ---------------------------------------------------------------------------
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31) -- every
+# bench/results/ archival probe stamps the resolved ONNX model path and its exact SHA-256
+# into its own output record, so a PHI35_MODEL override -- or a stale/corrupted cached
+# file silently sitting at the historical default path -- can never be silently absorbed
+# into the evidence: the record always names the exact bytes it was computed from.
+# ---------------------------------------------------------------------------
+
+_ARCHIVAL_PHI35_OVERRIDE = re.compile(r'os\.environ\.get\(\s*["\']PHI35_MODEL["\']')
+
+
+def _archival_probes_with_phi35_override() -> list[Path]:
+    """Every bench/results/*.py script that accepts the PHI35_MODEL replay override --
+    discovered, not hand-enumerated, so a new archival script is covered automatically
+    and a removed one does not leave a stale entry to maintain."""
+    out = []
+    for path in sorted((REPO_ROOT / "bench" / "results").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if _ARCHIVAL_PHI35_OVERRIDE.search(text):
+            out.append(path)
+    return out
+
+
+def test_every_archival_phi35_probe_stamps_resolved_path_and_hash():
+    """Every archival script that accepts a PHI35_MODEL override must also define
+    `_result_identity()` and stamp both `onnx_file` and `onnx_sha256` into whatever it
+    writes -- a script that accepts an override but never records which file it actually
+    used could have that override silently substitute a different artifact with nothing
+    in the evidence to reveal it (Morpheus, PR #31 review)."""
+    probes = _archival_probes_with_phi35_override()
+    assert len(probes) >= 20, (
+        f"expected the ~23 archival PHI35_MODEL scripts issue #19 migrated, found "
+        f"{len(probes)}: {[p.name for p in probes]}. This bound guards against the "
+        f"discovery glob itself silently finding nothing."
+    )
+    missing = []
+    for path in probes:
+        text = path.read_text(encoding="utf-8")
+        if "_result_identity" not in text:
+            missing.append(path.name)
+            continue
+        if '"onnx_file"' not in text or '"onnx_sha256"' not in text:
+            missing.append(path.name)
+    assert not missing, (
+        f"{len(missing)} archival probe(s) accept PHI35_MODEL but do not stamp "
+        f"onnx_file/onnx_sha256 into their output record: {missing}"
+    )
+
+
+def test_every_archival_phi35_probe_reuses_the_shared_hasher():
+    """The stamping helper must reuse `model_provenance.sha256_of` (already a streaming
+    SHA-256, already exercised by tests/ops/test_small_model_provenance.py) rather than
+    each of the ~23 scripts defining its own 23rd divergent hasher for this new field."""
+    probes = _archival_probes_with_phi35_override()
+    missing = [
+        p.name for p in probes
+        if "_model_provenance.sha256_of" not in p.read_text(encoding="utf-8")
+    ]
+    assert not missing, (
+        f"{len(missing)} archival probe(s) stamp a hash without reusing "
+        f"model_provenance.sha256_of: {missing}"
+    )
+
+
+def test_archival_probe_result_identity_reflects_a_phi35_model_override(tmp_path):
+    """FUNCTIONAL: pointing PHI35_MODEL at a different file must change the stamped
+    onnx_file AND onnx_sha256 in lockstep -- an override that changed the resolved path
+    but left a stale hash behind would be exactly the silent-substitution failure mode
+    this contract exists to close."""
+    import importlib.util
+
+    probe_path = REPO_ROOT / "bench" / "results" / "probe_kv_depth.py"
+    fake_model = tmp_path / "fake_phi35.onnx"
+    fake_model.write_bytes(b"not a real onnx file, just needs to exist and hash")
+
+    old_env = os.environ.get("PHI35_MODEL")
+    os.environ["PHI35_MODEL"] = str(fake_model)
+    try:
+        spec = importlib.util.spec_from_file_location("probe_kv_depth_under_test", probe_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        identity = mod._result_identity()
+    finally:
+        if old_env is None:
+            os.environ.pop("PHI35_MODEL", None)
+        else:
+            os.environ["PHI35_MODEL"] = old_env
+
+    assert identity["onnx_file"] == str(fake_model)
+
+    import hashlib
+    expected = hashlib.sha256(fake_model.read_bytes()).hexdigest()
+    assert identity["onnx_sha256"] == expected
+
+
+def test_archival_probe_result_identity_detects_silent_content_substitution(tmp_path):
+    """FUNCTIONAL: a file swapped for a DIFFERENT one at the exact same path (the
+    silent-substitution scenario Morpheus's review named -- a stale/corrupted re-download
+    landing at the historical default path with no PHI35_MODEL override at all) must
+    produce a different onnx_sha256. A hash that failed to change would mean the stamp
+    is decorative rather than a detector."""
+    import importlib.util
+
+    probe_path = REPO_ROOT / "bench" / "results" / "probe_kv_depth.py"
+    model_path = tmp_path / "phi35.onnx"
+    model_path.write_bytes(b"artifact version A")
+
+    old_env = os.environ.get("PHI35_MODEL")
+    os.environ["PHI35_MODEL"] = str(model_path)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "probe_kv_depth_under_test_2", probe_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        before = mod._result_identity()["onnx_sha256"]
+
+        # Silent substitution: same path, different bytes -- no override change at all.
+        model_path.write_bytes(b"artifact version B (substituted)")
+        after = mod._result_identity()["onnx_sha256"]
+    finally:
+        if old_env is None:
+            os.environ.pop("PHI35_MODEL", None)
+        else:
+            os.environ["PHI35_MODEL"] = old_env
+
+    assert before != after, (
+        "onnx_sha256 did not change when the file at the same path was substituted -- "
+        "the stamp would not have revealed the substitution"
+    )
+
+
+def test_live_phi35_tools_no_longer_bypass_the_resolver_with_a_pre_check_override():
+    """`probe_phi35_claim_reading.py`, `probe_silent_cpu_rebuild.py` and
+    `roofline_split.py` used to check PHI35_MODEL BEFORE calling
+    foundry_discovery.resolve_model_path(), which let an override silently skip the
+    resolver's exact variant+execution-provider validation (Morpheus, PR #31 review).
+    These are LIVE tools, not archival replay scripts, so -- unlike bench/results/ -- they
+    must resolve by identity every time, with no override path at all."""
+    live_tools = (
+        REPO_ROOT / "rust" / "tools" / "probe_phi35_claim_reading.py",
+        REPO_ROOT / "rust" / "tools" / "probe_silent_cpu_rebuild.py",
+        REPO_ROOT / "rust" / "tools" / "roofline_split.py",
+    )
+    functional_override = re.compile(r'os\.environ\.get\(\s*["\']PHI35_MODEL["\']')
+    for path in live_tools:
+        text = path.read_text(encoding="utf-8")
+        # A comment naming PHI35_MODEL to explain why there is deliberately no override is
+        # fine and expected; an actual `os.environ.get("PHI35_MODEL", ...)` read is the
+        # bypass this test exists to reject.
+        assert not functional_override.search(text), (
+            f"{path.relative_to(REPO_ROOT).as_posix()} still reads PHI35_MODEL from the "
+            f"environment; a live tool must resolve the model by identity "
+            f"unconditionally, not accept a pre-resolver override"
+        )
+        assert "_resolve_model(" not in text, (
+            f"{path.relative_to(REPO_ROOT).as_posix()} still defines/calls the old "
+            f"_resolve_model() override helper"
+        )
+        assert "_foundry_discovery.resolve_model_path(_PHI35_SPEC)" in text, (
+            f"{path.relative_to(REPO_ROOT).as_posix()} does not call the shared resolver "
+            f"directly"
+        )
+
+
+def test_live_phi35_tools_still_fail_loud_on_an_unresolvable_model():
+    """The 3 corrected live tools must still exit non-zero with ERROR(instrument) when
+    the model cannot be resolved at all -- the fix removes the override, it must not
+    also remove the fail-loud contract every other live tool already has."""
+    live_tools = (
+        "probe_phi35_claim_reading.py",
+        "probe_silent_cpu_rebuild.py",
+        "roofline_split.py",
+    )
+    for name in live_tools:
+        path = REPO_ROOT / "rust" / "tools" / name
+        text = path.read_text(encoding="utf-8")
+        assert "except _foundry_discovery.FoundryDiscoveryError as exc:" in text
+        assert "ERROR(instrument): Phi-3.5 model not resolvable" in text
+
+
+# ---------------------------------------------------------------------------
 # ci/check_open_reds.py — the register that tells an accepted red from a new one.
 #
 # These tests never point the screen at the SHIPPED register. ci/check_open_reds.py

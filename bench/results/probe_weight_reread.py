@@ -86,6 +86,21 @@ SHADER_STEM = "q_gemv_matmul_nbits_f16"
 SHADER_SRC = ROOT / "rust" / "shaders" / "glsl" / "templates" / "q_gemv.comp"
 SHADER_INC = ROOT / "rust" / "shaders" / "include"
 
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been used successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(ROOT / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(MODEL),
+        "onnx_sha256": _model_provenance.sha256_of(MODEL),
+    }
+
 #: Mirrors of `ops::quant`. Checked against the Rust unit tests' own expectations in
 #: `bench/test_weight_reread.py`.
 GEMV_RED_WORDS = 2048
@@ -486,6 +501,7 @@ def main() -> int:
             )
 
         report = {
+            **_result_identity(),
             "probe": "weight_reread_amplification_phi35_executed",
             "no_clock": "Every number here is a count of instructions or of bytes.",
             "subject": {

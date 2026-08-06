@@ -109,6 +109,21 @@ MODEL_FILE = Path(
     )
 )
 
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been used successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(REPO / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(MODEL_FILE),
+        "onnx_sha256": _model_provenance.sha256_of(MODEL_FILE),
+    }
+
 #: The node under suspicion and the activation that feeds it.
 LM_HEAD_NODE = "/lm_head/MatMul_Q4"
 HIDDEN_TENSOR = "/model/layers.32/final_norm_layernorm/output_0"
@@ -899,6 +914,7 @@ def main(argv=None) -> int:
         "no criterion-10 row is closed; the verdict stays DIVERGENT",
     ]
     rec["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    rec.update(_result_identity())
 
     text = json.dumps(rec, indent=1, sort_keys=True, default=str)
     if args.out:

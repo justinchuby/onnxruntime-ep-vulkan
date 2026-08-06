@@ -84,6 +84,21 @@ MODEL = pathlib.Path(
 
 REREAD_RECORD = ROOT / "bench" / "results" / "weight_reread_phi35.json"
 
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been opened successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(ROOT / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(MODEL),
+        "onnx_sha256": _model_provenance.sha256_of(MODEL),
+    }
+
 #: The run whose device this file's peak bandwidth is a specification *of*. The device name is
 #: read out of this record's `device_identity.observed_from_trace` -- the device whose
 #: timestamp fingerprint appears in the trace -- and never off `device_index`, which is an EP
@@ -448,6 +463,7 @@ def main() -> int:
         })
 
     report = {
+        **_result_identity(),
         "probe": "whole_island_bytes_phi35_decode",
         "provenance": PROVENANCE,
         "specification": {
