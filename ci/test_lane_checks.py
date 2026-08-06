@@ -1479,6 +1479,41 @@ def test_ci_yml_production_invocation_is_pinned_to_the_directory_form():
     assert invocations[0].strip() == ".github/workflows", invocations
 
 
+def test_lane_checks_job_has_no_depth_limited_fetch_before_the_ledger_census_issue_28():
+    """ISSUE #28. `git fetch --depth=1 origin main`, run earlier in the SAME job as
+    `ci/check_ledger_census.py`, grafted the shared repository — even though the job's
+    own checkout above already declares `fetch-depth: 0` — because a depth-limited fetch
+    marks its own boundary regardless of what history the repository already holds. A
+    real `pull/N/merge` preview's base parent IS `origin/main`'s tip, so that graft point
+    was always one of the checked-out merge's own two parents, and
+    `git rev-parse --is-shallow-repository` went true for the whole checkout.
+    `ci/check_ledger_census.py`'s history-completeness guard then (correctly) refused to
+    answer, and `ci/open_reds.json` reported `ledger_census`/`ledger_census_negative_control`
+    `FAIL(condition=unaccounted_red)` on every PR.
+
+    The fix drops the unnecessary `--depth` from that one lookup (the job already has
+    full history and gains nothing from shortening this one already-known ref). This
+    asserts on ci.yml's own text within the `lane-checks` job specifically, so a
+    `--depth`-limited `git fetch ... origin` reintroduced anywhere ahead of the census
+    step in this job fails on the change that reintroduces it.
+    """
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    lane_start = ci_text.index("\n  lane-checks:\n")
+    next_job = re.search(r"\n  [a-zA-Z][\w-]*:\n", ci_text[lane_start + 1 :])
+    lane_end = lane_start + 1 + next_job.start() if next_job else len(ci_text)
+    lane_body = ci_text[lane_start:lane_end]
+
+    assert "check_ledger_census.py" in lane_body, "this job must still run the census"
+    fetch_lines = re.findall(r"git fetch[^\n]*origin[^\n]*", lane_body)
+    assert fetch_lines, "expected at least the main-tip lookup fetch in this job"
+    for line in fetch_lines:
+        assert "--depth" not in line, (
+            f"a depth-limited fetch in the lane-checks job grafts the WHOLE repository "
+            f"(shared .git/shallow), not just the fetched ref, poisoning the census's "
+            f"history-completeness guard for the rest of the job: {line!r}"
+        )
+
+
 # ---------------------------------------------------------------------------------------
 # ci/check_tautological_assertions.py
 #
