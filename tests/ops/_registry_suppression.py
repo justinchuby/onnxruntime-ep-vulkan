@@ -165,7 +165,17 @@ def suppress_registry_entries(
     key is absent, unwritable, or matches nothing — callers trying several suppression
     arms in sequence should catch this and move to the next arm.
     """
-    import winreg  # noqa: PLC0415
+    # Same guard as `_open_key_all_access`, repeated here: this function's own body
+    # (not just that helper's) calls `winreg.EnumValue`/`winreg.SetValueEx` directly
+    # below, so it needs its own import — and that import must not even be attempted
+    # on a platform where the module does not exist (issue #1 Linux-lane regression,
+    # 2026-08-06: an unguarded `import winreg` here raised a bare `ModuleNotFoundError`
+    # instead of the intended `RegistryMechanismUnavailable`, which no caller catches).
+    if sys.platform != "win32":
+        raise RegistryMechanismUnavailable(
+            f"registry-based suppression only applies on Windows (platform={sys.platform!r})"
+        )
+    import winreg  # noqa: PLC0415 — Windows-only import, guarded immediately above
 
     with _open_key_all_access(key_path) as key:
         originals: dict[str, tuple[int, int]] = {}
