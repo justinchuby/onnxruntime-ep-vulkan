@@ -2063,10 +2063,19 @@ def run_subprocess_checked(
 
     budget = contention_tolerant_timeout(quiet_seconds, floor=floor)
     try:
+        # encoding="utf-8"/errors="replace" instead of a bare text=True: without an
+        # explicit encoding, Python decodes the child's stdout/stderr with the platform
+        # locale encoding, which on an English Windows runner is not UTF-8. Several
+        # callers of this helper (e.g. the criterion-4/3d ICD- and layer-removal
+        # witnesses) parse for non-ASCII markers such as "§7.2" that the child process
+        # writes as UTF-8; a locale mis-decode silently corrupts them into a string no
+        # classifier regex matches, which reads as "instrument could not observe"
+        # instead of the real state (issue #1).
         return subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=budget,
             **kwargs,
         )
