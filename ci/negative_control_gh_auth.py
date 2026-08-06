@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Negative control for ``ci/check_gh_auth.py`` — every arm shown in its POSITIVE state,
 plus the arm issue #16 actually asked for: proof that missing `gh` authentication reports
-an instrument error, never a PASS and never a skip.
+an instrument error, never a PASS and never a skip. Extended for issue #21 with the two
+blind spots PR #17's review found: inline `env: {GH_TOKEN: ...}` being falsely convicted,
+and a zero-`gh`-reaching-subject frame (e.g. the screen pointed at the wrong scope, a
+subdirectory, or a file that genuinely has nothing to check) reporting a silent PASS.
 
 A screen that has only ever been observed green is indistinguishable from a constant that
 returns green. Every rule below is therefore exercised with the defect GENUINELY PRESENT,
@@ -33,6 +36,7 @@ SCREEN = HERE / "check_gh_auth.py"
 MAIN_IS_GREEN = HERE / "check_main_is_green.py"
 CI_YML = REPO / ".github" / "workflows" / "ci.yml"
 CONFORMANCE_YML = REPO / ".github" / "workflows" / "conformance.yml"
+WORKFLOWS_DIR = REPO / ".github" / "workflows"
 
 # The commit immediately before this fix landed: `Open-reds negative control` has no
 # GH_TOKEN in its `env:`, at any scope — the real bytes PR #13 run 31052604259 hit.
@@ -96,6 +100,33 @@ def main() -> int:
         record(
             "LIVE", "and it names the two real `gh`-reaching steps as checked",
             "PASS" in r.stdout and "gh`-reaching step" in r.stdout,
+        )
+
+        print("\nLIVE — issue #21: the real .github/workflows DIRECTORY, not two named files")
+        # Naming files one at a time is exactly how a new workflow keeps going unscreened
+        # after it is added — nobody remembers to extend the command line. Pointing the
+        # screen at the directory instead must find the same two real subjects (and every
+        # other workflow file in the tree, whether or not it happens to call `gh`).
+        r = run_screen(WORKFLOWS_DIR)
+        record(
+            "LIVE", "the whole workflows directory, expanded recursively, still passes",
+            r.returncode == EXIT_PASS and "gh`-reaching step" in r.stdout,
+            (r.stdout or "")[-800:],
+        )
+
+        print("\nLIVE — issue #21: wrong-scope invocation, the real conformance.yml alone")
+        # conformance.yml genuinely has zero `gh`-reaching steps of its own. Screening it
+        # alone is exactly what a mis-scoped CI caller (pointed at a subdirectory, the
+        # wrong file, or run from the wrong working directory) would do by accident, and
+        # the pre-#21 screen would have printed `PASS — 0 gh-reaching step(s)` for it —
+        # indistinguishable from a screen that never actually read anything.
+        r = run_screen(CONFORMANCE_YML)
+        record(
+            "LIVE",
+            "screening only conformance.yml (0 real gh-reaching steps) is a loud "
+            "ERROR(instrument=zero_gh_reaching_subjects), never a silent PASS",
+            r.returncode == EXIT_ERROR_INSTRUMENT and "zero_gh_reaching_subjects" in r.stdout,
+            (r.stdout or "")[-600:],
         )
 
         print("\nLIVE — the exact arm issue #16 asked for: absent auth, never a PASS")
@@ -173,12 +204,21 @@ def main() -> int:
 
         r = plant(
             "non-api-call-no-token.yml",
+            # A second, real subject (`gh api`, token-satisfied) keeps this file's total
+            # gh-reaching count above zero -- otherwise issue #21's zero-subject rule
+            # would fire here for an unrelated reason and this arm would stop isolating
+            # the one shape it exists to check: that `gh --version` itself is not
+            # mistaken for an API call.
             "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
-            "    steps:\n      - name: s\n        run: gh --version\n",
+            "    env:\n      GH_TOKEN: x\n"
+            "    steps:\n      - name: s\n        run: gh --version\n"
+            "      - name: real subject\n        run: gh api repos/x/y\n",
         )
         record(
-            "PLANTED", "a non-API `gh --version` call with no token is NOT flagged",
-            r.returncode == EXIT_PASS,
+            "PLANTED",
+            "a non-API `gh --version` call with no token of its own is NOT counted as "
+            "a subject (only the file's one real `gh api` call is)",
+            r.returncode == EXIT_PASS and "PASS — 1 `gh`-reaching step" in r.stdout,
             (r.stdout or "")[-600:],
         )
 
@@ -210,6 +250,102 @@ def main() -> int:
         )
 
         r = plant(
+            "block-env-step-level.yml",
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        env:\n          GH_TOKEN: x\n"
+            "        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "block-form `env:` (key on its own indented line below) at STEP level "
+            "satisfies the token check",
+            r.returncode == EXIT_PASS,
+            (r.stdout or "")[-600:],
+        )
+
+        r = plant(
+            "inline-env-step-level.yml",
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n"
+            "        env: {GH_TOKEN: ${{ github.token }}}\n"
+            "        run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "issue #21's false-conviction fix: inline `env: {GH_TOKEN: ...}` on one "
+            "line at STEP level satisfies the token check exactly like the block form "
+            "above -- this is the exact remediation text quoted in this screen's own "
+            "FAIL message, and it must never itself be convicted",
+            r.returncode == EXIT_PASS,
+            (r.stdout or "")[-600:],
+        )
+
+        r = plant(
+            "wrong-token-name.yml",
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        env: {TOKEN: x}\n        run: gh pr list\n",
+        )
+        record(
+            "PLANTED",
+            "a wrongly-named env key (TOKEN, not GH_TOKEN/GITHUB_TOKEN) does not "
+            "satisfy the check, in either YAML form",
+            r.returncode == EXIT_FAIL_CONDITION and "missing_token_path" in r.stdout,
+            (r.stdout or "")[-600:],
+        )
+
+        r = plant(
+            "zero-subjects.yml",
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        run: echo hi\n",
+        )
+        record(
+            "PLANTED",
+            "issue #21: a workflow with real steps but ZERO gh-reaching subjects is a "
+            "loud ERROR(instrument=zero_gh_reaching_subjects) by default, never a "
+            "silent PASS",
+            r.returncode == EXIT_ERROR_INSTRUMENT and "zero_gh_reaching_subjects" in r.stdout,
+            (r.stdout or "")[-600:],
+        )
+
+        r = run_screen(tmp / "zero-subjects.yml", extra=["--allow-empty-frame"])
+        record(
+            "PLANTED",
+            "--allow-empty-frame is the only documented way to turn that same "
+            "zero-subject frame into a PASS, and it says so explicitly in its output",
+            r.returncode == EXIT_PASS and "allow-empty-frame" in r.stdout,
+            (r.stdout or "")[-400:],
+        )
+
+        empty_dir = tmp / "empty_subdir"
+        empty_dir.mkdir()
+        r = run_screen(empty_dir)
+        record(
+            "PLANTED",
+            "issue #21: a directory scope with no *.yml/*.yaml file under it at all "
+            "(the wrong-working-directory/wrong-subdirectory shape) is ERROR, never a "
+            "silent pass",
+            r.returncode == EXIT_ERROR_INSTRUMENT and "empty_workflow_directory" in r.stdout,
+            (r.stdout or "")[-400:],
+        )
+
+        nested = tmp / "nested_dir" / "sub"
+        nested.mkdir(parents=True)
+        (nested / "bad.yml").write_text(
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+            encoding="utf-8",
+        )
+        r = run_screen(tmp / "nested_dir")
+        record(
+            "PLANTED",
+            "directory expansion recurses into subdirectories, so a workflow nested "
+            "under a --workflows-dir-style invocation cannot hide from it -- checking "
+            "only a subdirectory of a broader scope cannot pass vacuously",
+            r.returncode == EXIT_FAIL_CONDITION and "missing_token_path" in r.stdout,
+            (r.stdout or "")[-600:],
+        )
+
+        r = plant(
             "indirect-via-open-reds.yml",
             "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
             "    steps:\n      - name: s\n        run: python ci/check_open_reds.py\n",
@@ -237,15 +373,21 @@ def main() -> int:
 
         r = plant(
             "comment-mentions-gh-run.yml",
+            # Same reasoning as the `gh --version` arm above: a second real subject
+            # keeps the total above zero so this isolates only the comment-matching
+            # shape, not issue #21's separate zero-subject rule.
             "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    env:\n      GH_TOKEN: x\n"
             "    steps:\n      - name: s\n"
             "        # this step does NOT call `gh run list`, it only talks about it\n"
-            "        run: echo 'no gh here'\n",
+            "        run: echo 'no gh here'\n"
+            "      - name: real subject\n        run: gh api repos/x/y\n",
         )
         record(
             "PLANTED",
-            "a comment that merely quotes `gh run list` is not mistaken for the command",
-            r.returncode == EXIT_PASS,
+            "a comment that merely quotes `gh run list` is not mistaken for the "
+            "command (only the file's one real `gh api` call is counted)",
+            r.returncode == EXIT_PASS and "PASS — 1 `gh`-reaching step" in r.stdout,
             (r.stdout or "")[-600:],
         )
 
