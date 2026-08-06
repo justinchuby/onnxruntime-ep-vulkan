@@ -132,6 +132,15 @@ FRAME_DIRS: dict[str, str] = {
     "docs": "OUT OF FRAME — prose. Contains no executable instrument.",
     "evidence": "OUT OF FRAME — recorded artifacts. Data, not mechanism.",
     "third_party": "OUT OF FRAME — vendored. Not ours to screen or to fix.",
+    "python": (
+        "OUT OF FRAME — the pip-installable registration shim "
+        "(python/src/onnxruntime_ep_vulkan). It carries real claim-truth guards "
+        "(assert_ep_selected, verify_provenance) but has no tests/ directory of its own "
+        "and no domain question defined for it yet, so 'not scanned' is the honest answer "
+        "rather than a silent one. Candidate for a fourth census domain the day it grows "
+        "an always-on self-test suite; until then this line is what stops a reader from "
+        "reading FRAME PASS as 'python/ was looked at'."
+    ),
     ".github": "OUT OF FRAME — workflow YAML; see ci/lane_inventory.py.",
     ".squad": "OUT OF FRAME — team state and prose records, not shipped mechanism.",
     ".copilot": "OUT OF FRAME — agent configuration, not shipped mechanism.",

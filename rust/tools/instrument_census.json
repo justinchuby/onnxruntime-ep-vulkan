@@ -25,6 +25,9 @@
     "bench_unfalsified_is_a_property_of_the_screen": "85 bench rows read `unfalsified` because polarity is detected from pytest.raises and most bench instruments are TOTAL functions returning a token (STEADY / MARGINAL_TAIL / NO_STEADY_TAIL / SOLE_TENANT). This is the same limit already recorded for `classify_`. The count is not a verdict on Niobe's tests. Crediting a polarity the screen did not observe would be Guard D with the sign flipped. Handed to Niobe: a value-polarity model for total instruments, or a per-row note."
   },
   "uninvoked": [
+    "counters.rs::on_arena_insert",
+    "counters.rs::on_arena_release",
+    "counters.rs::on_arena_remove",
     "counters.rs::to_json",
     "trace.rs::note_thread",
     "trace.rs::observes_gpu_work",
