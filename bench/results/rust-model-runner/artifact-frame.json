@@ -1,13 +1,13 @@
 {
   "files": {
-    "mnist-12.json": "8132c89c5f3a9cdc8872be5e6398d1ffb6b7e945fed9679853a494c98f798121",
-    "mobilenetv2-12.json": "a07313bedd8d0929993d87dba23032c69c6b2edf43643b542485672e8edde4b5",
-    "phi-3.5-mini.json": "678f76020693263d279b55bcd4b5e62bc8c30375b0cdde7e7b6cd55890abd611"
+    "mnist-12.json": "5a5c4a05b496b0a07282c82053fb93309807688a80661df38f569cb11c04d362",
+    "mobilenetv2-12.json": "07e996f1bc2988dc825bb8a4d710adea09d1e8334eaa17fe393fb19c16c21413",
+    "phi-3.5-mini.json": "17f1ad11dd1e7fe4aa99180c9b5ba86c005d54e406eabdae587df51337f9a988"
   },
-  "note": "Real CPU-vs-Vulkan model agreement taken by rust/modelrunner (ort-model-runner --check-model-agreement), release build, on an NVIDIA RTX A1000. mnist-12 PASS: ORT profile CPUExecutionProvider=6 / VulkanExecutionProvider=1, dispatches_executed=2, claimed_nodes=4, islands_offered=1, output Plus214_Output_0 bit-identical to the CPU EP. mobilenetv2-12 PASS: profile CPU=7 / Vulkan=1, dispatches_executed=97, claimed_nodes=98, max_rel=2.256589e-3, max_abs=1.347065e-5 against rtol 1e-2 / atol 1e-4. phi-3.5-mini UNSUPPORTED(reason=reference_run_unsupported): the Foundry cache entry resolved and hashed (3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f, 26180848 bytes) and the CPU reference arm then refused generated inputs at GroupQueryAttention (seqlens_k[0]=7 out of range [0,1)); the identity is recorded because a document with a blank identity cannot be checked later. One profile node execution is one FUSED ISLAND, which is why vulkan_nodes=1 while claimed_nodes is 4 and 98. HOW TO RE-TAKE: cargo build --release -p ort-model-runner, then ort-model-runner --check-model-agreement <name> --ort-lib <onnxruntime> --out bench/results/rust-model-runner/<name>.json on any machine with a Vulkan device -- no Python, no PyPI, which is the whole reason this runner exists. NOT REGISTERED IN ci/open_reds.json on purpose: a gating entry over these paths would go red on the next unrelated commit to rust/src with nobody committed to re-taking it that day, which is how a real screen becomes a thing people disable. The frame is here so the staleness is READABLE on demand; run ci/check_artifact_frame.py bench/results/rust-model-runner before citing any number above.",
+  "note": "Real CPU-vs-Vulkan model agreement taken by rust/modelrunner (ort-model-runner --check-model-agreement), release build, on an NVIDIA RTX A1000. RE-TAKEN for issue #39 after the enum-ABI and test-hermeticity fix; the previous stamp was two commits stale. mnist-12 PASS: ORT profile CPUExecutionProvider=6 / VulkanExecutionProvider=1, dispatches_executed=2, claimed_nodes=4, islands_offered=1, output Plus214_Output_0 bit-identical to the CPU EP. mobilenetv2-12 PASS: profile CPU=7 / Vulkan=1, dispatches_executed=97, claimed_nodes=98, max_rel=2.256589e-3, max_abs=1.347065e-5 against rtol 1e-2 / atol 1e-4. phi-3.5-mini UNSUPPORTED(reason=reference_run_unsupported): the Foundry cache entry resolved and hashed (3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f) and the CPU reference arm then refused generated inputs at GroupQueryAttention; the identity is recorded because a document with a blank identity cannot be checked later. One profile node execution is one FUSED ISLAND, which is why vulkan_nodes=1 while claimed_nodes is 4 and 98. Numbers are unchanged from the 1d643d7 reading, which is the expected result: issue #39 was a compile-time and test-harness defect, not a numerical one, so a changed number here would have been the surprise. HOW TO RE-TAKE: cargo build --release -p ort-model-runner, then ort-model-runner --check-model-agreement <name> --ort-lib <onnxruntime> --out bench/results/rust-model-runner/<name>.json on any machine with a Vulkan device -- no Python, no PyPI, which is the whole reason this runner exists. NOT REGISTERED IN ci/open_reds.json on purpose: a gating entry over these paths would go red on the next unrelated commit to rust/src with nobody committed to re-taking it that day, which is how a real screen becomes a thing people disable. The frame is here so the staleness is READABLE on demand; run ci/check_artifact_frame.py bench/results/rust-model-runner before citing any number above.",
   "platform": "Windows 11 / NVIDIA RTX A1000 (10de:25b0), driver via Vulkan 1.4 loader / ONNX Runtime 1.28.0",
-  "produced_at_commit": "1d643d7e3c709261df8c5aab307e8f096bab2460",
-  "produced_with_uncommitted_changes_in_dir": false,
+  "produced_at_commit": "4d71159b92bf74337bb03b5dd33d6d9c97f43ad1",
+  "produced_with_uncommitted_changes_in_dir": true,
   "produced_with_uncommitted_changes_in_subject": false,
   "schema": 1,
   "subject_path": "onnxruntime_vulkan_ep.dll",
@@ -16,5 +16,5 @@
     "rust/src",
     "rust/shaders"
   ],
-  "subject_sha256": "d70c743915d29153aad3ad71d9c5dee86b065038d4304d1c5770d9f84fbdfcfb"
+  "subject_sha256": "5b99386a19b7e22494ec5ee812389dd0686ef16e519fd1825a17786ef407f8e2"
 }

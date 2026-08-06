@@ -23,9 +23,12 @@
 //! * On a machine without the Vulkan SDK the shaders are not even *compiled* — `build.rs` needs
 //!   `glslc`. This binary detects that, sets the documented escape hatch so the build can
 //!   proceed, and reports the reduced coverage rather than hiding it.
-//! * It runs no pytest lane, no lavapipe lane, no dispatch, and no Linux/macOS build. It *does*
-//!   run the validation-layer positive control (`tests/validation_control.rs`), which is the only
-//!   thing here that creates a `VkInstance`.
+//! * It runs no pytest lane, no lavapipe lane, no dispatch, and no Linux/macOS *build*. It does
+//!   offer `--cross`, which **compiles** the workspace (tests included) for
+//!   `x86_64-unknown-linux-gnu` and is the only local check that catches a Linux-only type error
+//!   — see `rust/ci/linux-stub-include/README.md` and issue #39. It *does* run the
+//!   validation-layer positive control (`tests/validation_control.rs`), which is the only thing
+//!   here that creates a `VkInstance`.
 //!
 //! Every one of those absences is printed at the end of a successful run. A developer who reads
 //! the output cannot come away believing more was verified than was.
@@ -94,6 +97,161 @@ fn crate_root() -> PathBuf {
         .parent()
         .expect("xtask must live inside the crate directory")
         .to_path_buf()
+}
+
+/// The one target `cargo ci --cross` checks.
+///
+/// Windows and Linux are the two lanes CI builds, so from either host there is exactly one
+/// *other* platform worth proving compiles. Only the Windows→Linux direction is offered: the
+/// reverse needs the MSVC CRT headers, which are not redistributable and cannot be stubbed.
+const CROSS_TARGET: &str = "x86_64-unknown-linux-gnu";
+
+/// Where the parse-only C library declarations live, relative to the crate root.
+const CROSS_STUB_INCLUDE: &str = "ci/linux-stub-include";
+
+/// Clang's own builtin header directory (`stddef.h`, `stdint.h`, `stdbool.h`).
+///
+/// bindgen re-targets clang correctly on its own, but when it does, clang stops finding its
+/// builtin headers by the path it would have used for the host. Asking the driver is the only
+/// answer that stays right across LLVM versions and installation layouts; the LIBCLANG_PATH walk
+/// is the fallback for a machine that ships `libclang` without the `clang` driver.
+fn clang_resource_include(libclang: Option<&Path>) -> Option<PathBuf> {
+    let from_driver = Command::new("clang")
+        .arg("-print-resource-dir")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim().to_string()))
+        .map(|p| p.join("include"))
+        .filter(|p| p.is_dir());
+    if from_driver.is_some() {
+        return from_driver;
+    }
+    // `<llvm>/bin` or `<llvm>/lib` -> `<llvm>/lib/clang/<version>/include`.
+    let lib_root = libclang
+        .or_else(|| Some(Path::new(r"C:\Program Files\LLVM\bin")))?
+        .parent()?
+        .join("lib")
+        .join("clang");
+    let mut versions: Vec<PathBuf> = std::fs::read_dir(lib_root)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path().join("include"))
+        .filter(|p| p.is_dir())
+        .collect();
+    versions.sort();
+    versions.pop()
+}
+
+fn cross_target_installed() -> Result<bool, String> {
+    let out = Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+        .map_err(|e| format!("could not run rustup: {e}"))?;
+    if !out.status.success() {
+        return Err("`rustup target list --installed` failed".to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l.trim() == CROSS_TARGET))
+}
+
+/// **The decisive cross-platform check.** Compile the whole workspace, tests included, for the
+/// other CI lane's target.
+///
+/// # Why this is not just the portability lint again
+///
+/// `tests/portability.rs` reads source as text. It cannot see the defect it was written about
+/// twice over: the lines that broke the Linux lane on 2026-08-06 (issue #39) never *name* the
+/// alias whose width they assume —
+///
+/// ```text
+/// Some(get) => unsafe { get(status) },   // typed by ort::OrtErrorCode, which is not written here
+/// None => -1,                            // `u32: Neg` is not satisfied, on Linux only
+/// ```
+///
+/// A scanner cannot catch that and a compiler cannot miss it. So this runs the compiler.
+///
+/// # Why it is opt-in rather than part of the default run
+///
+/// It needs `rustup target add x86_64-unknown-linux-gnu` (~100 MB of std) and a working
+/// `bindgen`. Both are one-time and both are stated plainly when absent — the failure mode this
+/// avoids is a check that quietly does nothing on a machine missing a prerequisite, which is how
+/// a green light becomes a lie. It refuses rather than skips.
+fn run_cross_check(env: &Env) -> bool {
+    println!("\n=== cross-compile check ({CROSS_TARGET}) ===");
+    println!("    mirrors CI: job `build-test-linux` — the *compile* half of it, from this host");
+
+    match cross_target_installed() {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!(
+                "    REFUSED: the `{CROSS_TARGET}` std is not installed.\n    \
+                 Run `rustup target add {CROSS_TARGET}` (one time, ~100 MB) and re-run.\n    \
+                 Not skipping: a cross-check that silently does nothing is worse than no \
+                 cross-check, because it reports the same green as one that ran."
+            );
+            return false;
+        }
+        Err(e) => {
+            eprintln!("    REFUSED: {e}");
+            return false;
+        }
+    }
+
+    let stubs = env.root.join(CROSS_STUB_INCLUDE);
+    if !stubs.join("stdlib.h").is_file() {
+        eprintln!(
+            "    REFUSED: {} does not contain the parse-only C headers this check needs.",
+            stubs.display()
+        );
+        return false;
+    }
+    let Some(builtin) = clang_resource_include(env.libclang.as_deref()) else {
+        eprintln!(
+            "    REFUSED: could not locate clang's builtin header directory (stddef.h, \
+             stdint.h).\n    Put `clang` on PATH or set LIBCLANG_PATH to an LLVM installation."
+        );
+        return false;
+    };
+
+    // Retargeted clang needs to be told where the C declarations are, because the host's are the
+    // wrong ABI and there is no Linux sysroot here. `-ffreestanding` keeps it from assuming a
+    // hosted environment it does not have.
+    let clang_args = format!(
+        "-ffreestanding -isystem \"{}\" -isystem \"{}\"",
+        builtin.display(),
+        stubs.display()
+    );
+    let args = [
+        "check",
+        "--workspace",
+        "--all-targets",
+        "--target",
+        CROSS_TARGET,
+    ];
+    println!("    cargo {}", args.join(" "));
+    println!("    BINDGEN_EXTRA_CLANG_ARGS={clang_args}");
+
+    let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+    cmd.current_dir(&env.root)
+        .args(args)
+        .env("BINDGEN_EXTRA_CLANG_ARGS", &clang_args);
+    if let Some(p) = &env.libclang {
+        cmd.env("LIBCLANG_PATH", p);
+    }
+    if env.glslc.is_none() {
+        cmd.env(ENV_ALLOW_MISSING_GLSLC, "1");
+    }
+    cmd.env_remove("RUSTFLAGS");
+    match cmd.status() {
+        Ok(s) if s.success() => true,
+        Ok(_) => false,
+        Err(e) => {
+            eprintln!("    could not run cargo: {e}");
+            false
+        }
+    }
 }
 
 /// Is a shader compiler available? Mirrors `build.rs::find_glslc`.
@@ -254,7 +412,7 @@ fn run_check(check: &Check, env: &Env, fix_fmt: bool, release: bool) -> bool {
     }
 }
 
-fn print_caveats(env: &Env) {
+fn print_caveats(env: &Env, cross_ran: bool) {
     println!();
     println!("─────────────────────────────────────────────────────────────────────────────");
     println!("WHAT THIS DID *NOT* VERIFY — read this before reporting work complete");
@@ -302,16 +460,25 @@ fn print_caveats(env: &Env) {
          \x20   `epctl --check-counters`. A green `cargo ci` and an executed dispatch are\n\
          \x20   unrelated claims; do not report the second on the strength of the first."
     );
-    println!(
-        "  * ONLY THIS HOST'S TARGET WAS COMPILED. Nothing here builds for the other OS, and this\n\
-         \x20   caveat has already come true once: `tests/mock_ort/mod.rs` named a bindgen type\n\
-         \x20   that only exists on Windows, and broke the Linux lane for a full cycle.\n\
-         \x20   `tests/portability.rs` now lints the cheap subset of that class (platform-only\n\
-         \x20   bindings must be cfg-gated; every fork must have both arms), but a lint is not a\n\
-         \x20   compiler. A genuine cross-check needs `cargo check --target <other>`, which needs\n\
-         \x20   a sysroot for the target's libc before bindgen can parse the ORT headers — see\n\
-         \x20   D-T20. Until then: when you touch anything platform-conditional, watch CI."
-    );
+    if cross_ran {
+        println!(
+            "  * THE OTHER LANE'S TARGET WAS COMPILED, NOT RUN. `--cross` proves {CROSS_TARGET}\n\
+             \x20   builds; it executes nothing, so every Linux runtime behaviour — path\n\
+             \x20   handling, `dlopen` search order, the ELF loader — is still claimed only by\n\
+             \x20   CI's Linux lane."
+        );
+    } else {
+        println!(
+            "  * ONLY THIS HOST'S TARGET WAS COMPILED, and this caveat has come true twice.\n\
+             \x20   `tests/mock_ort/mod.rs` named a bindgen type that only exists on Windows and\n\
+             \x20   broke the Linux lane for a full cycle; then `modelrunner/src/ortapi.rs`\n\
+             \x20   negated a C enum that is unsigned under GCC and signed under MSVC, and broke\n\
+             \x20   it again (issue #39). `tests/portability.rs` lints the cheap subset of that\n\
+             \x20   class, but a lint reads text and could not see either inferred type.\n\
+             \x20   Run `cargo ci --cross`: it compiles this workspace for {CROSS_TARGET} in\n\
+             \x20   about a minute and needs no sysroot."
+        );
+    }
     println!(
         "\n  `cargo ci` green means: CI's *Rust* lanes should pass. It does not mean the EP works."
     );
@@ -390,6 +557,14 @@ fn usage() {
     eprintln!("    cargo ci --fix      same, but let rustfmt rewrite instead of reporting");
     eprintln!("    cargo ci --list     print the checks and the CI steps they mirror");
     eprintln!("    cargo ci --release  build and test optimised, as CI does (slower)");
+    eprintln!(
+        "    cargo ci --cross    also compile the workspace for {CROSS_TARGET}, which is the"
+    );
+    eprintln!(
+        "                        only local check that catches a Linux-only type error \
+         (issue #39)."
+    );
+    eprintln!("                        Needs `rustup target add {CROSS_TARGET}` once.");
 }
 
 fn main() -> ExitCode {
@@ -397,10 +572,11 @@ fn main() -> ExitCode {
     let fix = args.iter().any(|a| a == "--fix");
     let list = args.iter().any(|a| a == "--list");
     let release = args.iter().any(|a| a == "--release");
+    let cross = args.iter().any(|a| a == "--cross");
 
     if let Some(bad) = args
         .iter()
-        .find(|a| !matches!(a.as_str(), "--fix" | "--list" | "--release"))
+        .find(|a| !matches!(a.as_str(), "--fix" | "--list" | "--release" | "--cross"))
     {
         eprintln!("cargo ci: unrecognised argument `{bad}`");
         usage();
@@ -457,11 +633,22 @@ fn main() -> ExitCode {
             // people stop running the checks in the first place.
         }
     }
+    if cross && !run_cross_check(&env) {
+        failed.push("cross-compile");
+    }
 
     println!();
     if failed.is_empty() {
         println!("ALL CHECKS PASSED");
-        print_caveats(&env);
+        print_caveats(&env, cross);
+        if !cross {
+            println!(
+                "\n  ! NO OTHER PLATFORM WAS COMPILED. `cargo ci --cross` checks the workspace \
+                 for\n\x20   {CROSS_TARGET}, which is the only local check that catches a \
+                 Linux-only\n\x20   type error before CI does. Two red lanes have been caused by \
+                 skipping it."
+            );
+        }
         ExitCode::SUCCESS
     } else {
         println!("FAILED: {}", failed.join(", "));

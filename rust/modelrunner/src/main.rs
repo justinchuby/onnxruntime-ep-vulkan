@@ -159,6 +159,20 @@ fn parse_args(argv: &[String]) -> Result<Command> {
         }
         i += 1;
     }
+    // Argv is the most upstream instrument there is, and a refusal that is knowable from it
+    // alone belongs here rather than 500 lines into a run. `compare::resolve` also rejects this
+    // pairing, but it is not reached until after the CPU arm has executed -- so before this
+    // check, `--rtol 1e-3` with no `--atol` meant a full inference run and *then* an error, and
+    // the CLI test that claimed to cover it could only assert "some non-zero exit", which it got
+    // for an unrelated reason. Both checks stay: this one is the fast, observable one, and the
+    // one in `compare` guards the library's own callers.
+    if config.rtol.is_some() != config.atol.is_some() {
+        return Err(Failure::instrument(
+            "partial_tolerance_override",
+            "--rtol and --atol must be given together: half an overridden tolerance silently \
+             inherits the other half from the policy, which is the kind of number nobody reviews.",
+        ));
+    }
     match action {
         Some("list-models") => Ok(Command::ListModels),
         Some("list-devices") => Ok(Command::ListDevices(Box::new(config))),
@@ -232,7 +246,11 @@ fn list_devices(config: &run::RunConfig) -> Result<()> {
         loaded.api_version, loaded.version_string
     );
     let api = ort_model_runner::ortapi::Api::new(loaded.api);
-    let env = ort_model_runner::ortapi::Env::new(api, "ort-model-runner", 3)?;
+    let env = ort_model_runner::ortapi::Env::new(
+        api,
+        "ort-model-runner",
+        ort_model_runner::ortapi::LogSeverity::Error,
+    )?;
     let ep_lib = config
         .ep_lib
         .clone()

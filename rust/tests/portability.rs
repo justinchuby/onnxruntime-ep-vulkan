@@ -24,23 +24,44 @@
 //!
 //! # Why not just cross-compile locally?
 //!
-//! Because it does not work on a Windows box, and I tried it rather than assuming. `rustup` has
-//! the `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` std libraries installed here, and
-//! `cargo check --target x86_64-unknown-linux-gnu` gets impressively far — every dependency
-//! checks, and bindgen correctly re-targets clang. It then dies in `build.rs`:
+//! **This section was wrong, and being wrong cost a second red lane. It is kept, corrected, as
+//! the record of what changed.**
+//!
+//! The original reasoning: `cargo check --target x86_64-unknown-linux-gnu` gets impressively far
+//! on a Windows box — every dependency checks, and bindgen correctly re-targets clang — and then
+//! dies in `build.rs`:
 //!
 //! ```text
 //! third_party/onnxruntime/include/onnxruntime_c_api.h:34:10: fatal error: 'stdlib.h' file not found
 //! ```
 //!
 //! Clang's own builtin headers can be supplied with `BINDGEN_EXTRA_CLANG_ARGS` (that fixes
-//! `stdbool.h`), but `stdlib.h` belongs to glibc, and getting it means vendoring or downloading a
-//! Linux sysroot. That is infrastructure we would have to maintain, on every dev box, for one
-//! lint's worth of value. Rejected — see `.squad/decisions/inbox/tank-m0-foundation.md` D-T20.
+//! `stdbool.h`), but `stdlib.h` belongs to glibc — so, the argument went, getting it means
+//! vendoring or downloading a Linux sysroot, which is infrastructure we would have to maintain on
+//! every dev box for one lint's worth of value. Rejected — see
+//! `.squad/decisions/inbox/tank-m0-foundation.md` D-T20.
 //!
-//! So this lint attacks the specific, cheap, high-yield subset instead: **the ways our source can
-//! name something that does not exist on another platform.** It runs in milliseconds, everywhere,
-//! and needs no toolchain we do not already have.
+//! On 2026-08-06 that conclusion cost the Linux lane again: `modelrunner/src/ortapi.rs` merged
+//! with two Linux-only type errors (issue #39). Re-testing the premise rather than re-reading it
+//! showed it was false. The ORT headers do not *use* glibc; they include three C library headers
+//! and then declare their own types. `rust/ci/linux-stub-include` is those three headers as
+//! declarations — 40 lines, no download, no sysroot — and with them
+//! `cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu` completes and
+//! reproduces the real errors exactly. It is wired up as `cargo ci --cross`.
+//!
+//! **That is now the decisive check, and this lint is the cheap one.** The distinction matters,
+//! because this scanner *structurally cannot* catch what broke the lane in 2026-08: the offending
+//! lines never name the alias whose width they assume.
+//!
+//! ```text
+//! Some(get) => unsafe { get(status) },   // typed by ort::OrtErrorCode -- not written here
+//! None => -1,                            // `u32: Neg` is not satisfied, on Linux only
+//! ```
+//!
+//! P3 fires on a *carrier* that spells a width in a scope that names the alias. Both of those
+//! conditions were absent. So the honest division of labour is: this lint runs in milliseconds on
+//! every `cargo test` and catches the carrier shape; `cargo ci --cross` runs the real front end
+//! and catches everything; CI's Linux lane is the backstop that also *runs* the result.
 //!
 //! # The rules
 //!
@@ -115,23 +136,57 @@ struct WidthVaryingSymbol {
     remedy: &'static str,
 }
 
-/// Every ORT binding whose *width* depends on the target.
+/// Every ORT binding whose *width* depends on the target — and, deliberately, not all of them.
+///
+/// **The measurement.** Diffing the two generated `ort.rs` files (Windows MSVC against
+/// `x86_64-unknown-linux-gnu`, both produced via `cargo ci --cross`) shows **25 of the 28** `ort`
+/// enum aliases change signedness across the two targets. Only `OrtAllocatorType`, `OrtMemType`
+/// and `OrtDeviceEpIncompatibilityReason` are `c_int` on both, because each carries a negative
+/// enumerator and so is signed everywhere.
+///
+/// **Why the table lists one of the 25 and not all of them.** P3's trigger is "this scope names
+/// a constant of the alias", which is a weak signal that gets weaker as the table grows. Adding
+/// `ort::OrtErrorCode` was tried and reverted: it fires on `src/sys.rs`'s
+/// `fn at_version(version: u32)` — an ORT *API version*, correctly `u32` on every target — merely
+/// because the same test module elsewhere names `ort::OrtErrorCode_ORT_EP_FAIL`. This file's own
+/// rule is that "a lint that reports unrelated integers trains people to ignore it", and that
+/// applies to this lint too.
+///
+/// **What covers the other 24.** `cargo ci --cross`, which compiles the workspace for the other
+/// lane's target and has no false positives because it is not a heuristic. That check is also the
+/// only one that could have caught issue #39, whose two defective lines never named an alias at
+/// all — so growing this table would have bought nothing there and cost a false positive.
+/// `tests::the_narrow_p3_table_is_a_decision_and_not_an_oversight` pins that reasoning so a
+/// future reader does not "fix" it by widening the table again.
 const WIDTH_VARYING_SYMBOLS: &[WidthVaryingSymbol] = &[WidthVaryingSymbol {
     alias: "ort::OrtLoggingLevel",
     const_prefix: "ort::OrtLoggingLevel_",
     widths: &["i32", "u32"],
     why: "bindgen emits `OrtLoggingLevel` as `::std::os::raw::c_int` under MSVC and as \
-          `::std::os::raw::c_uint` under GCC — verified by reading both generated `ort.rs` files \
+          `::std::os::raw::c_uint` under GCC — verified by diffing both generated `ort.rs` files \
           — because `OrtLoggingLevel`'s values are 0..=4 and a C enum with no negative enumerator \
           is signed for MSVC and unsigned for GCC. The values are identical on both; only the \
           binding's type differs",
     remedy: "declare the carrier as `ort::OrtLoggingLevel` (the alias), not as a spelled width, \
              and do not reach for an `as` cast — a cast compiles on both platforms while keeping \
-             the assumption that the width is knowable here",
+             the assumption that the width is knowable here. To *read* such a value, convert it \
+             into `i64`, which both widths do losslessly (see `modelrunner/src/ortapi.rs::widen` \
+             and `src/counters.rs`)",
 }];
 
 /// Directories scanned, relative to the crate root.
-const ROOTS: &[&str] = &["src", "tests", "xtask/src"];
+///
+/// `modelrunner/` is a sibling crate rather than a module of this one, and its absence from this
+/// list is why the lint said nothing while `modelrunner/src/ortapi.rs` merged with two Linux-only
+/// type errors (issue #39). The lint is a property of the *workspace*'s source text, not of this
+/// crate's, so the roots follow the source and not the crate boundary.
+const ROOTS: &[&str] = &[
+    "src",
+    "tests",
+    "xtask/src",
+    "modelrunner/src",
+    "modelrunner/tests",
+];
 
 /// This file exempts itself, and only itself.
 ///
@@ -253,17 +308,38 @@ fn scan_platform_symbols(file: &str, text: &str) -> Vec<Finding> {
     findings
 }
 
-/// **P2** — a `#[cfg(windows)]` item has a `#[cfg(not(windows))]` sibling in the same file.
+/// The gate spellings that mean "this item exists on Windows".
+///
+/// `#[cfg(windows)]` and `#[cfg(target_os = "windows")]` are the same predicate written two ways,
+/// and counting only the first is how `modelrunner/`'s forks were invisible to P2. Both are
+/// listed rather than pattern-matched loosely, so a reader can see exactly what the rule covers.
+const WINDOWS_POSITIVE_GATES: &[&str] = &["#[cfg(windows)]", "#[cfg(target_os = \"windows\")]"];
+
+/// The gate spellings that mean "this item exists everywhere else".
+///
+/// The `not(any(...))` form is how a three-way fork (Windows / macOS / the rest) spells its
+/// Windows-excluding arm, and it counts: what P2 is really asking is whether every Windows-only
+/// item has something on the other side, not whether the two spellings are literal mirrors.
+const WINDOWS_NEGATIVE_GATES: &[&str] = &[
+    "#[cfg(not(windows))]",
+    "#[cfg(not(target_os = \"windows\"))]",
+];
+
+fn is_windows_negative_gate(line: &str) -> bool {
+    let t = line.trim();
+    WINDOWS_NEGATIVE_GATES.contains(&t)
+        || (t.starts_with("#[cfg(not(any(") && t.contains("windows"))
+}
+
+/// **P2** — a Windows-only item has a sibling for everywhere else, in the same file.
 fn scan_balanced_forks(file: &str, text: &str) -> Vec<Finding> {
     let lines: Vec<&str> = text.lines().collect();
-    let count = |needle: &str| {
-        lines
-            .iter()
-            .filter(|l| is_code(l) && l.trim() == needle)
-            .count()
-    };
-    let windows = count("#[cfg(windows)]");
-    let not_windows = count("#[cfg(not(windows))]");
+    let code: Vec<&&str> = lines.iter().filter(|l| is_code(l)).collect();
+    let windows = code
+        .iter()
+        .filter(|l| WINDOWS_POSITIVE_GATES.contains(&l.trim()))
+        .count();
+    let not_windows = code.iter().filter(|l| is_windows_negative_gate(l)).count();
     if windows == not_windows {
         return Vec::new();
     }
@@ -275,10 +351,11 @@ fn scan_balanced_forks(file: &str, text: &str) -> Vec<Finding> {
     vec![Finding {
         file: file.to_string(),
         line: 0,
-        text: format!("{windows} × #[cfg(windows)], {not_windows} × #[cfg(not(windows))]"),
+        text: format!("{windows} × Windows-only gate, {not_windows} × everywhere-else gate"),
         message: format!(
             "unbalanced platform fork: {more} item(s) on one side, {less} on the other.\n      \
-             Every `#[cfg(windows)]` item needs a `{missing}` sibling, or the other platform has \
+             Every Windows-only item needs a `{missing}` sibling (or a \
+             `#[cfg(not(any(target_os = \"windows\", ...)))]` arm), or the other platform has \
              a hole where this item should be — which is a compile error there and nowhere \
              else.\n      If the asymmetry is genuinely intended, give the missing arm an \
              explicit `compile_error!` or an empty stub so the intent is in the source.",
@@ -339,7 +416,9 @@ fn module_spans(text: &str) -> Vec<ModuleSpan> {
 /// Is `word` present in `line` as a whole token rather than as part of a longer one?
 ///
 /// This is what keeps the numeric literal `4u32` and the identifier `read_u32` from reading as
-/// type positions.
+/// type positions. A trailing `::` is excluded for the same reason: `u32::MAX` is a path to an
+/// associated constant — a *value* — and flagging it made P3 object to the very test that proves
+/// the widening reader accepts both signednesses.
 fn names_token(line: &str, word: &str) -> bool {
     let ident = |c: char| c.is_alphanumeric() || c == '_';
     let mut from = 0usize;
@@ -348,7 +427,8 @@ fn names_token(line: &str, word: &str) -> bool {
         let end = start + word.len();
         let before_ok = start == 0 || !line[..start].chars().next_back().is_some_and(ident);
         let after_ok = end == line.len() || !line[end..].chars().next().is_some_and(ident);
-        if before_ok && after_ok {
+        let is_value_path = line[end..].starts_with("::");
+        if before_ok && after_ok && !is_value_path {
             return true;
         }
         from = end;
@@ -520,11 +600,17 @@ fn platform_fork_inventory_is_small_enough_to_review() {
     // A soft ceiling, not a hard design rule: if the platform surface ever gets large enough that
     // nobody reads the list above, this fails and forces the conversation about consolidating it
     // behind aliases instead of spreading `cfg` through the crate.
+    //
+    // Raised from 24 to 32 in issue #39, deliberately and for one reason: the scan now covers the
+    // `modelrunner/` crate as well as this one, and that crate contributes 13 items of its own
+    // (path encoding in `ortapi.rs`, library naming and loader hints in `ortlib.rs`). The ceiling
+    // is a budget for what a reviewer will read in one sitting, so it moves when the thing being
+    // read gets larger — not when someone wants to add one more fork.
     assert!(
-        total <= 24,
-        "the crate now has {total} platform-conditional items, which is more than a reviewer will \
-         actually read. Consolidate them behind cfg-selected aliases (see `OrtChar`) rather than \
-         forking logic at each use site, then raise this ceiling deliberately."
+        total <= 32,
+        "the workspace now has {total} platform-conditional items, which is more than a reviewer \
+         will actually read. Consolidate them behind cfg-selected aliases (see `OrtChar`) rather \
+         than forking logic at each use site, then raise this ceiling deliberately."
     );
 }
 
@@ -575,6 +661,165 @@ fn detects_a_planted_one_armed_fork() {
 
     let both = "#[cfg(windows)]\nfn f() {}\n#[cfg(not(windows))]\nfn f() {}\n";
     assert!(scan_balanced_forks("ok.rs", both).is_empty());
+}
+
+#[test]
+fn p2_reads_the_target_os_spelling_as_the_same_fork() {
+    // The spelling `modelrunner/` uses throughout. Counting only `#[cfg(windows)]` is why P2 had
+    // nothing to say about that crate's forks at all (issue #39).
+    let planted = "#[cfg(target_os = \"windows\")]\nfn only_on_windows() {}\n";
+    let findings = scan_balanced_forks("planted.rs", planted);
+    assert_eq!(
+        findings.len(),
+        1,
+        "P2 ignored a one-armed `target_os = \"windows\"` fork"
+    );
+
+    let both = concat!(
+        "#[cfg(target_os = \"windows\")]\n",
+        "fn f() {}\n",
+        "#[cfg(not(target_os = \"windows\"))]\n",
+        "fn f() {}\n",
+    );
+    assert!(scan_balanced_forks("ok.rs", both).is_empty());
+}
+
+#[test]
+fn p2_accepts_a_three_way_fork_whose_negative_arm_is_a_not_any() {
+    // `modelrunner/src/ortlib.rs::library_file_names` — Windows, macOS, everything else. The
+    // Windows-excluding arm is spelled `not(any(...))`, and reading that as "no sibling" would
+    // make P2 report a correct fork as a hole, which is the fastest way to get a lint ignored.
+    let three_way = concat!(
+        "#[cfg(target_os = \"windows\")]\n",
+        "fn f() {}\n",
+        "#[cfg(target_os = \"macos\")]\n",
+        "fn f() {}\n",
+        "#[cfg(not(any(target_os = \"windows\", target_os = \"macos\")))]\n",
+        "fn f() {}\n",
+    );
+    assert!(
+        scan_balanced_forks("three.rs", three_way).is_empty(),
+        "P2 reported a correctly-forked three-way platform split"
+    );
+}
+
+#[test]
+fn the_lint_actually_reaches_the_model_runner_crate() {
+    // The scanner said nothing about `modelrunner/` for as long as that crate existed, because
+    // its roots stopped at this crate's boundary. Two Linux-only type errors merged through the
+    // gap. Assert the reach itself, not just the rules: a future refactor that narrows `ROOTS`
+    // reopens the same hole silently.
+    let files = rust_files();
+    let names: Vec<String> = files.iter().map(|p| rel(p)).collect();
+    for expected in [
+        "modelrunner/src/ortapi.rs",
+        "modelrunner/src/ortlib.rs",
+        "modelrunner/src/run.rs",
+        "modelrunner/tests/cli.rs",
+    ] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "the portability lint does not scan `{expected}`; scanned {} file(s): {names:?}",
+            names.len()
+        );
+    }
+}
+
+#[test]
+fn every_width_varying_entry_names_a_real_binding_and_its_constant_prefix() {
+    // A typo'd alias in the table is a lint entry that can never fire, and it looks exactly like
+    // one that is passing. The constant prefix is the alias plus `_`, by bindgen's own naming.
+    for sym in WIDTH_VARYING_SYMBOLS {
+        assert_eq!(
+            sym.const_prefix,
+            format!("{}_", sym.alias),
+            "`{}`'s constant prefix does not follow bindgen's naming, so the scanner would never \
+             recognise a module that handles it",
+            sym.alias
+        );
+        assert!(sym.alias.starts_with("ort::"));
+        assert_eq!(sym.widths, ["i32", "u32"]);
+    }
+}
+
+#[test]
+fn the_narrow_p3_table_is_a_decision_and_not_an_oversight() {
+    // 25 of the 28 `ort` enum aliases change signedness between MSVC and GCC, and this table
+    // lists one of them. That looks like something to go and fix, so: it was tried.
+    //
+    // Adding `ort::OrtErrorCode` makes P3 fire on `src/sys.rs`'s `fn at_version(version: u32)`,
+    // where `u32` is an ORT *API version* and is correct on every target — flagged only because
+    // the enclosing test module elsewhere names `ort::OrtErrorCode_ORT_EP_FAIL`. P3's trigger is
+    // "this scope names a constant of the alias", which is a weak signal that gets weaker with
+    // every entry added, and this file's own rule is that a lint reporting unrelated integers
+    // trains people to ignore it.
+    //
+    // The 24 unlisted aliases are covered by `cargo ci --cross`, which compiles for the other
+    // lane's target and is not a heuristic at all. Widening this table is the tempting fix and
+    // the wrong one; if you are about to, read `rust/ci/linux-stub-include/README.md` first.
+    assert_eq!(
+        WIDTH_VARYING_SYMBOLS.len(),
+        1,
+        "the P3 table grew. That is a deliberate decision to revisit, not a routine edit — see \
+         this test's comment for the false positive it costs and for what already covers the \
+         aliases it would add."
+    );
+}
+
+#[test]
+fn p3_catches_a_spelled_width_for_each_alias_in_the_table() {
+    // One planted violation per entry, so a table entry that is present but inert is visible.
+    for sym in WIDTH_VARYING_SYMBOLS {
+        let planted = format!(
+            "    mod m {{\n        static C: Mutex<Vec<(i32, String)>> = f();\n        \
+             fn g() {{ let _ = {}SOMETHING; }}\n    }}\n",
+            sym.const_prefix
+        );
+        let findings = scan_width_varying("planted.rs", &planted);
+        assert_eq!(
+            findings.len(),
+            1,
+            "P3 said nothing about a spelled `i32` in a module that handles `{}`",
+            sym.alias
+        );
+        assert!(findings[0].message.contains(sym.alias));
+    }
+}
+
+#[test]
+fn p3_does_not_read_an_associated_constant_as_a_carrier() {
+    // `u32::MAX` is a *value*, and the path that names it is not a type position. Reading it as
+    // one made P3 fire on `modelrunner/src/ortapi.rs`'s own portability test, which is a lint
+    // objecting to the control that proves the bug is fixed.
+    let values = concat!(
+        "    mod m {\n",
+        "        fn g() {\n",
+        "            let _ = widen(u32::MAX);\n",
+        "            let _ = i32::MIN;\n",
+        "            let _ = ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_INFO;\n",
+        "        }\n",
+        "    }\n",
+    );
+    assert!(
+        scan_width_varying("values.rs", values).is_empty(),
+        "P3 read an associated constant as a spelled carrier: {:?}",
+        scan_width_varying("values.rs", values)
+            .iter()
+            .map(|f| f.text.clone())
+            .collect::<Vec<_>>()
+    );
+
+    // ...and it must still catch the carrier on a line that also has a value path on it.
+    let carrier = concat!(
+        "    mod m {\n",
+        "        fn g(level: i32) { let _ = ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_INFO; }\n",
+        "    }\n",
+    );
+    assert_eq!(
+        scan_width_varying("carrier.rs", carrier).len(),
+        1,
+        "the value-path exemption swallowed a real carrier"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
