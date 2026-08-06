@@ -2954,14 +2954,13 @@ are **equal**, so a test cannot fall out of both and be observed by neither.
 This is Trinity's contention-gate principle applied to a register rather than a
 test pool: narrowing is what makes the entry sensitive, not what makes it cheap.
 
-### 7.24.5 What the five accepted reds are, and whose they are
+### 7.24.5 What the four accepted reds are, and whose they are
 
 | entry | owner | closes when |
 |---|---|---|
 | `audit_instruments_census` | Mouse | the nine accessors get callers or are removed, then `--write-baseline` |
 | `harness_census_drift` | Mouse | same event, same commit — the same condition read by a second gate |
 | `lane_checks_census_extent` | Mouse / Switch / Tank | 12 instrumented surfaces get a census mechanism or an out-of-frame reason |
-| `kv_caller_bind_reading` | Switch | the caller-bind reading is re-taken and one of the two readings is retired |
 | `proof_ledger_writer_refuses` | Mouse | the synthetic runs get a `source_digest`, or the writer distinguishes *no witness* from *deliberately absent* |
 
 Writing the third one down is the first time anyone has had to say **whose** the
@@ -2970,23 +2969,35 @@ mechanism: `compile_calls`, `compute_calls`, `subgraphs_stub` (Mouse) and nine
 EP env switches split across Mouse, Switch and Tank. None of them is closable
 from `ci/`.
 
-`kv_caller_bind_reading` is the interesting one. The test asserts that the
-tracked artifact `bench/results/kv_device_residency-callerbind.json` contains
-`CUDA` — i.e. that `device_type='gpu'` routes to CUDA regardless of vendor, so a
-plugin EP is unaddressable by the documented spelling. The artifact was re-taken
-at `872d739` and now records `by_device_type_and_vendor: "OK"`. Exactly one of
-those two readings is right, and the artifact alone cannot say which. That is
-why it is an owned red and not a fix.
+`kv_caller_bind_reading` (Switch) was the fifth entry, retired 2026-08-05.
+The test asserted that the tracked artifact
+`bench/results/kv_device_residency-callerbind.json` contains `CUDA` — i.e.
+that `device_type='gpu'` routes to CUDA regardless of vendor, so a plugin EP is
+unaddressable by the documented spelling. The artifact had been re-taken at
+`872d739` and recorded `by_device_type_and_vendor: "OK"` — but `git diff
+ed48f5b 872d739 -- bench/results/kv_device_residency-callerbind.json` shows the
+device metadata changing in the same edit as the reading: vendor `0x10de`
+(NVIDIA) to `0x8086` (Intel), `device_index` 1 to 0. That re-take was a
+different `vendor_id` argument to the same ORT call, not a re-answer of the
+original question — so the reading is **restored**, not the assertion updated.
+`bench/results/kv_device_residency-epbind.json` is still on record from the
+original NVIDIA capture and still shows the CUDA `RuntimeError`, so
+`test_the_python_binding_hardcodes_gpu_to_cuda` now reads whichever
+currently-committed artifact carries vendor `0x10de` (today, `epbind`'s)
+instead of a hardcoded filename, and a companion test,
+`test_the_cuda_hardcode_does_not_reproduce_on_intels_vendor_id`, keeps the
+Intel `"OK"` finding as a recorded fact instead of discarding it. The claim is
+now stated as vendor-specific rather than "regardless of the vendor id."
 
-### 7.24.6 Why `union_check`'s five are declared one at a time
+### 7.24.6 Why `union_check`'s four are declared one at a time
 
-`FAIL(condition=union_red)` is a returncode, and that returncode sums **3
+`FAIL(condition=union_red)` is a returncode, and that returncode sums **2
 `FAIL(condition)` with 2 `ERROR(instrument)`**. This is the same
 incommensurable-sum defect as the "48 failures" headline I carried for three
 sessions — 42 ledger + 4 instrument + 2 residual, three different kinds of thing
-behind one number. An entry for the sum would accept all five as one red and go
-on accepting a sixth. So the four host-free ones are declared individually and
-the fifth is declared *absent*:
+behind one number. An entry for the sum would accept all four as one red and go
+on accepting a fifth. So the three host-free ones are declared individually and
+the fourth is declared *absent*:
 
 `tests/ops/test_matmulnbits.py::test_layer_capture_mechanism` is red on a lane
 with a GPU (the run falls back to `CPUExecutionProvider`) and **green-by-skip**

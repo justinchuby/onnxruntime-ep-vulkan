@@ -85,7 +85,7 @@ def test_conv_matches_cpu_across_the_attribute_space(case, require_vulkan) -> No
     m.check(model, feeds, **m.FP32_CONV)
 
 
-def test_depthwise_reads_only_its_own_group() -> None:
+def test_depthwise_reads_only_its_own_group(require_vulkan) -> None:
     """A depthwise convolution with one-hot weights must be a pure channel-wise copy.
 
     Tolerance-based comparison against ORT can hide a group-indexing error whenever the wrong
@@ -110,7 +110,7 @@ def test_depthwise_reads_only_its_own_group() -> None:
     np.testing.assert_array_equal(got, x)
 
 
-def test_zero_padding_is_skipped_accumulation_not_a_clamped_read() -> None:
+def test_zero_padding_is_skipped_accumulation_not_a_clamped_read(require_vulkan) -> None:
     """A padded border must contribute zero, not a repeat of the edge element.
 
     With all-ones weights and all-ones input, every output element equals the number of taps
