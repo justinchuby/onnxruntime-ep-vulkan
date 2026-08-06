@@ -788,6 +788,20 @@ onnxruntime-ep-vulkan/
 │       ├── sys.rs                     # raw bindgen output for the ORT plugin-EP C ABI
 │       ├── logging.rs                 # in-crate `log` subscriber, env-gated, silent by default
 │       └── trace.rs                   # env-gated Chrome/Perfetto tracer + GPU timestamp queries
+├── rust/modelrunner/                  # ✨ Tank: Rust-native real-model validation (§9.3)
+│   ├── Cargo.toml                     #    workspace member, NOT a default member; host-only
+│   └── src/
+│       ├── main.rs                    #    the `--check-model-agreement` CLI
+│       ├── run.rs                     #    the six guards and the evidence document
+│       ├── ortapi.rs                  #    RAII wrappers over the ORT C API (the unsafe surface)
+│       ├── ortlib.rs                  #    dlopen/LoadLibrary discovery + API-version gate
+│       ├── provenance.rs              #    SHA-256 + size pin against model_provenance.json
+│       ├── foundry.rs                 #    Foundry Local cache resolution (exactly-one rule)
+│       ├── feeds.rs                   #    deterministic input generation, free-dim pinning
+│       ├── compare.rs                 #    the per-model tolerance policy and the comparator
+│       ├── evidence.rs                #    guards, counters snapshot, artifact writing
+│       ├── sha256.rs                  #    in-tree SHA-256 (no crate: PyPI-free means dep-free)
+│       └── json.rs                    #    in-tree JSON reader/writer
 ├── tests/
 │   ├── README.md
 │   ├── ops/                           # pytest op-correctness: Vulkan EP vs ORT CPU EP
@@ -5443,6 +5457,78 @@ deliberately:
   timings are noise. It flags a regression as a prompt to re-measure locally.
 - **No performance claim leaves this repo before the corresponding op is green in `tests/ops/` on
   at least one real GPU.**
+
+### 9.3 Real-model validation without a Python interpreter — Tank
+
+**The gap this closes.** Every real-model reading this project has ever taken came from a Python
+probe under `rust/tools/`. Those probes need `onnx`, `onnxruntime`, `numpy` and a reachable package
+index. On a host where the index is blocked — air-gapped runner, corporate egress policy, a fresh
+container — none of them can run, and the project's whole-model evidence becomes unavailable at
+exactly the moment somebody wants to check a claim. `rust/modelrunner` is the same question asked in
+a binary that has no interpreter and no wheel behind it.
+
+**Dependency-free is a load-bearing property, not an aesthetic.** SHA-256, JSON parsing/printing and
+the input PRNG are implemented in the crate and tested against published vectors. The only non-`std`
+dependency is `libloading`, used solely to `dlopen`/`LoadLibrary` ONNX Runtime — the EP crate itself
+never links against `onnxruntime`, and neither does this. A runner justified by "works where PyPI is
+blocked" that needed `cargo fetch` to reach a registry would fail in the same conditions for the
+same reason.
+
+**The claim it makes.** `--check-model-agreement <model>` reports `PASS` only when all six of these
+hold, each written into the evidence document with its reason whether it held or not:
+
+1. `model_identity_pinned` — the file's size **and** SHA-256 match `bench/results/model_provenance.json`.
+2. `vulkan_ep_device_present` — the plugin registered an `OrtEpDevice`.
+3. `vulkan_ep_in_session` — that device was appended to *this* session's options.
+4. `vulkan_executed_nodes` — **ONNX Runtime's own profile** attributes at least one executed node
+   to `VulkanExecutionProvider`.
+5. `vulkan_dispatched_work` — the EP's counters snapshot reports `dispatches_executed > 0`.
+6. `outputs_agree` — outputs match the CPU EP's for the same bytes, within a tolerance written in
+   advance.
+
+**Guard 4 is the one that did not previously exist.** `rust/tools/probe_model_output_agreement.py`
+documents a dispatch guard and implements a provider-list membership test —
+`"VulkanExecutionProvider" in session.get_providers()` — and that list is fixed at session-create
+time. It is `True` whenever the EP was *requested*, including a run where every node fell back to
+CPU. That is the §10.0 fabricated-speedup shape in a correctness harness.
+
+**Witness rank is asymmetric, and the asymmetry is the design.** ORT's profile is the **primary**
+witness because it is produced outside the frame under question: ORT decides what ran where and has
+no stake in this EP's claims. The EP's own counter is **corroborating only**, because it is inside
+that frame. When the two disagree the evidence records `split_frame` and the run does not pass — the
+disagreement is reported, not arbitrated in the EP's favour. This is the same rule
+`tests/ops/_verdict.py` applies and the same one §8.9.21 imposed on the proof ledger.
+
+**Tolerance is reviewed policy.** `compare.rs` carries a table of per-model `rtol`/`atol` with a
+written rationale per entry. A model absent from the table is **refused**, not compared against a
+default: an unreviewed default is how a genuine numerical regression becomes a green run.
+`--rtol`/`--atol` override the policy, must be supplied together, and are stamped into the evidence
+as `tolerance.source = "cli"` so a reader can see the comparison was loosened and by whom.
+
+**Four outcomes, not two.** `PASS` (0), `FAIL(condition=…)` (1) for a false claim about the EP,
+`ERROR(instrument=…)` (2) when the harness could not ask the question, and `UNSUPPORTED(reason=…)`
+(3) when the model is outside what the runner can drive. `UNSUPPORTED` is a first-class state: a
+model whose inputs are interdependent (KV cache, `seqlens_k`, tokenised text) cannot be driven from
+generated inputs, and saying so is the honest answer. The model's resolved path and SHA-256 are
+still stamped into the evidence on that path — issue #19's lesson was that a document with a blank
+identity cannot be checked later, so identity is recorded even when the comparison is not made.
+
+**Library discovery refuses ambiguity.** `--ort-lib`, `ORT_MODEL_RUNNER_ORT_LIB`, `ORT_HOME`,
+`ONNXRUNTIME_DIR`, the repository `.venv`, then the loader path — and two distinct libraries found
+is `ERROR(instrument=ort_library_ambiguous)`, never a pick. The API version is gated against the
+same `ORT_API_VERSION_MIN`/`ORT_API_VERSION_EXPECTED` constants the EP pins, so the runner cannot
+drift from the plugin it is validating. On Windows this is immediately load-bearing:
+`C:\Windows\System32\onnxruntime.dll` is 1.17.1 on many machines and wins the loader search; the
+runner refuses it by version and names the remedy rather than failing later in a way that reads as
+an EP defect.
+
+**Extent.** It is not a benchmark and measures no speed. It does not replace `tests/ops`, which
+reaches a per-op granularity no whole-model run does. Its host-free lane —
+`cargo test -p ort-model-runner`, registered as `build.model_runner` in `ci/lane_inventory.py` on
+both build lanes — proves the arithmetic, the pin refusals, the discovery arbitration and the
+comparator, and can see **none** of the device guards. Those are only claimed by a real run on a
+real GPU, and such runs are committed under `bench/results/rust-model-runner/` with an artifact
+frame naming the commit and the device, per §8.9.26.
 
 ---
 
