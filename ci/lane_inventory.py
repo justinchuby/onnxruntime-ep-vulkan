@@ -753,7 +753,13 @@ CHECKS: tuple[Check, ...] = (
             "`present: true` when the snapshot file does not exist — i.e. collapse "
             "\"the instrument did not report\" into \"the EP dispatched nothing\", "
             "which is the exact shape that lets a run with no EP loaded read as a run "
-            "that legitimately did no work."
+            "that legitimately did no work. WHEN RESTORING, UPDATE THE FILE'S MTIME "
+            "(`git checkout -- <file>` then touch it, or edit in place — do NOT restore "
+            "by moving a copy back, because Copy-Item/cp -p preserve the original "
+            "timestamp). cargo's freshness check is mtime-based, so a restored file that "
+            "is older than the planted build's artifact is treated as unchanged and the "
+            "next `cargo test` re-runs the PLANTED binary. Observed 2026-08-06: a restore "
+            "by Move-Item left a green tree reporting 87 passed / 1 failed."
         ),
         arm_healthy=(
             "106 passed; 0 failed (88 lib + 18 integration), clippy -D warnings clean"
