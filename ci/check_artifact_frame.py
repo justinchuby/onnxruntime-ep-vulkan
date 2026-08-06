@@ -23,7 +23,7 @@ Each declared artifact carries a sidecar `<dir>/artifact-frame.json` naming, per
   * `platform`           — where
   * `subject_paths`      — the source the reading is ABOUT
 
-and this screen asks two questions:
+and this screen asks three questions:
 
   1. `FAIL(condition=artifact_predates_subject)` — has any commit touched `subject_paths`
      since `produced_at_commit`? This needs NO BUILD, NO DEVICE and NO SECOND PLATFORM: it
@@ -31,7 +31,16 @@ and this screen asks two questions:
      by hand. It is the arm that would have caught the RAI-012 citation.
   2. `FAIL(condition=artifact_content_moved)` — do the artifact bytes still hash to what
      the frame recorded? A frame that has drifted from its file is a frame for a reading
-     nobody has.
+     nobody has. Text artifacts (`.json`/`.log`/`.txt`/`.md`) are hashed through the same
+     line-ending normalisation as rust/build.rs's `normalize_shader_text`: a checkout that
+     rewrites LF to CRLF (`core.autocrlf=true`) does not change what the artifact SAYS, and
+     a digest that moves on it reports a difference the file does not have — see
+     docs/DESIGN.md 8.9.26 and mouse's "portable digest" repair. It is still exactly as
+     sensitive to a real edit, on any platform.
+  3. `FAIL(condition=artifact_unframed)` — does this directory hold a file the frame says
+     nothing about? A file dropped in beside a stamped frame, without a re-stamp, is
+     exactly as uncompared as one the frame names and cannot find; this arm makes the
+     directory and the frame's file list the same set, not merely a subset check.
 
 WHAT THIS SCREEN DELIBERATELY DOES NOT DO, AND THE COST OF MAKING IT
 --------------------------------------------------------------------
@@ -64,6 +73,26 @@ REPO = HERE.parent
 FRAME_NAME = "artifact-frame.json"
 REQUIRED = ("produced_at_commit", "platform", "subject_paths", "files")
 
+# Suffixes hashed through `_normalize_text` rather than raw. Every artifact this screen has
+# ever framed is one of these; an unrecognised suffix is hashed byte-for-byte so a future
+# binary artifact (a `.so`/`.dll` subject, say) is never silently reinterpreted as text.
+TEXT_SUFFIXES = {".json", ".log", ".txt", ".md"}
+
+
+def _normalize_text(data: bytes) -> bytes:
+    """CRLF and a lone CR both become LF, exactly like rust/build.rs's normalize_shader_text.
+
+    A Windows checkout with `core.autocrlf=true` rewrites every tracked text file's line
+    endings on the way to disk; the bytes committed to git — the frame's actual authoritative
+    surface — never change. A digest that moves on that rewrite is reporting a difference the
+    artifact does not have, which is strictly worse than the digest it would replace: see
+    docs/DESIGN.md 8.9.26's 133-byte "line-ending artifact" and mouse's "portable digest"
+    repair (`.squad/agents/mouse/history.md`). Deliberately not a whitespace normaliser —
+    trailing spaces and blank lines stay in the digest — only the checkout-time transform is
+    absorbed.
+    """
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
 
 KNOWN_LIMITS = {
     "subject_paths_is_a_writers_declaration": (
@@ -83,6 +112,9 @@ def _git(args: list[str], repo: Path) -> subprocess.CompletedProcess:
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
+    if path.suffix.lower() in TEXT_SUFFIXES:
+        h.update(_normalize_text(path.read_bytes()))
+        return h.hexdigest()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
@@ -174,6 +206,22 @@ def check(repo: Path, directory: Path, subject: Path | None) -> int:
         )
         for name, why in moved:
             print(f"  - {name}: {why}")
+        return 1
+
+    unframed = sorted(
+        f.name for f in directory.iterdir()
+        if f.is_file() and f.name != FRAME_NAME and f.name not in doc["files"]
+    )
+    if unframed:
+        print("")
+        print(
+            f"FAIL(condition=artifact_unframed): {len(unframed)} file(s) sit in this "
+            "directory with no entry in the frame that claims to describe it. An artifact "
+            "nobody stamped is a reading nobody can compare against anything; name it in "
+            "`files` (re-stamp) or remove it from the directory."
+        )
+        for name in unframed:
+            print(f"  - {name}")
         return 1
 
     later = _git(
