@@ -121,6 +121,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -168,6 +169,11 @@ RETIRED = REPO / RETIRED_REL
 FRAME_WITNESSES = ("source_digest", "toolchain")
 REWITNESS = REPO / "evidence" / "proof_rewitness.json"
 REWITNESS_FIELDS = ("revision", "field", "owner", "date", "reason")
+# A v2 record names no `revision`: see `load_rewitness` for why naming one cannot work.
+REWITNESS_V2_FIELDS = ("schema", "field", "owner", "date", "reason", "caused_by", "transitions")
+SCHEMA_V1 = "rewitness/1"
+SCHEMA_V2 = "rewitness/2"
+KNOWN_SCHEMAS = (SCHEMA_V1, SCHEMA_V2)
 WORKTREE = "WORKTREE"
 
 
@@ -292,6 +298,86 @@ def witness_transitions(
     return out, walk + [WORKTREE]
 
 
+def _record_schema(rec: dict) -> str:
+    """Which schema a record is written in. Absent `schema` means v1, and that is the ONLY
+    thing absence is allowed to mean: an unknown value is an error, never a v1 fallback."""
+    raw = rec.get("schema")
+    if raw is None:
+        return SCHEMA_V1
+    if raw not in KNOWN_SCHEMAS:
+        raise ValueError(
+            f"a rewitness record declares schema {raw!r}, which this checker "
+            f"does not know (known: {list(KNOWN_SCHEMAS)}). Refusing to read it. A checker "
+            "that silently treats an unrecognised schema as the oldest one it knows will "
+            "screen a record it has not understood and print PASS — which is how a "
+            "declaration format becomes unenforceable the moment it is extended."
+        )
+    return raw
+
+
+_HEX16 = re.compile(r"\A[0-9a-f]{16}\Z")
+
+
+def _validate_v2(rec: dict, path: Path, seen: set[tuple[str, str, str, str]]) -> None:
+    """Structural validation of a v2 record. Every branch here is a fail, never a warning.
+
+    The rules exist because each of them, left unchecked, lets a record *look* like a
+    declaration while ruling on nothing:
+
+    * a bare `keys: 55` with no enumeration declares a NUMBER, not a set of moves — it
+      matches any 55 moves, including 55 moves nobody intended;
+    * a transition whose `old`/`new` are equal declares a non-event;
+    * a duplicate transition lets one real move be "declared" twice and silently covers a
+      second, different move of the same key;
+    * a `keys` count that disagrees with the enumeration means one of the two is a lie and
+      the checker cannot tell which.
+    """
+    missing = [f for f in REWITNESS_V2_FIELDS if not rec.get(f)]
+    if missing:
+        raise ValueError(
+            f"{path}: a {SCHEMA_V2} record is missing {missing}. Unlike v1 this schema "
+            "cannot fall back on a revision, so every one of these is load-bearing."
+        )
+    trans = rec.get("transitions")
+    if not isinstance(trans, list) or not trans:
+        raise ValueError(f"{path}: {SCHEMA_V2} `transitions` must be a non-empty list.")
+    field = rec["field"]
+    for t in trans:
+        if not isinstance(t, dict) or set(t) != {"key", "old", "new"}:
+            raise ValueError(
+                f"{path}: every {SCHEMA_V2} transition needs exactly key/old/new, got "
+                f"{sorted(t) if isinstance(t, dict) else type(t).__name__}. Extra keys are "
+                "refused rather than ignored: an ignored key is a claim nobody checked."
+            )
+        if t["old"] == t["new"]:
+            raise ValueError(
+                f"{path}: transition for {t['key']!r} declares old == new ({t['old']!r}). "
+                "That is not a move, and declaring it hides the real one."
+            )
+        for side in ("old", "new"):
+            if not _HEX16.match(str(t[side])):
+                raise ValueError(
+                    f"{path}: transition for {t['key']!r} has {side}={t[side]!r}, which is "
+                    "not a 16-hex-digit digest. A malformed digest can never match a real "
+                    "transition, so it would declare nothing while looking like a record."
+                )
+        sig = (field, t["key"], t["old"], t["new"])
+        if sig in seen:
+            raise ValueError(
+                f"{path}: transition {sig} is declared more than once (within or across "
+                "records). Declarations are consumed one-for-one, so a duplicate lets a "
+                "second, undeclared move borrow the first one's declaration."
+            )
+        seen.add(sig)
+    if "keys" in rec and rec["keys"] != len(trans):
+        raise ValueError(
+            f"{path}: record says keys={rec['keys']} but enumerates {len(trans)} "
+            "transition(s). The enumeration is the declaration; the count is a summary of "
+            "it, and a summary that disagrees with its subject is the defect this schema "
+            "was introduced to remove."
+        )
+
+
 def load_rewitness(path: Path) -> dict:
     """The declarations that make a witness move legible.
 
@@ -299,11 +385,39 @@ def load_rewitness(path: Path) -> dict:
     to happen silently is an event nobody can tell from its opposite. `screened_since`
     bounds the window so adopting this screen does not retroactively convict history that
     predates it — transitions older than that revision are counted and named, not failed.
+
+    ── WHY THERE IS A SECOND SCHEMA ────────────────────────────────────────────────────
+    v1 matched a declaration to a move by REVISION. That is unsatisfiable under a
+    squash merge, and not as an edge case — as the normal path. A declaration must be
+    written *before* the merge exists, so the only revisions an author can name are
+    branch commits; a squash merge then replays the change under a brand-new sha and
+    erases every one of them. The declaration is now stale and the move it describes is
+    undeclared: one event, two failures, and the register is worse than useless because
+    it reports a red for a move that WAS declared, correctly, in advance.
+
+    This happened twice on this project. `601ddcf` was named by a #35 declaration and
+    erased by that PR's squash (issue #43's fourth red). The repair — re-pointing at the
+    squash sha after the fact — is not a fix: it needs a human to notice, and it cannot
+    be done before the merge, so the register is guaranteed to be wrong in the window
+    where it matters.
+
+    v2 removes the revision from the matching rule entirely. A move IS its content:
+    `(field, key, old, new)`. That tuple is identical on the branch commit, on a squash
+    commit, on a rebase, on a cherry-pick and in the working tree, because it is a fact
+    about the ledger's bytes and not about the commit that carried them. `caused_by`
+    still names a revision, but a different one and for a different purpose: the LANDED
+    commit whose source change made the re-witness necessary. That one is knowable in
+    advance, is checked for ancestry, and is evidence rather than an index.
     """
     if not path.is_file():
         return {"screened_since": "", "rewitness": []}
     doc = json.loads(path.read_text(encoding="utf-8"))
+    seen: set[tuple[str, str, str, str]] = set()
     for rec in doc.get("rewitness", []):
+        schema = _record_schema(rec)
+        if schema == SCHEMA_V2:
+            _validate_v2(rec, path, seen)
+            continue
         missing = [f for f in REWITNESS_FIELDS if not rec.get(f)]
         if missing:
             raise ValueError(
@@ -315,14 +429,55 @@ def load_rewitness(path: Path) -> dict:
     return doc
 
 
+def unlanded_causes(
+    repo: Path,
+    doc: dict,
+    at_scope: str | None = None,
+    live: set[int] | None = None,
+) -> list[tuple[str, str]]:
+    """v2 records whose `caused_by` is not an ancestor of the scope — i.e. has not landed.
+
+    This is the one place a v2 record IS judged on a revision, and the direction matters.
+    `caused_by` does not index the declaration; it names the source change that made the
+    re-witness necessary. That change must already be in the history the declaration is
+    being read against, because a re-witness justified by a commit that is not in this
+    history is justified by nothing a reader here can see.
+
+    A BRANCH-ONLY revision therefore fails: it resolves (the object exists in the clone)
+    but is not an ancestor, which is exactly the state a squash merge leaves behind and
+    exactly the state that must not be quietly accepted.
+
+    Only records that are DOING WORK in this scope are judged — `live` is the set of record
+    indices whose transitions matched a move in this walk. A replay bounded at an older
+    revision must not convict a declaration written for a change that had not happened yet;
+    that is the same append-only discipline `screened_since` enforces for the walk.
+    """
+    out: list[tuple[str, str]] = []
+    head = at_scope or DEFAULT_SCOPE
+    for i, rec in enumerate(doc.get("rewitness", [])):
+        if _record_schema(rec) != SCHEMA_V2:
+            continue
+        if live is not None and i not in live:
+            continue
+        cb = rec["caused_by"]
+        ok = _git(["rev-parse", "--verify", "--quiet", cb + "^{commit}"], repo)
+        if ok.returncode != 0:
+            out.append((cb, "does not resolve to a commit in this repository"))
+            continue
+        anc = _git(["merge-base", "--is-ancestor", cb, head], repo)
+        if anc.returncode != 0:
+            out.append((cb, f"resolves but is NOT an ancestor of {head} — it has not landed"))
+    return out
+
+
 def screen_transitions(
     repo: Path,
     transitions: list[tuple[str, str, str, str, str]],
     walk: list[str],
     doc: dict,
     at_scope: str | None = None,
-) -> tuple[list, list, int]:
-    """-> (undeclared, stale_declarations, out_of_frame_count).
+) -> tuple[list, list, int, list, set[int]]:
+    """-> (undeclared, stale_declarations, out_of_frame_count, overdeclared, live_v2).
 
     The frame boundary is a POSITION IN THE WALK, not an ancestry test, and that is the
     second thing this arm got wrong before it got it right. `merge-base --is-ancestor` said
@@ -365,12 +520,28 @@ def screen_transitions(
             out_of_frame += 1
             continue
         in_frame.append(t)
+
+    # v2 index: (field, key, old, new) -> record position. Content, not commit — see
+    # `load_rewitness` for why the commit cannot be the index.
+    by_content: dict[tuple[str, str, str, str], int] = {}
+    for i, d in enumerate(decls):
+        if _record_schema(d) != SCHEMA_V2:
+            continue
+        for t in d["transitions"]:
+            by_content[(d["field"], t["key"], t["old"], t["new"])] = i
+
     matched: set[int] = set()
+    matched_content: set[tuple[str, str, str, str]] = set()
     undeclared = []
     for rev, key, field, old, new in in_frame:
-        hit = None
+        sig = (field, key, old, new)
+        hit = by_content.get(sig)
+        if hit is not None:
+            matched.add(hit)
+            matched_content.add(sig)
+            continue
         for i, d in enumerate(decls):
-            if d["field"] != field:
+            if _record_schema(d) != SCHEMA_V1 or d["field"] != field:
                 continue
             dr = d["revision"]
             if dr == rev or (dr != WORKTREE and rev != WORKTREE and rev.startswith(dr)):
@@ -381,7 +552,31 @@ def screen_transitions(
         else:
             matched.add(hit)
     stale = []
+    overdeclared: list[tuple[str, str, str, str]] = []
     for i, d in enumerate(decls):
+        if _record_schema(d) == SCHEMA_V2:
+            # A v2 record is in scope when the LANDED revision it blames is in this walk.
+            # `caused_by` is the source change that made the re-witness necessary, so if
+            # that change is not in frame the re-witness cannot be either.
+            cb = d["caused_by"]
+            in_scope = any(r == cb or r.startswith(cb) for r in walk)
+            unmatched = [
+                t for t in d["transitions"]
+                if (d["field"], t["key"], t["old"], t["new"]) not in matched_content
+            ]
+            # Over-declaration is reported separately from staleness on purpose. A wholly
+            # unmatched record is a record for an event that did not happen; a PARTIALLY
+            # matched one is worse, because it looks live while quietly carrying rows that
+            # match nothing — which is how a wrong `old` or a typo'd key would otherwise
+            # ride along inside an otherwise-correct declaration and never be read.
+            if in_scope and unmatched and i in matched:
+                for t in unmatched:
+                    overdeclared.append((d["field"], t["key"], t["old"], t["new"]))
+            if i in matched:
+                continue
+            if in_scope:
+                stale.append(d)
+            continue
         if i in matched:
             continue
         dr = d["revision"]
@@ -391,7 +586,8 @@ def screen_transitions(
             in_scope = any(r == dr or r.startswith(dr) for r in walk)
         if in_scope:
             stale.append(d)
-    return undeclared, stale, out_of_frame
+    live_v2 = {i for i in matched if _record_schema(decls[i]) == SCHEMA_V2}
+    return undeclared, stale, out_of_frame, overdeclared, live_v2
 
 
 def accidental(doc: dict) -> list[dict]:
@@ -615,9 +811,10 @@ def screen(argv: list[str] | None = None) -> int:
     now = present_at(repo, args.at)
     rw_doc = load_rewitness(repo / "evidence" / "proof_rewitness.json")
     _trans, _walk = witness_transitions(repo, args.at)
-    undeclared, stale_decl, out_of_frame = screen_transitions(
+    undeclared, stale_decl, out_of_frame, overdeclared, live_v2 = screen_transitions(
         repo, _trans, _walk, rw_doc, args.at
     )
+    unlanded_cause = unlanded_causes(repo, rw_doc, args.at, live_v2)
     where = args.at or "the working tree"
 
     vanished = sorted(k for k in ever if k not in now and k not in retired)
@@ -636,11 +833,15 @@ def screen(argv: list[str] | None = None) -> int:
     )
     print(
         f"  frame witnesses {list(FRAME_WITNESSES)}: {len(undeclared)} UNDECLARED move(s), "
-        f"{len(stale_decl)} declaration(s) matching nothing, {out_of_frame} out of frame "
+        f"{len(stale_decl)} declaration(s) matching nothing, {len(overdeclared)} "
+        f"over-declared transition(s), {len(unlanded_cause)} unlanded cause(s), "
+        f"{out_of_frame} out of frame "
         f"(before screened_since={rw_doc.get('screened_since') or '<unset>'})"
         + ("  [history truncated: --allow-shallow]" if not complete else "")
     )
     for d in accidental(rw_doc):
+        if d.get("revision") is None:
+            continue
         if not any(r == d["revision"] or r.startswith(d["revision"]) for r in _walk):
             continue
         print(
@@ -722,7 +923,44 @@ def screen(argv: list[str] | None = None) -> int:
             "deleting it is what stops this register rotting."
         )
         for d in stale_decl:
-            print(f"  - {d['revision']} {d['field']} [{d['owner']} {d['date']}: {d['reason']}]")
+            ident = d.get("revision") or f"caused_by={d.get('caused_by')}"
+            print(f"  - {ident} {d['field']} [{d['owner']} {d['date']}: {d['reason']}]")
+        rc = 1
+    elif overdeclared:
+        print("")
+        print(
+            f"FAIL(condition=overdeclared_witness_move): {len(overdeclared)} transition(s) "
+            f"declared in {REWITNESS.relative_to(REPO).as_posix()} match NO move in the "
+            "history, inside records whose other transitions do match."
+        )
+        for field, key, old, new in overdeclared[:12]:
+            print(f"  - {field} {key}\n      declared {old!r} -> {new!r}, which never happened")
+        if len(overdeclared) > 12:
+            print(f"  ... +{len(overdeclared) - 12} more")
+        print(
+            "\n  A partially-matching declaration is worse than a wholly stale one, because it "
+            "looks live. A wrong `old`, a typo'd key or a row copied from another move rides "
+            "along inside an otherwise-correct record and is never read — which is precisely "
+            "the state a bare `keys: <n>` count made unobservable, and the reason this schema "
+            "enumerates transitions instead of counting them. Fix the row or remove it; do not "
+            "widen the matcher."
+        )
+        rc = 1
+    elif unlanded_cause:
+        print("")
+        print(
+            f"FAIL(condition=unlanded_rewitness_cause): {len(unlanded_cause)} declaration(s) "
+            "blame a source change that is not in this history."
+        )
+        for cb, why in unlanded_cause:
+            print(f"  - caused_by={cb}: {why}")
+        print(
+            "\n  `caused_by` is the landed commit whose source change made the re-witness "
+            "necessary. A branch-only revision RESOLVES but is not an ancestor — the exact "
+            "state a squash merge leaves behind — so accepting it would reintroduce, through "
+            "the one revision this schema still reads, the failure the schema removed from "
+            "the matching rule."
+        )
         rc = 1
     else:
         print("")
@@ -749,6 +987,13 @@ def screen(argv: list[str] | None = None) -> int:
                         for r, k2, f, o, nv in undeclared
                     ],
                     "rewitness_declarations_matching_nothing": stale_decl,
+                    "rewitness_transitions_overdeclared": [
+                        {"field": f, "key": k2, "from": o, "to": nv}
+                        for f, k2, o, nv in overdeclared
+                    ],
+                    "rewitness_causes_not_landed": [
+                        {"caused_by": cb, "why": why} for cb, why in unlanded_cause
+                    ],
                     "witness_moves_out_of_frame": out_of_frame,
                     "history_complete": complete,
                     "retired_but_present": retired_present,

@@ -2,7 +2,7 @@
  "schema": 1,
  "purpose": "Every deliberate move of a §8.9.19 FRAME WITNESS (`source_digest`, `toolchain`) in evidence/proof_ledger.jsonl, with an owner and a reason. Read ci/check_ledger_census.py for the argument; the short form is that on 2026-08-04 an author regenerating the ledger from a base that predated a re-witness put the withdrawn digests back on 115 of 121 entries, and NOTHING SAW IT: no key went missing, so the key census and the loss invariant both reported 0, and on Windows a stale source digest with matching SPIR-V is SOURCE-COSMETIC, which forgives, so `--check` printed PASS over all 115. Only the Linux lane declined, and it declined 115 entries and the op suite with them. A witness move is legitimate and routine; a witness move NOBODY WROTE DOWN is indistinguishable from that accident.",
  "why_not_a_value_rule": "The first version of this arm asked 'did the value go back to something a later revision replaced'. That question is SYMMETRIC: it convicted the repair exactly as loudly as it convicted the regression, because from the values alone the two are the same event seen from opposite ends. A screen cannot rank two alternating values without a frame, and the ledger records no frame for its own hashing rule. So the question asked is not 'which value is right' — it is 'did the writer say they were moving it', which has an answer in the repository and needs no build, no device and no second platform.",
- "how_to_add_a_record": "One record per (revision, field). `revision` is the commit that carries the move, or the literal WORKTREE for an uncommitted one — WORKTREE records must be re-pointed at the real sha before merge, and a WORKTREE record that matches nothing fails as `stale_rewitness_declaration`. Say WHY the witness moved: `--reprove` (the kernel changed) and `--backfill-frame --rewitness-source` (the hashing rule changed) are different events and only the second is a re-witness.",
+ "how_to_add_a_record": "WRITE NEW RECORDS IN SCHEMA `rewitness/2`. A v2 record is content-addressed: it carries `schema`, `field`, `owner`, `date`, `reason`, `caused_by`, and a `transitions` list of {key, old, new} naming EVERY key it moves. It has no `revision`, and that is the point -- a declaration must be written before the merge that lands it exists, so under squash-merge the only sha an author can write is a branch commit that the squash then erases. Both failure modes of that are on record here: 601ddcf (named by a #35 declaration, erased by #35's squash, surfaced as issue #43's fourth red) and the first draft of the 55-key record below, which named a7deb38 and would have repeated it. `(field, key, old, new)` is a fact about this ledger's bytes, so it matches identically on a branch commit, a squash, a rebase, a cherry-pick or in the working tree, and needs no follow-up re-point ever. `caused_by` names the LANDED commit whose SOURCE change made the re-witness necessary -- evidence, not an index. It is knowable before the merge exists (it is already in main), and it is checked for ancestry, so a branch-only sha fails as `unlanded_rewitness_cause` rather than being quietly accepted. ENUMERATE, DO NOT COUNT. A bare `keys: <n>` declares a number, and a number matches any n moves including n nobody intended; an enumerated list makes a wrong `old`, a typo'd key or a row copied from another move fail as `overdeclared_witness_move`. An optional `keys` may accompany the list only if it equals its length. Say WHY the witness moved: `--reprove` (the kernel changed) and `--backfill-frame --rewitness-source` (the source text or the hashing rule changed while the SPIR-V is byte-identical, which is the evidence the subject did not) are different events and only the second is a re-witness. EXISTING v1 RECORDS STAY VALID AND ARE NOT REWRITTEN. v1 is one record per (revision, field), matched by revision; `revision` may be the literal WORKTREE for an uncommitted move, which must be re-pointed at the real sha before merge. v1 and v2 coexist in this file and both are screened -- migration is per record, not a flag day. Do not write new v1 records: they are the schema whose branch shas this repository's squash-merge erases. An unknown `schema` value is refused outright rather than read as v1.",
  "screened_since": "aea0147b4cd4697d2b79e68cc4d369455cf9b61e",
  "screened_since_note": "The merge that first carried a portable source_digest into main. Moves in revisions that are not descendants of it predate the rule this screen enforces and are counted and named, not failed — the same append-only discipline as `retired` in ci/open_reds.json. Adopting a screen must not retroactively convict history it could not have governed.",
  "rewitness": [
@@ -49,7 +49,7 @@
    "reason": "The repair of 18ddece, declared late: the commit landed on main before this register was consulted, which is itself the finding — a re-witness that is correct and undeclared is indistinguishable to this screen from the accident it repairs, and the screen said so by convicting both. 9 and not 13 because four of the thirteen keys were retired by Morpheus 8.9.23 between the accident and the repair and are now in evidence/retired_proof_keys.json; the surviving nine carry d29f419bfe2c97ee, the digest computed under the current normalize_shader_text rule, which is what the ledger reads today."
   },
   {
-   "revision": "601ddcf894c35a90cb1f19b2290ac2c9f8aa70ae",
+   "revision": "e3d3cf66537f1710557b0c798009d11d9db790aa",
    "field": "source_digest",
    "owner": "switch",
    "date": "2026-08-06",
@@ -61,7 +61,297 @@
     "ai.onnx::Acos/7+/f32>f32/ew_unary_acos_f32/static/n1"
   ],
    "reason": "NOT a re-witness in the sense this register was built for — the hashing rule did not move, the KERNEL did. Issue #4 replaced GLSL's `asin()`/`acos()` in rust/shaders/glsl/templates/ew_unary.comp with a portable minimax core (`ew_asin_core`/`ew_asin_abs`/`ew_asin`/`ew_acos`), because Vulkan defines both built-ins by inheritance from `atan2`, which is allowed 4096 ULP in single precision; lavapipe measured 3831/3903 ULP against the ORT CPU EP and was conformant while missing FP32_TRANSCENDENTAL by 15x. Different source and different SPIR-V means a different subject, so the two entries had to be re-proved rather than re-witnessed: without the reprove the EP correctly read both as SUBJECT-CHANGED and declined them, which is the negative control working. Re-proved on NVIDIA RTX A1000, verdict MATCH, worst_rel 1.79e-07 (Acos) with dispatches_executed=1. Declared here because the screen cannot tell a deliberate kernel change from a regeneration off a stale base by looking at the digests alone — only the writer can say which happened.",
-   "how_this_gets_closed": "It does not get deleted. `revision` was WORKTREE while the change was uncommitted and was re-pointed at 601ddcf — the commit that carries the ledger move — in the follow-up commit on squad/4-portable-inverse-trig, per `how_to_add_a_record`."
+   "how_this_gets_closed": "It does not get deleted. `revision` was WORKTREE while the change was uncommitted, was re-pointed at 601ddcf on squad/4-portable-inverse-trig, and was re-pointed AGAIN at e3d3cf6 here (issue #43) because PR #35 landed as a SQUASH merge: the squash minted a new commit for the whole branch and 601ddcf is not an ancestor of main, so the declaration named a revision this repository no longer contains and ci/check_ledger_census.py read it as `stale_rewitness_declaration` while reading the identical move under e3d3cf6 as `undeclared_witness_move`. Both arms were describing ONE event from two sides. The lesson generalises past this record: under a squash-merge workflow, any `revision` in this register that names a branch commit is live only until the PR merges, so a record written on a branch MUST be re-pointed at the merge commit — the same discipline `how_to_add_a_record` already states for WORKTREE, for the same reason and with one more step."
+  },
+  {
+   "schema": "rewitness/2",
+   "field": "source_digest",
+   "owner": "switch",
+   "date": "2026-08-06",
+   "deliberate": true,
+   "caused_by": "e3d3cf66537f1710557b0c798009d11d9db790aa",
+   "tool": "rust/tools/gen_proof_ledger.py --backfill-frame --rewitness-source",
+   "reason": "The OTHER half of e3d3cf6 (the PR #35 squash), and the cause of issue #43. `source_digest_for` hashes the WHOLE text of a template plus its includes, so per-variant uniqueness comes from STEM + VARIANT-DEFINE + ARGV and not from preprocessing. rust/shaders/glsl/templates/ew_unary.comp is shared by 42 op selectors, so #35's edits to it moved the source_digest of ALL 55 ew_unary-derived entries at once, not just the 2 whose kernel changed. #35 re-proved those 2 and left the other 53 carrying a digest computed from source text that no longer exists. NOTHING SAW IT, for the third time and by the third distinct route: the census arm sees only values that MOVE IN THE FILE and these never moved in the file, they went stale under it; and on Windows a stale source_digest whose SPIR-V still matches is SOURCE-COSMETIC, which forgives, so --check printed PASS over all 55. Linux convicted 5 of them (IsInf@sel1/sel2/sel3, IsNaN and Not) because CI's shaderc emits different SPIR-V for exactly those five, and once BOTH witnesses have moved the checker cannot tell a moved compiler from a moved kernel and must decline. The EP declining is the negative control WORKING: test_op_table[IsInf|IsNaN|Not] failed at assert_vulkan_claims, with correct numerics throughout. TWO SOURCE TEXTS ARE INVOLVED, and that is why the ledger was ALREADY STALE AT e3d3cf6 rather than being made stale by this branch. 53 of the `old` values below were computed from the pre-#35 template at 7752b84 and went stale at 601ddcf, when the Asin/Acos code entered the shared template. The remaining 2 (Asin, Acos) were computed at 601ddcf and went stale at 8028299 -- the #35 review-fix commit that added the Cephes attribution header, i.e. a COMMENT-ONLY edit, which is exactly the change class this digest is designed to notice and the SPIR-V is designed to forgive. Both of those commits landed inside e3d3cf6, which is why `caused_by` names the squash and not either branch commit. Re-witnessed and not re-proved because the subject demonstrably did not change: --backfill-frame refuses per entry unless the recorded spirv_digest AND toolchain both match this build's, and all 55 passed that guard (55 re-witnessed, 0 skipped); independently, the SPIR-V is byte-identical across both historical texts and today's build for all 55. Re-proving would have been the wrong instrument twice over: it asserts a kernel change that did not happen, and it would have rewritten 55 canonical `device` frames from the ledger's NVIDIA GeForce RTX 4060 Laptop GPU to this machine's NVIDIA RTX A1000. The diff is 55 source_digest fields and nothing else: no key added, none removed, no spirv_digest and no device touched. Windows --check goes 78 identical + 55 SOURCE-COSMETIC to 133 identical.",
+   "evidence": "Every `old` below was REPRODUCED, not inferred. For each entry the named historical text of rust/shaders/glsl/templates/ew_unary.comp was restored, the EP release DLL rebuilt, and OrtEpVulkanGetShaderSubject queried with that entry's own `shaders` list -- the same call rust/tools/gen_proof_ledger.py::_shader_subject makes, and not a reimplementation of the hash. 53 keys reproduce exactly from 7752b84 (pre-#35), 2 (Asin, Acos) exactly from 601ddcf; 0 keys are unexplained. Every `new` equals the digest computed by two independent `cargo clean --release` + rebuild cycles, which agreed byte-for-byte on all 96 stems -- so the digest is deterministic and content-derived, and the movement here is a stale RECORD being corrected, not a wandering hash. SPIR-V is unchanged for 55/55. No key OUTSIDE this list disagrees with the current build, so the edit is exactly as wide as the staleness and no wider.",
+   "why_schema_v2": "This record is schema rewitness/2 and names NO `revision`, because naming one cannot work here. A declaration must exist in the commit that carries the ledger edit, so at writing time the only sha an author can name is a branch commit -- and this repository SQUASH-MERGES, which mints a new commit and leaves the branch commit permanently un-ancestored. The v1 record for e3d3cf6 hit exactly this and had to be re-pointed after the fact; the first draft of THIS record named the branch commit a7deb38 and would have hit it again, producing the same `undeclared_witness_move` + `stale_rewitness_declaration` pair it was written to fix. A content-addressed declaration has no such failure mode: (field, key, old, new) is a fact about the ledger's own bytes, so it matches identically on a branch commit, a squash, a rebase, a cherry-pick or an uncommitted worktree, and needs no follow-up re-point. `caused_by` is EVIDENCE rather than an index -- it names the LANDED source change that made the re-witness necessary, it is knowable before the merge exists, and it is the one field still read for ancestry, so a branch-only value fails as `unlanded_rewitness_cause` instead of being quietly accepted. Transitions are ENUMERATED rather than counted so that a wrong `old`, a typo'd key or a row copied from another move cannot ride along unobserved: an unmatched row inside an otherwise-matching record fails as `overdeclared_witness_move`. The bare `keys: 55` this record used to carry could not have caught any of that.",
+   "standing_repair": "tests/ops/test_proof_ledger.py::test_no_entry_carries_a_stale_source_digest, added with this record. It compares every recorded source_digest against the one this build computes and fails on a mismatch WITHOUT consulting SPIR-V, so it is platform-independent and would have failed on the author's own Windows machine the moment #35 touched the shared template. Both pre-existing screens are blind to a stale-but-unmoved witness: the census sees only values that move in the file, and --check forgives a stale source digest whose SPIR-V still matches. That test is the one that is not blind; tests/ops/test_unary_boundary.py is the collateral-damage control on what the shared ops COMPUTE.",
+   "transitions": [
+    {
+     "key": "ai.onnx::Abs/6+/f32>f32/ew_unary_abs_f32/static/n1",
+     "old": "9e1bd68fc0bb45ae",
+     "new": "4c4c78166c2fe47c"
+    },
+    {
+     "key": "ai.onnx::Acos/7+/f32>f32/ew_unary_acos_f32/static/n1",
+     "old": "93a50fc893de0fdb",
+     "new": "e50d6c43418d79d5"
+    },
+    {
+     "key": "ai.onnx::Acosh/9+/f32>f32/ew_unary_acosh_f32/static/n1",
+     "old": "0fe1ef95b26c8c77",
+     "new": "d209e9ad4ec78fbb"
+    },
+    {
+     "key": "ai.onnx::Asin/7+/f32>f32/ew_unary_asin_f32/static/n1",
+     "old": "81b16661792e892d",
+     "new": "4a8bdbf02bbfd5de"
+    },
+    {
+     "key": "ai.onnx::Asinh/9+/f32>f32/ew_unary_asinh_f32/static/n1",
+     "old": "11ddd1ab42f08fe5",
+     "new": "06a4889a55c44c33"
+    },
+    {
+     "key": "ai.onnx::Atan/7+/f32>f32/ew_unary_atan_f32/static/n1",
+     "old": "68efd50592017538",
+     "new": "82c8444c1ec24919"
+    },
+    {
+     "key": "ai.onnx::Atanh/9+/f32>f32/ew_unary_atanh_f32/static/n1",
+     "old": "e8b5989f937e2dd8",
+     "new": "e08be850ab032816"
+    },
+    {
+     "key": "ai.onnx::BitwiseNot/18+/i32>i32/ew_unary_bitnot_i32/static/n1",
+     "old": "f2831ad64504b4cc",
+     "new": "3c644b5ac3965ac6"
+    },
+    {
+     "key": "ai.onnx::Ceil/6+/f32>f32/ew_unary_ceil_f32/static/n1",
+     "old": "1f19b3388bef79e7",
+     "new": "b8ad77bd24c42b1a"
+    },
+    {
+     "key": "ai.onnx::Celu/12+/f32>f32/ew_unary_celu_f32/static/n1",
+     "old": "0cb40213caece6c7",
+     "new": "a4a8437aafcfdd60"
+    },
+    {
+     "key": "ai.onnx::Cos/7+/f32>f32/ew_unary_cos_f32/static/n1",
+     "old": "a73fb73f342764a9",
+     "new": "d54a3e62b76b2ecc"
+    },
+    {
+     "key": "ai.onnx::Cosh/9+/f32>f32/ew_unary_cosh_f32/static/n1",
+     "old": "4845269cf0b39545",
+     "new": "015bc93cb7b0d541"
+    },
+    {
+     "key": "ai.onnx::Elu/6+/f32>f32/ew_unary_elu_f32/static/n1",
+     "old": "7139ed65d388ef5c",
+     "new": "37e08ba767e5dcdb"
+    },
+    {
+     "key": "ai.onnx::Erf/9+/f16>f16/ew_unary_erf_f16/static/n1",
+     "old": "1db16ee3a8d11319",
+     "new": "5e3446891df1a683"
+    },
+    {
+     "key": "ai.onnx::Erf/9+/f32>f32/ew_unary_erf_f32/static/n1",
+     "old": "c583c27a1baea2f7",
+     "new": "ce4a8948b31ee90c"
+    },
+    {
+     "key": "ai.onnx::Exp/6+/f16>f16/ew_unary_exp_f16/static/n1",
+     "old": "66c92bef3496d20a",
+     "new": "53b5cb4da2beb5f9"
+    },
+    {
+     "key": "ai.onnx::Exp/6+/f32>f32/ew_unary_exp_f32/runtime-extent/n1",
+     "old": "48924ecbe06fcc55",
+     "new": "55c4e92eb39a7f8c"
+    },
+    {
+     "key": "ai.onnx::Exp/6+/f32>f32/ew_unary_exp_f32/static/n1",
+     "old": "48924ecbe06fcc55",
+     "new": "55c4e92eb39a7f8c"
+    },
+    {
+     "key": "ai.onnx::Floor/6+/f32>f32/ew_unary_floor_f32/static/n1",
+     "old": "078c54e88a1203f0",
+     "new": "dfaa8f2ff819ad17"
+    },
+    {
+     "key": "ai.onnx::Gelu/20+/f16>f16/ew_unary_gelu_f16/static/n1",
+     "old": "cb65561dcce99381",
+     "new": "d682fcec04c9e819"
+    },
+    {
+     "key": "ai.onnx::Gelu/20+/f32>f32/ew_unary_gelu_f32/static/n1",
+     "old": "87dba6ffcbccbeba",
+     "new": "0f51ad5418a14588"
+    },
+    {
+     "key": "ai.onnx::HardSigmoid/6+/f32>f32/ew_unary_hardsigmoid_f32/static/n1",
+     "old": "8d35df0ae441967a",
+     "new": "f99a0611e183ba49"
+    },
+    {
+     "key": "ai.onnx::HardSwish/14+/f32>f32/ew_unary_hardswish_f32/static/n1",
+     "old": "ab93464618c97f97",
+     "new": "b866eae4ab560486"
+    },
+    {
+     "key": "ai.onnx::Identity/1+/f32>f32/ew_unary_identity_f32/static/n1",
+     "old": "3d04b046f40196b9",
+     "new": "e82069121561b59b"
+    },
+    {
+     "key": "ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel1/static/n1",
+     "old": "67ec786f798705d6",
+     "new": "d46a773d7d778764"
+    },
+    {
+     "key": "ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel2/static/n1",
+     "old": "67ec786f798705d6",
+     "new": "d46a773d7d778764"
+    },
+    {
+     "key": "ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel3/static/n1",
+     "old": "67ec786f798705d6",
+     "new": "d46a773d7d778764"
+    },
+    {
+     "key": "ai.onnx::IsNaN/9+/f32>bool/ew_unary_isnan_f32/static/n1",
+     "old": "e75f05a742a43ec8",
+     "new": "aa39610fc7b5ad39"
+    },
+    {
+     "key": "ai.onnx::LeakyRelu/6+/f32>f32/ew_unary_leakyrelu_f32/static/n1",
+     "old": "d71b62652a6ebbc7",
+     "new": "73fb37ef074118e8"
+    },
+    {
+     "key": "ai.onnx::Log/6+/f32>f32/ew_unary_log_f32/runtime-extent/n1",
+     "old": "46864003d91807ff",
+     "new": "0ba0b2e8c6f99d06"
+    },
+    {
+     "key": "ai.onnx::Log/6+/f32>f32/ew_unary_log_f32/static/n1",
+     "old": "46864003d91807ff",
+     "new": "0ba0b2e8c6f99d06"
+    },
+    {
+     "key": "ai.onnx::Mish/18+/f32>f32/ew_unary_mish_f32/static/n1",
+     "old": "528847a8dd380649",
+     "new": "193a415a00250eae"
+    },
+    {
+     "key": "ai.onnx::Neg/6+/f32>f32/ew_unary_neg_f32/static/n1",
+     "old": "101196761010fe4a",
+     "new": "81aeea555fd0f4c9"
+    },
+    {
+     "key": "ai.onnx::Not/1+/bool>bool/ew_unary_not_bool/static/n1",
+     "old": "c065a2f2d237aad0",
+     "new": "5bedb6be1ae2ca01"
+    },
+    {
+     "key": "ai.onnx::Reciprocal/6+/f32>f32/ew_unary_recip_f32/static/n1",
+     "old": "8b35da692da217c3",
+     "new": "04e56bfba01e6c05"
+    },
+    {
+     "key": "ai.onnx::Relu/6+/f16>f16/ew_unary_relu_f16/static/n1",
+     "old": "c1c3039ba7629ee1",
+     "new": "fd02fe2411d34742"
+    },
+    {
+     "key": "ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/static/n1",
+     "old": "3bd10b311db42a42",
+     "new": "8706d3d67f18ff64"
+    },
+    {
+     "key": "ai.onnx::Round/11+/f32>f32/ew_unary_round_f32/static/n1",
+     "old": "bfffc411da8cca28",
+     "new": "4a5427a5e51fe264"
+    },
+    {
+     "key": "ai.onnx::Selu/6+/f32>f32/ew_unary_selu_f32/static/n1",
+     "old": "5e3e29ff6821f96a",
+     "new": "84217233b1330e7f"
+    },
+    {
+     "key": "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1",
+     "old": "fa2b06358fc4d5ae",
+     "new": "c51e51fd66ea5256"
+    },
+    {
+     "key": "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/static/n1",
+     "old": "fa2b06358fc4d5ae",
+     "new": "c51e51fd66ea5256"
+    },
+    {
+     "key": "ai.onnx::Sigmoid/6+/f32>f32/ew_unary_sigmoid_f32/runtime-extent/n1",
+     "old": "2d8c2df8e4844d42",
+     "new": "fd7cd5a1636bd8f6"
+    },
+    {
+     "key": "ai.onnx::Sigmoid/6+/f32>f32/ew_unary_sigmoid_f32/static/n1",
+     "old": "2d8c2df8e4844d42",
+     "new": "fd7cd5a1636bd8f6"
+    },
+    {
+     "key": "ai.onnx::Sign/9+/f32>f32/ew_unary_sign_f32/static/n1",
+     "old": "914666cd0c1d1e7e",
+     "new": "4f55a24fd475f460"
+    },
+    {
+     "key": "ai.onnx::Sin/7+/f32>f32/ew_unary_sin_f32/static/n1",
+     "old": "79b38ef8f3287644",
+     "new": "0fec1db1366e05f1"
+    },
+    {
+     "key": "ai.onnx::Sinh/9+/f32>f32/ew_unary_sinh_f32/static/n1",
+     "old": "587c044b58452632",
+     "new": "babddc35f5b0dfbb"
+    },
+    {
+     "key": "ai.onnx::Softplus/1+/f32>f32/ew_unary_softplus_f32/static/n1",
+     "old": "7e827488b9228e1f",
+     "new": "1f768bdfa16e0694"
+    },
+    {
+     "key": "ai.onnx::Softsign/1+/f32>f32/ew_unary_softsign_f32/static/n1",
+     "old": "ae0c3f33d20a9660",
+     "new": "ac94f2168645613e"
+    },
+    {
+     "key": "ai.onnx::Sqrt/6+/f16>f16/ew_unary_sqrt_f16/static/n1",
+     "old": "b63578c0b2de9ffb",
+     "new": "d89c184935081884"
+    },
+    {
+     "key": "ai.onnx::Sqrt/6+/f32>f32/ew_unary_sqrt_f32/static/n1",
+     "old": "e37bee50ca6bf195",
+     "new": "3f8299b52f1fa4d8"
+    },
+    {
+     "key": "ai.onnx::Tan/7+/f32>f32/ew_unary_tan_f32/static/n1",
+     "old": "870b7e227e055f73",
+     "new": "4c8922671897c185"
+    },
+    {
+     "key": "ai.onnx::Tanh/6+/f16>f16/ew_unary_tanh_f16/static/n1",
+     "old": "5250c65f20ba0927",
+     "new": "40906fe108bc4ab7"
+    },
+    {
+     "key": "ai.onnx::Tanh/6+/f32>f32/ew_unary_tanh_f32/runtime-extent/n1",
+     "old": "a05342a57e8409af",
+     "new": "73b0fa3c946d1377"
+    },
+    {
+     "key": "ai.onnx::Tanh/6+/f32>f32/ew_unary_tanh_f32/static/n1",
+     "old": "a05342a57e8409af",
+     "new": "73b0fa3c946d1377"
+    },
+    {
+     "key": "ai.onnx::ThresholdedRelu/10+/f32>f32/ew_unary_trelu_f32/static/n1",
+     "old": "8fc22777fdc9998e",
+     "new": "578369f076f7feb5"
+    }
+   ]
   }
  ]
 }

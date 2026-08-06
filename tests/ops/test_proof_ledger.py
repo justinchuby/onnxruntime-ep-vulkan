@@ -377,6 +377,128 @@ def test_check_ledger_fails_on_a_tampered_artifact(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Issue #43 — the stale-but-unmoved frame witness.
+#
+# Two screens already watch `source_digest` and BOTH were blind to the same event:
+#
+#   * ci/check_ledger_census.py reads git history and convicts a witness that MOVES in
+#     the file with no declaration. A digest that goes stale UNDER an untouched entry
+#     never moves in the file, so the census reads clean.
+#   * gen_proof_ledger.py --check compares the ledger to the build, but a stale
+#     source_digest whose SPIR-V still matches is SOURCE-COSMETIC, which FORGIVES. That
+#     verdict is toolchain-dependent, so the same file passes on Windows and, wherever
+#     the compiler happens to emit different SPIR-V, reads SUBJECT-CHANGED and declines.
+#
+# That is exactly how PR #35 shipped. `source_digest_for` hashes the WHOLE text of a
+# template, and ew_unary.comp is shared by 42 op selectors, so an attribution header and
+# four Asin/Acos-only functions moved the source_digest of all 55 ew_unary entries. 53
+# were left stale. Windows said 78 identical + 55 SOURCE-COSMETIC and printed PASS; Linux
+# CI found different SPIR-V for five of them — IsInf x3, IsNaN, Not — and with both
+# witnesses moved it could no longer tell a moved compiler from a moved kernel, so it
+# declined, and test_op_table[IsInf|IsNaN|Not] failed at assert_vulkan_claims.
+#
+# The screen below asks the one question neither of the others asks, and asks it WITHOUT
+# consulting SPIR-V: does every recorded source_digest still equal the one this build
+# computes? Being source-only makes it platform-independent — it fails on the author's own
+# machine, at the moment the shared template is edited, instead of one merge later on the
+# only platform whose compiler disagrees.
+# ---------------------------------------------------------------------------
+
+
+def _source_digest_audit():
+    """-> (checked, stale) where stale is [(key, recorded, this_build)].
+
+    Deliberately reads ONLY `source_digest`. Consulting `shader_digest` here would rebuild
+    the very forgiveness that hid #35: SPIR-V agreement is what makes a stale source digest
+    *survivable* on one toolchain, not what makes it *correct*.
+    """
+    import gen_proof_ledger as gpl
+
+    lib = gpl._find_lib(os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB", ""))
+    if lib is None:
+        pytest.skip("no built EP to compare the ledger against")
+    checked, stale = 0, []
+    for line in _ledger_lines()[1:]:
+        entry = json.loads(line)
+        recorded = entry.get("source_digest")
+        stems = entry.get("shaders") or []
+        if not recorded or not stems:
+            continue
+        built = gpl._shader_subject(lib, stems).get("source_digest")
+        if not built:
+            # This build has no module for those stems. A real finding, but a different
+            # one (`no-module-in-build`), already ruled on by --check. Not ours to claim.
+            continue
+        checked += 1
+        if built != recorded:
+            stale.append((entry["key"], recorded, built))
+    return checked, stale
+
+
+def test_no_entry_carries_a_stale_source_digest():
+    """Every recorded §8.9.19 source witness still describes the source this build hashed.
+
+    This is the screen that would have failed PR #35 on Windows. It is the standing repair
+    for issue #43 and the negative control the issue asks for against collateral edits to a
+    SHARED template: because `source_digest_for` hashes the whole file, touching
+    ew_unary.comp for one operator moves the witness of all 55 entries derived from it, and
+    this test names every one that was not re-witnessed or re-proved afterwards.
+    """
+    checked, stale = _source_digest_audit()
+    assert checked, "no ledger entry could be compared; this test is UNOBSERVABLE, not passing"
+    # R13: quote the failures, never just the count.
+    assert not stale, (
+        f"{len(stale)} of {checked} ledger entr(ies) carry a source_digest this build does not "
+        "compute. The recorded witness describes source text that no longer exists, so on any "
+        "toolchain that also emits different SPIR-V the EP must decline the op:\n"
+        + "\n".join(f"  {k}: recorded {r} != this build's {b}" for k, r, b in sorted(stale)[:20])
+        + (f"\n  ... +{len(stale) - 20} more" if len(stale) > 20 else "")
+        + "\n\nIf the kernel changed, `--reprove` it. If only the source text moved and the "
+        "SPIR-V is identical, `--backfill-frame --rewitness-source` and declare the move in "
+        "evidence/proof_rewitness.json."
+    )
+
+
+def test_the_stale_source_digest_screen_can_say_no(tmp_path, monkeypatch):
+    """A screen whose red state nobody has seen is not evidence.
+
+    Plants the exact #35 regression — one entry left holding a source witness from a
+    withdrawn revision of the template — and requires the audit to convict it. Without this,
+    a `_shader_subject` that silently returned the recorded value would make the test above
+    pass forever.
+    """
+    import gen_proof_ledger as gpl
+
+    if gpl._find_lib(os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB", "")) is None:
+        pytest.skip("no built EP to compare the ledger against")
+    lines = _ledger_lines()
+    victim = next(
+        (json.loads(l) for l in lines[1:]
+         if json.loads(l).get("source_digest") and json.loads(l).get("shaders")),
+        None,
+    )
+    if victim is None:
+        pytest.skip("no entry carries a source_digest to falsify")
+
+    real = victim["source_digest"]
+    victim["source_digest"] = "dead" + real[4:] if not real.startswith("dead") else "beef" + real[4:]
+    planted = tmp_path / "proof_ledger.jsonl"
+    planted.write_text(
+        lines[0] + "\n" + json.dumps(victim, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(sys.modules[__name__], "LEDGER", planted)
+    try:
+        checked, stale = _source_digest_audit()
+    finally:
+        monkeypatch.undo()
+    assert checked == 1, f"expected to compare the single planted entry, compared {checked}"
+    assert [k for k, _, _ in stale] == [victim["key"]], (
+        "the audit did not convict an entry whose source_digest was hand-edited away from "
+        f"this build's; it reported {stale!r}. A screen that cannot say no is not a screen."
+    )
+
+
+# ---------------------------------------------------------------------------
 # §8.9.24 — mintability. Can a key exist at all?
 # ---------------------------------------------------------------------------
 
@@ -586,3 +708,109 @@ def test_a_shrinking_write_is_a_failure_not_a_footnote(tmp_path):
     assert g.write_ledger(p, lines[:2], allow_shrink=True) == 0
     kept = [l for l in p.read_text(encoding="utf-8").splitlines() if l.strip()][1:]
     assert len(kept) == 2
+
+
+# ── the §8.9.19 declaration register itself ────────────────────────────────────────────────
+
+
+def _rewitness_doc():
+    """The register, parsed by the CANONICAL parser rather than by `json.load`.
+
+    Reading it with `json.load` here would test that the file is JSON, which nothing disputes.
+    Reading it through `ci/check_ledger_census.py` tests the thing that matters: that the
+    register the lane screens is the register this suite is looking at, and that its schema
+    validation is reachable from the test lane and not only from a shell script CI runs.
+    """
+    sys.path.insert(0, str(REPO / "ci"))
+    import check_ledger_census as clc  # noqa: PLC0415
+
+    return clc, clc.load_rewitness(REPO / "evidence" / "proof_rewitness.json")
+
+
+def test_the_rewitness_register_parses_under_the_canonical_checker():
+    clc, doc = _rewitness_doc()
+    records = doc.get("rewitness", [])
+    assert records, "the register is empty; this test is UNOBSERVABLE, not passing"
+    for rec in records:
+        # Raises on an unknown schema — the fail-loud path, exercised on the real file.
+        assert clc._record_schema(rec) in clc.KNOWN_SCHEMAS
+
+
+def test_no_v2_record_names_a_revision():
+    """The whole point of `rewitness/2` is that it has nothing for a squash to erase.
+
+    A `revision` on a v2 record would be dead weight at best and, far more likely, the thing
+    a future reader trusts — reintroducing by habit the coupling the schema removed. It is
+    not merely unused; it must not be there.
+    """
+    clc, doc = _rewitness_doc()
+    offenders = [
+        (i, rec.get("revision"))
+        for i, rec in enumerate(doc.get("rewitness", []))
+        if clc._record_schema(rec) == clc.SCHEMA_V2 and "revision" in rec
+    ]
+    assert not offenders, (
+        f"{len(offenders)} rewitness/2 record(s) carry a `revision`: {offenders!r}. "
+        "Matching is (field, key, old, new); a revision here is a sha a squash will erase."
+    )
+
+
+def test_every_declared_transition_lands_on_the_digest_this_build_computes():
+    """A declaration is a claim about this ledger, so it is checkable against this build.
+
+    Each v2 transition says a key moved `old` -> `new`. `new` is what the ledger carries now,
+    and `test_no_entry_carries_a_stale_source_digest` already ties the ledger to the build —
+    but only in aggregate. This one is per declared row, so a record that enumerates a key
+    with a plausible-looking digest nobody computes is convicted HERE, in the file that
+    declares it, rather than showing up as a mystery decline on the other platform.
+
+    It also closes the `old == new` loophole from the other side: a row whose `new` is not the
+    current value is either a stale declaration or a wrong one, and both are defects.
+    """
+    clc, doc = _rewitness_doc()
+    entries = {json.loads(l)["key"]: json.loads(l) for l in _ledger_lines()[1:]}
+    wrong, checked = [], 0
+    for rec in doc.get("rewitness", []):
+        if clc._record_schema(rec) != clc.SCHEMA_V2:
+            continue
+        field = rec["field"]
+        for t in rec["transitions"]:
+            entry = entries.get(t["key"])
+            if entry is None:
+                wrong.append((t["key"], "declared but absent from the ledger", t["new"]))
+                continue
+            checked += 1
+            if entry.get(field) != t["new"]:
+                wrong.append((t["key"], entry.get(field), t["new"]))
+    if not checked:
+        pytest.skip("no rewitness/2 transitions to check against the ledger")
+    assert not wrong, (
+        f"{len(wrong)} declared transition(s) do not describe the shipped ledger:\n"
+        + "\n".join(f"  {k}: ledger has {a!r}, declaration says new={b!r}" for k, a, b in wrong[:20])
+    )
+
+
+def test_the_declaration_screen_survives_a_squash_of_this_branch():
+    """The end-to-end control for the squash-safety claim, run against the real repository.
+
+    `ci/simulate_squash_rewitness.py` clones this repo, replays HEAD's tree onto origin/main as
+    one brand-new commit (which is exactly what `gh pr merge --squash` produces), and screens
+    the result — then plants the v1 form of the same declaration and requires it to go red.
+    Both polarities, because a simulation that only shows green proves the simulation, not the
+    schema.
+
+    Skipped rather than failed when `origin/main` is not fetched: that is an unobservable
+    environment, not a defect in the register.
+    """
+    sim = REPO / "ci" / "simulate_squash_rewitness.py"
+    if not sim.is_file():
+        pytest.skip("simulator absent")
+    if subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "origin/main^{commit}"],
+        cwd=REPO, capture_output=True, text=True,
+    ).returncode != 0:
+        pytest.skip("origin/main is not present in this clone")
+    r = subprocess.run([sys.executable, str(sim)], cwd=REPO, capture_output=True, text=True)
+    assert r.returncode == 0, f"squash simulation failed:\n{r.stdout}\n{r.stderr}"
+    assert "rewitness/2 survives the squash" in r.stdout, r.stdout
+
