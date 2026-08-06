@@ -42,9 +42,30 @@ CI's Rust lanes run:
 cargo ci --list     # show the checks and which CI job each mirrors, without running them
 cargo ci --fix      # same, but rustfmt rewrites instead of complaining
 cargo ci --release  # build and test optimised, as CI does (slower; catches release-only faults)
+cargo ci --cross    # also compile the workspace for x86_64-unknown-linux-gnu
 ```
 
 It runs **every** check even after one fails, so a single invocation shows you every problem.
+
+### `--cross`: the only local check that sees the *other* lane
+
+Everything else in `cargo ci` compiles for the host. That is a real blind spot rather than a
+theoretical one: on 2026-08-06 (issue #39) two lines that are correct MSVC Rust and invalid GNU
+Rust reached `main` and turned the Linux lane red for everybody at once. A C enum with no negative
+enumerator is `int` under MSVC and `unsigned int` under GCC, so bindgen emits `c_int` on Windows
+and `c_uint` on Linux — 25 of the 28 `ort` enum aliases differ this way — and `None => -1` on such
+a value does not compile on Linux. No amount of host testing can see it.
+
+`--cross` compiles the whole workspace, tests included, for `x86_64-unknown-linux-gnu`. It needs
+`rustup target add x86_64-unknown-linux-gnu` once. It does **not** need a Linux sysroot: bindgen
+only has to *parse* ORT's headers, so `rust/ci/linux-stub-include/` supplies the three C headers
+they include (`stdlib.h`, `string.h`, `stdio.h`) as declarations only, and clang is run
+`-ffreestanding`. See that directory's README for what this does and does not check.
+
+If a prerequisite is missing it **refuses and returns non-zero** rather than skipping. A check that
+silently does nothing reports the same green as one that ran, which is the failure this whole file
+exists to prevent. A `cargo ci` run *without* `--cross` prints a warning saying no other platform
+was compiled.
 
 ### Why this exists
 
@@ -570,6 +591,37 @@ covers per-op semantics at a granularity no whole-model run reaches. And its hos
 device — those are only claimed by a real run, and such runs are committed under
 `bench/results/rust-model-runner/` with an artifact frame that says which commit and which GPU
 produced them.
+
+### Its tests declare their whole world
+
+`cargo test -p ort-model-runner` needs cargo and nothing else. No ONNX Runtime, no model, no GPU,
+no network, no `$HOME`. That is a rule, not a coincidence, and it is written down because breaking
+it is cheap and invisible: in issue #39 one integration test read `mnist-12` out of whatever model
+cache the machine happened to have, so it passed for every developer and failed on every clean CI
+runner — and three of its neighbours had the same dependency but did not fail, because they
+asserted only "some non-zero exit" and got one from `model_not_cached` instead of from the refusal
+they were named after. A test that passes for the wrong reason is worse than a missing test,
+because it occupies the slot where the real one would go.
+
+So `tests/cli.rs` gives every test a `World`: a private model cache it plants files into, a private
+stand-in file for `--ort-lib` (discovery asks only whether the path *is a file*, so no real library
+is needed to make the instrument half of a run resolve), and `env_remove` for every variable
+discovery consults — `ORT_HOME`, `ORT_DIR`, `ONNXRUNTIME_DIR`, `ORT_LIB_DIR`, `VIRTUAL_ENV`,
+`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `ONNXRUNTIME_EP_VULKAN_MODEL_CACHE`. Paths contain spaces
+on purpose. **If a new test needs something installed to pass, the test is wrong** — do not add an
+install step to CI for it.
+
+The one exception is `live_model_arm`, which is skipped unless `ORT_MODEL_RUNNER_LIVE=1` and is the
+only place a real device claim is made.
+
+### The instrument is checked before the subject
+
+`run::execute` resolves the ONNX Runtime library *before* it resolves and hashes the model.
+`discover` opens nothing and hashes nothing, so this costs nothing, and it means an unusable
+runtime is reported as `ort_library_missing` even when the model is also absent. The other order
+hides instrument faults behind subject faults, which is machine-dependent by construction: with
+`mnist-12` cached you saw the library error, without it you saw `model_not_cached` from the same
+code. A measurement whose instrument is broken says nothing about its subject.
 
 ### Before citing a committed reading, check its frame
 
@@ -1350,6 +1402,10 @@ compiles on the machine it was written on and cannot compile anywhere else.**
 |---|---|
 | **P1** | A binding that exists on only some targets may only be named by a `cfg`-gated definition. Today that list is one entry, `ort::wchar_t`. |
 | **P2** | Every `#[cfg(windows)]` item has a `#[cfg(not(windows))]` sibling in the same file. |
+| **P3** | A value typed by a width-varying ABI alias is carried as the alias, never re-spelled as `i32`/`u32`. |
+
+It scans `src/`, `tests/`, `xtask/src/`, and both `modelrunner/src/` and `modelrunner/tests/` —
+the runner was added to the scan in issue #39, having previously been outside it entirely.
 
 It also prints the crate's entire platform-conditional surface and fails if it grows past a
 reviewable size, on the theory that a small surface consolidated behind aliases is worth more than
@@ -1361,15 +1417,28 @@ broke the Linux lane outright — masking everything behind it, including the la
 were actually waiting for. `cargo ci` had already printed a caveat saying precisely this could
 happen. This file is that caveat converted into a mechanism.
 
-**Why not just cross-compile locally?** Because it does not work on a Windows box, and that was
-measured rather than assumed. `rustup` has the Linux and macOS std libraries installed here and
-`cargo check --target x86_64-unknown-linux-gnu` gets all the way through every dependency —
-bindgen even re-targets clang correctly — before dying in `build.rs` on `'stdlib.h' file not
-found`. Clang's own builtin headers can be supplied via `BINDGEN_EXTRA_CLANG_ARGS` (that fixes
-`stdbool.h`), but `stdlib.h` is glibc's, and having it means vendoring or downloading a Linux
-sysroot on every dev box. Rejected as infrastructure we would not maintain; see D-T20 in
-`.squad/decisions/inbox/tank-m0-foundation.md`. A lint is not a compiler, and `cargo ci` says so
-in its own output.
+**What it structurally cannot catch, and what replaced that hope.** In issue #39 the two lines that
+broke the Linux lane never *named* the alias whose width they assumed:
+
+```rust
+Some(get) => unsafe { get(status) },   // typed by ort::OrtErrorCode — not written here
+None => -1,                            // `u32: Neg` unsatisfied, on Linux only
+```
+
+P3 reads source as text, so a value whose type is inferred is invisible to it, and widening the
+table to make it fire here produced false positives on unrelated `u32`s — a lint that reports
+unrelated integers trains people to ignore it. The lint stayed narrow *and* the real check was
+built: `cargo ci --cross`, above, which runs the compiler. A scanner cannot catch that defect and
+a compiler cannot miss it.
+
+**Why not just cross-compile locally? (Superseded 2026-08-06.)** D-T20 recorded that this was
+impossible on a Windows box because `stdlib.h` is glibc's and having it means vendoring a Linux
+sysroot. **The premise was wrong.** bindgen does not *compile* those headers, it parses ORT's, so
+the only thing needed is declarations of the handful of names ORT's headers use — `size_t`,
+`ptrdiff_t`, `FILE`, a few functions. Three files totalling under 60 lines of declarations, in
+`rust/ci/linux-stub-include/`, make `cargo check --target x86_64-unknown-linux-gnu` complete, and
+they reproduced the exact CI errors E0277 and E0308 on a Windows machine. No sysroot, no download,
+nothing to maintain per release. D-T20 is superseded; the mechanism is `cargo ci --cross`.
 
 ---
 

@@ -755,11 +755,13 @@ CHECKS: tuple[Check, ...] = (
             "which is the exact shape that lets a run with no EP loaded read as a run "
             "that legitimately did no work."
         ),
-        arm_healthy="98 passed; 0 failed (84 lib + 14 integration), clippy -D warnings clean",
+        arm_healthy=(
+            "106 passed; 0 failed (88 lib + 18 integration), clippy -D warnings clean"
+        ),
         arm_broken=(
             "evidence::tests::a_missing_counters_file_is_absent_not_zero FAILED — "
             "panicked at modelrunner/src/evidence.rs:218 'assertion failed: !c.present'; "
-            "test result: FAILED. 83 passed; 1 failed"
+            "test result: FAILED. 87 passed; 1 failed"
         ),
         observed="2026-08-06",
         misses=(
@@ -774,6 +776,20 @@ CHECKS: tuple[Check, ...] = (
             "Windows half sees the Windows one — each lane compiles and exercises only "
             "its own #[cfg] branch. The cfg-gated arms of ortlib.rs and ortapi.rs are "
             "each proven on exactly one of the two lanes.",
+            "It could not, before 2026-08-06, distinguish a lane that passes from a "
+            "lane that passes on one particular machine. Issue #39: the Windows arm of "
+            "this step failed on every clean runner and passed on every developer box, "
+            "because one integration test read an ambient model cache it had not "
+            "created. The tests are now hermetic (each builds its own cache, its own "
+            "stand-in library, and clears the variables discovery reads), so a green "
+            "here is a green anywhere — but note that the property 'the tests are "
+            "hermetic' is itself not watched by anything except review.",
+            "It watched the Linux crate compile only from the Linux lane, which meant "
+            "an MSVC-only type assumption reached main and went red for everyone at "
+            "once (issue #39: `None => -1` on an enum that is `unsigned` under GCC and "
+            "`int` under MSVC). `cargo ci --cross` now compiles this crate for "
+            "x86_64-unknown-linux-gnu from a Windows host and catches that before a "
+            "push, but it is a developer command, not a lane, and nothing forces it.",
         ),
     ),
     Check(

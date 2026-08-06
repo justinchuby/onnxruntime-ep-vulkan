@@ -42,7 +42,7 @@ use crate::error::{Failure, Result, Severity};
 use crate::evidence::{Counters, FileIdentity, Guard, Outcome};
 use crate::feeds;
 use crate::json::{self, Json};
-use crate::ortapi::{Api, Env, MemoryInfo, Session, SessionOptions, element_name};
+use crate::ortapi::{Api, Env, LogSeverity, MemoryInfo, Session, SessionOptions, element_name};
 use crate::ortlib;
 use crate::provenance::{self, VerifiedModel};
 
@@ -171,9 +171,9 @@ fn run_arm(
     profile_prefix: Option<&Path>,
 ) -> Result<(ArmResult, Vec<feeds::FeedRecord>, Vec<feeds::DimPin>)> {
     let options = SessionOptions::new(api)?;
-    // Severity 3 (error) matches the Python harness: ORT's warnings about a plugin EP declining
-    // nodes are expected and would drown the output that matters.
-    options.set_log_severity(3)?;
+    // `Error` matches the Python harness's `log_severity_level = 3`: ORT's warnings about a
+    // plugin EP declining nodes are expected and would drown the output that matters.
+    options.set_log_severity(LogSeverity::Error)?;
     if let Some(prefix) = profile_prefix {
         options.enable_profiling(prefix)?;
     }
@@ -269,6 +269,23 @@ pub fn execute(config: &RunConfig) -> Result<(Outcome, Json)> {
     let repo = crate::repo::root()?;
     let started = Instant::now();
 
+    // The instrument is validated before the subject, and this order is load-bearing rather than
+    // incidental. `discover` is a pure path check -- it opens nothing and hashes nothing -- so
+    // running it first costs nothing and means an unusable ONNX Runtime is reported as
+    // `ort_library_missing` / `ort_library_ambiguous` even when the model is also absent. The
+    // other order hides instrument faults behind subject faults: on a machine where `mnist-12`
+    // happened to be cached it reported the library error, and on a clean CI runner the same
+    // code reported `model_not_cached` instead, which is how issue #39's Windows integration
+    // test could pass on a dev box and fail on every fresh checkout. A measurement whose
+    // instrument is broken says nothing about its subject, so the instrument is checked first.
+    //
+    // Only the *discovery* moves. Hashing the library and `dlopen`ing it stay below the model
+    // resolution, so the model is still identified before any foreign code is mapped in.
+    let discovered = ortlib::discover(&ortlib::Search::from_environment(
+        Some(&repo),
+        config.ort_lib.clone(),
+    ))?;
+
     let verified = resolve_model(config, &repo)?;
     let model_identity = FileIdentity {
         path: verified.path.display().to_string(),
@@ -280,10 +297,6 @@ pub fn execute(config: &RunConfig) -> Result<(Outcome, Json)> {
         .ep_lib
         .clone()
         .unwrap_or_else(|| default_ep_lib(&repo));
-    let discovered = ortlib::discover(&ortlib::Search::from_environment(
-        Some(&repo),
-        config.ort_lib.clone(),
-    ))?;
     let ort_identity = FileIdentity::of(&discovered.path)?;
     let loaded = ortlib::load(discovered)?;
     let api = Api::new(loaded.api);
@@ -328,7 +341,7 @@ pub fn execute(config: &RunConfig) -> Result<(Outcome, Json)> {
     ));
 
     // -- CPU reference arm ------------------------------------------------------------------
-    let env = Env::new(api, "ort-model-runner", 3)?;
+    let env = Env::new(api, "ort-model-runner", LogSeverity::Error)?;
     let cpu_arm = run_arm(api, &env, &verified.path, &[], config.seed, config, None);
     let (cpu, feed_records, dim_pins) = match cpu_arm {
         Ok(v) => v,

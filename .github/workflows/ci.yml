@@ -815,6 +815,15 @@ jobs:
       # real binary with planted-negative caches. Neither needs a GPU, an
       # ONNX Runtime, or a network. This lane is also the only place the
       # Linux half of the path/loader code is exercised at all.
+      #
+      # 2026-08-06, issue #39: one integration test did quietly depend on
+      # an ambient model cache, passed on every developer machine, and
+      # failed on every clean runner. Nothing was added to this step to fix
+      # that -- installing a model here would have hidden the defect rather
+      # than removed it. Instead each test now builds its own cache and its
+      # own stand-in library and scrubs the environment variables discovery
+      # reads, so this step needs exactly cargo and nothing else. If a
+      # future test needs an install here to pass, the test is wrong.
       # -------------------------------------------------------
       - name: Model runner (cargo test -p ort-model-runner, no device needed)
         run: |
@@ -1444,6 +1453,14 @@ jobs:
       # library-discovery arbitration) and its integration tests drive the
       # real binary with planted-negative caches. Neither needs a GPU, an
       # ONNX Runtime, or a network.
+      #
+      # 2026-08-06, issue #39: the clean-runner failure was observed here
+      # first -- `C:\Users\runneradmin\.cache\...\mnist-12.onnx` does not
+      # exist on a fresh image, and a test that assumed it did reported
+      # `model_not_cached` in place of the refusal it was named after. The
+      # fix is in the tests, not in this step: they now build their own
+      # cache and stand-in library, so this needs exactly cargo. No model
+      # is downloaded here and no DLL is placed on PATH for it.
       # -------------------------------------------------------
       - name: Model runner (cargo test -p ort-model-runner, no device needed)
         run: |

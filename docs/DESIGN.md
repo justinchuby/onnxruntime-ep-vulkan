@@ -5522,6 +5522,16 @@ drift from the plugin it is validating. On Windows this is immediately load-bear
 runner refuses it by version and names the remedy rather than failing later in a way that reads as
 an EP defect.
 
+**The instrument is resolved before the subject.** `discover` runs before the model is resolved or
+hashed. It opens nothing, so the ordering is free, and it means an unusable ONNX Runtime reads as
+`ERROR(instrument=ort_library_missing)` even when the model is also absent. The other order makes
+the *reported error* a function of machine state — with the model cached you see the library fault,
+without it you see `model_not_cached` from identical code and identical arguments — which is how
+issue #39's Windows integration test passed for every developer and failed on every clean runner. A
+measurement whose instrument is broken says nothing about its subject. Only discovery moved:
+hashing the library and mapping it in still happen after the model is identified, so no foreign
+code is loaded before the subject is known.
+
 **Extent.** It is not a benchmark and measures no speed. It does not replace `tests/ops`, which
 reaches a per-op granularity no whole-model run does. Its host-free lane —
 `cargo test -p ort-model-runner`, registered as `build.model_runner` in `ci/lane_inventory.py` on
@@ -5529,6 +5539,22 @@ both build lanes — proves the arithmetic, the pin refusals, the discovery arbi
 comparator, and can see **none** of the device guards. Those are only claimed by a real run on a
 real GPU, and such runs are committed under `bench/results/rust-model-runner/` with an artifact
 frame naming the commit and the device, per §8.9.26.
+
+That lane requires exactly `cargo`: no ONNX Runtime, no model, no network, no `$HOME`. Each test
+builds its own model cache and its own stand-in for `--ort-lib`, and clears every variable
+discovery reads. This is a contract, not an observation — **a test that needs something installed
+in order to pass is a defective test, and the remedy is never to add the install.** Issue #39: one
+test read an ambient cache and was machine-dependent; three of its neighbours shared the dependency
+and did not fail, because they asserted only a non-zero exit and received one from an unrelated
+refusal. A test that passes for the wrong reason occupies the slot the real one would take.
+
+**Cross-target compilation is a developer command.** A C enum with no negative enumerator is `int`
+under MSVC and `unsigned int` under GCC — 25 of the 28 `ort` enum aliases differ between the two CI
+targets — so Rust that is correct on one lane can fail to compile on the other with no warning from
+any host-side check. `cargo ci --cross` compiles the workspace for `x86_64-unknown-linux-gnu` from
+a Windows host using parse-only C header stubs in `rust/ci/linux-stub-include/` (no sysroot). It
+refuses rather than skips when a prerequisite is missing. It is deliberately **not** a new CI lane:
+CI's Linux job already compiles for real, and the gap was on developer machines.
 
 ---
 

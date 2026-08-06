@@ -21,6 +21,27 @@
 //! `ORTCHAR_T` is `wchar_t` on Windows and `char` everywhere else, which is the single most
 //! common portability defect in ORT hosts. [`OrtString`] is the one place that difference exists,
 //! and `tests::path_round_trip` pins it on both shapes.
+//!
+//! ENUM WIDTHS
+//! -----------
+//! The *second* most common one, and the one that broke this crate's Linux lane on the day it
+//! merged. A C enum with no negative enumerator is `int` under MSVC and `unsigned int` under
+//! GCC/Clang, so bindgen emits `ort::OrtLoggingLevel` (and 24 other ORT enums) as `i32` on
+//! Windows and `u32` on Linux. Measured, not assumed: diffing the two generated `ort.rs` files
+//! shows 25 of the 28 ORT enum aliases change signedness across the two targets, and only
+//! `OrtAllocatorType`, `OrtMemType` and `OrtDeviceEpIncompatibilityReason` — the three that carry
+//! a negative enumerator — do not.
+//!
+//! Two rules follow, and both are mechanised rather than remembered:
+//!
+//! * **Never produce a value of such an alias from a literal.** [`LogSeverity`] is the only way
+//!   to name a logging level here, and its [`LogSeverity::raw`] returns the bindgen constant, so
+//!   the alias's width is never spelled at any call site.
+//! * **Never consume one at a fixed width.** [`widen`] takes anything that converts into `i64`,
+//!   which both `i32` and `u32` do losslessly, so reading a discriminant compiles on both.
+//!
+//! `rust/tests/portability.rs` rule P3 enforces the same thing over this file's text, and
+//! `cargo test --test portability` covers `modelrunner/` as of issue #39.
 
 use std::ffi::{CStr, CString};
 use std::path::Path;
@@ -89,6 +110,65 @@ pub fn cstring(text: &str) -> Result<CString> {
     })
 }
 
+/// Read a value of a width-varying ORT enum alias without spelling its width.
+///
+/// `ort::OrtErrorCode` is `i32` on MSVC and `u32` on GCC/Clang (see the module docs). Any
+/// expression that assumes one of those — `-1` as a sentinel, `as u32`, a `match` arm typed by a
+/// literal — compiles on exactly one platform. `i64` is the one width *both* aliases convert into
+/// losslessly and infallibly, so this is the only reader.
+///
+/// The bound is deliberately `Into<i64>` and not a concrete type: it is satisfied by `i32` and by
+/// `u32` and by nothing that would silently truncate, which makes "this compiles on both targets"
+/// a property of the signature rather than of the machine it was compiled on. The same rule and
+/// the same reasoning already live in `src/counters.rs`; this is its modelrunner-side twin.
+pub fn widen<T: Into<i64>>(value: T) -> i64 {
+    value.into()
+}
+
+/// A logging severity, named rather than spelled.
+///
+/// ORT's own `OrtLoggingLevel` is width-varying, so a literal `3` typed as that alias is an `i32`
+/// on Windows and a `u32` on Linux and cannot be written portably at a call site. This enum is
+/// the runner's own type — its width is ours, not the ABI's — and [`Self::raw`] is the single
+/// place that converts to the ABI, by naming bindgen's constant. There is no other constructor,
+/// so no call site can reintroduce the literal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogSeverity {
+    Verbose,
+    Info,
+    Warning,
+    Error,
+    Fatal,
+}
+
+impl LogSeverity {
+    /// The ABI value, taken from bindgen's constant so that its type is whatever this target says
+    /// it is. Note there is no `as` cast here: a cast would compile on both platforms while
+    /// keeping the assumption that the width is knowable in this file.
+    pub fn raw(self) -> ort::OrtLoggingLevel {
+        match self {
+            Self::Verbose => ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_VERBOSE,
+            Self::Info => ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_INFO,
+            Self::Warning => ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_WARNING,
+            Self::Error => ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_ERROR,
+            Self::Fatal => ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_FATAL,
+        }
+    }
+
+    /// The value ORT's *session* option takes, which is a plain `int` on every target — a
+    /// different C signature from `CreateEnv`'s, and the reason this is a separate accessor
+    /// rather than a cast of [`Self::raw`].
+    pub fn session_level(self) -> std::os::raw::c_int {
+        match self {
+            Self::Verbose => 0,
+            Self::Info => 1,
+            Self::Warning => 2,
+            Self::Error => 3,
+            Self::Fatal => 4,
+        }
+    }
+}
+
 /// The negotiated API table plus the error plumbing every call needs.
 #[derive(Clone, Copy)]
 pub struct Api {
@@ -129,7 +209,7 @@ impl Api {
         };
         let code = match self.raw.GetErrorCode {
             // SAFETY: as above.
-            Some(get) => unsafe { get(status) },
+            Some(get) => widen(unsafe { get(status) }),
             None => -1,
         };
         if let Some(release) = self.raw.ReleaseStatus {
@@ -150,12 +230,12 @@ pub struct Env {
 }
 
 impl Env {
-    pub fn new(api: Api, log_id: &str, severity: i32) -> Result<Self> {
+    pub fn new(api: Api, log_id: &str, severity: LogSeverity) -> Result<Self> {
         let create = api.f(api.raw.CreateEnv, "CreateEnv")?;
         let id = cstring(log_id)?;
         let mut raw: *mut ort::OrtEnv = ptr::null_mut();
         // SAFETY: `id` outlives the call; ORT copies the log id. `raw` is a valid out-pointer.
-        let status = unsafe { create(severity, id.as_ptr(), &mut raw) };
+        let status = unsafe { create(severity.raw(), id.as_ptr(), &mut raw) };
         api.check(status, "CreateEnv")?;
         Ok(Self { api, raw })
     }
@@ -291,13 +371,18 @@ impl SessionOptions {
     }
 
     /// Matches the Python harness's `so.log_severity_level = 3`.
-    pub fn set_log_severity(&self, level: i32) -> Result<()> {
+    ///
+    /// `SetSessionLogSeverityLevel` takes a plain `c_int` on every target — it is not typed as
+    /// `OrtLoggingLevel` in the C API — so this one *is* portable at a fixed width. The argument
+    /// is still a [`LogSeverity`] rather than a bare integer, so that the session and the
+    /// environment cannot drift apart by a typo.
+    pub fn set_log_severity(&self, level: LogSeverity) -> Result<()> {
         let set = self.api.f(
             self.api.raw.SetSessionLogSeverityLevel,
             "SetSessionLogSeverityLevel",
         )?;
         // SAFETY: `raw` is a live session-options handle.
-        let status = unsafe { set(self.raw, level) };
+        let status = unsafe { set(self.raw, level.session_level()) };
         self.api.check(status, "SetSessionLogSeverityLevel")
     }
 
@@ -883,5 +968,81 @@ mod tests {
             element_name(ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_STRING),
             "onnx_element_type_8"
         );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The enum-width defect that broke the Linux lane the day the runner merged (issue #39).
+    //
+    // These are compile-time controls as much as run-time ones. `widen` is generic over
+    // `Into<i64>`, so calling it with *both* signednesses in one test means narrowing it back to
+    // a concrete `i32` (or `u32`) does not fail an assertion -- it fails to build, on the
+    // machine of whoever narrowed it, which is the whole point. On Windows the second call is
+    // the one that would stop compiling; on Linux the first.
+    // ---------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_discriminant_is_read_at_a_width_that_exists_on_every_target() {
+        assert_eq!(widen(7i32), 7i64);
+        assert_eq!(widen(7u32), 7i64);
+        assert_eq!(widen(-1i32), -1i64);
+        assert_eq!(widen(u32::MAX), 4_294_967_295i64);
+    }
+
+    #[test]
+    fn the_error_code_alias_goes_through_the_widening_reader() {
+        // `ort::OrtErrorCode` is `c_int` under MSVC and `c_uint` under GCC/Clang. This call is
+        // the one that fails to compile if `widen` ever acquires a concrete parameter type, and
+        // it is also the exact expression `Api::check` uses.
+        let code = widen(ort::OrtErrorCode_ORT_FAIL);
+        assert_eq!(code, 1i64);
+        assert_eq!(widen(ort::OrtErrorCode_ORT_OK), 0i64);
+        // The sentinel for "this ORT serves no GetErrorCode". Before the fix this was a bare
+        // `-1` in a `match` whose other arm was alias-typed, which is `u32: Neg` on Linux.
+        let absent: i64 = -1;
+        assert!(absent < code);
+    }
+
+    #[test]
+    fn a_logging_level_is_produced_only_from_the_bindgen_constant() {
+        // No `as` cast anywhere: `raw()` returns whatever width this target's binding has, and
+        // comparing it to the constant is the only assertion that is true on both.
+        assert_eq!(
+            LogSeverity::Verbose.raw(),
+            ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_VERBOSE
+        );
+        assert_eq!(
+            LogSeverity::Info.raw(),
+            ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_INFO
+        );
+        assert_eq!(
+            LogSeverity::Warning.raw(),
+            ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_WARNING
+        );
+        assert_eq!(
+            LogSeverity::Error.raw(),
+            ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_ERROR
+        );
+        assert_eq!(
+            LogSeverity::Fatal.raw(),
+            ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_FATAL
+        );
+    }
+
+    #[test]
+    fn the_session_level_is_the_python_harness_number_and_agrees_with_the_env_level() {
+        // `SetSessionLogSeverityLevel` takes a plain `c_int`, so this half is portable at a
+        // fixed width -- but it must still name the same severity as the environment does, or
+        // the session and the env silently disagree. Compared through `widen` because the
+        // env-side value's width is the one that varies.
+        for (sev, expected) in [
+            (LogSeverity::Verbose, 0),
+            (LogSeverity::Info, 1),
+            (LogSeverity::Warning, 2),
+            (LogSeverity::Error, 3),
+            (LogSeverity::Fatal, 4),
+        ] {
+            assert_eq!(sev.session_level(), expected);
+            assert_eq!(widen(sev.raw()), i64::from(expected));
+        }
     }
 }
