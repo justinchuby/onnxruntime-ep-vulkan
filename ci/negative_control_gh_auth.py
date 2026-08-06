@@ -735,6 +735,64 @@ def main() -> int:
             (r.stdout or "")[-700:],
         )
 
+        print("\nPLANTED — issue #25 (Morpheus re-review of PR #27): compact-form step minting")
+
+        r = plant(
+            "compact-single-job-untokened.yml",
+            # `steps:` and its FIRST item's dash sit at the exact same column -- the
+            # equally-valid "compact"/zero-indent block-sequence form YAML permits
+            # everywhere, not only for `steps:`. Before this fix, the generic
+            # `indent <= frame.indent` pop popped the `steps:` frame itself before
+            # this dash was ever recognised as ITS child (both are at the same
+            # indent), so the step -- and its untokened `gh api` call -- was
+            # silently dropped from every subject this screen ever sees: a false
+            # PASS by omission, in a single job, with no second job needed to
+            # trigger it.
+            "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n    - name: s\n      run: gh api repos/x/y\n",
+        )
+        record(
+            "PLANTED",
+            "a single-job compact-form (equal-indent) `steps:` list mints its "
+            "step -- an untokened `gh api` call inside it is convicted, not "
+            "silently dropped",
+            r.returncode == EXIT_FAIL_CONDITION
+            and "missing_token_path" in r.stdout
+            and "PASS" not in r.stdout,
+            (r.stdout or "")[-700:],
+        )
+
+        r = plant(
+            "compact-then-indented-two-jobs.yml",
+            # The exact reproducer Morpheus's re-review supplied: job `a` uses the
+            # compact (equal-indent) `steps:` form and its one step is untokened;
+            # job `b` uses the ordinary indented form and its step IS tokened. The
+            # combination matters, not just the compact form alone: before this
+            # fix, job `a`'s step was silently dropped (see the arm above) so this
+            # file's only COUNTED subject was job `b`'s tokened step -- a false
+            # PASS. This also exercises the buf/flush ordering fix: job `b`'s own
+            # dash line (indent 6) is deeper than job `a`'s step's `current_indent`
+            # (4), which -- before that ordering fix -- spliced job `b`'s dash line
+            # onto the tail of job `a`'s step body instead of starting a fresh one.
+            "name: p\non: push\njobs:\n"
+            "  a:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n    - name: untokened\n      run: gh api repos/x/y\n"
+            "  b:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - name: tokened\n        env: {GH_TOKEN: x}\n"
+            "        run: gh api repos/a/b\n",
+        )
+        record(
+            "PLANTED",
+            "R4 (Morpheus): a compact-form job followed by an indented-form job "
+            "does not silently omit the compact job's untokened step -- the file "
+            "is convicted, and both steps are named as distinct subjects",
+            r.returncode == EXIT_FAIL_CONDITION
+            and "missing_token_path" in r.stdout
+            and "untokened" in r.stdout
+            and "PASS — 1 `gh`-reaching step" not in r.stdout,
+            (r.stdout or "")[-900:],
+        )
+
         print("\nLIVE — issue #25: ci.yml's production invocation is pinned to the directory form")
         # The wiring concern issue #25 (and #21 before it) exists to close: naming
         # files one at a time on the command line is exactly how a new/relocated

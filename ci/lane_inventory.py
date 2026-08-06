@@ -1047,7 +1047,26 @@ CHECKS: tuple[Check, ...] = (
             "column that undershot `env:`'s true column, letting a later true sibling "
             "field at that real column be swallowed as one of `env:`'s own children — "
             "closed by computing the real column from the actual whitespace after the "
-            "dash."
+            "dash. Morpheus's re-review of PR #27 then found a sixth blind spot, this "
+            "time in the frame-POP logic rather than a value it could not read: the "
+            "generic `indent <= frame.indent` pop that correctly discards a mapping "
+            "key's frame on a same-or-shallower-indent sibling line was applied "
+            "unconditionally to sequence-item (`- ...`) lines too, even though YAML "
+            "permits a list's items to sit at the EXACT SAME column as the key that "
+            "introduces them (the \"compact\"/zero-indent block-sequence form, e.g. "
+            "`steps:\\n- name: x`, valid for any list-valued key, not only `steps:`) — "
+            "so that form's `steps:` frame was popped before its own first dash was "
+            "ever recognised as ITS child, silently dropping the step (R4). Closed by "
+            "giving sequence-item lines their own pop rule: pop frames strictly "
+            "DEEPER than the dash first, then pop at most one sibling sequence-item "
+            "frame already sitting at this exact indent, but never the owning key's "
+            "frame itself, whether that key was opened at the item's exact indent "
+            "(compact form) or shallower (the ordinary indented form). A related "
+            "buf/flush ordering defect surfaced in the same fix: appending a new "
+            "step's own dash line to the PREVIOUS step's body buffer before flushing "
+            "it (rather than after) corrupted both steps' captured text whenever the "
+            "new step's list sat deeper than the old step's — now flush happens before "
+            "anything is appended to the new step's buffer."
         ),
         arm_healthy=(
             "GH-AUTH: PASS — N `gh`-reaching step(s) across every workflow file under "
@@ -1146,11 +1165,19 @@ CHECKS: tuple[Check, ...] = (
             "ERROR, while a `${{ github.token }}` GH Actions expression in the same "
             "position is NOT mistaken for either (R3b); a duplicate SIBLING `env:` key "
             "at the same scope is ERROR (N1); and a dash-inline `- env:` block does not "
-            "swallow a true sibling field at its real column (N2)."
+            "swallow a true sibling field at its real column (N2). Morpheus's "
+            "re-review of PR #27 added: a sequence item whose dash sits at the EXACT "
+            "SAME column as its owning key (the equally-valid compact/zero-indent "
+            "block-sequence form YAML permits for any list-valued key, not only "
+            "`steps:`) still mints its step rather than being popped off the frame "
+            "stack before it is ever recognised as that key's child (R4) — in both a "
+            "single compact-form job, and a compact-form job followed by a "
+            "differently-indented job in the same file (the exact false-PASS-by-"
+            "omission Morpheus's reproducer demonstrated)."
         ),
         status=DEMONSTRATED,
         mutation=(
-            "42 arms: 8 LIVE (today's workflows and the whole workflows directory pass "
+            "44 arms: 8 LIVE (today's workflows and the whole workflows directory pass "
             "the screen; screening only conformance.yml — genuinely 0 gh-reaching steps "
             "— is ERROR(instrument=zero_gh_reaching_subjects), never a silent PASS; "
             "check_main_is_green.py with GH_TOKEN/GITHUB_TOKEN/GH_ENTERPRISE_TOKEN "
@@ -1159,7 +1186,7 @@ CHECKS: tuple[Check, ...] = (
             "ci.yml's own text is read and its real check_gh_auth.py invocation is "
             "asserted to be the single `.github/workflows` directory form), "
             "2 REPLAYED (the real ci.yml at b1886d99 convicts on `Open-reds negative "
-            "control`; the same rule over today's bytes is green), 32 PLANTED (no-token "
+            "control`; the same rule over today's bytes is green), 34 PLANTED (no-token "
             "API call; non-API `gh --version` with no token of its own is NOT counted; "
             "a token in a different job does not satisfy this one; a job-level token "
             "satisfies every step in that job; block-form and inline-form `env:` at "
@@ -1184,9 +1211,13 @@ CHECKS: tuple[Check, ...] = (
             "`${{ ... }}` GH Actions expression inside `env: {...}` is NOT mistaken "
             "for the R3b shape (regression guard); a duplicate sibling `env:` key at "
             "job scope is ERROR (N1); a dash-inline `- env:` block does not swallow a "
-            "true sibling field (N2))."
+            "true sibling field (N2); a single-job compact-form (equal-indent) "
+            "`steps:` list mints its step and convicts an untokened `gh api` call "
+            "inside it rather than silently dropping it (R4a); and a compact-form job "
+            "followed by an indented-form job in the same file does not silently omit "
+            "the compact job's untokened step (R4b, Morpheus's exact reproducer))."
         ),
-        arm_healthy="42/42 arms fire as specified, exit 0",
+        arm_healthy="44/44 arms fire as specified, exit 0",
         arm_broken=(
             "Each arm is red by construction with its defect genuinely present: the "
             "screen convicts the real pre-fix ci.yml bytes; check_main_is_green.py with "
@@ -1195,7 +1226,7 @@ CHECKS: tuple[Check, ...] = (
         ),
         observed="2026-08-05",
         misses=(
-            "32 of 42 arms are PLANTED and this control prints that ratio itself. A "
+            "34 of 44 arms are PLANTED and this control prints that ratio itself. A "
             "planted arm proves the rule fires on the shape it was written for; it does "
             "not show the rule is load-bearing. The LIVE and REPLAYED arms are the ones "
             "that do.",

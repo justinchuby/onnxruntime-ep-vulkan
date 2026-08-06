@@ -124,6 +124,28 @@ direction — every one raises `YamlStructureError`, surfaced as `ERROR(instrume
 unsupported_yaml_construct)`, rather than resolving to a PASS or FAIL a human did not
 actually write.
 
+MORPHEUS RE-REVIEW OF PR #27 (issue #25, a sixth blind spot — this time in the frame-POP
+logic itself, not a value the parser could not read)
+=========================================================================================
+R4  A sequence item's dash may sit at the exact same column as the key that introduces
+    it — YAML's "compact"/zero-indent block-sequence form (`steps:\n- name: x`), valid
+    for ANY list-valued key, not only `steps:`. The generic pop rule for a plain mapping
+    key (`while indent <= frame.indent: pop`) — correct there, since an equal indent
+    always means "sibling of whatever opened this frame" — used to run for sequence-item
+    lines too, popping the `steps:` frame itself before its own first dash was ever
+    recognised as ITS child, silently dropping the step (and any `gh api` call inside
+    it) from every subject this screen ever sees. Sequence-item lines now use their own
+    pop rule instead: pop frames strictly DEEPER than the dash first (the previous
+    item's own content), then pop at most one previous sequence-item SIBLING frame
+    already sitting at this exact indent — but never the owning key's frame itself,
+    whether that key opened at the item's exact indent (compact form) or shallower (the
+    ordinary indented form). See the two `while` loops guarded by `if m:` in the main
+    parse loop. A related ordering defect in the same code path was fixed alongside it:
+    a new step's own dash line was being appended to the PREVIOUS step's text buffer
+    before `flush()` ran, not after, corrupting both steps' captured bodies whenever the
+    new step's list sat deeper than the old step's `current_indent` (exactly what
+    happens when a compact-form job is immediately followed by an indented-form job).
+
 ZERO SUBJECTS
 =============
 If nothing across the screened files reaches the GitHub API through `gh`, that is either
@@ -766,13 +788,32 @@ def parse_workflow(path: Path) -> list[Step]:
                 buf.append(line)
             continue
 
-        while stack and indent <= stack[-1].indent:
-            stack.pop()
-
-        if current is not None and indent > current_indent:
-            buf.append(line)
-
         m = _SEQ_ITEM_RE.match(stripped)
+        if m:
+            # A sequence item's dash may sit EITHER deeper than its owning key
+            # (`steps:\n  - name: x`) OR at the exact same column as that key
+            # (the equally-valid compact/zero-indent block form,
+            # `steps:\n- name: x`). A blanket `indent <= stack[-1].indent`
+            # pop -- correct for a plain mapping key, where equal indent always
+            # means "sibling of whatever opened this frame" -- would pop the
+            # `steps:` frame itself before this dash is ever recognised as ITS
+            # child, orphaning the item and silently dropping it (and any
+            # `gh api` command inside it) from every subject this screen ever
+            # sees: a false PASS, not a loud failure. So: pop frames strictly
+            # DEEPER than this dash first (the previous item's own content),
+            # then -- only if the frame now on top is itself a previous
+            # sequence-item sibling AT THIS SAME INDENT (not the owning key,
+            # which never carries `is_seq_item`) -- pop that one sibling too.
+            # The owning key's frame, whether opened deeper or at this exact
+            # column, is never popped by this branch.
+            while stack and indent < stack[-1].indent:
+                stack.pop()
+            while stack and stack[-1].indent == indent and stack[-1].is_seq_item:
+                stack.pop()
+        else:
+            while stack and indent <= stack[-1].indent:
+                stack.pop()
+
         if m:
             parent_is_steps = (
                 bool(stack)
@@ -782,9 +823,20 @@ def parse_workflow(path: Path) -> list[Step]:
             )
             stack.append(_Frame(indent=indent, is_seq_item=True))
             if parent_is_steps:
+                # This dash MINTS a brand-new step -- flush the PRIOR step's
+                # buffer before appending anything, never after. A step whose
+                # own list is indented deeper than the previous job's compact
+                # (zero-indent) `steps:` list has `indent > current_indent`
+                # here; appending this dash line to `buf` first (the order
+                # this screen used before) would splice this new step's own
+                # marker onto the tail of the PREVIOUS step's body instead of
+                # starting a fresh one -- corrupting both steps' text instead
+                # of just correctly separating them.
                 flush()
                 current = Step(name="<step>", job=job, file=file_str, line=idx)
                 current_indent = indent
+            elif current is not None and indent > current_indent:
+                buf.append(line)
             rest = m.group("rest")
             if rest:
                 # The REAL column where `rest` begins in the ORIGINAL line -- not a
@@ -799,6 +851,9 @@ def parse_workflow(path: Path) -> list[Step]:
                 rest_real_indent = indent + 1 + (len(after_dash) - len(after_dash.lstrip()))
                 dispatch_key_line(rest_real_indent, rest, idx)
             continue
+
+        if current is not None and indent > current_indent:
+            buf.append(line)
 
         dispatch_key_line(indent, line[indent:], idx)
 

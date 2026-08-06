@@ -1420,6 +1420,54 @@ def test_a_dash_inline_env_block_does_not_swallow_a_true_sibling_field(tmp_path)
     assert "FAIL(condition=missing_token_path)" in r.stdout
 
 
+def test_a_compact_form_steps_list_mints_its_step(tmp_path):
+    """`steps:` and its FIRST item's dash sit at the exact same column -- the
+    equally-valid "compact"/zero-indent block-sequence form YAML permits for any
+    list-valued key, not only `steps:`. Before this fix, the generic `indent <=
+    frame.indent` pop popped the `steps:` frame itself before this dash was ever
+    recognised as ITS child (both frames sit at the same indent), so the step --
+    and its untokened `gh api` call -- was silently dropped from every subject this
+    screen ever sees: a false PASS by omission, reproducible in a single job with no
+    second job required (Morpheus's re-review of PR #27)."""
+    wf = tmp_path / "compact-single-job.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n    - name: s\n      run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+    assert "PASS" not in r.stdout
+
+
+def test_a_compact_form_job_before_an_indented_form_job_does_not_silently_omit_its_step(tmp_path):
+    """Morpheus's exact reproducer: job `a` uses the compact (equal-indent) `steps:`
+    form and its one step is untokened; job `b` uses the ordinary indented form and
+    its step IS tokened. Before this fix, job `a`'s step was silently dropped (see
+    the single-job arm above), so the file's only COUNTED subject was job `b`'s
+    already-tokened step -- a false PASS. This also exercises the buf/flush ordering
+    fix alongside the frame-pop fix: job `b`'s own dash line (indent 6) sits deeper
+    than job `a`'s step's `current_indent` (4); appending that dash line to the OLD
+    step's buffer before flushing (the order this screen used previously) would
+    splice job `b`'s marker onto job `a`'s body instead of starting a fresh step."""
+    wf = tmp_path / "compact-then-indented.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n"
+        "  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n    - name: untokened\n      run: gh api repos/x/y\n"
+        "  b:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: tokened\n        env: {GH_TOKEN: x}\n"
+        "        run: gh api repos/a/b\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+    assert "untokened" in r.stdout
+    assert "PASS — 1 `gh`-reaching step" not in r.stdout
+
+
 def test_ci_yml_production_invocation_is_pinned_to_the_directory_form():
     """The wiring concern issue #21 (and #25 after it) exists to close: a real
     regression here is exactly reverting `.github/workflows` back to two named files,
