@@ -139,6 +139,19 @@ TABLE: dict[str, dict[str, str]] = {
                 "declared-but-empty token from a real one; that is a provisioning "
                 "question, not an authoring one.",
     },
+    "ci/check_hardcoded_foundry_paths.py": {
+        "verdict": "EXTERNAL",
+        "subject": "every *.py file's source text, scanned for a literal Foundry cache path "
+                  "fragment (issue #11/#19)",
+        "oracle": "an explicit allowlist of archival/documentation files, hand-declared in "
+                  "this script from issue #19's live/archival/dead classification of every "
+                  "prior occurrence in the tree",
+        "note": "the allowlist is the independently-produced side: it names specific files by "
+                "issue #19's classification pass over the tree as it stood then, not a "
+                "property the regex scan derives from the files it is scanning now, so a new "
+                "hardcoded path in a file absent from that list is convicted rather than "
+                "quietly matching whatever the tree already contains.",
+    },
     "ci/check_flake_witness.py": {
         "verdict": "ARTIFACT",
         "subject": "a red-then-green sequence",
