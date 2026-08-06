@@ -377,6 +377,128 @@ def test_check_ledger_fails_on_a_tampered_artifact(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Issue #43 — the stale-but-unmoved frame witness.
+#
+# Two screens already watch `source_digest` and BOTH were blind to the same event:
+#
+#   * ci/check_ledger_census.py reads git history and convicts a witness that MOVES in
+#     the file with no declaration. A digest that goes stale UNDER an untouched entry
+#     never moves in the file, so the census reads clean.
+#   * gen_proof_ledger.py --check compares the ledger to the build, but a stale
+#     source_digest whose SPIR-V still matches is SOURCE-COSMETIC, which FORGIVES. That
+#     verdict is toolchain-dependent, so the same file passes on Windows and, wherever
+#     the compiler happens to emit different SPIR-V, reads SUBJECT-CHANGED and declines.
+#
+# That is exactly how PR #35 shipped. `source_digest_for` hashes the WHOLE text of a
+# template, and ew_unary.comp is shared by 42 op selectors, so an attribution header and
+# four Asin/Acos-only functions moved the source_digest of all 55 ew_unary entries. 53
+# were left stale. Windows said 78 identical + 55 SOURCE-COSMETIC and printed PASS; Linux
+# CI found different SPIR-V for five of them — IsInf x3, IsNaN, Not — and with both
+# witnesses moved it could no longer tell a moved compiler from a moved kernel, so it
+# declined, and test_op_table[IsInf|IsNaN|Not] failed at assert_vulkan_claims.
+#
+# The screen below asks the one question neither of the others asks, and asks it WITHOUT
+# consulting SPIR-V: does every recorded source_digest still equal the one this build
+# computes? Being source-only makes it platform-independent — it fails on the author's own
+# machine, at the moment the shared template is edited, instead of one merge later on the
+# only platform whose compiler disagrees.
+# ---------------------------------------------------------------------------
+
+
+def _source_digest_audit():
+    """-> (checked, stale) where stale is [(key, recorded, this_build)].
+
+    Deliberately reads ONLY `source_digest`. Consulting `shader_digest` here would rebuild
+    the very forgiveness that hid #35: SPIR-V agreement is what makes a stale source digest
+    *survivable* on one toolchain, not what makes it *correct*.
+    """
+    import gen_proof_ledger as gpl
+
+    lib = gpl._find_lib(os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB", ""))
+    if lib is None:
+        pytest.skip("no built EP to compare the ledger against")
+    checked, stale = 0, []
+    for line in _ledger_lines()[1:]:
+        entry = json.loads(line)
+        recorded = entry.get("source_digest")
+        stems = entry.get("shaders") or []
+        if not recorded or not stems:
+            continue
+        built = gpl._shader_subject(lib, stems).get("source_digest")
+        if not built:
+            # This build has no module for those stems. A real finding, but a different
+            # one (`no-module-in-build`), already ruled on by --check. Not ours to claim.
+            continue
+        checked += 1
+        if built != recorded:
+            stale.append((entry["key"], recorded, built))
+    return checked, stale
+
+
+def test_no_entry_carries_a_stale_source_digest():
+    """Every recorded §8.9.19 source witness still describes the source this build hashed.
+
+    This is the screen that would have failed PR #35 on Windows. It is the standing repair
+    for issue #43 and the negative control the issue asks for against collateral edits to a
+    SHARED template: because `source_digest_for` hashes the whole file, touching
+    ew_unary.comp for one operator moves the witness of all 55 entries derived from it, and
+    this test names every one that was not re-witnessed or re-proved afterwards.
+    """
+    checked, stale = _source_digest_audit()
+    assert checked, "no ledger entry could be compared; this test is UNOBSERVABLE, not passing"
+    # R13: quote the failures, never just the count.
+    assert not stale, (
+        f"{len(stale)} of {checked} ledger entr(ies) carry a source_digest this build does not "
+        "compute. The recorded witness describes source text that no longer exists, so on any "
+        "toolchain that also emits different SPIR-V the EP must decline the op:\n"
+        + "\n".join(f"  {k}: recorded {r} != this build's {b}" for k, r, b in sorted(stale)[:20])
+        + (f"\n  ... +{len(stale) - 20} more" if len(stale) > 20 else "")
+        + "\n\nIf the kernel changed, `--reprove` it. If only the source text moved and the "
+        "SPIR-V is identical, `--backfill-frame --rewitness-source` and declare the move in "
+        "evidence/proof_rewitness.json."
+    )
+
+
+def test_the_stale_source_digest_screen_can_say_no(tmp_path, monkeypatch):
+    """A screen whose red state nobody has seen is not evidence.
+
+    Plants the exact #35 regression — one entry left holding a source witness from a
+    withdrawn revision of the template — and requires the audit to convict it. Without this,
+    a `_shader_subject` that silently returned the recorded value would make the test above
+    pass forever.
+    """
+    import gen_proof_ledger as gpl
+
+    if gpl._find_lib(os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB", "")) is None:
+        pytest.skip("no built EP to compare the ledger against")
+    lines = _ledger_lines()
+    victim = next(
+        (json.loads(l) for l in lines[1:]
+         if json.loads(l).get("source_digest") and json.loads(l).get("shaders")),
+        None,
+    )
+    if victim is None:
+        pytest.skip("no entry carries a source_digest to falsify")
+
+    real = victim["source_digest"]
+    victim["source_digest"] = "dead" + real[4:] if not real.startswith("dead") else "beef" + real[4:]
+    planted = tmp_path / "proof_ledger.jsonl"
+    planted.write_text(
+        lines[0] + "\n" + json.dumps(victim, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(sys.modules[__name__], "LEDGER", planted)
+    try:
+        checked, stale = _source_digest_audit()
+    finally:
+        monkeypatch.undo()
+    assert checked == 1, f"expected to compare the single planted entry, compared {checked}"
+    assert [k for k, _, _ in stale] == [victim["key"]], (
+        "the audit did not convict an entry whose source_digest was hand-edited away from "
+        f"this build's; it reported {stale!r}. A screen that cannot say no is not a screen."
+    )
+
+
+# ---------------------------------------------------------------------------
 # §8.9.24 — mintability. Can a key exist at all?
 # ---------------------------------------------------------------------------
 
