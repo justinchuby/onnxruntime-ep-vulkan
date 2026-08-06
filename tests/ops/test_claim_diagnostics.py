@@ -389,21 +389,24 @@ def test_shaders_compiled_ep_claims(require_vulkan) -> None:
     epctl_name = "epctl.exe" if sys.platform == "win32" else "epctl"
     epctl_path = ep_lib.parent / epctl_name
 
-    live_ops: int = 0
+    kernel_ops: int = 0
     if epctl_path.is_file():
         result = subprocess.run(
             [str(epctl_path), "--dump-capabilities", "--json"],
             capture_output=True, text=True, timeout=30,
         )
         if result.returncode == 0:
-            # Count "live": true entries
-            live_ops = result.stdout.count('"live": true')
+            # Count rows carrying a kernel. The field is `has_kernel`, not `live`: the row used
+            # to spell `live` twice — once as this boolean, once as a `status` token that is a
+            # strict subset of it — and counting `"live": true` here silently counted the
+            # boolean while reading like it counted the status (§8.9.25 ruling 6).
+            kernel_ops = result.stdout.count('"has_kernel": true')
         print(
-            f"[CRITERION 5 POSITIVE] epctl --dump-capabilities: {live_ops} live op(s).",
+            f"[CRITERION 5 POSITIVE] epctl --dump-capabilities: {kernel_ops} op(s) with a kernel.",
             file=sys.stderr,
         )
-        assert live_ops > 0, (
-            "Criterion 5 POSITIVE CONTROL: epctl reports zero live ops. "
+        assert kernel_ops > 0, (
+            "Criterion 5 POSITIVE CONTROL: epctl reports zero ops with a kernel. "
             "This binary has no shaders compiled — it cannot be the positive control. "
             "Build with glslc present (remove ALLOW_MISSING_GLSLC=1)."
         )
@@ -427,7 +430,7 @@ def test_shaders_compiled_ep_claims(require_vulkan) -> None:
     }
     m.assert_vulkan_claims(model, feeds)
     print(
-        f"[CRITERION 5 POSITIVE] EP claimed Add ({live_ops} live ops in binary). "
+        f"[CRITERION 5 POSITIVE] EP claimed Add ({kernel_ops} ops with a kernel in binary). "
         f"Paired with criterion-5 negative (shader-less build → zero claims).",
         file=sys.stderr,
     )

@@ -55,6 +55,12 @@ import datetime
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+# The retirement register is ONE register with ONE rule, and this tool is the other reader of it.
+# `ci/check_ledger_census.py` imports the same module. When the two had a parser each, a
+# withdrawal with no owner was an exemption here and a refusal there — one file, two answers.
+sys.path.insert(0, str(REPO / "ci"))
+import proof_retirement  # noqa: E402
+
 DEFAULT_OUT = REPO / "evidence" / "proof_ledger.jsonl"
 
 # Must match `registry.rs::fnv1a64`.  A checksum, not a signature — see the doc comment there.
@@ -285,7 +291,7 @@ def _record_attempt(model_path, keys, verdict, detail, device, ort_build, tolera
         )
 
 
-RETIRED = REPO / "evidence" / "retired_proof_keys.json"
+RETIRED = proof_retirement.register_path(REPO)
 
 
 def _attempt_matched_keys(path: pathlib.Path | None = None) -> tuple[set[str], str]:
@@ -322,25 +328,23 @@ def _attempt_matched_keys(path: pathlib.Path | None = None) -> tuple[set[str], s
 
 
 def _retired_keys(path: pathlib.Path | None = None) -> tuple[dict[str, str], str]:
-    """Keys deliberately withdrawn from the ledger, each with a reason. Absent file = none."""
+    """Keys deliberately withdrawn from the ledger, each with a reason. Absent file = none.
+
+    ONE REGISTER, ONE RULE. The shape and the required fields are `ci/proof_retirement.py`, which
+    `ci/check_ledger_census.py` imports too. This tool used to accept a withdrawal carrying only a
+    `reason` while the census refused the same record for having no `owner` and no `date` — one
+    file, two answers, and the exemption granted by whichever tool asked first. A register that is
+    present and malformed is an error string, never an empty exemption set: `{}` here would turn
+    every withdrawal in it into a lost proof below.
+
+    The default resolves the register at CALL time so a probe can point the invariant at another
+    pair of artifacts, exactly as `_attempt_matched_keys` does.
+    """
     path = path if path is not None else RETIRED
-    if not path.is_file():
-        return {}, ""
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-        out: dict[str, str] = {}
-        for row in doc.get("retired") or []:
-            key = row.get("key", "")
-            reason = row.get("reason", "")
-            if not key or not reason:
-                return {}, (
-                    f"{path} holds a retirement with no key or no reason; a withdrawal nobody "
-                    f"has to justify is a blanket exemption"
-                )
-            out[key] = reason
-        return out, ""
-    except (OSError, ValueError) as exc:
-        return {}, f"cannot read {path}: {exc}"
+        return proof_retirement.reasons(path), ""
+    except proof_retirement.RetirementError as exc:
+        return {}, str(exc)
 
 
 def check_no_proof_went_missing(ledger_keys: set[str]) -> tuple[list[str], list[str], str]:

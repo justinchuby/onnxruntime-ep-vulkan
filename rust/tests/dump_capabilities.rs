@@ -98,6 +98,108 @@ fn every_contrib_row_is_printed_with_a_real_baseline() {
     }
 }
 
+/// **The kernel boolean is `has_kernel`, and the row never spells `live` twice.**
+///
+/// §8.9.25 ruling (6): the JSON row carried a `status` token whose `live` value is the deprecated
+/// `OpStatus::Live` alias — which grants nothing — beside a boolean *also* named `live` meaning
+/// *this row has a kernel*, true for `Live` and `Ready` alike. Two denotations, one noun, in a
+/// serialised schema. A reader checking "76 rows carry a kernel" against the field literally
+/// named `live` got 46, and the collision was found by it happening to someone.
+///
+/// This test is deliberately about the NAME and not only the value: a rename that left the old
+/// key in place would satisfy every value assertion and none of the ruling.
+#[test]
+fn the_kernel_boolean_is_named_has_kernel_and_live_is_only_a_status_token() {
+    let (stdout, _, code) = run(&["--dump-capabilities", "--json"]);
+    assert_eq!(code, 0);
+
+    let rows = stdout.matches("\"name\": ").count();
+    assert!(
+        rows > 0,
+        "the dump has no op rows; this test proves nothing"
+    );
+    assert_eq!(
+        stdout.matches("\"has_kernel\": ").count(),
+        rows,
+        "every row must carry `has_kernel`:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("\"live\":"),
+        "the retired boolean name `live` is still a key in the dump — a noun retired in prose \
+         and left in a schema is retired in the one place people quote from:\n{stdout}"
+    );
+
+    let has_kernel = stdout.matches("\"has_kernel\": true").count();
+    let live_token = stdout.matches("\"status\": \"live\"").count();
+    let ready_token = stdout.matches("\"status\": \"ready\"").count();
+    let staged_token = stdout.matches("\"status\": \"staged\"").count();
+
+    // The token stays three-valued. That is the half of the ruling that is a promise NOT to
+    // change anything: `status` is what five consumers parse.
+    assert_eq!(
+        live_token + ready_token + staged_token,
+        rows,
+        "`status` must be exactly one of live/ready/staged on every row:\n{stdout}"
+    );
+    assert_eq!(
+        has_kernel,
+        live_token + ready_token,
+        "`has_kernel` must be true for exactly the Live and Ready rows"
+    );
+    assert_eq!(
+        stdout.matches("\"has_kernel\": false").count(),
+        staged_token,
+        "a staged row has no kernel, by definition of staged"
+    );
+    // And the rename is load-bearing rather than cosmetic only while the two counts differ.
+    // Guarded rather than asserted flat: if every `Ready` row is ever promoted the collision
+    // stops being observable, and a test that then went red would be reporting on the registry
+    // instead of on the schema.
+    if ready_token > 0 {
+        assert_ne!(
+            has_kernel, live_token,
+            "the two questions must be distinguishable while a Ready row exists"
+        );
+    }
+
+    let registered = onnxruntime_vulkan_ep::registry::all_specs().count();
+    let with_kernel = onnxruntime_vulkan_ep::registry::all_specs()
+        .filter(|s| s.is_live())
+        .count();
+    assert_eq!(rows, registered, "the dump must carry every registered row");
+    assert_eq!(
+        has_kernel, with_kernel,
+        "`has_kernel` must agree with `OpSpec::is_live`, which is the predicate it renames"
+    );
+}
+
+/// The human summary carried the same collision: it called the kernel-carrying count "live"
+/// while the status column beside it spelled `live` for a strict subset of those rows.
+#[test]
+fn the_human_summary_names_the_predicate_it_counted() {
+    let (stdout, _, code) = run(&["--dump-capabilities"]);
+    assert_eq!(code, 0);
+
+    let registered = onnxruntime_vulkan_ep::registry::all_specs().count();
+    let with_kernel = onnxruntime_vulkan_ep::registry::all_specs()
+        .filter(|s| s.is_live())
+        .count();
+    assert!(
+        stdout.contains(&format!(
+            "{registered} row(s): {with_kernel} with a kernel ("
+        )),
+        "the summary must say WHICH question the count answers:\n{stdout}"
+    );
+    let summary = stdout
+        .lines()
+        .find(|l| l.contains("with a kernel ("))
+        .expect("summary line");
+    assert!(
+        summary.contains(&format!("{} staged", registered - with_kernel)),
+        "the summary must decompose to the row count: {summary}"
+    );
+}
+
 #[test]
 fn no_arguments_is_an_error_not_an_empty_success() {
     let (_, stderr, code) = run(&[]);

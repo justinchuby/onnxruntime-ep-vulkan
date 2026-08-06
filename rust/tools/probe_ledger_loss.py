@@ -24,6 +24,12 @@ ARMS (predictions written before the run)
 4. arm 2 + that key retired with a reason -> PASS                   (retirement is the escape)
 5. arm 1 + a retirement for a key that is
    still in the ledger                    -> FAIL                   (a stale exemption fails)
+5b. arm 2 + a retirement with no owner
+   and no date                            -> ERROR(instrument)      (one register, ONE rule:
+                                                                     the census refused this
+                                                                     record while this tool
+                                                                     honoured it, until the
+                                                                     parse was unified)
 6. attempt log absent                     -> ERROR(instrument), never PASS
 
 NO CLOCK. Set/count comparisons only.
@@ -94,16 +100,31 @@ def main() -> int:
     no_retire = scratch / "none.json"
     no_retire.write_text(json.dumps({"retired": []}), encoding="utf-8")
 
+    # TODAY'S ARMS READ TODAY'S REGISTER, AND THAT IS NOT A CONVENIENCE.
+    #
+    # Arms 1, 2, 4 and 5 ask about the tree as it stands, and the tree as it stands has 43 keys
+    # deliberately withdrawn by the §8.9.23 schema change. Handing those arms an EMPTY register
+    # asked the invariant a question about a repository that does not exist: all 43 read as lost,
+    # arm 1 ("a guard that fails on a healthy tree gets switched off") was red for days, and arms
+    # 2/4/5 could no longer count their own failures. The empty register stays where it belongs —
+    # arm 3, the historical replay, where nothing had been retired yet and where applying today's
+    # withdrawals to yesterday's ledger would convict the right revision for the wrong reason.
+    base_rows = json.loads(
+        (REPO / "evidence" / "retired_proof_keys.json").read_text(encoding="utf-8")
+    )["retired"] if (REPO / "evidence" / "retired_proof_keys.json").is_file() else []
+    retired_now = scratch / "register_now.json"
+    retired_now.write_text(json.dumps({"retired": base_rows}), encoding="utf-8")
+
     results: list[tuple[str, bool, str]] = []
     live_keys = _ledger_keys(LEDGER.read_text(encoding="utf-8"))
 
     # Arm 1 — the tree as it stands. A guard that fails on a healthy tree gets switched off.
-    fails, notes, err = _evaluate(live_keys, attempts_now, no_retire)
+    fails, notes, err = _evaluate(live_keys, attempts_now, retired_now)
     results.append(("1 current tree is clean", not err and not fails, err or "; ".join(fails[:2])))
 
     # Arm 2 — delete one entry. This is the mutation the merge performed.
     victim = sorted(live_keys)[0]
-    fails, _, err = _evaluate(live_keys - {victim}, attempts_now, no_retire)
+    fails, _, err = _evaluate(live_keys - {victim}, attempts_now, retired_now)
     hit = not err and len(fails) == 1 and victim in fails[0]
     results.append((f"2 a deleted entry is named ({victim.split('/')[0]}...)", hit,
                     err or "; ".join(fails[:2]) or "no failure reported"))
@@ -123,10 +144,15 @@ def main() -> int:
         hit, detail = False, f"ERROR(instrument): cannot read {INCIDENT_COMMIT} from this repo"
     results.append(("3 the real eb84364 loss is detected", hit, detail))
 
-    # Arm 4 — retirement is the escape, and it costs a key and a reason.
+    # Arm 4 — retirement is the escape, and it costs a key, an owner, a date and a reason.
+    # `owner`/`date` are not decoration here: since the register and its parse were unified into
+    # `ci/proof_retirement.py`, this tool and `ci/check_ledger_census.py` require the same three
+    # fields, so a record that omits them is refused by BOTH rather than exempting by one.
     retire_one = scratch / "retire_one.json"
     retire_one.write_text(
-        json.dumps({"retired": [{"key": victim, "reason": "probe arm 4", "when": "2026-08-03"}]}),
+        json.dumps({"retired": base_rows + [{"key": victim, "owner": "probe",
+                                             "date": "2026-08-03",
+                                             "reason": "probe arm 4"}]}),
         encoding="utf-8",
     )
     fails, _, err = _evaluate(live_keys - {victim}, attempts_now, retire_one)
@@ -137,6 +163,19 @@ def main() -> int:
     fails, _, err = _evaluate(live_keys, attempts_now, retire_one)
     hit = not err and len(fails) == 1 and "retired" in fails[0]
     results.append(("5 a stale retirement fails", hit, err or "; ".join(fails[:2]) or "no failure"))
+
+    # Arm 5b — the polarity that the one-register unification adds: a withdrawal nobody signed is
+    # refused HERE, in the producer, and not merely by the census. This arm is the falsifier for
+    # "one register, one rule" — it went the other way (silently exempt) until 2026-08-05.
+    unsigned = scratch / "retire_unsigned.json"
+    unsigned.write_text(
+        json.dumps({"retired": [{"key": victim, "reason": "no owner, no date"}]}),
+        encoding="utf-8",
+    )
+    fails, _, err = _evaluate(live_keys - {victim}, attempts_now, unsigned)
+    hit = bool(err) and "owner" in err and not fails
+    results.append(("5b an unsigned retirement is refused, not honoured", hit,
+                    err[:80] or "no error reported"))
 
     # Arm 6 — no attempt log. The answer must be "I cannot tell", not "nothing is missing".
     fails, _, err = _evaluate(live_keys, scratch / "does_not_exist.jsonl", no_retire)
