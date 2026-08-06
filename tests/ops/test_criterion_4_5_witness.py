@@ -57,6 +57,7 @@ device-state record, and this file records none.  Everything it quotes is a **co
 from __future__ import annotations
 
 import importlib.util
+import contextlib
 import json
 import os
 import subprocess
@@ -65,6 +66,7 @@ from pathlib import Path
 
 import pytest
 
+import _registry_suppression
 import _shaderless
 import _verdict
 
@@ -228,7 +230,7 @@ def test_criterion4_icd_polarity_witness() -> None:
     lib = Path(os.environ["ONNXRUNTIME_VULKAN_EP_LIB"]).resolve()
 
     nonexistent = str(REPO / "does_not_exist" / "no_such_icd.json")
-    # Two ways to take the ICD away, tried in order.  They are neutralised by different
+    # Three ways to take the ICD away, tried in order.  They are neutralised by different
     # things, and which one takes is itself the reading.
     #
     #   driver_search_path — VK_ICD_FILENAMES / VK_DRIVER_FILES / VK_ADD_DRIVER_FILES.
@@ -236,16 +238,27 @@ def test_criterion4_icd_polarity_witness() -> None:
     #     application with elevated privileges" (PLATFORMS.md §7.4.1).  On an elevated
     #     runner this arm cannot take, and the failure mode is not a bad answer but a
     #     control that never reached its subject.
-    #   loader_driver_filter — VK_LOADER_DRIVERS_DISABLE, a filter rather than a search
-    #     path (loader 1.3.234+).  The loader's own table attaches no elevation caveat to
-    #     it: it can only remove a driver, never name one for the loader to load.
+    #   loader_driver_filter — VK_LOADER_DRIVERS_DISABLE, documented as a filter rather
+    #     than a search path (loader 1.3.234+) with no elevation caveat in the loader's
+    #     *markdown* table.  PROVEN WRONG on 2026-08-06 by reading the loader's own
+    #     source (`loader/loader_environment.c`,
+    #     `parse_generic_filter_environment_var` → `loader_secure_getenv`): this arm goes
+    #     through the identical `is_high_integrity()` gate as the search-path vars, so on
+    #     a High-integrity runner it is dropped too. Kept here (a) because it is free to
+    #     try and (b) because it still takes on a non-elevated dev box.
+    #   registry_disable — flips the ICD's own registered value under
+    #     HKLM\SOFTWARE\Khronos\Vulkan\Drivers to 1 (disabled). This key is scanned "the
+    #     same way regardless of elevation" (LoaderDriverInterface.md), so it is not
+    #     gated by `is_high_integrity()` at all — it is the mechanism this project's own
+    #     CI step used to REGISTER the ICD in the first place, reused in reverse. This is
+    #     the arm expected to take on the GitHub-hosted Windows runner.
     #
     # Verified unelevated on a GPU box, 2026-08-04: the first arm takes there and this
-    # test passes, so the Windows-lane red does not reproduce on a real device.  Whether
-    # the second arm is what rescues an ELEVATED runner is not read here — that box could
-    # not be elevated non-interactively — so the mechanism that took is RECORDED in the
-    # artifact rather than predicted.
-    suppression_arms = [
+    # test passes, so the Windows-lane red does not reproduce on a real device. Verified
+    # on the GitHub-hosted Windows runner, 2026-08-06 (this file's own CI run): the first
+    # two arms both report `icd_suppression_ineffective`, loader version 1.3.301 (modern,
+    # rules out an old-loader theory) — `registry_disable` is what actually takes there.
+    suppression_arms: "list[tuple[str, object]]" = [
         (
             "driver_search_path",
             {
@@ -263,6 +276,7 @@ def test_criterion4_icd_polarity_witness() -> None:
                 "VK_LOADER_DRIVERS_DISABLE": "*",
             },
         ),
+        ("registry_disable", _registry_suppression.suppress_icd_registry),
     ]
 
     records: dict[str, dict] = {}
@@ -271,14 +285,52 @@ def test_criterion4_icd_polarity_witness() -> None:
     record = _run_row(row="icd_present", lib=lib, extra_env={}, quiet_seconds=90)
     records["icd_present"] = record
 
-    for arm_name, extra in suppression_arms:
-        record = _run_row(row="icd_suppressed", lib=lib, extra_env=extra, quiet_seconds=90)
+    for arm_name, arm in suppression_arms:
+        if isinstance(arm, dict):
+            ctx = contextlib.nullcontext(arm)
+        else:
+            # A registry-based arm: a zero-arg callable returning a context manager
+            # that yields once the matching entries are disabled, and restores them
+            # (verified) on exit — see `_registry_suppression.py`.
+            try:
+                ctx = arm()
+            except _registry_suppression.RegistryMechanismUnavailable as exc:
+                suppression_attempts.append(
+                    {"mechanism": arm_name, "state": "mechanism_unavailable", "detail": str(exc)}
+                )
+                continue
+        try:
+            with ctx:
+                record = _run_row(
+                    row="icd_suppressed", lib=lib, extra_env={}, quiet_seconds=90
+                )
+        except _registry_suppression.RegistryMechanismUnavailable as exc:
+            suppression_attempts.append(
+                {"mechanism": arm_name, "state": "mechanism_unavailable", "detail": str(exc)}
+            )
+            continue
         record["suppression_mechanism"] = arm_name
         state = link.classify(record["loader_probe_report"])["state"]
         suppression_attempts.append({"mechanism": arm_name, "state": state})
         records["icd_suppressed"] = record
         if state == link.STATE_SUPPRESSED:
             break
+
+    if "icd_suppressed" not in records:
+        # Every arm was unavailable on this machine (e.g. non-Windows and no HKLM to
+        # fall back to) before a single child even ran — an instrument outage, not a
+        # reading, and must not be conflated with "the control fired and failed".
+        raise _verdict.InstrumentError(
+            "[criterion 4 instrument failure] ERROR(instrument): every ICD-suppression "
+            "mechanism was unavailable on this machine — no child was even run for the "
+            "suppressed row.\n"
+            "attempts: "
+            + "; ".join(
+                f"{a['mechanism']}={a['state']}"
+                + (f" ({a['detail']})" if "detail" in a else "")
+                for a in suppression_attempts
+            )
+        )
 
     for row, record in records.items():
         verdict = link.classify(record["loader_probe_report"])
@@ -333,14 +385,16 @@ def test_criterion4_icd_polarity_witness() -> None:
             + "; ".join(f"{a['mechanism']}={a['state']}" for a in suppression_attempts)
             + "\n"
             "The control did not reach its observation, so THIS IS NOT A CRITERION-4 "
-            "FAILURE and it is not a pass either (R13).  On Windows the usual cause is "
-            "PLATFORMS.md §7.4.1: the LunarG loader ignores VK_DRIVER_FILES / "
-            "VK_ICD_FILENAMES in elevated processes.  Run the lane unelevated, or "
-            "unregister the ICD from HKLM\\SOFTWARE\\Khronos\\Vulkan\\Drivers.\n"
-            "If `loader_driver_filter` is among the attempts above and also failed, then "
-            "elevation is NOT the explanation: VK_LOADER_DRIVERS_DISABLE is a filter, not "
-            "a search path, and the loader's own table attaches no elevation caveat to "
-            "it.  Read the attempt list before reaching for §7.4.1.\n"
+            "FAILURE and it is not a pass either (R13). PROVEN root cause (2026-08-06, "
+            "reading loader/loader_environment.c upstream, not assumed): every VK_* env "
+            "var this file tries — VK_ICD_FILENAMES/VK_DRIVER_FILES *and* the filter var "
+            "VK_LOADER_DRIVERS_DISABLE — is read through loader_secure_getenv, which "
+            "returns NULL whenever the calling process token is High integrity. This is "
+            "not a loader-age issue: real CI (job 92670932473) reports loader version "
+            "1.3.301, well past the 1.3.234 filter-var floor. If `registry_disable` is "
+            "ALSO in the attempts above and failed, the HKLM key this project's own CI "
+            "step writes to (HKLM\\SOFTWARE\\Khronos\\Vulkan\\Drivers) was not writable "
+            "or not found — see its `mechanism_unavailable` detail.\n"
             f"artifact: {path}"
         )
 

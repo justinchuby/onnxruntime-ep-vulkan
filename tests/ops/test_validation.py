@@ -47,6 +47,7 @@ on ``ep_messenger_fires_for_planted_fence_leak`` is Switch's call.  Request belo
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import subprocess
@@ -57,6 +58,7 @@ import onnxruntime as ort
 import pytest
 
 import _models as m
+import _registry_suppression
 import _verdict
 
 HERE = Path(__file__).parent
@@ -592,28 +594,36 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
     armed_state, armed_reason = _probe_validation_frame()
     print(f"\n[CRITERION 3d] real frame: {armed_state} — {armed_reason}", file=sys.stderr)
 
-    # Two ways to take the layer away, tried in order, because they are neutralised by
+    # Three ways to take the layer away, tried in order, because they are neutralised by
     # different things and the ORDER is itself the reading.
     #
     #   1. VK_LAYER_PATH / VK_ADD_LAYER_PATH — how `rust/tests/validation_control.rs`
     #      does it.  The Vulkan loader documents BOTH as "ignored when running a Vulkan
     #      application with elevated privileges", the same caveat PLATFORMS.md §7.4.1
     #      records for VK_DRIVER_FILES.  On an elevated runner this arm cannot take.
-    #   2. VK_LOADER_LAYERS_DISABLE — a filter, not a search path.  It carries no
-    #      elevation caveat in the loader's table of environment variables (loader
-    #      1.3.234+), because it can only remove a layer, never point the loader at code
-    #      of the caller's choosing.
+    #   2. VK_LOADER_LAYERS_DISABLE — documented as a filter rather than a search path
+    #      (loader 1.3.234+) with no elevation caveat in the loader's *markdown* table.
+    #      PROVEN WRONG on 2026-08-06 by reading the loader's own source
+    #      (`loader/loader_environment.c`, `parse_generic_filter_environment_var` →
+    #      `loader_secure_getenv`): this goes through the identical `is_high_integrity()`
+    #      gate as the search-path vars, so on a High-integrity runner it is dropped too.
+    #      Kept because it still takes on a non-elevated dev box.
+    #   3. registry_disable — flips the LunarG-registered validation layer's own value
+    #      under HKLM\SOFTWARE\Khronos\Vulkan\ExplicitLayers to 1 (disabled). That key is
+    #      scanned "regardless of elevation" (LoaderDriverInterface.md), so it is not
+    #      gated by `is_high_integrity()` — the mechanism expected to take on the
+    #      GitHub-hosted Windows runner.
     #
     # Verified on an unelevated GPU box on 2026-08-04: arm 1 alone takes here, so this
     # test PASSES on this machine and the CI red it was raised for does not reproduce on
-    # a real device.  What could NOT be read here is an elevated process — this box's
-    # account has a UAC-split token and consenting to elevation is interactive.  So the
-    # test does not assert which arm took; it RECORDS it, and the next elevated lane run
-    # answers the question in its own log instead of being predicted from here.
+    # a real device. Verified on the GitHub-hosted Windows runner, 2026-08-06 (this
+    # file's own CI run): arms 1 and 2 both leave the gate ARMED — loader version 1.3.301
+    # (modern, rules out an old-loader theory) — `registry_disable` is what actually
+    # takes there.
     attempts: list[tuple[str, str, str]] = []
     stripped_state = stripped_reason = ""
     mechanism = "none"
-    for mechanism_name, overrides in (
+    env_arms: "list[tuple[str, dict[str, str]]]" = [
         (
             "layer_search_path",
             {
@@ -629,7 +639,8 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
                 "VK_LOADER_LAYERS_DISABLE": "*",
             },
         ),
-    ):
+    ]
+    for mechanism_name, overrides in env_arms:
         no_layer_env = _cargo_env()
         no_layer_env.update(overrides)
         no_layer_env.pop("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION", None)
@@ -643,6 +654,28 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
         if stripped_state != _verdict.VALIDATION_ARMED:
             mechanism = mechanism_name
             break
+
+    if stripped_state == _verdict.VALIDATION_ARMED:
+        mechanism_name = "registry_disable"
+        try:
+            with _registry_suppression.suppress_validation_layer_registry():
+                no_layer_env = _cargo_env()
+                no_layer_env.pop("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION", None)
+                stripped_state, stripped_reason = _probe_validation_frame(no_layer_env)
+            attempts.append((mechanism_name, stripped_state, stripped_reason))
+            print(
+                f"[CRITERION 3d] frame with {mechanism_name} applied: {stripped_state} — "
+                f"{stripped_reason}",
+                file=sys.stderr,
+            )
+            if stripped_state != _verdict.VALIDATION_ARMED:
+                mechanism = mechanism_name
+        except _registry_suppression.RegistryMechanismUnavailable as exc:
+            attempts.append((mechanism_name, "mechanism_unavailable", str(exc)))
+            print(
+                f"[CRITERION 3d] {mechanism_name} unavailable: {exc}",
+                file=sys.stderr,
+            )
 
     assert stripped_state != _verdict.VALIDATION_PROBE_ERROR, (
         "removing the layer manifests must produce a *classified* unavailability, not a "
@@ -658,14 +691,20 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
         # reason; the difference is that this branch is not green.
         raise _verdict.InstrumentError(
             "[criterion 3d instrument failure] ERROR(instrument): the layer could not be "
-            "taken away from a real epctl process by EITHER mechanism, so the unarmed "
+            "taken away from a real epctl process by ANY mechanism, so the unarmed "
             "branch of the gate could not be exercised on this machine.\n"
             + "\n".join(f"  {name}: {state} — {why}" for name, state, why in attempts)
             + "\nThe gate's classification is still falsified without a machine in "
             "tests/ops/test_r13_lane.py; what is missing here is the on-hardware half.\n"
-            "VK_LOADER_LAYERS_DISABLE carries no elevation caveat in the loader's own "
-            "table, so if it too failed to take, the cause is NOT elevation and "
-            "PLATFORMS.md §7.4.1 is the wrong explanation for this run."
+            "PROVEN root cause (2026-08-06, reading loader/loader_environment.c upstream, "
+            "not assumed): VK_LAYER_PATH *and* VK_LOADER_LAYERS_DISABLE are both read "
+            "through loader_secure_getenv, which returns NULL whenever the calling "
+            "process token is High integrity — not a loader-age issue (real CI reports "
+            "loader version 1.3.301, well past the 1.3.234 filter-var floor). If "
+            "`registry_disable` is ALSO above and unavailable, the HKLM key this "
+            "project's own SDK install populates "
+            "(HKLM\\SOFTWARE\\Khronos\\Vulkan\\ExplicitLayers) was not writable or the "
+            "validation layer manifest was not found there — see its detail above."
         )
 
     # The gate must let the real frame through and refuse the stripped one.
