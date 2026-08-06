@@ -13,8 +13,8 @@
     "vk_icd_filenames": ""
   },
   "domain": "[-1, 1] closed; seams at +-1/2 and +-1 with representable neighbours; signed zero; out-of-domain and non-finite inputs in edge_cases",
-  "generated_at": "2026-08-06T04:05:11-07:00",
-  "label": "portable ew_asin/ew_acos (squad/4-portable-inverse-trig)",
+  "generated_at": "2026-08-06T05:08:59-07:00",
+  "label": "portable ew_asin/ew_acos (squad/4-portable-inverse-trig, post-merge of origin/main 3047758)",
   "ops": {
     "Acos": {
       "bit_identical_to_cpu": false,
