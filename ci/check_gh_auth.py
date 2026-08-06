@@ -51,11 +51,100 @@ the same way, semantically, not by line-shape guessing:
       GH_TOKEN: ${{ github.token }}
 
 The block form spans multiple lines under `env:`; the inline (flow-mapping) form puts
-`{key: value, ...}` on the `env:` line itself. Issue #21: a step remediated with the
-inline form was being FALSELY CONVICTED of having no token path, because the block-only
-line-shape check saw `env: {...}` and, since nothing followed on the NEXT line the way a
-block mapping requires, read the step as having declared no keys at all — the exact
-remediation text read as if it were the defect it fixes.
+`{key: value, ...}` on the `env:` line itself — or across SEVERAL lines, since YAML flow
+mappings may wrap. Issue #21: a step remediated with the inline form was being FALSELY
+CONVICTED of having no token path, because the block-only line-shape check saw `env:
+{...}` and, since nothing followed on the NEXT line the way a block mapping requires,
+read the step as having declared no keys at all — the exact remediation text read as if
+it were the defect it fixes.
+
+Issue #25 (adversarial review of #22's fix): a line-oriented "is this line more indented
+than X" check cannot tell a REAL `env:` apart from two other shapes that merely look like
+one:
+
+* text resembling `env:`/`GH_TOKEN:` sitting inside a `run: |`/`run: >` BLOCK SCALAR — a
+  step's own shell script, echoed prose, or a heredoc — which is executed text, not YAML
+  structure, no matter how deeply it happens to be indented under the step;
+* a real YAML mapping named `env` that is nested under something else entirely —
+  `services.<id>.env` (a service CONTAINER's environment) or `with: env:` (an action
+  INPUT that happens to be called `env`) — neither of which is the step/job/workflow
+  execution environment `gh` would see.
+
+The parser below is therefore YAML-STRUCTURAL rather than line-oriented: it walks a real
+stack of open mapping/sequence frames, tracked by indentation the way YAML's own grammar
+requires, and recognises `env:` at exactly three ancestor shapes — the document root, one
+`jobs.<id>`, one `steps:` sequence item — never merely "however many spaces more indented
+than something else". A block scalar's body is walked as literal text and never
+re-examined as YAML at all, so it can neither convict nor acquit a step. Two keys
+declared in one `env:` mapping (block or flow, quoted or not) is an unsupported/ambiguous
+construct this parser will not silently resolve one way or the other; it raises instead
+(`ERROR(instrument=unsupported_yaml_construct)`, never a guess that happens to come out
+green). See `parse_workflow()` for the mechanism and `_env_scope_for()` for the exact
+three shapes.
+
+PR #27 REVIEW FIXES (issue #25, five more blind spots in the structural parser itself)
+=======================================================================================
+R1  A `steps:` frame only mints a new step under the EXACT ancestor path
+    `jobs.<job>.steps` — not any frame whose leaf key happens to be `steps`. A legal
+    action input named `steps` (`with: steps: [...]`, e.g. a matrix-generating action)
+    used to reset/orphan the real step and silently drop whatever ran after it (a
+    `run: gh api ...` sibling included) from body capture — a false PASS by omission,
+    not a wrong token judgement. See `_Frame.is_real_steps` / `_is_job_steps_ancestor()`.
+
+R2  A scalar value this parser does not structurally understand (`&anchor`, `!!tag`,
+    `*alias`) now raises `YamlStructureError` if the NEXT content line is more
+    indented — instead of silently letting that more-indented content (e.g. a nested
+    `env:`) be attributed to the grandparent frame, which could read a step-level
+    `env:` as satisfied by a mapping actually nested inside an anchored/tagged value.
+
+R3  Two more shapes now raise rather than guess:
+    (a) a multi-document file (`---` separator) — this screen reads one YAML document
+        per file and will not guess which document a file's steps/env belong to;
+    (b) a nested flow collection as an `env: {...}` value (`{FOO: {GH_TOKEN: x}}`, the
+        inner key is FOO's own value, not this mapping's sibling) and a quoted flow
+        value containing a literal `{`/`}`/`[`/`]` (`{FOO: '{"GH_TOKEN": "1"}'}`) — both
+        previously (correctly, but silently) risked being misread rather than refused;
+        a `${{ github.token }}` GitHub Actions expression is NOT this shape (its
+        internally-balanced braces are recognised and skipped as opaque, exactly the
+        remediation text this screen's own FAIL message recommends) and still passes.
+
+N1  A duplicate SIBLING `env:` key at the same scope (two `env:` blocks under one job,
+    in either YAML form) is now `ERROR(instrument=unsupported_yaml_construct)`, not
+    silently unioned via `set.update()` the way two prior, separate `env:` records for
+    the same scope used to be.
+
+N2  A dash-inline `- env:` block now computes the REAL column its content starts at
+    (from the actual whitespace after the dash) instead of a synthetic `dash_indent +
+    1` offset, which used to undershoot `env:`'s true column and let a later TRUE
+    SIBLING field at that real column be wrongly swallowed as one of `env:`'s own
+    children.
+
+Each of the above is unsupported/ambiguous input, not a silent guess in either
+direction — every one raises `YamlStructureError`, surfaced as `ERROR(instrument=
+unsupported_yaml_construct)`, rather than resolving to a PASS or FAIL a human did not
+actually write.
+
+MORPHEUS RE-REVIEW OF PR #27 (issue #25, a sixth blind spot — this time in the frame-POP
+logic itself, not a value the parser could not read)
+=========================================================================================
+R4  A sequence item's dash may sit at the exact same column as the key that introduces
+    it — YAML's "compact"/zero-indent block-sequence form (`steps:\n- name: x`), valid
+    for ANY list-valued key, not only `steps:`. The generic pop rule for a plain mapping
+    key (`while indent <= frame.indent: pop`) — correct there, since an equal indent
+    always means "sibling of whatever opened this frame" — used to run for sequence-item
+    lines too, popping the `steps:` frame itself before its own first dash was ever
+    recognised as ITS child, silently dropping the step (and any `gh api` call inside
+    it) from every subject this screen ever sees. Sequence-item lines now use their own
+    pop rule instead: pop frames strictly DEEPER than the dash first (the previous
+    item's own content), then pop at most one previous sequence-item SIBLING frame
+    already sitting at this exact indent — but never the owning key's frame itself,
+    whether that key opened at the item's exact indent (compact form) or shallower (the
+    ordinary indented form). See the two `while` loops guarded by `if m:` in the main
+    parse loop. A related ordering defect in the same code path was fixed alongside it:
+    a new step's own dash line was being appended to the PREVIOUS step's text buffer
+    before `flush()` ran, not after, corrupting both steps' captured bodies whenever the
+    new step's list sat deeper than the old step's `current_indent` (exactly what
+    happens when a compact-form job is immediately followed by an indented-form job).
 
 ZERO SUBJECTS
 =============
@@ -91,7 +180,8 @@ Terminal states (R13):
     1  GH-AUTH: FAIL(condition=missing_token_path)
     2  usage
     4  GH-AUTH: ERROR(instrument=...)   workflow_not_found | empty_workflow_directory |
-                                        no_steps_parsed | zero_gh_reaching_subjects
+                                        no_steps_parsed | zero_gh_reaching_subjects |
+                                        unsupported_yaml_construct
 
 USAGE
     python ci/check_gh_auth.py .github/workflows/ci.yml .github/workflows/conformance.yml
@@ -137,29 +227,165 @@ _GH_AUTH_STATUS_RE = re.compile(r"(?<![\w./-])gh\s+auth\s+status\b")
 
 _PY_SCRIPT_RUN_RE = re.compile(r"(?:^|[\s;&|])python3?\s+(?P<path>ci/[A-Za-z0-9_./-]+\.py)")
 
-_STEP_START_RE = re.compile(r"^(?P<indent>\s*)-\s+name:\s*(?P<name>.+?)\s*$")
-_STEP_USES_ONLY_RE = re.compile(r"^(?P<indent>\s*)-\s+uses:\s*(?P<uses>\S+)")
-_JOB_RE = re.compile(r"^  (?P<job>[A-Za-z0-9_.-]+):\s*$")
-#: Block form: `env:` alone on its line, keys follow indented on the lines under it.
-_ENV_BLOCK_RE = re.compile(r"^(?P<indent>\s*)env:\s*$")
-#: Inline (flow-mapping) form: `env: {KEY: value, ...}` on the one line. YAML permits
-#: either shape and they are semantically identical; a screen that only recognises the
-#: first teaches a step author that the fix it just applied (the inline form is exactly
-#: the remediation text quoted in this screen's own FAIL message) is the defect (#21).
-_ENV_INLINE_RE = re.compile(r"^(?P<indent>\s*)env:\s*(?P<inline>\{.*\})\s*$")
-_ENV_KEY_RE = re.compile(r"^(?P<indent>\s*)(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*:")
-#: Key names inside a YAML flow mapping's `{...}` text. A key starts right after the
-#: opening brace or a top-level comma — the two positions flow-style permits — optionally
-#: quoted. Values are never inspected (this screen's own non-disclosure rule): they may
-#: contain `${{ ... }}` expressions, which this repository's usage never puts a bare
-#: `identifier:` inside, so scanning for that shape finds keys without needing a real
-#: YAML flow-mapping parser.
+#: A mapping key at the start of a (de-indented) logical line: `key:`, `key: value`,
+#: `"key": value`, or `'key': value`. `rest` is everything after the colon, RAW (not yet
+#: comment-stripped or trimmed) — "" if nothing follows. Job ids and step field names
+#: this repository uses are `[A-Za-z0-9_.-]+`; env var names are the stricter POSIX
+#: shape, checked separately where it matters (TOKEN_NAMES membership).
+_MAP_KEY_NOINDENT_RE = re.compile(
+    r"""^(?:(?P<q>['"])(?P<qkey>[A-Za-z_][A-Za-z0-9_.-]*)(?P=q)|(?P<key>[A-Za-z_][A-Za-z0-9_.-]*))
+        \s*:(?P<rest>.*)$""",
+    re.VERBOSE,
+)
+#: A block-sequence item: `- ` (or bare `-`) starting a logical line. `rest` is whatever
+#: follows the dash and its one required space, e.g. `name: build` for `- name: build`.
+_SEQ_ITEM_RE = re.compile(r"^-(?:\s(?P<rest>.*))?$")
+#: A block-scalar indicator as a key's entire (comment-stripped, trimmed) value: `|`,
+#: `>`, with an optional chomping indicator (`-`/`+`) and an optional explicit
+#: indentation indicator digit — `run: |`, `run: |-`, `run: >2`, etc. Everything more
+#: indented than the key itself is then literal text, never YAML structure (#25: a
+#: `run: |` body that happens to contain the substring `env:` must never be read as one).
+_BLOCK_SCALAR_RE = re.compile(r"^[|>][+-]?[0-9]?$")
+#: Key names inside a YAML flow mapping's `{...}` text (single- or multi-line, already
+#: joined). A key starts right after the opening brace or a top-level comma — the two
+#: positions flow-style permits — optionally quoted. Values are never inspected (this
+#: screen's own non-disclosure rule): they may contain `${{ ... }}` expressions, which
+#: this repository's usage never puts a bare `identifier:` inside, so scanning for that
+#: shape finds keys without needing a real YAML flow-mapping parser.
 _FLOW_MAPPING_KEY_RE = re.compile(r"""(?:\{|,)\s*(['"]?)(?P<key>[A-Za-z_][A-Za-z0-9_]*)\1\s*:""")
 
 
-def _flow_mapping_keys(inline: str) -> set[str]:
-    """Key names declared in a YAML inline mapping, e.g. ``{GH_TOKEN: ${{ github.token }}}``."""
-    return {m.group("key") for m in _FLOW_MAPPING_KEY_RE.finditer(inline)}
+class YamlStructureError(ValueError):
+    """A YAML construct this constrained parser will not guess about (issue #25): two
+    keys declared in one `env:` mapping, or a multi-line flow collection that never
+    closes. Raised rather than silently resolved one way or the other — an ambiguous
+    input is an ERROR(instrument), never a guess that happens to come out green."""
+
+
+def _split_comment(text: str) -> tuple[str, str]:
+    """Split `text` into (code, comment) by YAML's own rule: `#` starts a comment when
+    it is the first character or is immediately preceded by whitespace, and never
+    inside a single- or double-quoted scalar. Returns the comment WITH its `#`, "" if
+    there is none. Needed so a step's own remediation — `env: {GH_TOKEN: ...}  # ci`
+    trailing a real declaration — is not read as having declared nothing (#25)."""
+    quote = None
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        elif ch == "#" and (i == 0 or text[i - 1].isspace()):
+            return text[:i], text[i:]
+    return text, ""
+
+
+def _bracket_delta(code: str) -> int:
+    """Net change in flow-collection nesting depth contributed by comment-stripped
+    `code`, counting `{`/`}`/`[`/`]` outside quoted scalars. `${{ ... }}` expressions
+    are internally balanced (equal `{` and `}`) so they never perturb the count of the
+    flow mapping/sequence that encloses them."""
+    depth = 0
+    quote = None
+    for ch in code:
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+    return depth
+
+
+def _flow_mapping_key_list(inline: str, file_str: str, line_no: int) -> list[str]:
+    """Key names declared DIRECTLY in a YAML flow mapping's own top level, IN ORDER,
+    WITH duplicates — ``{GH_TOKEN: ${{ github.token }}}`` -> ``["GH_TOKEN"]``. `inline`
+    may be the single-line text or several physical lines already joined; the regex
+    only cares about a key's adjacency to `{`/`,`, not physical line boundaries, so a
+    multi-line flow mapping is read exactly the same way as a single-line one once its
+    lines are concatenated (#25).
+
+    Before running that regex, this walks `inline` once, tracking quote state and flow-
+    collection nesting depth, and REFUSES two shapes the regex alone cannot safely
+    resolve (#25 R3) rather than guessing at either of them:
+
+    * a NESTED flow collection as a value — ``{FOO: {GH_TOKEN: x}}`` — once depth goes
+      past 1, everything inside belongs to FOO's own value, not to this mapping, and a
+      regex blind to nesting would misreport GH_TOKEN as this mapping's OWN sibling key
+      rather than a key buried inside FOO's value;
+    * a quoted value that itself contains a literal `{`/`}`/`[`/`]` —
+      ``{FOO: '{"GH_TOKEN": "1"}'}`` — the quote-tracking below would in fact treat
+      that text as opaque and not misextract GH_TOKEN from it, but this parser is
+      deliberately conservative about a shape it cannot independently confirm is inert
+      text rather than a YAML author's typo, and refuses rather than silently trusting
+      its own reading either way.
+    """
+    depth = 0
+    quote: str | None = None
+    i = 0
+    length = len(inline)
+    while i < length:
+        ch = inline[i]
+        if quote is not None:
+            if ch in "{}[]":
+                raise YamlStructureError(
+                    f"{file_str}:{line_no}: a quoted value inside this `env: {{...}}` "
+                    f"mapping contains a literal {ch!r} — this screen cannot safely "
+                    "tell opaque text apart from YAML structure here and will not "
+                    "guess which one it is."
+                )
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if inline.startswith("${{", i):
+            # A GitHub Actions expression, not YAML flow-collection nesting -- its
+            # `{`/`}` are balanced by construction and every ordinary GH_TOKEN
+            # declaration is exactly this shape (`${{ github.token }}`). Skip the
+            # whole span opaquely so its internal braces never perturb `depth`;
+            # treating them as real nesting would misfire on correct workflows,
+            # not just adversarial ones.
+            end = inline.find("}}", i + 3)
+            i = length if end == -1 else end + 2
+            continue
+        if ch in "{[":
+            depth += 1
+            if depth > 1:
+                raise YamlStructureError(
+                    f"{file_str}:{line_no}: this `env: {{...}}` mapping has a nested "
+                    "flow collection as a value — this screen only reads the "
+                    "mapping's own direct keys and will not guess which of a nested "
+                    "collection's keys, if any, are meant to be seen as its own."
+                )
+        elif ch in "}]":
+            depth -= 1
+        i += 1
+    return [m.group("key") for m in _FLOW_MAPPING_KEY_RE.finditer(inline)]
+
+
+def _flow_mapping_keys(inline: str, file_str: str, line_no: int) -> set[str]:
+    """Key names declared in a YAML flow mapping, e.g. ``{GH_TOKEN: ${{ github.token }}}``."""
+    return set(_flow_mapping_key_list(inline, file_str, line_no))
+
+
+def _first_duplicate(keys: list[str]) -> str | None:
+    """The first key that occurs twice in `keys`, in insertion order — None if every
+    key is unique."""
+    seen: set[str] = set()
+    for k in keys:
+        if k in seen:
+            return k
+        seen.add(k)
+    return None
 
 
 @dataclass
@@ -193,36 +419,154 @@ class Step:
         )
 
 
+@dataclass
+class _Frame:
+    """One open mapping/sequence-item context, on a stack kept in step with the file's
+    actual indentation — YAML nesting IS indentation, so a generic stack of these
+    (rather than two hand-picked thresholds) is enough to tell a real `env:` apart from
+    one nested under `services.<id>:` or `with:` (#25), without a full YAML grammar."""
+
+    indent: int
+    #: The mapping key that opened this frame ("jobs", a job id, "steps", "env",
+    #: "with", "services", a service id, ...). None for a bare sequence-item frame
+    #: (e.g. one `- ...` entry of `steps:`) — the item has no key of its own, only a
+    #: position in its parent sequence.
+    key: str | None = None
+    is_seq_item: bool = False
+    #: True only for a frame opened by a block-scalar indicator (`run: |`, `run: >`,
+    #: ...). While this frame is on top of the stack, every more-indented line is
+    #: literal scalar text — never re-interpreted as YAML structure, so a `run: |` body
+    #: that happens to contain the substring `env:` is never read as a real one (#25).
+    is_block_scalar: bool = False
+    #: Set only when `key == "env"` and this frame was opened by the BLOCK form (the
+    #: `env:` line's own value is empty; keys follow, indented, below). Computed once,
+    #: at open time, from the ancestor shape: "workflow" | "job" | "step" | None (this
+    #: `env:` is nested under something else entirely and is not a real token scope —
+    #: `services.<id>.env`, `with: env:`, `container: env:`, ...).
+    env_scope: str | None = None
+    #: key -> the line it was first declared on, for THIS ONE `env:` mapping only.
+    #: Discarded with the frame on dedent, so it can never confuse a different `env:`
+    #: elsewhere in the file. A repeat is a duplicate YAML mapping key — ambiguous,
+    #: never silently resolved (#25).
+    env_seen: dict[str, int] = field(default_factory=dict)
+    #: True only for a frame opened by the `steps:` key whose ancestor stack, at open
+    #: time, was the EXACT shape `jobs.<job_id>` — this repository's only source of
+    #: real job steps. A same-named `steps:` key anywhere else (an action `with:
+    #: steps:` input, a matrix key, ...) gets an ordinary frame with this False, so a
+    #: sequence item under it is never minted as a Step (#25 R1).
+    is_real_steps: bool = False
+    #: True once this frame has had a DIRECT `env:` child, in either YAML form. A
+    #: second `env:` key at the same scope is a duplicate mapping key — the same YAML
+    #: defect as a duplicate key inside one `env:` mapping, one level up — and is
+    #: refused rather than having its keys silently unioned into the first (#25 N1).
+    has_env_child: bool = False
+
+
+def _env_scope_for(stack: list[_Frame]) -> str | None:
+    """Which frame an `env:` mapping belongs to, by its EXACT ancestor shape — not mere
+    indentation. "workflow" at the document root, "job" directly under `jobs.<id>`,
+    "step" directly under one `steps:` sequence item. Anything else — nested one level
+    deeper under `services.<id>:`, `with:`, `container:`, `strategy:`, or any other
+    intervening key — is None: a real YAML mapping, but not an execution-scope env for
+    any step this screen tracks (#25's two named blind spots, and the general case)."""
+    if not stack:
+        return "workflow"
+    if len(stack) == 2 and stack[0].key == "jobs" and not stack[0].is_seq_item and not stack[1].is_seq_item:
+        return "job"
+    if (
+        len(stack) == 4
+        and stack[0].key == "jobs"
+        and not stack[0].is_seq_item
+        and not stack[1].is_seq_item
+        and stack[2].key == "steps"
+        and not stack[2].is_seq_item
+        and stack[3].is_seq_item
+    ):
+        return "step"
+    return None
+
+
+def _is_job_steps_ancestor(stack: list[_Frame]) -> bool:
+    """True only when `stack` — the frames already open, NOT including the `steps:`
+    frame about to be pushed for this key — is the exact ancestor shape `jobs.<job_id>`.
+    That is this repository's only source of REAL job steps; a same-named `steps:` key
+    anywhere else (a legal action `with: steps:` list input, a matrix key, ...) is a
+    same-named key at the wrong ancestor shape, not a second source of steps (#25 R1).
+    """
+    return (
+        len(stack) == 2
+        and stack[0].key == "jobs"
+        and not stack[0].is_seq_item
+        and not stack[1].is_seq_item
+    )
+
+
 def parse_workflow(path: Path) -> list[Step]:
-    """Extract every named step with its `run:` body and its VISIBLE token names.
+    """Extract every step with its `run:` body and its VISIBLE token names, structurally.
 
-    No PyYAML, same reasoning as ci/check_build_precondition.py: this runs in the
-    lane-checks job, which installs pytest/onnx/numpy and nothing else, and a screen
-    skipped because an import failed is a screen that does not exist.
+    No PyYAML: this runs in the lane-checks job, which installs pytest/onnx/numpy and
+    nothing else (same reasoning as ci/check_build_precondition.py), and a screen
+    skipped on the runner because an import failed is a screen that does not exist.
+    PyYAML's default loader is also silent about duplicate mapping keys (last one wins,
+    with no error), which is the opposite of what #25 asks for — the constrained parser
+    below raises on exactly that shape instead.
 
-    Scoping is by relative indentation, in one pass: an `env:` block is WORKFLOW-scoped
-    if it sits at or above the current job's own indent (or there is no job yet),
-    JOB-scoped if it sits deeper than the job's indent but we are between steps, and
-    STEP-scoped if it sits deeper than the current step's own `- name:`/`- uses:` marker.
-    That is what GitHub Actions' nesting means by construction, regardless of how many
-    spaces any one file happens to use per level.
+    This is a real, if small, YAML skeleton: a stack of open mapping/sequence-item
+    frames, tracked by indentation the way YAML's own grammar requires. `env:` is
+    recognised at three EXACT ancestor shapes only — workflow root, `jobs.<id>`, one
+    `steps:` sequence item — never merely "deeper than the job" or "deeper than the
+    step", so `services.<id>.env` and `with: env:` (#25's two named review findings) are
+    seen as the unrelated nested maps they are, not as a token declaration. A `run: |`/
+    `run: >` block scalar's body is walked as literal text and never re-parsed as YAML
+    at all, so text that merely resembles `env:` inside a shell script cannot convict or
+    acquit a step either way. A YAML flow mapping (`{...}`) may span multiple physical
+    lines; a duplicate key declared twice in one `env:` mapping, in either shape, is an
+    unsupported/ambiguous construct — this parser will not guess which one wins, and
+    raises `YamlStructureError` instead (caught by `screen()`, reported as
+    ERROR(instrument=unsupported_yaml_construct), never a silent green).
     """
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
+    n = len(lines)
     file_str = str(path).replace("\\", "/")
 
     steps: list[Step] = []
     workflow_env: set[str] = set()
     job_env: dict[str, set[str]] = {}
+    #: True once a top-level (document-root) `env:` key has been seen, in either YAML
+    #: form. There is no _Frame for the document root (`stack` is simply empty there),
+    #: so this mirrors `_Frame.has_env_child` for the one scope that has no frame of
+    #: its own (#25 N1).
+    workflow_env_seen = False
 
     job = "<top-level>"
-    job_indent: int | None = None
     current: Step | None = None
     current_indent: int = 0
     buf: list[str] = []
 
-    # (indent-of-the-`env:`-line, scope) — scope in {"workflow", "job", "step"}.
-    env_ctx: tuple[int, str] | None = None
+    stack: list[_Frame] = []
+
+    # Set only while a multi-line flow collection (`{`/`[`) is open and has not yet
+    # balanced back to depth 0. Lines while this is set are NOT run through the normal
+    # frame-stack dispatch at all — they are raw continuation text of one scalar value,
+    # regardless of their own indentation (a flow collection's closing bracket may sit
+    # at ANY column, including back at the opening key's own indent or less).
+    pending_flow: dict | None = None
+
+    def _peek_next_indent(after_idx: int) -> int | None:
+        """The indentation of the next physical line, scanning forward from 0-based
+        `after_idx`, that is neither blank nor a full-line comment — None if no such
+        line exists before EOF. Blank lines and comment-only lines carry no YAML
+        structure of their own and must never be mistaken for the indentation of the
+        node that structurally follows (#25 R2)."""
+        j = after_idx
+        while j < n:
+            raw = lines[j]
+            s = raw.strip()
+            if s and not s.startswith("#"):
+                return len(raw) - len(raw.lstrip())
+            j += 1
+        return None
 
     def flush() -> None:
         nonlocal current, buf
@@ -232,102 +576,294 @@ def parse_workflow(path: Path) -> list[Step]:
         current = None
         buf = []
 
-    def env_scope(env_indent: int) -> str:
-        """Which frame an `env:` line at this indent belongs to, by nesting alone —
-        deeper than the current step's marker is STEP, deeper than the job's is JOB,
-        otherwise WORKFLOW. Read at call time (closes over `current`/`job_indent`,
-        which change as the file is walked), not fixed at definition time."""
-        if current is not None and env_indent > current_indent:
-            return "step"
-        if job_indent is not None and env_indent > job_indent:
-            return "job"
-        return "workflow"
-
     def record(scope: str, keys: set[str]) -> None:
         if scope == "workflow":
             workflow_env.update(keys)
         elif scope == "job":
             job_env[job].update(keys)
-        elif current is not None:
+        elif scope == "step" and current is not None:
             current.token_names.update(keys)
 
-    for idx, line in enumerate(lines, start=1):
+    def dispatch_key_line(indent: int, text_after_indent: str, line_no: int) -> None:
+        """Interpret one logical `key: ...` line — a real physical line, or the inline
+        remainder right after a sequence dash (`- key: value`), which is structurally
+        identical and processed the same way."""
+        nonlocal job, pending_flow, current, workflow_env_seen
+        m = _MAP_KEY_NOINDENT_RE.match(text_after_indent)
+        if not m:
+            return  # not a recognisable key -- an opaque scalar/leaf; nothing to track.
+        key = m.group("qkey") or m.group("key")
+        code, _comment = _split_comment(m.group("rest"))
+        code = code.strip()
+
+        def claim_env_slot() -> None:
+            """Raise if `env:` has already been declared once, directly, at this exact
+            scope (workflow root, this job, or this step) — a second `env:` key,
+            block or flow form on either side, is the SAME YAML defect as a duplicate
+            key inside one mapping, one level up: forbidden, and silently unioning the
+            two mappings' keys together (#25 N1) is exactly the guess this parser will
+            not make."""
+            nonlocal workflow_env_seen
+            if stack:
+                parent = stack[-1]
+                if parent.has_env_child:
+                    raise YamlStructureError(
+                        f"{file_str}:{line_no}: a second `env:` key at this scope — "
+                        "YAML forbids duplicate mapping keys and this screen will not "
+                        "silently union them."
+                    )
+                parent.has_env_child = True
+            else:
+                if workflow_env_seen:
+                    raise YamlStructureError(
+                        f"{file_str}:{line_no}: a second top-level `env:` key — YAML "
+                        "forbids duplicate mapping keys and this screen will not "
+                        "silently union them."
+                    )
+                workflow_env_seen = True
+
+        # A job id is a direct child of `jobs:` — the one place this repo's usage lets
+        # an arbitrary identifier introduce a whole new scope.
+        if len(stack) == 1 and stack[0].key == "jobs" and not stack[0].is_seq_item:
+            job = key
+            job_env.setdefault(job, set())
+
+        # A step's own `name:`/`uses:` field, for a readable `where` — cosmetic only,
+        # never affects scope classification.
+        if (
+            current is not None
+            and key in ("name", "uses")
+            and stack
+            and stack[-1].is_seq_item
+            and stack[-1].indent == current_indent
+        ):
+            current.name = code.strip("\"'") if key == "name" else f"<uses {code}>"
+
+        # A leaf key directly inside an open BLOCK-form `env:` mapping.
+        if stack and stack[-1].key == "env" and not stack[-1].is_block_scalar:
+            frame = stack[-1]
+            if key in frame.env_seen:
+                raise YamlStructureError(
+                    f"{file_str}:{line_no}: key {key!r} declared twice in the `env:` "
+                    f"mapping opened at line {frame.env_seen[key]} — YAML forbids "
+                    "duplicate keys in one mapping and this screen will not guess "
+                    "which one wins."
+                )
+            frame.env_seen[key] = line_no
+            if frame.env_scope is not None and key in TOKEN_NAMES:
+                record(frame.env_scope, {key})
+
+        if code == "":
+            # Block form: this key's children follow, indented, on later lines.
+            if key == "env":
+                claim_env_slot()
+            frame = _Frame(indent=indent, key=key)
+            if key == "env":
+                frame.env_scope = _env_scope_for(stack)
+            elif key == "steps":
+                frame.is_real_steps = _is_job_steps_ancestor(stack)
+            stack.append(frame)
+            return
+
+        if _BLOCK_SCALAR_RE.match(code):
+            stack.append(_Frame(indent=indent, key=key, is_block_scalar=True))
+            return
+
+        if code[0] == "{":
+            if key == "env":
+                claim_env_slot()
+            scope = _env_scope_for(stack) if key == "env" else None
+            depth = _bracket_delta(code)
+            if depth == 0:
+                if scope is not None:
+                    keys = _flow_mapping_key_list(code, file_str, line_no)
+                    dup = _first_duplicate(keys)
+                    if dup:
+                        raise YamlStructureError(
+                            f"{file_str}:{line_no}: key {dup!r} declared twice in one "
+                            "`env: {...}` flow mapping — YAML forbids duplicate keys "
+                            "in one mapping and this screen will not guess which one "
+                            "wins."
+                        )
+                    record(scope, set(keys) & set(TOKEN_NAMES))
+                return
+            if depth < 0:
+                raise YamlStructureError(
+                    f"{file_str}:{line_no}: `{key}:` closes more `}}`/`]` than it opens "
+                    "on its own line — not a construct this screen will guess about."
+                )
+            pending_flow = {
+                "text": code, "depth": depth, "key": key, "scope": scope, "line": line_no,
+            }
+            return
+
+        if code[0] == "[":
+            depth = _bracket_delta(code)
+            if depth > 0:
+                pending_flow = {
+                    "text": code, "depth": depth, "key": None, "scope": None, "line": line_no,
+                }
+            elif depth < 0:
+                raise YamlStructureError(
+                    f"{file_str}:{line_no}: `{key}:` closes more `}}`/`]` than it opens "
+                    "on its own line — not a construct this screen will guess about."
+                )
+            return
+
+        # A node property/reference indicator — an anchor (`&name`), a tag (`!!type`
+        # or `!type`), or an alias (`*name`) — is not a construct this constrained
+        # parser structurally understands. If nothing more indented follows, treating
+        # the whole thing as an opaque scalar leaf is safe: there is nothing here to
+        # misattribute. If MORE indented content DOES follow, that content is the
+        # anchored/tagged node's real payload, and attributing it to whatever frame
+        # happens to already be open (its grandparent, since no frame was pushed for
+        # this key) would be exactly the guess #25 R2 exists to refuse.
+        if code[:1] in ("&", "!", "*"):
+            next_indent = _peek_next_indent(idx)
+            if next_indent is not None and next_indent > indent:
+                raise YamlStructureError(
+                    f"{file_str}:{line_no}: `{key}: {code}` is followed by more "
+                    "indented content — an anchor, tag, or alias node this screen "
+                    "does not structurally understand — and this screen will not "
+                    "guess which scope that content belongs to."
+                )
+            return
+
+        # A plain scalar leaf (`name: build`, `uses: actions/checkout@v4`, a one-line
+        # `run:` command, ...). Nothing further to track structurally.
+
+    idx = 0
+    while idx < n:
+        idx += 1
+        line = lines[idx - 1]
+
+        if pending_flow is not None:
+            code, _comment = _split_comment(line)
+            pending_flow["text"] += "\n" + code
+            pending_flow["depth"] += _bracket_delta(code)
+            if pending_flow["depth"] > 0:
+                continue
+            if pending_flow["depth"] < 0:
+                raise YamlStructureError(
+                    f"{file_str}:{pending_flow['line']}: flow collection closes more "
+                    "`}`/`]` than it opens across its multiple lines — not a "
+                    "construct this screen will guess about."
+                )
+            if pending_flow["key"] == "env" and pending_flow["scope"] is not None:
+                keys = _flow_mapping_key_list(pending_flow["text"], file_str, pending_flow["line"])
+                dup = _first_duplicate(keys)
+                if dup:
+                    raise YamlStructureError(
+                        f"{file_str}:{pending_flow['line']}: key {dup!r} declared "
+                        "twice in one multi-line `env: {...}` flow mapping — YAML "
+                        "forbids duplicate keys in one mapping and this screen will "
+                        "not guess which one wins."
+                    )
+                record(pending_flow["scope"], set(keys) & set(TOKEN_NAMES))
+            pending_flow = None
+            continue
+
         stripped = line.strip()
         if not stripped:
             continue
         indent = len(line) - len(line.lstrip())
 
-        if env_ctx is not None and indent <= env_ctx[0]:
-            env_ctx = None
+        if re.match(r"^-{3}(\s|$)", stripped):
+            raise YamlStructureError(
+                f"{file_str}:{idx}: a `---` document-separator line — this screen "
+                "reads one YAML document per file and will not guess which document "
+                "a multi-document file's steps/env belong to."
+            )
 
         if stripped.startswith("#"):
             if current is not None and indent > current_indent:
                 buf.append(line)
             continue
 
-        m = _JOB_RE.match(line)
-        if m:
-            flush()
-            job = m.group("job")
-            job_indent = indent
-            job_env.setdefault(job, set())
-            env_ctx = None
-            continue
-
-        m = _ENV_INLINE_RE.match(line)
-        if m:
-            env_indent = len(m.group("indent"))
-            record(env_scope(env_indent), _flow_mapping_keys(m.group("inline")) & set(TOKEN_NAMES))
-            if current is not None and env_indent > current_indent:
-                buf.append(line)
-            continue
-
-        m = _ENV_BLOCK_RE.match(line)
-        if m:
-            env_indent = len(m.group("indent"))
-            env_ctx = (env_indent, env_scope(env_indent))
-            if current is not None and env_indent > current_indent:
-                buf.append(line)
-            continue
-
-        if env_ctx is not None and indent > env_ctx[0]:
-            ek = _ENV_KEY_RE.match(line)
-            if ek and ek.group("key") in TOKEN_NAMES:
-                record(env_ctx[1], {ek.group("key")})
+        if stack and stack[-1].is_block_scalar and indent > stack[-1].indent:
+            # Literal scalar text: never structure, however much it may resemble an
+            # `env:` declaration or a `gh` command (the latter IS still relevant to
+            # step.body below, just not to YAML structure).
             if current is not None and indent > current_indent:
                 buf.append(line)
             continue
 
-        m = _STEP_START_RE.match(line)
+        m = _SEQ_ITEM_RE.match(stripped)
         if m:
-            flush()
-            current = Step(
-                name=m.group("name").strip().strip("\"'"),
-                job=job,
-                file=file_str,
-                line=idx,
-            )
-            current_indent = len(m.group("indent"))
-            continue
-        m = _STEP_USES_ONLY_RE.match(line)
+            # A sequence item's dash may sit EITHER deeper than its owning key
+            # (`steps:\n  - name: x`) OR at the exact same column as that key
+            # (the equally-valid compact/zero-indent block form,
+            # `steps:\n- name: x`). A blanket `indent <= stack[-1].indent`
+            # pop -- correct for a plain mapping key, where equal indent always
+            # means "sibling of whatever opened this frame" -- would pop the
+            # `steps:` frame itself before this dash is ever recognised as ITS
+            # child, orphaning the item and silently dropping it (and any
+            # `gh api` command inside it) from every subject this screen ever
+            # sees: a false PASS, not a loud failure. So: pop frames strictly
+            # DEEPER than this dash first (the previous item's own content),
+            # then -- only if the frame now on top is itself a previous
+            # sequence-item sibling AT THIS SAME INDENT (not the owning key,
+            # which never carries `is_seq_item`) -- pop that one sibling too.
+            # The owning key's frame, whether opened deeper or at this exact
+            # column, is never popped by this branch.
+            while stack and indent < stack[-1].indent:
+                stack.pop()
+            while stack and stack[-1].indent == indent and stack[-1].is_seq_item:
+                stack.pop()
+        else:
+            while stack and indent <= stack[-1].indent:
+                stack.pop()
+
         if m:
-            flush()
-            current = Step(
-                name=f"<uses {m.group('uses')}>",
-                job=job,
-                file=file_str,
-                line=idx,
+            parent_is_steps = (
+                bool(stack)
+                and stack[-1].key == "steps"
+                and not stack[-1].is_seq_item
+                and stack[-1].is_real_steps
             )
-            current_indent = len(m.group("indent"))
+            stack.append(_Frame(indent=indent, is_seq_item=True))
+            if parent_is_steps:
+                # This dash MINTS a brand-new step -- flush the PRIOR step's
+                # buffer before appending anything, never after. A step whose
+                # own list is indented deeper than the previous job's compact
+                # (zero-indent) `steps:` list has `indent > current_indent`
+                # here; appending this dash line to `buf` first (the order
+                # this screen used before) would splice this new step's own
+                # marker onto the tail of the PREVIOUS step's body instead of
+                # starting a fresh one -- corrupting both steps' text instead
+                # of just correctly separating them.
+                flush()
+                current = Step(name="<step>", job=job, file=file_str, line=idx)
+                current_indent = indent
+            elif current is not None and indent > current_indent:
+                buf.append(line)
+            rest = m.group("rest")
+            if rest:
+                # The REAL column where `rest` begins in the ORIGINAL line -- not a
+                # fixed `indent + 1` offset. `_SEQ_ITEM_RE` requires exactly one
+                # whitespace character between the dash and `rest`'s first non-blank
+                # run, but this repo's YAML (like YAML generally) permits more than
+                # one; a fixed offset that undershoots this key's TRUE column would
+                # make every later TRUE SIBLING field (necessarily indented at least
+                # as deep as this key's own real column) look like a CHILD of
+                # whatever frame this key opens, silently swallowing it (#25 N2).
+                after_dash = line[indent + 1 :]
+                rest_real_indent = indent + 1 + (len(after_dash) - len(after_dash.lstrip()))
+                dispatch_key_line(rest_real_indent, rest, idx)
             continue
 
-        if current is not None:
-            if indent <= current_indent:
-                flush()
-                continue
+        if current is not None and indent > current_indent:
             buf.append(line)
 
+        dispatch_key_line(indent, line[indent:], idx)
+
     flush()
+
+    if pending_flow is not None:
+        raise YamlStructureError(
+            f"{file_str}:{pending_flow['line']}: a flow collection opened here never "
+            "closes before the file ends — not a construct this screen will guess about."
+        )
 
     for step in steps:
         step.token_names |= workflow_env
@@ -491,7 +1027,17 @@ def screen(
 
     all_steps: list[Step] = []
     for p in paths:
-        all_steps.extend(parse_workflow(p))
+        try:
+            all_steps.extend(parse_workflow(p))
+        except YamlStructureError as exc:
+            return _error(
+                "unsupported_yaml_construct",
+                str(exc),
+                "A YAML construct this constrained parser will not guess about — a "
+                "duplicate key in one `env:` mapping, or a flow collection that never "
+                "closes. Ambiguous input is an ERROR(instrument), never a guess that "
+                "happens to come out green (#25).",
+            )
 
     if not all_steps:
         return _error(
