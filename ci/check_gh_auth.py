@@ -44,7 +44,36 @@ WHAT "has a token path" MEANS
 the step: the step's own `env:`, its job's `env:`, or the workflow's top-level `env:`.
 Declared, not valued — this screen reads key NAMES out of `env:` blocks and never reads,
 prints, or evaluates a value, so it cannot leak a token even if one were hardcoded (which
-would be its own, different, defect).
+would be its own, different, defect). Both supported YAML shapes for that block are read
+the same way, semantically, not by line-shape guessing:
+
+    env:                              env: {GH_TOKEN: ${{ github.token }}}
+      GH_TOKEN: ${{ github.token }}
+
+The block form spans multiple lines under `env:`; the inline (flow-mapping) form puts
+`{key: value, ...}` on the `env:` line itself. Issue #21: a step remediated with the
+inline form was being FALSELY CONVICTED of having no token path, because the block-only
+line-shape check saw `env: {...}` and, since nothing followed on the NEXT line the way a
+block mapping requires, read the step as having declared no keys at all — the exact
+remediation text read as if it were the defect it fixes.
+
+ZERO SUBJECTS
+=============
+If nothing across the screened files reaches the GitHub API through `gh`, that is either
+an honestly `gh`-free set of workflows, or this screen has been pointed at the wrong
+scope — a subdirectory, a stale path, the wrong working directory — and is reading
+nothing. Issue #21: `PASS — 0 gh-reaching step(s)` is indistinguishable, on the page, from
+"this screen was never actually run", so a zero-subject frame is `ERROR(instrument=
+zero_gh_reaching_subjects)` by default, not a PASS. Pass `--allow-empty-frame` if an empty
+frame is genuinely the intended one (e.g. deliberately screening a workflow directory
+known to contain no `gh` calls yet, as a forward-looking regression barrier) — that mode
+is opt-in and named on the command line, never the silent default.
+
+A directory may be given in place of individual files: every `*.yml`/`*.yaml` file under
+it (recursively) is screened, so a caller that names a whole `.github/workflows/`
+directory keeps covering every workflow in it as files are added, rather than only the
+ones somebody remembered to list by name — the concrete way a check "over a subdirectory"
+would otherwise pass vacuously by construction.
 
 WHAT IT DELIBERATELY DOES NOT DO
 =================================
@@ -61,10 +90,13 @@ Terminal states (R13):
     0  GH-AUTH: PASS
     1  GH-AUTH: FAIL(condition=missing_token_path)
     2  usage
-    4  GH-AUTH: ERROR(instrument=...)
+    4  GH-AUTH: ERROR(instrument=...)   workflow_not_found | empty_workflow_directory |
+                                        no_steps_parsed | zero_gh_reaching_subjects
 
 USAGE
     python ci/check_gh_auth.py .github/workflows/ci.yml .github/workflows/conformance.yml
+    python ci/check_gh_auth.py .github/workflows
+    python ci/check_gh_auth.py --allow-empty-frame .github/workflows/docs-only.yml
 """
 
 from __future__ import annotations
@@ -108,8 +140,26 @@ _PY_SCRIPT_RUN_RE = re.compile(r"(?:^|[\s;&|])python3?\s+(?P<path>ci/[A-Za-z0-9_
 _STEP_START_RE = re.compile(r"^(?P<indent>\s*)-\s+name:\s*(?P<name>.+?)\s*$")
 _STEP_USES_ONLY_RE = re.compile(r"^(?P<indent>\s*)-\s+uses:\s*(?P<uses>\S+)")
 _JOB_RE = re.compile(r"^  (?P<job>[A-Za-z0-9_.-]+):\s*$")
+#: Block form: `env:` alone on its line, keys follow indented on the lines under it.
 _ENV_BLOCK_RE = re.compile(r"^(?P<indent>\s*)env:\s*$")
+#: Inline (flow-mapping) form: `env: {KEY: value, ...}` on the one line. YAML permits
+#: either shape and they are semantically identical; a screen that only recognises the
+#: first teaches a step author that the fix it just applied (the inline form is exactly
+#: the remediation text quoted in this screen's own FAIL message) is the defect (#21).
+_ENV_INLINE_RE = re.compile(r"^(?P<indent>\s*)env:\s*(?P<inline>\{.*\})\s*$")
 _ENV_KEY_RE = re.compile(r"^(?P<indent>\s*)(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*:")
+#: Key names inside a YAML flow mapping's `{...}` text. A key starts right after the
+#: opening brace or a top-level comma — the two positions flow-style permits — optionally
+#: quoted. Values are never inspected (this screen's own non-disclosure rule): they may
+#: contain `${{ ... }}` expressions, which this repository's usage never puts a bare
+#: `identifier:` inside, so scanning for that shape finds keys without needing a real
+#: YAML flow-mapping parser.
+_FLOW_MAPPING_KEY_RE = re.compile(r"""(?:\{|,)\s*(['"]?)(?P<key>[A-Za-z_][A-Za-z0-9_]*)\1\s*:""")
+
+
+def _flow_mapping_keys(inline: str) -> set[str]:
+    """Key names declared in a YAML inline mapping, e.g. ``{GH_TOKEN: ${{ github.token }}}``."""
+    return {m.group("key") for m in _FLOW_MAPPING_KEY_RE.finditer(inline)}
 
 
 @dataclass
@@ -182,6 +232,25 @@ def parse_workflow(path: Path) -> list[Step]:
         current = None
         buf = []
 
+    def env_scope(env_indent: int) -> str:
+        """Which frame an `env:` line at this indent belongs to, by nesting alone —
+        deeper than the current step's marker is STEP, deeper than the job's is JOB,
+        otherwise WORKFLOW. Read at call time (closes over `current`/`job_indent`,
+        which change as the file is walked), not fixed at definition time."""
+        if current is not None and env_indent > current_indent:
+            return "step"
+        if job_indent is not None and env_indent > job_indent:
+            return "job"
+        return "workflow"
+
+    def record(scope: str, keys: set[str]) -> None:
+        if scope == "workflow":
+            workflow_env.update(keys)
+        elif scope == "job":
+            job_env[job].update(keys)
+        elif current is not None:
+            current.token_names.update(keys)
+
     for idx, line in enumerate(lines, start=1):
         stripped = line.strip()
         if not stripped:
@@ -205,16 +274,18 @@ def parse_workflow(path: Path) -> list[Step]:
             env_ctx = None
             continue
 
+        m = _ENV_INLINE_RE.match(line)
+        if m:
+            env_indent = len(m.group("indent"))
+            record(env_scope(env_indent), _flow_mapping_keys(m.group("inline")) & set(TOKEN_NAMES))
+            if current is not None and env_indent > current_indent:
+                buf.append(line)
+            continue
+
         m = _ENV_BLOCK_RE.match(line)
         if m:
             env_indent = len(m.group("indent"))
-            if current is not None and env_indent > current_indent:
-                scope = "step"
-            elif job_indent is not None and env_indent > job_indent:
-                scope = "job"
-            else:
-                scope = "workflow"
-            env_ctx = (env_indent, scope)
+            env_ctx = (env_indent, env_scope(env_indent))
             if current is not None and env_indent > current_indent:
                 buf.append(line)
             continue
@@ -222,13 +293,7 @@ def parse_workflow(path: Path) -> list[Step]:
         if env_ctx is not None and indent > env_ctx[0]:
             ek = _ENV_KEY_RE.match(line)
             if ek and ek.group("key") in TOKEN_NAMES:
-                scope = env_ctx[1]
-                if scope == "workflow":
-                    workflow_env.add(ek.group("key"))
-                elif scope == "job":
-                    job_env[job].add(ek.group("key"))
-                elif current is not None:
-                    current.token_names.add(ek.group("key"))
+                record(env_ctx[1], {ek.group("key")})
             if current is not None and indent > current_indent:
                 buf.append(line)
             continue
@@ -383,7 +448,21 @@ def _error(instrument: str, *lines: str) -> int:
     return EXIT_ERROR_INSTRUMENT
 
 
-def screen(paths: list[Path], ci_dir: Path, register_path: Path) -> int:
+def _workflow_files_under(dir_path: Path) -> list[Path]:
+    """Every ``*.yml``/``*.yaml`` file under `dir_path`, recursively, sorted.
+
+    Lets a caller name a whole workflows directory instead of listing files one at a
+    time, so a workflow added later is screened from the day it exists rather than the
+    day someone remembers to add its name to a command line — the concrete way a screen
+    "over a subdirectory" (issue #21) would otherwise keep passing on a shrinking view
+    of the tree without anybody changing a line of YAML.
+    """
+    return sorted({*dir_path.rglob("*.yml"), *dir_path.rglob("*.yaml")})
+
+
+def screen(
+    paths: list[Path], ci_dir: Path, register_path: Path, *, allow_empty_frame: bool = False
+) -> int:
     missing = [p for p in paths if not p.exists()]
     if missing:
         return _error(
@@ -392,6 +471,23 @@ def screen(paths: list[Path], ci_dir: Path, register_path: Path) -> int:
             "are not there would pass, and a pass from a screen that read nothing is "
             "not an observation.",
         )
+
+    expanded: list[Path] = []
+    for p in paths:
+        if p.is_dir():
+            files = _workflow_files_under(p)
+            if not files:
+                return _error(
+                    "empty_workflow_directory",
+                    f"{p} is a directory with no `*.yml`/`*.yaml` file under it. "
+                    "Screening a scope that contains no workflow files at all is the "
+                    "wrong-working-directory/wrong-scope failure this screen exists to "
+                    "surface, not a clean tree.",
+                )
+            expanded.extend(files)
+        else:
+            expanded.append(p)
+    paths = sorted(set(expanded))
 
     all_steps: list[Step] = []
     for p in paths:
@@ -439,11 +535,31 @@ def screen(paths: list[Path], ci_dir: Path, register_path: Path) -> int:
             "others need.",
         )
 
+    if checked == 0 and not allow_empty_frame:
+        return _error(
+            "zero_gh_reaching_subjects",
+            f"0 `gh`-reaching step(s) across {len(paths)} workflow file(s): "
+            f"{[str(p) for p in paths]}.",
+            "That is either an honestly `gh`-free set of workflows, or this screen has "
+            "been pointed at the wrong scope — a subdirectory, a stale path, the wrong "
+            "working directory — and is reading nothing. `PASS — 0 gh-reaching "
+            "step(s)` would be indistinguishable, on the page, from a screen that was "
+            "never actually run (issue #21); a zero-subject frame is therefore an "
+            "instrument error by default, not a pass.",
+            "If an empty frame is genuinely the intended one, pass --allow-empty-frame "
+            "to say so explicitly on the command line — never the silent default.",
+        )
+
     print(
         f"GH-AUTH: PASS — {checked} `gh`-reaching step(s) across {len(paths)} workflow "
         f"file(s), every one with GH_TOKEN or GITHUB_TOKEN declared in scope. "
         f"{len(needing)} ci/*.py script(s) classified as reaching `gh` (directly or "
-        "through ci/open_reds.json).",
+        "through ci/open_reds.json)."
+        + (
+            " (--allow-empty-frame: 0 gh-reaching subjects explicitly accepted.)"
+            if checked == 0
+            else ""
+        ),
         flush=True,
     )
     return EXIT_PASS
@@ -451,9 +567,21 @@ def screen(paths: list[Path], ci_dir: Path, register_path: Path) -> int:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("workflows", nargs="*", help="workflow YAML files to screen")
+    ap.add_argument(
+        "workflows", nargs="*", help="workflow YAML files (or directories) to screen"
+    )
     ap.add_argument("--ci-dir", default=str(CI_DIR))
     ap.add_argument("--register", default=str(DEFAULT_REGISTER))
+    ap.add_argument(
+        "--allow-empty-frame",
+        action="store_true",
+        help=(
+            "accept 0 gh-reaching step(s) as PASS instead of ERROR(instrument="
+            "zero_gh_reaching_subjects). Documented opt-in only — the default refuses "
+            "an empty frame because it cannot be told apart from this screen having "
+            "been pointed at the wrong scope (issue #21)."
+        ),
+    )
     if not argv:
         print(__doc__, flush=True)
         return EXIT_USAGE
@@ -462,7 +590,10 @@ def main(argv: list[str]) -> int:
         print(__doc__, flush=True)
         return EXIT_USAGE
     return screen(
-        [Path(p) for p in args.workflows], Path(args.ci_dir), Path(args.register)
+        [Path(p) for p in args.workflows],
+        Path(args.ci_dir),
+        Path(args.register),
+        allow_empty_frame=args.allow_empty_frame,
     )
 
 
