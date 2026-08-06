@@ -5086,12 +5086,27 @@ writes there by default would reintroduce that exact defect on every CI run.
 PowerShell process via `[System.Environment]::SetEnvironmentVariable(..., 'Process')`, then set
 `VULKAN_SDK`/`LIBCLANG_PATH` the same way, then invoke `cargo build --release` directly from that
 PowerShell session. Chaining `vcvars64.bat && set X=... && cargo build` inside one `cmd /c "..."`
-string is a **known-bad pattern**: environment mutations made after the `&&` inside a single
-`cmd /c` invocation do not reliably propagate to a child process spawned later in the same chain
-on this toolchain combination, and a build run that way was observed to silently drop custom
-environment variables the build script depended on. Capturing vcvars' output and re-applying it
-natively, rather than chaining through cmd, is the fix, and it is now the only recipe this
-document recommends for Windows.
+string is fragile on this toolchain, but **not** because a later child process fails to inherit a
+`set` mutation made earlier in the same chain — it does; a `set X=1` followed later in the same
+`cmd /c "..."` invocation by a genuine child process (another `cmd /c echo %X%`, or `cargo
+build`) sees `X` correctly, confirmed by direct test. The two real, verifiable hazards are
+parse-time `%VAR%` expansion and PowerShell/cmd quoting. `cmd.exe` expands every `%VAR%` token in
+a single command line once, before executing any part of that line, so `set
+PATH=%VULKAN_SDK%\Bin;%PATH%` chained after `call vcvars64.bat` in the same line reads the
+pre-vcvars values of `%VULKAN_SDK%`/`%PATH%` (or a literal, unexpanded token if undefined) —
+confirmed: `set X=1 && echo %X%` in one line prints the literal text `%X%`, not `1`. Delayed
+expansion (`setlocal enabledelayedexpansion` + `!VAR!`) works around this but is easy to omit.
+Separately, building a long `cmd /c "..."` argument from PowerShell requires getting nested
+double-quotes (for paths containing spaces) and `$`/backtick escaping exactly right, so PowerShell
+does not interpolate before `cmd` ever sees the string; a small quoting mistake drops or corrupts
+arguments with no error message, only a confusing build failure or a wrong environment. Capturing
+vcvars' output and applying it natively inside the current PowerShell process — using
+PowerShell's own `$env:`/`[System.Environment]` mechanisms instead of `%VAR%`/chained-`cmd`
+syntax — sidesteps both hazards entirely, since nothing is expanded or quoted through `cmd.exe`
+more than once, and every applied variable is inspectable (`$env:INCLUDE`/`$env:LIB`) in the same
+shell that runs `cargo build`. That determinism and inspectability, not a false claim about child
+processes losing `set` mutations, is why it is the only recipe this document recommends for
+Windows.
 
 ### 9.2 Benchmarking — Niobe
 
