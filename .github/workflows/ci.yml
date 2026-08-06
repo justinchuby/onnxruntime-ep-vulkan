@@ -147,7 +147,23 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
-        run: python -m pip install --upgrade pytest onnx numpy
+        # `pytest onnx numpy` alone is not enough: `harness_census_drift`'s registered
+        # command (tests/ops/test_harness_census.py::test_census_baseline_has_no_drift,
+        # ci/open_reds.json) collects through tests/ops/conftest.py, which does an
+        # unconditional `import onnx_ir as ir` / `import onnxruntime as ort` at module
+        # scope for every test under tests/ops/ -- including this one, which itself uses
+        # neither. Without them collection fails with `ModuleNotFoundError: No module
+        # named 'onnx_ir'` before a single assertion runs, and check_open_reds.py reports
+        # `FAIL(condition=unaccounted_red)` for a census that is not actually drifting
+        # (rust/tools/audit_instruments.py --check is green). Pinned the same way as the
+        # build-test jobs' "Install Python test dependencies" step so there is one answer
+        # to "which onnxruntime" repo-wide, not a second, unpinned one. No Vulkan device or
+        # ORT session is created here -- only the import needs to resolve.
+        run: |
+          python -m pip install --upgrade \
+            "onnxruntime==${ORT_VERSION}" \
+            "onnx>=${ONNX_MIN_VERSION}" \
+            numpy onnx_ir pytest
 
       - name: Lane inventory against the COMPOSED workflow, not this branch's view
         # On 2026-08-02 the same shape occurred five times in one day, in four subsystems

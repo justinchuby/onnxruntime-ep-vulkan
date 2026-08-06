@@ -1514,6 +1514,42 @@ def test_lane_checks_job_has_no_depth_limited_fetch_before_the_ledger_census_iss
         )
 
 
+def test_lane_checks_job_installs_what_tests_ops_conftest_imports_issue_24():
+    """ISSUE #24. `harness_census_drift`'s registered command (``ci/open_reds.json``,
+    ``tests/ops/test_harness_census.py::test_census_baseline_has_no_drift``) is collected
+    through ``tests/ops/conftest.py``, which does an unconditional ``import onnx_ir as ir``
+    / ``import onnxruntime as ort`` at module scope for EVERY test under ``tests/ops/`` --
+    including this one, which itself needs neither. This job's ``Install test
+    dependencies`` step installed only ``pytest onnx numpy``, so on every run since the
+    entry was opened (2026-08-03) collection failed with
+    ``ModuleNotFoundError: No module named 'onnx_ir'`` before a single assertion ran, and
+    ``check_open_reds.py`` reported ``FAIL(condition=unaccounted_red)`` for a census that
+    was not actually drifting (``rust/tools/audit_instruments.py --check`` was green the
+    whole time). This asserts on ci.yml's own text within the ``lane-checks`` job
+    specifically, so removing either package from this one step's command -- while every
+    other job keeps installing them -- fails on the change that reintroduces the gap.
+    """
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    lane_start = ci_text.index("\n  lane-checks:\n")
+    next_job = re.search(r"\n  [a-zA-Z][\w-]*:\n", ci_text[lane_start + 1 :])
+    lane_end = lane_start + 1 + next_job.start() if next_job else len(ci_text)
+    lane_body = ci_text[lane_start:lane_end]
+
+    install_match = re.search(
+        r"name: Install test dependencies\n(?:.*\n)*?\s*run: \|?\n((?:.*\n)*?)\n",
+        lane_body,
+    )
+    assert install_match, "expected an 'Install test dependencies' step in this job"
+    install_body = install_match.group(1)
+    for package in ("onnx_ir", "onnxruntime"):
+        assert package in install_body, (
+            f"the lane-checks job's 'Install test dependencies' step no longer installs "
+            f"{package!r}, which tests/ops/conftest.py imports unconditionally for every "
+            f"test it collects, including test_harness_census.py -- reintroducing the "
+            f"ModuleNotFoundError this test exists to catch:\n{install_body}"
+        )
+
+
 # ---------------------------------------------------------------------------------------
 # ci/check_tautological_assertions.py
 #
