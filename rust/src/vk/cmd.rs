@@ -428,6 +428,13 @@ mod tests {
     #[test]
     fn queue_lock_excludes_and_counts_contention() {
         use vk::Handle;
+        // The contention counter is a process-global static, and this test's assertion is a
+        // *delta* over it: a concurrent `counters::reset()` or `record_*` in any other test
+        // lands between `before` and the re-read and turns a real pass into an intermittent
+        // red. Serialise with every other test that touches the counters — the same lock,
+        // from the same module, as `counters.rs` and `vk/barrier.rs` use (enforced by
+        // `rust/tools/audit_counter_test_lock.py`).
+        let _g = crate::allocator::ledger::test_lock();
         let q = vk::Queue::from_raw(0xdeadbeef);
         let lock = queue_lock(q);
         let before = crate::counters::queue_submit_contentions();

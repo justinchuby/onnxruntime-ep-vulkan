@@ -111,8 +111,36 @@ jobs:
   lane-checks:
     name: Lane-check self-test (two polarities, no GPU)
     runs-on: ubuntu-latest
+    # Narrowest scope, declared HERE rather than at workflow level: this is the only job
+    # in this workflow that asks GitHub anything (the `main_is_green` register entry and
+    # its own negative control, both of which shell out to `gh run list`). Adding this
+    # block resets the job's default token to exactly these two scopes and no others —
+    # `contents: read` for actions/checkout, `actions: read` for `gh run list` (workflow
+    # run history, not code, not issues, not packages). The other three jobs in this file
+    # (format, build-test-linux, build-test-windows) never call `gh` and are deliberately
+    # left OFF this block so they keep whatever this repository's default token policy is,
+    # rather than being broadened to match a need that is local to this one job. See
+    # ci/check_gh_auth.py, written for issue #16.
+    permissions:
+      contents: read
+      actions: read
     steps:
+      # fetch-depth: 0 (full history), not the default depth-1 shallow clone.
+      # This job runs every REPLAYED negative-control arm that reads a historical
+      # commit with `git show <ref>:<path>` — 607056a (negative_control_build_
+      # precondition.py), 133b9fe (negative_control_open_reds.py), 8a851f8
+      # (negative_control_readme_usage.py), eb84364/26fd93f (negative_control_
+      # ledger_census.py). A depth-1 checkout makes every one of those commits
+      # unreachable, so `git show` fails, the REPLAYED arm reports UNOBSERVABLE
+      # rather than firing, and the negative control counts that as a failed arm
+      # (ci/negative_control_build_precondition.py:historical_workflow: "a control
+      # that cannot read its subject must say UNOBSERVABLE rather than quietly
+      # dropping an arm") — red for a reason that has nothing to do with the
+      # product. Full history costs nothing here: this job builds no code and
+      # needs no Vulkan SDK.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -235,6 +263,19 @@ jobs:
         # 133b9fe -- the merge that reintroduced four dormant `BUILD_SKIPPED` guards --
         # and requires the register to call them an UNACCOUNTED red. The same rule over
         # today's bytes is green, so it is not a constant.
+        #
+        # Its LIVE arm runs the real register end to end, which includes `main_is_green`
+        # -- and that entry shells out to `gh run list` (ci/check_main_is_green.py). PR
+        # #13 run 31052604259 hit exactly this: this step had no GH_TOKEN, so `gh` refused
+        # with "set the GH_TOKEN environment variable", check_main_is_green.py correctly
+        # reported ERROR(instrument=github_unreachable), and that did not match the
+        # register's accepted signature for `main_is_green` (FAIL(condition=main_is_red)),
+        # which failed the LIVE arm for a reason that has nothing to do with any rule
+        # under test here -- an instrument-configuration failure wearing a product-verdict
+        # coat. Same token as the "Open reds" step below, minted for this job only (see
+        # the job-level `permissions:` block): `actions: read` is all `gh run list` needs.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python ci/negative_control_open_reds.py
 
       - name: Proof-ledger census (has a proof ever gone missing?)
@@ -294,6 +335,55 @@ jobs:
           # subject" is exactly the state that let ten red pushes go unremarked.
           GH_TOKEN: ${{ github.token }}
         run: python ci/check_open_reds.py --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: GH-invocation auth screen (every API-using `gh` call has a token path)
+        # Issue #16's static half. The two steps above needed a human to notice that
+        # `gh run list` has no token in scope; this exists so the NEXT one does not need
+        # a human. It reads .github/workflows/*.yml for every step whose script calls the
+        # `gh` CLI with a subcommand that talks to the API (`run`, `api`, `pr`, `issue`,
+        # `release`, `workflow`, `repo`, ... -- not `--version`/`help`/`completion`), plus
+        # every step that invokes a ci/*.py script which itself shells out to `gh`,
+        # directly or by way of ci/open_reds.json's registered commands (`negative_control
+        # _open_reds.py` -> `check_open_reds.py` -> the `main_is_green` entry's cmd ->
+        # `check_main_is_green.py` -> `gh run list`, which is the exact chain that had no
+        # token). For each one it requires GH_TOKEN or GITHUB_TOKEN to be declared in an
+        # `env:` block this step can actually see -- workflow, job, or the step itself,
+        # recognising both the block and inline YAML forms of `env:` semantically rather
+        # than by line shape (issue #21: the inline form was being falsely convicted) --
+        # and fails naming the step when none is. It only reads env KEY names, never a
+        # value, so it cannot print a token even by accident.
+        #
+        # Issue #21: pointed at the WHOLE .github/workflows directory, not two files
+        # named on the command line, so a workflow added later is screened from the day
+        # it exists rather than the day someone remembers to extend this line -- and a
+        # zero-`gh`-reaching-subject frame (this screen pointed at the wrong scope, a
+        # subdirectory, or a stale path) is a loud ERROR(instrument=
+        # zero_gh_reaching_subjects) by default, never a silent PASS.
+        run: python ci/check_gh_auth.py .github/workflows
+
+      - name: GH-invocation auth negative control (demand red without a token, never a skip)
+        # LIVE arm proves the thing issue #16 actually asked for: with GH_TOKEN and
+        # GITHUB_TOKEN stripped from its environment, ci/check_main_is_green.py -- the
+        # exact process this job runs that calls `gh run list` -- must exit
+        # ERROR(instrument=github_unreachable), exit 4, and must never print PASS and
+        # never exit 0. "gh absent, unauthenticated or offline" collapses to one polarity
+        # here on purpose: whichever of the three is true on a given runner, the answer a
+        # reader gets must be "unread", never "clean". REPLAYED arm points the screen
+        # above at this repository's own ci.yml as it stood at b1886d9 -- one commit
+        # before this fix -- and requires FAIL(condition=missing_token_path) naming the
+        # Open-reds negative control step; the same screen over today's bytes is PASS, so
+        # it is not a constant. Issue #21 added: the whole workflows directory still
+        # passes via directory expansion; screening only conformance.yml (which has zero
+        # real gh-reaching steps) is ERROR, never a silent PASS; the inline `env: {...}`
+        # form satisfies the token check exactly like the block form; a wrongly-named
+        # env key does not; a workflow with steps but zero gh-reaching subjects is ERROR
+        # by default and PASS only with --allow-empty-frame; an empty or mis-scoped
+        # directory is ERROR; and directory expansion recurses into subdirectories so a
+        # nested workflow cannot hide from a broader invocation. The rest are the
+        # original PLANTED arms: a synthetic `gh api` call with no token anywhere, a
+        # token declared in the wrong job, a non-API `gh --version` call that must NOT be
+        # flagged, and a step that reaches `gh` only through another script.
+        run: python ci/negative_control_gh_auth.py
 
       - name: Tautological-assertion screen (no GPU, whole tree)
         # Scans Rust and Python sources for assertions that pass without reading their

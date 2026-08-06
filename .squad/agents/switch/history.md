@@ -89,3 +89,24 @@ Artifacts: `bench/results/ctx4096_{BEFORE,BEFORE_samebinary,AFTER,identity,separ
 📌 
 
 📌 Team update (2026-08-04T20-25-00-07-00): Mouse's `claimed_nodes` != `dispatches_executed` -- BERT claims 481 of 1274 rows at `GetCapability` but the partitioner's net-benefit gate retains only 4; every coverage figure quoted against `claimed_nodes` alone (including prior island/counterfactual rankings) is affected. `dispatches_executed` is the honest metric going forward. -- decided by Mouse
+
+## Session 51 — 2026-08-05 — issue #10: the queue-lock contention test was itself unguarded
+
+**Defect:** udit_counter_test_lock.py --check reported `UNGUARDED vk/cmd.rs:428
+queue_lock_excludes_and_counts_contention` once #1's CI fix let the auditor step run to
+completion. Real finding, not a tool artefact: the test I added in session 49 asserts a
+**delta** over `counters::queue_submit_contentions()` — reads `before`, calls
+`record_queue_submit_contention()`, re-reads — and took no test lock while doing it. Any
+concurrently scheduled `counters::reset()` or `record_*` lands between the two reads and turns
+a real pass into an intermittent red. Ironic shape worth naming: the test that exists to make
+serialization falsifiable was the one test in its family not serialized.
+**Fix:** one line, the convention already in the tree —
+`let _g = crate::allocator::ledger::test_lock();` at the top of the test, same lock, same module
+as `counters.rs` and `vk/barrier.rs`. No allowlist, no auditor change: the lock contract did not
+change, only this test's conformance to it. Concurrency semantics are untouched — the queue lock,
+the `try_lock` branch and the counted contention are exactly as before.
+**Evidence:** auditor `--selftest --check --pairs` 0 findings (was 1) with selftest 9/9;
+negative control — the pre-fix blob still flags line 428 through `audit_text`, so the auditor is
+not merely quiet; `contention_gate.py --selftest` 5/5 and the full gate GREEN, 0/20 red on all 5
+pools including `counters` (32 tests) and `all-contended` (49); `cargo test --lib` 620 passed,
+0 failed; `cargo fmt --check` and `cargo clippy --all-targets` clean.
