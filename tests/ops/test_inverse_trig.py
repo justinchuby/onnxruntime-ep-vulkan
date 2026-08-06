@@ -143,7 +143,51 @@ def _run(op: str, xs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     m.assert_vulkan_claims(model, feeds)
     vk = np.asarray(m.run_vulkan(model, feeds)[0], dtype=np.float32)
     cpu = np.asarray(m.run_cpu(model, feeds)[0], dtype=np.float32)
+    in_domain = np.isfinite(xs) & (np.abs(xs) <= np.float32(1.0))
+    for name, arr in (("the Vulkan EP", vk), ("the CPU EP", cpu)):
+        bad = in_domain & ~np.isfinite(arr)
+        if np.any(bad):
+            raise AssertionError(
+                f"{op}: {name} returned a non-finite value at {int(np.count_nonzero(bad))} "
+                f"in-domain input(s), first at {_hexf(xs[np.flatnonzero(bad)[0]])}. Inverse trig "
+                f"is finite everywhere on [-1, 1]; a NaN or Inf here is a defect, and the ULP "
+                f"comparison downstream would only have averaged it away."
+            )
     return vk, cpu
+
+
+def _hexf(x: np.floating) -> str:
+    """A float32 as both its decimal value and its bits — NaN payloads and -0.0 survive this."""
+    v = np.float32(x)
+    return f"{float(v)!r} (0x{int(v.view(np.uint32)):08x})"
+
+
+def _max_ulp(u: np.ndarray, xs: np.ndarray, what: str) -> float:
+    """The worst ULP in `u`, refusing to look away from a non-finite entry.
+
+    The obvious spelling of this is ``np.max(u[np.isfinite(u)])``, and it is a trap. ``_ulp``
+    already returns 0.0 where both sides are NaN or bit-equal, so a *surviving* non-finite entry
+    means the two sides disagreed about being finite at all — exactly the failure worth catching.
+    Filtering it out before the max converts that into a silent pass, and the more broken the
+    device, the quieter the test gets. ``test_max_ulp_rejects_a_planted_non_finite`` plants one to
+    prove this function still says so.
+    """
+    flat_u = np.asarray(u).reshape(-1)
+    flat_x = np.asarray(xs).reshape(-1)
+    bad = ~np.isfinite(flat_u)
+    if np.any(bad):
+        idx = np.flatnonzero(bad)
+        shown = ", ".join(
+            f"x={_hexf(flat_x[i])} -> {float(flat_u[i])!r} ULP"
+            for i in idx[:8]
+            if i < flat_x.size
+        )
+        raise AssertionError(
+            f"{what}: {idx.size} of {flat_u.size} comparisons are non-finite, which means one "
+            f"side produced a NaN or Inf the other did not. First: {shown}. This is a failure, "
+            f"not a point to skip past — do not restore the np.isfinite() mask to make it green."
+        )
+    return float(np.max(flat_u))
 
 
 def _ulp(got: np.ndarray, ref: np.ndarray) -> np.ndarray:
@@ -183,7 +227,7 @@ def test_reference_core_bound(op: str) -> None:
     got = (_reference_asin if op == "asin" else _reference_acos)(xs)
     exact = (np.arcsin if op == "asin" else np.arccos)(xs.astype(np.float64))
     u = _ulp(got, exact.astype(np.float32))
-    worst = float(np.max(u[np.isfinite(u)]))
+    worst = _max_ulp(u, xs, f"the float32 reference for {op}")
     assert worst <= CORE_ULP_BOUND[op], (
         f"the float32 reference for {op} reached {worst:.3f} ULP over {xs.size} points, above the "
         f"{CORE_ULP_BOUND[op]} this suite's derivation of STATED_ULP_BOUND assumes. Either the "
@@ -204,13 +248,12 @@ def test_dense_sweep_within_stated_bound(op: str) -> None:
     xs = _dense_grid()
     vk, cpu = _run(op, xs)
     u = _ulp(vk, cpu)
-    finite = np.isfinite(u)
-    worst = float(np.max(u[finite]))
-    at = xs[np.argmax(np.where(finite, u, -1.0))]
+    worst = _max_ulp(u, xs, f"{op} dense sweep")
+    at = xs[np.argmax(u)]
     assert worst <= STATED_ULP_BOUND, (
         f"{op}: worst {worst:.1f} ULP vs the CPU EP at x={float(at)!r} over {xs.size} points, "
-        f"above the derived bound of {STATED_ULP_BOUND}. p99={np.percentile(u[finite], 99):.1f}, "
-        f"p99.9={np.percentile(u[finite], 99.9):.1f}. This bound is derived from Vulkan's own "
+        f"above the derived bound of {STATED_ULP_BOUND}. p99={np.percentile(u, 99):.1f}, "
+        f"p99.9={np.percentile(u, 99.9):.1f}. This bound is derived from Vulkan's own "
         f"guarantees; a device that exceeds it has done something the derivation does not cover."
     )
 
@@ -223,7 +266,7 @@ def test_random_inputs_within_stated_bound(op: str) -> None:
     xs = ((rng.random(8192) * 2.0) - 1.0).astype(np.float32)
     vk, cpu = _run(op, xs)
     u = _ulp(vk, cpu)
-    worst = float(np.max(u[np.isfinite(u)]))
+    worst = _max_ulp(u, xs, f"{op} random sample")
     assert worst <= STATED_ULP_BOUND, f"{op}: worst {worst:.1f} ULP on random inputs"
 
 
@@ -243,7 +286,7 @@ def test_near_unit_magnitude_is_stable(op: str) -> None:
     arr = np.unique(np.array(xs, dtype=np.float32))
     vk, cpu = _run(op, arr)
     u = _ulp(vk, cpu)
-    worst = float(np.max(u[np.isfinite(u)]))
+    worst = _max_ulp(u, arr, f"{op} near |x|=1")
     assert worst <= STATED_ULP_BOUND, (
         f"{op}: worst {worst:.1f} ULP within 64 ULP of |x|=1 — the reduction is unstable there"
     )
@@ -302,7 +345,7 @@ def test_asin_plus_acos_is_pi_over_two() -> None:
     acos_vk, _ = _run("Acos", xs)
     total = asin_vk.astype(np.float64) + acos_vk.astype(np.float64)
     u = _ulp(total.astype(np.float32), np.full(xs.shape, np.float32(np.pi / 2)))
-    worst = float(np.max(u[np.isfinite(u)]))
+    worst = _max_ulp(u, xs, "asin(x) + acos(x)")
     assert worst <= 2 * STATED_ULP_BOUND, (
         f"asin(x) + acos(x) is {worst:.1f} ULP from pi/2 — the two ops are not sharing a core"
     )
@@ -329,13 +372,53 @@ def test_symmetry(op: str, relation: str) -> None:
         )
     else:
         u = _ulp(neg, (np.float32(np.pi) - pos).astype(np.float32))
-        worst = float(np.max(u[np.isfinite(u)]))
+        worst = _max_ulp(u, xs, "acos(-x) vs pi - acos(x)")
         assert worst <= 2 * STATED_ULP_BOUND, f"acos(-x) vs pi - acos(x): {worst:.1f} ULP"
 
 
 # ---------------------------------------------------------------------------
 # Negative controls — the bound has power, and the built-in really failed
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "planted", [np.nan, np.inf, -np.inf], ids=["nan", "+inf", "-inf"]
+)
+def test_max_ulp_rejects_a_planted_non_finite(planted: float) -> None:
+    """Polarity control for `_max_ulp`: prove it still speaks when a result goes non-finite.
+
+    Every accuracy test above reports "no non-finite outputs" by *not* raising. That is an absence
+    of evidence unless the raise can be made to happen on demand, so here it is made to happen: a
+    single NaN or Inf planted into an otherwise perfect result must fail, and must fail loudly
+    enough to name the input that produced it.
+
+    The second half is the part that matters. The idiom this suite used to use —
+    ``np.max(u[np.isfinite(u)])`` — is asserted here to return a clean **0.0** on the very same
+    poisoned array. Not a smaller number, not a warning: a perfect score. That is what was being
+    relied on before this control existed, and pinning it means nobody can quietly reintroduce the
+    mask believing it was equivalent.
+    """
+    xs = _dense_grid(1001)
+    ref = np.arcsin(xs.astype(np.float64)).astype(np.float32)
+    clean = ref.copy()
+    assert _max_ulp(_ulp(clean, ref), xs, "unpoisoned control") == 0.0, (
+        "the control array is not bit-identical to its own reference — the test is miscalibrated"
+    )
+
+    poisoned = clean.copy()
+    victim = poisoned.size // 3
+    poisoned[victim] = np.float32(planted)
+    u = _ulp(poisoned, ref)
+
+    with pytest.raises(AssertionError, match="non-finite"):
+        _max_ulp(u, xs, "planted")
+
+    masked = u[np.isfinite(u)]
+    assert float(np.max(masked)) == 0.0, (
+        "the masked idiom no longer reports a perfect score on a poisoned array; the shape of "
+        "_ulp has changed and this control's premise needs rechecking"
+    )
+    assert masked.size == u.size - 1, "exactly one entry should have been masked away"
 
 
 def test_bound_rejects_the_builtin_error_magnitude() -> None:
@@ -350,7 +433,7 @@ def test_bound_rejects_the_builtin_error_magnitude() -> None:
     perturbed = (exact + np.float32(3.9e-4)).astype(np.float32)
 
     u = _ulp(perturbed, exact)
-    assert float(np.max(u[np.isfinite(u)])) > STATED_ULP_BOUND, (
+    assert _max_ulp(u, xs, "builtin-magnitude perturbation") > STATED_ULP_BOUND, (
         "the derived ULP bound accepts lavapipe's measured built-in error — it is not a check"
     )
     assert not np.allclose(
