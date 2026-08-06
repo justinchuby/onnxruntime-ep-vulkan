@@ -76,27 +76,42 @@ HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 sys.path.insert(0, str(REPO / "bench" / "results"))
 
+# Resolved by identity through foundry_discovery (issue #11), never by a hardcoded cache
+# path: Foundry Local's on-disk layout is versioned by its CLI's internal catalog revision
+# (this machine's cache moved from "...-cuda-gpu" to "...-cuda-gpu-2" between when this test
+# was first written and 2026-08-05) and a hardcoded path goes stale silently when that
+# happens, with this lane skipping for what looks like "no GPU" rather than the real reason.
+# PHI35_MODEL, if set, is still honored as an explicit direct override.
+from test_phi35 import _PHI35_SPEC, _foundry_discovery  # noqa: E402
+
 ARTIFACT = REPO / "bench" / "results" / "push_constants_written.json"
 SENSITIVITY = REPO / "bench" / "results" / "push_constants_sensitivity.json"
+
+_PHI35_DISCOVERY_ERROR: str | None = None
+_override = os.environ.get("PHI35_MODEL")
+if _override:
+    _PHI35_MODEL_PATH: pathlib.Path | None = pathlib.Path(_override)
+else:
+    try:
+        _PHI35_MODEL_PATH = _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+    except _foundry_discovery.FoundryDiscoveryError as _exc:
+        _PHI35_MODEL_PATH = None
+        _PHI35_DISCOVERY_ERROR = str(_exc)
 
 
 def _model_present() -> bool:
     from probe_push_constants_written import PROBE_CHILD  # noqa: PLC0415, F401
 
-    m = pathlib.Path(
-        os.environ.get(
-            "PHI35_MODEL",
-            r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
-            r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-            r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
-        )
-    )
-    return m.is_file()
+    return _PHI35_MODEL_PATH is not None and _PHI35_MODEL_PATH.is_file()
 
 
 _requires_lane = pytest.mark.skipif(
     not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB") or not _model_present(),
-    reason="needs ONNXRUNTIME_VULKAN_EP_LIB and the Phi-3.5 model to execute a real graph",
+    reason=(
+        "needs ONNXRUNTIME_VULKAN_EP_LIB and the Phi-3.5 model to execute a real graph"
+        if _PHI35_DISCOVERY_ERROR is None
+        else f"Phi-3.5 model not resolvable: {_PHI35_DISCOVERY_ERROR}"
+    ),
 )
 
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import sys
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -32,12 +33,20 @@ import pytest
 
 import _models as m
 
-_MODEL_DIR = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models"
-    r"\Microsoft\Phi-3.5-mini-instruct-cuda-gpu"
-    r"\cuda-int4-rtn-block-32"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "rust" / "tools"))
+import foundry_discovery as _foundry_discovery  # noqa: E402
+
+# Resolved by identity (variant name + execution provider), not by a hardcoded path — see
+# rust/tools/foundry_discovery.py. This file used to carry its own independent copy of the
+# same hardcoded Foundry cache path test_phi35.py carried, and it went stale for the same
+# reason (issue #11): Foundry's own on-disk cache layout is versioned by its CLI's internal
+# catalog revision, which this repo does not control.
+_PHI35_SPEC = _foundry_discovery.FoundryModelSpec(
+    variant_name="Phi-3.5-mini-instruct-cuda-gpu",
+    execution_provider="CUDAExecutionProvider",
+    onnx_filename="phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    download_alias="phi-3.5-mini",
 )
-_ONNX_FILE = _MODEL_DIR / "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
 _RESULT_FILE = pathlib.Path(__file__).parents[2] / "island_attribution.json"
 
 
@@ -204,8 +213,10 @@ def test_island_attribution(require_vulkan, tmp_path: pathlib.Path) -> None:
     Falsifier: if the attribution names a different op than GQA as the top cutter,
     we implement that op first (data decides, not the brief's guess).
     """
-    if not _ONNX_FILE.exists():
-        pytest.skip(f"Phi-3.5 model not found at {_ONNX_FILE}")
+    try:
+        onnx_file = _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+    except _foundry_discovery.FoundryDiscoveryError as exc:
+        pytest.skip(f"Phi-3.5 model not resolvable: {exc}")
 
     device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
     claim_log_path = tmp_path / f"phi35_claim_log_attr_dev{device_index}.jsonl"
@@ -219,7 +230,7 @@ def test_island_attribution(require_vulkan, tmp_path: pathlib.Path) -> None:
         opts.log_severity_level = 3
         opts.enable_profiling = False
         sess = ort.InferenceSession(
-            str(_ONNX_FILE),
+            str(onnx_file),
             opts,
             providers=m.EP_PROVIDERS,
             free_dimension_overrides_by_name={"batch_size": "1", "sequence_length": "1"},
@@ -254,8 +265,8 @@ def test_island_attribution(require_vulkan, tmp_path: pathlib.Path) -> None:
     print(f"\n[island_attribution] {len(claim_records)} records in CLAIM_LOG")
 
     # Load graph topology.
-    print(f"[island_attribution] Loading graph topology from {_ONNX_FILE.name}")
-    nodes_by_name, value_to_producer, value_to_consumers = _load_graph_topology(_ONNX_FILE)
+    print(f"[island_attribution] Loading graph topology from {onnx_file.name}")
+    nodes_by_name, value_to_producer, value_to_consumers = _load_graph_topology(onnx_file)
     print(f"[island_attribution] {len(nodes_by_name)} nodes in graph")
 
     result = _compute_attribution(

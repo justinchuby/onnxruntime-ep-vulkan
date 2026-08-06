@@ -23,14 +23,25 @@ import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-MODEL = pathlib.Path(
-    os.environ.get(
-        "PHI35_MODEL",
-        r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
-        r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-        r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
-    )
-)
+
+# Resolved by identity through foundry_discovery (issue #11), never by a hardcoded cache
+# path: Foundry Local's on-disk layout is versioned by its CLI's internal catalog revision
+# (this machine's cache moved from "...-cuda-gpu" to "...-cuda-gpu-2" between when this
+# constant was first written and 2026-08-05), and a hardcoded path goes stale silently when
+# that happens.  PHI35_MODEL, if set, is still honored as an explicit direct override.
+sys.path.insert(0, str(HERE))
+from test_phi35 import _PHI35_SPEC, _foundry_discovery  # noqa: E402
+
+MODEL_DISCOVERY_ERROR: str | None = None
+_override = os.environ.get("PHI35_MODEL")
+if _override:
+    MODEL: pathlib.Path | None = pathlib.Path(_override)
+else:
+    try:
+        MODEL = _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+    except _foundry_discovery.FoundryDiscoveryError as _exc:
+        MODEL = None
+        MODEL_DISCOVERY_ERROR = str(_exc)
 
 #: Printed by the child the instant the last inference returns and before anything is torn
 #: down.  Everything the layer said up to here was said while the instance, the device, every
@@ -43,6 +54,11 @@ BOUNDARY = "[CRITERION3A-PHI35] last inference returned; dispatch window closes 
 def _child() -> int:
     import numpy as np  # noqa: F401  (the feeds builder owns the dtypes)
     import onnxruntime as ort
+
+    if MODEL is None:
+        raise SystemExit(
+            f"[CRITERION3A-PHI35] Phi-3.5 model not resolvable: {MODEL_DISCOVERY_ERROR}"
+        )
 
     ort.set_default_logger_severity(0)
     ort.register_execution_provider_library(

@@ -225,7 +225,7 @@ is the only thing that proves the second.
 | Rust ≥ 1.85 | **yes** | edition 2024 |
 | **libclang** (LLVM) | **yes** | `bindgen` parses the vendored ORT headers at build time |
 | ONNX Runtime install | no | the headers are vendored; nothing links against ORT |
-| Vulkan SDK / `glslc` | not yet | only needed once `shaders/glsl/` is non-empty |
+| Vulkan SDK / `glslc` | **yes** | `rust/shaders/glsl/` now has 10 `.comp` shaders; `build.rs` compiles them at build time |
 | Vulkan loader | at runtime only | absent loader ⇒ zero devices advertised, not an error |
 
 Install libclang:
@@ -260,6 +260,67 @@ Artifacts land in `target/{debug,release}/`:
 | macOS | `libonnxruntime_vulkan_ep.dylib` |
 
 Two C symbols are exported, and only two: `CreateEpFactories` and `ReleaseEpFactory`.
+
+### Windows: MSVC environment via `vcvars64.bat`
+
+A plain `cargo build` from a PowerShell prompt that never ran a Visual Studio developer shell
+setup script will fail in the linker (`cl.exe`/`link.exe` not on `PATH`, `INCLUDE`/`LIB` unset).
+The standard fix — Visual Studio's own `vcvars64.bat` — is a **`cmd.exe` batch file**, and the
+naive way to combine it with a custom build in one line is fragile on this toolchain, for two
+distinct, verifiable reasons — **not** because a real child process fails to inherit variables
+`set` earlier in the same `cmd /c "..."` chain (it does; a `set X=1` followed later in the same
+chain by a genuine child process, e.g. another `cmd /c echo %X%` or `cargo build`, sees `X`
+correctly — confirmed by direct test on this toolchain):
+
+```powershell
+# FRAGILE — avoid. Two real hazards, neither of which is "child processes don't inherit
+# `set` mutations":
+#
+# 1. Parse-time %VAR% expansion: cmd.exe expands every %VAR% token in a single command line
+#    ONCE, before executing any part of that line. `set PATH=%VULKAN_SDK%\Bin;%PATH%` chained
+#    after `call vcvars64.bat` in the *same* line reads the pre-vcvars values of %VULKAN_SDK%/
+#    %PATH% (or a literal, unexpanded token if undefined) — confirmed: `set X=1 && echo %X%` in
+#    one line prints the literal text `%X%`, not `1`. Delayed expansion (`setlocal
+#    enabledelayedexpansion` + `!VAR!`) works around this but is easy to omit.
+# 2. PowerShell/cmd quoting: building a long `cmd /c "..."` argument from PowerShell requires
+#    getting nested double-quotes (for paths containing spaces) and `$`/backtick escaping (so
+#    PowerShell does not interpolate before cmd ever sees the string) exactly right; a small
+#    quoting mistake drops or corrupts arguments with no error message, only a confusing build
+#    failure or a wrong environment.
+cmd /c 'call vcvars64.bat && set PATH=%VULKAN_SDK%\Bin;%PATH% && cargo build --release'
+```
+
+The proven recipe instead **captures** `vcvars64.bat`'s resulting environment and **applies it
+natively inside the current PowerShell process**, using PowerShell's own `$env:`/
+`[System.Environment]` mechanisms instead of `%VAR%`/chained-`cmd` syntax — sidestepping both
+hazards above entirely, since nothing is expanded or quoted through `cmd.exe` more than once:
+
+```powershell
+$vcvars = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+$envDump = cmd /c "call `"$vcvars`" >nul 2>&1 && set"
+foreach ($line in $envDump) {
+    if ($line -match '^([^=]+)=(.*)$') {
+        [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
+    }
+}
+
+# Set anything project-specific the same way — natively in this process, never chained through cmd.
+$env:VULKAN_SDK    = "C:\VulkanSDK\1.4.350.0"
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+$env:PATH          = "$env:USERPROFILE\.cargo\bin;$env:VULKAN_SDK\Bin;$env:PATH"
+
+cd rust
+cargo build --release
+```
+
+Adjust the `vcvars64.bat` and Vulkan SDK paths to the versions actually installed
+(`vswhere.exe -latest -property installationPath` finds the Visual Studio install path if it is
+not the default). This recipe is for a fresh interactive PowerShell session — a developer
+machine or a squad worktree — that never ran a VS developer shell; **CI's `windows-latest`
+runner does not run this recipe** (its images ship with the MSVC toolchain already reachable
+from a plain PowerShell session, so `.github/workflows/ci.yml` never calls `vcvars64.bat`). If a
+build fails with an MSVC toolchain error, verify with `$env:INCLUDE` / `$env:LIB` non-empty in
+the *same* shell that runs `cargo build` before assuming the code is at fault.
 
 ### Verify
 

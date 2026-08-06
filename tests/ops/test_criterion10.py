@@ -84,7 +84,7 @@ import pytest
 
 import _models as m
 import _kv_depth
-from test_phi35 import _ONNX_FILE, _build_phi35_feeds
+from test_phi35 import _PHI35_SPEC, _build_phi35_feeds, _foundry_discovery
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _RESULTS_DIR = _REPO_ROOT / "bench" / "results"
@@ -188,12 +188,13 @@ def kv_writeback_route(counters: dict | None) -> dict:
 
 @pytest.fixture(scope="module")
 def phi35_model_path() -> pathlib.Path:
-    if not _ONNX_FILE.exists():
+    try:
+        return _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+    except _foundry_discovery.FoundryDiscoveryError as exc:
         pytest.skip(
-            f"Phi-3.5 model not found at {_ONNX_FILE}. Criterion 10 is measured on the "
+            f"Phi-3.5 model not resolvable: {exc} Criterion 10 is measured on the "
             "real artifact at producer-at-version; there is no synthetic substitute."
         )
-    return _ONNX_FILE
 
 
 def _compare_run_to_cpu(
