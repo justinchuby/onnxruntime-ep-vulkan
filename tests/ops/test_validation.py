@@ -267,9 +267,13 @@ def test_validation_messenger_armed() -> None:
             "a pass."
         )
 
+    # encoding="utf-8"/errors="replace": `text=True` alone decodes with the platform
+    # locale, which is not UTF-8 on an English Windows runner; epctl's own diagnostics
+    # (e.g. loader/layer manifest paths, "§7.2") are UTF-8, and a locale mis-decode would
+    # silently corrupt them before this string is ever inspected (see issue #1).
     result = subprocess.run(
         [str(epctl), "--probe-validation"],
-        capture_output=True, text=True,
+        capture_output=True, encoding="utf-8", errors="replace",
         timeout=_verdict.contention_tolerant_timeout(20),
     )
     output = result.stdout + result.stderr

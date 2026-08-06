@@ -543,6 +543,57 @@ def test_icd_suppression_reports_the_three_states_apart(tmp_path):
     assert states == {icd.STATE_SUPPRESSED, icd.STATE_INEFFECTIVE, icd.STATE_UNREADABLE}
 
 
+#: A duplicate/conflicting-manifest report: two ICDs registered at once (e.g. a
+#: leftover HKLM entry *and* an env-var search path both resolving), so the loader's
+#: own line about the first ICD it tried is followed by a second, different verdict
+#: from a second ICD. This is issue #1's "duplicate ICD manifest" scenario: the report
+#: is readable and the loader's own count is the discriminator, not the number of
+#: manifests behind it.
+PROBE_DUPLICATE_MANIFEST = (
+    "=== Vulkan Loader Probe ===\nVulkan library loaded.\n"
+    "  VK_ICD_FILENAMES = C:\\a\\lvp_icd.json;C:\\b\\lvp_icd.json\n"
+    "2 device(s) passed the \u00a77.2 capability gate."
+)
+
+
+def test_icd_suppression_with_duplicate_icd_manifests_is_still_ineffective(tmp_path):
+    """Two manifests naming the same/different ICDs must not confuse the count parse.
+
+    Whether one ICD is registered or several, the classifier reads the loader's own
+    tally, never the number of manifest paths on the command line — the loader already
+    did that reconciliation. A duplicate-manifest report where devices still pass the
+    gate is exactly as ineffective as a single-manifest one; the classifier must say so,
+    not go quiet on the unfamiliar shape.
+    """
+    import check_icd_suppression as icd  # type: ignore
+
+    verdict = icd.classify(PROBE_DUPLICATE_MANIFEST)
+    assert verdict["state"] == icd.STATE_INEFFECTIVE
+    assert verdict["devices_passing_gate"] == 2
+
+
+def test_icd_suppression_missing_manifest_path_is_readable_as_suppressed(tmp_path):
+    """A manifest path that names a file which no longer exists is a real suppression.
+
+    ``ci/negative_control_build_precondition.py``'s scenario: the ICD json was deleted
+    (or, in the criterion-4 witness, pointed at ``does_not_exist/no_such_icd.json``) and
+    the loader could not resolve any driver behind it. That is
+    ``ERROR_INCOMPATIBLE_DRIVER`` from the loader's own mouth — a readable, positive
+    reading, not an instrument outage.
+    """
+    import check_icd_suppression as icd  # type: ignore
+
+    report = (
+        "=== Vulkan Loader Probe ===\nVulkan library loaded.\n"
+        "  VK_ICD_FILENAMES = C:\\does_not_exist\\no_such_icd.json\n"
+        "FAIL: vkCreateInstance returned ERROR_INCOMPATIBLE_DRIVER: "
+        "the loader found no usable ICD or the ICD library is not loadable.\n"
+    )
+    verdict = icd.classify(report)
+    assert verdict["state"] == icd.STATE_SUPPRESSED
+    assert verdict["devices_passing_gate"] == 0
+
+
 # ---------------------------------------------------------------------------
 # check_device_state.py — §10.0 obligation 8 at the lane level
 #
