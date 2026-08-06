@@ -69,6 +69,24 @@ def run_screen(register: Path, extra: list[str] | None = None, env: dict | None 
     )
 
 
+def _live_failure_note(stdout: str, stderr: str) -> str:
+    """Everything from ``check_open_reds.py``'s own state table onward, not a blind tail.
+
+    A fixed ``[-1500:]`` byte tail was landing on whichever section happened to be last
+    (``KNOWN LIMITS``, usually) and cutting the ``state       check`` table -- the one
+    part that names every unaccounted red -- out of every CI log this arm ever produced.
+    That is precisely the thing issue #24 needed and could not get without a local
+    reproduction: a real, authenticated CI run that said "6 check(s)" without ever
+    printing which six. Anchor on the table's own header instead, so a failing LIVE arm
+    always shows the full per-check verdict list, however long the pytest tracebacks
+    that precede it are.
+    """
+    marker = "OPEN-REDS: frame"
+    idx = stdout.find(marker)
+    tail = stdout[idx:] if idx != -1 else stdout[-4000:]
+    return tail + stderr[-1500:]
+
+
 def base_doc() -> dict:
     return json.loads(REGISTER.read_text(encoding="utf-8"))
 
@@ -126,7 +144,7 @@ def main() -> int:
         print("\nLIVE — the real register against the real tree")
         r = run_screen(REGISTER)
         record("LIVE", "the shipped register is the colour it declares", r.returncode == 0,
-               (r.stdout or "")[-1500:] + (r.stderr or "")[-1500:])
+               _live_failure_note(r.stdout or "", r.stderr or ""))
         record("LIVE", "and it names every accepted red with an owner",
                "ACCOUNTED REDS" in r.stdout and "owner" in r.stdout)
 
