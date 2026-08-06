@@ -7,7 +7,9 @@ worktree to origin/main, apply this branch's TREE as one brand-new commit (exact
 ancestors of that commit, so a v1 record naming one would self-invalidate.
 """
 import json
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -15,6 +17,17 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 PY = sys.executable
+
+
+def _force_writable(func, path, _exc):
+    """Git marks objects and packs read-only, and Windows honours that on unlink.
+
+    `rmtree(..., ignore_errors=True)` therefore leaves a multi-hundred-megabyte clone
+    behind next to the repository every time this runs, silently. Clear the read-only
+    bit and retry, and let a failure that is not that one be seen.
+    """
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 
 def git(args, cwd):
@@ -112,7 +125,9 @@ def main() -> int:
         print("\nFAIL")
         return 1
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(tmp, onerror=_force_writable)
+        if tmp.exists():
+            print(f"WARNING: could not remove the simulation clone at {tmp}")
 
 
 if __name__ == "__main__":
