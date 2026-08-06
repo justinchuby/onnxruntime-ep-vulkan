@@ -47,6 +47,21 @@
    "keys": 9,
    "tool": "rust/tools/gen_proof_ledger.py --backfill-frame --rewitness-source",
    "reason": "The repair of 18ddece, declared late: the commit landed on main before this register was consulted, which is itself the finding — a re-witness that is correct and undeclared is indistinguishable to this screen from the accident it repairs, and the screen said so by convicting both. 9 and not 13 because four of the thirteen keys were retired by Morpheus 8.9.23 between the accident and the repair and are now in evidence/retired_proof_keys.json; the surviving nine carry d29f419bfe2c97ee, the digest computed under the current normalize_shader_text rule, which is what the ledger reads today."
+  },
+  {
+   "revision": "601ddcf894c35a90cb1f19b2290ac2c9f8aa70ae",
+   "field": "source_digest",
+   "owner": "switch",
+   "date": "2026-08-06",
+   "deliberate": true,
+   "keys": 2,
+   "tool": "rust/tools/gen_proof_ledger.py --reprove --append --model evidence/cases/asin_f32.onnx --model evidence/cases/acos_f32.onnx",
+   "keys_moved": [
+    "ai.onnx::Asin/7+/f32>f32/ew_unary_asin_f32/static/n1",
+    "ai.onnx::Acos/7+/f32>f32/ew_unary_acos_f32/static/n1"
+  ],
+   "reason": "NOT a re-witness in the sense this register was built for — the hashing rule did not move, the KERNEL did. Issue #4 replaced GLSL's `asin()`/`acos()` in rust/shaders/glsl/templates/ew_unary.comp with a portable minimax core (`ew_asin_core`/`ew_asin_abs`/`ew_asin`/`ew_acos`), because Vulkan defines both built-ins by inheritance from `atan2`, which is allowed 4096 ULP in single precision; lavapipe measured 3831/3903 ULP against the ORT CPU EP and was conformant while missing FP32_TRANSCENDENTAL by 15x. Different source and different SPIR-V means a different subject, so the two entries had to be re-proved rather than re-witnessed: without the reprove the EP correctly read both as SUBJECT-CHANGED and declined them, which is the negative control working. Re-proved on NVIDIA RTX A1000, verdict MATCH, worst_rel 1.79e-07 (Acos) with dispatches_executed=1. Declared here because the screen cannot tell a deliberate kernel change from a regeneration off a stale base by looking at the digests alone — only the writer can say which happened.",
+   "how_this_gets_closed": "It does not get deleted. `revision` was WORKTREE while the change was uncommitted and was re-pointed at 601ddcf — the commit that carries the ledger move — in the follow-up commit on squad/4-portable-inverse-trig, per `how_to_add_a_record`."
   }
  ]
 }

@@ -23,7 +23,41 @@ MIT permits any use, modification, distribution, and sublicensing, with one cond
 | **llama.cpp** (`ggml/src/ggml-vulkan/vulkan-shaders/`) | MIT | Copyright (c) 2023–2026 The ggml authors | ✅ fetched from `ggerganov/llama.cpp` `LICENSE` |
 | **ExecuTorch** (`backends/vulkan/`) | BSD 3-Clause | Copyright (c) Meta Platforms, Inc. and affiliates; Arm Ltd.; Qualcomm Innovation Center, Inc.; Apple Inc.; MediaTek Inc.; NXP; Samsung; Intel | ✅ fetched from `pytorch/executorch` `LICENSE` |
 | **ONNX Runtime** (headers, C API, examples) | MIT | Copyright (c) Microsoft Corporation | ✅ fetched from `microsoft/onnxruntime` `LICENSE` |
+| **Cephes Mathematical Library** (`single/asinf.c`, via <https://netlib.org/cephes/>) | **BSD 3-Clause by permission of the author — no author-assigned SPDX identifier.** See the ruling below. | `Cephes Math Library Release 2.2: June, 1992` / `Copyright 1984, 1987, 1992 by Stephen L. Moshier` / `Direct inquiries to 30 Frost Street, Cambridge, MA 02140` | ✅ **ADAPTED — in the shipped binary.** Notice + full provenance in `docs/THIRD_PARTY_NOTICES.md`; header in `rust/shaders/glsl/templates/ew_unary.comp` |
 | **vulkan.gpuinfo.org data** (cited in `PLATFORMS.md`) | CC-BY 4.0 | Sascha Willems | Already attributed in `PLATFORMS.md` |
+
+### 2.1 Cephes — why its row needs more than a licence name
+
+Cephes is the only entry in the table above that **has no `LICENSE` file at all**, and the only one
+this project has actually adapted code from rather than merely read. Both facts change what is
+owed, so the row is expanded here rather than compressed into a cell.
+
+**What the canonical distribution says, in full.** The entire licence-bearing text of
+<https://netlib.org/cephes/readme> is:
+
+> Some software in this archive may be from the book _Methods and Programs for Mathematical
+> Functions_ (Prentice-Hall or Simon & Schuster International, 1989) or from the Cephes
+> Mathematical Library, a commercial product. In either event, it is copyrighted by the author.
+> What you see here may be used freely but it comes with no support or guarantee.
+
+"May be used freely" is permissive in tone but silent on modification and redistribution, and it
+calls the library a commercial product. **Taken alone it would not support shipping adapted code
+in a binary**, which is what this project now does.
+
+**What the grant actually rests on.** Stephen Moshier granted BSD-style terms by email to Debian on
+28 December 2004 — <https://lists.debian.org/debian-legal/2004/12/msg00295.html> — supplying a
+boilerplate ending `[standard BSD license here]`. SciPy fills that placeholder with the full BSD
+3-Clause text and records Cephes as `BSD-3-Clause` on that authority
+(<https://raw.githubusercontent.com/scipy/xsf/main/LICENSES_bundled.txt>). **This project follows
+SciPy's reading and says so, rather than asserting an SPDX tag as though the author had chosen
+one.** The two caveats worth knowing — that the 2004 message is addressed to one redistributor,
+and that its boilerplate names Release 2.8 while the adapted file is Release 2.2 — are recorded in
+`docs/THIRD_PARTY_NOTICES.md` rather than resolved away here.
+
+**The rule this sets for anyone adding a source to §2:** if the upstream has no `LICENSE` file,
+the "Verified" column may not say ✅ on the strength of what a redistributor's metadata asserts.
+Fetch the primary grant, quote it, and record where it stops. A licence name copied from a
+downstream package is a citation of a conclusion, not of evidence.
 
 ---
 
@@ -123,6 +157,7 @@ SPIR-V compiled from adapted GLSL is a **derivative work** of the original GLSL.
 | **ORT C API headers (MIT)** | Use the public C ABI freely — calling a public API is not copying code, and creates zero licence obligations. If Tank vendors ORT header files directly into `rust/sys/` (copying header text into our tree), treat those files as MIT-attributed inclusions and ensure their copyright notices are preserved. | If headers are vendored: copyright notices in the vendored files must be preserved. No separate NOTICES entry needed unless substantial body text is adapted. | Do not claim to be part of ORT or Microsoft. |
 | **ORT examples (`nv_vulkan_test.cc`, etc.) (MIT)** | Read freely. No `.cc` files were found vendored in this repo as of this review — Switch studied them online. If any example code is adapted, standard MIT attribution applies. | If adapted: file header + THIRD_PARTY_NOTICES.md entry. | None. |
 | **vulkan.gpuinfo.org data (CC-BY 4.0)** | Use the data in documentation. Already correctly attributed in `PLATFORMS.md` with source URL, author, and date. CC-BY 4.0 data does not affect code licence for this project. | Attribution already present in `PLATFORMS.md`. Ensure it stays on any page that uses the data. | Do not embed gpuinfo.org data in a way that claims it as ours. |
+| **Cephes `asinf.c` (BSD-3 by permission — see §2.1)** | Read freely. Adapt — **this project has**: the `ew_asin_core` coefficients and reduction in `rust/shaders/glsl/templates/ew_unary.comp`, shipped as SPIR-V inside the binary. | **All three are now in force, not hypothetical.** Moshier copyright notice + BSD-3 text + provenance in `docs/THIRD_PARTY_NOTICES.md` (created for this). File header in `ew_unary.comp` (§4), at file top and again at the coefficients. Commit message note (§6). Notices file ships with every binary release (§5). | Do not upgrade §2.1's "BSD-3 **by permission**" into a bare "BSD-3-Clause" SPDX tag, and do not delete §2.1's caveats as clutter: the author assigned no SPDX identifier, and the grant rests on a 2004 email, not a `LICENSE` file. Anyone re-checking this needs the evidence, not our conclusion. |
 
 ---
 
@@ -156,6 +191,19 @@ If engineers write their own shaders from scratch after understanding the algori
 ---
 
 ## 10. When to Create THIRD_PARTY_NOTICES.md
+
+> **STATUS UPDATE — the trigger below has fired.** `docs/THIRD_PARTY_NOTICES.md` **now exists and
+> must be kept current.** The condition named in the original text — "the first binary release that
+> embeds SPIR-V compiled from adapted third-party shader source" — was met when the portable
+> inverse-trigonometry path (DESIGN.md §8.9.28, issue #4) adapted the Cephes `asinf` coefficients
+> and reduction into `rust/shaders/glsl/templates/ew_unary.comp`, whose SPIR-V is embedded in
+> `onnxruntime_vulkan_ep.dll`. Cephes is the first and, at time of writing, only entry.
+>
+> The paragraph below is preserved as written for the record; read it as history, not as current
+> state. **Anything landing adapted third-party code from here on adds a section to the notices
+> file in the same commit — not in a follow-up.** The template is a starting point, not the
+> standard: the Cephes section shows what an entry looks like when the upstream has no `LICENSE`
+> file and the provenance has to be carried rather than named.
 
 `docs/THIRD_PARTY_NOTICES.md` **does not need to exist today** — no code has been copied yet (project is pre-implementation). It must be created before the first binary release that embeds SPIR-V compiled from adapted third-party shader source.
 

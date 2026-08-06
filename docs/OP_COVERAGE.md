@@ -293,6 +293,16 @@ All `ai.onnx`. All **S**, all `EW-U`. f32/f16 (integer forms where the spec allo
 `Sin`/`Cos` are LLM-critical (dynamic RoPE cache construction in the VL builder — verified).
 `Erf` is vision-critical (GELU). The rest are long-tail breadth that costs one table row each.
 
+**Accuracy is not uniformly the driver's problem.** Vulkan's precision table gives several of these
+built-ins an allowance wider than the `1e-5` these ops are tested at: `asin`/`acos`/`atan` inherit
+**4096 ULP** from `atan2`, and `sin`/`cos` are allowed an *absolute* error of `2⁻¹¹` (`4.9e-4`) in
+`[-π, π]`, with `tan` inheriting from both. `Asin`/`Acos` therefore no longer call the built-in —
+see **DESIGN.md §8.9.28**, which replaces them with a shared minimax core carrying a bound derived
+from the specification rather than fitted to a device. `Sin`/`Cos`/`Tan`/`Atan` still call theirs
+and are green only because the two drivers we can reach choose to beat their contract; that is
+tracked in `BUILTIN_SCREEN` in `tests/ops/test_inverse_trig.py`, which fails if a new built-in call
+appears without a recorded decision.
+
 ### 4.3 Activations — 16 ops · template `EW-U` with push-constant params
 
 `Relu` `LeakyRelu` `Elu` `Selu` `Celu` `HardSigmoid` `HardSwish` `Softplus` `Softsign` `Sigmoid`
