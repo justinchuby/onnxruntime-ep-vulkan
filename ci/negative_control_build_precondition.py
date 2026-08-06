@@ -51,10 +51,21 @@ jobs:
 
 
 def run(args: list[str]) -> tuple[int, str]:
+    # encoding/errors pinned explicitly: check_build_precondition.py's output carries
+    # literal em-dashes, and this process's own PYTHONIOENCODING does not govern how
+    # *this* subprocess.run() call decodes a child's stdout -- that decode falls back to
+    # locale.getpreferredencoding(), which is cp1252 on a default Windows shell. The
+    # child (inheriting this process's environment, PYTHONIOENCODING included) writes
+    # UTF-8 bytes; decoding those bytes as cp1252 does not raise, it silently mangles the
+    # em-dash into mojibake, and the REPLAYED arm below that greps for 'BP1 --' in `out`
+    # then fails for a reason that has nothing to do with BP1/BP2 -- a decode mismatch
+    # wearing the same coat as a real regression. Reproduced and confirmed Windows-only;
+    # the equivalent CI job (Ubuntu, UTF-8 locale) never hits this path.
     proc = subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=str(REPO_ROOT),
     )
     return proc.returncode, proc.stdout + proc.stderr
