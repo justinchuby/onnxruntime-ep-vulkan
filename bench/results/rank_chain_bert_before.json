@@ -1,0 +1,116 @@
+{
+ "model": ".scratch-models\\bertsquad-12.onnx",
+ "nodes": 1167,
+ "op_counts": {
+  "Unsqueeze": 191,
+  "Mul": 186,
+  "Add": 185,
+  "MatMul": 98,
+  "Reshape": 71,
+  "Cast": 70,
+  "Sub": 62,
+  "Transpose": 62,
+  "Concat": 56,
+  "ReduceMean": 50,
+  "Identity": 28,
+  "Sqrt": 25,
+  "Reciprocal": 25,
+  "Softmax": 12,
+  "Pow": 12,
+  "Tanh": 12,
+  "Squeeze": 7,
+  "Slice": 6,
+  "Shape": 5,
+  "ConstantOfShape": 1,
+  "Gather": 1,
+  "OneHot": 1,
+  "Split": 1
+ },
+ "edges_total": 3103,
+ "edges_without_rank": 1773,
+ "edges_without_rank_by_op": {
+  "Add": 433,
+  "Mul": 409,
+  "MatMul": 220,
+  "Sub": 125,
+  "Reshape": 124,
+  "Transpose": 122,
+  "ReduceMean": 100,
+  "Identity": 52,
+  "Sqrt": 50,
+  "Reciprocal": 50,
+  "Softmax": 24,
+  "Pow": 24,
+  "Tanh": 24,
+  "Squeeze": 4,
+  "Shape": 3,
+  "Split": 3,
+  "Cast": 2,
+  "Gather": 2,
+  "OneHot": 2
+ },
+ "reshape_target_producer": {
+  "Cast": 58,
+  "initializer": 13
+ },
+ "reshape_outputs_without_rank": 58,
+ "chain_ops": {
+  "Shape": {
+   "nodes": 5,
+   "all_inputs_ranked": 2,
+   "outputs_ranked": 5
+  },
+  "Cast": {
+   "nodes": 70,
+   "all_inputs_ranked": 69,
+   "outputs_ranked": 69
+  },
+  "Concat": {
+   "nodes": 56,
+   "all_inputs_ranked": 56,
+   "outputs_ranked": 56
+  },
+  "Gather": {
+   "nodes": 1,
+   "all_inputs_ranked": 0,
+   "outputs_ranked": 0
+  },
+  "Unsqueeze": {
+   "nodes": 191,
+   "all_inputs_ranked": 191,
+   "outputs_ranked": 191
+  },
+  "Squeeze": {
+   "nodes": 7,
+   "all_inputs_ranked": 5,
+   "outputs_ranked": 5
+  },
+  "Slice": {
+   "nodes": 6,
+   "all_inputs_ranked": 6,
+   "outputs_ranked": 6
+  }
+ },
+ "matmul_nodes": 98,
+ "matmul_A_without_rank": 98,
+ "matmul_B_without_rank": 24,
+ "sample_chain": [
+  "reshape node: bert/encoder/Reshape -> out rank None",
+  "bert/encoder/Reshape__27:0 <- Cast{'to': 7}",
+  "  bert/encoder/Reshape/shape_Concat__26:0 <- Concat{'axis': 0}",
+  "    bert/encoder/Reshape/shape_Unsqueeze__23:0 <- Unsqueeze{'axes': [0]}",
+  "      bert/encoder/strided_slice__17:0 <- Cast{'to': 6}",
+  "        bert/encoder/strided_slice__16:0 <- Squeeze{'axes': [0]}",
+  "          bert/encoder/strided_slice:0 <- Slice",
+  "            bert/encoder/Shape__12:0 <- Cast{'to': 1}",
+  "              bert/encoder/Shape:0 <- Shape",
+  "                input_ids:0 = <graph input> rank=2",
+  "            const_slice__13 = initializer dims=[1] [np.int64(0)]",
+  "            const_slice__14 = initializer dims=[1] [np.int64(1)]",
+  "            const_slice__15 = initializer dims=[1] [np.int64(0)]",
+  "    bert/encoder/Reshape/shape_Unsqueeze__24:0 <- Unsqueeze{'axes': [0]}",
+  "      bert/encoder/Reshape/shape/1:0 = initializer dims=[] [np.int32(1)]",
+  "    bert/encoder/Reshape/shape_Unsqueeze__25:0 <- Unsqueeze{'axes': [0]}",
+  "      bert/encoder/Reshape/shape/2:0 = initializer dims=[] [np.int32(256)]"
+ ]
+}

@@ -230,6 +230,18 @@ pub struct VulkanEp {
     /// Stored in a `Box` for a stable address: `SubgraphComputeInfo` holds a raw pointer into
     /// this box (valid because ORT guarantees the EP outlives all compiled compute infos).
     session: Option<Box<VulkanSession>>,
+    /// Ranks proven at `GetCapability` (§8.11), kept so `Compile` can honour the same facts.
+    ///
+    /// `Compile` is handed a **fused subgraph**, whose boundary inputs are produced by nodes that
+    /// are no longer in it, so re-running the pass there would prove strictly less than the pass
+    /// that decided to claim. Claiming on a fact and then compiling without it is how a claim
+    /// becomes a broken commitment, so the facts travel with the EP instead. Keyed by ONNX value
+    /// name, which fusion preserves, and accumulated across every `GetCapability` call because a
+    /// model with control flow gets more than one.
+    ///
+    /// Behind a `Mutex` because ORT hands us `&self` (`*const OrtEp`) on both paths and makes no
+    /// promise about which thread calls them.
+    inferred_shapes: std::sync::Mutex<crate::shape_infer::InferredShapes>,
 }
 
 impl VulkanEp {
@@ -297,6 +309,7 @@ impl VulkanEp {
             name: name.to_owned(),
             options,
             session,
+            inferred_shapes: std::sync::Mutex::new(crate::shape_infer::InferredShapes::default()),
         })
     }
 
@@ -405,6 +418,119 @@ unsafe extern "C" fn get_default_memory_device(
 }
 
 // --- GetCapability ---------------------------------------------------------------------------
+
+/// Build the graph-level rank overlay for one `GetCapability` call.
+///
+/// This is the ORT-facing half of [`crate::shape_infer`]: it reads names, edge shapes, constant
+/// initializers and attributes off the live graph, hands them to the pure-Rust pass, and returns
+/// the frozen result. All of the ONNX reasoning lives in that module and is unit-testable without
+/// ORT; nothing here decides anything.
+///
+/// Failure is never fatal — an empty overlay simply leaves every predicate reading exactly what
+/// ORT reported, which is the pre-existing behaviour.
+///
+/// # Safety
+/// `api` must be a live `OrtApi` and every non-null entry of `nodes` must belong to a graph that
+/// outlives this call.
+unsafe fn infer_graph_shapes(
+    api: *const ort::OrtApi,
+    nodes: &[*const ort::OrtNode],
+) -> crate::shape_infer::InferredShapes {
+    use crate::shape_infer::{AttrKind, AttrValue, InferNode, Inference, MAX_INFER_INTS};
+
+    let mut pass = Inference::new();
+    if !logging::rank_inference_enabled() {
+        log::info!(
+            "GetCapability: rank inference disabled by \
+             ONNXRUNTIME_EP_VULKAN_RANK_INFERENCE — every predicate reads ORT's shapes verbatim"
+        );
+        return pass.finish();
+    }
+    let mut infer_nodes: Vec<InferNode> = Vec::with_capacity(nodes.len());
+
+    for &node in nodes {
+        if node.is_null() {
+            continue;
+        }
+        // SAFETY: `node` belongs to a graph that outlives this call, per the fn contract, and the
+        // view is dropped inside this iteration. No overlay is installed: the pass must read
+        // ORT's own answers, not its own output.
+        let view = unsafe { registry::NodeView::new(api, node) };
+
+        let inputs = view.input_names();
+        let outputs = view.output_names();
+
+        // Seed ORT's own readings for every edge. `declare` ignores a rank-0 reading, which is
+        // ambiguous between "scalar" and "never established" — see `shape_infer`'s rule 3.
+        for (i, name) in inputs.iter().enumerate() {
+            let shape = view.input_type(i).and_then(|t| t.shape);
+            pass.declare(name, shape.as_deref());
+        }
+        for (i, name) in outputs.iter().enumerate() {
+            let shape = view.output_type(i).and_then(|t| t.shape);
+            pass.declare(name, shape.as_deref());
+        }
+
+        // Seed constant initializers. This is the only sound source of a rank-0 fact, because the
+        // rank of stored data is a property of the data and not of an inference that may not have
+        // run. It is also where the transformer chain's literal extents come from.
+        for (i, name) in inputs.iter().enumerate() {
+            if name.is_empty() {
+                continue;
+            }
+            if let Some((shape, ints)) = view.constant_input_tensor(i, MAX_INFER_INTS) {
+                pass.constant(name, &shape, ints);
+            }
+        }
+
+        let op_type = view.op_type();
+        if !crate::shape_infer::has_rule(&op_type) {
+            continue;
+        }
+        let attrs = crate::shape_infer::wanted_attrs(&op_type)
+            .iter()
+            .filter_map(|(n, kind)| {
+                let v = match kind {
+                    AttrKind::Int => AttrValue::Int(view.attr_int(n)?),
+                    AttrKind::Ints => AttrValue::Ints(view.attr_ints(n)?),
+                };
+                Some((*n, v))
+            })
+            .collect();
+
+        infer_nodes.push(InferNode {
+            op_type,
+            domain: view.domain(),
+            since_version: view.since_version(),
+            inputs,
+            outputs,
+            attrs,
+        });
+    }
+
+    pass.run(&infer_nodes);
+    let facts = pass.finish();
+    // `run` reports only what it saw; `ranks_proved` / `extents_proved` are counted by `finish`,
+    // which is the only place that knows what ORT had already declared. Read them from the frozen
+    // overlay, never from `run`'s return value.
+    let stats = facts.stats();
+    if !facts.is_empty() || stats.contradictions > 0 {
+        log::info!(
+            "GetCapability: rank inference proved {} rank(s) and {} extent(s) ORT did not report \
+             over {} node(s) in {} sweep(s) (declared={}, contradictions={}, sweep_limit_hit={}, \
+             overlay={} value(s))",
+            stats.ranks_proved,
+            stats.extents_proved,
+            infer_nodes.len(),
+            stats.sweeps,
+            stats.declared,
+            stats.contradictions,
+            stats.hit_sweep_limit,
+            facts.len(),
+        );
+    }
+    facts
+}
 
 unsafe extern "C" fn get_capability(
     p: *mut ort::OrtEp,
@@ -535,13 +661,35 @@ unsafe fn get_capability_impl(
         BTreeMap::new();
     let claim_debug = logging::claim_debug_enabled();
 
+    // --- graph-level rank inference (DESIGN.md §8.11) ---
+    // Runs once per graph, before any predicate reads an edge. Every fact it proves is a
+    // consequence of ONNX semantics applied to what ORT itself reported; it never guesses, and
+    // `refine` never contradicts ORT. Predicates read the refined answer through `NodeView` and
+    // are unchanged by its existence.
+    //
+    // The overlay is also kept on the EP, because `Compile` is handed a fused subgraph whose
+    // boundary producers are no longer in it: claiming on a fact and then compiling without it is
+    // exactly how a claim turns into a broken commitment at `Compute()`.
+    // SAFETY: `api` is live and every node in `nodes` belongs to `graph`, which outlives this call.
+    let inferred = unsafe { infer_graph_shapes(api, &nodes) };
+    // SAFETY: `p` is our EP pointer, live for the duration of this call.
+    match unsafe { this(p) }.inferred_shapes.lock() {
+        Ok(mut kept) => kept.absorb(&inferred),
+        // A poisoned lock means a previous call panicked mid-absorb; the facts are then of
+        // unknown completeness, so the only honest thing is to keep claiming without them.
+        Err(_) => log::warn!(
+            "rank inference: the fact store is poisoned; Compile will fall back to ORT's own \
+             shapes for this session"
+        ),
+    }
+
     for &node in &nodes {
         if node.is_null() {
             continue;
         }
         // SAFETY: `api` is live and `node` belongs to `graph`, which outlives this loop. The view
-        // borrows and never outlives this iteration.
-        let view = unsafe { NodeView::new(api, node) };
+        // borrows and never outlives this iteration; `inferred` outlives every view built here.
+        let view = unsafe { NodeView::new_with_facts(api, node, &inferred) };
 
         let mut audit_key: Option<registry::ProofKey> = None;
         let decision = if in_control_flow_body {
@@ -1466,11 +1614,27 @@ enum Slots {
 ///
 /// Deliberately strict: a `TensorDesc` with a guessed dtype or a symbolic dimension treated as
 /// concrete is worse than no `TensorDesc`, because the handler would size a buffer from it.
-fn tensor_desc(edge: Option<&registry::EdgeType>) -> Option<crate::engine::TensorDesc> {
+///
+/// **Rank 0 is ambiguous and is not a fact.** ORT's `GetDimensionsCount` returns 0 both for a
+/// genuine scalar and for a value whose shape was never established, and the C API offers no way
+/// to tell the two apart. Reading `[]` as "static scalar, 4 bytes" is therefore a guess, and when
+/// the guess is wrong `Compute()` binds a tensor of a different size and the EP breaks a claim it
+/// made — the exact failure this pass exists to remove (`docs/DESIGN.md` §8.11). The one case
+/// where the reading *is* corroborated is a constant initializer, whose dimensions ORT takes from
+/// the stored tensor rather than from type annotation; every other rank-0 reading is demoted to
+/// `None`, which routes the node to the dynamic-kernel path that re-reads the real shape at
+/// `Compute()`. That is slower for a true scalar and correct for both.
+fn tensor_desc(
+    edge: Option<&registry::EdgeType>,
+    corroborated: bool,
+) -> Option<crate::engine::TensorDesc> {
     let edge = edge?;
     let dtype = edge.dtype?;
     let shape = edge.shape.as_ref()?;
     if shape.iter().any(|d| *d < 0) {
+        return None;
+    }
+    if shape.is_empty() && !corroborated {
         return None;
     }
     Some(crate::engine::TensorDesc::new(dtype, shape.clone()))
@@ -1504,9 +1668,18 @@ fn attr_value(view: &NodeView<'_>, name: &str) -> Option<crate::engine::AttrValu
 ///
 /// # Safety
 /// `api` must be live; `node` must be a node of a graph that is live for the duration of the call.
-unsafe fn node_desc(api: *const ort::OrtApi, node: *const ort::OrtNode) -> crate::engine::NodeDesc {
+unsafe fn node_desc(
+    api: *const ort::OrtApi,
+    node: *const ort::OrtNode,
+    facts: &crate::shape_infer::InferredShapes,
+) -> crate::engine::NodeDesc {
     // SAFETY: `api` is live and `node` belongs to a live graph; the view never outlives this fn.
-    let view = unsafe { NodeView::new(api, node) };
+    // The overlay is the one `GetCapability` claimed on: a `TensorDesc` built without it would
+    // disagree with the decision to claim, and the disagreement would surface as a broken
+    // commitment inside `Compute()` rather than as a decline. A refined shape that is still
+    // partly symbolic yields **no** `TensorDesc`, which routes the node to the dynamic-kernel
+    // path — the correct answer for a rank ORT never established.
+    let view = unsafe { NodeView::new_with_facts(api, node, facts) };
 
     // SAFETY: same contract as the view above.
     let input_slots = unsafe { node_slots(api, node, Slots::Inputs) };
@@ -1519,11 +1692,14 @@ unsafe fn node_desc(api: *const ort::OrtApi, node: *const ort::OrtNode) -> crate
     let inputs = input_slots
         .iter()
         .enumerate()
-        .map(|(i, slot)| crate::engine::TensorRef {
-            // SAFETY: `slot` is null or graph-owned; `value_info_name` handles both.
-            name: unsafe { value_info_name(api, *slot) },
-            desc: tensor_desc(input_types.get(i).and_then(Option::as_ref)),
-            is_initializer: view.input_is_constant(i),
+        .map(|(i, slot)| {
+            let is_initializer = view.input_is_constant(i);
+            crate::engine::TensorRef {
+                // SAFETY: `slot` is null or graph-owned; `value_info_name` handles both.
+                name: unsafe { value_info_name(api, *slot) },
+                desc: tensor_desc(input_types.get(i).and_then(Option::as_ref), is_initializer),
+                is_initializer,
+            }
         })
         .collect();
 
@@ -1533,7 +1709,8 @@ unsafe fn node_desc(api: *const ort::OrtApi, node: *const ort::OrtNode) -> crate
         .map(|(i, slot)| crate::engine::OutRef {
             // SAFETY: as above.
             name: unsafe { value_info_name(api, *slot) },
-            desc: tensor_desc(output_types.get(i).and_then(Option::as_ref)),
+            // An output is never an initializer, so a rank-0 reading has nothing corroborating it.
+            desc: tensor_desc(output_types.get(i).and_then(Option::as_ref), false),
         })
         .collect();
 
@@ -1577,6 +1754,7 @@ unsafe fn plan_for_fused_node(
     api: *const ort::OrtApi,
     graph: *const ort::OrtGraph,
     fused_node: *const ort::OrtNode,
+    facts: &crate::shape_infer::InferredShapes,
 ) -> Result<crate::engine::Plan, String> {
     let mut num_nodes: usize = 0;
     // SAFETY: `api` is live, `graph` is ORT's, and `num_nodes` is a valid out-param slot.
@@ -1618,11 +1796,11 @@ unsafe fn plan_for_fused_node(
             return Err("ORT reported a null node inside a fused subgraph".into());
         }
         // SAFETY: `node` is a live node of `graph`, which outlives this loop.
-        plan.nodes.push(unsafe { node_desc(api, node) });
+        plan.nodes.push(unsafe { node_desc(api, node, facts) });
     }
 
     // SAFETY: `fused_node` is the live node ORT passed in.
-    let fused = unsafe { node_desc(api, fused_node) };
+    let fused = unsafe { node_desc(api, fused_node, facts) };
     plan.inputs = fused.inputs;
     plan.outputs = fused.outputs;
 
@@ -1699,6 +1877,13 @@ unsafe fn compile_impl(
     let api = unsafe { this(p).ort_api };
     // SAFETY: `p` is our EP pointer.
     let abi_version = unsafe { this(p).abi_version() };
+    // The ranks `GetCapability` proved and claimed on. Cloned rather than borrowed because the
+    // loop below takes `&mut` reborrows of the EP for the session.
+    // SAFETY: `p` is our EP pointer.
+    let facts = match unsafe { this(p) }.inferred_shapes.lock() {
+        Ok(kept) => kept.clone(),
+        Err(_) => crate::shape_infer::InferredShapes::default(),
+    };
 
     counters::record_compile_call();
 
@@ -1739,7 +1924,7 @@ unsafe fn compile_impl(
         }
 
         // SAFETY: `api`, `graph` and `fused_node` are live for the duration of this call.
-        let plan = match unsafe { plan_for_fused_node(api, graph, fused_node) } {
+        let plan = match unsafe { plan_for_fused_node(api, graph, fused_node, &facts) } {
             Ok(plan) => plan,
             Err(msg) => {
                 log::error!("Compile: could not build a plan for fused subgraph {i}: {msg}");
@@ -3442,37 +3627,72 @@ mod tests {
     #[test]
     fn tensor_desc_refuses_partial_or_symbolic_type_information() {
         use crate::engine::DType;
-        assert_eq!(tensor_desc(None), None);
+        assert_eq!(tensor_desc(None, false), None);
         assert_eq!(
-            tensor_desc(Some(&registry::EdgeType {
-                dtype: None,
-                shape: Some(vec![2, 3]),
-            })),
+            tensor_desc(
+                Some(&registry::EdgeType {
+                    dtype: None,
+                    shape: Some(vec![2, 3]),
+                }),
+                false
+            ),
             None,
             "an unknown dtype must not produce a TensorDesc"
         );
         assert_eq!(
-            tensor_desc(Some(&registry::EdgeType {
-                dtype: Some(DType::F32),
-                shape: None,
-            })),
+            tensor_desc(
+                Some(&registry::EdgeType {
+                    dtype: Some(DType::F32),
+                    shape: None,
+                }),
+                false
+            ),
             None,
             "an unknown shape must not produce a TensorDesc"
         );
         assert_eq!(
-            tensor_desc(Some(&registry::EdgeType {
-                dtype: Some(DType::F32),
-                shape: Some(vec![2, -1]),
-            })),
+            tensor_desc(
+                Some(&registry::EdgeType {
+                    dtype: Some(DType::F32),
+                    shape: Some(vec![2, -1]),
+                }),
+                false
+            ),
             None,
             "a symbolic dimension must not be silently treated as concrete"
         );
         assert!(
-            tensor_desc(Some(&registry::EdgeType {
-                dtype: Some(DType::F32),
-                shape: Some(vec![2, 3]),
-            }))
+            tensor_desc(
+                Some(&registry::EdgeType {
+                    dtype: Some(DType::F32),
+                    shape: Some(vec![2, 3]),
+                }),
+                false
+            )
             .is_some()
         );
+    }
+
+    #[test]
+    fn tensor_desc_treats_an_uncorroborated_rank_zero_reading_as_unknown() {
+        use crate::engine::DType;
+        // ORT reports dimension-count 0 both for a genuine scalar and for a value whose shape
+        // was never established, and the C API cannot tell them apart. Reading the second as a
+        // 4-byte scalar is how this EP used to break a claim: `Compile` planned one element and
+        // `Compute()` was handed a whole tensor. Unless something corroborates the reading, the
+        // honest answer is "unknown", which routes the node to the dynamic-kernel path.
+        let scalar = registry::EdgeType {
+            dtype: Some(DType::F32),
+            shape: Some(vec![]),
+        };
+        assert_eq!(
+            tensor_desc(Some(&scalar), false),
+            None,
+            "a rank-0 reading with nothing behind it must not become a static scalar desc"
+        );
+        // A constant initializer *is* corroboration: ORT takes its dimensions from the stored
+        // tensor, not from a type annotation, so a rank-0 initializer really is a scalar.
+        let desc = tensor_desc(Some(&scalar), true).expect("initializer rank-0 is a real scalar");
+        assert_eq!(desc.shape, Vec::<i64>::new());
     }
 }

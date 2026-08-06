@@ -1,0 +1,324 @@
+{
+ "model": ".scratch-models\\bertsquad-12.onnx",
+ "tag": "bert_rank_after",
+ "graph": {
+  "nodes": 1167,
+  "opset_import": {
+   "ai.onnx": 12
+  },
+  "ir_version": 7
+ },
+ "dispatches_executed": 367,
+ "counters": {
+  "claimed_nodes": 489,
+  "islands_offered": 52,
+  "viable_islands_retained": 52,
+  "dispatches_executed": 367,
+  "net_benefit_gate_clusters_seen": 126,
+  "_status": "measured"
+ },
+ "inference_run": true,
+ "graph_op_counts": {
+  "Identity": 28,
+  "Unsqueeze": 191,
+  "Shape": 5,
+  "Cast": 70,
+  "Slice": 6,
+  "Squeeze": 7,
+  "Concat": 56,
+  "ConstantOfShape": 1,
+  "Reshape": 71,
+  "Mul": 186,
+  "Sub": 62,
+  "Gather": 1,
+  "Transpose": 62,
+  "OneHot": 1,
+  "MatMul": 98,
+  "Add": 185,
+  "ReduceMean": 50,
+  "Sqrt": 25,
+  "Reciprocal": 25,
+  "Softmax": 12,
+  "Pow": 12,
+  "Tanh": 12,
+  "Split": 1
+ },
+ "decisions_recorded": 919,
+ "claimed_nodes": 489,
+ "declined_nodes": 430,
+ "no_decision_nodes": 0,
+ "no_decision_ops": {},
+ "per_op": {
+  "Add": {
+   "seen": 223,
+   "claimed": 182,
+   "declined": 41,
+   "codes": {
+    "partition": 41
+   },
+   "ledger_hits": 182,
+   "proof_keys": {
+    "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/runtime-extent/n2": 182
+   }
+  },
+  "Cast": {
+   "seen": 25,
+   "claimed": 5,
+   "declined": 20,
+   "codes": {
+    "dtype": 15,
+    "partition": 5
+   },
+   "ledger_hits": 5,
+   "proof_keys": {
+    "ai.onnx::Cast/6+/i64>f32/ew_cast_i64_to_f32/static/n1": 5,
+    "ai.onnx::Cast/6+/f32>i32/ew_cast_f32_to_i32/static/n1": 5,
+    "ai.onnx::Cast/6+/i32>i64/ew_cast_i32_to_i64/static/n1": 9,
+    "ai.onnx::Cast/6+/i64>f32/ew_cast_i64_to_f32/runtime-extent/n1": 1
+   }
+  },
+  "Concat": {
+   "seen": 9,
+   "claimed": 0,
+   "declined": 9,
+   "codes": {
+    "not-registered": 9
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "ConstantOfShape": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Gather": {
+   "seen": 2,
+   "claimed": 1,
+   "declined": 1,
+   "codes": {
+    "partition": 1
+   },
+   "ledger_hits": 1,
+   "proof_keys": {
+    "ai.onnx::Gather/1+/f32,i64>f32/gather_f32/runtime-extent/n2": 1
+   }
+  },
+  "Gemm": {
+   "seen": 3,
+   "claimed": 3,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 3,
+   "proof_keys": {
+    "ai.onnx::Gemm/7+/f32,f32,f32>f32/gemm_f32/runtime-extent/n3": 3
+   }
+  },
+  "Identity": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "dtype": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::Identity/1+/i64>i64/ew_unary_identity_i64/runtime-extent/n1": 1
+   }
+  },
+  "MatMul": {
+   "seen": 95,
+   "claimed": 71,
+   "declined": 24,
+   "codes": {
+    "dynamic-shape": 24
+   },
+   "ledger_hits": 95,
+   "proof_keys": {
+    "ai.onnx::MatMul/1+/f32,f32>f32/gemm_f32/runtime-extent/n2": 95
+   }
+  },
+  "Mul": {
+   "seen": 211,
+   "claimed": 164,
+   "declined": 47,
+   "codes": {
+    "partition": 47
+   },
+   "ledger_hits": 164,
+   "proof_keys": {
+    "ai.onnx::Mul/7+/f32,f32>f32/ew_binary_mul_f32/runtime-extent/n2": 162,
+    "ai.onnx::Mul/7+/i32,i32>i32/ew_binary_mul_i32/static/n2": 2
+   }
+  },
+  "OneHot": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Pow": {
+   "seen": 12,
+   "claimed": 0,
+   "declined": 12,
+   "codes": {
+    "unproven": 12
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::Pow/7+/f32,f32>f32/ew_binary_pow_f32/runtime-extent/n2": 12
+   }
+  },
+  "Reciprocal": {
+   "seen": 25,
+   "claimed": 0,
+   "declined": 25,
+   "codes": {
+    "unproven": 25
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::Reciprocal/6+/f32>f32/ew_unary_recip_f32/runtime-extent/n1": 25
+   }
+  },
+  "ReduceMean": {
+   "seen": 50,
+   "claimed": 0,
+   "declined": 50,
+   "codes": {
+    "not-registered": 50
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Reshape": {
+   "seen": 59,
+   "claimed": 0,
+   "declined": 59,
+   "codes": {
+    "dtype": 4,
+    "unknown-rank": 53,
+    "dynamic-shape": 2
+   },
+   "ledger_hits": 55,
+   "proof_keys": {
+    "ai.onnx::Reshape/5+/i64,i64>i64/ew_cast_i64_to_i64/runtime-extent/n2": 4,
+    "ai.onnx::Reshape/5+/f32,i64>f32/ew_cast_f32_to_f32/runtime-extent/n2": 55
+   }
+  },
+  "Shape": {
+   "seen": 5,
+   "claimed": 0,
+   "declined": 5,
+   "codes": {
+    "not-registered": 5
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Slice": {
+   "seen": 5,
+   "claimed": 0,
+   "declined": 5,
+   "codes": {
+    "not-registered": 5
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Softmax": {
+   "seen": 12,
+   "claimed": 0,
+   "declined": 12,
+   "codes": {
+    "not-registered": 12
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Split": {
+   "seen": 1,
+   "claimed": 0,
+   "declined": 1,
+   "codes": {
+    "not-registered": 1
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Sqrt": {
+   "seen": 25,
+   "claimed": 0,
+   "declined": 25,
+   "codes": {
+    "unproven": 25
+   },
+   "ledger_hits": 0,
+   "proof_keys": {
+    "ai.onnx::Sqrt/6+/f32>f32/ew_unary_sqrt_f32/runtime-extent/n1": 25
+   }
+  },
+  "Squeeze": {
+   "seen": 7,
+   "claimed": 0,
+   "declined": 7,
+   "codes": {
+    "not-registered": 7
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Sub": {
+   "seen": 79,
+   "claimed": 51,
+   "declined": 28,
+   "codes": {
+    "partition": 28
+   },
+   "ledger_hits": 51,
+   "proof_keys": {
+    "ai.onnx::Sub/7+/f32,f32>f32/ew_binary_sub_f32/runtime-extent/n2": 51
+   }
+  },
+  "Tanh": {
+   "seen": 12,
+   "claimed": 12,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 12,
+   "proof_keys": {
+    "ai.onnx::Tanh/6+/f32>f32/ew_unary_tanh_f32/runtime-extent/n1": 12
+   }
+  },
+  "Transpose": {
+   "seen": 49,
+   "claimed": 0,
+   "declined": 49,
+   "codes": {
+    "not-registered": 49
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Unsqueeze": {
+   "seen": 7,
+   "claimed": 0,
+   "declined": 7,
+   "codes": {
+    "not-registered": 7
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  }
+ },
+ "ep_lib": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-8\\rust\\target\\release\\onnxruntime_vulkan_ep.dll"
+}
