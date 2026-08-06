@@ -119,3 +119,76 @@ instruction, so nothing here bears on Switch's `ctx-4096` `ep_inter_76` failure.
 **declined, not handled** — no graph exists to test it on and an attribute claimed-but-untested is
 the `Gemm` transpose mistake. The 68% claim-log name-match rate on BERT is a real limit on the
 counterfactual table and biases every delta *downward*; the tool prints it.
+
+
+---
+
+## 2026-08-06 — issue #8: conservative rank inference through Shape/Cast/Concat chains
+
+Worktree `onnxruntime-ep-vulkan-8`, branch `squad/8-transformer-rank-inference`, commit `4d51675`
+from `origin/main` at `fa39a69`. Draft PR #46.
+
+### The thing worth remembering
+
+BERT executed **4 dispatches on 797 nodes**, and the reason was one `Cast`. BERT computes reshape
+targets at runtime through `Shape → Cast(FLOAT) → Slice → Squeeze → Cast(INT32) → Unsqueeze →
+Concat → Cast(INT64) → Reshape`, and ORT's partial-data propagation follows *integral* tensors
+only. The float cast destroys ORT's knowledge of the shape tensor's **values**, so ORT can no
+longer fold the `Concat` and no longer knows the `Reshape` output's rank — 1,773 edges arrive with
+no rank, 58 of 71 `Reshape` outputs unranked, all 98 `MatMul` A-inputs inheriting it.
+
+A cast does not change a tensor's **shape**. The *length* survives, and the length is the whole of
+what fixes the rank. That one sentence is the entire feature.
+
+### Two mistakes I made and had to undo
+
+1. **My first planted controls proved nothing.** Simple `Shape→Slice→Concat→Reshape` graphs all
+   passed for the wrong reason: ORT constant-folds every one of them before the EP is asked
+   anything, *even with a symbolic batch dimension*. I only found this by dumping the optimized
+   model. **Any control that omits the float cast is vacuous.** Six variants — `plain`,
+   `cast_roundtrip`, `mul_by_one`, `neg_one_first`, `cos_of_shape`, `expand` — all folded to
+   `['Reshape', 'Mul']` with a literal initializer.
+2. **`refine_shape` silently blinded itself.** I wrote `let facts = self.facts?;`, so every
+   `NodeView::new` without an overlay returned `None` for *every* shape — discarding ORT's own
+   readings. Unit tests cannot catch this class of bug because there is no real ORT in them. It
+   showed up only as a wrong number in a model measurement.
+
+### The pre-existing bug this exposed
+
+A converse test hit `input 0 is 1024 byte(s) but this subgraph was compiled for 4`. **It
+reproduces with the pass disabled**, and I confirmed it against a fresh build of `fa39a69`: ORT
+reports dimension-count 0 both for a real scalar and for a value whose shape was never
+established, and `tensor_desc` was reading the second as the first. Rank 0 is not a fact. Fixed by
+demoting any uncorroborated rank-0 reading to the dynamic path.
+
+Corollary for future work: **a failing test of mine is not automatically a bug in my change.**
+Establishing pre-existence cost one throwaway worktree and one build, and it changed what I wrote
+in the PR from an apology to a fix.
+
+### Numbers (RTX A1000, release, ORT 1.28.0, bertsquad-12 sha256 5f0d96a9…9659e55)
+
+Dispatches executed **4 → 367**; profile-attributed CPU nodes 781 → 418; islands 4 → 52; claimed
+nodes 481 → 489. **The claimed-nodes column is the trap** — +8 would have been an honest-looking
+and badly misleading headline. Agreement AGREE on all 3 outputs (max_abs 6.68e-06). MNIST 2→2,
+MobileNet 97→97, both agree. `ort-model-runner` PASS on all three models.
+
+### Established / not established
+
+**Established:** `cargo test --lib` 669/0; `cargo ci` green; fmt/clippy clean; release build;
+`pytest tests/ops` 955 passed / 1 failed, and that one (`criterion10`, Phi-3.5 int4) reproduces
+identically on a `fa39a69` build.
+
+**Not established:** **no second device** — `--list-devices` shows only `10de:25b0`; there is no
+lavapipe ICD on this host, so nothing here bears on another driver. **No timing** — the 4→367
+number is a dispatch count, not a speedup, and I made no performance claim. The
+`PROVEN-ELSEWHERE{device}` ledger warnings (entries proved on an RTX 4060) are pre-existing and I
+left them device-specific rather than unioning them.
+
+### Tooling notes
+
+`cargo` is not on `PATH` in fresh shells here (`$env:PATH="$env:USERPROFILE\.cargo\bin;$env:PATH"`),
+and `gh` needs its full path `C:\Program Files\GitHub CLI\gh.exe`. `ort-model-runner` picks up a
+stale ORT 1.17.1 from `System32` unless given `--ort-lib` pointing at the venv's `onnxruntime.dll`.
+The dispatch counters are **process-global cumulative atomics**, so two readings in one process are
+comparable only as consecutive differences. ORT's CSE folds two `Reshape` nodes with identical
+inputs into one, so a fan-out test needs branches that differ in something other than a node name.
