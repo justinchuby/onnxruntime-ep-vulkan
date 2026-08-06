@@ -251,3 +251,48 @@ the full `pytest tests/ops` suite.
 fast-forward writes no merge commit, and a conflicted merge finishes through `git commit`,
 which runs `pre-commit`. Two of the three ways to merge bypass the colour read. I read it
 by hand: `main` is RED at 61627d6, 9 of the last 10 completed runs failed.
+
+## Round 38 — 2026-08-05 — issue #33, the census surface map, and the accepted red that had already closed
+
+**The issue said 12; the screen said 13, and both were right about different things.**
+`ci/check_census_completeness.py` against HEAD (`f74bab8`) reported `FAIL(condition=unmapped_surface)`
+on exactly 13 surfaces with **no map entry at all** — 7 `counters.rs` fields
+(`device_losses`, `device_unattributed_claims`, `outputs_device_bound`,
+`outputs_device_resident`, `outputs_host_resident`, `proven_elsewhere_claims`,
+`subject_changed_declines`) and 6 env switches (`BIND_OUTPUTS`, `DEBUG_CONSTANTS`,
+`DEVICE_MEMORY_BUDGET_MB`, `FORCE_STDERR_FAILURE`, `KV_ARENA`, `KV_PREFIX_ALIAS`). Traced
+each through production source and every non-census tool/test in the tree; added 13 entries
+to `ci/census_surface_map.json` (12 `uncensused` with an evidenced owner and reason, 1
+`not_a_mechanism` — `DEBUG_CONSTANTS` exists only inside a doc comment, `git log --all -S`
+finds zero `std::env::var` reads of it ever). Screen now PASSes: 63 surfaces, 33 censused /
+24 uncensused / 3 out of frame / 3 not mechanisms.
+
+**The open-red I didn't go looking for closed itself, and its own reason named the wrong
+12.** `ci/open_reds.json`'s `lane_checks_census_extent` accepted three tests
+(`test_the_whole_is_not_derived_from_the_census`,
+`test_extent_reports_unobservable_rather_than_zero_over_zero`,
+`test_the_screen_will_not_narrow_to_source_only_silently`) as a known red since 2026-08-03,
+with a reason naming a *different* 12 surfaces (`compile_calls`/`compute_calls`/
+`subgraphs_stub` + 9 env switches) that were already correctly `uncensused`-with-owner
+before this session and never the load-bearing cause — confirmed by replaying the screen
+against the pre-fix map with today's `rust/src` (still FAIL, same 13, none of the entry's
+named 12). `check_open_reds.py` itself called this `FAIL(condition=stale_acceptance)` once
+my map fix landed. Retired the entry per the register's own convention (`kv_caller_bind_reading`'s
+precedent, not deletion), un-deselected the three tests back into `lane_checks_suite`'s
+plain cmd, and generalised the one test/one negative-control-script assertion that had
+hardcoded `lane_checks_census_extent`'s id and a `--deselect` requirement into an equality
+check over whichever expect=red entries exist — true and non-vacuous whether that set is
+empty (now) or not (later). `check_open_reds.py` now PASSes with 11 subjects ruled (10
+green, 1 accepted red — `main_is_green`, genuinely red on `main` today, unrelated to this
+branch). Corrected `docs/DESIGN.md`'s criterion-12 row, which still cited the stale "50
+surfaces, of which 12" figure.
+
+**Verified on this box:** `ci/check_census_completeness.py --json-out` PASS (63/33/24/3/3);
+`ci/test_lane_checks.py` **218 passed** (1 deselected — a pre-existing, HEAD-reproducing
+`UnicodeDecodeError` subprocess flake in `test_conftest_actually_collects_..._issue_24`,
+confirmed via `git stash` to predate this session and unrelated to it);
+`ci/check_open_reds.py` (with `gh` on PATH) **PASS**, 11/11 ruled;
+`ci/negative_control_open_reds.py` (with `gh` on PATH) **55/55 arms**;
+`tests/ops/test_kv_device_residency.py` + `tests/ops/test_wiring_census.py`: **13 passed, 9
+skipped** (`ONNXRUNTIME_VULKAN_EP_LIB`/EP-library absence — genuine, no built DLL on this
+box, not run). No Rust source touched; no `cargo` run (map/test/registry-only change).
