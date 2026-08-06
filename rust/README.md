@@ -470,7 +470,109 @@ baseline there would dilute the signal on the rows that need one.
 
 ---
 
-## Proving a lane executed something: execution counters
+## Real-model validation without Python: `ort-model-runner`
+
+`rust/modelrunner` is a second, host-only workspace member. It loads a real ONNX model, runs it on
+the CPU EP and on this EP, and proves the Vulkan run was *real* and *correct* — with no Python
+interpreter, no PyPI wheel and no third-party crate involved at any point.
+
+```console
+$ cargo build --release -p ort-model-runner
+$ ./target/release/ort-model-runner --list-models
+$ ./target/release/ort-model-runner --check-model-agreement mnist-12 \
+    --ort-lib /path/to/onnxruntime.dll \
+    --out bench/results/rust-model-runner/mnist-12.json
+PASS mnist-12
+```
+
+### Why it is Rust and why it has no dependencies
+
+The Python probes under `rust/tools/` are the reason this exists. They are the only thing that ever
+ran a real model end to end, and they need `onnx`, `onnxruntime`, `numpy` and a working index. On a
+machine where the package index is unreachable — an air-gapped runner, a locked-down corporate host,
+a fresh container behind an egress policy — none of them can execute, and the project's only
+real-model evidence becomes unavailable exactly when someone needs to check a claim.
+
+So SHA-256, JSON, and the deterministic input PRNG are implemented in-tree and tested against
+published vectors. A runner whose purpose is "works where PyPI is blocked" must not be one
+`cargo fetch` away from the same failure. The only non-`std` code it uses is `libloading`, and only
+to `dlopen` ONNX Runtime — the same thing ORT's own C API examples do, and the reason the EP crate
+itself never links against `onnxruntime`.
+
+### The six guards
+
+Every one must hold for `PASS`. Each is written into the evidence JSON with its reason, whether it
+held or not, because a guard that is silent when it passes cannot be audited later.
+
+| Guard | Asks | Witness |
+| --- | --- | --- |
+| `model_identity_pinned` | Are these the bytes we said they were? | `bench/results/model_provenance.json` — size **and** SHA-256 |
+| `vulkan_ep_device_present` | Did the plugin register an `OrtEpDevice`? | `GetEpDevices` on the real environment |
+| `vulkan_ep_in_session` | Was the EP selected for *this* session? | `SessionOptionsAppendExecutionProvider_V2` succeeded against that device |
+| `vulkan_executed_nodes` | Did ORT attribute executed nodes to us? | **ORT's own profile JSON** — `cat == "Node"`, tallied by provider |
+| `vulkan_dispatched_work` | Did the GPU do anything? | the EP's counters snapshot, `dispatches_executed > 0` |
+| `outputs_agree` | Is the answer right? | the CPU EP's outputs for the same bytes, under a written-in-advance tolerance |
+
+The fourth guard is the point of the tool. `rust/tools/probe_model_output_agreement.py` documents a
+dispatch guard and does not implement one: it checks `"VulkanExecutionProvider" in
+session.get_providers()`, and that list is fixed at session-create time, so it is `True` whenever
+the EP was merely *requested*. A run in which every node fell back to CPU passes it.
+
+The two witnesses are deliberately unequal. ORT's profile is **primary** because it is produced
+outside the frame under question — ORT decides what ran where, and it has no stake in this EP's
+claims. Our own counter is **corroborating** only, because it is inside that frame. When they
+disagree, the evidence records `split_frame` and the run does not pass; it is not resolved in the
+EP's favour.
+
+### Tolerance is policy, not a knob
+
+`compare.rs` holds a table of per-model `rtol`/`atol` with a written rationale for each. A model
+that is not in the table is refused rather than compared against a default — an unreviewed default
+tolerance is how a real numerical regression becomes a green run. `--rtol`/`--atol` override it,
+must be given together, and are stamped into the evidence as `tolerance.source = "cli"` so a reader
+can see the comparison was loosened.
+
+Inputs are generated from a fixed-seed SplitMix64 stream (the stream itself is pinned by a unit
+test), so two runs of the same model on the same build compare the same numbers. Free dimensions
+default to 1 and every resolution is recorded; `--free-dim` pins them explicitly and `--input`
+feeds real bytes for models whose inputs are interdependent.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | `PASS` — all six guards held |
+| 1 | `FAIL(condition=…)` — a claim about the EP is false (outputs disagreed, nothing dispatched, the pin did not match) |
+| 2 | `ERROR(instrument=…)` — the harness could not ask the question (no ONNX Runtime, ambiguous library, unreadable model) |
+| 3 | `UNSUPPORTED(reason=…)` — the model is outside what this runner can drive, stated as such and never as a pass |
+
+`UNSUPPORTED` is a real state, not a polite failure. Phi-3.5-mini resolves and hashes correctly and
+then cannot be driven with generated inputs, because `GroupQueryAttention` requires a KV cache
+consistent with `seqlens_k`. The runner reports exit 3 with the model's exact path and SHA-256 still
+stamped in the evidence, so the identity is on record even though the comparison is not.
+
+### Finding ONNX Runtime
+
+Searched in order: `--ort-lib`, `ORT_MODEL_RUNNER_ORT_LIB`, `ORT_HOME`, `ONNXRUNTIME_DIR`, the
+repository `.venv`, then the loader path. **Two different libraries found is an error, not a
+choice.** The API version is gated to the same `ORT_API_VERSION_MIN`/`ORT_API_VERSION_EXPECTED`
+constants the EP itself pins, so the runner cannot drift from the plugin it is testing.
+
+On Windows this matters immediately: `C:\Windows\System32\onnxruntime.dll` is ORT 1.17.1 on many
+machines and wins the loader search. The runner refuses it by version and names `--ort-lib` in the
+refusal rather than loading it and failing later in a way that looks like an EP defect.
+
+### What it is not
+
+It is not a benchmark and it does not measure speed. It is not a replacement for `tests/ops`, which
+covers per-op semantics at a granularity no whole-model run reaches. And its host-free lane
+(`cargo test -p ort-model-runner`, wired into both build lanes) cannot see the guards that need a
+device — those are only claimed by a real run, and such runs are committed under
+`bench/results/rust-model-runner/` with an artifact frame that says which commit and which GPU
+produced them.
+
+---
+
 
 A green test suite and an executed dispatch are unrelated claims. A lane where every op declines,
 or every test skips, or every node quietly falls back to CPU under our provider's name, passes its

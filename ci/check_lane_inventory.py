@@ -132,6 +132,7 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Verdict vocabulary preflight", "hostfree.verdict_vocabulary"),
     ("cargo test --lib", "build.rust_unit_tests"),
     ("Rust unit tests", "build.rust_unit_tests"),
+    ("Model runner", "build.model_runner"),
     ("Portability lint", "build.portability_lint"),
     ("Layering lint", "build.layering_lint"),
     ("Portability lint", "build.portability_lint"),

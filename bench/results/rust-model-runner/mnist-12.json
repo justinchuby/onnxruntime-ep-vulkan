@@ -1,0 +1,152 @@
+{
+  "schema": "ort-model-runner/1",
+  "tool": "rust/modelrunner (ort-model-runner)",
+  "pass": true,
+  "outcome": "PASS",
+  "model": "mnist-12",
+  "onnx_file": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\models\\mnist-12.onnx",
+  "onnx_sha256": "5c688690f8bacf667d4c2074af5ad0646ca328d7ab03eccf944a65b320171bdd",
+  "onnx_bytes": 26143,
+  "model_provenance": "pinned",
+  "onnxruntime": {
+    "library": {
+      "path": "\\\\?\\C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan\\.venv\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime.dll",
+      "sha256": "3d6bd02dc137b9a1dfdac045a52b147ffb920bb06ab812b08fc8e14279859855",
+      "bytes": 17766752
+    },
+    "api_version": 28,
+    "version": "1.28.0",
+    "discovered_via": "--ort-lib"
+  },
+  "execution_provider": {
+    "registration_name": "VulkanExecutionProvider",
+    "library": {
+      "path": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-5\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "sha256": "d70c743915d29153aad3ad71d9c5dee86b065038d4304d1c5770d9f84fbdfcfb",
+      "bytes": 2388480
+    },
+    "devices": [
+      {
+        "index": 0,
+        "ep_name": "CPUExecutionProvider",
+        "ep_vendor": "Microsoft",
+        "hardware_type": "CPU",
+        "vendor_id": 32902,
+        "device_id": 7
+      },
+      {
+        "index": 1,
+        "ep_name": "VulkanExecutionProvider",
+        "ep_vendor": "onnxruntime-ep-vulkan",
+        "hardware_type": "GPU",
+        "vendor_id": 4318,
+        "device_id": 9648
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "name": "Input3",
+      "dtype": "float32",
+      "shape": [
+        1,
+        1,
+        28,
+        28
+      ],
+      "elements": 784,
+      "source": "generated"
+    }
+  ],
+  "free_dim_pins": [],
+  "seed": "0x5EED000000000001",
+  "tolerance": {
+    "rtol": 0.01,
+    "atol": 1e-5,
+    "source": "policy",
+    "rationale": "Eight layers of f32 Conv/Add/MaxPool with no normalisation; the same 1e-2 relative bound rust/tools/probe_model_output_agreement.py applies to whole-model f32 comparisons. The atol floor covers the near-zero logits that make a relative bound meaningless."
+  },
+  "attribution": {
+    "primary_witness": "onnxruntime profile (cat=Node)",
+    "corroborating_witness": "onnxruntime-ep-vulkan counters (dispatches_executed)",
+    "provider_node_counts": {
+      "CPUExecutionProvider": 6,
+      "VulkanExecutionProvider": 1
+    },
+    "profile_note": "",
+    "counters": {
+      "present": true,
+      "dispatches_executed": 2,
+      "claimed_nodes": 4,
+      "islands_offered": 1,
+      "compute_calls": 1,
+      "note": ""
+    },
+    "split_frame": false
+  },
+  "outputs": [
+    {
+      "name": "Plus214_Output_0",
+      "verdict": "EXACT",
+      "dtype": "float32",
+      "reference_shape": [
+        1,
+        10
+      ],
+      "candidate_shape": [
+        1,
+        10
+      ],
+      "elements": 10,
+      "max_abs_diff": 0,
+      "max_rel_diff": 0,
+      "worst_index": 0,
+      "reference_at_worst": 0,
+      "candidate_at_worst": 0,
+      "nan_reference": 0,
+      "nan_candidate": 0,
+      "reference_all_zero": false,
+      "detail": "bit-identical to the CPU reference"
+    }
+  ],
+  "timings_ms": {
+    "cpu_session_load": 9.957,
+    "cpu_run": 1.1647999999999998,
+    "vulkan_session_load": 97.79079999999999,
+    "vulkan_run": 28.786099999999998,
+    "total": 576.3975
+  },
+  "guards": [
+    {
+      "name": "model_identity_pinned",
+      "held": true,
+      "detail": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\models\\mnist-12.onnx sha256 5c688690f8bacf667d4c2074af5ad0646ca328d7ab03eccf944a65b320171bdd (26143 bytes), provenance=pinned"
+    },
+    {
+      "name": "vulkan_ep_device_present",
+      "held": true,
+      "detail": "1 device(s) named VulkanExecutionProvider: GPU 10de:25b0"
+    },
+    {
+      "name": "vulkan_ep_in_session",
+      "held": true,
+      "detail": "SessionOptionsAppendExecutionProvider_V2 accepted the Vulkan EpDevice and the session was created with it"
+    },
+    {
+      "name": "vulkan_executed_nodes",
+      "held": true,
+      "detail": "ORT's profile attributed 1 of 7 node executions to VulkanExecutionProvider: {\"CPUExecutionProvider\": 6, \"VulkanExecutionProvider\": 1}"
+    },
+    {
+      "name": "vulkan_dispatched_work",
+      "held": true,
+      "detail": "dispatches_executed=2 (claimed_nodes=Some(4), islands_offered=Some(1))"
+    },
+    {
+      "name": "outputs_agree",
+      "held": true,
+      "detail": "1 output(s); worst EXACT on \"Plus214_Output_0\": bit-identical to the CPU reference"
+    }
+  ]
+}
+

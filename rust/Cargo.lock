@@ -180,6 +180,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ort-model-runner"
+version = "0.28.0"
+dependencies = [
+ "libloading",
+ "onnxruntime-ep-vulkan",
+]
+
+[[package]]
 name = "presser"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
