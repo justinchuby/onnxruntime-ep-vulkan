@@ -952,6 +952,149 @@ def test_the_real_workflow_has_no_unclassified_gate_steps():
     assert r.returncode == EXIT_PASS, r.stdout
 
 # ---------------------------------------------------------------------------------------
+# ci/check_gh_auth.py — issue #21: semantic env parsing (block AND inline) and a
+# zero-gh-reaching-subject frame that fails loudly by default instead of a silent PASS.
+# ---------------------------------------------------------------------------------------
+
+
+def test_inline_env_form_is_not_falsely_convicted(tmp_path):
+    """The exact PR #17 review finding: `env: {GH_TOKEN: ...}` on one line is the
+    remediation text, not the defect. Paired with the block form, which must satisfy
+    the check identically."""
+    inline = tmp_path / "inline.yml"
+    inline.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n"
+        "        env: {GH_TOKEN: ${{ github.token }}}\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(inline))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+    block = tmp_path / "block.yml"
+    block.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        env:\n          GH_TOKEN: ${{ github.token }}\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(block))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+
+def test_inline_env_at_job_and_workflow_scope_is_visible_to_its_steps(tmp_path):
+    job_scope = tmp_path / "job.yml"
+    job_scope.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    env: {GH_TOKEN: x}\n    steps:\n      - name: s\n        run: gh issue list\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(job_scope))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+    workflow_scope = tmp_path / "workflow.yml"
+    workflow_scope.write_text(
+        "name: p\non: push\nenv: {GITHUB_TOKEN: x}\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        run: gh issue list\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(workflow_scope))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+
+def test_a_wrongly_named_env_key_is_still_convicted(tmp_path):
+    """Neither YAML shape should let a key that merely resembles GH_TOKEN pass."""
+    wf = tmp_path / "wrong.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        env: {TOKEN: x}\n        run: gh pr list\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+
+
+def test_zero_gh_reaching_subjects_fails_loudly_by_default(tmp_path):
+    """Issue #21's second review finding: a frame with real steps but nothing that
+    reaches `gh` must not read the same as a healthy screen. It is ERROR(instrument),
+    unless the caller explicitly asks for --allow-empty-frame."""
+    wf = tmp_path / "no-gh.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        run: echo hi\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=zero_gh_reaching_subjects)" in r.stdout
+
+    r = run_check("check_gh_auth.py", "--allow-empty-frame", str(wf))
+    assert r.returncode == EXIT_PASS
+    assert "allow-empty-frame" in r.stdout
+
+
+def test_a_directory_argument_is_expanded_and_an_empty_one_still_errors(tmp_path):
+    """A caller may name a whole directory instead of individual files; every
+    `*.yml`/`*.yaml` under it (recursively) is screened, and a directory with none in
+    it at all is the wrong-scope/wrong-working-directory failure this screen exists to
+    surface — never a silent pass over nothing."""
+    nested = tmp_path / "workflows" / "sub"
+    nested.mkdir(parents=True)
+    (nested / "reachable.yml").write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    env: {GH_TOKEN: x}\n    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(tmp_path / "workflows"))
+    assert r.returncode == EXIT_PASS, r.stdout
+    assert "1 `gh`-reaching step" in r.stdout
+
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    r = run_check("check_gh_auth.py", str(empty_dir))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=empty_workflow_directory)" in r.stdout
+
+
+def test_a_directory_scope_does_not_let_a_missing_token_hide_in_a_subdirectory(tmp_path):
+    """The wiring concern issue #21 raises directly: screening a broader directory must
+    still catch an offending step nested under it, not stop at the top level."""
+    nested = tmp_path / "workflows" / "sub"
+    nested.mkdir(parents=True)
+    (nested / "offender.yml").write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(tmp_path / "workflows"))
+    assert r.returncode == EXIT_FAIL_CONDITION
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+
+
+def test_the_real_workflows_directory_passes_via_directory_expansion():
+    """The wiring change itself: ci.yml now points the screen at the whole
+    .github/workflows directory rather than two named files, so a workflow added
+    later — or moved into a subdirectory — is screened without anyone extending a
+    command line."""
+    r = run_check("check_gh_auth.py", str(REPO_ROOT / ".github" / "workflows"))
+    assert r.returncode == EXIT_PASS, r.stdout
+    assert "gh`-reaching step" in r.stdout
+
+
+def test_screening_only_the_gh_free_conformance_workflow_errors_not_passes():
+    """conformance.yml genuinely has no `gh`-reaching step of its own. Screening it
+    alone is exactly the wrong-scope/subdirectory shape issue #21 exists to catch, and
+    it must never read as a clean PASS."""
+    r = run_check(
+        "check_gh_auth.py", str(REPO_ROOT / ".github" / "workflows" / "conformance.yml")
+    )
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=zero_gh_reaching_subjects)" in r.stdout
+
+
+# ---------------------------------------------------------------------------------------
 # ci/check_tautological_assertions.py
 #
 # This screen reports 0 detections over the real tree, so every scrap of evidence that it

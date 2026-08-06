@@ -347,10 +347,19 @@ jobs:
         # _open_reds.py` -> `check_open_reds.py` -> the `main_is_green` entry's cmd ->
         # `check_main_is_green.py` -> `gh run list`, which is the exact chain that had no
         # token). For each one it requires GH_TOKEN or GITHUB_TOKEN to be declared in an
-        # `env:` block this step can actually see -- workflow, job, or the step itself --
+        # `env:` block this step can actually see -- workflow, job, or the step itself,
+        # recognising both the block and inline YAML forms of `env:` semantically rather
+        # than by line shape (issue #21: the inline form was being falsely convicted) --
         # and fails naming the step when none is. It only reads env KEY names, never a
         # value, so it cannot print a token even by accident.
-        run: python ci/check_gh_auth.py .github/workflows/ci.yml .github/workflows/conformance.yml
+        #
+        # Issue #21: pointed at the WHOLE .github/workflows directory, not two files
+        # named on the command line, so a workflow added later is screened from the day
+        # it exists rather than the day someone remembers to extend this line -- and a
+        # zero-`gh`-reaching-subject frame (this screen pointed at the wrong scope, a
+        # subdirectory, or a stale path) is a loud ERROR(instrument=
+        # zero_gh_reaching_subjects) by default, never a silent PASS.
+        run: python ci/check_gh_auth.py .github/workflows
 
       - name: GH-invocation auth negative control (demand red without a token, never a skip)
         # LIVE arm proves the thing issue #16 actually asked for: with GH_TOKEN and
@@ -363,10 +372,17 @@ jobs:
         # above at this repository's own ci.yml as it stood at b1886d9 -- one commit
         # before this fix -- and requires FAIL(condition=missing_token_path) naming the
         # Open-reds negative control step; the same screen over today's bytes is PASS, so
-        # it is not a constant. The rest are PLANTED: a synthetic `gh api` call with no
-        # token anywhere, a token declared in the wrong job, a non-API `gh --version` call
-        # that must NOT be flagged, and a step that reaches `gh` only through another
-        # script.
+        # it is not a constant. Issue #21 added: the whole workflows directory still
+        # passes via directory expansion; screening only conformance.yml (which has zero
+        # real gh-reaching steps) is ERROR, never a silent PASS; the inline `env: {...}`
+        # form satisfies the token check exactly like the block form; a wrongly-named
+        # env key does not; a workflow with steps but zero gh-reaching subjects is ERROR
+        # by default and PASS only with --allow-empty-frame; an empty or mis-scoped
+        # directory is ERROR; and directory expansion recurses into subdirectories so a
+        # nested workflow cannot hide from a broader invocation. The rest are the
+        # original PLANTED arms: a synthetic `gh api` call with no token anywhere, a
+        # token declared in the wrong job, a non-API `gh --version` call that must NOT be
+        # flagged, and a step that reaches `gh` only through another script.
         run: python ci/negative_control_gh_auth.py
 
       - name: Tautological-assertion screen (no GPU, whole tree)
