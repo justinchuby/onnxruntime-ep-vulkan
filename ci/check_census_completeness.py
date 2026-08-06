@@ -815,6 +815,21 @@ def print_report(surfaces, frame, cov, mechanisms, rows_extent, rows_name, artif
 
 
 def main_guarded(argv=None) -> int:
+    # Make this screen's own stdout able to carry its own report.  The map's prose
+    # legitimately contains non-ASCII (section signs, em dashes, arrows), and on a
+    # Windows console stdout defaults to cp1252, so a single character outside that
+    # codepage made `print` raise UnicodeEncodeError *after* the screen had already
+    # done its work correctly.  That surfaced as ERROR(instrument=screen_raised) --
+    # explicitly NOT a detection under DESIGN.md 10.0.1 R13 -- which means a real
+    # unmapped surface would have been reported as an outage instead of as the gap
+    # it is.  Reconfiguring to UTF-8 with `errors="backslashreplace"` keeps the
+    # report readable on any console and makes an unprintable character degrade to
+    # an escape rather than to a crash.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, ValueError):  # not a reconfigurable text stream
+            pass
     try:
         return main(argv)
     except SystemExit as exc:  # argparse
