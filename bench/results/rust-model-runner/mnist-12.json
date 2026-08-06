@@ -21,9 +21,9 @@
   "execution_provider": {
     "registration_name": "VulkanExecutionProvider",
     "library": {
-      "path": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-5\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
-      "sha256": "d70c743915d29153aad3ad71d9c5dee86b065038d4304d1c5770d9f84fbdfcfb",
-      "bytes": 2388480
+      "path": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-39\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "sha256": "5b99386a19b7e22494ec5ee812389dd0686ef16e519fd1825a17786ef407f8e2",
+      "bytes": 2393088
     },
     "devices": [
       {
@@ -110,11 +110,11 @@
     }
   ],
   "timings_ms": {
-    "cpu_session_load": 9.957,
-    "cpu_run": 1.1647999999999998,
-    "vulkan_session_load": 97.79079999999999,
-    "vulkan_run": 28.786099999999998,
-    "total": 576.3975
+    "cpu_session_load": 25.37,
+    "cpu_run": 0.7542,
+    "vulkan_session_load": 113.6909,
+    "vulkan_run": 29.1787,
+    "total": 1042.3865
   },
   "guards": [
     {

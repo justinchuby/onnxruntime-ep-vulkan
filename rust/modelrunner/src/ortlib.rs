@@ -289,6 +289,11 @@ pub fn load(discovered: Discovered) -> Result<LoadedOrt> {
     // On Windows, ORT's dll pulls in siblings from its own directory (providers_shared, DirectML
     // where present). Prepending its directory to PATH is the portable way to say "look there
     // first" without reaching for SetDllDirectoryW.
+    //
+    // This prepends the *resolved library's own* directory and nothing else. It is not a search
+    // fallback: `discover` has already refused anything ambiguous or absent, so this only tells
+    // the loader where the siblings of an already-chosen file live. No directory the caller did
+    // not effectively name is ever added.
     #[cfg(target_os = "windows")]
     if let Some(dir) = discovered.path.parent() {
         let current = std::env::var("PATH").unwrap_or_default();
@@ -296,6 +301,14 @@ pub fn load(discovered: Discovered) -> Result<LoadedOrt> {
         // SAFETY: called before any session exists and before any thread is spawned by this
         // process; ORT itself has not been loaded yet, so nothing is reading PATH concurrently.
         unsafe { std::env::set_var("PATH", joined) };
+    }
+    // The deliberate other arm. `dlopen` resolves `DT_NEEDED` siblings via the library's own
+    // RUNPATH and the loader cache, so there is nothing to do -- but an absent arm and an
+    // intentionally empty one look identical in a diff, and portability rule P2 exists because
+    // that ambiguity is how a platform ends up with a hole. Saying it costs three lines.
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Nothing: the ELF loader already looks beside the library it is loading.
     }
 
     // SAFETY: loading an arbitrary shared library runs its initialisers. The path is either an
