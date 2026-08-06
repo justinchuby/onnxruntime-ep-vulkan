@@ -571,6 +571,19 @@ device — those are only claimed by a real run, and such runs are committed und
 `bench/results/rust-model-runner/` with an artifact frame that says which commit and which GPU
 produced them.
 
+### Before citing a committed reading, check its frame
+
+```console
+$ python ci/check_artifact_frame.py bench/results/rust-model-runner
+```
+
+The committed readings are stamped against the commit and the GPU that produced them. That
+directory is deliberately **not** registered in `ci/open_reds.json`: a gating entry over
+`rust/src` would go red on the next unrelated EP commit with nobody committed to re-taking the
+reading that day, which is how a real screen becomes one people switch off. The frame is there so
+the staleness is *readable on demand* instead of invisible. Re-taking it is one command on any
+machine with a Vulkan device — no Python, no package index, which is the whole reason this exists.
+
 ---
 
 
