@@ -1,0 +1,23 @@
+{
+  "model": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\models\\mnist-12.onnx",
+  "providers": [
+    "VulkanExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "outputs": [
+    {
+      "name": "Plus214_Output_0",
+      "shape": [
+        1,
+        10
+      ],
+      "dtype": "float32",
+      "max_abs": 0.0,
+      "max_rel": 0.0,
+      "all_zero_vk": false,
+      "verdict": "AGREE"
+    }
+  ],
+  "worst_max_rel": 0.0,
+  "verdict": "AGREE"
+}

@@ -92,6 +92,7 @@ impl EdgeType {
 pub struct NodeView<'graph> {
     api: *const ort::OrtApi,
     node: *const ort::OrtNode,
+    facts: Option<&'graph crate::shape_infer::InferredShapes>,
     _graph: std::marker::PhantomData<&'graph ()>,
 }
 
@@ -104,6 +105,29 @@ impl<'graph> NodeView<'graph> {
         NodeView {
             api,
             node,
+            facts: None,
+            _graph: std::marker::PhantomData,
+        }
+    }
+
+    /// Wrap a node together with the graph-level rank facts proved by [`crate::shape_infer`].
+    ///
+    /// The overlay is applied inside [`NodeView::edge_type`], so every predicate that reads an
+    /// input or output type sees the refined reading without knowing the pass exists. The overlay
+    /// only ever *adds* information — see [`crate::shape_infer::InferredShapes::refine`], which
+    /// keeps ORT's reading whole whenever the two disagree.
+    ///
+    /// # Safety
+    /// Same contract as [`NodeView::new`].
+    pub unsafe fn new_with_facts(
+        api: *const ort::OrtApi,
+        node: *const ort::OrtNode,
+        facts: &'graph crate::shape_infer::InferredShapes,
+    ) -> NodeView<'graph> {
+        NodeView {
+            api,
+            node,
+            facts: Some(facts),
             _graph: std::marker::PhantomData,
         }
     }
@@ -262,8 +286,19 @@ impl<'graph> NodeView<'graph> {
         }
     }
 
-    /// Resolve one `OrtValueInfo` to an [`EdgeType`].
+    /// Resolve one `OrtValueInfo` to an [`EdgeType`], applying the rank overlay if one is
+    /// installed.
     fn edge_type(&self, slot: *const ort::OrtValueInfo) -> Option<EdgeType> {
+        self.edge_type_inner(slot, true)
+    }
+
+    /// Resolve one `OrtValueInfo` to exactly what ORT reported, overlay or no overlay.
+    fn edge_type_raw(&self, slot: *const ort::OrtValueInfo) -> Option<EdgeType> {
+        self.edge_type_inner(slot, false)
+    }
+
+    /// Resolve one `OrtValueInfo` to an [`EdgeType`].
+    fn edge_type_inner(&self, slot: *const ort::OrtValueInfo, refine: bool) -> Option<EdgeType> {
         if slot.is_null() {
             return None;
         }
@@ -344,8 +379,36 @@ impl<'graph> NodeView<'graph> {
                 }
             }
 
-            Some(EdgeType { dtype, shape })
+            Some(EdgeType {
+                dtype,
+                shape: if refine {
+                    self.refine_shape(slot, shape)
+                } else {
+                    shape
+                },
+            })
         }
+    }
+
+    /// Apply the graph-level rank overlay, if one was installed, to one edge reading.
+    ///
+    /// A `NodeView` built with [`NodeView::new`] has no overlay and returns the reading unchanged,
+    /// which is what every existing unit test and the `Compile` path get.
+    fn refine_shape(
+        &self,
+        slot: *const ort::OrtValueInfo,
+        shape: Option<Vec<i64>>,
+    ) -> Option<Vec<i64>> {
+        let Some(facts) = self.facts else {
+            return shape;
+        };
+        // SAFETY: `slot` is the same live, graph-owned value info the caller just read a type
+        // from, and `self.api` is live per the constructor's contract.
+        let name = unsafe { value_info_name(self.api, slot) };
+        if name.is_empty() {
+            return shape;
+        }
+        facts.refine(&name, shape.as_deref()).or(shape)
     }
 
     /// Type of input `i`, or `None` if the slot is absent (omitted optional input) or untyped.
@@ -358,6 +421,18 @@ impl<'graph> NodeView<'graph> {
     pub fn output_type(&self, i: usize) -> Option<EdgeType> {
         let slots = self.output_slots();
         self.edge_type(*slots.get(i)?)
+    }
+
+    /// Type of output `i` **exactly as ORT reported it**, bypassing the rank overlay.
+    ///
+    /// For the one predicate that must distinguish "ORT resolved this output" from "this EP
+    /// worked the rank out": `Reshape`'s target is a runtime *value*, so a rank this pass proved
+    /// is not a shape `Compute()` can bind, and claiming on it would be a broken commitment
+    /// rather than a fallback. Every other row reasons about ranks that follow from input shapes,
+    /// which the dynamic-kernel path re-reads from ORT at `Compute()`.
+    pub fn output_type_as_reported(&self, i: usize) -> Option<EdgeType> {
+        let slots = self.output_slots();
+        self.edge_type_raw(*slots.get(i)?)
     }
 
     /// All input types in order. `None` entries are omitted optional inputs.
@@ -404,6 +479,75 @@ impl<'graph> NodeView<'graph> {
             }
             is_const
         }
+    }
+
+    /// Whether any of this node's edge readings came from the rank overlay rather than from ORT.
+    ///
+    /// [`crate::shape_infer::InferredShapes`] only retains values whose shape the pass proved
+    /// *beyond* what ORT declared, so an entry for any of this node's edges means a predicate that
+    /// read that edge saw something ORT did not report. Recorded in the claim log so the record
+    /// never implies ORT said more than it did.
+    pub fn rank_inferred(&self) -> bool {
+        let Some(facts) = self.facts else {
+            return false;
+        };
+        self.input_slots()
+            .into_iter()
+            .chain(self.output_slots())
+            .any(|s| {
+                // SAFETY: `s` is a live, graph-owned value info (or null, which
+                // `value_info_name` handles) and `self.api` is live.
+                let name = unsafe { value_info_name(self.api, s) };
+                facts.shape(&name).is_some()
+            })
+    }
+
+    /// Input value names in order. An omitted optional input yields an empty string, as does a
+    /// slot whose name ORT declines to report.
+    pub fn input_names(&self) -> Vec<String> {
+        self.input_slots()
+            .into_iter()
+            // SAFETY: each slot is a live, graph-owned value info (or null, which
+            // `value_info_name` handles) and `self.api` is live.
+            .map(|s| unsafe { value_info_name(self.api, s) })
+            .collect()
+    }
+
+    /// Output value names in order. See [`NodeView::input_names`].
+    pub fn output_names(&self) -> Vec<String> {
+        self.output_slots()
+            .into_iter()
+            // SAFETY: as for `input_names`.
+            .map(|s| unsafe { value_info_name(self.api, s) })
+            .collect()
+    }
+
+    /// Read the shape and, for small integer tensors, the element values of a constant initializer.
+    ///
+    /// Returns `(shape, ints)`. `ints` is `Some` only for `INT32`/`INT64` tensors of at most
+    /// `max_ints` elements whose bytes ORT actually handed us; every other case yields the shape
+    /// alone. The shape is a property of *stored data*, so unlike an inference result a rank-0
+    /// answer here genuinely means "scalar" — this is the only sound source of a rank-0 fact
+    /// (see [`crate::shape_infer`]).
+    ///
+    /// Returns `None` when the input is absent, is not a constant initializer, or when any part of
+    /// the read fails. Never partially reports: an unreadable tensor is simply not a fact.
+    pub fn constant_input_tensor(
+        &self,
+        i: usize,
+        max_ints: usize,
+    ) -> Option<(Vec<i64>, Option<Vec<i64>>)> {
+        if !self.input_is_constant(i) {
+            return None;
+        }
+        let slots = self.input_slots();
+        let &slot = slots.get(i)?;
+        if slot.is_null() {
+            return None;
+        }
+        // SAFETY: `slot` is a live, graph-owned value info that `input_is_constant` just confirmed
+        // is a constant initializer, and `self.api` is live for the whole call.
+        unsafe { read_constant_tensor(self.api, slot, max_ints) }
     }
 
     /// Borrow one attribute by name, if the node has it.
@@ -674,6 +818,13 @@ pub fn dtype_from_onnx_value(v: i64) -> Option<DType> {
 // Public helpers for `compile_impl` (ep.rs boundary layer)
 // -------------------------------------------------------------------------------------------
 
+/// Rank ceiling for a constant initializer read at `GetCapability` time.
+///
+/// The shape-inference pass only ever reads shape vectors and axis lists, which are rank 0 or 1.
+/// A higher rank is not an error, it is simply not something this path needs, so it is refused
+/// rather than allocated for.
+const MAX_CONSTANT_RANK: usize = 1;
+
 /// Read the name of an `OrtValueInfo` pointer.
 ///
 /// Returns an empty string on any failure (null pointer, missing API entry, ORT error).
@@ -703,9 +854,150 @@ pub unsafe fn value_info_name(api: *const ort::OrtApi, vi: *const ort::OrtValueI
     }
 }
 
-/// Read the [`EdgeType`] of a standalone `OrtValueInfo` pointer.
+/// Read a constant initializer's shape and, when it is a small integer tensor, its values.
+////// Equivalent to `NodeView::edge_type(slot)` but usable outside of `NodeView`'s method context,
+/// The shape is always returned when the type info reads; the values are returned only for
+/// `INT32`/`INT64` tensors of at most `max_ints` elements. Symbolic dimensions cannot occur here
+/// — an initializer has stored data — but a negative extent is still rejected rather than trusted.
 ///
-/// Equivalent to `NodeView::edge_type(slot)` but usable outside of `NodeView`'s method context,
+/// # Safety
+/// `api` must be a live `OrtApi`; `vi` must be a live `OrtValueInfo` owned by an ORT graph that
+/// outlives this call, and it must name a constant initializer.
+unsafe fn read_constant_tensor(
+    api: *const ort::OrtApi,
+    vi: *const ort::OrtValueInfo,
+    max_ints: usize,
+) -> Option<(Vec<i64>, Option<Vec<i64>>)> {
+    // SAFETY: reading the immutable function table of a live `OrtApi` is a plain field read.
+    let (get_init, get_tts, get_et, get_n, get_d, release_info) = unsafe {
+        (
+            (*api).ValueInfo_GetInitializerValue?,
+            (*api).GetTensorTypeAndShape?,
+            (*api).GetTensorElementType?,
+            (*api).GetDimensionsCount?,
+            (*api).GetDimensions?,
+            (*api).ReleaseTensorTypeAndShapeInfo?,
+        )
+    };
+
+    let mut value: *const ort::OrtValue = std::ptr::null();
+    // SAFETY: `vi` is live per the fn contract and `value` is a valid out-parameter slot. The
+    // `OrtValue` ORT writes is **borrowed** from the graph's initializer storage — the C API
+    // declares it const and documents no release — so it must not be released here.
+    let st = unsafe { get_init(vi, &mut value) };
+    if !st.is_null() {
+        // SAFETY: `api` and `st` are live; the status is ours to release.
+        unsafe { sys::release_status(api, st) };
+        return None;
+    }
+    if value.is_null() {
+        return None;
+    }
+
+    let mut info: *mut ort::OrtTensorTypeAndShapeInfo = std::ptr::null_mut();
+    // SAFETY: `value` is a live `OrtValue`; `info` is a valid out-parameter slot. Unlike the value
+    // above, this info is **owned** by us and is released on every path below.
+    let st = unsafe { get_tts(value, &mut info) };
+    if !st.is_null() {
+        // SAFETY: `api` and `st` are live.
+        unsafe { sys::release_status(api, st) };
+        return None;
+    }
+    if info.is_null() {
+        return None;
+    }
+
+    // Everything from here on must release `info`, so it runs in a closure whose result is
+    // returned after the release.
+    let read = || -> Option<(Vec<i64>, Option<Vec<i64>>)> {
+        let mut et = ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+        // SAFETY: `info` is a live, non-null info produced above; `&mut et` is a valid slot.
+        let st = unsafe { get_et(info, &mut et) };
+        if !st.is_null() {
+            // SAFETY: `api` and `st` are live.
+            unsafe { sys::release_status(api, st) };
+            return None;
+        }
+
+        let mut rank: usize = 0;
+        // SAFETY: `info` is live; `&mut rank` is a valid slot.
+        let st = unsafe { get_n(info, &mut rank) };
+        if !st.is_null() {
+            // SAFETY: `api` and `st` are live.
+            unsafe { sys::release_status(api, st) };
+            return None;
+        }
+        if rank > MAX_CONSTANT_RANK {
+            return None;
+        }
+        let mut dims = vec![0i64; rank];
+        if rank > 0 {
+            // SAFETY: `info` is live and `dims` holds exactly `rank` writable `i64` slots.
+            let st = unsafe { get_d(info, dims.as_mut_ptr(), rank) };
+            if !st.is_null() {
+                // SAFETY: `api` and `st` are live.
+                unsafe { sys::release_status(api, st) };
+                return None;
+            }
+        }
+        if dims.iter().any(|d| *d < 0) {
+            return None; // stored data cannot have a symbolic extent; refuse the whole reading
+        }
+
+        let mut count: usize = 1;
+        for d in &dims {
+            let d = usize::try_from(*d).ok()?;
+            count = count.checked_mul(d)?;
+        }
+
+        let is_i32 = et == ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32;
+        let is_i64 = et == ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64;
+        if !(is_i32 || is_i64) || count > max_ints {
+            return Some((dims, None));
+        }
+
+        // SAFETY: reading the immutable function table of a live `OrtApi`.
+        let Some(get_data) = (unsafe { (*api).GetTensorData }) else {
+            return Some((dims, None));
+        };
+        let mut data: *const std::ffi::c_void = std::ptr::null();
+        // SAFETY: `value` is a live `OrtValue` and `data` is a valid out-parameter slot.
+        let st = unsafe { get_data(value, &mut data) };
+        if !st.is_null() {
+            // SAFETY: `api` and `st` are live.
+            unsafe { sys::release_status(api, st) };
+            return Some((dims, None));
+        }
+        if data.is_null() {
+            // A zero-element tensor legitimately has no buffer; anything else is unreadable.
+            return Some((dims, if count == 0 { Some(Vec::new()) } else { None }));
+        }
+
+        // SAFETY: ORT reported this tensor as `count` elements of the element type just read, and
+        // `data` is the start of its contiguous buffer, which is owned by the graph's initializer
+        // storage and outlives this call. The slice is therefore `count` valid, initialised,
+        // correctly-aligned elements of exactly that type, and is only read from.
+        let ints = unsafe {
+            if is_i32 {
+                std::slice::from_raw_parts(data.cast::<i32>(), count)
+                    .iter()
+                    .map(|v| i64::from(*v))
+                    .collect()
+            } else {
+                std::slice::from_raw_parts(data.cast::<i64>(), count).to_vec()
+            }
+        };
+        Some((dims, Some(ints)))
+    };
+
+    let out = read();
+    // SAFETY: `info` is the non-null, live info produced above and is not used afterwards.
+    unsafe { release_info(info) };
+    out
+}
+
+/// Read the [`EdgeType`] of a standalone `OrtValueInfo` pointer.
+////// Equivalent to `NodeView::edge_type(slot)` but usable outside of `NodeView`'s method context,
 /// so that `compile_impl` can build [`crate::engine::TensorDesc`] for graph inputs/outputs.
 ///
 /// Returns `None` for null pointers, non-tensor types, or when ORT's type-info API is absent.
@@ -3616,6 +3908,10 @@ pub struct ClaimAudit {
     pub ledger_hit: bool,
     /// `PROVEN` / `PROVEN-ELSEWHERE` / `UNPROVEN` for this node on **this device** (§10.0.1 R12).
     pub proof_state: ProofState,
+    /// Whether any edge reading this decision rested on came from the graph-level rank overlay
+    /// (§8.11) rather than from ORT directly. Recorded so the claim log's `input_shapes` and
+    /// `output_shapes` are never mistaken for ORT's own answers. See [`NodeView::rank_inferred`].
+    pub rank_inferred: bool,
 }
 
 impl ClaimAudit {
@@ -3662,6 +3958,7 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
             proof_key: None,
             ledger_hit: false,
             proof_state: ProofState::Unproven,
+            rank_inferred: view.rank_inferred(),
         };
     };
 
@@ -3867,6 +4164,7 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
         proof_key: Some(proof_key),
         ledger_hit,
         proof_state: form_state,
+        rank_inferred: view.rank_inferred(),
     }
 }
 
