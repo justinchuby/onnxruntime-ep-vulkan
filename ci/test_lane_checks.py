@@ -16,6 +16,7 @@ lane where the thing they check is broken.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -1512,6 +1513,311 @@ def test_lane_checks_job_has_no_depth_limited_fetch_before_the_ledger_census_iss
             f"(shared .git/shallow), not just the fetched ref, poisoning the census's "
             f"history-completeness guard for the rest of the job: {line!r}"
         )
+
+
+# ---------------------------------------------------------------------------------------
+# ISSUE #24 -- a real import-closure contract, not a string search.
+#
+# Morpheus's round-N review of PR #32 (APPROVE WITH REQUIRED FIXES) rejected the first
+# version of this guard on two counts: (1) the fix it guarded hand-copied a SECOND
+# package list into the lane-checks job instead of using tests/requirements.txt, the one
+# authoritative floor list already used by the Windows build-test job; (2) the guard
+# itself only asserted that two literal substrings ("onnx_ir", "onnxruntime") appeared
+# somewhere in the step's text, which a stray comment mentioning either word would also
+# satisfy, and which says nothing about whether tests/ops/conftest.py's actual import
+# list is still fully covered.
+#
+# What follows derives the CLAIM (which third-party names conftest.py needs) from the
+# source file itself via `ast`, derives what tests/requirements.txt PROMISES via its own
+# text, and asserts the two agree -- plus that the lane-checks job installs from that one
+# file. Three buckets, none silent: every module-scope import root is stdlib, a local
+# sibling file, or a third-party name that must appear (after PEP 503 normalization) in
+# tests/requirements.txt.
+# ---------------------------------------------------------------------------------------
+
+CONFTEST_PATH = REPO_ROOT / "tests" / "ops" / "conftest.py"
+REQUIREMENTS_PATH = REPO_ROOT / "tests" / "requirements.txt"
+
+#: Import root name -> PyPI distribution name, for cases where PEP 503 normalization of
+#: the import name does not equal the normalized distribution name on its own. `onnx_ir`
+#: imports as `onnx_ir` but its distribution is `onnx-ir` (`pip show onnx_ir` in the repo
+#: .venv reports `Name: onnx-ir`) -- normalization alone already bridges this particular
+#: one (both sides fold to `onnx-ir`), but it is listed explicitly so the mapping is a
+#: real, present, fail-loud table rather than something relying on a coincidence between
+#: two independent naming schemes. A genuinely divergent case (`import cv2` -> the
+#: `opencv-python` distribution, `import yaml` -> `PyYAML`) would have to be added here
+#: explicitly, or this check would wrongly report the import as uncovered.
+IMPORT_TO_DISTRIBUTION: dict[str, str] = {
+    "onnx_ir": "onnx-ir",
+}
+
+
+def _extract_module_scope_import_roots(py_file: Path) -> set[str]:
+    """Root package names of every *unconditional, module-scope* import in py_file.
+
+    Only direct children of the module body (`tree.body`) are considered: an import
+    guarded by `if TYPE_CHECKING:`, wrapped in `try/except ImportError:`, or nested in a
+    function/class body is conditional or deferred, and does not reproduce issue #24's
+    failure mode -- collection only fails because these particular names are imported
+    UNCONDITIONALLY at collection time, for every test under the directory, regardless of
+    which one is selected. `ast`, not text search, so a docstring or comment containing
+    the word "import" cannot be mistaken for one.
+    """
+    tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+    roots: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                roots.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level and node.level > 0:
+                continue  # `from . import x` -- always local, never third-party.
+            if node.module:
+                roots.add(node.module.split(".")[0])
+    return roots
+
+
+def _local_module_roots(directory: Path) -> set[str]:
+    """Names importable as a sibling of a file in `directory` purely by file presence:
+    `<name>.py` or `<name>/__init__.py`. This is how pytest's rootdir-relative import
+    makes `tests/ops/_verdict.py` reachable as `import _verdict` from
+    `tests/ops/conftest.py` -- a real local module, not a third-party package that
+    happens to be missing from tests/requirements.txt."""
+    names: set[str] = set()
+    for entry in directory.iterdir():
+        if entry.is_file() and entry.suffix == ".py":
+            names.add(entry.stem)
+        elif entry.is_dir() and (entry / "__init__.py").exists():
+            names.add(entry.name)
+    return names
+
+
+def _classify_import_roots(
+    roots: set[str], local_dir: Path
+) -> tuple[set[str], set[str], set[str]]:
+    """Partition import roots into (stdlib, local, third_party). Every root lands in
+    exactly one bucket -- there is no silent fourth category. `local` is checked first:
+    a name that is both a local sibling file and a stdlib name is a real local import in
+    this directory (shadowing), so local wins over stdlib on purpose."""
+    local_names = _local_module_roots(local_dir)
+    stdlib_names = set(sys.stdlib_module_names)
+    stdlib, local, third_party = set(), set(), set()
+    for root in roots:
+        if root in local_names:
+            local.add(root)
+        elif root in stdlib_names:
+            stdlib.add(root)
+        else:
+            third_party.add(root)
+    return stdlib, local, third_party
+
+
+def _normalize_distribution_name(name: str) -> str:
+    """PEP 503 normalization: case-fold, collapse runs of `-_.` into a single `-`."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _requirements_txt_distribution_names(requirements_path: Path) -> set[str]:
+    """Normalized distribution names declared in a requirements.txt file, ignoring
+    comments (whole-line or trailing) and version specifiers."""
+    names: set[str] = set()
+    for line in requirements_path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        m = re.match(r"^([A-Za-z0-9_.-]+)", line)
+        if m:
+            names.add(_normalize_distribution_name(m.group(1)))
+    return names
+
+
+def _uncovered_third_party_imports(
+    conftest_path: Path, requirements_path: Path
+) -> list[str]:
+    """Third-party import roots at conftest_path's module scope that are NOT covered by
+    a normalized distribution name in requirements_path (after IMPORT_TO_DISTRIBUTION).
+    Empty list means the import closure is fully covered."""
+    roots = _extract_module_scope_import_roots(conftest_path)
+    _stdlib, _local, third_party = _classify_import_roots(roots, conftest_path.parent)
+    declared = _requirements_txt_distribution_names(requirements_path)
+    uncovered = []
+    for root in sorted(third_party):
+        dist = IMPORT_TO_DISTRIBUTION.get(root, root)
+        if _normalize_distribution_name(dist) not in declared:
+            uncovered.append(root)
+    return uncovered
+
+
+def test_conftest_third_party_imports_are_covered_by_tests_requirements_txt_issue_24():
+    """ISSUE #24, the real contract: every third-party name `tests/ops/conftest.py`
+    imports unconditionally at module scope must have a matching, normalized entry in
+    `tests/requirements.txt` -- the file the lane-checks job (after this fix) actually
+    installs from. This is derived from both files' own content via `ast` and PEP 503
+    normalization, not asserted as a hardcoded pair of literal strings, so it keeps
+    holding if conftest.py's import list changes in either direction."""
+    uncovered = _uncovered_third_party_imports(CONFTEST_PATH, REQUIREMENTS_PATH)
+    assert not uncovered, (
+        f"tests/ops/conftest.py imports {uncovered!r} unconditionally at module scope, "
+        f"but tests/requirements.txt declares no matching distribution (after PEP 503 "
+        f"normalization and the IMPORT_TO_DISTRIBUTION table) for at least one of them. "
+        f"Any job that installs only from tests/requirements.txt will hit "
+        f"ModuleNotFoundError at collection time for every test under tests/ops/ -- "
+        f"issue #24's exact failure mode."
+    )
+
+
+def test_conftest_import_closure_check_fails_on_a_planted_uncovered_import(tmp_path):
+    """Positive control for the CHECK's own sensitivity (not for conftest.py): a fixture
+    conftest.py importing a package genuinely absent from a fixture requirements.txt must
+    be reported as uncovered. Without this, the test above could pass for the wrong
+    reason -- e.g. a `_uncovered_third_party_imports` that always returns an empty list."""
+    fixture_dir = tmp_path / "ops"
+    fixture_dir.mkdir()
+    (fixture_dir / "conftest.py").write_text(
+        "import definitely_not_a_stdlib_or_declared_package\n", encoding="utf-8"
+    )
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("numpy>=1.24\npytest>=8.0\n", encoding="utf-8")
+
+    uncovered = _uncovered_third_party_imports(fixture_dir / "conftest.py", requirements)
+    assert uncovered == ["definitely_not_a_stdlib_or_declared_package"], uncovered
+
+
+def test_conftest_import_closure_check_fails_when_a_real_requirement_is_removed():
+    """Negative-polarity fixture built from conftest.py's REAL import list (the actual
+    regression subject, not a synthetic stand-in), paired with a requirements.txt that
+    has had `onnx_ir` removed -- simulating exactly the historical bug: a job whose
+    install step forgot one of the packages tests/ops/conftest.py needs. This must be
+    caught even though conftest.py itself is untouched."""
+    real_roots = _extract_module_scope_import_roots(CONFTEST_PATH)
+    _stdlib, _local, real_third_party = _classify_import_roots(
+        real_roots, CONFTEST_PATH.parent
+    )
+    assert "onnx_ir" in real_third_party  # sanity: still true of the real file today
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        fixture_dir = tmp_path / "ops"
+        fixture_dir.mkdir()
+        # `_verdict.py` must be present alongside the copied conftest.py, or `_verdict`
+        # would misclassify as third-party (it is a real local sibling, not the subject
+        # of this test) and pollute the result with an unrelated finding.
+        shutil.copy(CONFTEST_PATH, fixture_dir / "conftest.py")
+        shutil.copy(
+            REPO_ROOT / "tests" / "ops" / "_verdict.py", fixture_dir / "_verdict.py"
+        )
+
+        full_requirements = REQUIREMENTS_PATH.read_text(encoding="utf-8")
+        trimmed = "\n".join(
+            line for line in full_requirements.splitlines() if "onnx_ir" not in line
+        )
+        requirements = tmp_path / "requirements.txt"
+        requirements.write_text(trimmed, encoding="utf-8")
+
+        uncovered = _uncovered_third_party_imports(
+            fixture_dir / "conftest.py", requirements
+        )
+    assert uncovered == ["onnx_ir"], uncovered
+
+
+def test_conftest_actually_collects_with_tests_requirements_txt_dependencies_issue_24():
+    """Supplements, but does not replace, the static AST-based coverage check above: a
+    subprocess collection of `harness_census_drift`'s own registered command, using the
+    CURRENT interpreter (which has tests/requirements.txt's packages installed in this
+    repo's .venv). This is real evidence that, given those dependencies, collection
+    genuinely succeeds. It does not by itself prove the CI job installs them -- that is
+    `test_lane_checks_job_installs_from_tests_requirements_txt_issue_24` below -- and it
+    says nothing about interpreters other than this one."""
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            str(REPO_ROOT / "tests" / "ops" / "test_harness_census.py"),
+        ],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert r.returncode == 0, f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    assert "ModuleNotFoundError" not in r.stdout, r.stdout
+    assert re.search(r"\b\d+ tests? collected\b", r.stdout), r.stdout
+
+
+def _lane_checks_job_body(ci_text: str) -> str:
+    """Extract the `lane-checks:` job's body from ci.yml's raw text -- the same job-
+    boundary convention `...issue_28` uses, factored out so both tests share it."""
+    lane_start = ci_text.index("\n  lane-checks:\n")
+    next_job = re.search(r"\n  [a-zA-Z][\w-]*:\n", ci_text[lane_start + 1 :])
+    lane_end = lane_start + 1 + next_job.start() if next_job else len(ci_text)
+    return ci_text[lane_start:lane_end]
+
+
+def _step_body(job_body: str, step_name: str) -> str:
+    """Every line belonging to a named step (from just after its `- name:` line up to,
+    but not including, the next step at the same indentation, or the job's end), with
+    whole-line `#` comments stripped -- so a check for what a step actually RUNS cannot
+    be satisfied by a comment merely mentioning the right words."""
+    m = re.search(rf"(?P<indent>[ \t]*)- name:\s*{re.escape(step_name)}\s*\n", job_body)
+    assert m, f"expected a step named {step_name!r} in this job"
+    indent = len(m.group("indent"))
+    rest = job_body[m.end() :]
+    next_step = re.search(rf"^[ \t]{{{indent}}}-\s", rest, re.MULTILINE)
+    body = rest[: next_step.start()] if next_step else rest
+    kept = [
+        line
+        for line in body.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    return "\n".join(kept)
+
+
+def test_lane_checks_job_installs_from_tests_requirements_txt_issue_24():
+    """ISSUE #24 (Morpheus review of PR #32, required fix 1). The lane-checks job's
+    prior fix hand-copied its own package list (`onnxruntime==... onnx>=... numpy
+    onnx_ir pytest`) -- a SECOND, independently-maintained answer to "what does
+    tests/ops/ need to import", diverging from tests/requirements.txt (the one
+    authoritative floor list, already used by the Windows build-test job's own "Install
+    Python test dependencies" step) the moment either one is edited without the other.
+    This asserts the job installs from that one file instead of a hand-copied list."""
+    lane_body = _lane_checks_job_body(
+        (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
+    step_body = _step_body(lane_body, "Install test dependencies")
+    assert re.search(r"-r\s+tests/requirements\.txt", step_body), (
+        f"the lane-checks job's 'Install test dependencies' step must install from "
+        f"tests/requirements.txt (`pip install -r tests/requirements.txt`), the one "
+        f"authoritative floor list, not a hand-copied second (or third) package list "
+        f"(comments mentioning the filename do not count -- this reads the step's "
+        f"non-comment lines only):\n{step_body}"
+    )
+
+
+def test_lane_checks_job_install_step_check_fails_on_the_prior_hand_copied_list():
+    """Negative-polarity fixture: this job's OWN prior form (issue #24's first pass,
+    approved-with-required-fixes by Morpheus) -- a hand-copied inline package list, not
+    sourced from tests/requirements.txt -- must be reported as NOT satisfying the
+    requirement above, proving this test's own sensitivity rather than a check that
+    would pass against anything."""
+    fixture_ci_yml = (
+        "name: p\non: push\njobs:\n"
+        "  lane-checks:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: Install test dependencies\n"
+        "        run: |\n"
+        '          python -m pip install --upgrade "onnxruntime==1.28.0" '
+        '"onnx>=1.22.0" numpy onnx_ir pytest\n'
+        "  next-job:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps: []\n"
+    )
+    lane_body = _lane_checks_job_body(fixture_ci_yml)
+    step_body = _step_body(lane_body, "Install test dependencies")
+    assert not re.search(r"-r\s+tests/requirements\.txt", step_body), step_body
 
 
 # ---------------------------------------------------------------------------------------
