@@ -3307,66 +3307,166 @@ def test_hardcoded_foundry_paths_negative_control_all_arms_pass():
 
 # ---------------------------------------------------------------------------
 # Result-identity contract (issue #19 follow-up, Morpheus review on PR #31) -- every
-# bench/results/ archival probe stamps the resolved ONNX model path and its exact SHA-256
+# PHI35_MODEL-reading probe stamps the resolved ONNX model path and its exact SHA-256
 # into its own output record, so a PHI35_MODEL override -- or a stale/corrupted cached
 # file silently sitting at the historical default path -- can never be silently absorbed
 # into the evidence: the record always names the exact bytes it was computed from.
+#
+# Discovery is repo-wide, not scoped to bench/results/*.py. The first pass at this
+# contract only glob-scanned bench/results/ and missed two siblings Morpheus's review
+# found: tests/ops/probe_validation_phi35.py reads PHI35_MODEL directly and writes its own
+# JSON record, and bench/results/probe_push_constants_written.py never reads PHI35_MODEL
+# itself but inherits it into a subprocess of probe_validation_phi35.py via
+# `dict(os.environ)` and writes its own JSON with no model identity at all. A glob scoped
+# to one directory cannot catch either shape; the scan below walks the whole tree and
+# separately detects the subprocess-inheritance shape.
 # ---------------------------------------------------------------------------
 
-_ARCHIVAL_PHI35_OVERRIDE = re.compile(r'os\.environ\.get\(\s*["\']PHI35_MODEL["\']')
+_PHI35_MODEL_READ = re.compile(r'os\.environ\.get\(\s*["\']PHI35_MODEL["\']')
+_JSON_WRITE = re.compile(r'json\.dumps?\(')
+_SUBPROCESS_SPAWNS_A_SCRIPT = re.compile(r'subprocess\.run\(\s*\[\s*sys\.executable')
+_SUBPROCESS_INHERITS_FULL_ENV = re.compile(r'dict\(os\.environ\)')
+
+_SCAN_EXCLUDED_DIRS = (".git", ".venv", "venv", "target", "node_modules", "__pycache__", ".squad")
 
 
-def _archival_probes_with_phi35_override() -> list[Path]:
-    """Every bench/results/*.py script that accepts the PHI35_MODEL replay override --
-    discovered, not hand-enumerated, so a new archival script is covered automatically
-    and a removed one does not leave a stale entry to maintain."""
+def _iter_all_python_files() -> list[Path]:
     out = []
-    for path in sorted((REPO_ROOT / "bench" / "results").glob("*.py")):
+    for path in sorted(REPO_ROOT.rglob("*.py")):
+        rel = path.relative_to(REPO_ROOT)
+        if any(part in _SCAN_EXCLUDED_DIRS for part in rel.parts):
+            continue
+        out.append(path)
+    return out
+
+
+def _phi35_model_direct_readers() -> list[Path]:
+    """Every *.py file anywhere in the repo that reads PHI35_MODEL from the environment
+    directly -- discovered by walking the whole tree, not a single directory's glob, so a
+    sibling reader anywhere else cannot evade this the way the bench/results/-only first
+    pass did."""
+    out = []
+    for path in _iter_all_python_files():
         text = path.read_text(encoding="utf-8")
-        if _ARCHIVAL_PHI35_OVERRIDE.search(text):
+        if _PHI35_MODEL_READ.search(text):
             out.append(path)
     return out
 
 
-def test_every_archival_phi35_probe_stamps_resolved_path_and_hash():
-    """Every archival script that accepts a PHI35_MODEL override must also define
-    `_result_identity()` and stamp both `onnx_file` and `onnx_sha256` into whatever it
-    writes -- a script that accepts an override but never records which file it actually
-    used could have that override silently substitute a different artifact with nothing
-    in the evidence to reveal it (Morpheus, PR #31 review)."""
-    probes = _archival_probes_with_phi35_override()
-    assert len(probes) >= 20, (
+def _phi35_subprocess_inheritors(direct_readers: list[Path]) -> list[Path]:
+    """A file need not read PHI35_MODEL itself to inherit the same silent-substitution
+    gap: spawning `sys.executable` against another script while handing it
+    `dict(os.environ)` passes that child whatever override is set with no code in the
+    parent ever naming PHI35_MODEL literally. Flagged only when the file also names one of
+    the direct readers by module stem (an import or a literal path), so an unrelated
+    subprocess call is not mistaken for this shape."""
+    reader_stems = {p.stem for p in direct_readers}
+    out = []
+    for path in _iter_all_python_files():
+        if path in direct_readers:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if not (_SUBPROCESS_SPAWNS_A_SCRIPT.search(text)
+                and _SUBPROCESS_INHERITS_FULL_ENV.search(text)):
+            continue
+        if any(stem in text for stem in reader_stems):
+            out.append(path)
+    return out
+
+
+def _writes_json_output(path: Path) -> bool:
+    return bool(_JSON_WRITE.search(path.read_text(encoding="utf-8")))
+
+
+def test_phi35_model_reader_discovery_is_repo_wide_not_bench_results_only():
+    """The exhaustiveness bound: a repo-wide scan must find the ~23 bench/results/
+    archival scripts AND tests/ops/probe_validation_phi35.py AND its sibling skip-gating
+    test tests/ops/test_push_constants_written.py -- the two files a bench/results/-only
+    glob structurally cannot reach, which is exactly what Morpheus's review found."""
+    readers = _phi35_model_direct_readers()
+    names = {p.relative_to(REPO_ROOT).as_posix() for p in readers}
+    assert "tests/ops/probe_validation_phi35.py" in names, sorted(names)
+    assert "tests/ops/test_push_constants_written.py" in names, sorted(names)
+    bench_results_readers = [n for n in names if n.startswith("bench/results/")]
+    assert len(bench_results_readers) >= 20, (
         f"expected the ~23 archival PHI35_MODEL scripts issue #19 migrated, found "
-        f"{len(probes)}: {[p.name for p in probes]}. This bound guards against the "
-        f"discovery glob itself silently finding nothing."
+        f"{len(bench_results_readers)}: {sorted(bench_results_readers)}"
     )
+    assert len(readers) >= 25, (
+        "a repo-wide scan finding fewer readers than the bench/results/-only glob alone "
+        "used to find would mean the wider walk itself is broken"
+    )
+
+
+def test_every_phi35_model_reader_that_writes_json_stamps_result_identity():
+    """Every repo-wide PHI35_MODEL reader that also writes a JSON record must stamp
+    `onnx_file`/`onnx_sha256` into it -- either by defining `_result_identity()` itself or
+    by importing one from a module that does (tests/ops/test_push_constants_written.py
+    reads PHI35_MODEL only to decide a pytest skip and never writes JSON itself, so it is
+    exempt from this one; discovery still finds it above, it just is not a writer)."""
+    readers = _phi35_model_direct_readers()
     missing = []
-    for path in probes:
+    for path in readers:
+        if not _writes_json_output(path):
+            continue
+        text = path.read_text(encoding="utf-8")
+        defines_own = (
+            "_result_identity" in text and '"onnx_file"' in text and '"onnx_sha256"' in text
+        )
+        imports_one = bool(re.search(r'import[^\n]*\b_result_identity\b', text))
+        if not (defines_own or imports_one):
+            missing.append(path.relative_to(REPO_ROOT).as_posix())
+    assert not missing, (
+        f"{len(missing)} PHI35_MODEL reader(s) write JSON but do not stamp "
+        f"onnx_file/onnx_sha256: {missing}"
+    )
+
+
+def test_phi35_model_subprocess_inheritors_are_discovered_and_stamp_result_identity():
+    """The subprocess-inheritance regression Morpheus's review named:
+    bench/results/probe_push_constants_written.py never reads PHI35_MODEL itself, only
+    passes it through `dict(os.environ)` into a subprocess of probe_validation_phi35.py.
+    This must both be discovered by the repo-wide scan and, since it writes its own JSON
+    (push_constants_written.json / push_constants_sensitivity.json), carry a
+    `_result_identity()` reference of its own -- a fix that touched only the direct reader
+    and missed this wrapper would leave the exact gap Morpheus found standing."""
+    readers = _phi35_model_direct_readers()
+    inheritors = _phi35_subprocess_inheritors(readers)
+    names = {p.relative_to(REPO_ROOT).as_posix() for p in inheritors}
+    assert "bench/results/probe_push_constants_written.py" in names, sorted(names)
+    missing = []
+    for path in inheritors:
+        if not _writes_json_output(path):
+            continue
         text = path.read_text(encoding="utf-8")
         if "_result_identity" not in text:
-            missing.append(path.name)
-            continue
-        if '"onnx_file"' not in text or '"onnx_sha256"' not in text:
-            missing.append(path.name)
+            missing.append(path.relative_to(REPO_ROOT).as_posix())
     assert not missing, (
-        f"{len(missing)} archival probe(s) accept PHI35_MODEL but do not stamp "
-        f"onnx_file/onnx_sha256 into their output record: {missing}"
+        f"{len(missing)} subprocess-inheritor(s) write JSON but never reference "
+        f"_result_identity: {missing}"
     )
 
 
 def test_every_archival_phi35_probe_reuses_the_shared_hasher():
     """The stamping helper must reuse `model_provenance.sha256_of` (already a streaming
     SHA-256, already exercised by tests/ops/test_small_model_provenance.py) rather than
-    each of the ~23 scripts defining its own 23rd divergent hasher for this new field."""
-    probes = _archival_probes_with_phi35_override()
+    each reader/inheritor defining its own divergent hasher for this field. Scoped to
+    files that define `_result_identity()` themselves (an importer of another module's
+    helper has nothing local to check here)."""
+    readers = _phi35_model_direct_readers()
+    inheritors = _phi35_subprocess_inheritors(readers)
     missing = [
-        p.name for p in probes
-        if "_model_provenance.sha256_of" not in p.read_text(encoding="utf-8")
+        p.relative_to(REPO_ROOT).as_posix()
+        for p in (*readers, *inheritors)
+        if "_result_identity" in (text := p.read_text(encoding="utf-8"))
+        and '"onnx_file"' in text
+        and "_model_provenance.sha256_of" not in text
     ]
     assert not missing, (
-        f"{len(missing)} archival probe(s) stamp a hash without reusing "
-        f"model_provenance.sha256_of: {missing}"
+        f"{len(missing)} file(s) define _result_identity and stamp a hash without "
+        f"reusing model_provenance.sha256_of: {missing}"
     )
+
 
 
 def test_archival_probe_result_identity_reflects_a_phi35_model_override(tmp_path):

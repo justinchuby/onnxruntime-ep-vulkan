@@ -5214,6 +5214,26 @@ deliberately:
   read (a comment naming the variable to explain why there is deliberately no override is fine)
   and the presence of the direct resolver call and its fail-loud exception handling.
 
+  **The contract is not scoped to `bench/results/*.py`, and its own test coverage is not either.**
+  A second review round found the same silent-substitution gap in two siblings a
+  `bench/results/`-only glob structurally cannot reach: `tests/ops/probe_validation_phi35.py`
+  reads `PHI35_MODEL` directly and writes its own `validation_phi35_probe-dev*-*.json` record, and
+  `bench/results/probe_push_constants_written.py` never reads `PHI35_MODEL` itself but inherits it
+  — via `dict(os.environ)` — into a subprocess of `probe_validation_phi35.py --child`, then writes
+  `push_constants_written.json`/`push_constants_sensitivity.json` with only a DLL hash and no model
+  identity at all. Both now carry the same stamp: `probe_validation_phi35.py` defines its own
+  `_result_identity()` (tolerating a `None` model — resolution itself can fail here, unlike the
+  archival scripts, so the failure is reported as data rather than raised out of a writer that
+  must still land its record); `probe_push_constants_written.py` imports that same
+  `_result_identity` directly rather than re-resolving, since its subprocess is spawned from
+  this process's own `os.environ` after `probe_validation_phi35`'s module-level `MODEL` has
+  already resolved against that identical environment — the two therefore always name the same
+  file. `ci/test_lane_checks.py`'s discovery walks the whole tree (not one directory's glob) for
+  both shapes — a direct `PHI35_MODEL` read, and a `subprocess.run([sys.executable, ...])` call
+  passing `dict(os.environ)` to a script that is itself a direct reader — and asserts every reader
+  or inheritor that writes JSON stamps or imports `_result_identity`; this is confirmed to fail
+  against the pre-fix tree for both files, so it is a real regression guard, not a decorative one.
+
 ### 9.2 Benchmarking — Niobe
 
 - **Baselines are versus the ORT CPU EP on the same machine, same model, same ORT build.** Any

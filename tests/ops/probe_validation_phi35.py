@@ -43,6 +43,30 @@ else:
         MODEL = None
         MODEL_DISCOVERY_ERROR = str(_exc)
 
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved
+# model path and its exact content hash are stamped into every JSON record this probe
+# writes, computed lazily at write time -- never at import -- so a PHI35_MODEL override, or
+# a stale/substituted file silently sitting at the resolved path, can never be absorbed
+# invisibly into the evidence. Reuses the same streaming SHA-256 helper the bench/results/
+# archival scripts reuse, rather than a divergent hasher. Unlike those scripts, MODEL can be
+# None here (resolution can fail outright), so the failure is reported as data instead of
+# raising out of a result-writer that must still land its record.
+sys.path.insert(0, str(REPO / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    if MODEL is None:
+        return {
+            "onnx_file": None,
+            "onnx_sha256": None,
+            "onnx_resolution_error": MODEL_DISCOVERY_ERROR,
+        }
+    try:
+        return {"onnx_file": str(MODEL), "onnx_sha256": _model_provenance.sha256_of(MODEL)}
+    except OSError as exc:
+        return {"onnx_file": str(MODEL), "onnx_sha256": None, "onnx_hash_error": str(exc)}
+
 #: Printed by the child the instant the last inference returns and before anything is torn
 #: down.  Everything the layer said up to here was said while the instance, the device, every
 #: descriptor set and every command buffer were live: that is the dispatch window.  Anything
@@ -158,6 +182,7 @@ def run_arm(arm: str = "clean", *, timeout: int = 5400) -> dict:
                 "alloc_device_frame_session_devices",
             )
         }
+    doc.update(_result_identity())
     (out / f"validation_phi35_probe-dev{selector}-{arm}.json").write_text(
         json.dumps({k: v for k, v in doc.items() if k != "transcript_tail"}, indent=2),
         encoding="utf-8",

@@ -54,7 +54,16 @@ HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 sys.path.insert(0, str(REPO / "tests" / "ops"))
 
-from probe_validation_phi35 import BOUNDARY  # noqa: E402
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): this script never
+# reads PHI35_MODEL itself, but `measure()` inherits the parent's full environment
+# (`dict(os.environ)`, below) into a subprocess of `probe_validation_phi35.py --child`, which
+# does -- the exact silent-substitution gap the archival bench/results/ scripts have, one level
+# of subprocess indirection removed. `probe_validation_phi35` resolves its own module-level
+# `MODEL` at import time using this same process's `os.environ`, before the subprocess is ever
+# spawned, so its `_result_identity()` names the identical model the child subprocess actually
+# consumed. Reused directly rather than re-resolved, so this file never becomes a 24th
+# divergent implementation.
+from probe_validation_phi35 import BOUNDARY, _result_identity  # noqa: E402
 
 PROBE_CHILD = REPO / "tests" / "ops" / "probe_validation_phi35.py"
 
@@ -124,6 +133,7 @@ def measure(timeout: int = 5400) -> dict:
         output, encoding="utf-8"
     )
     return {
+        **_result_identity(),
         "dll_sha256_16": _dll_hash(),
         "device_selector_requested": selector,
         # The selector is a request, not an identity (Trinity, 2026-08-02): read the device off
