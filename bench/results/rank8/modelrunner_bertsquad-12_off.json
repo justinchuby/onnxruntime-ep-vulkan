@@ -1,0 +1,252 @@
+{
+  "schema": "ort-model-runner/1",
+  "tool": "rust/modelrunner (ort-model-runner)",
+  "pass": true,
+  "outcome": "PASS",
+  "model": "bertsquad-12",
+  "onnx_file": ".scratch-models\\bertsquad-12.onnx",
+  "onnx_sha256": "5f0d96a9e6b8a4a2e59f9636f8bbad09ee8a0c58c8212027cc17c5fcc9659e55",
+  "onnx_bytes": 435852736,
+  "model_provenance": "pinned",
+  "onnxruntime": {
+    "library": {
+      "path": "\\\\?\\C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan\\.venv\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime.dll",
+      "sha256": "3d6bd02dc137b9a1dfdac045a52b147ffb920bb06ab812b08fc8e14279859855",
+      "bytes": 17766752
+    },
+    "api_version": 28,
+    "version": "1.28.0",
+    "discovered_via": "--ort-lib"
+  },
+  "execution_provider": {
+    "registration_name": "VulkanExecutionProvider",
+    "library": {
+      "path": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-8\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "sha256": "b97209e7c0b1eea5947ae5e13ef3ab0c15cc4a2d8769355f9edf39dc355da6a5",
+      "bytes": 2490368
+    },
+    "devices": [
+      {
+        "index": 0,
+        "ep_name": "CPUExecutionProvider",
+        "ep_vendor": "Microsoft",
+        "hardware_type": "CPU",
+        "vendor_id": 32902,
+        "device_id": 7
+      },
+      {
+        "index": 1,
+        "ep_name": "VulkanExecutionProvider",
+        "ep_vendor": "onnxruntime-ep-vulkan",
+        "hardware_type": "GPU",
+        "vendor_id": 4318,
+        "device_id": 9648
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "name": "unique_ids_raw_output___9:0",
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "elements": 1,
+      "source": "generated"
+    },
+    {
+      "name": "segment_ids:0",
+      "dtype": "int64",
+      "shape": [
+        1,
+        256
+      ],
+      "elements": 256,
+      "source": "generated"
+    },
+    {
+      "name": "input_mask:0",
+      "dtype": "int64",
+      "shape": [
+        1,
+        256
+      ],
+      "elements": 256,
+      "source": "generated"
+    },
+    {
+      "name": "input_ids:0",
+      "dtype": "int64",
+      "shape": [
+        1,
+        256
+      ],
+      "elements": 256,
+      "source": "generated"
+    }
+  ],
+  "free_dim_pins": [
+    {
+      "input": "unique_ids_raw_output___9:0",
+      "axis": 0,
+      "symbol": "unk__492",
+      "value": 1,
+      "source": "default"
+    },
+    {
+      "input": "segment_ids:0",
+      "axis": 0,
+      "symbol": "unk__493",
+      "value": 1,
+      "source": "default"
+    },
+    {
+      "input": "input_mask:0",
+      "axis": 0,
+      "symbol": "unk__494",
+      "value": 1,
+      "source": "default"
+    },
+    {
+      "input": "input_ids:0",
+      "axis": 0,
+      "symbol": "unk__495",
+      "value": 1,
+      "source": "default"
+    }
+  ],
+  "seed": "0x5EED000000000001",
+  "tolerance": {
+    "rtol": 0.02,
+    "atol": 0.001,
+    "source": "policy",
+    "rationale": "Transformer with LayerNorm and Softmax over 384 positions; accumulation order differs between a CPU reduction and a workgroup reduction, and the logits are O(10). Not yet exercised -- issue #5 lists bertsquad-12 as a follow-on -- but the number is fixed here in advance so the first run cannot choose its own."
+  },
+  "attribution": {
+    "primary_witness": "onnxruntime profile (cat=Node)",
+    "corroborating_witness": "onnxruntime-ep-vulkan counters (dispatches_executed)",
+    "provider_node_counts": {
+      "CPUExecutionProvider": 781,
+      "VulkanExecutionProvider": 4
+    },
+    "profile_note": "",
+    "counters": {
+      "present": true,
+      "dispatches_executed": 4,
+      "claimed_nodes": 481,
+      "islands_offered": 4,
+      "compute_calls": 4,
+      "note": ""
+    },
+    "split_frame": false
+  },
+  "outputs": [
+    {
+      "name": "unstack:1",
+      "verdict": "AGREE",
+      "dtype": "float32",
+      "reference_shape": [
+        1,
+        256
+      ],
+      "candidate_shape": [
+        1,
+        256
+      ],
+      "elements": 256,
+      "max_abs_diff": 0.0010744333267211914,
+      "max_rel_diff": 0.0009324978331751867,
+      "worst_index": 89,
+      "reference_at_worst": -0.7458747625350952,
+      "candidate_at_worst": -0.7465702891349792,
+      "nan_reference": 0,
+      "nan_candidate": 0,
+      "reference_all_zero": false,
+      "detail": "max_rel=9.324978e-4 (<= 2.0e-2) or max_abs=1.074433e-3 (<= 1.0e-3)"
+    },
+    {
+      "name": "unstack:0",
+      "verdict": "AGREE",
+      "dtype": "float32",
+      "reference_shape": [
+        1,
+        256
+      ],
+      "candidate_shape": [
+        1,
+        256
+      ],
+      "elements": 256,
+      "max_abs_diff": 0.0011801719665527344,
+      "max_rel_diff": 0.0005271827683016823,
+      "worst_index": 96,
+      "reference_at_worst": -2.2386391162872314,
+      "candidate_at_worst": -2.239819288253784,
+      "nan_reference": 0,
+      "nan_candidate": 0,
+      "reference_all_zero": false,
+      "detail": "max_rel=5.271828e-4 (<= 2.0e-2) or max_abs=1.180172e-3 (<= 1.0e-3)"
+    },
+    {
+      "name": "unique_ids:0",
+      "verdict": "EXACT",
+      "dtype": "int64",
+      "reference_shape": [
+        1
+      ],
+      "candidate_shape": [
+        1
+      ],
+      "elements": 1,
+      "max_abs_diff": 0,
+      "max_rel_diff": 0,
+      "worst_index": 0,
+      "reference_at_worst": 0,
+      "candidate_at_worst": 0,
+      "nan_reference": 0,
+      "nan_candidate": 0,
+      "reference_all_zero": false,
+      "detail": "bit-identical to the CPU reference"
+    }
+  ],
+  "timings_ms": {
+    "cpu_session_load": 744.2784,
+    "cpu_run": 74.8064,
+    "vulkan_session_load": 746.191,
+    "vulkan_run": 237.4641,
+    "total": 3556.0627
+  },
+  "guards": [
+    {
+      "name": "model_identity_pinned",
+      "held": true,
+      "detail": ".scratch-models\\bertsquad-12.onnx sha256 5f0d96a9e6b8a4a2e59f9636f8bbad09ee8a0c58c8212027cc17c5fcc9659e55 (435852736 bytes), provenance=pinned"
+    },
+    {
+      "name": "vulkan_ep_device_present",
+      "held": true,
+      "detail": "1 device(s) named VulkanExecutionProvider: GPU 10de:25b0"
+    },
+    {
+      "name": "vulkan_ep_in_session",
+      "held": true,
+      "detail": "SessionOptionsAppendExecutionProvider_V2 accepted the Vulkan EpDevice and the session was created with it"
+    },
+    {
+      "name": "vulkan_executed_nodes",
+      "held": true,
+      "detail": "ORT's profile attributed 4 of 785 node executions to VulkanExecutionProvider: {\"CPUExecutionProvider\": 781, \"VulkanExecutionProvider\": 4}"
+    },
+    {
+      "name": "vulkan_dispatched_work",
+      "held": true,
+      "detail": "dispatches_executed=4 (claimed_nodes=Some(481), islands_offered=Some(4))"
+    },
+    {
+      "name": "outputs_agree",
+      "held": true,
+      "detail": "3 output(s); worst AGREE on \"unstack:1\": max_rel=9.324978e-4 (<= 2.0e-2) or max_abs=1.074433e-3 (<= 1.0e-3)"
+    }
+  ]
+}
+

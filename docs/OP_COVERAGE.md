@@ -2263,7 +2263,8 @@ Per §8.8:
 
 * **rank known, extents symbolic → claimable.** This is the LLM case.
 * **rank unknown → decline** (`unknown-rank`, a new code — previously reported as `dynamic-shape`,
-  which is wrong: one is a hard decline, the other a floor).
+  which is wrong: one is a hard decline, the other a floor). Since issue #8 a rank ORT did not
+  report may still be *proven* by this EP before the predicate runs — see §7.5.9.
 * **data-dependent output shape → permanently declined** (`data-dependent-shape`, new). `NonZero`,
   `Unique`, `Compress`, `StringSplit`, `TopK`, `RoiAlign`, `NonMaxSuppression`. This is a property
   of ONNX, not of our progress, so it does not move. `Reshape`/`Slice`/`Expand` are deliberately
@@ -2394,6 +2395,59 @@ remains an oracle — but neither may be presented as progress on inference, bec
 claim depends on static extents claims nothing on the second token. Resolving dims statically
 improves our test numbers without making inference work, which is the §9.1.2 hazard in its purest
 form.
+
+#### 7.5.9 `unknown-rank` is now a *measured* decline, not an accepted one (issue #8, 2026-08-06)
+
+§7.5.2 treats "ORT did not report a rank" as a terminal fact about the node. On transformer
+graphs it is not: it is a fact about ORT's *propagator*, and one this EP can often discharge
+itself. BERT-SQuAD-12 declined **1,773 edges** as `unknown-rank`, and every one of them traced
+back to a single structural cause — the reshape targets are computed at runtime through
+
+```
+Shape → Cast(FLOAT) → Slice → Squeeze → Cast(INT32) → Unsqueeze → Concat → Cast(INT64) → Reshape
+```
+
+and ORT's partial-data propagation follows only *integral* tensors. The `Cast` to `FLOAT`
+destroys ORT's knowledge of the shape tensor's **values**, so it can no longer fold the `Concat`
+and no longer knows the `Reshape` output's rank. 58 of 71 `Reshape` outputs and all 98 `MatMul`
+A-inputs went unranked for that one reason, and the EP executed **4 dispatches** on 797 nodes.
+
+`rust/src/shape_infer.rs` closes it by proving only what ONNX guarantees — crucially, that a
+cast preserves a tensor's *shape* even when it destroys its *values*, so the shape tensor's
+**length** survives the float round trip, and the length is the whole of what fixes the rank.
+The three rules and the full contract are in `docs/DESIGN.md` §8.11. For this document the
+coverage-facing points are:
+
+* The pass runs once per `GetCapability`, before any predicate. Predicates are unchanged: they
+  still decline `unknown-rank`, they are just asked fewer times.
+* A row claimed on a rank this EP proved is marked `rank_inferred: true` in the claim log, so
+  coverage attributable to inference is separable from coverage ORT handed us.
+* `ONNXRUNTIME_EP_VULKAN_RANK_INFERENCE=0` restores the old decisions exactly, which is how the
+  A/B below was taken.
+* `Reshape` is deliberately excluded: its output rank is a property of a runtime *value*, so a
+  proven rank is not a shape `Compute()` can bind. It gates on ORT's raw reading.
+* **Rank 0 is not a fact.** ORT reports dimension-count 0 both for a real scalar and for a value
+  whose shape was never established. Treating the second as the first was a live broken
+  commitment (a `Mul` planned for 4 bytes and handed 1,024); `tensor_desc` now demotes any
+  uncorroborated rank-0 reading to the dynamic path.
+
+Measured on `NVIDIA RTX A1000`, release build, ORT 1.28.0, `bertsquad-12.onnx`
+(sha256 `5f0d96a9…9659e55`):
+
+| | OFF | ON |
+|---|---|---|
+| dispatches executed | 4 | **367** |
+| claimed nodes | 481 | 489 |
+| islands retained | 4 | 52 |
+| profile-attributed CPU nodes | 781 | 418 |
+
+The `claimed_nodes` column is the reason this section exists in a coverage document with a
+warning attached: **+8 claimed is not the result**. The result is +363 dispatches actually
+executed and −363 nodes attributed to the CPU EP in the profile. A claim that ends in CPU
+re-execution is not coverage, and the two columns move independently — quoting the first would
+have overstated a 4→367 change as an 8-node one, and understated it as a fraction. Outputs
+agree with the CPU oracle on all three BERT outputs (max-abs `6.68e-06`, max-rel `2.19e-06`);
+MNIST-12 (2→2) and MobileNetV2-12 (97→97) are unchanged. No timing claim is made.
 
 ---
 

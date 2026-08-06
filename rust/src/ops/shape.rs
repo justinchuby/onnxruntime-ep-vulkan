@@ -243,7 +243,7 @@ fn reshape(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     // at all. Declined until a graph exists to test it on.
     claim::attr_int_is(view, spec, "allowzero", 0)?;
 
-    let out = view.output_type(0).ok_or_else(|| {
+    let out = view.output_type_as_reported(0).ok_or_else(|| {
         crate::registry::decline(
             crate::registry::DeclineCode::UnknownRank,
             format_args!("`{}` output 0 has no type information", spec.op_type),
@@ -264,6 +264,12 @@ fn reshape(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     // output would require a rank-0 *input* (one element), and the shape operand would be a
     // 1-D vector of length 0, which no graph in the census emits. Either reading declines, and
     // the code says `unknown-rank` because that is what it is on every node measured.
+    //
+    // Read from `output_type_as_reported`, deliberately: the §8.11 rank overlay can prove this
+    // output's rank from the `Shape`/`Cast`/`Concat` chain that feeds the target, and that proof
+    // is sound — but it is a proof about the *graph*, not a `TensorDesc` ORT will hand `Compute()`
+    // for an output whose extents it never resolved. The whole point of the check below is that
+    // ORT reports no output descriptor for exactly those outputs, so it has to ask ORT.
     let declared = out.shape.clone().unwrap_or_default();
     require!(
         !declared.is_empty(),

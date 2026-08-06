@@ -1,0 +1,94 @@
+{
+ "model": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\models\\mnist-12.onnx",
+ "tag": "mnist-12_after",
+ "graph": {
+  "nodes": 12,
+  "opset_import": {
+   "ai.onnx": 12
+  },
+  "ir_version": 7
+ },
+ "dispatches_executed": 2,
+ "counters": {
+  "claimed_nodes": 4,
+  "islands_offered": 1,
+  "viable_islands_retained": 1,
+  "dispatches_executed": 2,
+  "net_benefit_gate_clusters_seen": 3,
+  "_status": "measured"
+ },
+ "inference_run": true,
+ "graph_op_counts": {
+  "Conv": 2,
+  "Add": 3,
+  "Relu": 2,
+  "MaxPool": 2,
+  "Reshape": 2,
+  "MatMul": 1
+ },
+ "decisions_recorded": 10,
+ "claimed_nodes": 4,
+ "declined_nodes": 6,
+ "no_decision_nodes": 4,
+ "no_decision_ops": {
+  "Add": 3,
+  "MatMul": 1
+ },
+ "per_op": {
+  "Conv": {
+   "seen": 2,
+   "claimed": 0,
+   "declined": 2,
+   "codes": {
+    "attribute": 2
+   },
+   "ledger_hits": 2,
+   "proof_keys": {
+    "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32/static/n3": 2
+   }
+  },
+  "Gemm": {
+   "seen": 1,
+   "claimed": 1,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 1,
+   "proof_keys": {
+    "ai.onnx::Gemm/7+/f32,f32,f32>f32/gemm_f32/static/n3": 1
+   }
+  },
+  "MaxPool": {
+   "seen": 2,
+   "claimed": 0,
+   "declined": 2,
+   "codes": {
+    "not-registered": 2
+   },
+   "ledger_hits": 0,
+   "proof_keys": {}
+  },
+  "Relu": {
+   "seen": 4,
+   "claimed": 2,
+   "declined": 2,
+   "codes": {
+    "partition": 2
+   },
+   "ledger_hits": 2,
+   "proof_keys": {
+    "ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/static/n1": 2
+   }
+  },
+  "Reshape": {
+   "seen": 1,
+   "claimed": 1,
+   "declined": 0,
+   "codes": {},
+   "ledger_hits": 1,
+   "proof_keys": {
+    "ai.onnx::Reshape/5+/f32,i64>f32/ew_cast_f32_to_f32/static/n2": 1
+   }
+  }
+ },
+ "ep_lib": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-8\\rust\\target\\release\\onnxruntime_vulkan_ep.dll"
+}
