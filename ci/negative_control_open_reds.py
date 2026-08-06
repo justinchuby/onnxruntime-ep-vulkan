@@ -390,9 +390,27 @@ def main() -> int:
                all(c["owner"] for c in doc["checks"] if c["expect"] == "red"))
         record("PLANTED", "no accepted red uses a signature short enough to match anything",
                all(len(c["signature"]) >= 8 for c in doc["checks"] if c["expect"] == "red"))
+        # Generalised 2026-08-05 (issue #33): this used to require lane_checks_suite's
+        # cmd to always carry a --deselect, back when a single narrow-red entry
+        # (lane_checks_census_extent) existed to hold known census reds out of the
+        # whole-suite acceptance. That entry retired for real (its three node ids went
+        # green; see ci/open_reds.json's `retired`), so the invariant that is actually
+        # load-bearing is not "there is always a deselect" but "every test the green
+        # entry deselects is picked up by some other expect=red entry over the same
+        # file" -- which holds trivially, and correctly, when both sides are empty.
+        suite = next(c for c in doc["checks"] if c["id"] == "lane_checks_suite")
+        deselected = {
+            suite["cmd"][i + 1]
+            for i, a in enumerate(suite["cmd"])
+            if a == "--deselect"
+        }
+        selected = set()
+        for c in doc["checks"]:
+            if c["id"] == "lane_checks_suite" or c["expect"] != "red":
+                continue
+            selected |= {a for a in c["cmd"] if a.startswith("ci/test_lane_checks.py::")}
         record("PLANTED", "the suite entry is narrowed, not accepted whole",
-               any(i == "lane_checks_suite" for i in ids)
-               and any("--deselect" in c["cmd"] for c in doc["checks"] if c["id"] == "lane_checks_suite"))
+               any(i == "lane_checks_suite" for i in ids) and deselected == selected)
         record("PLANTED", "every subject is either live or retired — nothing has fallen out",
                set(doc["subjects"]) == set(ids) | set(doc.get("retired", {})))
         record("PLANTED", "the removal instructions say flip, not delete",

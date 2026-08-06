@@ -4592,20 +4592,57 @@ def test_open_reds_has_no_flag_that_suppresses_a_failure(tmp_path):
 
 def test_the_shipped_register_narrows_rather_than_accepting_a_whole_suite():
     """Trinity's principle: narrowing is the amplifier, not a cost saving. Accepting
-    ci/test_lane_checks.py as red WHOLE would absorb every future red in 135 tests —
-    which is exactly the defect that let a 4th red hide behind '3 known reds'."""
+    ci/test_lane_checks.py as red WHOLE would absorb every future red in 135+ tests —
+    which is exactly the defect that let a 4th red hide behind '3 known reds'.
+
+    Generalised 2026-08-05 (issue #33): this used to hardcode a single narrow-red
+    entry (`lane_checks_census_extent`), which is now `retired` because the three
+    node ids it named went green for real and a second, narrower census over the
+    same subject is the failure `rust/tools/audit_instruments.py` names. The
+    invariant this test actually protects is not that ENTRY's existence, it is that
+    every test id `lane_checks_suite` deselects is picked up by SOME other
+    expect=red entry over the same file — so a deselected test is always observed
+    by exactly one entry in the register, never zero. With no accepted reds over
+    ci/test_lane_checks.py currently open, both sides of that equality are empty,
+    which is the correct state, not a vacuous one: replanting a red here (see the
+    negative-control sibling test) must make the assertion fail again.
+    """
     doc = json.loads(OPEN_REDS_REGISTER.read_text(encoding="utf-8"))
     by_id = {c["id"]: c for c in doc["checks"]}
     suite = by_id["lane_checks_suite"]
     assert suite["expect"] == "green"
-    assert "--deselect" in suite["cmd"]
-    extent = by_id["lane_checks_census_extent"]
-    assert extent["expect"] == "red"
     deselected = {suite["cmd"][i + 1] for i, a in enumerate(suite["cmd"]) if a == "--deselect"}
-    selected = {a for a in extent["cmd"] if a.startswith("ci/test_lane_checks.py::")}
+    selected: set[str] = set()
+    for c in doc["checks"]:
+        if c["id"] == "lane_checks_suite" or c["expect"] != "red":
+            continue
+        selected |= {a for a in c["cmd"] if a.startswith("ci/test_lane_checks.py::")}
     assert deselected == selected, (
-        "every test deselected from the green entry must be selected by the red one, "
+        "every test deselected from the green entry must be selected by some red entry, "
         "or a test falls out of both and is observed by neither"
+    )
+
+
+def test_a_deselected_lane_checks_test_with_no_red_entry_is_caught():
+    """Negative control for the generalisation above: plant exactly the defect the
+    prior, hardcoded version of this test could no longer detect once its one named
+    entry retired -- a --deselect with nothing accepting the red it hides."""
+    doc = json.loads(OPEN_REDS_REGISTER.read_text(encoding="utf-8"))
+    by_id = {c["id"]: c for c in doc["checks"]}
+    suite = dict(by_id["lane_checks_suite"])
+    suite["cmd"] = suite["cmd"] + [
+        "--deselect",
+        "ci/test_lane_checks.py::test_planted_with_no_accepted_red",
+    ]
+    deselected = {suite["cmd"][i + 1] for i, a in enumerate(suite["cmd"]) if a == "--deselect"}
+    selected: set[str] = set()
+    for c in doc["checks"]:
+        if c["id"] == "lane_checks_suite" or c["expect"] != "red":
+            continue
+        selected |= {a for a in c["cmd"] if a.startswith("ci/test_lane_checks.py::")}
+    assert deselected != selected, "the planted defect must be visible to the comparison"
+    assert (
+        "ci/test_lane_checks.py::test_planted_with_no_accepted_red" in (deselected - selected)
     )
 
 

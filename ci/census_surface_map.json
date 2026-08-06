@@ -384,6 +384,97 @@
       "disposition": "uncensused",
       "reason": "Raises logging to Info. Unobserved by the census.",
       "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "device_losses",
+      "disposition": "uncensused",
+      "reason": "Sticky per-process VK_ERROR_DEVICE_LOST count, incremented at rust/src/vk/cmd.rs:333 on a fence wait. No wiring-census mechanism reads it, and none could without a change: the census's own graph is a six-node elementwise chain that never provokes a device loss, so a mechanism added today would read a permanent 0/0 in that frame \u2014 the same reachability defect ONNXRUNTIME_EP_VULKAN_GEMV_PACKED already carries. It is not unobserved everywhere: rust/tools/device_loss_gate.py reads device_losses off every repetition's own counters snapshot and records rec['lost'] across paired arms that provoke it on purpose (device-memory budget clamp, KV arena pin \u2014 bench/results/device_loss_gate_armB_budget.json, ci/device_loss_incident_records.json), and test_wiring_census.py::test_the_counters_mirror_matches_the_running_dll reads it to prove the ctypes ABI mirror has not drifted (the 2026-08-02 mid-struct insertion incident this field caused). Neither is the census: the gate is a standalone incident tool and the mirror test checks an offset, not a state. Closing this needs a census mechanism that provokes a device loss inside the census's own graph, or one that adopts device_loss_gate's evidence as its observation \u2014 owed by Switch.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "outputs_device_resident",
+      "disposition": "uncensused",
+      "reason": "Fused-node outputs ORT allocated in this EP's own device memory, incremented via record_output_residency() called from rust/src/vk/session.rs:2981. No wiring-census mechanism reports it, and the census's clean/inject/flags arms never arm ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY, so ORT never has a device allocator to hand this field a nonzero reading in that frame. A real capture exists outside the census: bench/results/probe_kv_device_residency.py and bench/results/probe_default_bind_outputs.py both read this field into their written artifacts (bench/results/kv_device_residency-*.json, default_bind_outputs-dev{0,1}.json) across multiple arms, but no test asserts on its value or on it varying \u2014 it is captured, not checked. Closing this needs either a census arm that arms the device allocator, or a test on the existing archival artifact that asserts the value moves with the arm \u2014 owed by Switch.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "outputs_host_resident",
+      "disposition": "uncensused",
+      "reason": "Fused-node outputs ORT allocated in host memory, incremented via record_output_residency() called from rust/src/vk/session.rs:2981 (see outputs_device_resident, its complement). No wiring-census mechanism reports it. bench/results/probe_kv_device_residency.py and bench/results/probe_default_bind_outputs.py capture it into their artifacts across arms, but neither that capture nor any test asserts on its value or on it varying with the arm \u2014 it is the one member of the outputs_device_resident/outputs_host_resident/outputs_device_bound triple with no assertion anywhere in the tree, only presence in archival JSON. Owed by Switch: either a census arm, or a test on the existing artifact.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "outputs_device_bound",
+      "disposition": "uncensused",
+      "reason": "Fused-node outputs bound directly to ORT's device buffer at Step 1c, incremented at rust/src/vk/session.rs:1805. This is the strongest-evidenced of the thirteen: tests/ops/test_kv_device_residency.py asserts counters['outputs_device_bound'] > 0 in the EP-bind lane, == 0 in the caller-bind lane, and that the two differ (lines 133, 155-157) \u2014 a genuine, non-vacuous, per-lane falsifier over committed artifacts (bench/results/kv_device_residency-{callerbind,epbind}.json). bench/results/probe_default_bind_outputs.py and bench/results/probe_kv_device_residency.py both also use it as a live route discriminator (the lane a run took is read off this field, never off ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS \u2014 rust/src/vk/session.rs:782 says so explicitly). None of this is the wiring census: test_kv_device_residency.py is a separate module, not one of test_wiring_census.py's fourteen mechanisms, and the census's own graph never arms the device allocator that makes this field nonzero. So it remains an uncensused surface from this screen's frame even though it is one of the best-tested counters in the repository outside that frame. Closing it inside the census needs a census arm that arms ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY and ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS together \u2014 owed by Switch.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "device_unattributed_claims",
+      "disposition": "uncensused",
+      "reason": "Nodes claimed on a \u00a78.9 ledger entry whose device cannot be compared to this run's hardware, incremented at rust/src/registry.rs:3827 (record_device_unattributed, called only on a hit, never on a miss). No wiring-census mechanism reports it; ledger_lookup (test_wiring_census.py lines ~1910-1957) is the mechanism that reads the neighbouring ledger fields (proven_key_lookups, ledger_hits, ledger_entries, unproven_declines, unproven_forms_claimed) but its observation string never mentions this field or its two siblings below, so adding a census arm that exercises the ledger does not by itself make this one censused. rust/src/disclosure.rs aggregates the per-session count into Disclosure::device_unattributed and discloses it per form at INFO (disclosure.rs:117, 213-215), and rust/tools/probe_session_disclosure.py captures the raw counter into bench/results/session-disclosure-*.json \u2014 but nothing asserts on it varying; it is disclosed to a log and archived, never checked. Owed by Mouse: extend ledger_lookup's observation to name this field (and the two below), or add a disclosure-side test asserting it moves with a planted unattributable-device entry.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "counter",
+      "id": "proven_elsewhere_claims",
+      "disposition": "uncensused",
+      "reason": "Nodes claimed on a \u00a78.9 ledger entry that is sound about this exact subject but was proven in a different frame (different device or shader compiler), incremented at rust/src/registry.rs:3834-3838 (record_proven_elsewhere_claim). Same gap as device_unattributed_claims and the same reason: ledger_lookup's observation string (test_wiring_census.py) does not name this field, rust/src/disclosure.rs discloses the aggregate per form at INFO (disclosure.rs:117, 600) and rust/tools/probe_session_disclosure.py archives the raw count, but no test in the tree asserts this counter is nonzero or moves with an arm. \u00a78.9.19 part 1 turned this from a silent decline into a disclosed claim specifically so an operator could see it without reading a counters file; the census still cannot see it. Owed by Mouse: name it in ledger_lookup's observation, or add a disclosure test with a planted proven-elsewhere entry.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "counter",
+      "id": "subject_changed_declines",
+      "disposition": "uncensused",
+      "reason": "Nodes declined because the \u00a78.9 ledger entry's subject moved (kernel replaced, or SPIR-V differs with no source_digest to attribute it), incremented at rust/src/registry.rs:3771 (record_subject_changed_decline). Not read by ledger_lookup's observation string, and not the same thing as rust/tools/probe_ledger_subject_check.py, which is a real and rigorous falsifier (7 arms, MEASURED incident 2026-08-03 where a GQA shader edit without a ledger regen declined all 32 GroupQueryAttention nodes and only this field saw it) \u2014 but that tool asserts on gen_proof_ledger.py --check's own text output (a build-time ledger validator), never on this runtime counter. rust/src/disclosure.rs's Disclosure::subject_changed aggregates the per-session count (disclosure.rs:230, 412) and warrants a WARN, and rust/tools/probe_session_disclosure.py archives the raw count, but nothing asserts on this exact counter moving. Owed by Mouse: name it in ledger_lookup's observation, or add a runtime-counter assertion alongside the existing --check text assertion in probe_ledger_subject_check.py.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS",
+      "disposition": "uncensused",
+      "reason": "Disables the Step 1c output-side device bind; read once at rust/src/vk/session.rs:768 (output_bind_requested), default ON since 2026-08-03. flag_frame (test_wiring_census.py) is the mechanism that discloses nine other switches and does not include this one. The switch's own doc comment (session.rs:782) is explicit that a census must read outputs_bind_attempted/outputs_device_bound off the run rather than read this variable, which is exactly what tests/ops/test_kv_device_residency.py does (asserting outputs_device_bound differs between the callerbind and epbind lanes) and what bench/results/probe_kv_device_residency.py and bench/results/probe_default_bind_outputs.py do as multi-arm falsifiers; bench/results/criterion10_route-dev{0,1}-*.json is the route-identity evidence (forced on, all 65 per-output residuals identical to the unbound route on both vendors \u2014 Round 35). None of that is the wiring census's own frame. Owed by Switch: extend flag_frame to name this switch, using outputs_device_bound as the discriminator rather than the env value itself, per the switch's own documented reading rule.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS",
+      "disposition": "not_a_mechanism",
+      "reason": "Named exactly once in the whole tree, inside a doc comment at rust/src/ep.rs:1631 (introduced by commit b602bbb as prose only, `git log -S` finds no other occurrence ever). No `std::env::var` call anywhere in rust/src reads this name; the extractor found it only because the name appears inside backticks in a comment describing a one-off manual measurement session. There is no switch here for a census to observe because there is nothing in the shipped binary that reads it \u2014 not a standing gap, a name with no implementation behind it.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB",
+      "disposition": "uncensused",
+      "reason": "The device-memory ceiling this process imposes on itself, in MB; read at rust/src/vk/host_device_memory.rs:100 (budget_bytes), a fault-injection instrument for the device-allocator degrade-to-host-staging path. Not one of flag_frame's nine switches. rust/tools/device_loss_gate.py arms it as one of two knobs (with ONNXRUNTIME_EP_VULKAN_KV_ARENA) that provoke device_losses on purpose (bench/results/device_loss_gate_armB_budget.json), and bench/results/probe_device_memory_hazards.py exercises it directly, but neither is the wiring census and the census's own clean/inject/flags arms never set it. Owed by Switch: a census arm pinning a small budget alongside a read of device_losses/alloc_failed_lookups.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_FORCE_STDERR_FAILURE",
+      "disposition": "uncensused",
+      "reason": "A planted control (rust/src/logging.rs:63) that makes every stderr write from this process report failure without writing, so the \u00a78.9.7 disclosure escalation path can be observed firing on a shipping binary without needing a host whose stderr is genuinely closed. Not one of flag_frame's nine switches. rust/tools/probe_disclosure_reachability.py is a real, rigorous falsifier for it (\"ARM 3 \u2014 ESCALATION (PLANTED)\": with ORT's default threshold refusing INFO and stderr refusing the bytes, the disclosure must arrive at WARNING on ORT's own sink, and every run under this variable is marked stderr_fault_injection=ACTIVE in its own artifact \u2014 bench/results/disclosure-reachability-dev{0,1}-escalation.json), but that probe is not the wiring census. Owed by Mouse (\u00a78.9.7 claim-disclosure delivery, same domain as ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG above): extend flag_frame or add a tenth census segment that reads probe_disclosure_reachability's own arm structure.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_KV_ARENA",
+      "disposition": "uncensused",
+      "reason": "Declares the caller-bound-arena KV convention (present IS past, true length carried by seqlens_k alone); the sole reader is kv_arena_enabled() at rust/src/factory.rs:517-527, ships OFF. Not one of flag_frame's nine switches, and the census's six-node elementwise graph carries no KV cache at all, so it is not reachable from that frame regardless \u2014 the same shape as ONNXRUNTIME_EP_VULKAN_GEMV_PACKED's unreachability. It is nonetheless one of the most heavily evidenced switches in the repository outside the census: bench/results/probe_kv_arena_phi35.py, probe_kv_chain_phi35.py, probe_kv_lever_ledger.py and rust/tools/device_loss_gate.py all arm it directly against real Phi-3.5 KV chains (bench/results/kv_arena_chain-*.json, kv_arena_budget.json). Owed by Mouse (KV-cache op contract) with Switch (the bind-time alias check): a census lane that includes a KV-cache-shaped subgraph, or a discrimination arm in the existing archival probes.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_KV_PREFIX_ALIAS",
+      "disposition": "uncensused",
+      "reason": "The growing-cache prefix alias (stage past into present's prefix, never allocate a separate past buffer); the sole reader is kv_prefix_alias_enabled() at rust/src/factory.rs:554-561, ships ON \u2014 polarity reversed from every other flag in the file because disabling it is the escape hatch. Not one of flag_frame's nine switches, and unreachable from the census's KV-free graph for the same reason ONNXRUNTIME_EP_VULKAN_KV_ARENA is. bench/results/probe_ctx4096_shipping_lane.py is a real falsifier across shipping/noalias arms and context lengths (MEASURED 2026-08-04: the default shipping lane executes 355 dispatches at past_len 2048 and zero at 3072 with the alias off \u2014 bench/results/ctx4096_BEFORE.json), but it is an archival probe, not the wiring census. Owed by Mouse (KV-cache op contract) with Switch (the staging copy): a KV-cache-shaped census lane, or a discrimination arm in the existing archival probe.",
+      "owner": "Mouse"
     }
   ],
   "mechanism_names": [

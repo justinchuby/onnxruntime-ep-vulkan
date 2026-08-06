@@ -23,52 +23,15 @@
         "ci/test_lane_checks.py",
         "-q",
         "-p",
-        "no:cacheprovider",
-        "--deselect",
-        "ci/test_lane_checks.py::test_the_whole_is_not_derived_from_the_census",
-        "--deselect",
-        "ci/test_lane_checks.py::test_extent_reports_unobservable_rather_than_zero_over_zero",
-        "--deselect",
-        "ci/test_lane_checks.py::test_the_screen_will_not_narrow_to_source_only_silently"
+        "no:cacheprovider"
       ],
       "expect": "green",
       "owner": "link",
       "opened": "2026-08-03",
       "review_by": "2026-11-01",
-      "reason": "The two-polarity suite for everything in ci/, MINUS the three census-extent tests, which are their own entry below. This entry is the whole reason the file exists: for four sessions I reported this suite as '132 passed, 3 failed (the known census reds)' and today, post-merge, it was 4 — the fourth being four `if: env.BUILD_SKIPPED != '1'` guards whose writer my own previous commit had deleted, reintroduced by the merge and caught by my own build-precondition screen. Reading the node ids found it; reading the count would not have. Narrowing here is the amplifier, not a cost saving (Trinity's principle from the contention gate): a whole-suite entry accepted as red absorbs every future red in 135 tests, whereas this one goes red on the next one.",
+      "reason": "The two-polarity suite for everything in ci/. Ran without the three census-extent deselects for four sessions as '132 passed, 3 failed (the known census reds)', and on 2026-08-03 post-merge it was 4 — the fourth being four `if: env.BUILD_SKIPPED != '1'` guards whose writer my own previous commit had deleted, reintroduced by the merge and caught by my own build-precondition screen. Reading the node ids found it; reading the count would not have. Narrowing here is the amplifier, not a cost saving (Trinity's principle from the contention gate): a whole-suite entry accepted as red absorbs every future red in 135 tests, whereas this one goes red on the next one. The three census-extent deselects were removed 2026-08-05 (issue #33): see `retired.lane_checks_census_extent` for why they now belong in this suite unconditionally rather than carved out.",
       "closes_when": "n/a — this is expected green and must stay green.",
       "timeout": 1200
-    },
-    {
-      "id": "lane_checks_census_extent",
-      "cmd": [
-        "python",
-        "-m",
-        "pytest",
-        "-q",
-        "-p",
-        "no:cacheprovider",
-        "ci/test_lane_checks.py::test_the_whole_is_not_derived_from_the_census",
-        "ci/test_lane_checks.py::test_extent_reports_unobservable_rather_than_zero_over_zero",
-        "ci/test_lane_checks.py::test_the_screen_will_not_narrow_to_source_only_silently"
-      ],
-      "expect": "red",
-      "signature": "CENSUS-EXTENT",
-      "owner": "mouse (counters + ops/), switch (vk/ env switches), tank (allocator env switches)",
-      "opened": "2026-08-03",
-      "review_by": "2026-11-01",
-      "reason": "These three are the reds I have been calling 'known' since session 14, and writing them down is the first time anyone has had to say WHOSE they are. All three assert EXIT_PASS from the census-extent screen, and the screen is correctly reporting 12 instrumented surfaces that no census mechanism observes: counters.rs compile_calls / compute_calls / subgraphs_stub (Mouse), and nine env switches — BACKEND_PROBE, DUMP_OUTPUT_BYTES, VERBOSE (Switch), CLAIM_DEBUG, CLAIM_LOG, GEMV_PACKED (Mouse), DEVICE_MEMORY, QUARANTINE_SPANS, VA_RESERVE_MIB (Tank). None of them is mine and none can be closed from ci/. GEMV_PACKED is the interesting one and already has a written verdict: the switch enters the program as specialization constant index 5 and keys the pipeline cache, but no artifact the project produces records a pipeline key or a spec constant, so every kernel observation we hold is silent about which kernel it observed.",
-      "closes_when": "Each owner either wires a census mechanism to their surface or records it out of frame with a reason. The entry is deleted when the three tests go green; until then the screen reports it every run with these names attached, which is strictly more than the count did.",
-      "timeout": 900,
-      "extent": {
-        "pattern": "^FAILED (\\S+)",
-        "members": [
-          "ci/test_lane_checks.py::test_the_whole_is_not_derived_from_the_census",
-          "ci/test_lane_checks.py::test_extent_reports_unobservable_rather_than_zero_over_zero",
-          "ci/test_lane_checks.py::test_the_screen_will_not_narrow_to_source_only_silently"
-        ]
-      },
-      "extent_reason": "signature 'CENSUS-EXTENT' is a substring, and a FOURTH census-extent test failing the same way would still contain it. The acceptance is granted over exactly these three node ids; a newcomer is extent_widened and needs its own reading rather than this entry's silence."
     },
     {
       "id": "build_precondition",
@@ -313,6 +276,11 @@
       "owner": "switch",
       "date": "2026-08-05",
       "reason": "Restored, not updated: the re-take at 872d739 answered a different question. `git diff ed48f5b 872d739 -- bench/results/kv_device_residency-callerbind.json` shows the device metadata changing in the same edit as the reading -- vendor 0x10de (NVIDIA) to 0x8086 (Intel), device_index 1 to 0 -- so `by_device_type_and_vendor` going from the CUDA RuntimeError to 'OK' was a different vendor id argument to the same ORT call, not a re-answer of the original one. `bench/results/kv_device_residency-epbind.json` is still on record from the NVIDIA capture and still shows the RuntimeError, so `test_the_python_binding_hardcodes_gpu_to_cuda` now reads whichever committed artifact carries vendor 0x10de (today, epbind's) instead of a hardcoded filename, and a companion test (`test_the_cuda_hardcode_does_not_reproduce_on_intels_vendor_id`) records the Intel 'OK' finding as a kept fact rather than a discarded one. The docstring's 'regardless of the vendor id' claim is corrected to vendor-specific. Both tests pass against the currently-committed artifacts."
+    },
+    "lane_checks_census_extent": {
+      "owner": "trinity",
+      "date": "2026-08-05",
+      "reason": "check_open_reds.py reports this GREEN against the register's expect=red (FAIL(condition=stale_acceptance)). The three node ids are restored to lane_checks_suite's plain cmd rather than kept as a second, narrower entry over the same subject -- the same reasoning proof_ledger_writer_refuses used above. What actually closed it, on the evidence, is NOT the fix this entry's `reason` named: the 12 surfaces it listed (compile_calls / compute_calls / subgraphs_stub, BACKEND_PROBE, CLAIM_DEBUG, CLAIM_LOG, DEVICE_MEMORY, DUMP_OUTPUT_BYTES, GEMV_PACKED, QUARANTINE_SPANS, VA_RESERVE_MIB, VERBOSE) were already carrying a correctly-recorded `uncensused` disposition with an owner in ci/census_surface_map.json before this session touched it, and `uncensused` has never failed this screen -- confirmed by re-running check_census_completeness.py against the pre-issue-#33 map (`git show <pre-fix>:ci/census_surface_map.json`) with today's rust/src: it still reports those same 12 as GAP and still exits FAIL(condition=unmapped_surface), because the true unmapped set was a DIFFERENT and non-overlapping 13 surfaces this entry's reason never named -- 7 counters.rs fields (device_losses, device_unattributed_claims, outputs_device_bound, outputs_device_resident, outputs_host_resident, proven_elsewhere_claims, subject_changed_declines) and 6 env switches (BIND_OUTPUTS, DEBUG_CONSTANTS, DEVICE_MEMORY_BUDGET_MB, FORCE_STDERR_FAILURE, KV_ARENA, KV_PREFIX_ALIAS), which is what issue #33 asked to have investigated and were, each, given an evidenced owner and disposition (12 uncensused, 1 not_a_mechanism -- ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS exists only in a doc comment, never in a std::env::var call, per `git log --all -S`). This entry's own reason was never the load-bearing fact for its own colour; the screen is green now because the surfaces actually missing a map entry finally have one, not because the 12 it named acquired a census mechanism (none of them did, and none was owed one to close this)."
     }
   }
 }
