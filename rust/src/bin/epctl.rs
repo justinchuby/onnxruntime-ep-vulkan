@@ -125,15 +125,30 @@ fn dump_human() {
         );
     }
 
-    let live = rows.iter().filter(|s| s.is_live()).count();
+    let has_kernel = rows.iter().filter(|s| s.is_live()).count();
+    let live_token = rows
+        .iter()
+        .filter(|s| matches!(s.status, OpStatus::Live))
+        .count();
+    let ready_token = rows
+        .iter()
+        .filter(|s| matches!(s.status, OpStatus::Ready))
+        .count();
     println!();
+    // The noun `live` used to appear twice in this output with two denotations: the status column
+    // spelled the deprecated `OpStatus::Live` alias, and this line called the *kernel-carrying*
+    // count "live". A reader checking the summary against the column got two different integers
+    // and no way to tell which question either answered (§8.9.25(6)). The summary now names the
+    // predicate it counted and shows the decomposition, so the two numbers are reconcilable
+    // without knowing that one word meant two things.
     println!(
-        "{} row(s): {live} live, {} staged",
+        "{} row(s): {has_kernel} with a kernel ({live_token} live + {ready_token} ready), {} staged",
         rows.len(),
-        rows.len() - live
+        rows.len() - has_kernel
     );
     println!(
-        "A staged row is registered and tested but never claimed. Only live rows can take a node."
+        "A staged row is registered and tested but never claimed. Only rows with a kernel can take \
+         a node."
     );
 
     let mut reasons: Vec<(&'static str, usize)> = Vec::new();
@@ -166,9 +181,16 @@ fn dump_json() {
     let rows = sorted_rows();
     for (i, spec) in rows.iter().enumerate() {
         let comma = if i + 1 == rows.len() { "" } else { "," };
+        // `has_kernel`, NOT `live` (§8.9.25 ruling 6, owner Tank). This row used to spell the noun
+        // `live` twice with two denotations: a `status` token that is the deprecated
+        // `OpStatus::Live` alias and grants nothing, and a boolean meaning *this row has a
+        // kernel*, true for `Live` AND `Ready`. A reader checking "76 rows carry a kernel"
+        // against the field literally named `live` got 46. The three-valued `status` token is
+        // unchanged — it is the field five consumers parse, and this rename is precisely so that
+        // it can keep its meaning without a boolean shadowing its name.
         println!(
             "    {{\"name\": \"{}\", \"opsets\": \"{}\", \"dtypes\": \"{}\", \
-             \"status\": \"{}\", \"live\": {}, \"schema_baseline\": \"{}\", \
+             \"status\": \"{}\", \"has_kernel\": {}, \"schema_baseline\": \"{}\", \
              \"staged_reason\": {}}}{comma}",
             escape_json(&spec.qualified_name()),
             opset_window(spec),

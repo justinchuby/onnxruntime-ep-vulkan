@@ -133,3 +133,57 @@ arm pinned `DEVICE_MEMORY=1` / `KV_ARENA=0` and screened on `dispatches_executed
 pipe, so a UTF-8 read renders every ORT line NUL-separated and every grep answers "absent". Both
 probes strip NULs before matching. A log-absence claim taken without that strip is a null reading.
 **Decisions:** `tank-mintability-is-an-abi-question.md`, `tank-loudly-logged-silently-returned.md`.
+
+## Session 26 — one register, and a boolean that stopped meaning two things (issue #3)
+
+**One path was not one register.** `2aafb35` pointed the census and the producer at the same
+*file*, which retired the 43 VANISHED rows and closed the visible symptom. Two independent
+parsers survived it: `check_ledger_census.py` demanded `owner`+`date`+`reason`, and
+`gen_proof_ledger.py` demanded `reason` alone. A retirement signed by nobody was therefore
+**honoured by the producer and rejected by the census in the same run** — two rules, one file,
+and the exemption you get depends on which tool asks. `ci/proof_retirement.py` is now the only
+code in the tree that opens that file; both readers import it. Absent file = `{}` and is legal;
+malformed file raises `RetirementError` and the census exits **2 `ERROR(instrument=
+unreadable_retirement_register)`** with no census arithmetic printed. The old failure mode was a
+parser that answered "nothing is retired" when it meant "I could not read the register" — those
+two answers must never share an exit code, because the first one is deletion-bearing.
+
+**The negative control had never run to completion on this platform.** It crashed in `run()`
+before recording a single arm: the register's reasons contain `§`, children wrote cp1252,
+the parent decoded utf-8, and `_readerthread` raised `UnicodeDecodeError` — surfacing as
+`AttributeError` on `r.stdout.strip()`, which reads like a harness bug and not like an encoding
+one. Children now inherit `PYTHONIOENCODING=utf-8`/`PYTHONUTF8=1`. **A falsifier that has never
+completed is not a green; it is an untested assertion about a test.** Three new arms plant a
+retirement and require the *same* verdict from both tools (`_both_readers`), which is the only
+form of this test that can fail when the two parsers drift apart again.
+
+**`probe_ledger_loss.py` was 2/6 on `main`** — four arms evaluated today's producer against an
+*empty* register while the tree carries 43 real retirements, so they were testing a world that
+does not exist. Today's arms now read the canonical register; arm 3 keeps the empty one because
+it is a historical replay and must stay in its own frame. Added arm 5b (unsigned retirement
+refused by the producer — the exact divergence above). **7/7.**
+
+**`live` → `has_kernel` (§8.9.25 ruling 6).** The dump row spelled one noun twice: a boolean
+meaning *this row has a kernel* (78) and a `status` token that is the deprecated `OpStatus::Live`
+alias (46, a strict subset). Every consumer that checked the documented 78 against the field
+literally named `live` got 46. The boolean is renamed; `status` keeps all three tokens and its
+type. The test that matters asserts the **name** — `"live":` must not appear as a key — because a
+rename that left the old key beside the new one passes every value assertion ever written about
+it. The human summary carried the same collision and now decomposes: `96 row(s): 78 with a kernel
+(46 live + 32 ready), 18 staged`. README/DESIGN §0 stated 94/76/46-30-18; the dump reads
+96/78/46-32-18. **The prose was wrong in the same commit that explained how to avoid being wrong
+about it** — which is the argument for deriving it, not for restating it more carefully.
+
+**No union merge for `evidence/`.** Retirement is deletion-bearing: union merge cannot represent
+a removal, so a branch forked before a retirement would silently resurrect the key on merge —
+exactly the `squad-history` defect, one directory over. Written into `.gitattributes` as a
+documented negative so the next person to hit an evidence conflict has the reason in front of
+them.
+
+**Verified:** `cargo test --lib` 620 passed / 0 failed / 4 ignored; `cargo test --test
+dump_capabilities` 8 passed (was 6); `ci/check_ledger_census.py` PASS (176 ever proven = 133
+present + 43 retired + 0 VANISHED); `ci/negative_control_ledger_census.py` **34/34** arms;
+`rust/tools/probe_ledger_loss.py` **7/7**; `cargo fmt --check` and clippy clean.
+**CI-pending, not skipped:** `ci/test_lane_checks.py`, `tests/ops/test_proof_ledger.py`,
+`tests/ops/test_claim_diagnostics.py` need pytest/onnx/numpy, and this machine's egress to
+`files.pythonhosted.org` is administratively blocked. I did not work around it.
