@@ -4786,6 +4786,157 @@ that runs.
 
 ---
 
+#### 8.9.28 RULING — a **GLSL built-in whose Vulkan allowance is wider than our op tolerance is not an implementation**, and `Asin`/`Acos` stop using one
+
+**By:** Switch. Closes issue #4. **Refs #24.**
+
+##### (1) The finding, which is not a driver bug
+
+`tests/ops/test_op_table.py::[Asin-fp32]` and `[Acos-fp32]` failed on the lavapipe lane at
+`94a4bd6` — max absolute difference `1.56e-4` against `FP32_TRANSCENDENTAL`'s `1e-5`, a miss by
+more than an order of magnitude — while passing on NVIDIA. The obvious reading is "lavapipe is
+wrong". It is not. Vulkan's *Precision of GLSL.std.450 Instructions* table gives `asin` and `acos`
+**no bound of their own**. It defines each one **by inheritance**:
+
+| built-in | defined as | inherits |
+|---|---|---|
+| `asin(x)` | `atan2(x, sqrt(1.0 - x*x))` | `atan`/`atan2` |
+| `acos(x)` | `atan2(sqrt(1.0 - x*x), x)` | `atan`/`atan2` |
+| `atan`, `atan2` | — | **4096 ULP**, single precision |
+
+4096 ULP is roughly `2.4e-4` relative. Measured over a 2,000,010-point sweep of `[-1, 1]` against
+the ORT CPU EP, lavapipe returned **3831 ULP** for `Asin` and **3903 ULP** for `Acos` — inside its
+allowance, with margin to spare. It was conformant the whole time. NVIDIA's 4/5 ULP is a courtesy,
+not a contract, and nothing in the specification stops the next driver we meet from spending the
+other 4091.
+
+##### (2) What this rules
+
+**A built-in whose specified allowance is wider than the tolerance an op is tested at is not an
+implementation of that op — it is a dependency on driver goodwill, and it may not be shipped as
+one.** Three consequences, in the order they matter:
+
+1. **The tolerance does not move.** Widening `FP32_TRANSCENDENTAL` to `2.4e-4` would have turned
+   both lanes green in one line. It would also have adopted the 4096-ULP allowance as this
+   project's accuracy policy for every op that reaches `atan` — and it would have been *invisible*,
+   because a tolerance is a number and nothing in the tree says where a number came from. The
+   §9.1 oracle exists so that a disagreement with the CPU EP is a finding; a tolerance chosen to
+   stop a finding is not a tolerance, it is a suppression.
+2. **We own the math.** `Asin`/`Acos` now evaluate a polynomial *we* wrote, out of operations the
+   same precision table requires to be **correctly rounded** (`OpFMul`, `OpFAdd`, `OpFSub`) plus
+   one `sqrt`. The accuracy claim is then derivable from the specification rather than measured off
+   whichever device happened to be plugged in.
+3. **The claim is a derived bound, not a fitted one.** `STATED_ULP_BOUND = 16` in
+   `tests/ops/test_inverse_trig.py` is built up from Vulkan's own guarantees — see (4). It is
+   **5×** wider than the worst number any device in this repository has produced. That gap is the
+   point: a bound fitted to the measurement would go red the first time a conformant driver used
+   room it was always entitled to, and we would learn nothing except that we had written the
+   measurement down twice.
+
+##### (3) The implementation
+
+In `rust/shaders/glsl/templates/ew_unary.comp`, guarded by `#ifdef EW_FLOAT`:
+
+- `ew_asin_core(s)` — `asin(s)` for `s ∈ [0, ½]` as the odd series `s + s³·P(s²)`, `P` the degree-4
+  minimax from **Cephes `asinf` (Moshier)**. An established, published fit; a refit attempted
+  during this work was *worse* (27+ ULP), and the attempt is recorded here so nobody repeats it.
+- `ew_asin_abs(a)` — the range reduction, `asin(a) = π/2 − 2·asin(sqrt((1−a)/2))` for `a > ½`.
+- `ew_asin(x)`, `ew_acos(x)` — sign, domain and the `acos` reflection.
+
+Four details that are load-bearing rather than stylistic:
+
+- **`Asin` and `Acos` share `ew_asin_core`.** Two approximations of the same function drift apart
+  under maintenance; one cannot.
+- **The sign is copied bitwise**, not applied with `sign(x)`. GLSL's `sign(-0.0)` is `+0.0`, which
+  would turn ONNX's required `asin(-0) = -0` into `+0`.
+- **NaN is emitted as a bit pattern** (`uintBitsToFloat(0x7fc00000u)`), not as `0.0/0.0`. The
+  driver may be compiling under fast-math assumptions, and
+  `shaderSignedZeroInfNanPreserveFloat32` is a property we are permitted to *read*, not a
+  guarantee we are permitted to *require* of every device we run on.
+- **The radicand is clamped** with `max(…, 0.0)`. Rounding in `0.5 - 0.5*a` can land a hair below
+  zero at `a == 1`, and GLSL leaves `sqrt` of a negative operand undefined.
+
+The domain test `(x >= -1.0 && x <= 1.0)` is false for NaN as well as for `|x| > 1`, so
+out-of-domain and NaN-in-NaN-out are one branch rather than two.
+
+##### (4) Where 16 ULP comes from
+
+Every term is either measured in exact float32 on the host (no device in the loop) or quoted from
+the precision table:
+
+| term | value | source |
+|---|---|---|
+| core polynomial, `asin` | ≤ 2.42 ULP | measured in numpy float32 over 4,000,001 points |
+| core polynomial, `acos` | ≤ 1.28 ULP | same |
+| `sqrt` | ≤ ~4.5 ULP | inherited from `1.0 / inversesqrt()`: `inversesqrt` 2 ULP, `OpFDiv` 2.5 ULP |
+| reflected branch | ×2 (the `2·r`), amplified by `1/sqrt(1−s²)`, worst at the `s = ½` seam | ≤ ~10.4 ULP |
+| everything else | 0 | `OpFMul`/`OpFAdd`/`OpFSub` correctly rounded |
+
+`2.42 + 10.4 → 16`, rounded up. That is ~`1.9e-6` relative, **5× inside** `FP32_TRANSCENDENTAL`.
+The polynomial half is re-derived on every run by `test_reference_core_bound`, which runs entirely
+in numpy and therefore fails identically on every machine — it is the part of the bound that cannot
+be blamed on, or rescued by, a driver.
+
+##### (5) Measured, before and after
+
+2,000,010-point sweep of `[-1, 1]`, ULP against the ORT CPU EP; absolute error against float64.
+Artifacts in `bench/results/inverse_trig_ulp_{lavapipe,nvidia}_{builtin,portable}.json`, each
+naming the device it opened.
+
+| path | device | `Asin` ULP | `Acos` ULP | `Asin` abs | `Acos` abs |
+|---|---|---|---|---|---|
+| GLSL built-in (`94a4bd6`) | lavapipe (LLVM 22.1.8) | **3831** | **3903** | 3.905e-4 | 1.562e-4 |
+| GLSL built-in (`94a4bd6`) | NVIDIA RTX A1000 | 4 | 5 | 1.99e-7 | 3.01e-7 |
+| portable (this ruling) | lavapipe (LLVM 22.1.8) | **4** | **5** | 1.646e-7 | 3.038e-7 |
+| portable (this ruling) | NVIDIA RTX A1000 | **4** | **5** | 1.840e-7 | 3.154e-7 |
+
+The ORT CPU EP is itself 4 ULP from float64 on this sweep, so 4/5 ULP is at the oracle's own noise
+floor. **The result to read is not that the number got smaller on one device — it is that it is now
+the same number on both.** All edge cases (`±1`, `±0`, out-of-domain, `±inf`, NaN) agree bit-for-bit
+with the CPU EP on both devices, in both directions of the change.
+
+**Performance:** unchanged in the shape that matters. The op stays one dispatch of the same
+`ew_unary` module over the same buffers with the same workgroup size; nothing in the claim
+predicate, the binding layout or the dispatch geometry moved, and `rust/src/ops/shader_variants.txt`
+is byte-identical. What changed is the body: roughly a dozen correctly-rounded ALU operations plus
+one `sqrt`, in place of an opaque built-in that on most drivers expands to a comparable or larger
+sequence. **No timing claim is made in either direction.** This op is memory-bound at every size
+`test_op_table.py` exercises, so a wall-clock reading there would measure the copy, not the
+arithmetic; establishing a real delta needs a bandwidth-saturating benchmark that this ruling does
+not have. What is asserted is only that the dispatch count, the module count and the variant set
+are unchanged — which is checked, not estimated.
+
+##### (6) The screen, so this cannot recur silently
+
+`test_builtin_screen_is_complete` reads the shader tree — comments stripped — and fails if any
+called function is absent from `BUILTIN_SCREEN`, a table of every built-in we call with its
+allowance from the precision table and a decision. The decision cannot be skipped by adding a call.
+Entries currently marked `loose-unusable`:
+
+| built-in | allowance | decision |
+|---|---|---|
+| `asin`, `acos` | inherited from `atan2` → 4096 ULP | **REPLACED** — this ruling |
+| `atan` | 4096 ULP | **NOT REPLACED** — follow-on |
+| `sin`, `cos` | abs error ≤ 2⁻¹¹ (`4.9e-4`) in `[-π, π]` | **NOT REPLACED** — follow-on |
+| `tan` | inherited from `sin`/`cos` | **NOT REPLACED** — follow-on |
+
+**This is an open red by construction.** `Sin`/`Cos`/`Tan`/`Atan` are green today on both devices
+we can reach, and green for exactly the reason `Asin`/`Acos` were green on NVIDIA: the driver chose
+to be better than its contract. `sin`/`cos`'s `2⁻¹¹` absolute allowance is **49×**
+`FP32_TRANSCENDENTAL`'s `atol`. They are not fixed here because that is a second body of math and a
+second set of proofs, and bundling it would make this change unreviewable — not because the
+exposure is smaller. It is filed, and the table above is the file.
+
+##### (7) What this ruling admits
+
+It replaces the body of two `ew_unary` cases and re-proves their two ledger entries (declared in
+`evidence/proof_rewitness.json`, `--reprove`: the kernel changed, the hashing rule did not). It
+mints no key component, adds no variant, changes no tolerance, and touches no other op. Without the
+re-prove the EP reads both entries as `SUBJECT-CHANGED` and **declines** the ops — which is the
+proof register working, and was observed doing exactly that during this work.
+
+---
+
 ## 9. Testing and benchmarking strategy
 
 ### 9.1 Differential testing against the ORT CPU EP — Trinity
