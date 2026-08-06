@@ -15,6 +15,7 @@ frame alone, and that the fix commit is among the commits it names.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -26,6 +27,18 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 SCREEN = HERE / "check_artifact_frame.py"
+
+# Loaded (not just invoked as a subprocess) so the REPLAYED arm can hash a file exactly the
+# way the screen itself does -- through `_sha256`'s line-ending normalisation for text
+# suffixes. Re-implementing that hash here with plain `hashlib.sha256(f.read_bytes())`
+# would make this arm platform-dependent again: it would build a frame from raw CRLF bytes
+# on a Windows checkout and then ask the (CRLF-normalising) screen to compare against it,
+# which is the same false "moved" this file exists to prevent, just relocated into the
+# control instead of the thing it controls.
+_spec = importlib.util.spec_from_file_location("check_artifact_frame", SCREEN)
+_check_artifact_frame = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_check_artifact_frame)
+frame_sha256 = _check_artifact_frame._sha256
 
 # The real RAI-012 citation gap. Neither sha was planted by this file.
 RAI012_ARTIFACT_COMMIT = "ac4bd0b"
@@ -56,9 +69,13 @@ def build_repo(root: Path) -> None:
     git(["config", "user.email", "nc@example.invalid"], root)
     git(["config", "user.name", "negative control"], root)
     (root / "src").mkdir()
-    (root / "src" / "lib.rs").write_text("fn a() {}\n", encoding="utf-8")
+    # `newline="\n"` pins these to LF regardless of platform: `write_text`'s default
+    # newline translation would otherwise make this control's own baseline CRLF on
+    # Windows, which is exactly the checkout-time transform arm 4c below constructs on
+    # purpose -- the fixture must not already be in that state before the arm runs.
+    (root / "src" / "lib.rs").write_text("fn a() {}\n", encoding="utf-8", newline="\n")
     (root / "art").mkdir()
-    (root / "art" / "run.log").write_text("633 passed\n", encoding="utf-8")
+    (root / "art" / "run.log").write_text("633 passed\n", encoding="utf-8", newline="\n")
     git(["add", "-A"], root)
     git(["commit", "-q", "-m", "base"], root)
 
@@ -72,9 +89,10 @@ def stamp(root: Path) -> subprocess.CompletedProcess:
 
 
 def touch_subject(root: Path, text: str) -> None:
-    (root / "src" / "lib.rs").write_text(text, encoding="utf-8")
+    (root / "src" / "lib.rs").write_text(text, encoding="utf-8", newline="\n")
     git(["add", "-A"], root)
     git(["commit", "-q", "-m", "fix: the thing the artifact is cited as evidence for"], root)
+
 
 
 def planted(tmp: Path) -> None:
@@ -152,6 +170,39 @@ def planted(tmp: Path) -> None:
     out = run_screen("art", r3)
     record("PLANTED", "artifact_file_deleted",
            out.returncode == 1 and "artifact_content_moved" in out.stdout,
+           f"rc={out.returncode}")
+
+    # 4b. a file dropped into the evidence directory without ever being stamped. The
+    # `moved` loop above only walks the frame's own keys, so a brand-new, wholly unframed
+    # file was previously invisible to this screen by construction -- present in the
+    # directory that is supposed to be one artifact's whole evidence, absent from the one
+    # document that is supposed to describe it. Issue #20's "moved/unframed artifact" arm.
+    r3b = tmp / "unframed"
+    r3b.mkdir()
+    build_repo(r3b)
+    stamp(r3b)
+    (r3b / "art" / "extra-not-in-frame.log").write_text("nobody stamped this\n", encoding="utf-8")
+    out = run_screen("art", r3b)
+    record("PLANTED", "artifact_unframed",
+           out.returncode == 1 and "artifact_unframed" in out.stdout
+           and "extra-not-in-frame.log" in out.stdout,
+           f"rc={out.returncode}")
+
+    # 4c. the converse of the two arms above: a pure line-ending rewrite of a text
+    # artifact (the CRLF a Windows checkout with core.autocrlf=true actually performs)
+    # must NOT be reported as content having moved. This is the arm that proves the
+    # `_normalize_text` fix is real rather than merely non-crashing: content bytes that
+    # really changed (4/4b above) still convict, and a checkout transform that changed
+    # nothing the artifact SAYS does not.
+    r3c = tmp / "crlf"
+    r3c.mkdir()
+    build_repo(r3c)
+    stamp(r3c)
+    original = (r3c / "art" / "run.log").read_bytes()
+    (r3c / "art" / "run.log").write_bytes(original.replace(b"\n", b"\r\n"))
+    out = run_screen("art", r3c)
+    record("PLANTED", "checkout_line_ending_rewrite_is_not_content_drift",
+           out.returncode == 0 and "PASS" in out.stdout,
            f"rc={out.returncode}")
 
     # 5. no frame at all is UNOBSERVABLE, never PASS
@@ -237,7 +288,7 @@ def replayed(tmp: Path) -> None:
             "subject_paths": ["rust/src"],
             "note": "REPLAY ONLY - reconstructed frame for the 2026-08-03 citation gap",
             "files": {
-                f.name: __import__("hashlib").sha256(f.read_bytes()).hexdigest()
+                f.name: frame_sha256(f)
                 for f in sorted(art.iterdir())
                 if f.is_file() and f.name != "artifact-frame.json"
             },

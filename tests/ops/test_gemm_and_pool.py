@@ -93,7 +93,7 @@ def test_gemm_matches_cpu_across_the_value_space(case, require_vulkan) -> None:
     m.check(model, feeds, **m.FP32_CONV)
 
 
-def test_transb_is_a_transpose_and_not_a_relabelling() -> None:
+def test_transb_is_a_transpose_and_not_a_relabelling(require_vulkan) -> None:
     """A structural check that a tolerance comparison against random data can miss.
 
     `B` is square and asymmetric with distinct integer entries, `A` is the identity, and `C` is
@@ -121,7 +121,7 @@ def test_transb_is_a_transpose_and_not_a_relabelling() -> None:
     assert not np.array_equal(got, b), "the case must discriminate, or it proves nothing"
 
 
-def test_a_broadcast_column_c_is_added_down_the_rows() -> None:
+def test_a_broadcast_column_c_is_added_down_the_rows(require_vulkan) -> None:
     """`C` of shape `[M, 1]` must repeat across columns, not across rows.
 
     The two broadcast directions are indistinguishable when `M == N`, so this case uses a
@@ -211,7 +211,7 @@ def test_global_average_pool_matches_cpu(case, require_vulkan) -> None:
     m.check(model, feeds, **m.FP32_CONV)
 
 
-def test_the_pool_reduces_its_own_channel_and_not_its_neighbour() -> None:
+def test_the_pool_reduces_its_own_channel_and_not_its_neighbour(require_vulkan) -> None:
     """Channel `i` is filled with the constant `i`, so `Y[0, i] == i` exactly.
 
     A base-index error that read the neighbouring channel would return `i+1` — a different

@@ -51,10 +51,28 @@ EXIT_ERROR_INSTRUMENT = 4
 
 
 def run_check(script: str, *args: str) -> subprocess.CompletedProcess:
+    # Complete encoding pair, same reasoning as
+    # negative_control_build_precondition.py's run(): pinning only the PARENT-side
+    # decode (encoding="utf-8" below) is not enough on its own, because the CHILD
+    # screen picks its OWN stdout/stderr encoding from locale.getpreferredencoding()
+    # -- cp1252 on a default Windows shell -- unless PYTHONIOENCODING is present in
+    # its environment. Several of these screens print literal Unicode (em-dashes,
+    # arrows) in their frame/report lines; under a stock Windows env with neither
+    # PYTHONIOENCODING nor PYTHONUTF8 set, the child's own print() raises
+    # UnicodeEncodeError on those characters before ever emitting the assertion text
+    # this suite's tests check for (e.g. check_tick_conversions.py's `->` arrow),
+    # turning a real screen PASS/FAIL into an unrelated Windows-local instrument
+    # crash. Forcing PYTHONIOENCODING=utf-8 into the child's env makes its own
+    # encode side independent of the invoking shell; encoding="utf-8" below makes
+    # this process's decode side independent of it too.
+    child_env = dict(os.environ)
+    child_env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run(
         [sys.executable, str(CI_DIR / script), *args],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=child_env,
     )
 
 
@@ -950,6 +968,551 @@ def test_the_real_workflow_has_no_unclassified_gate_steps():
         str(REPO_ROOT / ".github" / "workflows" / "ci.yml"),
     )
     assert r.returncode == EXIT_PASS, r.stdout
+
+# ---------------------------------------------------------------------------------------
+# ci/check_gh_auth.py — issue #21: semantic env parsing (block AND inline) and a
+# zero-gh-reaching-subject frame that fails loudly by default instead of a silent PASS.
+# ---------------------------------------------------------------------------------------
+
+
+def test_inline_env_form_is_not_falsely_convicted(tmp_path):
+    """The exact PR #17 review finding: `env: {GH_TOKEN: ...}` on one line is the
+    remediation text, not the defect. Paired with the block form, which must satisfy
+    the check identically."""
+    inline = tmp_path / "inline.yml"
+    inline.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n"
+        "        env: {GH_TOKEN: ${{ github.token }}}\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(inline))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+    block = tmp_path / "block.yml"
+    block.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        env:\n          GH_TOKEN: ${{ github.token }}\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(block))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+
+def test_inline_env_at_job_and_workflow_scope_is_visible_to_its_steps(tmp_path):
+    job_scope = tmp_path / "job.yml"
+    job_scope.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    env: {GH_TOKEN: x}\n    steps:\n      - name: s\n        run: gh issue list\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(job_scope))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+    workflow_scope = tmp_path / "workflow.yml"
+    workflow_scope.write_text(
+        "name: p\non: push\nenv: {GITHUB_TOKEN: x}\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        run: gh issue list\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(workflow_scope))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+
+def test_a_wrongly_named_env_key_is_still_convicted(tmp_path):
+    """Neither YAML shape should let a key that merely resembles GH_TOKEN pass."""
+    wf = tmp_path / "wrong.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        env: {TOKEN: x}\n        run: gh pr list\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+
+
+def test_zero_gh_reaching_subjects_fails_loudly_by_default(tmp_path):
+    """Issue #21's second review finding: a frame with real steps but nothing that
+    reaches `gh` must not read the same as a healthy screen. It is ERROR(instrument),
+    unless the caller explicitly asks for --allow-empty-frame."""
+    wf = tmp_path / "no-gh.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        run: echo hi\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=zero_gh_reaching_subjects)" in r.stdout
+
+    r = run_check("check_gh_auth.py", "--allow-empty-frame", str(wf))
+    assert r.returncode == EXIT_PASS
+    assert "allow-empty-frame" in r.stdout
+
+
+def test_a_directory_argument_is_expanded_and_an_empty_one_still_errors(tmp_path):
+    """A caller may name a whole directory instead of individual files; every
+    `*.yml`/`*.yaml` under it (recursively) is screened, and a directory with none in
+    it at all is the wrong-scope/wrong-working-directory failure this screen exists to
+    surface — never a silent pass over nothing."""
+    nested = tmp_path / "workflows" / "sub"
+    nested.mkdir(parents=True)
+    (nested / "reachable.yml").write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    env: {GH_TOKEN: x}\n    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(tmp_path / "workflows"))
+    assert r.returncode == EXIT_PASS, r.stdout
+    assert "1 `gh`-reaching step" in r.stdout
+
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    r = run_check("check_gh_auth.py", str(empty_dir))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=empty_workflow_directory)" in r.stdout
+
+
+def test_a_directory_scope_does_not_let_a_missing_token_hide_in_a_subdirectory(tmp_path):
+    """The wiring concern issue #21 raises directly: screening a broader directory must
+    still catch an offending step nested under it, not stop at the top level."""
+    nested = tmp_path / "workflows" / "sub"
+    nested.mkdir(parents=True)
+    (nested / "offender.yml").write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(tmp_path / "workflows"))
+    assert r.returncode == EXIT_FAIL_CONDITION
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+
+
+def test_the_real_workflows_directory_passes_via_directory_expansion():
+    """The wiring change itself: ci.yml now points the screen at the whole
+    .github/workflows directory rather than two named files, so a workflow added
+    later — or moved into a subdirectory — is screened without anyone extending a
+    command line."""
+    r = run_check("check_gh_auth.py", str(REPO_ROOT / ".github" / "workflows"))
+    assert r.returncode == EXIT_PASS, r.stdout
+    assert "gh`-reaching step" in r.stdout
+
+
+def test_screening_only_the_gh_free_conformance_workflow_errors_not_passes():
+    """conformance.yml genuinely has no `gh`-reaching step of its own. Screening it
+    alone is exactly the wrong-scope/subdirectory shape issue #21 exists to catch, and
+    it must never read as a clean PASS."""
+    r = run_check(
+        "check_gh_auth.py", str(REPO_ROOT / ".github" / "workflows" / "conformance.yml")
+    )
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=zero_gh_reaching_subjects)" in r.stdout
+
+
+# ---------------------------------------------------------------------------------------
+# ci/check_gh_auth.py — issue #25: YAML-structural env parsing. A purely line/indent
+# heuristic cannot tell a real workflow/job/step `env:` apart from text that merely looks
+# like one (inside a `run: |` block scalar) or a real `env` mapping that belongs to
+# something else entirely (`services.<id>.env`, `with: env:`). These tests plant each
+# shape and assert the checker gets it right — never a false PASS and never a false FAIL.
+# ---------------------------------------------------------------------------------------
+
+
+def test_env_like_text_inside_a_run_block_scalar_is_not_a_real_declaration(tmp_path):
+    """A `run: |` block scalar is literal shell script text handed to the runner, not
+    YAML structure. Lines inside it that happen to read `env:` / `GH_TOKEN:` must never
+    be mistaken for an actual token declaration."""
+    wf = tmp_path / "block-scalar-trap.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        run: |\n"
+        "          echo \"env:\"\n"
+        "          echo \"  GH_TOKEN: fake\"\n"
+        "          gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+
+
+def test_services_env_is_not_the_jobs_env(tmp_path):
+    """`services.<id>.env` is a real YAML mapping literally named `env`, but it belongs
+    to a service container, not the job. It must not satisfy the job-scope token check
+    for the job's own steps."""
+    wf = tmp_path / "services-env-trap.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    services:\n      redis:\n        image: redis\n"
+        "        env:\n          GH_TOKEN: fake\n"
+        "    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+
+
+def test_with_env_is_not_the_steps_env(tmp_path):
+    """`with: env:` is a real YAML mapping literally named `env`, but it is an action
+    input, not the step's own execution environment."""
+    wf = tmp_path / "with-env-trap.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        uses: some/action@v1\n"
+        "        with:\n          env:\n            GH_TOKEN: fake\n"
+        "      - name: real\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+
+
+def test_a_quoted_block_key_satisfies_the_check(tmp_path):
+    """`"GH_TOKEN":` (quoted) is the same key as `GH_TOKEN:` (unquoted); quoting a
+    block-form mapping key must not blind the parser to it."""
+    wf = tmp_path / "quoted-key.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        env:\n"
+        '          "GH_TOKEN": ${{ github.token }}\n'
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+
+@pytest.mark.parametrize(
+    "env_text",
+    [
+        "        env:\n          GH_TOKEN: one\n          GH_TOKEN: two\n",
+        "        env: {GH_TOKEN: one, GH_TOKEN: two}\n",
+    ],
+    ids=["block-form", "flow-form"],
+)
+def test_a_duplicate_key_in_one_env_mapping_is_an_unsupported_construct(tmp_path, env_text):
+    """A key declared twice in the SAME `env:` mapping (block or flow form) is
+    ambiguous/unsupported input, not something to silently resolve by picking a
+    winner -- it must raise a loud instrument error."""
+    wf = tmp_path / "dup-key.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n" + env_text + "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "unsupported_yaml_construct" in r.stdout
+    assert "declared twice" in r.stdout
+
+
+def test_a_trailing_comment_after_inline_env_does_not_hide_the_declaration(tmp_path):
+    """A trailing `# comment` after `env: {GH_TOKEN: ...}` on the same physical line
+    must not stop the token from being recognised -- the old anchored-regex approach
+    would silently fail to match here."""
+    wf = tmp_path / "trailing-comment.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n"
+        "        env: {GH_TOKEN: ${{ github.token }}}  # ci: token lives here\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+
+def test_a_full_line_comment_mentioning_env_is_never_treated_as_structure(tmp_path):
+    """A full-line comment that happens to read `env:`/`GH_TOKEN:` is not YAML
+    structure at all and must never satisfy the token check."""
+    wf = tmp_path / "comment-only.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n"
+        "        # env:\n        #   GH_TOKEN: fake\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+
+
+def test_a_multiline_flow_mapping_is_read_as_one_declaration(tmp_path):
+    """A flow mapping `env: {...}` split across several physical lines is still valid
+    YAML and must be recognised as a single declaration, not missed the way a
+    single-physical-line-only regex would miss it."""
+    wf = tmp_path / "multiline-flow.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        env: {\n"
+        "          GH_TOKEN: ${{ github.token }},\n"
+        "          OTHER: value\n        }\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+
+def test_a_with_steps_list_does_not_orphan_the_real_step(tmp_path):
+    """`with: steps:` is a legal action input that happens to be named `steps` and
+    holds its own nested list. Before R1, ANY frame whose key was literally "steps"
+    reset step-minting, so this nested list's own dash orphaned the REAL step: its
+    `run: gh api ...` line (after the `with:` block) was silently dropped from body
+    capture and never became a checked subject at all -- a false PASS by omission. A
+    second, unrelated, correctly-tokened `gh` step keeps the file's total gh-reaching
+    count above zero, isolating the omission from issue #21's separate zero-subject
+    rule."""
+    wf = tmp_path / "with-steps-trap.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        uses: some/action@v1\n"
+        "        with:\n          steps:\n            - name: fake\n"
+        "              run: echo hi\n"
+        "        run: gh api repos/x/y\n"
+        "      - name: real\n        env:\n          GH_TOKEN: x\n"
+        "        run: gh api repos/a/b\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+    assert "PASS — 1 `gh`-reaching step" not in r.stdout
+
+
+@pytest.mark.parametrize(
+    "with_value",
+    ["&anchor", "!!map"],
+    ids=["anchor", "tag"],
+)
+def test_an_unrecognised_scalar_value_followed_by_deeper_content_is_an_error(tmp_path, with_value):
+    """When a key's value is a bare scalar this parser does not structurally
+    understand (`&anchor`, `!!tag`, `*alias`), and the NEXT line is MORE indented
+    (its real nested payload), that content must not be silently attributed to the
+    grandparent frame -- it must raise, because the grandparent's own `env:` scope is
+    NOT actually where that nested `env:` lives."""
+    wf = tmp_path / "unrecognised-scalar-trap.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        uses: some/action@v1\n"
+        f"        with: {with_value}\n          env:\n            GH_TOKEN: x\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "unsupported_yaml_construct" in r.stdout
+    assert "anchor, tag, or alias" in r.stdout
+
+
+def test_a_multi_document_separator_is_an_error(tmp_path):
+    """A `---` YAML document-separator line. This screen reads one YAML document per
+    file; silently continuing past it would misattribute the second document's
+    steps/env to whatever frame was still open at the end of the first."""
+    wf = tmp_path / "multi-doc.yml"
+    wf.write_text(
+        "name: p\non: push\n---\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "unsupported_yaml_construct" in r.stdout
+    assert "document-separator" in r.stdout
+
+
+def test_a_nested_flow_collection_as_an_env_value_is_an_error(tmp_path):
+    """`env: {FOO: {GH_TOKEN: x}}` -- GH_TOKEN is nested INSIDE FOO's own value, not a
+    sibling key of the mapping itself. This must never be silently read either way;
+    it is ambiguous input that raises."""
+    wf = tmp_path / "nested-flow-value.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n"
+        "        env: {FOO: {GH_TOKEN: x}}\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "unsupported_yaml_construct" in r.stdout
+    assert "nested flow collection" in r.stdout
+
+
+def test_a_quoted_value_containing_a_literal_brace_is_an_error(tmp_path):
+    """`env: {FOO: '{"GH_TOKEN": "1"}'}` -- a quoted value that itself contains
+    literal braces. The quote-tracking scan can in fact tell this is opaque text, but
+    this screen deliberately refuses rather than trusting its own reading of an
+    ambiguous-looking shape."""
+    wf = tmp_path / "quoted-brace-value.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n"
+        '        env: {FOO: \'{"GH_TOKEN": "1"}\'}\n        run: gh api repos/x/y\n',
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "unsupported_yaml_construct" in r.stdout
+    assert "quoted value" in r.stdout
+
+
+def test_a_gh_expression_inside_flow_env_is_not_mistaken_for_nested_value_braces(tmp_path):
+    """Regression guard for the nested-flow-collection check above: a
+    `${{ github.token }}` GitHub Actions expression is internally-balanced `{`/`}`
+    text, not YAML flow-collection nesting, and must not itself be convicted -- this
+    is, after all, the exact remediation text this screen's own FAIL message
+    recommends."""
+    wf = tmp_path / "gh-expression-in-flow-env.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: s\n"
+        "        env: {GH_TOKEN: ${{ github.token }}, OTHER: ${{ secrets.X }}}\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+
+def test_a_duplicate_sibling_env_key_at_job_scope_is_an_error(tmp_path):
+    """Two SIBLING `env:` block keys at the same job scope. Before N1 these were
+    silently unioned (`set.update`), so a job with two `env:` blocks -- one of which
+    happens to declare GH_TOKEN -- satisfied the check even though a duplicate
+    mapping key is itself invalid/ambiguous YAML that no single reading should
+    resolve silently."""
+    wf = tmp_path / "dup-sibling-env.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    env:\n      GH_TOKEN: x\n    env:\n      GITHUB_TOKEN: y\n"
+        "    steps:\n      - name: s\n        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "unsupported_yaml_construct" in r.stdout
+    assert "second `env:` key" in r.stdout
+
+
+def test_a_dash_inline_env_block_does_not_swallow_a_true_sibling_field(tmp_path):
+    """`- env:` opens a block-form env inline with the dash. Before N2, the
+    redispatch used a synthetic `dash_indent + 1` column, which undershoots `env:`'s
+    TRUE column (`dash_indent + 2`, one space after the dash) -- so a later TRUE
+    SIBLING field at that real column (here a bogus step-level `GH_TOKEN:` key that
+    is NOT actually inside `env:`) was wrongly swallowed as one of env's own
+    children, letting a coincidentally-named sibling satisfy the token check it
+    should not."""
+    wf = tmp_path / "dash-inline-env-sibling.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - env:\n          NOT_A_TOKEN: x\n"
+        "        GH_TOKEN: this-is-not-really-an-env-declaration\n"
+        "        run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+
+
+def test_a_compact_form_steps_list_mints_its_step(tmp_path):
+    """`steps:` and its FIRST item's dash sit at the exact same column -- the
+    equally-valid "compact"/zero-indent block-sequence form YAML permits for any
+    list-valued key, not only `steps:`. Before this fix, the generic `indent <=
+    frame.indent` pop popped the `steps:` frame itself before this dash was ever
+    recognised as ITS child (both frames sit at the same indent), so the step --
+    and its untokened `gh api` call -- was silently dropped from every subject this
+    screen ever sees: a false PASS by omission, reproducible in a single job with no
+    second job required (Morpheus's re-review of PR #27)."""
+    wf = tmp_path / "compact-single-job.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n    - name: s\n      run: gh api repos/x/y\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+    assert "PASS" not in r.stdout
+
+
+def test_a_compact_form_job_before_an_indented_form_job_does_not_silently_omit_its_step(tmp_path):
+    """Morpheus's exact reproducer: job `a` uses the compact (equal-indent) `steps:`
+    form and its one step is untokened; job `b` uses the ordinary indented form and
+    its step IS tokened. Before this fix, job `a`'s step was silently dropped (see
+    the single-job arm above), so the file's only COUNTED subject was job `b`'s
+    already-tokened step -- a false PASS. This also exercises the buf/flush ordering
+    fix alongside the frame-pop fix: job `b`'s own dash line (indent 6) sits deeper
+    than job `a`'s step's `current_indent` (4); appending that dash line to the OLD
+    step's buffer before flushing (the order this screen used previously) would
+    splice job `b`'s marker onto job `a`'s body instead of starting a fresh step."""
+    wf = tmp_path / "compact-then-indented.yml"
+    wf.write_text(
+        "name: p\non: push\njobs:\n"
+        "  a:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n    - name: untokened\n      run: gh api repos/x/y\n"
+        "  b:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: tokened\n        env: {GH_TOKEN: x}\n"
+        "        run: gh api repos/a/b\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_gh_auth.py", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=missing_token_path)" in r.stdout
+    assert "untokened" in r.stdout
+    assert "PASS — 1 `gh`-reaching step" not in r.stdout
+
+
+def test_ci_yml_production_invocation_is_pinned_to_the_directory_form():
+    """The wiring concern issue #21 (and #25 after it) exists to close: a real
+    regression here is exactly reverting `.github/workflows` back to two named files,
+    which is how a newly added or relocated workflow would silently stop being
+    screened. This asserts on ci.yml's own text, not just synthetic behaviour."""
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    invocations = re.findall(r"run: python ci/check_gh_auth\.py ([^\n]+)", ci_text)
+    assert len(invocations) == 1, invocations
+    assert invocations[0].strip() == ".github/workflows", invocations
+
+
+def test_lane_checks_job_has_no_depth_limited_fetch_before_the_ledger_census_issue_28():
+    """ISSUE #28. `git fetch --depth=1 origin main`, run earlier in the SAME job as
+    `ci/check_ledger_census.py`, grafted the shared repository — even though the job's
+    own checkout above already declares `fetch-depth: 0` — because a depth-limited fetch
+    marks its own boundary regardless of what history the repository already holds. A
+    real `pull/N/merge` preview's base parent IS `origin/main`'s tip, so that graft point
+    was always one of the checked-out merge's own two parents, and
+    `git rev-parse --is-shallow-repository` went true for the whole checkout.
+    `ci/check_ledger_census.py`'s history-completeness guard then (correctly) refused to
+    answer, and `ci/open_reds.json` reported `ledger_census`/`ledger_census_negative_control`
+    `FAIL(condition=unaccounted_red)` on every PR.
+
+    The fix drops the unnecessary `--depth` from that one lookup (the job already has
+    full history and gains nothing from shortening this one already-known ref). This
+    asserts on ci.yml's own text within the `lane-checks` job specifically, so a
+    `--depth`-limited `git fetch ... origin` reintroduced anywhere ahead of the census
+    step in this job fails on the change that reintroduces it.
+    """
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    lane_start = ci_text.index("\n  lane-checks:\n")
+    next_job = re.search(r"\n  [a-zA-Z][\w-]*:\n", ci_text[lane_start + 1 :])
+    lane_end = lane_start + 1 + next_job.start() if next_job else len(ci_text)
+    lane_body = ci_text[lane_start:lane_end]
+
+    assert "check_ledger_census.py" in lane_body, "this job must still run the census"
+    fetch_lines = re.findall(r"git fetch[^\n]*origin[^\n]*", lane_body)
+    assert fetch_lines, "expected at least the main-tip lookup fetch in this job"
+    for line in fetch_lines:
+        assert "--depth" not in line, (
+            f"a depth-limited fetch in the lane-checks job grafts the WHOLE repository "
+            f"(shared .git/shallow), not just the fetched ref, poisoning the census's "
+            f"history-completeness guard for the rest of the job: {line!r}"
+        )
+
 
 # ---------------------------------------------------------------------------------------
 # ci/check_tautological_assertions.py
@@ -2409,6 +2972,245 @@ def test_a_dormant_guard_is_not_inert_and_the_screen_says_why(tmp_path):
     assert rc == 1
     assert "dead_guard" in out
     assert "BUILD_SKIPPED" in out
+
+
+# ---------------------------------------------------------------------------
+# ci/negative_control_build_precondition.py's REPLAYED arms — is 607056a actually
+# reachable from THIS checkout, and do BOTH arms pinned to it actually execute?
+# Issue #1: `actions/checkout@v4` defaults to a depth-1 shallow clone, which makes
+# `git show 607056a:<path>` fail, and the negative control correctly counts that as a
+# failed arm (UNOBSERVABLE, never a silent pass) rather than skipping it — but a
+# checkout that cannot reach its own history turns that correct behaviour into a
+# permanent, uninformative red. The fix is `fetch-depth: 0` on the `lane-checks` job's
+# checkout step; these two tests are the positive/negative pair that proves the fix is
+# real rather than assumed: one shows the subject is reachable in a normal (unshallowed)
+# checkout and both REPLAYED arms fire, the other reproduces the CI defect in a scratch
+# shallow clone and requires the control to still report it loudly, never green.
+#
+# NOTE ON THE FIRST CUT OF THIS TEST (fixed after a real CI red, PR #6): it called the
+# `_precondition()` helper above, which runs `check_build_precondition.py` — the
+# production screen `negative_control_build_precondition.py` is a meta-test *of*. That
+# produces a `BUILD-PRECONDITION: PASS` line, never the `NEGATIVE-CONTROL: ... N LIVE /
+# M REPLAYED / K PLANTED` summary this test actually needs, so the count assertion could
+# never pass no matter how many REPLAYED arms fired. The fix is to invoke
+# `negative_control_build_precondition.py` itself (it takes no CLI arguments — see
+# ``main()``), and to assert the REPLAYED arm *count* parsed out of its own summary line
+# rather than a full literal string, so a change to the number of PLANTED arms (which
+# says nothing about REPLAYED reachability) cannot make this test's real subject —
+# "did both REPLAYED arms execute" — silently untestable again.
+# ---------------------------------------------------------------------------
+
+def _run_negative_control_build_precondition(repo_root: Path) -> tuple[int, str]:
+    """Invoke ``<repo_root>/ci/negative_control_build_precondition.py`` (no CLI args).
+
+    The script computes its own ``REPO_ROOT`` from ``Path(__file__).resolve().parent.
+    parent`` -- it does NOT read the process's current working directory -- so running
+    it against a *different* checkout (e.g. the scratch shallow clone below) means
+    invoking the copy of the script that lives inside that checkout, not this
+    worktree's copy with a different ``cwd``. Passing the wrong ``repo_root`` here would
+    silently re-run this worktree's own (unshallowed) script and could never observe the
+    shallow clone's REPLAYED arm at all -- the exact defect this helper exists to avoid.
+    """
+    script = repo_root / "ci" / "negative_control_build_precondition.py"
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True, text=True, cwd=str(repo_root),
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_the_replayed_subjects_are_reachable_from_this_checkout():
+    """POSITIVE arm: this checkout can `git show` every commit a REPLAYED arm depends on,
+    and both of ``negative_control_build_precondition.py``'s own REPLAYED arms execute.
+
+    If the ``git show`` loop below is red, no REPLAYED arm anywhere in ci/ can fire here
+    -- a shallow clone is exactly the shape that makes `git show <ref>:<path>` fail,
+    which is indistinguishable, one arm at a time, from the defect itself having gone
+    missing. The count assertion below is the control's *own* declared inventory, not a
+    number chosen here: ``negative_control_build_precondition.py`` appends exactly one
+    REPLAYED arm when its historical ref is unreadable (UNOBSERVABLE) and exactly two
+    when it is readable (the exact historical bytes, and that BP1 -- not BP2 -- is what
+    catches them). Asserting `== 2` is asserting "every declared REPLAYED arm for this
+    control actually executed", the real invariant issue #1 asks for, not a guess.
+    """
+    for ref, rel_path in (
+        ("607056a", ".github/workflows/ci.yml"),  # negative_control_build_precondition.py
+        ("133b9fe", ".github/workflows/ci.yml"),  # negative_control_open_reds.py
+        ("8a851f8", "README.md"),  # negative_control_readme_usage.py
+        ("eb84364", "evidence/proof_ledger.jsonl"),  # negative_control_ledger_census.py
+        ("26fd93f", "evidence/proof_ledger.jsonl"),  # negative_control_ledger_census.py
+    ):
+        proc = subprocess.run(
+            ["git", "show", f"{ref}:{rel_path}"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        assert proc.returncode == 0, (
+            f"`git show {ref}:{rel_path}` failed in this checkout -- every REPLAYED arm "
+            f"pinned to {ref} is UNOBSERVABLE here, not merely untested.\n"
+            f"stderr: {proc.stderr.strip()}"
+        )
+
+    rc, out = _run_negative_control_build_precondition(REPO_ROOT)
+    assert rc == 0, out
+    assert "NEGATIVE-CONTROL: PASS" in out, (
+        "every declared arm must fire once its historical refs are reachable\n" + out
+    )
+    counts = re.search(r"(\d+) LIVE / (\d+) REPLAYED / (\d+) PLANTED", out)
+    assert counts is not None, f"could not find the control's own arm-count line:\n{out}"
+    replayed = int(counts.group(2))
+    assert replayed == 2, (
+        f"only {replayed} of the control's 2 declared REPLAYED arms fired -- a checkout "
+        "that can reach 607056a but still reports fewer than both REPLAYED arms has "
+        f"regressed silently, not gone shallow.\n{out}"
+    )
+
+
+def test_negative_control_reports_unobservable_not_a_pass_on_a_shallow_clone(tmp_path):
+    """NEGATIVE arm: reproduce the actual CI defect in a scratch clone, on purpose.
+
+    A `--depth 1` clone of this repository cannot reach 607056a (it long predates HEAD),
+    so the REPLAYED arm must FAIL loudly -- UNOBSERVABLE, per
+    ``negative_control_build_precondition.historical_workflow`` -- and the control's exit
+    code must stay non-zero. It must NOT skip the arm and it must NOT report PASS: a
+    negative control that goes quietly green the moment its subject becomes unreachable
+    is indistinguishable, from the outside, from one that was never wired at all.
+    """
+    shallow = tmp_path / "shallow"
+    clone = subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", "--no-local",
+         REPO_ROOT.as_uri(), str(shallow)],
+        capture_output=True, text=True,
+    )
+    assert clone.returncode == 0, f"scratch shallow clone failed: {clone.stderr}"
+
+    show = subprocess.run(
+        ["git", "show", "607056a:.github/workflows/ci.yml"],
+        capture_output=True, text=True, cwd=str(shallow),
+    )
+    assert show.returncode != 0, (
+        "a depth-1 clone that CAN reach 607056a does not reproduce the CI defect this "
+        "test exists to replay -- widen the clone or pick a more recent HISTORICAL_REF"
+    )
+
+    rc, out = _run_negative_control_build_precondition(shallow)
+    assert rc == 1, (
+        f"a shallow checkout must fail the control, not pass it silently.\nOutput:\n{out}"
+    )
+    assert "UNOBSERVABLE" in out, "the reason must be named, not just a bare non-zero exit"
+    assert "NEGATIVE-CONTROL: FAIL(condition=arm_did_not_fire)" in out
+    assert "NEGATIVE-CONTROL: PASS" not in out, (
+        "an unreachable REPLAYED subject must never be reported as every arm firing"
+    )
+
+
+def _run_negative_control_build_precondition_with_env(extra_env: dict) -> tuple[int, str]:
+    """Like ``_run_negative_control_build_precondition``, but with a caller-controlled
+    parent environment instead of this test process's own inherited one.
+
+    ``PYTHONIOENCODING``, ``PYTHONUTF8`` and ``PYTHONLEGACYWINDOWSSTDIO`` are stripped
+    from the base environment before ``extra_env`` is applied, so a value this pytest
+    process happens to have picked up (from a CI job env, a dev shell profile, etc.)
+    cannot quietly stand in for the polarity a given call is trying to exercise.
+    """
+    env = dict(os.environ)
+    for var in ("PYTHONIOENCODING", "PYTHONUTF8", "PYTHONLEGACYWINDOWSSTDIO"):
+        env.pop(var, None)
+    env.update(extra_env)
+    script = REPO_ROOT / "ci" / "negative_control_build_precondition.py"
+    proc = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True,
+        cwd=str(REPO_ROOT), env=env,
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_negative_control_build_precondition_passes_under_both_encoding_polarities():
+    """``run()``'s child-encoding pin must make the control's own PASS independent of
+    the *parent* shell that launched ``negative_control_build_precondition.py``, not
+    merely reproduce whatever this dev machine already has configured.
+
+    Before this fix, only the PARENT-side decode was pinned (``encoding="utf-8"`` on
+    ``subprocess.run``); the CHILD (``check_build_precondition.py``) still picked its
+    own stdout encoding from ``locale.getpreferredencoding()``, so which BP arm's
+    assertion tripped depended on whatever the invoking shell had (or had not) set --
+    exactly the "parent-only pin flips which BP arm fails depending on shell" defect.
+    ``run()`` now forces ``PYTHONIOENCODING=utf-8`` into the CHILD's own environment
+    unconditionally, so both polarities below must PASS identically:
+
+    * a stock/legacy parent env -- neither ``PYTHONIOENCODING`` nor ``PYTHONUTF8`` set,
+      the shape of a default Windows shell (cp1252-preferred-encoding) and, on POSIX,
+      forced further with ``LC_ALL=C``/``LANG=C`` to remove the usual UTF-8 locale
+      safety net so the same "nothing declares UTF-8" condition is reproduced there too;
+    * an explicit UTF-8 parent env -- proving the fix isn't a coincidence of whichever
+      polarity this box already happened to have.
+    """
+    polarities = {
+        "stock/legacy (no PYTHONIOENCODING/PYTHONUTF8, C locale)": {
+            "LC_ALL": "C", "LANG": "C",
+        },
+        "explicit UTF-8": {
+            "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "LC_ALL": "en_US.UTF-8",
+        },
+    }
+    for label, extra_env in polarities.items():
+        rc, out = _run_negative_control_build_precondition_with_env(extra_env)
+        assert rc == 0, f"[{label}] must PASS regardless of the parent shell's own encoding:\n{out}"
+        assert "NEGATIVE-CONTROL: PASS" in out, f"[{label}]:\n{out}"
+        # This is the one arm whose `ok` is computed from `"BP1 \u2014" in out` inside
+        # negative_control_build_precondition.py's own check_build_precondition.py
+        # subprocess call -- the exact literal substring match the mojibake bug broke.
+        # The raw captured text isn't echoed verbatim by the outer script, so the arm's
+        # own printed verdict ("ok " vs "FAIL") is the observable proxy for whether that
+        # decode round-tripped correctly under this parent env.
+        assert "[REPLAYED] ok    and it is BP1 that catches it, not BP2 by accident" in out, (
+            f"[{label}] the em-dash-dependent REPLAYED arm did not fire cleanly -- the "
+            f"child-encoding pin did not hold under this parent env:\n{out}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# ci/negative_control_open_reds.py's _live_failure_note() -- the helper that anchors a
+# failing LIVE arm's diagnostic on check_open_reds.py's own state-table header instead
+# of a blind [-1500:] stdout tail (see its own docstring for the CI-log-truncation bug
+# this replaced). Two polarities: the marker is present (anchor on it, don't blindly
+# truncate before it), and the marker is absent/malformed (fall back to a bounded tail
+# that still carries content -- fail-loud, never silently empty).
+# ---------------------------------------------------------------------------
+
+def _load_live_failure_note():
+    import importlib
+    mod = importlib.import_module("negative_control_open_reds")
+    return mod._live_failure_note
+
+
+def test_live_failure_note_anchors_on_the_state_table_when_the_marker_is_present():
+    """POSITIVE: with the marker present, the note starts at the marker, not at a fixed
+    byte offset that could land anywhere relative to it."""
+    live_failure_note = _load_live_failure_note()
+    preamble = "pytest collection noise\n" * 400  # long enough to defeat a [-1500:] tail
+    table = "OPEN-REDS: frame\nstate                            check\nFAIL(...) something_unaccounted\n"
+    note = live_failure_note(preamble + table, "")
+    assert note.startswith("OPEN-REDS: frame"), (
+        f"note must anchor on the table header, not a blind tail:\n{note[:200]!r}"
+    )
+    assert "something_unaccounted" in note, "the named failing check must survive into the note"
+    assert "pytest collection noise" not in note, (
+        "the preamble before the marker must not leak into the anchored note"
+    )
+
+
+def test_live_failure_note_falls_back_to_a_bounded_tail_when_the_marker_is_missing():
+    """NEGATIVE: marker absent (e.g. an older/malformed check_open_reds.py that never
+    printed the header, or output truncated before the header was ever written) must
+    still produce a non-empty, bounded diagnostic -- never blank, and never raise --
+    so a missing marker degrades to "the same tail as before" rather than to nothing."""
+    live_failure_note = _load_live_failure_note()
+    stdout = "z" * 5000  # no "OPEN-REDS: frame" anywhere
+    stderr = "w" * 3000
+    note = live_failure_note(stdout, stderr)
+    assert note == stdout[-4000:] + stderr[-1500:], "must fall back to the bounded tail exactly"
+    assert note, "a missing marker must still produce a non-empty, fail-loud diagnostic"
+    assert len(note) <= 4000 + 1500
 
 
 # ---------------------------------------------------------------------------
