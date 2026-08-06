@@ -524,6 +524,86 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.hardcoded_foundry_paths",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Hardcoded Foundry cache path screen (static, whole tree)",
+        watches=(
+            "Every *.py file for a literal Foundry cache directory fragment "
+            "(...\\.foundry\\cache\\models...). tests/ops/test_phi35.py hardcoded this "
+            "shape and went stale under us with no code change on either side when "
+            "Foundry Local's own catalog revision moved (issue #11); PR #15 fixed that one "
+            "site with an identity-keyed resolver, and issue #19 found ~31 more sites in "
+            "tools, probes and archived benchmark scripts PR #15 had not reached. A "
+            "migration with no standing guard erodes: the next probe written under time "
+            "pressure pastes the pattern back in, because that is what every existing "
+            "probe in the tree looked like until this pass."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "ci/negative_control_hardcoded_foundry_paths.py, 5 arms. The strongest is not "
+            "planted: it runs the screen against the real bench/exec_census.py at ea427fd "
+            "— the commit immediately before issue #19's migration — placed outside the "
+            "archival allowlist exactly as it shipped, and demands exit 1."
+        ),
+        arm_healthy=(
+            "FOUNDRY-PATHS: PASS — 33 allowlisted occurrence(s), 0 outside the allowlist "
+            "(24 archival bench/results/*.py scripts + rust/tools/foundry_discovery.py's "
+            "own defect-documentation (1) + the screen's own files naming the pattern in "
+            "prose/fixtures — ci/check_hardcoded_foundry_paths.py (3), "
+            "ci/negative_control_hardcoded_foundry_paths.py (2), ci/test_lane_checks.py "
+            "(2) and ci/lane_inventory.py (1))"
+        ),
+        arm_broken=(
+            "FOUNDRY-PATHS: FAIL — 1 hardcoded Foundry cache path(s) outside the "
+            "allowlist: bench/exec_census.py:29: ..."
+        ),
+        observed="2026-08-05",
+        misses=(
+            "It matches literal source text, not identity strings or pathlib joins built "
+            "from separate segments (Path.home() / '.foundry' / 'cache' / 'models' is "
+            "invisible to it by design, since that shape cannot go stale the way a single "
+            "hardcoded literal does). A hardcode assembled via string concatenation or "
+            "f-string interpolation at a non-literal offset would also be invisible.",
+            "The allowlist is a directory prefix (bench/results/) plus two named files. A "
+            "genuinely new archival script placed outside bench/results/ — or a live tool "
+            "placed inside it to dodge the screen — is not distinguished from the cases "
+            "the allowlist is meant to cover; only the location is checked, not intent.",
+            "It scans *.py only. A hardcoded path pasted into a shell script, a notebook, "
+            "or a non-Python tool would not be caught.",
+        ),
+    ),
+    Check(
+        id="hostfree.hardcoded_foundry_paths_negative_control",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Hardcoded Foundry path screen negative control (replay the shipped defect)",
+        watches=(
+            "The screen above. It is the only reason that screen may be called a "
+            "detector rather than a step that has been observed passing."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Its own instrument arm: an archival script planted under bench/results/ with "
+            "the identical literal must stay green (PASS), proving the allowlist is a "
+            "directory rule and not merely 'the files that happen to exist today'."
+        ),
+        arm_healthy="5/5 arms, 2026-08-05, 3 of them PLANTED and counted as such",
+        arm_broken=(
+            "the real bench/exec_census.py at ea427fd judged against an empty tree: exit "
+            "1, naming rust/tools/probe_new_thing.py as the injected live-tool violation "
+            "and the replayed bench/exec_census.py as the historical one"
+        ),
+        observed="2026-08-05",
+        misses=(
+            "The historical arm needs ea427fd in the clone. actions/checkout defaults to "
+            "depth 1, so on a shallow checkout that arm reports UNOBSERVED and the "
+            "remaining four are PLANTED. The summary says so rather than reporting 4/4.",
+            "Three of five arms are PLANTED. They prove each rule fires on an input built "
+            "to make it fire, not that the shape recurs unprompted.",
+        ),
+    ),
+    Check(
         id="hostfree.tautological_assertions",
         lane=LANE_HOSTFREE,
         step="Tautological-assertion screen (no GPU, whole tree)",

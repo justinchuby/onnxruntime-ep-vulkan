@@ -5123,6 +5123,155 @@ shell that runs `cargo build`. That determinism and inspectability, not a false 
 processes losing `set` mutations, is why it is the only recipe this document recommends for
 Windows.
 
+**Issue #19 closed the remaining gap: every hardcoded cache path outside the fixture PR #15
+migrated, and a standing guard against a new one.** PR #15's resolver reached `test_phi35.py`
+alone; a repo-wide inventory found ~34 more sites — 11 live tools (`bench/exec_census.py`,
+`bench/island_attribution.py`, and nine `rust/tools/probe_*.py`/`roofline_split.py` scripts) that
+called a hardcoded path directly, and 23 archived one-off investigation scripts under
+`bench/results/` whose default path is the exact historical artifact the recorded result was
+actually measured against (an earlier pass through this inventory undercounted the archival group
+at 22; a precise grep for the `os.environ.get("PHI35_MODEL"` pattern during PR #31 review found
+the exhaustive, verified count is 23 — `bench/results/probe_planted_kv.py` names the path fragment
+only in a docstring and is neither of these groups). These two groups are migrated differently,
+deliberately:
+
+  - **Live tools** now build a `FoundryModelSpec` and call `resolve_model_path`, exactly like
+    `test_phi35.py` — the same fail-loud four-way `FoundryDiscoveryError` from §9.1.4 applies,
+    surfaced as each tool's own pre-existing error-handling idiom (`SystemExit`, a printed
+    `ERROR(instrument)` plus non-zero return, or a graceful `SKIP` for tools that already
+    tolerated an absent model).
+  - **Archival scripts are never pointed at the live resolver.** A resolver call picks whatever
+    is cached *today*; an archived script's job is to reproduce what was measured on the day it
+    ran, which may be a different cache revision than the one currently installed. Each archival
+    script instead reads `os.environ.get("PHI35_MODEL", <the exact historical literal path>)` —
+    the override lets a maintainer point it at a different cache layout on purpose, but the
+    default keeps failing loudly against the one specific path the archived numbers came from,
+    never silently substituting a newer cache revision's model. `bench/results/probe_planted_kv.py`
+    was found to name the same fragment only in prose (a narrative docstring, not executable
+    code) and needed no change.
+
+  No dead duplicates were found among these ~34 sites: every file's content is unique (no two
+  hash-identical, and no pair scores above a 0.55 line-similarity ratio against any other), so
+  issue #19's "delete dead duplicates" acceptance criterion is satisfied vacuously here rather
+  than by a deletion.
+
+  **The standing guard is `ci/check_hardcoded_foundry_paths.py`.** It is a static, source-text
+  screen — no GPU, no Foundry install, no cached model required — that greps every `*.py` file
+  for the literal fragment `.foundry/cache/models` (either path-separator spelling) and fails on
+  any hit outside an explicit allowlist (`bench/results/**`, `rust/tools/foundry_discovery.py`'s
+  own defect-documentation, and the check's own test surface). Deliberately narrow: it does not
+  match a model *identity* string used as a resolver key, nor a `pathlib` join built from
+  separate literal segments, only a single literal that already spells out the on-disk
+  hierarchy — the shape a hardcoded lookup takes, and the shape a resolver call does not.
+  `ci/negative_control_hardcoded_foundry_paths.py` proves the screen is load-bearing with a
+  REPLAYED arm (the real `bench/exec_census.py` as it stood at `ea427fd`, immediately before
+  this migration — the actual defect, not an invented shape) alongside PLANTED and LIVE arms.
+  Both are registered in `ci/lane_inventory.py` under `hostfree.hardcoded_foundry_paths` /
+  `hostfree.hardcoded_foundry_paths_negative_control`. The allowlist stands at **33** occurrences
+  (24 archival `bench/results/*.py` files/lines, plus 3 in the check's own docstring/source, 1 in
+  `ci/lane_inventory.py`, 2 in `ci/negative_control_hardcoded_foundry_paths.py`, 2 in
+  `ci/test_lane_checks.py`, and 1 in `rust/tools/foundry_discovery.py`'s own defect-documentation)
+  — not the "28" an earlier revision of this migration's evidence quoted, corrected after review.
+
+  **The result-identity contract: every archival record names the exact bytes it was computed
+  from.** An `os.environ.get("PHI35_MODEL", ...)` override lets an archival script be pointed at
+  a different cache layout on purpose (the whole reason these scripts are not migrated onto the
+  live resolver, above) — but an override that changed *which file ran* while the emitted JSON
+  kept quoting only the historical default path string would let a maintainer silently swap in a
+  different artifact and misattribute the result to the one the archived numbers actually came
+  from. The same failure shape exists with no override at all, if a stale or corrupted re-download
+  ever lands at the exact historical path. Review of PR #31 (issue #19 follow-up) closed this: each
+  of the 23 archival scripts that accept `PHI35_MODEL` now also defines a lazily-evaluated
+  `_result_identity()` — computed only when a result record is actually written, never at import
+  time, so a script's existing graceful-missing-model behavior (an early `.exists()` return, or a
+  later `onnx.load`/ORT exception) is unchanged — returning
+
+  ```json
+  {"onnx_file": "<the exact path resolved for this run>",
+   "onnx_sha256": "<streaming SHA-256 of that exact file>"}
+  ```
+
+  merged into every JSON record the script writes. All 23 reuse one existing helper,
+  `rust/tools/model_provenance.py`'s `sha256_of(path)` (already exercised for the MobileNet/BERT
+  provenance contract), rather than each defining its own hasher. `ci/test_lane_checks.py` proves
+  both the structural contract (every script accepting `PHI35_MODEL` defines `_result_identity`
+  and stamps both keys, and reuses the shared hasher — not a hand-maintained file list, discovered
+  by the same override pattern the fix targets) and the functional one (pointing `PHI35_MODEL` at
+  a fixture file changes both `onnx_file` and `onnx_sha256` in lockstep; substituting different
+  bytes at the *same* path — no override — changes `onnx_sha256`, proving a silent substitution
+  cannot be invisible in the evidence).
+
+  **The three live tools flagged in the same review — `rust/tools/probe_phi35_claim_reading.py`,
+  `rust/tools/probe_silent_cpu_rebuild.py`, `rust/tools/roofline_split.py` — had each kept a
+  `PHI35_MODEL` environment check ahead of the resolver call**, left over from an earlier
+  migration pass; an override present in the environment (from an unrelated archival script run,
+  say) would silently skip `resolve_model_path`'s own exact variant+execution-provider validation
+  for what are otherwise live tools with no legitimate reason to replay a historical artifact.
+  All three now match the other 8 migrated live tools exactly: an unconditional
+  `resolve_model_path(_PHI35_SPEC)` at import time, with no environment override of any kind, and
+  the same fail-loud `FoundryDiscoveryError` → `SystemExit("ERROR(instrument): ...")` contract.
+  `ci/test_lane_checks.py` asserts both the absence of a functional `os.environ.get("PHI35_MODEL"`
+  read (a comment naming the variable to explain why there is deliberately no override is fine)
+  and the presence of the direct resolver call and its fail-loud exception handling.
+
+  **The contract is not scoped to `bench/results/*.py`, and its own test coverage is not either.**
+  A second review round found the same silent-substitution gap in two siblings a
+  `bench/results/`-only glob structurally cannot reach: `tests/ops/probe_validation_phi35.py`
+  reads `PHI35_MODEL` directly and writes its own `validation_phi35_probe-dev*-*.json` record, and
+  `bench/results/probe_push_constants_written.py` never reads `PHI35_MODEL` itself but inherits it
+  — via `dict(os.environ)` — into a subprocess of `probe_validation_phi35.py --child`, then writes
+  `push_constants_written.json`/`push_constants_sensitivity.json` with only a DLL hash and no model
+  identity at all. Both now carry the same stamp: `probe_validation_phi35.py` defines its own
+  `_result_identity()` (tolerating a `None` model — resolution itself can fail here, unlike the
+  archival scripts, so the failure is reported as data rather than raised out of a writer that
+  must still land its record); `probe_push_constants_written.py` imports that same
+  `_result_identity` directly rather than re-resolving, since its subprocess is spawned from
+  this process's own `os.environ` after `probe_validation_phi35`'s module-level `MODEL` has
+  already resolved against that identical environment — the two therefore always name the same
+  file.
+
+  **Third review round (PR #31 rejected at `60f0ae7`): the discovery itself was the defect, and
+  is now semantic.** Discovery had been a set of source-text regexes in `ci/test_lane_checks.py`,
+  and `subprocess\.run\(\s*\[\s*sys\.executable` recognised exactly one spelling — the argv
+  written inline at the call site. Both remaining offenders build the argv into a variable first
+  (`cmd = [sys.executable, str(PROBE), ...]; subprocess.run(cmd, env=env, ...)`), so the screen
+  walked past `rust/tools/device_loss_gate.py`, which spawned `probe_kv_chain_phi35.py` and wrote
+  `bench/results/device_loss_gate.json` with no model identity, and
+  `bench/results/probe_device_memory_kv.py`, which spawned `probe_kv_bytes_earned.py`, *read* the
+  child's record for its byte totals, and discarded the `onnx_file`/`onnx_sha256` in it while
+  writing `device_memory_kv_lanes.json`. The same regexes could match their own source text, and
+  `dict(os.environ)` as the inheritance test missed `os.environ.copy()` and scored the strongest
+  case — passing no `env=` at all — as no inheritance.
+
+  Discovery now lives in **`ci/phi35_identity_audit.py`**, which parses every `*.py` file in the
+  tree and reasons over the AST: environment reads through any alias (`os.environ.get`,
+  `os.environ[...]`, `os.getenv`, `from os import environ`, `import os as o`), subprocess argv and
+  `env=` built inline *or* through variables, script targets named through module-level path
+  constants, and JSON *records written to disk* distinguished from a `json.dumps` merely printed.
+  The "the model reaches this file" relation is closed to a **fixed point**, not one hop, so a
+  wrapper of a wrapper is caught by construction. It is a module rather than a `ci/check_*.py`
+  entry point on purpose — it is driven from the already-registered `lane_checks_suite` and adds
+  no new verification subject. It reports **25 identity-bearing producers**, all clean; it exits
+  `4 ERROR(instrument)` on an unparseable file rather than skipping it into a green.
+
+  Both offenders now **propagate** the child's identity rather than re-deriving it — the child is
+  the process that opened the file, so its hash is of the bytes that actually ran. Neither writes
+  a blank on a success path: `device_loss_gate.py` stamps per-repetition identity, refuses with
+  `ERROR(identity=children_disagree)` when repetitions consumed different models (a pooled loss
+  rate over two models is not a rate) and exits `ERROR(instrument=model_identity_unknown)` rather
+  than publish an unattributable rate; `probe_device_memory_kv.py` refuses lanes that measured
+  different models by the same argument its existing DLL check makes about the binary, and its
+  `--reuse` path records `ERROR(identity=reused_records_named_no_model)` instead of inventing one.
+  `bench/results/probe_lane_logits_identity.py`, which is derived entirely from the gate's record,
+  propagates the identity forward; record-consumption is a **stated limit** of the audit (its
+  relations are environment read and spawn), declared in the module rather than left implicit.
+  `ci/test_lane_checks.py` drives the audit LIVE over the real tree and pairs it with planted arms
+  for every shape — inline and variable-built argv, all four `env=` spellings including its
+  absence, the alias/import variants, child-output field discarding, two-hop reachability, a
+  `json.dumps` that is only printed, and source that merely *describes* the defect — each asserted
+  against the rejected regex as well, so "the new screen is green" is not the only evidence that
+  it works.
+
 ### 9.2 Benchmarking — Niobe
 
 - **Baselines are versus the ORT CPU EP on the same machine, same model, same ORT build.** Any

@@ -87,11 +87,36 @@ REPO = HERE.parent.parent
 SCRATCH = HERE / "_scratch"
 OPS = REPO / "tests" / "ops"
 
+# ARCHIVAL: pinned to the exact Foundry cache layout this investigation measured against
+# (the pre-2026-08-05 "...-cuda-gpu/cuda-int4-rtn-block-32/..." catalog revision, issue
+# #11). Intentionally NOT auto-resolved against the live cache: a live resolver could
+# silently pick a *different* cached revision than the one this result was measured
+# against, which would misattribute a new run to an old artifact. Override PHI35_MODEL to
+# replay against a different artifact explicitly (issue #19).
 ONNX_FILE = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
-    r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-    r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+    os.environ.get(
+        "PHI35_MODEL",
+        r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
+        r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
+        r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    )
 )
+
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved
+# model path and its exact content hash are stamped into every output record below,
+# computed lazily (only once the model has already been used successfully) so a
+# PHI35_MODEL override or a stale/wrong cached file can never be silently absorbed into the
+# evidence. Reuses the streaming SHA-256 helper `model_provenance.sha256_of` rather than a
+# 23rd divergent hasher.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(ONNX_FILE),
+        "onnx_sha256": _model_provenance.sha256_of(ONNX_FILE),
+    }
 EP_NAME = "VulkanExecutionProvider"
 COUNTERS_ENV = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
 
@@ -229,7 +254,7 @@ def _worker(lane: str, backend: str, bits: int, gran: str | None, steps: int,
         if ep_device is None:
             doc["verdict"] = "ERROR(instrument)"
             doc["why"] = ["the Vulkan EP is not among ORT's EP devices"]
-            out_json.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+            out_json.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
             return 2
         # Read the device off the run, never off the selector: DEVICE=0 has run on 1=NVIDIA.
         doc["ep_device"] = {
@@ -247,7 +272,7 @@ def _worker(lane: str, backend: str, bits: int, gran: str | None, steps: int,
     if backend == "vk" and EP_NAME not in sess.get_providers():
         doc["verdict"] = "ERROR(instrument)"
         doc["why"] = [f"{EP_NAME} absent from {sess.get_providers()}"]
-        out_json.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        out_json.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
         return 2
 
     # The seed past: identical bytes in every lane (same seed, same draw order), so the nine
@@ -341,7 +366,7 @@ def _worker(lane: str, backend: str, bits: int, gran: str | None, steps: int,
     np.savez(out_npz, **saved)
     doc["npz"] = str(out_npz)
     doc["verdict"] = "LANE_RAN"
-    out_json.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out_json.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
     return 0
 
 
@@ -727,7 +752,7 @@ def main() -> int:
 
 def _write(doc: dict, args) -> None:
     out = pathlib.Path(args.out) if args.out else HERE / f"kv_int8_budget-dev{args.device}.json"
-    out.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    out.write_text(json.dumps({**doc, **_result_identity()}, indent=2), encoding="utf-8")
     print(f"\n{doc.get('verdict')}  ->  {out}")
 
 

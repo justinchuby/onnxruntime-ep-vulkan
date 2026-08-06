@@ -48,14 +48,25 @@ import sys
 import numpy as np
 import onnxruntime as ort
 
+import foundry_discovery as _foundry_discovery
+
 EP_NAME = "VulkanExecutionProvider"
 EP_LIB_ENV = "ONNXRUNTIME_VULKAN_EP_LIB"
 
-_MODEL = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models"
-    r"\Microsoft\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-    r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+# Resolved by identity (variant name + execution provider), not by a hardcoded path: Foundry
+# Local's own on-disk cache layout is versioned by its CLI's internal catalog revision (issue
+# #11), and a hardcoded path silently goes stale when that happens with no code change on either
+# side. See foundry_discovery.py for the full discovery contract (fail-loud, never guessed).
+_PHI35_SPEC = _foundry_discovery.FoundryModelSpec(
+    variant_name="Phi-3.5-mini-instruct-cuda-gpu",
+    execution_provider="CUDAExecutionProvider",
+    onnx_filename="phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    download_alias="phi-3.5-mini",
 )
+try:
+    _MODEL = _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+except _foundry_discovery.FoundryDiscoveryError:
+    _MODEL = None  # handled as a genuine-absence SKIP in main(), not a silent guess
 
 RUNS = int(os.environ.get("PROBE_RUNS", "3"))
 LAYERS = 32
@@ -103,8 +114,8 @@ def make_session(use_ep: bool) -> ort.InferenceSession:
 
 
 def main() -> int:
-    if not _MODEL.exists():
-        print(f"SKIP: model not found at {_MODEL}")
+    if _MODEL is None or not _MODEL.exists():
+        print(f"SKIP: Phi-3.5 model not resolvable in the Foundry cache ({_MODEL})")
         return 0
 
     feeds = build_feeds()

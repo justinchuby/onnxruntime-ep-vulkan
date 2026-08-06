@@ -38,11 +38,18 @@ from collections import defaultdict
 _ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 _RESULTS = _ROOT / "bench" / "results"
 _DEFAULT_LOG = _RESULTS / "claim_log_attribution.jsonl"
-_ONNX = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models"
-    r"\Microsoft\Phi-3.5-mini-instruct-cuda-gpu"
-    r"\cuda-int4-rtn-block-32"
-    r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+
+# Resolved by identity (variant name + execution provider), not by a hardcoded path: Foundry
+# Local's own on-disk cache layout is versioned by its CLI's internal catalog revision (issue
+# #11), and a hardcoded path silently goes stale when that happens with no code change on either
+# side. See foundry_discovery.py for the full discovery contract (fail-loud, never guessed).
+import foundry_discovery as _foundry_discovery  # noqa: E402
+
+_PHI35_SPEC = _foundry_discovery.FoundryModelSpec(
+    variant_name="Phi-3.5-mini-instruct-cuda-gpu",
+    execution_provider="CUDAExecutionProvider",
+    onnx_filename="phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    download_alias="phi-3.5-mini",
 )
 
 
@@ -55,11 +62,18 @@ def main() -> int:
 
     import onnx
 
+    try:
+        onnx_path = _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+    except _foundry_discovery.FoundryDiscoveryError as exc:
+        # R13: an instrument that cannot run is an ERROR, never a clean bill of health.
+        print(f"ERROR(instrument): Phi-3.5 model not resolvable: {exc}")
+        return 2
+
     records = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
     claimed = {r["node"] for r in records if r.get("claimed") and r.get("node")}
     declined = [r for r in records if not r.get("claimed") and r.get("node")]
 
-    graph = onnx.load(str(_ONNX), load_external_data=False).graph
+    graph = onnx.load(str(onnx_path), load_external_data=False).graph
     producer: dict[str, str] = {}
     consumers: dict[str, list[str]] = defaultdict(list)
     nodes: dict[str, dict] = {}

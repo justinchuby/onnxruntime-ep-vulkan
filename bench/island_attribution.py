@@ -36,13 +36,25 @@ _RESULTS.mkdir(parents=True, exist_ok=True)
 
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
+if str(_ROOT / "rust" / "tools") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "rust" / "tools"))
+import foundry_discovery as _foundry_discovery  # noqa: E402
 
-_MODEL_DIR = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models"
-    r"\Microsoft\Phi-3.5-mini-instruct-cuda-gpu"
-    r"\cuda-int4-rtn-block-32"
+# Resolved by identity (variant name + execution provider), not by a hardcoded path: Foundry
+# Local's own on-disk cache layout is versioned by its CLI's internal catalog revision (issue
+# #11), and a hardcoded path silently goes stale when that happens with no code change on either
+# side. See rust/tools/foundry_discovery.py for the full discovery contract (fail-loud, never
+# guessed).
+_PHI35_SPEC = _foundry_discovery.FoundryModelSpec(
+    variant_name="Phi-3.5-mini-instruct-cuda-gpu",
+    execution_provider="CUDAExecutionProvider",
+    onnx_filename="phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    download_alias="phi-3.5-mini",
 )
-_ONNX_FILE = _MODEL_DIR / "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+try:
+    _ONNX_FILE = _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+except _foundry_discovery.FoundryDiscoveryError as exc:
+    raise SystemExit(f"ERROR(instrument): Phi-3.5 model not resolvable: {exc}")
 
 EP_LIB = pathlib.Path(
     r"C:\Users\justinchu\dev\ep-vulkan-mouse\rust\target\release\onnxruntime_vulkan_ep.dll"

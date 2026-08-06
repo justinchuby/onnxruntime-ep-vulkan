@@ -201,6 +201,76 @@ def _counters(path: pathlib.Path) -> dict:
         return {}
 
 
+# MODEL IDENTITY (added 2026-08-05, issue #19)
+# ===========================================
+# This gate does not open the model itself — it spawns `probe_kv_chain_phi35.py`, which
+# does, and which stamps `onnx_file`/`onnx_sha256` into every record it writes. Until now
+# the gate read that child record for its counters and threw the identity away, so
+# `device_loss_gate.json` said how often the device was lost without saying WHICH model
+# lost it. A loss rate is a rate *of something*; a PHI35_MODEL override, or a different
+# file arriving at the same cache path, silently changes what was measured and leaves the
+# record with nothing to contradict.
+#
+# Propagation is preferred over re-derivation on purpose: the child is the process that
+# actually opened the file, so its hash is the hash of the bytes that were executed, not
+# of whatever is at that path once the gate finishes.
+def _unidentified() -> dict:
+    """The absence of an identity, said out loud.
+
+    There is deliberately NO fallback that hashes something the gate found for itself. The
+    gate never opens the model; its children do. Re-deriving an identity here would name
+    whatever is at the path *now* and attribute repetitions that have already finished to
+    it — the silent substitution this contract exists to detect, performed by the detector.
+    A live tool in rust/tools/ also does not read PHI35_MODEL (that override belongs to the
+    archival replay scripts), so there is nothing here to resolve from either.
+    """
+    return {
+        "onnx_file": None,
+        "onnx_sha256": None,
+        "onnx_identity_error": (
+            "ERROR(identity=no_child_record_named_a_model): no repetition produced a "
+            "record carrying onnx_file/onnx_sha256, and this gate does not open the model "
+            "itself, so the run cannot be attributed to any file."
+        ),
+    }
+
+
+def gate_identity(reps: list[dict]) -> dict:
+    """The one model every repetition consumed — or a loud statement that there wasn't one.
+
+    Three outcomes, none of them silent:
+
+      * exactly one identity across all repetitions — propagated verbatim;
+      * more than one — ``children_disagree``, with every identity seen listed. Repetitions
+        of different models are not repetitions of the same experiment, and a pooled loss
+        rate over them is not a rate;
+      * none — the environment fallback above, which itself carries an error when it cannot
+        name the file.
+    """
+    seen = sorted(
+        {
+            (r.get("onnx_file"), r.get("onnx_sha256"))
+            for r in reps
+            if r.get("onnx_file")
+        }
+    )
+    if len(seen) == 1:
+        return {"onnx_file": seen[0][0], "onnx_sha256": seen[0][1]}
+    if len(seen) > 1:
+        return {
+            "onnx_file": None,
+            "onnx_sha256": None,
+            "onnx_identity_error": (
+                "ERROR(identity=children_disagree): repetitions consumed "
+                f"{len(seen)} different models, so their counts do not pool."
+            ),
+            "onnx_identities_seen": [
+                {"onnx_file": f, "onnx_sha256": s} for f, s in seen
+            ],
+        }
+    return _unidentified()
+
+
 def one_rep(i: int, steps: int, seed_past: int, arena: bool, budget_mb: int,
             lane: str = "resident") -> dict:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -252,7 +322,16 @@ def one_rep(i: int, steps: int, seed_past: int, arena: bool, budget_mb: int,
         "capture": str(capture.relative_to(REPO)),
         "faults": _fault_scan(text),
         "steps_recorded": len(doc.get("per_step") or []),
+        # Propagated from the child that actually opened the model — see `gate_identity`.
+        "onnx_file": doc.get("onnx_file"),
+        "onnx_sha256": doc.get("onnx_sha256"),
     }
+    if not rec["onnx_file"]:
+        rec["onnx_identity_error"] = (
+            "ERROR(identity=child_record_carried_no_model_identity): "
+            f"{out.relative_to(REPO)} named no onnx_file, so this repetition cannot say "
+            "which model it measured."
+        )
     rec["lost"] = bool(rec["device_losses"] or rec["faults"].get("device_lost_reported"))
     # A repetition that ran no EP dispatch did not observe this hazard. It is not a clean
     # run and must not enter the denominator.
@@ -370,6 +449,17 @@ def main(argv=None) -> int:
             list(doc.get("arm", {}).get("lanes") or []), doc.get("per_lane") or {}
         )
         doc.setdefault("rescored", []).append({"from": old, "to": doc["separation"]})
+        # A rescore re-reads observations that were already paid for; it must not invent an
+        # identity for them. A record written before identity stamping keeps its silence,
+        # made explicit — the alternative is hashing whatever is at PHI35_MODEL *today* and
+        # attributing yesterday's repetitions to it.
+        if not doc.get("onnx_file"):
+            doc["onnx_identity_error"] = (
+                "ERROR(identity=rescored_record_named_no_model): this record was written "
+                "without onnx_file/onnx_sha256 and rescoring cannot recover them. Re-run "
+                "the gate to obtain a record whose rate names the model it is a rate of."
+            )
+            print(f"{TAG}: {doc['onnx_identity_error']}")
         path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         print(f"{TAG}: rescored {path.relative_to(REPO)}")
         print(f"  was: {(old or {}).get('verdict')}")
@@ -486,6 +576,7 @@ def main(argv=None) -> int:
         "detection_power": {f"{r:.4f}": _power(len(nonvacuous), r) for r in POWER_RATES},
         "reps": reps,
     }
+    doc.update(gate_identity(reps))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     rec_path = REPO / "bench" / "results" / args.record
     rec_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
@@ -517,6 +608,18 @@ def main(argv=None) -> int:
               "observation, so the comparison this gate exists to make was never made. "
               "A lane that executed nothing is not a clean lane.")
         return EXIT_REFUSE
+    # A rate is a rate OF SOMETHING. Reached only once the run is otherwise scorable, so a
+    # missing identity is reported as what it is — an instrument fault — instead of being
+    # written into a green record as an absent field nobody reads.
+    if doc.get("onnx_identity_error"):
+        print(f"{TAG}: {doc['onnx_identity_error']}")
+        for ident in doc.get("onnx_identities_seen", []):
+            print(f"        saw {ident['onnx_file']} sha256={ident['onnx_sha256']}")
+        print(f"{TAG}: ERROR(instrument=model_identity_unknown) — {len(nonvacuous)} "
+              "non-vacuous repetition(s) were scored against a model this record cannot "
+              "name, so the result is not replayable and not falsifiable.")
+        return EXIT_ERROR
+    print(f"  model:  {doc['onnx_file']} sha256={(doc['onnx_sha256'] or '')[:16]}")
     if lost:
         print(f"{TAG}: FAIL — {len(lost)} loss(es) in lane(s) "
               + ",".join(sorted({r["lane"] for r in lost})) + "; captures kept at "

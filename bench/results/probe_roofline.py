@@ -40,6 +40,7 @@ Run:  python bench/results/probe_roofline.py
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 
@@ -48,10 +49,19 @@ sys.path.insert(0, str(ROOT / "bench" / "results"))
 
 from probe_gemv_counts import byte_model, matmulnbits_census  # noqa: E402
 
+# ARCHIVAL: pinned to the exact Foundry cache layout this investigation measured against
+# (the pre-2026-08-05 "...-cuda-gpu/cuda-int4-rtn-block-32/..." catalog revision, issue
+# #11). Intentionally NOT auto-resolved against the live cache: a live resolver could
+# silently pick a *different* cached revision than the one this result was measured
+# against, which would misattribute a new run to an old artifact. Override PHI35_MODEL to
+# replay against a different artifact explicitly (issue #19).
 MODEL = pathlib.Path(
-    r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
-    r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-    r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+    os.environ.get(
+        "PHI35_MODEL",
+        r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
+        r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
+        r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    )
 )
 
 #: NVIDIA GeForce RTX 4060 **Laptop** GPU, confirmed by nvidia-smi on this box.
@@ -63,6 +73,21 @@ BUS_BITS = 128
 MEM_GBPS = 16.0
 PEAK_BYTES_PER_S = BUS_BITS / 8 * MEM_GBPS * 1e9
 ACHIEVABLE_FRACTION = (0.75, 0.85)
+
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been read successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(ROOT / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(MODEL),
+        "onnx_sha256": _model_provenance.sha256_of(MODEL),
+    }
 
 #: The quotable achieved figure. `bench/results/phi35-certified-dev0.json` records
 #: `certification.quotable = true`, tail_verdict STEADY, n=41 at 82% coverage, 1.4959% RSD, sole
@@ -112,6 +137,7 @@ def main() -> int:
     achieved_s = ACHIEVED_GPU_BUSY_MS / 1e3
     dram_bytes_per_s = irreducible / achieved_s
     report = {
+        **_result_identity(),
         "probe": "bandwidth_roofline_phi35_int4_decode",
         "device": "NVIDIA GeForce RTX 4060 Laptop GPU",
         "model": str(MODEL),

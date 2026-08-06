@@ -82,6 +82,20 @@ def main(argv=None) -> int:
         "excluded": excluded,
         "per_lane": {},
     }
+    # Propagated from the gate record this reader is entirely derived from (issue #19).
+    # Found by hand rather than by ci/phi35_identity_audit.py, whose relations are
+    # spawn/env/direct-read: this file consumes another producer's RECORD, and record
+    # consumption is a stated limit of the audit rather than something it screens. A
+    # derived comparison that cannot name the model is exactly as unfalsifiable as the
+    # record it derives from, so the identity travels with it.
+    doc["onnx_file"] = rec.get("onnx_file")
+    doc["onnx_sha256"] = rec.get("onnx_sha256")
+    if not doc["onnx_file"]:
+        doc["onnx_identity_error"] = (
+            "ERROR(identity=source_record_named_no_model): "
+            f"{args.record} carries no onnx_file/onnx_sha256, so this cross-lane comparison "
+            "cannot say which model's logits it compared. Re-run the gate."
+        )
     for lane, rows in sorted(by_lane.items()):
         digests = sorted({r["sha256_16"] for r in rows})
         doc["per_lane"][lane] = {
@@ -114,6 +128,10 @@ def main(argv=None) -> int:
         print(f"LANE-IDENTITY: {lane:9s} {p['reps_compared']} rep(s) "
               f"{p['within_lane']} {p['distinct_digests']}")
     print(f"LANE-IDENTITY: CROSS_LANE {doc['cross_lane']}")
+    if doc.get("onnx_identity_error"):
+        print(f"  {doc['onnx_identity_error']}")
+    else:
+        print(f"  model: {doc['onnx_file']} sha256={(doc['onnx_sha256'] or '')[:16]}")
     for e in excluded:
         print(f"  excluded rep {e['rep']} ({e['lane']}): {e['excluded_because']}")
     print(f"  record: {out.relative_to(REPO)}")

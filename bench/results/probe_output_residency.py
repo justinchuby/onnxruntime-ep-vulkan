@@ -67,6 +67,12 @@ HERE = pathlib.Path(__file__).resolve().parent
 EP_NAME = "VulkanExecutionProvider"
 COUNTERS_ENV = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
 
+# ARCHIVAL: pinned to the exact Foundry cache layout this investigation measured against
+# (the pre-2026-08-05 "...-cuda-gpu/cuda-int4-rtn-block-32/..." catalog revision, issue
+# #11). Intentionally NOT auto-resolved against the live cache: a live resolver could
+# silently pick a *different* cached revision than the one this result was measured
+# against, which would misattribute a new run to an old artifact. Override PHI35_MODEL to
+# replay against a different artifact explicitly (issue #19).
 PHI = pathlib.Path(
     os.environ.get(
         "PHI35_MODEL",
@@ -77,6 +83,21 @@ PHI = pathlib.Path(
 )
 
 LAYERS, KV_HEADS, HEAD_DIM = 32, 32, 96
+
+# Result-identity contract (issue #19 follow-up, Morpheus review on PR #31): the resolved model
+# path and its exact content hash are stamped into the output record below, computed lazily
+# (only once the model has already been used successfully) so a PHI35_MODEL override or a
+# stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
+# SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
+sys.path.insert(0, str(ROOT / "rust" / "tools"))
+import model_provenance as _model_provenance  # noqa: E402
+
+
+def _result_identity() -> dict:
+    return {
+        "onnx_file": str(PHI),
+        "onnx_sha256": _model_provenance.sha256_of(PHI),
+    }
 
 
 def worker(past_len: int, iters: int) -> int:
@@ -230,7 +251,10 @@ def main() -> int:
 
     rec = HERE / "output_residency.json"
     rec.write_text(
-        json.dumps({"lanes": lanes, "verdict": verdict, "detail": detail}, indent=2),
+        json.dumps(
+            {**_result_identity(), "lanes": lanes, "verdict": verdict, "detail": detail},
+            indent=2,
+        ),
         encoding="utf-8",
     )
     print(f"\n  record: {rec}")
