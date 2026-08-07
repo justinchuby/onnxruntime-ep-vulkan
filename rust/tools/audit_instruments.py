@@ -499,6 +499,22 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_kv_write_redundancy.py": (
         "test module — a caller, screened as polarity, not as an instrument."
     ),
+    # Arrived 2026-08-06 (Tank) closing the `identify_by_uuid` unfalsified finding honestly
+    # rather than by hand note. `_polarity.py` is the VALUE-polarity source the screen now
+    # reads (see VALUE_REJECT_FN): it renders no verdict about a measurement, it enforces
+    # the refusal contract of an instrument that returns one instead of raising it — the
+    # same relationship `pytest.raises` has to a guard that raises, and pytest is not an
+    # instrument either. Its own two polarities are screened in test_devices_identity.py,
+    # which is where the mutation battery for identify_by_uuid also lives.
+    "_polarity.py": (
+        "polarity assertion helpers for TOTAL instruments — the screen's second polarity "
+        "source, not a verdict about a measurement. Two-polarity tested in "
+        "test_devices_identity.py."
+    ),
+    "test_devices_identity.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries the "
+        "five planted mutants that earn identify_by_uuid its `screened` state."
+    ),
 }
 
 
@@ -554,6 +570,65 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
                     out.add(node.name)
                     break
     return out
+
+
+# ---------------------------------------------------------------------------
+# VALUE POLARITY FOR TOTAL INSTRUMENTS (added 2026-08-06, Tank, on the
+# `bench/devices.py::identify_by_uuid` finding).
+#
+# The `pytest.raises` model above is blind to an instrument that RETURNS its refusal
+# instead of raising it.  `identify_by_uuid` is the specimen: it returns `(device, why)`
+# and never raises, because its caller `device_identity_check` prints the `why` on the
+# refusal path.  The totality is deliberate.
+#
+# Three ways to close such a finding, and only the third is honest:
+#   1. force an exception contract on the instrument so this screen can see it — changing
+#      the subject to fit the instrument, and making production worse to make the screen
+#      greener;
+#   2. baseline it with a hand note — converting an open question into a permanent one;
+#   3. give the screen a second polarity source that OBSERVES as strongly as
+#      `pytest.raises` does.
+#
+# `pytest.raises` earns its credit by failing the test when the thing inside it does not
+# raise.  So the second source is held to the same standard: a call to the instrument that
+# appears as an argument to `bench/_polarity.py::refuses(...)` is reject polarity, and one
+# that appears as an argument to `selects(...)` is accept polarity — and BOTH of those
+# helpers raise `PolarityError` at run time when the contract they name is not honoured.
+# They are assertions, not annotations.  A mutant instrument cannot pass through either.
+#
+# Crediting a bare marker would be the Guard D shape with the sign flipped, and this file
+# says so about itself two hundred lines up; the enforcement is what makes this not that.
+#
+# The blind spot, unchanged and restated: neither model can see whether the test's INPUT
+# actually varies the thing under test.  That is earned by mutation —
+# `bench/test_devices_identity.py` for this instrument, `tests/ops/test_guard_d.py` for
+# the harness domain — and it is not claimed by this screen.
+VALUE_REJECT_FN = frozenset({"refuses"})
+VALUE_ACCEPT_FN = frozenset({"selects"})
+
+
+def _polarity_wrapped(fn, wrapper_names: "frozenset[str]") -> "set[int]":
+    """ids of every ast node nested inside a call to one of *wrapper_names*."""
+    import ast as _ast
+
+    marked: set[int] = set()
+    for node in _ast.walk(fn):
+        if not isinstance(node, _ast.Call):
+            continue
+        func = node.func
+        name = (
+            func.attr
+            if isinstance(func, _ast.Attribute)
+            else func.id
+            if isinstance(func, _ast.Name)
+            else None
+        )
+        if name not in wrapper_names:
+            continue
+        for inner in _ast.walk(node):
+            if inner is not node:
+                marked.add(id(inner))
+    return marked
 
 
 def _is_gated(fn) -> bool:
@@ -632,6 +707,17 @@ def harness_survey(tests_root=None, files=None, fn_re=None, prefix="tests") -> l
                     ):
                         for inner in _ast.walk(node):
                             raising.add(id(inner))
+            # ...and whether it sits inside an enforcing value-polarity assertion, which is
+            # how a TOTAL instrument's refusal is watched.  See VALUE_REJECT_FN above.
+            value_reject = _polarity_wrapped(fn, VALUE_REJECT_FN)
+            value_accept = _polarity_wrapped(fn, VALUE_ACCEPT_FN)
+            # `value_accept` is computed and deliberately NOT used to award accept credit.
+            # A bare call already scores accept under the original model, so requiring
+            # `selects(...)` for it would silently re-score every screened row in the tree.
+            # It is read by the frame report instead: `selects` earns nothing from this
+            # screen, and does its work at RUN time, where it makes an accept credit mean
+            # something a bare call never did.
+            del value_accept
             for node in _ast.walk(fn):
                 if not isinstance(node, _ast.Call):
                     continue
@@ -648,7 +734,7 @@ def harness_survey(tests_root=None, files=None, fn_re=None, prefix="tests") -> l
                 stats[name]["calls"] += 1
                 if gated:
                     continue
-                if id(node) in raising:
+                if id(node) in raising or id(node) in value_reject:
                     stats[name]["reject"] += 1
                 else:
                     stats[name]["accept"] += 1
@@ -909,15 +995,23 @@ def main(argv: list[str]) -> int:
         files=BENCH_INSTRUMENT_FILES,
         note=(
             "READ THE UNFALSIFIED COUNT HERE AS A PROPERTY OF THIS SCREEN, NOT AS A VERDICT ON\n"
-            "bench/'s TESTS. Polarity is detected from `pytest.raises`, and most bench\n"
-            "instruments are TOTAL functions: they return a token (`STEADY`, `MARGINAL_TAIL`,\n"
-            "`NO_STEADY_TAIL`, `SOLE_TENANT`) instead of raising, so a test that watches\n"
-            "`gpu_steady_tail` refuse a series is invisible to the raise-based model. This is the\n"
-            "same limit already recorded for `classify_` in the harness domain. `unfalsified`\n"
-            "here means THIS SCREEN has not seen a disagreement, which is exactly what R12 says\n"
-            "it should say, and not that no test watches one. Crediting a polarity this screen\n"
-            "did not observe would be the Guard D shape with the sign flipped.\n"
-            "Handed to Niobe: a value-polarity model for total instruments, or a note per row."
+            "bench/'s TESTS. Most bench instruments are TOTAL functions: they return a token\n"
+            "(`STEADY`, `MARGINAL_TAIL`, `NO_STEADY_TAIL`, `SOLE_TENANT`) instead of raising, so\n"
+            "a test that watches `gpu_steady_tail` refuse a series was invisible to the original\n"
+            "raise-based model. `unfalsified` here means THIS SCREEN has not seen a disagreement,\n"
+            "which is exactly what R12 says it should say, and not that no test watches one.\n"
+            "Crediting a polarity this screen did not observe would be the Guard D shape with the\n"
+            "sign flipped.\n"
+            "\n"
+            "2026-08-06 (Tank): the value-polarity model handed to Niobe above now EXISTS, so this\n"
+            "count is no longer a limit anyone has to accept. A call wrapped in\n"
+            "`bench/_polarity.py::refuses(...)` scores reject polarity, and that helper raises when\n"
+            "the thing inside it did not refuse — an assertion, not an annotation. First subject:\n"
+            "`devices.py::identify_by_uuid`, moved unfalsified -> SCREENED with five planted\n"
+            "mutants in `bench/test_devices_identity.py`. EVERY ROW BELOW IS NOW REACHABLE THE\n"
+            "SAME WAY. A row that is still `unfalsified` is an instrument nobody has done this\n"
+            "for yet, which is a smaller and more actionable statement than the one this note\n"
+            "used to make."
         ),
     )
 

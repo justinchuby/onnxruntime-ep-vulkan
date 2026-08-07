@@ -1978,6 +1978,29 @@ The probe restores `_models.py`, verifies it hashes back to the original, clears
 
 The census scans `rust/src` and `tests/ops` only — **never `bench/`**. Every instrument under `bench/` is outside its frame, so "the census is clean" currently says nothing about them. Found by Niobe, routed to Tank; recorded here so nobody reads the verdict wider than it reaches.
 
+### 7.17.5 A guard the census called `unfalsified` where it was *not* right — added 2026-08-06T22:20-07:00 (Tank)
+
+§7.17 above records two cases where `unfalsified` was correct and the fix was to write the missing always-on polarity. This is the other case, and it is worth separating because the first response to it was wrong and shipped for one commit.
+
+`bench/devices.py::identify_by_uuid` (issue #18) was flagged `unfalsified` with `calls=2 reject_polarity=0 accept_polarity=2`. Two polarity tests for it already existed in `bench/test_phases.py` and were correct. The screen could not see the reject side, because it reads reject polarity from `pytest.raises` and **this instrument never raises**: it returns `(device, why)`, and its refusal is the `None` in the first slot. Its caller `device_identity_check` prints the `why` on the refusal path, so the totality is deliberate, not an oversight.
+
+**The wrong fix, made first:** baseline it under `bench_unfalsified` with a hand note in `hand.harness_notes` saying the screen structurally cannot see it. Every sentence in that note was true. It was still wrong, and the reason is the same one §7.17 turns on — `unfalsified` is a statement about *what has been watched*, and a note changes nothing about what has been watched. It converts an open question into a permanent one, and the permanence is invisible: a baselined row prints nothing on a green run.
+
+**The two other wrong fixes, considered and refused:**
+
+- Give `identify_by_uuid` an exception contract so the existing screen can see it. This makes *production* worse — the caller loses the reason string, or has to carry it out of band on an exception — in order to make a *screen* greener. Changing the subject to fit the instrument.
+- Delete the row from the frame. The frame arm exists precisely to make that a `FAIL(drift)`.
+
+**The fix taken:** teach the screen a second polarity source, held to the same standard as the first. `bench/_polarity.py` supplies `refuses(result)` and `selects(result, expected)`, and `audit_instruments.py::VALUE_REJECT_FN` scores a call to the instrument nested inside `refuses(...)` as reject polarity.
+
+What makes this a credit rather than an annotation is that **`refuses` raises when the thing inside it did not refuse** — the property `pytest.raises` has, and the one a comment does not. `selects` compares by `is`, not `==`, because two probed records for two same-model cards are equal on every field but the UUID, and an `==` assertion would pass against an instrument that returned the wrong card. That is the exact collapse issue #18 exists to prevent, reproduced inside its own test.
+
+**And the credit is earned by mutation, not asserted.** `bench/test_devices_identity.py` runs five deliberately defective reimplementations through the *identical* protocol the real instrument passes — case-sensitive compare; first-match-wins instead of refusing an ambiguity; absent-UUID-matches-anything; falls-back-to-name (the shape rejected at `11a7c69`); refuses-without-saying-why. All five are caught. Without that battery, "the tests pass" would say only that the tests pass.
+
+**The screen's own new polarity is screened too.** `tests/ops/test_harness_census.py` builds synthetic trees around a *total* instrument and requires the screen to disagree about them: two real observations written as bare asserts score `unfalsified` (correctly — nothing in the AST distinguishes `assert got is None` from `assert got is not None`), the same two declared through `refuses`/`selects` score `screened`, and either of them behind `require_vulkan` scores nothing. Guard D's rule is not weakened by the new source.
+
+**Result:** `identify_by_uuid` is `SCREENED` (`reject=5 accept=7`), the baseline row and the hand note are both gone, and the bench domain's `unfalsified` count went 88 → 87. The remaining 87 are now *reachable the same way* — including `identify_by_timestamp`, which is the same total shape and is explicitly **not** claimed to be screened. The note printed under the bench screen used to end "handed to Niobe: a value-polarity model for total instruments, or a note per row"; the model now exists, so what the count means has changed from "a limit of this screen" to "instruments nobody has done this for yet", which is smaller and actionable.
+
 ---
 
 ## 7.18 A lost device that exits 0 — added 2026-08-02T17:20-07:00

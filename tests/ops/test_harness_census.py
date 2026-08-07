@@ -150,6 +150,132 @@ def test_screen_does_not_credit_a_gpu_gated_polarity_test(tmp_path: Path) -> Non
 
 
 # ---------------------------------------------------------------------------
+# VALUE POLARITY — the same three-way discrimination, for a TOTAL instrument
+#
+# Added 2026-08-06 (Tank) with `VALUE_REJECT_FN`.  The model above cannot see the refusal
+# of an instrument that RETURNS it instead of raising it; `bench/devices.py::identify_by_uuid`
+# is the specimen and was `unfalsified` because of it.  A second polarity source added to a
+# screen, and then only ever run against the real repository where it happens to turn one
+# row green, would be exactly the defect the top of this file exists to prevent — so it gets
+# the same treatment: synthetic trees differing in one thing, and the screen must disagree
+# about them.
+# ---------------------------------------------------------------------------
+
+# A TOTAL instrument. It never raises; its refusal is the `None` in the first slot.
+_TOTAL_OWNER_SRC = '''
+def check_thing(x):
+    if x > 0:
+        return x, "accepted"
+    return None, "refused: not positive"
+'''
+
+# Both polarities are genuinely exercised here — and the old model scores this
+# `unfalsified`, because there is no `pytest.raises` anywhere in it. This tree is the
+# reason the second source exists.
+_TOTAL_NO_VALUE_POLARITY_TEST = '''
+import _models as m
+
+def test_accepts():
+    got, why = m.check_thing(1)
+    assert got == 1
+
+def test_refuses():
+    got, why = m.check_thing(-1)
+    assert got is None
+'''
+
+# The same two observations, declared through the enforcing helper.
+_TOTAL_VALUE_POLARITY_TEST = '''
+import _models as m
+from _polarity import refuses, selects
+
+def test_accepts():
+    assert selects(m.check_thing(1), 1) == 1
+
+def test_refuses():
+    assert "not positive" in refuses(m.check_thing(-1))
+'''
+
+# `refuses` behind a GPU gate must earn nothing, exactly as `pytest.raises` behind one does.
+_TOTAL_GATED_VALUE_POLARITY_TEST = '''
+import _models as m
+from _polarity import refuses, selects
+
+def test_accepts(require_vulkan):
+    assert selects(m.check_thing(1), 1) == 1
+
+def test_refuses(require_vulkan):
+    assert "not positive" in refuses(m.check_thing(-1))
+'''
+
+
+def _build_total_tree(root: Path, test_src: str) -> Path:
+    ops = root / "ops"
+    ops.mkdir(parents=True, exist_ok=True)
+    (ops / "_models.py").write_text(_TOTAL_OWNER_SRC, encoding="utf-8")
+    (ops / "test_it.py").write_text(test_src, encoding="utf-8")
+    return root
+
+
+def test_a_total_instrument_with_no_value_polarity_is_unfalsified(tmp_path: Path) -> None:
+    """NEGATIVE POLARITY for the new source: two real observations, no declaration.
+
+    This tree's tests DO watch the instrument disagree.  The screen still says
+    ``unfalsified``, and that is correct rather than a bug: nothing in the AST distinguishes
+    ``assert got is None`` from ``assert got is not None``, so the screen has observed
+    nothing.  Recording this is what stops the next reader from assuming the new source
+    credits any test that happens to call a total instrument.
+    """
+    audit = _load_audit()
+    root = _build_total_tree(tmp_path / "t_total_bare", _TOTAL_NO_VALUE_POLARITY_TEST)
+    assert _state_of(audit, root, fn="check_thing") == "unfalsified"
+
+
+def test_a_total_instrument_declared_through_refuses_is_screened(tmp_path: Path) -> None:
+    """POSITIVE POLARITY for the new source.
+
+    The two trees differ in exactly one thing — whether the refusal is declared through
+    ``bench/_polarity.py::refuses`` — and the screen's verdict changes.  What makes that
+    credit legitimate rather than an annotation is enforced elsewhere, at run time:
+    ``refuses`` RAISES when the thing inside it did not refuse, and
+    ``bench/test_devices_identity.py`` puts five planted mutants through it to prove so.
+    """
+    audit = _load_audit()
+    root = _build_total_tree(tmp_path / "t_total_declared", _TOTAL_VALUE_POLARITY_TEST)
+    assert _state_of(audit, root, fn="check_thing") == "screened"
+
+
+def test_value_polarity_behind_a_gpu_gate_earns_nothing(tmp_path: Path) -> None:
+    """The gate rule is not weakened by the new source; Guard D's lesson still applies."""
+    audit = _load_audit()
+    root = _build_total_tree(tmp_path / "t_total_gated", _TOTAL_GATED_VALUE_POLARITY_TEST)
+    assert _state_of(audit, root, fn="check_thing") == "unfalsified"
+
+
+def test_identify_by_uuid_is_screened_in_the_real_repository() -> None:
+    """The fact the discrimination above was built to establish, on the files on disk.
+
+    ``identify_by_uuid`` was the finding that produced the value-polarity model.  It must be
+    ``screened`` here — not baselined, not hand-noted — or the model bought nothing.
+    """
+    audit = _load_audit()
+    rows = audit.harness_survey(
+        tests_root=audit.BENCH,
+        files=audit.BENCH_INSTRUMENT_FILES,
+        fn_re=audit.BENCH_FN,
+        prefix="bench",
+    )
+    got = [r for r in rows if r["fn"] == "identify_by_uuid"]
+    assert got, "the bench screen no longer sees identify_by_uuid at all"
+    assert got[0]["state"] == "screened", (
+        f"identify_by_uuid is {got[0]['state']}: {got[0]}. bench/test_devices_identity.py is "
+        "supposed to supply both polarities in the always-on lane, the reject side through "
+        "bench/_polarity.py::refuses."
+    )
+    assert got[0]["reject"] >= 1 and got[0]["accept"] >= 1, got[0]
+
+
+# ---------------------------------------------------------------------------
 # The real repository
 # ---------------------------------------------------------------------------
 

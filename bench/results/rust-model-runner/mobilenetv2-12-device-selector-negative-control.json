@@ -94,11 +94,11 @@
   },
   "outputs": [],
   "timings_ms": {
-    "cpu_session_load": 58.276599999999995,
-    "cpu_run": 11.384699999999999,
+    "cpu_session_load": 56.5088,
+    "cpu_run": 6.1748,
     "vulkan_session_load": null,
     "vulkan_run": null,
-    "total": 435.17670000000004
+    "total": 478.4726
   },
   "guards": [
     {

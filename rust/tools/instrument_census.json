@@ -62,9 +62,10 @@
     "harness_notes": [
       {
         "instrument": "bench/devices.py::identify_by_uuid",
-        "state": "UNSCREENABLE by this screen's polarity model - baselined, with the reason",
-        "artifact": "bench/test_phases.py: test_identify_by_uuid_is_exact_even_for_two_identical_gpus (accept: two devices with the identical deviceName, one matching UUID, returns exactly that one) and test_identify_by_uuid_refuses_when_absent_or_unmatched (reject: uuid None, and uuid present-but-unmatched, both return (None, why) with the why naming which of the two it was). Both are always-on, no GPU, and both polarities are exercised.",
-        "why_out_of_frame": "The screen decides reject polarity from the test AST: it must see the call inside `pytest.raises(...)`. identify_by_uuid is a TOTAL function - it returns `(DeviceFacts | None, why)` and never raises - so its refusal arrives as a return value, and no amount of correct two-polarity testing can make this screen see it. Its sibling identify_by_timestamp is the same shape and has been baselined here for the same reason since it landed. Recording it rather than absorbing it silently: the entry is what distinguishes 'we know why this cannot be screened' from 'nobody looked'.",
+        "state": "SCREENED as of 2026-08-06 - and the record of how, because the first answer here was wrong",
+        "artifact": "bench/test_devices_identity.py: 16 always-on tests, no GPU. Accept polarity on the issue #18 crux (two cards with the IDENTICAL deviceName, distinct UUIDs, the right one selected, compared by `is` not `==` because those two records are equal on every other field). Reject polarity on all four documented refusals, each asserted to return a DIFFERENT sentence: uuid absent, uuid unmatched, uuid matching two probed devices (a probe() defect, not an ambiguity), and a probed card that reports no uuid at all. Five planted mutants - case-sensitive compare, first-match-wins, absent-uuid-matches-anything, falls-back-to-name (the rejected 11a7c69 shape), and refuses-without-saying-why - are each put through the IDENTICAL protocol and every one must be caught.",
+        "why_this_entry_exists": "The honest history, not the tidy version. This instrument was first flagged UNFALSIFIED and the first response was to baseline it here with a note saying the raise-based screen structurally cannot see a total function's refusal. That note was TRUE and it was still the wrong move: it converted an open question into a permanent one, and `unfalsified` is a statement about what has been watched, which a note does not change. The screen was extended instead - see VALUE_REJECT_FN in audit_instruments.py - so that a call wrapped in bench/_polarity.py::refuses(...) counts as reject polarity, because that helper RAISES when the thing inside it did not refuse. It is an assertion, not an annotation; that is the property pytest.raises has and a hand note does not. Kept in this file as a warning about the two rejected alternatives: forcing an exception contract onto a deliberately-total function would have made production worse to make a screen greener, and identify_by_uuid's caller device_identity_check needs the refusal's `why` string to print the reason a device name was withheld.",
+        "still_unscreenable_here": "bench/devices.py::identify_by_timestamp is the same total shape and is still baselined under bench_unfalsified. It is now screenable by the same mechanism and is NOT claimed to be screened; whoever gives it the same treatment should delete this sentence.",
         "owner": "tank"
       },
       {
@@ -292,7 +293,6 @@
     "bench/devices.py::ep_selection_order",
     "bench/devices.py::find_vulkaninfo",
     "bench/devices.py::identify_by_timestamp",
-  "bench/devices.py::identify_by_uuid",
     "bench/devices.py::probe",
     "bench/phases.py::analyse",
     "bench/phases.py::anchor_quality",

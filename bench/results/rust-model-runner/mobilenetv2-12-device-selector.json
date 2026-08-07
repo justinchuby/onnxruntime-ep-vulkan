@@ -137,11 +137,11 @@
     }
   ],
   "timings_ms": {
-    "cpu_session_load": 48.0929,
-    "cpu_run": 4.912599999999999,
-    "vulkan_session_load": 133.36090000000002,
-    "vulkan_run": 56.5705,
-    "total": 677.8381999999999
+    "cpu_session_load": 59.8256,
+    "cpu_run": 6.3915999999999995,
+    "vulkan_session_load": 121.6763,
+    "vulkan_run": 107.0917,
+    "total": 764.1348
   },
   "guards": [
     {
