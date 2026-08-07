@@ -396,6 +396,198 @@ def main() -> int:
             "outage in this control, not a pass",
         )
 
+    # --- The exclusion list, held to what it excludes (issue #24) -----------
+    #
+    # WHY THESE ARMS EXIST. Until 2026-08-07 an entry in
+    # ci/device_loss_incident_records.json silenced its file WHOLESALE and FOREVER, and
+    # said nothing about what it silenced. Six artifacts of real, already-diagnosed losses
+    # had landed committed with no entry at all, so the lane screen was red on every run
+    # that reached it — the state the list exists to prevent. The obvious repair, naming
+    # the six files, would have bought green with an exclusion that ALSO blinds the screen
+    # to the next loss recorded in the same file. So an exclusion now declares the
+    # finding(s) it accounts for and the check re-reads every excluded file to hold it
+    # there. These arms are what make that claim falsifiable.
+    #
+    # The planted records files use ABSOLUTE paths in `file`. `REPO_ROOT / entry["file"]`
+    # yields the absolute path unchanged, which is how a control can plant an exclusion
+    # without writing anything into the tree it is diagnosing (Tank, issue #14: a
+    # diagnostic must not mutate its subject).
+    def plant_records(where: Path, entries: list[dict]) -> Path:
+        doc = {"records": entries}
+        target = where / "records.json"
+        target.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        return target
+
+    def excl(path: Path, witness: dict, **over) -> dict:
+        entry = {
+            "file": str(path),
+            "witness": witness,
+            "reason": "planted by ci/negative_control_device_loss.py",
+            "owner": "link",
+            "date": "2026-08-07",
+        }
+        entry.update(over)
+        return entry
+
+    BYSTANDER = "a run that kept its device\nEXIT = 0\n"
+    LOSS_LINE = "[vulkan-ep] ERROR: vkWaitForFences failed: VK_ERROR_DEVICE_LOST\n"
+    # Two DISTINCT lines. A finding is a line, and the same line seen twice in one file is
+    # one finding, not two (scan_artifact de-duplicates); a second loss in a real capture
+    # carries its own dispatch count, so distinct is also the faithful shape.
+    LOSS_AT = "[vulkan-ep] ERROR: vkWaitForFences failed: VK_ERROR_DEVICE_LOST after {} dispatches\n"
+
+    inert = tmp / "excl_inert"
+    inert.mkdir()
+    (inert / "bystander.log").write_text(BYSTANDER, encoding="utf-8")
+    quiet = inert / "quiet.log"
+    quiet.write_text("nothing happened here at all\n", encoding="utf-8")
+    arms.expect_condition(
+        "an exclusion over a file that says nothing (it can only blind)",
+        "PLANTED",
+        [
+            "--incident-records",
+            str(plant_records(inert, [excl(quiet, {"device_lost_reported": 1})])),
+            str(inert),
+        ],
+        "incident_record_covers_nothing",
+    )
+
+    widened = tmp / "excl_widened"
+    widened.mkdir()
+    (widened / "bystander.log").write_text(BYSTANDER, encoding="utf-8")
+    two_losses = widened / "loss.log"
+    two_losses.write_text(LOSS_AT.format(1775) + LOSS_AT.format(0), encoding="utf-8")
+    arms.expect_condition(
+        "a second loss appended to an already-forgiven file",
+        "PLANTED",
+        [
+            "--incident-records",
+            str(plant_records(widened, [excl(two_losses, {"device_lost_reported": 1})])),
+            str(widened),
+        ],
+        "incident_record_widened",
+    )
+
+    # The same exclusion, accounting for what is actually there. This is the GREEN
+    # polarity of the pair: without it, "widened fires" is satisfied by an audit that
+    # reds on every exclusion, which would delete the exclusion list rather than bound it.
+    arms.expect_pass(
+        "  ...and the SAME file is green once the exclusion accounts for both",
+        "PLANTED",
+        [
+            "--incident-records",
+            str(plant_records(widened, [excl(two_losses, {"device_lost_reported": 2})])),
+            str(widened),
+        ],
+    )
+
+    # The counting rule itself, stated as an arm so it cannot drift silently: a witness
+    # counts DISTINCT finding lines. The same line twice is one finding, so a witness of 1
+    # over a file that repeats one loss line is accurate, not narrowed.
+    repeated = tmp / "excl_repeated_line"
+    repeated.mkdir()
+    (repeated / "bystander.log").write_text(BYSTANDER, encoding="utf-8")
+    same_twice = repeated / "loss.log"
+    same_twice.write_text(LOSS_LINE * 2, encoding="utf-8")
+    arms.expect_pass(
+        "a witness counts distinct finding lines, not repetitions of one line",
+        "PLANTED",
+        [
+            "--incident-records",
+            str(plant_records(repeated, [excl(same_twice, {"device_lost_reported": 1})])),
+            str(repeated),
+        ],
+    )
+
+    other_cond = tmp / "excl_other_condition"
+    other_cond.mkdir()
+    (other_cond / "bystander.log").write_text(BYSTANDER, encoding="utf-8")
+    mixed = other_cond / "mixed.json"
+    mixed.write_text(
+        json.dumps(
+            {
+                "stderr_tail": "vkQueueSubmit failed: The logical device has been lost\n",
+                "points": [{"iters": 25, "compute_calls": 9}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    arms.expect_condition(
+        "a truncation appears in a file forgiven only for its device-loss text",
+        "PLANTED",
+        [
+            "--incident-records",
+            str(plant_records(other_cond, [excl(mixed, {"device_lost_reported": 2})])),
+            str(other_cond),
+        ],
+        "incident_record_widened",
+    )
+
+    no_witness = tmp / "excl_no_witness"
+    no_witness.mkdir()
+    (no_witness / "bystander.log").write_text(BYSTANDER, encoding="utf-8")
+    unbounded = no_witness / "loss.log"
+    unbounded.write_text(LOSS_LINE, encoding="utf-8")
+    bad = {
+        "file": str(unbounded),
+        "reason": "no witness — an exclusion over everything this file will ever say",
+        "owner": "link",
+        "date": "2026-08-07",
+    }
+    arms.expect_error(
+        "an exclusion with no witness is an outage, not a permissive default",
+        "PLANTED",
+        ["--incident-records", str(plant_records(no_witness, [bad])), str(no_witness)],
+        "incident_record_file_unreadable",
+    )
+
+    # REPLAYED, on the shipped record and the shipped artifact: take Tank's arm-A
+    # repetition-0 capture and its real accounted count out of
+    # ci/device_loss_incident_records.json, append one more real device-lost line to a
+    # COPY, and require the audit to see the difference. This is the arm that proves the
+    # number in the shipped file is the number the check actually holds it to — a planted
+    # pair proves the rule, not that the rule is wired to the real list.
+    shipped_records = REPO_ROOT / "ci" / "device_loss_incident_records.json"
+    gate_capture = REPO_ROOT / "bench" / "results" / "device_loss_gate" / "armA_rep000.capture.txt"
+    try:
+        shipped = json.loads(shipped_records.read_text(encoding="utf-8"))
+        accounted = next(
+            r["witness"]["device_lost_reported"]
+            for r in shipped["records"]
+            if r["file"] == "bench/results/device_loss_gate/armA_rep000.capture.txt"
+        )
+        replay_dir = tmp / "excl_shipped_replay"
+        replay_dir.mkdir()
+        (replay_dir / "bystander.log").write_text(BYSTANDER, encoding="utf-8")
+        copy = replay_dir / "armA_rep000.capture.txt"
+        copy.write_text(
+            gate_capture.read_text(encoding="utf-8", errors="replace")
+            + LOSS_AT.format("a further 3141"),
+            encoding="utf-8",
+        )
+        arms.expect_condition(
+            f"Tank's real ctx-4096 capture, +1 loss, against its shipped count of {accounted}",
+            "REPLAYED",
+            [
+                "--incident-records",
+                str(
+                    plant_records(
+                        replay_dir, [excl(copy, {"device_lost_reported": accounted})]
+                    )
+                ),
+                str(replay_dir),
+            ],
+            "incident_record_widened",
+        )
+    except Exception as exc:  # noqa: BLE001
+        arms.arm(
+            "Tank's real ctx-4096 capture, +1 loss, against its shipped count",
+            "REPLAYED",
+            False,
+            f"could not build the replay: {exc} — an instrument outage in this control, "
+            "not a pass",
+        )
+
     # --- Instrument-outage arms: an outage is never a pass ------------------
     arms.expect_error("no path named at all", "PLANTED", [], "no_paths_given")
     empty = tmp / "empty_dir"
