@@ -27,6 +27,7 @@ the divergence looked like from either side.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -220,6 +221,171 @@ def _plant_frames(tmp: Path, history: list[dict[str, str]]) -> Path:
         _git(["add", "-A"], repo)
         _git(["commit", "-q", "-m", f"frames {sorted(state.items())}"], repo)
     return repo
+
+
+T_COMP = "rust/shaders/glsl/templates/t.comp"
+U_COMP = "rust/shaders/glsl/templates/u.comp"
+HELPER = "rust/shaders/include/helper.glsl"
+VARIANTS = "rust/src/ops/shader_variants.txt"
+UNRELATED = "rust/src/registry.rs"
+
+
+def _cid(text: str) -> str:
+    """sha256 of the normalised bytes of `text` — computed HERE, not imported from the screen.
+
+    Deliberately a second implementation. If these arms called `check_ledger_census.content_id`
+    they would agree with the screen by construction, including on the day somebody changes
+    what "normalised" means; two independent computations of the same number disagree the
+    moment one of them drifts, which is the only version of this arm worth having.
+    """
+    data = text.encode("utf-8").replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _sources(t_body: str, helper_body: str, defines_a: str = "D=1", **extra: str) -> dict:
+    """A minimal but REAL shader tree: a variant manifest, two templates, one shared include.
+
+    Real-shaped because the corroboration is not a string comparison — it re-derives the
+    source closure from the tree (manifest row -> template -> `#include` graph) exactly as
+    `rust/build_support/shader_source_digest.rs` does. An arm planted against a fake layout
+    would exercise the record parser and none of the reasoning that makes the record mean
+    anything.
+    """
+    files = {
+        VARIANTS: (
+            "# stem\tsource\tdefines\n"
+            f"stem_a\ttemplates/t.comp\t{defines_a}\n"
+            "stem_b\ttemplates/u.comp\tD=2\n"
+        ),
+        T_COMP: t_body,
+        U_COMP: '#version 450\nvoid main() { /* unrelated to stem_a */ }\n',
+        HELPER: helper_body,
+        UNRELATED: "pub fn register() {}\n",
+    }
+    files.update(extra)
+    return files
+
+
+def _write_sourced(repo: Path, files: dict, ledger: dict, newline: str = "\n") -> None:
+    """Write a source tree + a ledger whose entries name the stems they were proven from."""
+    for rel, body in files.items():
+        p = repo / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(body.replace("\n", newline).encode("utf-8"))
+    (repo / "evidence").mkdir(parents=True, exist_ok=True)
+    (repo / "evidence" / "proof_ledger.jsonl").write_text(
+        "".join(
+            json.dumps({
+                "key": k, "verdict": "MATCH", "shader_digest": "0" * 16,
+                "source_digest": digest, "toolchain": "planted", "shaders": list(stems),
+            }) + "\n"
+            for k, (digest, stems) in ledger.items()
+        ),
+        encoding="utf-8",
+    )
+
+
+def _plant_sourced(tmp: Path, files: dict, ledger: dict) -> Path:
+    repo = tmp
+    repo.mkdir(parents=True)
+    _git(["init", "-q", "-b", "main"], repo)
+    _write_sourced(repo, files, ledger)
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "base state"], repo)
+    return repo
+
+
+def _land_sourced(repo: Path, mode: str, files: dict, ledger: dict, records,
+                  newline: str = "\n") -> str:
+    """Move source + witness on a branch, declare it, and land it the way `mode` lands.
+
+    -> the branch tip, which every mode but `merge` ERASES from the graph. `main` is advanced
+    by one unrelated commit first, because that is both the realistic case (main moves while a
+    PR is open) and the only way the rebase arm means anything: replaying a commit onto its own
+    unchanged parent reproduces the identical sha, so a rebase with no divergence is a rebase
+    that erased nothing and an arm that tested nothing. It silently passed exactly once.
+
+    The landing is then ASSERTED rather than assumed: the witness must really have moved at
+    HEAD, and the branch tip must really be unreachable. A control harness whose plant quietly
+    failed to plant reports green for the same reason the defect it hunts does.
+    """
+    base = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    _git(["checkout", "-q", "-b", "feature"], repo)
+    _write_sourced(repo, files, ledger, newline)
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "branch: move the source and the witness together"], repo)
+    if records is not None:
+        recs = records if isinstance(records, list) else [records]
+        _write_rewitness(repo, {"schema": 1, "screened_since": "", "rewitness": recs})
+    tip = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+
+    _git(["checkout", "-q", "main"], repo)
+    (repo / "NOTES.md").write_text("main advanced while the PR was open\n", encoding="utf-8")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "main: an unrelated commit, landed first"], repo)
+
+    if mode == "squash":
+        _git(["checkout", "-q", tip, "--", "."], repo)
+        _git(["add", "-A"], repo)
+        _git(["commit", "-q", "-m", "squash landing (new sha, branch history erased)"], repo)
+        _git(["branch", "-q", "-D", "feature"], repo)
+    elif mode == "merge":
+        r = _git(["merge", "-q", "--no-ff", "--no-edit", "-m", "merge landing", "feature"], repo)
+        assert r.returncode == 0, f"merge landing failed: {r.stdout}{r.stderr}"
+    elif mode == "rebase":
+        r = _git(["cherry-pick", f"{base}..feature"], repo)
+        assert r.returncode == 0, f"rebase landing failed: {r.stdout}{r.stderr}"
+        _git(["branch", "-q", "-D", "feature"], repo)
+    else:
+        raise AssertionError(f"unknown landing {mode!r}")
+
+    shipped = (repo / "evidence" / "proof_ledger.jsonl").read_text(encoding="utf-8")
+    for key, (digest, _stems) in ledger.items():
+        assert f'"{digest}"' in shipped, f"{mode} landing did not carry {key}'s new witness"
+    if mode != "merge":
+        assert _git(["merge-base", "--is-ancestor", tip, "HEAD"], repo).returncode != 0, (
+            f"the {mode} landing left the branch tip reachable; it erased nothing, so any "
+            "arm about erasure would pass without testing anything"
+        )
+    return tip
+
+
+def _v3(transitions: list[tuple[str, str, str]], paths: list[tuple[str, str, str]],
+        **extra) -> dict:
+    """A schema `rewitness/3` record: the cause is CONTENT, so no landing can erase it."""
+    rec = {
+        "schema": "rewitness/3",
+        "field": "source_digest",
+        "owner": "tank",
+        "date": "2026-08-06",
+        "reason": "planted",
+        "caused_by_content": {
+            "kind": "same_change",
+            "paths": [{"path": p, "old": o, "new": n} for p, o, n in paths],
+        },
+        "transitions": [{"key": k, "old": o, "new": n} for k, o, n in transitions],
+    }
+    rec.update(extra)
+    return rec
+
+
+def _repath(rec: dict, path: str, old: str | None = None, new: str | None = None) -> dict:
+    """A copy of `rec` with its FIRST cause path rewritten — one planted lie per arm."""
+    out = json.loads(json.dumps(rec))
+    p = out["caused_by_content"]["paths"][0]
+    p["path"] = path
+    if old is not None:
+        p["old"] = old
+    if new is not None:
+        p["new"] = new
+    return out
+
+
+def _dup_path(rec: dict) -> dict:
+    out = json.loads(json.dumps(rec))
+    paths = out["caused_by_content"]["paths"]
+    paths.append(json.loads(json.dumps(paths[0])))
+    return out
 
 
 def _both_readers():
@@ -863,7 +1029,245 @@ def main() -> int:
             f"exit={r.returncode}",
         )
 
-        # THE ARM FOR THE THIRD FRAMING DEFECT OF THE SESSION, AND THE ONE THAT SHIPPED.
+        # ── rewitness/3: a same-change cause, corroborated against production source ──
+        #
+        # WHY THERE IS A THIRD SCHEMA, IN ONE PARAGRAPH. `rewitness/2` fixed v1's erasure
+        # problem by content-addressing the TRANSITIONS, but it still names the cause with a
+        # commit sha, and it requires that sha to be landed. For a witness that moves because
+        # of an edit in the SAME change, no such sha exists at authoring time: the only
+        # honest answer is the branch commit, which a squash and a rebase both erase. PR #53
+        # was green on its branch, green under a merge commit, and red on `main` after a
+        # squash. `rewitness/3` names the cause as CONTENT — the exact old/new of the shader
+        # source the witness is a hash of — which every landing preserves because every
+        # landing preserves the tree.
+        #
+        # These arms are the reason to believe that. The green ones are run under all three
+        # landings; the red ones are each ONE planted lie, because a screen that convicts a
+        # tree with nine defects in it has shown nothing about which defect it can see.
+        T1 = '#version 450\n#include "helper.glsl"\nvoid main() { tile(TILE); }\n'
+        T2 = '#version 450\n#include "helper.glsl"\nvoid main() { tile(TILE); prefill(); }\n'
+        U2 = '#version 450\nvoid main() { /* edited, and nothing to do with stem_a */ }\n'
+        H1, H2 = "#define TILE 1\n", "#define TILE 4\n"
+        BEFORE = _sources(T1, H1)
+        AFTER = _sources(T2, H1)
+        LED_BEFORE = {"a": (HX, ["stem_a"]), "b": (HP, ["stem_b"])}
+        LED_AFTER = {"a": (HY, ["stem_a"]), "b": (HP, ["stem_b"])}
+        GOOD_TRANS = [("a", HX, HY)]
+        GOOD_PATHS = [(T_COMP, _cid(T1), _cid(T2))]
+
+        for mode in ("squash", "merge", "rebase"):
+            repo = _plant_sourced(tmp / f"26-{mode}", BEFORE, LED_BEFORE)
+            _land_sourced(repo, mode, AFTER, LED_AFTER, _v3(GOOD_TRANS, GOOD_PATHS))
+            r = run(["--repo", str(repo)], cwd=repo)
+            record(
+                "PLANTED",
+                f"a rewitness/3 same-change cause is green under a {mode.upper()} landing",
+                r.returncode == 0 and "0 uncorroborated" in r.stdout,
+                f"exit={r.returncode}",
+            )
+
+        # THE DEFECT THIS SCHEMA REMOVES, IN THREE ROWS. The same true declaration, written
+        # the only way v2 allows — naming the branch commit that really made the change.
+        # It is green under one landing and red under the other two, which is a screen whose
+        # colour is decided by a maintainer's choice of merge button.
+        for mode, expect_rc in (("squash", 1), ("rebase", 1), ("merge", 0)):
+            repo = _plant_sourced(tmp / f"27-{mode}", BEFORE, LED_BEFORE)
+            tip = _land_sourced(repo, mode, AFTER, LED_AFTER, None)
+            _write_rewitness(repo, {"schema": 1, "screened_since": "",
+                                    "rewitness": [_v2("source_digest", tip, GOOD_TRANS)]})
+            r = run(["--repo", str(repo)], cwd=repo)
+            record(
+                "PLANTED",
+                f"the SAME cause written as v2 (branch sha) is "
+                + ("REFUSED" if expect_rc else "accepted")
+                + f" under a {mode.upper()} landing — landing-dependence, reproduced",
+                r.returncode == expect_rc
+                and (expect_rc == 0 or "unlanded_rewitness_cause" in r.stdout),
+                f"exit={r.returncode}",
+            )
+
+        # Each arm below plants exactly ONE wrong thing into an otherwise correct record,
+        # and lands it with a squash, the landing this repository actually uses.
+        for name, files_after, led_after, trans, paths, needle in [
+            (
+                "a WRONG `new` content id is convicted (the cause is not in the tree)",
+                AFTER, LED_AFTER, GOOD_TRANS, [(T_COMP, _cid(T1), _cid(T2 + "//x"))],
+                "the tree the witness moved in",
+            ),
+            (
+                "a WRONG `old` content id is convicted (the cause did not start here)",
+                AFTER, LED_AFTER, GOOD_TRANS, [(T_COMP, _cid(T1 + "//x"), _cid(T2))],
+                "did not start from this tree",
+            ),
+            (
+                "a WRONG PATH — a real edit, to a file this key is not hashed from — is "
+                "convicted",
+                _sources(T1, H1, **{U_COMP: U2}), LED_AFTER, GOOD_TRANS,
+                [(U_COMP, _cid(_sources(T1, H1)[U_COMP]), _cid(U2))],
+                "is not in the source closure",
+            ),
+            (
+                "a MISSING content transition (witness moves, source does not) is convicted",
+                BEFORE, LED_AFTER, GOOD_TRANS, GOOD_PATHS,
+                "no production source in the closure",
+            ),
+            (
+                "a GENERATED/EVIDENCE-only cause path is refused before it is even read",
+                AFTER, LED_AFTER, GOOD_TRANS,
+                [("evidence/proof_ledger.jsonl", "a" * 64, "b" * 64)],
+                "generated evidence or lane machinery",
+            ),
+            (
+                "an OVERBROAD cause (a real source edit outside the closure) is convicted",
+                _sources(T2, H1, **{UNRELATED: "pub fn register() { /* edited */ }\n"}),
+                LED_AFTER, GOOD_TRANS,
+                GOOD_PATHS + [(UNRELATED, _cid("pub fn register() {}\n"),
+                               _cid("pub fn register() { /* edited */ }\n"))],
+                "is not in the source closure",
+            ),
+            (
+                "an UNDER-DECLARED cause (a second edit inside the closure) is convicted",
+                _sources(T2, H2), LED_AFTER, GOOD_TRANS, GOOD_PATHS,
+                "and the record does not declare it",
+            ),
+            (
+                "one key's real cause CANNOT vouch for a key it shares no shader with",
+                AFTER, {"a": (HY, ["stem_a"]), "b": (HQ, ["stem_b"])},
+                [("a", HX, HY), ("b", HP, HQ)], GOOD_PATHS,
+                "authorised by no declared cause path in its own stems",
+            ),
+            (
+                "a moved SUBJECT (the entry's `shaders` changed) is convicted, not excused",
+                AFTER, {"a": (HY, ["stem_a", "stem_b"]), "b": (HP, ["stem_b"])},
+                GOOD_TRANS, GOOD_PATHS,
+                "The SUBJECT moved",
+            ),
+        ]:
+            slug = "".join(c for c in name if c.isalnum())[:24]
+            repo = _plant_sourced(tmp / f"28-{slug}", BEFORE, LED_BEFORE)
+            _land_sourced(repo, "squash", files_after, led_after, _v3(trans, paths))
+            r = run(["--repo", str(repo)], cwd=repo)
+            record(
+                "PLANTED", name,
+                r.returncode == 1
+                and "uncorroborated_rewitness_cause" in r.stdout
+                and needle in r.stdout,
+                f"exit={r.returncode}",
+            )
+
+        # REPLAY AFTER LANDING. The cause is real and already landed; a LATER commit moves
+        # the witness again with no source change and points at that same, spent cause. This
+        # is the shape a hand-edited digest takes when somebody reaches for the nearest
+        # plausible-looking edit, and it is the one a naive "did this content ever exist?"
+        # check would wave through.
+        repo = _plant_sourced(tmp / "29-replay", BEFORE, LED_BEFORE)
+        _land_sourced(repo, "squash", AFTER, LED_AFTER, _v3(GOOD_TRANS, GOOD_PATHS))
+        _write_sourced(repo, AFTER, {"a": (HZ, ["stem_a"]), "b": (HP, ["stem_b"])})
+        _git(["add", "-A"], repo)
+        _git(["commit", "-q", "-m", "later: move the witness again, touching no source"], repo)
+        _write_rewitness(repo, {"schema": 1, "screened_since": "", "rewitness": [
+            _v3(GOOD_TRANS, GOOD_PATHS),
+            _v3([("a", HY, HZ)], GOOD_PATHS, reason="planted: replay of a spent cause"),
+        ]})
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "REPLAYING a cause that already landed, for a later move, is convicted",
+            r.returncode == 1
+            and "uncorroborated_rewitness_cause" in r.stdout
+            and "already landed without the witness move" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # The green arms that keep the corroboration from being merely strict. Each is a
+        # REAL way `source_digest` moves, and a screen that convicted them would push authors
+        # straight back to prose.
+        for name, files_after, paths in [
+            (
+                "an INCLUDE-only edit corroborates (the closure is transitive)",
+                _sources(T1, H2), [(HELPER, _cid(H1), _cid(H2))],
+            ),
+            (
+                "a VARIANT-MANIFEST edit (the `-D` defines) corroborates",
+                _sources(T1, H1, defines_a="D=8"),
+                [(VARIANTS, _cid(_sources(T1, H1)[VARIANTS]),
+                  _cid(_sources(T1, H1, defines_a="D=8")[VARIANTS]))],
+            ),
+        ]:
+            slug = "".join(c for c in name if c.isalnum())[:20]
+            repo = _plant_sourced(tmp / f"30-{slug}", BEFORE, LED_BEFORE)
+            _land_sourced(repo, "squash", files_after, LED_AFTER, _v3(GOOD_TRANS, paths))
+            r = run(["--repo", str(repo)], cwd=repo)
+            record("PLANTED", name, r.returncode == 0, f"exit={r.returncode}")
+
+        # LINE ENDINGS. `core.autocrlf` is a per-clone setting, so a content id taken over raw
+        # bytes would make the verdict depend on which machine checked out the tree — green on
+        # the author's Linux box, red on the Windows lane, for identical source. The screen
+        # normalises exactly as `normalize_shader_text` in the Rust does; this arm lands the
+        # after-tree with CRLF everywhere and requires the LF-computed declaration to hold.
+        repo = _plant_sourced(tmp / "31-crlf", BEFORE, LED_BEFORE)
+        _land_sourced(repo, "squash", AFTER, LED_AFTER, _v3(GOOD_TRANS, GOOD_PATHS),
+                      newline="\r\n")
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "a CRLF checkout of the same source still corroborates an LF-computed cause",
+            r.returncode == 0 and "0 uncorroborated" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # Structural refusals are exit 2 — UNOBSERVABLE, never a colour. A register the
+        # checker could not read has ruled on nothing, and a v3 record it half-read would
+        # authorise whatever it names.
+        for name, mutate, needle in [
+            ("a v3 record carrying BOTH `caused_by` and `caused_by_content` is refused",
+             lambda r: r | {"caused_by": "0" * 40}, "also carries `caused_by`"),
+            ("an UNKNOWN cause `kind` is refused, not read as same_change",
+             lambda r: r | {"caused_by_content": r["caused_by_content"] | {"kind": "vibes"}},
+             "does not know"),
+            ("a v3 record for a field other than `source_digest` is refused",
+             lambda r: r | {"field": "toolchain"}, "declares field="),
+            ("an ABSOLUTE cause path is refused",
+             lambda r: _repath(r, "/etc/passwd"), "repository-relative POSIX path"),
+            ("a cause path containing `..` is refused",
+             lambda r: _repath(r, "rust/../../secrets.comp"), "repository-relative POSIX path"),
+            ("a WINDOWS cause path is refused",
+             lambda r: _repath(r, "C:\\shaders\\t.comp"), "repository-relative POSIX path"),
+            ("a DUPLICATED cause path is refused",
+             lambda r: _dup_path(r), "declared twice"),
+            ("a cause path with old == new is refused (it declares a non-event)",
+             lambda r: _repath(r, T_COMP, old=_cid(T2)), "declares old == new"),
+            ("a malformed (non-sha256) content id is refused",
+             lambda r: _repath(r, T_COMP, old="nope"), "64-hex-digit sha256"),
+            ("a v3 record MISSING `caused_by_content` is refused",
+             lambda r: {k: v for k, v in r.items() if k != "caused_by_content"}, "is missing"),
+        ]:
+            slug = "".join(c for c in name if c.isalnum())[:22]
+            repo = _plant_sourced(tmp / f"32-{slug}", BEFORE, LED_BEFORE)
+            _land_sourced(repo, "squash", AFTER, LED_AFTER,
+                          mutate(_v3(GOOD_TRANS, GOOD_PATHS)))
+            r = run(["--repo", str(repo)], cwd=repo)
+            record("PLANTED", name, r.returncode == 2 and needle in r.stdout,
+                   f"exit={r.returncode}")
+
+        # All three schemas in ONE register. Migration is per record and opt-in: the six
+        # transitions PR #53 migrated sit beside v1 and v2 records nobody rewrote, and the
+        # screen must apply each record's own rule rather than the newest one it knows.
+        repo = _plant_sourced(tmp / "33-coexist", BEFORE, LED_BEFORE)
+        landed_before = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+        _land_sourced(repo, "squash", AFTER, {"a": (HY, ["stem_a"]), "b": (HQ, ["stem_b"])}, [
+            _v3(GOOD_TRANS, GOOD_PATHS),
+            _v2("source_digest", landed_before, [("b", HP, HQ)]),
+        ])
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "v2 and v3 records coexist in one register, each judged by its own rule",
+            r.returncode == 0 and "0 uncorroborated" in r.stdout and "0 unlanded" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+
         #
         # The walk used `--all`. Minutes after a teammate pushed an in-progress branch the
         # live screen reported 28 VANISHED proofs "first proven in 18ddece" — a commit on

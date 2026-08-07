@@ -1,9 +1,10 @@
-// `com.microsoft.MatMulNBits` — block-dequantising GEMV.
+// `com.microsoft.MatMulNBits` — block-dequantising GEMV, with an M-tiled prefill path.
 //
-// One workgroup computes `QB_COLS` adjacent output elements `Y[m][n0 .. n0+QB_COLS)`. The grid is
-// `(ceil(N / QB_COLS), M, 1)`, so this kernel is *correct* for every `M` and merely unoptimal for
-// `M > 1`; prefill is a tiling problem, not a correctness problem, and shipping the correct shape
-// first is `OP_COVERAGE.md` §11's rule.
+// One workgroup computes a `QB_ROWS x QB_COLS` tile of `Y`: rows `m0 .. m0+QB_ROWS)` against
+// columns `n0 .. n0+QB_COLS)`. The grid is `(ceil(N / QB_COLS), ceil(M / QB_ROWS), 1)` with the
+// y extent clamped to the `maxComputeWorkGroupCount[1]` floor and a y-grid-stride loop covering
+// whatever the clamp cut off. `QB_ROWS == 1` is the decode path and is *the same instruction
+// sequence it has always been* — see "The row tile" below.
 //
 // # Why a workgroup produces more than one output
 //
@@ -94,6 +95,49 @@
 //                           `local_size_x * QB_COLS <= QB_RED_WORDS`, which is what keeps the
 //                           shared-memory requirement a static property of this module rather
 //                           than a device-dependent one.
+//   id 5  QB_PACKED         1 when one (column, block) blob is a whole number of 16-byte units.
+//   id 6  QB_ROWS           activation rows per workgroup, 1..QB_MAX_ROWS, appended so ids 0..5
+//                           keep the meaning every recorded `pipeline_variants` string already
+//                           gives them. `1` is the decode path, byte-for-byte.
+//
+// # The row tile — why `QB_ROWS` exists and what it costs
+//
+// The pre-tile kernel assigned one workgroup to one activation row, so **every prefill row
+// re-streamed the whole packed weight tensor**. Structural weight-read amplification was exactly
+// `M`, measured (not argued) by `bench/results/probe_weight_reread.py`: 1.000000 at `M = 1`,
+// 2.000000 at `M = 2`, 4.000000 at `M = 4`. Decode was already optimal; prefill paid `M` copies of
+// the one stream `probe_roofline.py` calls irreducible. Tiling `T` rows into one workgroup makes
+// it `ceil(M / T)`, because the tile loads each packed word once and multiply-accumulates it
+// against `T` activation rows.
+//
+// Three properties are deliberate:
+//
+//   * **`QB_ROWS == 1` is a specialisation-constant branch, not a degenerate case of the tiled
+//     loop.** The decode arm below is the previous kernel's text, unedited, so the pipeline the
+//     decode path creates contains the same loads, the same 128-bit packed path and the same
+//     barrier sequence it did before this file grew a second arm. "Bit-identical at `M = 1`" is
+//     then a property of the source rather than of an argument about floating-point associativity.
+//   * **The tiled arm reads `B` a 32-bit word at a time even when `QB_PACKED == 1`.** The 128-bit
+//     load exists to keep memory-level parallelism up in a kernel with almost no arithmetic per
+//     loaded byte; the tiled arm has `QB_ROWS` times more arithmetic per loaded byte and cannot
+//     afford the register file the wide path would need (a `uvec4` per column *and* a whole
+//     32-element activation chunk per row, live simultaneously). Naming the same bytes at a
+//     narrower width is a measured trade, and the instrument that measures it — load *width* read
+//     off the SPIR-V result type, separately from bytes — already exists.
+//   * **The reduction is sequential over rows and reuses one `red` array.** Shared memory stays at
+//     `local_size_x * QB_COLS` floats, exactly what it was, so no device that runs the decode
+//     kernel can fail to run the tiled one. The cost is `QB_ROWS` tree passes instead of one —
+//     but the tile produces `QB_ROWS` times more output, so *barriers per output element are
+//     unchanged*. Sizing `red` by `local_size_x * QB_COLS * QB_ROWS` instead would have made the
+//     row tile a shared-memory question on every device, which is the one class of limit the
+//     specification promises and we therefore refuse to spend.
+//
+// The write-after-read hazard the sequential reduction introduces is real and is handled
+// explicitly: row `r`'s tree cannot overwrite `red` until every invocation has finished reading
+// row `r-1`'s result out of it. `red_dirty` is workgroup-uniform (assigned unconditionally in
+// uniform flow), so the barrier it guards is in uniform control flow, and it is `false` exactly
+// once — the first row tile of a workgroup — which is why the decode arm executes the same number
+// of barriers as before.
 //
 // # Bindings
 //
@@ -119,6 +163,10 @@ layout(constant_id = 4) const uint QB_COLS = 1u;
 // can be fetched as whole `uvec4`s. Supplied by the host rather than derived here so the branch
 // below is a specialization constant and the unused path is eliminated at pipeline creation.
 layout(constant_id = 5) const uint QB_PACKED = 0u;
+// Activation rows one workgroup tiles. Appended at id 6 so no recorded specialisation vector is
+// silently repointed. `quant.rs`'s `gemv_tile` clamps it to `QB_MAX_ROWS` and to
+// `QB_COLS * QB_ROWS <= QB_MAX_TILE`, and falls back to 1 when neither fits.
+layout(constant_id = 6) const uint QB_ROWS = 1u;
 
 // Largest column tile this module can hold in registers. Every per-column array below is sized by
 // this literal, never by the specialisation constant, so the register budget is a static property
@@ -143,6 +191,23 @@ layout(constant_id = 5) const uint QB_PACKED = 0u;
 // is an estimate about an unseen driver allocator, whereas the shared-memory limit is a number the
 // specification promises, so the decision rests on the promise and not on the estimate.
 #define QB_MAX_COLS 16u
+
+// Largest row tile this module can hold, and the largest `QB_COLS * QB_ROWS` accumulator tile.
+//
+// Both are literals for the same reason `QB_MAX_COLS` is: the register budget must be a static
+// property of the module, not a function of what the host picked today. `QB_MAX_TILE` is 32 —
+// twice `QB_MAX_COLS`, because the accumulator arrays are the only per-tile storage that has to
+// stay live across the whole reduction extent, and 32 floats of `acc` plus 32 of `bacc` is the
+// largest tile that leaves room for the per-row activation window (`QB_MAX_ROWS * 4` `vec2` = 32
+// floats at 4 bits) inside a budget comparable to the decode arm's.
+//
+// `QB_MAX_ROWS` is 4 rather than 8 because `QB_COLS * QB_ROWS <= QB_MAX_TILE` would then force
+// `QB_COLS` to 4 on every shape Phi-3.5 has, and the activation stream — `ceil(N / QB_COLS)`
+// re-reads of the row — grows exactly as fast as the weight stream shrinks. The host picks the
+// pair by a byte model over both streams (`gemv_tile`), so the cap only has to be wide enough to
+// contain the optimum, and 4 is.
+#define QB_MAX_ROWS 4u
+#define QB_MAX_TILE 32u
 
 layout(push_constant) uniform Params {
     uint m_total;         // product of all leading dims of A times M
@@ -284,155 +349,286 @@ float mac4_8b(uint word, vec2 a0, vec2 a1, float z) {
 shared float red[QB_RED_WORDS];
 
 void main() {
+    // FAIL CLOSED. `acc`/`bacc` are sized `QB_MAX_TILE`, and the tile is addressed
+    // `r * QB_COLS + c`, so the indexing is in bounds exactly when `QB_ROWS * QB_COLS` fits.
+    // `quant.rs::gemv_tile` will not emit a pair that does not, and `matmul_nbits_gemv` refuses
+    // one outright — but "the host never asks" is a property of today's host, while an
+    // out-of-bounds shared/private write is a property of the module. Both operands are
+    // specialisation constants, so this folds away at pipeline-compile time in every pipeline
+    // the host actually builds; it costs nothing and makes the overrun unrepresentable. The
+    // `return` precedes every `barrier()` and is workgroup-uniform, so it is legal.
+    if (QB_ROWS * QB_COLS > QB_MAX_TILE || QB_ROWS > QB_MAX_ROWS) {
+        return;
+    }
+
     uint col0 = gl_WorkGroupID.x * QB_COLS;  // first output column of this tile
-    uint row = gl_WorkGroupID.y;             // m
     uint tid = gl_LocalInvocationID.x;
     uint wg = gl_WorkGroupSize.x;
     uint bpc = pc.blocks_per_col;
 
-    // Per-column state, hoisted out of the block loop. A column past the end of `N` — only
-    // possible in the tail tile when `QB_COLS` does not divide `N` — is redirected to `col0`
-    // rather than clamped away, so the inner loop stays branch-free and uniform; its result is
-    // discarded at the store, which is the only place `N` is re-checked.
-    float acc[QB_MAX_COLS];
+    // Row tiles this dispatch has to cover. The host clamps `groupCountY` to the
+    // `maxComputeWorkGroupCount[1]` floor (65535) that every Vulkan 1.1 device is required to
+    // offer, so a long prefill is covered by the y-grid-stride loop below rather than by a
+    // dispatch the device is entitled to reject — VUID-vkCmdDispatch-groupCountY-00418.
+    uint row_tiles = (pc.m_total + QB_ROWS - 1u) / QB_ROWS;
+
+    // Per-column state, hoisted out of everything. A column past the end of `N` — only possible
+    // in the tail tile when `QB_COLS` does not divide `N` — is redirected to `col0` rather than
+    // clamped away, so the inner loop stays branch-free and uniform; its result is discarded at
+    // the store, which is the only place `N` is re-checked.
     uint ucol[QB_MAX_COLS];
     for (uint c = 0u; c < QB_COLS; ++c) {
-        acc[c] = 0.0;
         ucol[c] = ((col0 + c) < pc.n) ? (col0 + c) : col0;
     }
 
-    if (row < pc.m_total && col0 < pc.n) {
-        uint a_base = row * pc.k;
-        uint bb = blob_bytes();
-        uint nwords = bb >> 2u;
+    // True once this workgroup has left values in `red` that some invocation may still be
+    // reading. Assigned unconditionally in uniform control flow, so it is workgroup-uniform and
+    // the barrier it guards is in uniform flow. It is `false` exactly once — the first row of the
+    // first row tile — which is why `QB_ROWS == 1` executes the barrier sequence this kernel had
+    // before the row tile existed.
+    bool red_dirty = false;
 
-        for (uint blk = tid; blk < bpc; blk += wg) {
-            uint k0 = blk * QB_BLOCK;
+    // The y-grid-stride loop. `gl_WorkGroupID.y` and `gl_NumWorkGroups.y` are workgroup-uniform,
+    // so every barrier inside is reached by every invocation of this workgroup the same number of
+    // times. Different workgroups run different trip counts; barriers synchronise a workgroup, not
+    // a grid, so that is not a hazard.
+    for (uint rt = gl_WorkGroupID.y; rt < row_tiles; rt += gl_NumWorkGroups.y) {
+        uint row0 = rt * QB_ROWS;
 
-            // Scale and zero point are invariant across the block. Loading them here rather than
-            // per element is what makes the inner loop pure multiply-add.
-            float s[QB_MAX_COLS];
-            float zpf[QB_MAX_COLS];
-            float bacc[QB_MAX_COLS];
-            for (uint c = 0u; c < QB_COLS; ++c) {
-                s[c] = load_s(ucol[c] * bpc + blk);
-                zpf[c] = float(load_zp(ucol[c], blk));
-                bacc[c] = 0.0;
-            }
+        // A row past the end of `M` — the tail tile when `QB_ROWS` does not divide `M` — is
+        // redirected onto `row0` for the same reason an out-of-range column is redirected onto
+        // `col0`: the loads stay in bounds and uniform, and the result is discarded at the store.
+        // `row0 < pc.m_total` holds by the loop condition, so `row0` is always a legal row.
+        uint urow[QB_MAX_ROWS];
+        for (uint r = 0u; r < QB_ROWS; ++r) {
+            urow[r] = ((row0 + r) < pc.m_total) ? (row0 + r) : row0;
+        }
 
-            if (QB_PACKED == 1u) {
-                // The packed path: one 128-bit load per (column, 16-byte chunk) in place of four
-                // dependent 32-bit ones. Batch-1 GEMV is memory-bandwidth-bound, so load width is
-                // the dominant term, and the four components of the `uvec4` feed four INDEPENDENT
-                // accumulators — the serial `t += ...` chain of the general path is a latency
-                // dependency that pins memory-level parallelism near one outstanding load.
-                //
-                // A 16-byte chunk covers 32 elements of k at 4 bits, 16 at 8 bits. Those
-                // activations are loaded once per chunk and reused by every column of the tile.
-                // The two widths are written as separate blocks with LITERAL loop bounds so the
-                // activation array is guaranteed to unroll into registers: a bound derived from a
-                // specialization constant is not always enough for a driver to promote the array,
-                // and an `av[]` that lands in scratch memory would cost far more than the wide
-                // load saves.
-                uint nchunk = bb >> 4u;
-                if (QB_BITS == 4u) {
-                    for (uint ch = 0u; ch < nchunk; ++ch) {
-                        uint ke = a_base + k0 + ch * 32u;
-                        vec2 av[16];
-                        for (uint i = 0u; i < 16u; ++i) {
-                            av[i] = load_a2(ke + i * 2u);
+        float acc[QB_MAX_TILE];
+        for (uint i = 0u; i < QB_ROWS * QB_COLS; ++i) {
+            acc[i] = 0.0;
+        }
+
+        if (col0 < pc.n) {
+            uint bb = blob_bytes();
+            uint nwords = bb >> 2u;
+
+            for (uint blk = tid; blk < bpc; blk += wg) {
+                uint k0 = blk * QB_BLOCK;
+
+                // Scale and zero point are invariant across the block *and across the rows of the
+                // tile* — they are properties of (column, block) only. Loading them here rather
+                // than per element is what makes the inner loop pure multiply-add, and the row
+                // tile gets them for free.
+                float s[QB_MAX_COLS];
+                float zpf[QB_MAX_COLS];
+                for (uint c = 0u; c < QB_COLS; ++c) {
+                    s[c] = load_s(ucol[c] * bpc + blk);
+                    zpf[c] = float(load_zp(ucol[c], blk));
+                }
+                float bacc[QB_MAX_TILE];
+                for (uint i = 0u; i < QB_ROWS * QB_COLS; ++i) {
+                    bacc[i] = 0.0;
+                }
+
+                if (QB_ROWS == 1u) {
+                    // ── The decode arm. Unedited. ────────────────────────────────────────────
+                    // This is the kernel as it stood before the row tile, and it stays that way
+                    // on purpose: `QB_ROWS` is a specialisation constant, so the pipeline the
+                    // decode path creates contains only this arm, with the same loads, the same
+                    // 128-bit packed path and the same summation order. That is what makes
+                    // "`M = 1` is bit-identical" a property of the text.
+                    uint a_base = urow[0] * pc.k;
+                    if (QB_PACKED == 1u) {
+                        // The packed path: one 128-bit load per (column, 16-byte chunk) in place
+                        // of four dependent 32-bit ones. Batch-1 GEMV is memory-bandwidth-bound,
+                        // so load width is the dominant term, and the four components of the
+                        // `uvec4` feed four INDEPENDENT accumulators — the serial `t += ...` chain
+                        // of the general path is a latency dependency that pins memory-level
+                        // parallelism near one outstanding load.
+                        //
+                        // A 16-byte chunk covers 32 elements of k at 4 bits, 16 at 8 bits. Those
+                        // activations are loaded once per chunk and reused by every column of the
+                        // tile. The two widths are written as separate blocks with LITERAL loop
+                        // bounds so the activation array is guaranteed to unroll into registers: a
+                        // bound derived from a specialization constant is not always enough for a
+                        // driver to promote the array, and an `av[]` that lands in scratch memory
+                        // would cost far more than the wide load saves.
+                        uint nchunk = bb >> 4u;
+                        if (QB_BITS == 4u) {
+                            for (uint ch = 0u; ch < nchunk; ++ch) {
+                                uint ke = a_base + k0 + ch * 32u;
+                                vec2 av[16];
+                                for (uint i = 0u; i < 16u; ++i) {
+                                    av[i] = load_a2(ke + i * 2u);
+                                }
+                                for (uint c = 0u; c < QB_COLS; ++c) {
+                                    uvec4 v = inb.data[(((ucol[c] * bpc + blk) * bb) >> 4u) + ch];
+                                    float z = zpf[c];
+                                    float t0 = mac8_4b(v.x, av[0], av[1], av[2], av[3], z);
+                                    float t1 = mac8_4b(v.y, av[4], av[5], av[6], av[7], z);
+                                    float t2 = mac8_4b(v.z, av[8], av[9], av[10], av[11], z);
+                                    float t3 = mac8_4b(v.w, av[12], av[13], av[14], av[15], z);
+                                    bacc[c] += (t0 + t1) + (t2 + t3);
+                                }
+                            }
+                        } else {
+                            for (uint ch = 0u; ch < nchunk; ++ch) {
+                                uint ke = a_base + k0 + ch * 16u;
+                                vec2 av[8];
+                                for (uint i = 0u; i < 8u; ++i) {
+                                    av[i] = load_a2(ke + i * 2u);
+                                }
+                                for (uint c = 0u; c < QB_COLS; ++c) {
+                                    uvec4 v = inb.data[(((ucol[c] * bpc + blk) * bb) >> 4u) + ch];
+                                    float z = zpf[c];
+                                    float t0 = mac4_8b(v.x, av[0], av[1], z);
+                                    float t1 = mac4_8b(v.y, av[2], av[3], z);
+                                    float t2 = mac4_8b(v.z, av[4], av[5], z);
+                                    float t3 = mac4_8b(v.w, av[6], av[7], z);
+                                    bacc[c] += (t0 + t1) + (t2 + t3);
+                                }
+                            }
                         }
-                        for (uint c = 0u; c < QB_COLS; ++c) {
-                            uvec4 v = inb.data[(((ucol[c] * bpc + blk) * bb) >> 4u) + ch];
-                            float z = zpf[c];
-                            float t0 = mac8_4b(v.x, av[0], av[1], av[2], av[3], z);
-                            float t1 = mac8_4b(v.y, av[4], av[5], av[6], av[7], z);
-                            float t2 = mac8_4b(v.z, av[8], av[9], av[10], av[11], z);
-                            float t3 = mac8_4b(v.w, av[12], av[13], av[14], av[15], z);
-                            bacc[c] += (t0 + t1) + (t2 + t3);
+                    } else for (uint w = 0u; w < nwords; ++w) {
+                        // `A` is loaded ONCE per word of `B` and reused by every column of the
+                        // tile. This is the whole point of the tile: the column loop is inside the
+                        // `A` load, not outside it.
+                        if (QB_BITS == 4u) {
+                            uint ke = a_base + k0 + w * 8u;
+                            vec2 a01 = load_a2(ke);
+                            vec2 a23 = load_a2(ke + 2u);
+                            vec2 a45 = load_a2(ke + 4u);
+                            vec2 a67 = load_a2(ke + 6u);
+                            for (uint c = 0u; c < QB_COLS; ++c) {
+                                uint packed = load_b_word((((ucol[c] * bpc + blk) * bb) >> 2u) + w);
+                                bacc[c] += mac8_4b(packed, a01, a23, a45, a67, zpf[c]);
+                            }
+                        } else {
+                            uint ke = a_base + k0 + w * 4u;
+                            vec2 a01 = load_a2(ke);
+                            vec2 a23 = load_a2(ke + 2u);
+                            for (uint c = 0u; c < QB_COLS; ++c) {
+                                uint packed = load_b_word((((ucol[c] * bpc + blk) * bb) >> 2u) + w);
+                                bacc[c] += mac4_8b(packed, a01, a23, zpf[c]);
+                            }
                         }
                     }
-                } else {
-                    for (uint ch = 0u; ch < nchunk; ++ch) {
-                        uint ke = a_base + k0 + ch * 16u;
-                        vec2 av[8];
-                        for (uint i = 0u; i < 8u; ++i) {
-                            av[i] = load_a2(ke + i * 2u);
+                } else for (uint w = 0u; w < nwords; ++w) {
+                    // ── The tiled arm. ──────────────────────────────────────────────────────
+                    // One 32-bit word of `B` is loaded once and multiply-accumulated against
+                    // `QB_ROWS` activation rows: the packed weight stream is named
+                    // `ceil(M / QB_ROWS)` times per inference instead of `M` times, which is the
+                    // whole point of this file's second arm.
+                    //
+                    // The nest is (word → rows-of-A → columns → rows) rather than
+                    // (chunk → columns) because both streams have to stay at one naming per
+                    // workgroup. Holding a `uvec4` per column *and* a 32-element activation window
+                    // per row simultaneously — what the 128-bit path would need here — is a
+                    // register budget this module will not promise, and re-reading either stream
+                    // to avoid that would give back more than the wide load wins. The bytes named
+                    // are the same either way; only the width differs, and the width is measured
+                    // separately off the SPIR-V result type.
+                    if (QB_BITS == 4u) {
+                        // Eight k-elements per word: four `vec2` per row of the tile, 32 floats at
+                        // `QB_MAX_ROWS`. Literal bounds so the window promotes to registers.
+                        vec2 av[QB_MAX_ROWS * 4u];
+                        for (uint r = 0u; r < QB_ROWS; ++r) {
+                            uint ke = urow[r] * pc.k + k0 + w * 8u;
+                            av[r * 4u] = load_a2(ke);
+                            av[r * 4u + 1u] = load_a2(ke + 2u);
+                            av[r * 4u + 2u] = load_a2(ke + 4u);
+                            av[r * 4u + 3u] = load_a2(ke + 6u);
                         }
                         for (uint c = 0u; c < QB_COLS; ++c) {
-                            uvec4 v = inb.data[(((ucol[c] * bpc + blk) * bb) >> 4u) + ch];
+                            uint packed = load_b_word((((ucol[c] * bpc + blk) * bb) >> 2u) + w);
                             float z = zpf[c];
-                            float t0 = mac4_8b(v.x, av[0], av[1], z);
-                            float t1 = mac4_8b(v.y, av[2], av[3], z);
-                            float t2 = mac4_8b(v.z, av[4], av[5], z);
-                            float t3 = mac4_8b(v.w, av[6], av[7], z);
-                            bacc[c] += (t0 + t1) + (t2 + t3);
+                            for (uint r = 0u; r < QB_ROWS; ++r) {
+                                bacc[r * QB_COLS + c] += mac8_4b(
+                                    packed, av[r * 4u], av[r * 4u + 1u], av[r * 4u + 2u],
+                                    av[r * 4u + 3u], z);
+                            }
+                        }
+                    } else {
+                        // Four k-elements per word: two `vec2` per row.
+                        vec2 av[QB_MAX_ROWS * 2u];
+                        for (uint r = 0u; r < QB_ROWS; ++r) {
+                            uint ke = urow[r] * pc.k + k0 + w * 4u;
+                            av[r * 2u] = load_a2(ke);
+                            av[r * 2u + 1u] = load_a2(ke + 2u);
+                        }
+                        for (uint c = 0u; c < QB_COLS; ++c) {
+                            uint packed = load_b_word((((ucol[c] * bpc + blk) * bb) >> 2u) + w);
+                            float z = zpf[c];
+                            for (uint r = 0u; r < QB_ROWS; ++r) {
+                                bacc[r * QB_COLS + c] += mac4_8b(
+                                    packed, av[r * 2u], av[r * 2u + 1u], z);
+                            }
                         }
                     }
                 }
-            } else for (uint w = 0u; w < nwords; ++w) {
-                // `A` is loaded ONCE per word of `B` and reused by every column of the tile. This
-                // is the whole point of the tile: the column loop is inside the `A` load, not
-                // outside it.
-                if (QB_BITS == 4u) {
-                    uint ke = a_base + k0 + w * 8u;
-                    vec2 a01 = load_a2(ke);
-                    vec2 a23 = load_a2(ke + 2u);
-                    vec2 a45 = load_a2(ke + 4u);
-                    vec2 a67 = load_a2(ke + 6u);
+
+                // The scale is applied once per (row, column, block), to a partial sum formed in
+                // fp32 over `QB_BLOCK` unscaled terms. Same summation order per output element as
+                // the decode arm, which is what keeps the accuracy argument in the header one
+                // argument rather than two.
+                for (uint r = 0u; r < QB_ROWS; ++r) {
                     for (uint c = 0u; c < QB_COLS; ++c) {
-                        uint packed = load_b_word((((ucol[c] * bpc + blk) * bb) >> 2u) + w);
-                        bacc[c] += mac8_4b(packed, a01, a23, a45, a67, zpf[c]);
-                    }
-                } else {
-                    uint ke = a_base + k0 + w * 4u;
-                    vec2 a01 = load_a2(ke);
-                    vec2 a23 = load_a2(ke + 2u);
-                    for (uint c = 0u; c < QB_COLS; ++c) {
-                        uint packed = load_b_word((((ucol[c] * bpc + blk) * bb) >> 2u) + w);
-                        bacc[c] += mac4_8b(packed, a01, a23, zpf[c]);
+                        acc[r * QB_COLS + c] += bacc[r * QB_COLS + c] * s[c];
                     }
                 }
             }
-
-            for (uint c = 0u; c < QB_COLS; ++c) {
-                acc[c] += bacc[c] * s[c];
-            }
         }
-    }
 
-    // Shared-memory tree, one pass for the whole tile. `wg` is a power of two (the host guarantees
-    // it) and every barrier below is reached by every invocation in the workgroup — the early-out
-    // above leaves `acc` at zero rather than returning, precisely so that stays true. Column `c`
-    // occupies `red[c * wg .. c * wg + wg)`, so for a fixed `c` consecutive invocations touch
-    // consecutive words and the tree stays bank-conflict free exactly as it was with one column.
-    for (uint c = 0u; c < QB_COLS; ++c) {
-        red[c * wg + tid] = acc[c];
-    }
-    barrier();
-    for (uint stride = wg >> 1u; stride > 0u; stride >>= 1u) {
-        if (tid < stride) {
+        // Shared-memory tree, one pass per row of the tile. `wg` is a power of two (the host
+        // guarantees it) and every barrier below is reached by every invocation in the workgroup —
+        // the early-out above leaves `acc` at zero rather than returning, precisely so that stays
+        // true. Column `c` occupies `red[c * wg .. c * wg + wg)`, so for a fixed `c` consecutive
+        // invocations touch consecutive words and the tree stays bank-conflict free exactly as it
+        // was with one row.
+        for (uint r = 0u; r < QB_ROWS; ++r) {
+            if (red_dirty) {
+                // WRITE-AFTER-READ. The previous row's result was read out of `red[c * wg]` by the
+                // storing invocations below; no invocation may overwrite those words until every
+                // invocation has finished reading them. `red_dirty` is workgroup-uniform, so this
+                // barrier is in uniform control flow.
+                barrier();
+            }
             for (uint c = 0u; c < QB_COLS; ++c) {
-                red[c * wg + tid] += red[c * wg + tid + stride];
+                red[c * wg + tid] = acc[r * QB_COLS + c];
             }
-        }
-        barrier();
-    }
+            barrier();
+            for (uint stride = wg >> 1u; stride > 0u; stride >>= 1u) {
+                if (tid < stride) {
+                    for (uint c = 0u; c < QB_COLS; ++c) {
+                        red[c * wg + tid] += red[c * wg + tid + stride];
+                    }
+                }
+                barrier();
+            }
+            red_dirty = true;
 
-    if (row < pc.m_total && col0 < pc.n) {
-        uint base = row * pc.n + col0;
-        // The tile owns both lanes of every word it writes when it is an even number of columns,
-        // starts on an even element, and no column of it fell off the end of `N`. Then and only
-        // then is the read-modify-write unnecessary. This is checked, not assumed, and every term
-        // is workgroup-uniform, so the branch is uniform.
-        bool paired = (QB_COLS >= 2u) && ((QB_COLS & 1u) == 0u)
-                      && ((base & 1u) == 0u) && ((col0 + QB_COLS) <= pc.n);
-        if (paired) {
-            if (tid < (QB_COLS >> 1u)) {
-                store_y_pair(base + tid * 2u, red[(tid * 2u) * wg], red[(tid * 2u + 1u) * wg]);
+            uint row = row0 + r;
+            if (row < pc.m_total && col0 < pc.n) {
+                uint base = row * pc.n + col0;
+                // The tile owns both lanes of every word it writes when it is an even number of
+                // columns, starts on an even element, and no column of it fell off the end of `N`.
+                // Then and only then is the read-modify-write unnecessary. This is checked, not
+                // assumed, and every term is workgroup-uniform, so the branch is uniform. Note
+                // `base` carries the row, so a shape with an odd `N` alternates between the paired
+                // and the masked store from one row to the next — which is exactly right, and is
+                // why the check is inside the row loop rather than hoisted out of it.
+                bool paired = (QB_COLS >= 2u) && ((QB_COLS & 1u) == 0u)
+                              && ((base & 1u) == 0u) && ((col0 + QB_COLS) <= pc.n);
+                if (paired) {
+                    if (tid < (QB_COLS >> 1u)) {
+                        store_y_pair(base + tid * 2u, red[(tid * 2u) * wg],
+                                     red[(tid * 2u + 1u) * wg]);
+                    }
+                } else if (tid < QB_COLS && (col0 + tid) < pc.n) {
+                    store_y(base + tid, red[tid * wg]);
+                }
             }
-        } else if (tid < QB_COLS && (col0 + tid) < pc.n) {
-            store_y(base + tid, red[tid * wg]);
         }
     }
 }

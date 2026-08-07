@@ -736,21 +736,22 @@ def test_the_rewitness_register_parses_under_the_canonical_checker():
         assert clc._record_schema(rec) in clc.KNOWN_SCHEMAS
 
 
-def test_no_v2_record_names_a_revision():
-    """The whole point of `rewitness/2` is that it has nothing for a squash to erase.
+def test_no_content_addressed_record_names_a_revision():
+    """The whole point of `rewitness/2` and `/3` is that they have nothing for a squash to erase.
 
-    A `revision` on a v2 record would be dead weight at best and, far more likely, the thing
-    a future reader trusts — reintroducing by habit the coupling the schema removed. It is
-    not merely unused; it must not be there.
+    A `revision` on either would be dead weight at best and, far more likely, the thing a
+    future reader trusts — reintroducing by habit the coupling the schema removed. It is not
+    merely unused; it must not be there. v3 goes one step further and names no commit at all,
+    so for a v3 record this also catches a half-finished migration from v2.
     """
     clc, doc = _rewitness_doc()
     offenders = [
-        (i, rec.get("revision"))
+        (i, clc._record_schema(rec), rec.get("revision"))
         for i, rec in enumerate(doc.get("rewitness", []))
-        if clc._record_schema(rec) == clc.SCHEMA_V2 and "revision" in rec
+        if clc._record_schema(rec) in clc.CONTENT_SCHEMAS and "revision" in rec
     ]
     assert not offenders, (
-        f"{len(offenders)} rewitness/2 record(s) carry a `revision`: {offenders!r}. "
+        f"{len(offenders)} content-addressed record(s) carry a `revision`: {offenders!r}. "
         "Matching is (field, key, old, new); a revision here is a sha a squash will erase."
     )
 
@@ -766,12 +767,16 @@ def test_every_declared_transition_lands_on_the_digest_this_build_computes():
 
     It also closes the `old == new` loophole from the other side: a row whose `new` is not the
     current value is either a stale declaration or a wrong one, and both are defects.
+
+    Both content-addressed schemas are read, not only v2: a v3 record enumerates the same
+    `(key, old, new)` rows and differs only in how it names the CAUSE, so exempting it here
+    would have made the migration a quiet loss of coverage.
     """
     clc, doc = _rewitness_doc()
     entries = {json.loads(l)["key"]: json.loads(l) for l in _ledger_lines()[1:]}
     wrong, checked = [], 0
     for rec in doc.get("rewitness", []):
-        if clc._record_schema(rec) != clc.SCHEMA_V2:
+        if clc._record_schema(rec) not in clc.CONTENT_SCHEMAS:
             continue
         field = rec["field"]
         for t in rec["transitions"]:
@@ -783,7 +788,7 @@ def test_every_declared_transition_lands_on_the_digest_this_build_computes():
             if entry.get(field) != t["new"]:
                 wrong.append((t["key"], entry.get(field), t["new"]))
     if not checked:
-        pytest.skip("no rewitness/2 transitions to check against the ledger")
+        pytest.skip("no content-addressed transitions to check against the ledger")
     assert not wrong, (
         f"{len(wrong)} declared transition(s) do not describe the shipped ledger:\n"
         + "\n".join(f"  {k}: ledger has {a!r}, declaration says new={b!r}" for k, a, b in wrong[:20])
@@ -791,13 +796,19 @@ def test_every_declared_transition_lands_on_the_digest_this_build_computes():
 
 
 def test_the_declaration_screen_survives_a_squash_of_this_branch():
-    """The end-to-end control for the squash-safety claim, run against the real repository.
+    """The end-to-end control for the landing-safety claim, run against the real repository.
 
-    `ci/simulate_squash_rewitness.py` clones this repo, replays HEAD's tree onto origin/main as
-    one brand-new commit (which is exactly what `gh pr merge --squash` produces), and screens
-    the result — then plants the v1 form of the same declaration and requires it to go red.
-    Both polarities, because a simulation that only shows green proves the simulation, not the
-    schema.
+    `ci/simulate_squash_rewitness.py` clones this repo, lands HEAD's tree onto `origin/main`
+    the way a maintainer's chosen button would, screens the result, screens it again one
+    unrelated commit later, and then plants two broken registers into the SAME landing and
+    requires both to go red. Both polarities, because a simulation that only shows green
+    proves the simulation, not the schema.
+
+    This runs the SQUASH landing only, because that is the landing this repository uses and a
+    pytest that clones the object store three times is a pytest people learn to skip. The
+    other two landings are covered by planted arms in `ci/negative_control_ledger_census.py`
+    ("green under a MERGE landing", "green under a REBASE landing", and their v2 contrast),
+    and a maintainer can run the full matrix here with no arguments.
 
     Skipped rather than failed when `origin/main` is not fetched: that is an unobservable
     environment, not a defect in the register.
@@ -810,7 +821,12 @@ def test_the_declaration_screen_survives_a_squash_of_this_branch():
         cwd=REPO, capture_output=True, text=True,
     ).returncode != 0:
         pytest.skip("origin/main is not present in this clone")
-    r = subprocess.run([sys.executable, str(sim)], cwd=REPO, capture_output=True, text=True)
+    r = subprocess.run([sys.executable, str(sim), "--landing", "squash"],
+                       cwd=REPO, capture_output=True, text=True)
     assert r.returncode == 0, f"squash simulation failed:\n{r.stdout}\n{r.stderr}"
-    assert "rewitness/2 survives the squash" in r.stdout, r.stdout
+    assert "survives every landing" in r.stdout, r.stdout
+    # The controls must have FIRED, not merely been run: a matrix of greens is what a screen
+    # that stopped reading the register also produces.
+    assert "unlanded_rewitness_cause" in r.stdout, r.stdout
+    assert "uncorroborated_rewitness_cause" in r.stdout, r.stdout
 
