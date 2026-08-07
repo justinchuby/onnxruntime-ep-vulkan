@@ -120,6 +120,10 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Contention gate", "build.contention_gate"),
     ("Op-correctness step asserted something", "device.op_correctness_productivity"),
     ("No-ICD fallback step asserted something", "device.no_icd_step_productivity"),
+    (
+        "Windows-namespace destination-policy regression",
+        "device.ledger_loss_windows_namespace_regression",
+    ),
     ("Tautological-assertion screen", "hostfree.tautological_assertions"),
     ("Tick-conversion screen negative control", "hostfree.tick_screen_negative_control"),
     ("Tick-conversion screen", "hostfree.tick_conversion_screen"),

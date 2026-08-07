@@ -5072,6 +5072,46 @@ _MACHINE_PATH_RE = re.compile(
     r"(?:[A-Za-z]:[\\/])|(?:(?:^|[\s\"'(=])/(?:home|Users|users|mnt|tmp|var|opt|root)/)"
 )
 
+#: PR #51's two high-confidence bypasses, restated as spelling functions rather than literal
+#: strings baked into one test, so every alias-of-a-tracked-path test below can ask for either
+#: spelling of any destination. Both are Windows path *namespaces* -- alternate ways the OS lets
+#: a caller name a file that already has an ordinary drive-letter name -- and neither is
+#: normalised by `pathlib.Path.resolve()` or `os.path.realpath()` (verified empirically against
+#: this checkout at review time: both left the prefix/UNC form untouched), which is exactly why
+#: `out.resolve().relative_to(repo.resolve())` used to raise `ValueError` on them and the
+#: `except ValueError` branch answered the permissive question (OUTSIDE) instead of consulting
+#: git at all.
+_WINDOWS_ONLY = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="\\\\?\\ extended-length and \\\\host\\C$\\ admin-share path namespaces are Windows-only",
+)
+
+
+def _extended_length_path(rel: str) -> str:
+    r"""The literal `\\?\` extended-length spelling of `REPO_ROOT / rel`.
+
+    This is the exact spelling the rejected PR #51 head demonstrated as bypass #1:
+    `--out \\?\C:\...\onnxruntime-ep-vulkan-14\evidence` exited 0, ran 7/7, and wrote into the
+    tracked `evidence/` directory.
+    """
+    return "\\\\?\\" + str(REPO_ROOT / rel)
+
+
+def _localhost_admin_share_path(rel: str) -> str:
+    r"""The literal `\\localhost\C$\...` administrative-share spelling of `REPO_ROOT / rel`.
+
+    This is the exact spelling the rejected PR #51 head demonstrated as bypass #2:
+    `--out \\localhost\C$\...\evidence` exited 0, ran 7/7, and wrote into the tracked
+    `evidence/` directory. `localhost` (rather than the machine's own hostname) is the literal
+    spelling from the review -- it resolves to this same machine's loopback SMB server on any
+    Windows host with File and Printer Sharing enabled, which is why the alias is dangerous: it
+    needs no configuration a reviewer would notice was missing.
+    """
+    full = REPO_ROOT / rel
+    drive_letter = full.drive.rstrip(":")
+    rest = str(full)[len(full.drive) + 1 :]  # strip the "C:\" prefix, keep the rest verbatim
+    return f"\\\\localhost\\{drive_letter}$\\{rest}"
+
 
 def run_probe(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
     """Run the probe the way a lane does: same interpreter, utf-8 pinned on the child's side."""
@@ -5128,14 +5168,36 @@ def test_ledger_loss_probe_default_run_leaves_the_worktree_exactly_as_it_found_i
 
 @pytest.mark.parametrize(
     "dest",
-    [CANONICAL_DIR_REL, "bench/results", "evidence", "ci", "rust/tools"],
+    [
+        CANONICAL_DIR_REL,
+        "bench/results",
+        "evidence",
+        "ci",
+        "rust/tools",
+        pytest.param(
+            _extended_length_path(CANONICAL_DIR_REL),
+            marks=_WINDOWS_ONLY,
+            id="extended-length-prefix-\\\\?\\",
+        ),
+        pytest.param(
+            _localhost_admin_share_path(CANONICAL_DIR_REL),
+            marks=_WINDOWS_ONLY,
+            id="localhost-admin-share-\\\\localhost\\C$",
+        ),
+    ],
 )
 def test_ledger_loss_probe_refuses_every_tracked_destination_and_writes_nothing(dest):
-    """The path boundary, on the canonical directory AND on four others.
+    r"""The path boundary, on the canonical directory, on four others, and on two Windows path
+    *namespace* aliases of the canonical one (PR #51 review).
 
-    A rule tested only on the one path that burned us is an allowlist of one path. The
-    refusal is `ERROR(instrument=...)` and not a silent fallback, because a probe that
-    quietly wrote somewhere else would answer a question nobody asked.
+    A rule tested only on the one path that burned us is an allowlist of one path, and a rule
+    tested only on drive-letter-relative spellings cannot see a namespace bypass -- which is
+    exactly how PR #51's rejected head passed this test's five original cases while
+    `--out \\?\C:\...\evidence` and `--out \\localhost\C$\...\evidence` still exited 0, ran
+    7/7 and wrote seven files -- three of them deletion-bearing retirement registers -- into
+    the tracked `evidence/` directory. The refusal is `ERROR(instrument=...)` and not a silent
+    fallback, because a probe that quietly wrote somewhere else would answer a question nobody
+    asked.
     """
     before = _porcelain()
     r = run_probe("--out", dest)
@@ -5155,12 +5217,128 @@ def test_ledger_loss_probe_refuses_the_canonical_directory_by_name_not_by_luck()
     assert "--record" in r.stdout, "the refusal must say what the deliberate path is"
 
 
-def test_ledger_loss_probe_record_without_a_destination_is_a_usage_error():
+@_WINDOWS_ONLY
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param(_extended_length_path, id="extended-length-prefix-\\\\?\\"),
+        pytest.param(_localhost_admin_share_path, id="localhost-admin-share-\\\\localhost\\C$"),
+    ],
+)
+def test_ledger_loss_probe_refuses_a_nonexistent_child_of_a_tracked_alias(spelling):
+    """A destination that does not exist YET, under a namespace alias of a tracked directory.
+
+    The ordinary `--out DIR` case is `DIR` not existing until the probe creates it -- the
+    identity walk must resolve through the *missing* path components (`evidence/not/made`)
+    up to the first REAL ancestor before it can ask whether that ancestor is `repo`. This is
+    the same walk as the plain-spelling case, but exercised through a namespace `.resolve()`
+    cannot see through, so a fix that only special-cased the exact rejected `evidence/`
+    leaf would not be caught by it.
+    """
+    before = _porcelain()
+    dest = spelling("evidence/not/made/yet")
+    r = run_probe("--out", dest)
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
+    assert "ERROR(instrument=refused_tracked_destination)" in r.stdout
+    assert _porcelain() == before
+    assert not (REPO_ROOT / "evidence" / "not").exists(), (
+        "the probe must not create ANY part of a refused destination, not even an empty parent"
+    )
+
+
+@_WINDOWS_ONLY
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param(_extended_length_path, id="extended-length-prefix-\\\\?\\"),
+        pytest.param(_localhost_admin_share_path, id="localhost-admin-share-\\\\localhost\\C$"),
+    ],
+)
+def test_ledger_loss_probe_record_through_a_windows_namespace_alias_still_writes(spelling):
+    r"""The OTHER polarity for the same two namespaces: `--record` through a `\\?\` or
+    `\\localhost\C$\` alias of a tracked directory must still be ALLOWED and must still
+    write a full, correctly-classified reading.
+
+    A destination policy that refuses a namespace alias unconditionally (rather than
+    classifying it correctly and then applying the SAME `--record` escape as the
+    plain-spelling case) would silently break the one deliberate-recording path the
+    project actually wants, while looking like the same fix from the outside.
+    """
+    dest = spelling(CANONICAL_DIR_REL)
+    before = _porcelain()
+    try:
+        r = run_probe("--out", dest, "--record")
+        assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+        doc = json.loads((REPO_ROOT / CANONICAL_DIR_REL / "result.json").read_text("utf-8"))
+        assert doc["recorded"] is True
+        assert doc["pass"] is True
+        assert (REPO_ROOT / CANONICAL_DIR_REL / "artifact-frame.json").is_file()
+    finally:
+        shutil.rmtree(REPO_ROOT / CANONICAL_DIR_REL, ignore_errors=True)
+    assert _porcelain() == before, "cleanup must restore the porcelain this test itself saw"
+
+
+@_WINDOWS_ONLY
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param(_extended_length_path, id="extended-length-prefix-\\\\?\\"),
+        pytest.param(_localhost_admin_share_path, id="localhost-admin-share-\\\\localhost\\C$"),
+    ],
+)
+def test_ledger_loss_probe_allows_a_git_ignored_destination_through_a_windows_namespace_alias(
+    spelling,
+):
+    r"""`target/` is git-ignored under its plain spelling; it must STILL be git-ignored, and
+    therefore still ALLOWED, when named through a `\\?\` or `\\localhost\C$\` alias -- the
+    identity walk must reach the same `DEST_IGNORED` verdict `git check-ignore` would give the
+    plain spelling, not merely happen to refuse less on the tracked side."""
+    real_out = REPO_ROOT / "target" / "_probe_ledger_loss_alias_test_out"
+    shutil.rmtree(real_out, ignore_errors=True)
+    try:
+        before = _porcelain()
+        dest = spelling("target/_probe_ledger_loss_alias_test_out")
+        r = run_probe("--out", dest)
+        assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+        assert (real_out / "result.json").is_file()
+        assert _porcelain() == before
+    finally:
+        shutil.rmtree(real_out, ignore_errors=True)
+
+
+def test_ledger_loss_probe_record_without_a_destination_is_error_instrument_not_usage():
     """`--record` is a permission, not a path. Letting it pick one would recreate the defect
-    with an extra flag in front of it."""
+    with an extra flag in front of it.
+
+    R13 reconciliation (PR #51 review, item 3): this print an `ERROR(instrument=...)` token
+    from the start, but used to exit `2` (usage) -- a code that disagreed with its own
+    vocabulary. `2` is reserved for the argument parser rejecting the command line itself; this
+    is a semantic refusal the parser accepted just fine, so it is `EXIT_ERROR_INSTRUMENT`.
+    """
     r = run_probe("--record")
-    assert r.returncode == EXIT_USAGE, r.stdout + r.stderr
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
     assert "ERROR(instrument=record_without_destination)" in r.stdout
+
+
+def test_ledger_loss_probe_an_unparseable_ledger_is_error_instrument_not_a_raw_crash(tmp_path):
+    """R13 reconciliation (PR #51 review, item 3): a malformed `evidence/proof_ledger.jsonl`
+    used to propagate as an uncaught `JSONDecodeError` -- a Python traceback on stderr and
+    the interpreter's own default `exit(1)`, indistinguishable on the exit code alone from
+    `FAIL(condition)`. The probe must reach an `ERROR(instrument=...)` token and exit 4
+    instead, because a crash is not a detection.
+
+    A throwaway `--repo` (never a git checkout) is enough: `main()` raises out of
+    `run_arms()` before anything downstream needs `git`.
+    """
+    fake_repo = tmp_path / "fake_repo"
+    (fake_repo / "evidence").mkdir(parents=True)
+    (fake_repo / "evidence" / "proof_ledger.jsonl").write_text("{not valid json", encoding="utf-8")
+    r = run_probe("--repo", str(fake_repo))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
+    assert "ERROR(instrument=ledger_unreadable)" in r.stdout
+    assert "Traceback" not in r.stdout and "Traceback" not in r.stderr, (
+        "a raw traceback must never reach a lane's log for an ordinary parse failure"
+    )
 
 
 def test_ledger_loss_probe_writes_its_reading_only_under_an_explicit_out(tmp_path):
@@ -5297,6 +5475,60 @@ def test_ledger_loss_probe_reports_an_unreachable_ledger_as_an_outage_not_a_verd
     assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
     assert "ERROR(instrument)" in r.stdout
     assert "evidence/proof_ledger.jsonl" in r.stdout
+
+
+def test_ledger_loss_probe_classify_destination_never_reads_uncertainty_as_outside(monkeypatch):
+    """UNIT-LEVEL control, direct-import, complementing (not replacing) the subprocess tests
+    above -- it asserts the exact PROPERTY the PR #51 review named: "never infer outside-repo
+    safety from ValueError", generalised to "never infer it from any unresolvable `stat`".
+
+    `os.stat` is monkeypatched to raise `PermissionError` -- a real, if rare, Windows failure
+    mode (an ACL that denies traversal partway down `--out`'s path) that is emphatically NOT
+    "this path segment does not exist yet". `classify_destination` must refuse closed
+    (`DEST_TRACKED_SURFACE`), never answer `DEST_OUTSIDE`, when it cannot complete the walk.
+    """
+    sys.path.insert(0, str((REPO_ROOT / "rust" / "tools")))
+    import probe_ledger_loss as pll  # type: ignore  # noqa: PLC0415
+
+    real_stat = os.stat
+    denied_marker = REPO_ROOT / "evidence" / "some_deep" / "unreadable" / "child"
+
+    def _flaky_stat(path, *a, **kw):
+        if str(path) == str(denied_marker):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(pll.os, "stat", _flaky_stat)
+    result = pll.classify_destination(REPO_ROOT, denied_marker)
+    assert result.kind == pll.DEST_TRACKED_SURFACE, (
+        f"a stat the instrument could not complete must refuse closed, got {result.kind!r} "
+        "-- this is the exact substitution ('unresolvable' read as 'safe') PR #51 was rejected "
+        "for, restated for a permission failure instead of a namespace ValueError"
+    )
+
+
+def test_ledger_loss_probe_classify_destination_resolves_windows_namespace_aliases_by_identity():
+    """UNIT-LEVEL companion to the subprocess-level parametrized refusal test: asserts the
+    PROPERTY (file identity survives a namespace rewrite) the subprocess tests exercise
+    end-to-end, directly against the function PR #51's review named.
+    """
+    sys.path.insert(0, str((REPO_ROOT / "rust" / "tools")))
+    import probe_ledger_loss as pll  # type: ignore  # noqa: PLC0415
+    import pathlib as _pathlib
+
+    plain = pll.classify_destination(REPO_ROOT, REPO_ROOT / "evidence")
+    assert plain.kind == pll.DEST_TRACKED_SURFACE
+
+    if sys.platform == "win32":
+        ext = pll.classify_destination(
+            REPO_ROOT, _pathlib.Path(_extended_length_path("evidence"))
+        )
+        unc = pll.classify_destination(
+            REPO_ROOT, _pathlib.Path(_localhost_admin_share_path("evidence"))
+        )
+        assert ext.kind == pll.DEST_TRACKED_SURFACE and ext.repo_relative == "evidence"
+        assert unc.kind == pll.DEST_TRACKED_SURFACE and unc.repo_relative == "evidence"
+
 
 
 def test_the_ledger_loss_probe_leaves_no_tracked_reading_behind():

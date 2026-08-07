@@ -1833,6 +1833,46 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="device.ledger_loss_windows_namespace_regression",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_WINDOWS,
+        step="Windows-namespace destination-policy regression (probe_ledger_loss)",
+        watches=(
+            "That `ci/test_lane_checks.py`'s `probe_ledger_loss` subset — including the "
+            "parametrized `\\\\?\\C:\\...` extended-length and `\\\\localhost\\C$\\...` "
+            "admin-share regressions added for the PR #51 review — actually executes "
+            "against a real Windows filesystem, not only against the `ubuntu-latest` "
+            "`lane-checks` job (where every Windows-only case in that file is "
+            "`skipif(sys.platform != 'win32')` and never runs at all)."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Reverted `rust/tools/probe_ledger_loss.py` to the rejected PR #51 head "
+            "(9c15fdf) in place, keeping the hardened test file, and ran this step's own "
+            "command on a real Windows checkout."
+        ),
+        arm_healthy=(
+            "31 passed, 268 deselected — the fixed `classify_destination()` in place "
+            "(local Windows run, 2026-08-06)"
+        ),
+        arm_broken=(
+            "9 failed, 22 passed — including both literal bypass regressions "
+            "(`...refuses_every_tracked_destination...[extended-length-prefix-\\\\?\\]` "
+            "and `[localhost-admin-share-\\\\localhost\\C$]`) against the unmodified "
+            "9c15fdf source, on the same real Windows checkout (local run, 2026-08-06)"
+        ),
+        observed="2026-08-06",
+        misses=(
+            "It is not wired into ci/check_suite_productivity.py or "
+            "ci/check_flake_witness.py: `ci/test_lane_checks.py` already names those "
+            "under the `lane-checks` job, and a second, differently-scoped floor entry "
+            "for the same file under `build-test-windows` would be a second answer to "
+            "how much of it must run. A silent all-skip here (e.g. every "
+            "`_WINDOWS_ONLY` guard misfiring) would still exit 0 and this table would not "
+            "catch that on its own — the step's own log is the only witness.",
+        ),
+    ),
+    Check(
         id="build.portability_lint",
         falsifier=FALSIFIER_OBSERVED,
         lane="both",

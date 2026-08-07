@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Does `--check` notice a proof that went *missing*? Owner: tank (was: Mouse).
+r"""Does `--check` notice a proof that went *missing*? Owner: tank (was: Mouse).
 
 WHY THIS EXISTS
 ---------------
@@ -57,10 +57,17 @@ THE CONTRACT NOW
     * **Default** — everything, including `result.json`, goes to an ephemeral scratch directory
       created outside the repository and removed on exit. The verdict is on stdout. Nothing
       inside any checkout is created, modified or deleted. This is what CI runs.
-    * **`--out DIR`** — the caller owns `DIR` and it is kept. If `DIR` resolves inside the
-      repository and git does not ignore it, the probe REFUSES with
+    * **`--out DIR`** — the caller owns `DIR` and it is kept. If `DIR` is inside the repository
+      and git does not ignore it, the probe REFUSES with
       `ERROR(instrument=refused_tracked_destination)` and writes nothing: an accidental
-      canonical write is not an observation, so it is never a PASS.
+      canonical write is not an observation, so it is never a PASS. "Inside the repository" is
+      decided by filesystem identity (`(st_dev, st_ino)`), not by string comparison, so it holds
+      regardless of which Windows path namespace `DIR` is spelled in — an extended-length
+      `\\?\C:\...` prefix, a `\\host\C$\...` administrative share, a `subst` drive, a directory
+      junction, a `..` segment or a letter-case difference all still name the same file and are
+      all refused identically (PR #51 review: the previous string-based check raised
+      `ValueError` on exactly these spellings and answered OUTSIDE). Anything the identity check
+      cannot resolve at all also refuses, never opens up.
     * **`--out DIR --record`** — the explicit, auditable recording mode, and the ONLY way to put
       a reading into a tracked path. It is not merely permission: the recorded `result.json`
       carries `owner`, `tool`, `produced_at_commit` and a `subject` block digesting the three
@@ -96,6 +103,11 @@ USAGE
 
 EXIT CODES (R13)
     0 PASS   1 FAIL(condition)   2 usage   4 ERROR(instrument)
+
+    `--record` given without `--out`, an unparseable ledger/attempt log, and any other
+    exception this probe cannot classify all print an `ERROR(instrument=...)` token and exit 4,
+    not 1 or 2 — a red that could mean either FAIL(condition) or an outage is not a signal
+    (§10.0.1 R13). `2` is reserved for the argument parser rejecting the command line itself.
 """
 
 from __future__ import annotations
@@ -110,6 +122,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import NamedTuple
 
 TOOL_DIR = pathlib.Path(__file__).resolve().parent
 REPO = TOOL_DIR.parents[1]
@@ -204,29 +217,123 @@ def _git_show(rev: str, path: str, dest: pathlib.Path, repo: pathlib.Path) -> bo
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Destination policy — the half of this file issue #14 is actually about
+#
+# REVISION (PR #51 rejection): `out.resolve().relative_to(repo.resolve())` does not survive a
+# Windows path *namespace* change -- an extended-length `\\?\C:\...` prefix, or a
+# `\\localhost\C$\...` administrative-share spelling of the very same file -- because neither
+# `Path.resolve()` nor `os.path.realpath()` normalises either one (verified empirically against
+# this checkout: both left the `\\?\` prefix and the UNC spelling untouched). `relative_to` then
+# raised `ValueError`, and the `except ValueError: return DEST_OUTSIDE` branch answered the
+# permissive question nobody asked: two spellings of a file inside `evidence/` came back
+# OUTSIDE, so both `--out \\?\...\evidence` and `--out \\localhost\C$\...\evidence` wrote seven
+# files -- including the three deletion-bearing register fixtures -- straight into the tracked,
+# canonical `evidence/` directory and reported PASS.
 # ──────────────────────────────────────────────────────────────────────────────
 
 DEST_OUTSIDE = "outside_repository"
 DEST_IGNORED = "inside_repository_but_git_ignored"
 DEST_TRACKED_SURFACE = "inside_repository_tracked_surface"
 
+#: Sentinels for `_stat_identity`. Neither is `None`: `None` would read as "no news", and both
+#: of these ARE news. `_STAT_MISSING` says "this path segment does not exist yet, keep walking
+#: up" (the ordinary nonexistent-child destination, e.g. `--out evidence/not/made/yet`).
+#: `_STAT_UNCERTAIN` says "the instrument could not answer" (permission denied, a filesystem
+#: error, ...) and must NEVER be read as "so it must be outside" -- that exact substitution,
+#: for a *different* unresolvable case (`ValueError` from `relative_to`), is the rejected defect.
+_STAT_MISSING = object()
+_STAT_UNCERTAIN = object()
 
-def classify_destination(repo: pathlib.Path, out: pathlib.Path) -> str:
-    """Where does `out` sit relative to `repo`'s tracked surface? Fails CLOSED.
 
-    `git check-ignore` is the only authority consulted, because a hand-written path list here
-    would be a second answer to "what is tracked" and the first one is what `git status` reads.
-    An unresolvable answer (not a git repository, git absent) is TRACKED_SURFACE, not OUTSIDE:
-    a destination policy that opens up when its instrument breaks is not a policy.
+def _stat_identity(path: pathlib.Path):
+    r"""`(st_dev, st_ino)` for `path`, or one of the two sentinels above.
+
+    This is the one primitive the whole destination policy is built on, because it is the one
+    property unaffected by *how* a path is spelled: an extended-length `\\?\C:\...` prefix, a
+    `\\host\C$\...` administrative share, a `subst`-mapped drive letter, a directory
+    junction/reparse point, a `..`/`.` segment and a letter-case difference all still name the
+    same file on the same volume, and the OS's own `stat` resolves every one of them to the same
+    device and file id before this function returns a verdict about anything. Confirmed against
+    this checkout: `os.stat()` on the repository root, on its `\\?\` spelling and on its
+    `\\localhost\C$\` spelling all return the identical `(st_dev, st_ino)` pair, and the same
+    holds for a `subst`-mapped drive letter pointed at the repository.
+
+    A path segment that does not exist yet (the common `--out DIR` case, where `DIR` itself is
+    to be created) raises `FileNotFoundError`, which is not uncertainty -- it is the expected
+    shape of a destination the caller has not created, and the caller of this function walks
+    upward past it. Anything else `stat` can raise (permission denied, an unreadable device, a
+    non-directory in the middle of the path, ...) is genuine uncertainty and must fail CLOSED.
     """
     try:
-        out.resolve().relative_to(repo.resolve())
-    except ValueError:
-        return DEST_OUTSIDE
-    r = _git(["check-ignore", "-q", "--", str(out.resolve())], repo)
-    if r.returncode == 0:
-        return DEST_IGNORED
-    return DEST_TRACKED_SURFACE
+        st = os.stat(str(path))
+    except FileNotFoundError:
+        return _STAT_MISSING
+    except OSError:
+        return _STAT_UNCERTAIN
+    return (st.st_dev, st.st_ino)
+
+
+class DestinationClassification(NamedTuple):
+    """`kind` is one of the three `DEST_*` constants. `repo_relative` is the canonical,
+    forward-slash, repo-relative spelling of `out` when it is inside `repo` (whether ignored or
+    tracked) -- reconstructed purely from the LEXICAL component names walked during
+    classification, never from `out`'s own spelling, so it is always safe to print even when
+    `out` was given in a namespace this policy had to see past. `None` when `out` is outside
+    `repo`, or when classification could not be completed at all."""
+
+    kind: str
+    repo_relative: str | None
+
+
+def classify_destination(repo: pathlib.Path, out: pathlib.Path) -> DestinationClassification:
+    """Where does `out` sit relative to `repo`'s tracked surface? Fails CLOSED, by file identity.
+
+    NOT `out.resolve().relative_to(repo.resolve())`: see the module-level note above this
+    section for why that raises `ValueError` on a destination that is genuinely inside `repo`,
+    spelled in a Windows path namespace `.resolve()` does not normalise.
+
+    Instead: walk `out` upward one lexical path component at a time (`.name` / `.parent` only --
+    the string spelling of `out` beyond that is never inspected), asking the OS for the
+    `(st_dev, st_ino)` identity of each ancestor that exists. Reaching `repo`'s own identity
+    along that walk is INSIDE, by a property that survives every rewrite a path namespace can
+    apply. Reaching a filesystem root (a drive letter or a UNC share root, where `.parent`
+    equals the path itself) without ever matching `repo` is OUTSIDE -- an affirmative answer the
+    instrument actually reached, not a guess. Anything the instrument could NOT reach (a `stat`
+    that fails for a reason other than "does not exist yet", or being unable to `stat` `repo`
+    itself) refuses closed to `DEST_TRACKED_SURFACE` instead of ever answering OUTSIDE on an
+    unresolved input -- that substitution is exactly what PR #51 was rejected for.
+
+    `git check-ignore`, the declared sole authority on what is tracked (`docs/DESIGN.md` §9.4
+    ruling 2), is consulted last, on a path rebuilt purely from the lexical component names
+    collected during the walk -- never on `out`'s original, possibly-exotic spelling -- so a
+    namespace git itself may not parse cleanly is never handed to it.
+    """
+    repo_id = _stat_identity(repo)
+    if not isinstance(repo_id, tuple):
+        # The checkout this tool is running from could not be stat'd. There is no destination
+        # this policy can safely call OUTSIDE if it cannot even establish where INSIDE is.
+        return DestinationClassification(DEST_TRACKED_SURFACE, None)
+
+    node = out
+    components: list[str] = []
+    while True:
+        ident = _stat_identity(node)
+        if ident is _STAT_UNCERTAIN:
+            return DestinationClassification(DEST_TRACKED_SURFACE, None)
+        if isinstance(ident, tuple) and ident == repo_id:
+            rel_parts = list(reversed(components))
+            repo_relative = "/".join(rel_parts)
+            out_in_repo = pathlib.Path(repo, *rel_parts) if rel_parts else repo
+            r = _git(["check-ignore", "-q", "--", str(out_in_repo)], repo)
+            kind = DEST_IGNORED if r.returncode == 0 else DEST_TRACKED_SURFACE
+            return DestinationClassification(kind, repo_relative)
+        parent = node.parent
+        if parent == node:
+            # Walked all the way to a filesystem root (a drive letter, or a UNC share root)
+            # without ever matching `repo`'s identity: an affirmative OUTSIDE, not an
+            # unresolved one -- `out` genuinely names no path under this checkout.
+            return DestinationClassification(DEST_OUTSIDE, None)
+        components.append(node.name)
+        node = parent
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -470,21 +577,25 @@ def main(argv: list[str] | None = None) -> int:
     repo = args.repo.resolve()
 
     if args.record and args.out is None:
+        # R13 reconciliation (PR #51 review, item 3): this already spoke the
+        # `ERROR(instrument=...)` token; the exit code must agree with its own vocabulary rather
+        # than answering usage(2), which is reserved for the argument parser itself.
         print(
             "ERROR(instrument=record_without_destination): --record names no directory. "
             "Recording is deliberate by construction; it does not pick a path for you.",
             flush=True,
         )
-        return EXIT_USAGE
+        return EXIT_ERROR_INSTRUMENT
 
     ephemeral = args.out is None
+    destination: DestinationClassification | None = None
     if ephemeral:
         out = pathlib.Path(tempfile.mkdtemp(prefix="probe_ledger_loss_")).resolve()
     else:
         out = args.out.resolve()
-        kind = classify_destination(repo, out)
-        if kind == DEST_TRACKED_SURFACE and not args.record:
-            rel = out.relative_to(repo).as_posix() if out.is_relative_to(repo) else str(out)
+        destination = classify_destination(repo, out)
+        if destination.kind == DEST_TRACKED_SURFACE and not args.record:
+            rel = destination.repo_relative if destination.repo_relative is not None else str(out)
             print(
                 f"ERROR(instrument=refused_tracked_destination): {rel} is inside the repository "
                 "and git does not ignore it, so writing this reading there would leave a tracked "
@@ -500,7 +611,22 @@ def main(argv: list[str] | None = None) -> int:
         out.mkdir(parents=True, exist_ok=True)
 
     try:
-        results = run_arms(repo, out)
+        try:
+            results = run_arms(repo, out)
+        except Exception as exc:  # noqa: BLE001 - see rationale below
+            # R13 reconciliation (PR #51 review, item 3): an unparseable ledger or attempt log
+            # used to propagate as a bare exception -- a raw traceback on stderr and Python's
+            # default exit(1), the same code this tool uses for FAIL(condition). A crash is not
+            # a detection: the probe never reached a verdict about the invariant, so this is
+            # ERROR(instrument), exactly as `ci/check_device_loss.py`'s `main_guarded` already
+            # treats any exception escaping its `main()`.
+            print(
+                f"ERROR(instrument=ledger_unreadable): {type(exc).__name__}: {exc}. The ledger "
+                "or attempt log this probe reads could not be parsed, so the loss invariant "
+                "cannot be evaluated. This is an instrument outage, not a failing arm.",
+                flush=True,
+            )
+            return EXIT_ERROR_INSTRUMENT
         ok = all(hit for _, hit, _ in results)
 
         record = {
@@ -545,7 +671,8 @@ def main(argv: list[str] | None = None) -> int:
         if ephemeral:
             print("scratch: an ephemeral directory outside the repository, removed on exit")
         else:
-            rel = out.relative_to(repo).as_posix() if out.is_relative_to(repo) else str(out)
+            assert destination is not None
+            rel = destination.repo_relative if destination.repo_relative is not None else str(out)
             print(f"{'recorded' if args.record else 'wrote'} result.json under {rel}")
         return EXIT_PASS if ok else EXIT_FAIL_CONDITION
     finally:
@@ -553,5 +680,23 @@ def main(argv: list[str] | None = None) -> int:
             shutil.rmtree(out, ignore_errors=True)
 
 
+def main_guarded(argv: list[str] | None = None) -> int:
+    """Entry point used by `__main__`. Same convention as `ci/check_device_loss.py`'s
+    `main_guarded`: any exception that reaches here escaped `main()`'s own R13 handling (the
+    `run_arms` guard above catches the expected "ledger did not parse" case) and is still an
+    instrument outage, never a raw traceback with `FAIL(condition)`'s exit code."""
+    try:
+        return main(argv)
+    except SystemExit as exc:
+        return int(exc.code or EXIT_USAGE)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"ERROR(instrument=probe_raised): {type(exc).__name__}: {exc}. This probe did not "
+            "reach a verdict, which is an instrument outage and not a detection (R13).",
+            flush=True,
+        )
+        return EXIT_ERROR_INSTRUMENT
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main_guarded())

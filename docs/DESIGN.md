@@ -5825,7 +5825,17 @@ committed `pass=true` stale, with no instrument in this repository able to notic
    `ERROR(instrument=refused_tracked_destination)` and **nothing is written**. The classification
    consults git and nothing else — a hand-written path list would be a second answer to "what is
    tracked" — and it fails **closed**: an unresolvable answer is treated as tracked surface, because
-   a destination policy that opens up when its instrument breaks is not a policy.
+   a destination policy that opens up when its instrument breaks is not a policy. **Hardened
+   2026-08-06 (PR #51 review):** string-based `Path.resolve().relative_to(repo)` is not that policy
+   on Windows — an extended-length (`\\?\C:\...`) or admin-share UNC (`\\localhost\C$\...`) spelling
+   of a tracked path raises `ValueError` there and the old handler answered `DEST_OUTSIDE`,
+   inferring "outside" from "the comparison failed," which is the exact inversion the sentence above
+   forbids. The classification now walks `--out` upward by filesystem *identity*
+   (`os.stat().st_dev`/`st_ino`, which extended-length, UNC-admin-share, `subst`, case and
+   dot-segment spellings of the same file all share) rather than by string comparison, and treats
+   every stat it cannot complete — not only a raised exception on the final comparison — as
+   uncertain and therefore tracked. The claim is unchanged; the mechanism that used to falsify it on
+   two Windows spellings does not exist anymore.
 3. **Recording a canonical artifact is an explicit, signed act.** `--record` is the only way to write
    a reading in-tree. It is not merely permission: it adds `owner`, `tool`, `produced_at_commit` and
    a `subject` block digesting each evidence file the reading is *about*, and it stamps the directory
