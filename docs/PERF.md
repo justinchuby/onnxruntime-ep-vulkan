@@ -4370,12 +4370,18 @@ worse than the decode arm; it is the same arithmetic in a different order.
 
 **The one honest limitation.** `rust/modelrunner` still reports
 `UNSUPPORTED(reason=reference_run_unsupported)` for this model: its GroupQueryAttention nodes reject
-generated inputs on the **CPU reference arm** (`seqlens_k[0] = 7 is out of range [0, 1)`) because
-the model's inputs are interdependent. That is a limit of the runner's input generation, it has
-nothing to do with MatMulNBits or with this change, and it means **there is no whole-model CPU
-reference to compare a Vulkan run against.** Nothing here is an end-to-end logits claim and nothing
-here should be read as one. What is claimed is the operator, on the model's own bytes, plus the
-graph-wide traffic reading — which is the narrowest thing that is still about the real model.
+*that tool's own generated* inputs on the **CPU reference arm** (`seqlens_k[0] = 7 is out of range
+[0, 1)`) because the model's inputs are interdependent and the runner's generic input generator does
+not know that. That is a limit of `rust/modelrunner`'s input generation specifically, it has nothing
+to do with MatMulNBits or with this change, and it does **not** mean there is no whole-model CPU
+reference available at all: `bench/phi35.py`'s `_run_device` already builds one, on real
+hand-constructed feeds (`tests/ops/test_phi35.py`'s `_build_phi35_feeds()`, not generated ones), by
+opening the same artifact a second time with `providers=["CPUExecutionProvider"]` and running it
+through `classify_outputs` as the §10.0 gate *before* anything is timed — a Vulkan run that
+disagrees with that CPU run is refused, never silently reported. Nothing here is a new end-to-end
+logits claim beyond what §10.0 already established, and nothing here should be read as one. What is
+claimed in this section is the operator, on the model's own bytes, plus the graph-wide traffic
+reading — which is the narrowest thing that is still about the real model.
 
 ### 25.6 The fallback, and why it is the same mechanism as the control
 

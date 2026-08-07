@@ -66,21 +66,6 @@ sys.path.insert(0, str(ROOT / "bench" / "results"))
 
 from spirv_simt import Dispatch, InstrumentError, SpirvModule  # noqa: E402
 
-# ARCHIVAL: pinned to the exact Foundry cache layout this investigation measured against
-# (the pre-2026-08-05 "...-cuda-gpu/cuda-int4-rtn-block-32/..." catalog revision, issue
-# #11). Intentionally NOT auto-resolved against the live cache: a live resolver could
-# silently pick a *different* cached revision than the one this result was measured
-# against, which would misattribute a new run to an old artifact. Override PHI35_MODEL to
-# replay against a different artifact explicitly (issue #19).
-MODEL = pathlib.Path(
-    os.environ.get(
-        "PHI35_MODEL",
-        r"C:\Users\justinchu\.foundry\cache\models\Microsoft"
-        r"\Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32"
-        r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
-    )
-)
-
 LEDGER = ROOT / "evidence" / "proof_ledger.jsonl"
 SHADER_STEM = "q_gemv_matmul_nbits_f16"
 SHADER_SRC = ROOT / "rust" / "shaders" / "glsl" / "templates" / "q_gemv.comp"
@@ -92,13 +77,57 @@ SHADER_INC = ROOT / "rust" / "shaders" / "include"
 # stale/wrong cached file can never be silently absorbed into the evidence. Reuses the streaming
 # SHA-256 helper `model_provenance.sha256_of` rather than a 23rd divergent hasher.
 sys.path.insert(0, str(ROOT / "rust" / "tools"))
+import foundry_discovery as _foundry_discovery  # noqa: E402
 import model_provenance as _model_provenance  # noqa: E402
 
+# The exact model identity this probe measures against -- never a literal path. Morpheus's
+# PR #53 review caught this file claiming "nothing was hardcoded" while its own default MODEL
+# was a literal Foundry cache path from the pre-2026-08-05 catalog revision
+# ("...-cuda-gpu/cuda-int4-rtn-block-32/...", issue #11) that does not exist under Foundry
+# Local 0.10.2's current layout ("...-cuda-gpu-2/v2/..."). A literal default goes stale
+# silently, exactly as issue #11 and issue #19 already found for every OTHER live lookup in
+# this tree -- there was nothing special about this probe that justified being the one
+# exception. `PHI35_MODEL`, if set, still pins an exact file explicitly (e.g. to replay
+# against a specific archived artifact) and is used as-is; otherwise resolution is by
+# IDENTITY through `foundry_discovery.resolve_model_path`, the same resolver
+# `probe_real_matmulnbits_rows.py` already uses, never a filesystem guess.
+_PHI35_SPEC = _foundry_discovery.FoundryModelSpec(
+    variant_name="Phi-3.5-mini-instruct-cuda-gpu",
+    execution_provider="CUDAExecutionProvider",
+    onnx_filename="phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    download_alias="phi-3.5-mini",
+)
 
-def _result_identity() -> dict:
+
+def resolve_model() -> pathlib.Path:
+    """The model this probe measures against. Lazy and side-effect-free at import time --
+    called only from `main()` / `_result_identity()`, never at module scope -- so importing
+    this file for its SPIR-V-only tests never touches the filesystem or invokes the Foundry
+    CLI (`test_import_has_no_side_effects`).
+
+    `PHI35_MODEL`, if set, pins an exact file explicitly and is used as-is (fail-loud if it
+    does not exist, rather than silently falling through to the resolver). Otherwise resolves
+    by identity via `foundry_discovery.resolve_model_path`, which raises
+    `FoundryDiscoveryError` -- propagated uncaught, never swallowed into a guess -- if the
+    identity does not resolve to exactly one cached, correctly-provisioned file.
+    """
+    override = os.environ.get("PHI35_MODEL")
+    if override:
+        path = pathlib.Path(override)
+        if not path.is_file():
+            raise InstrumentError(f"PHI35_MODEL override does not exist: {path}")
+        return path
+    return _foundry_discovery.resolve_model_path(_PHI35_SPEC)
+
+
+def _result_identity(model: pathlib.Path) -> dict:
     return {
-        "onnx_file": str(MODEL),
-        "onnx_sha256": _model_provenance.sha256_of(MODEL),
+        "onnx_file": str(model),
+        "onnx_sha256": _model_provenance.sha256_of(model),
+        "provider": _PHI35_SPEC.execution_provider,
+        "resolved_by": "PHI35_MODEL override" if os.environ.get("PHI35_MODEL")
+        else "foundry_discovery.resolve_model_path (identity: "
+             f"{_PHI35_SPEC.variant_name}, {_PHI35_SPEC.execution_provider})",
     }
 
 #: Mirrors of `ops::quant`. Checked against the Rust unit tests' own expectations in
@@ -533,9 +562,10 @@ def main() -> int:
     try:
         path, blob, digest = locate_module(SHADER_STEM)
         mod = SpirvModule(blob)
-        if not MODEL.is_file():
-            raise InstrumentError(f"model absent: {MODEL}")
-        cen = census(MODEL)
+        model = resolve_model()
+        if not model.is_file():
+            raise InstrumentError(f"resolved model absent: {model}")
+        cen = census(model)
 
         pos = positive_controls(mod)
 
@@ -630,7 +660,7 @@ def main() -> int:
             )
 
         report = {
-            **_result_identity(),
+            **_result_identity(model),
             "probe": "weight_reread_amplification_phi35_executed",
             "no_clock": "Every number here is a count of instructions or of bytes.",
             "subject": {

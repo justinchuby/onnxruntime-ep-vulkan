@@ -352,6 +352,51 @@
      "new": "578369f076f7feb5"
     }
    ]
+  },
+  {
+   "schema": "rewitness/2",
+   "field": "source_digest",
+   "owner": "link",
+   "date": "2026-08-07",
+   "deliberate": true,
+   "caused_by": "79c7a4fbc510ca4fd4e97608fadadcd2d26acaac",
+   "tool": "rust/tools/gen_proof_ledger.py --reprove --append --model bench/results/_ledger_models/matmulnbits_f16_scales.onnx --model bench/results/_ledger_models/matmulnbits_f16_scales_zp.onnx --model bench/results/_ledger_models/matmulnbits_f16_scales_dyn.onnx --model bench/results/_ledger_models/matmulnbits_f16_scales_zp_dyn.onnx --model bench/results/_ledger_models/matmulnbits_f32_scales.onnx --model bench/results/_ledger_models/matmulnbits_f32_scales_zp.onnx",
+   "reason": "A KERNEL change, not a hashing-rule move -- the same distinction `caused_by e3d3cf6` above exists to make, decided the same way: by asking the writer, not the digests. Issue #7 (PR #53, `79c7a4f`) gave `rust/shaders/glsl/templates/q_gemv.comp` a seventh specialisation constant, `QB_ROWS`, plus the folded spec-constant guard that fails closed when `QB_ROWS*QB_COLS > QB_MAX_TILE || QB_ROWS > QB_MAX_ROWS`, and restructured the row-reduction loop to reuse `red[]` across a tile of rows. That is new source text in the one template every MatMulNBits GEMV form is generated from, so `source_digest_for` -- which hashes the whole template plus its includes -- necessarily moved for every entry that stem produces, exactly as `e3d3cf6` moved it for all 55 `ew_unary`-derived entries when THAT shared template changed. This is the `--reprove` half of that same rule, not the `--backfill-frame` half: `QB_ROWS == 1u` is a spec-constant branch holding the byte-identical pre-change body (`test_the_decode_arm_is_untouched_by_the_row_tile` pins the 16-byte load width that proves it), but the SPIR-V for `rows > 1` is genuinely new object code implementing a new reduction strategy, not a comment or whitespace change the old build happens to still match. `--backfill-frame` refuses per entry unless the recorded `spirv_digest` matches this build's; it would have refused all six here, correctly, because the SPIR-V is not byte-identical to what `af66fa3` recorded. `--reprove` is therefore the only available and the correct instrument: it measures the new kernel on this device rather than asserting the old one is still what is being described.",
+   "evidence": "All six re-proofs are `MATCH` on **NVIDIA RTX A1000** (this machine), `ort_build 1.28.0`, `toolchain shaderc v2026.2 v2026.2`, `dispatches_executed: 1` each, against the six committed case models named in `tool` above (`bench/results/_ledger_models/matmulnbits_*.onnx`, pinned by `artifact_sha256` in the ledger). `gen_proof_ledger.py --check` reads `133/133 entries identical, 0 declines` after this re-proof: the move is exactly as wide as the six entries this record declares and no wider -- `git diff af66fa3..79c7a4f -- evidence/proof_ledger.jsonl` names precisely these six keys' `source_digest` and touches no other field on them, and no OTHER key's `source_digest` or `toolchain` moved. Two of the six (`f16, static/scales` and `f16, runtime-extent/scales`) share one `old`/`new` pair because both keys are produced from one shader stem, `q_gemv_matmul_nbits_f16`, under the identical template text -- likewise the `scales+zero_points` pair and the `f32` pair -- so `source_digest_for`'s per-stem hash is unaffected by the static/runtime-extent or scales/scales+zero_points axis, and moves in lockstep across the keys that share a stem exactly as it must.",
+   "why_schema_v2": "Written directly in `rewitness/2` rather than `rewitness/1` per `how_to_add_a_record`'s standing instruction: this repository squash-merges, so a `revision` naming a branch commit of PR #53 would be un-ancestored the moment the PR lands and would repeat the exact `stale_rewitness_declaration` / `undeclared_witness_move` pair `e3d3cf6` already hit twice. `caused_by` names `79c7a4f` directly (not a branch-only sha) because that commit is the actual, single commit that edited `q_gemv.comp`; whether PR #53 itself lands as a merge commit or a squash, `(field, key, old, new)` matches identically either way and needs no re-point.",
+   "standing_repair": "None added by this record beyond what `f8cfbf4`/`e3d3cf6` already established (`tests/ops/test_proof_ledger.py::test_no_entry_carries_a_stale_source_digest`); that test already covers these six entries because it walks every recorded `source_digest` against the current build for every key, not a fixed list.",
+   "transitions": [
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales",
+     "old": "ee2901c1275da648",
+     "new": "00d6a2587e50688f"
+    },
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points",
+     "old": "ee2901c1275da648",
+     "new": "00d6a2587e50688f"
+    },
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales",
+     "old": "ee2901c1275da648",
+     "new": "00d6a2587e50688f"
+    },
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points",
+     "old": "ee2901c1275da648",
+     "new": "00d6a2587e50688f"
+    },
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales",
+     "old": "3bb491fcee808f26",
+     "new": "87d83257fafcf9ee"
+    },
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points",
+     "old": "3bb491fcee808f26",
+     "new": "87d83257fafcf9ee"
+    }
+   ]
   }
  ]
 }
