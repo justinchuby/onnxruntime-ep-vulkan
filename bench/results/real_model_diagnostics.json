@@ -1,0 +1,4094 @@
+{
+  "schema": "real_model_diagnostics/1",
+  "environment": {
+    "onnxruntime": "1.28.0",
+    "onnxruntime_lib": "<home>/.copilot/repos/onnxruntime-ep-vulkan/<venv>/Lib/site-packages/onnxruntime/capi",
+    "ep_library": "<repo>/rust/target/release/onnxruntime_vulkan_ep.dll",
+    "ep_library_sha256": "2c080583a1e295bff28e482de302b020a62e9b316c527bfead263f8ae5f44530",
+    "python": "3.12.10",
+    "os": "Windows 11 10.0.26200",
+    "machine": "AMD64",
+    "device": {
+      "index": 0,
+      "name": "NVIDIA RTX A1000",
+      "driver": "573.44",
+      "transfer_class": "discrete",
+      "timestamp_period_ns": null,
+      "max_compute_shared_memory": 49152,
+      "subgroup_size": 32
+    },
+    "power_and_affinity": {
+      "assumption": "stock Windows power plan, no CPU affinity mask set, no GPU clock lock",
+      "thread_affinity_set": false,
+      "gpu_clocks_locked": false,
+      "note": "this box is shared indefinitely (PERF.md \u00a720), so wall clock is STEADY_UNCERTIFIED by default; arms are interleaved precisely because the machine state cannot be assumed quiet"
+    },
+    "methodology": {
+      "repeats": 3,
+      "iters_per_repeat": 5,
+      "warmup_per_session": 2,
+      "warmups_discarded": true,
+      "arm_order": "alternated per repeat (see real_model.arm_order)",
+      "session_per_arm_per_repeat": true,
+      "tracing_during_timed_pass": false
+    },
+    "build": {
+      "lib": "<repo>/rust/target/release/onnxruntime_vulkan_ep.dll",
+      "present": true,
+      "bytes": 2507264,
+      "mtime": "2026-08-06T23:56:58",
+      "profile": "release",
+      "sha256": "2c080583a1e295bff28e482de302b020a62e9b316c527bfead263f8ae5f44530"
+    }
+  },
+  "device": {
+    "index": 0,
+    "name": "NVIDIA RTX A1000"
+  },
+  "runs": [
+    {
+      "arm": "vulkan_tiled",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 1278,
+          "VulkanExecutionProvider": 1868822
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_1030414944306789527_0",
+            "microseconds": 1868822,
+            "nodes": 3,
+            "share_of_node_time": 0.9993166140848083
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 667,
+            "nodes": 3,
+            "share_of_node_time": 0.0003566654189615529
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 143,
+            "nodes": 3,
+            "share_of_node_time": 7.646649911769425e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 136,
+            "nodes": 6,
+            "share_of_node_time": 7.272338377626865e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 93,
+            "nodes": 3,
+            "share_of_node_time": 4.97299609646543e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 87,
+            "nodes": 3,
+            "share_of_node_time": 4.6521576386289504e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 83,
+            "nodes": 3,
+            "share_of_node_time": 4.438265333404631e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 69,
+            "nodes": 3,
+            "share_of_node_time": 3.689642265119512e-05
+          }
+        ],
+        "node_microseconds_total": 1870100
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "total_node_executions": 27,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 24,
+        "vulkan_share": 0.1111111111111111,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 195,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 195,
+        "outputs_bind_declined": 195,
+        "dispatches_executed": 1065,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 360,
+        "ledger_hits": 355,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 5,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 162,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/gather_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/simplified_layer_norm_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "shaders_dispatched_digest": "d8758b6e9bcf067a",
+        "shaders_dispatched_source_digest": "50b9cec003056f9f",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "gemv_packed_spec_constant": "1",
+        "shaders_dispatched_spec_digest": "065e6f5473241d76",
+        "specialisation_delta_forms": [
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=07240d10aafae21e"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "GROWING",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 2,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "ALL-PROVEN",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 2294396976,
+        "session_staging_upload_us": 1031861,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 1372032,
+        "session_staging_readback_us": 982,
+        "session_device_allocs": 1983,
+        "session_device_frees": 1983,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 2297082560,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 323,
+        "weight_cache_release_bytes": 2290839552,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 533,
+        "transient_input_device_bytes": 2294397072,
+        "transient_input_device_peak_bytes": 2292025392,
+        "transient_input_reuses": 0,
+        "transient_input_reused_bytes": 0,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 1065,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 355.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 195,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "vulkan_untiled",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 2017,
+          "VulkanExecutionProvider": 1974626
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_1030414944306789527_0",
+            "microseconds": 1974626,
+            "nodes": 3,
+            "share_of_node_time": 0.9989795830607753
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 777,
+            "nodes": 3,
+            "share_of_node_time": 0.0003930907098550421
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 326,
+            "nodes": 6,
+            "share_of_node_time": 0.0001649260893342905
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 227,
+            "nodes": 3,
+            "share_of_node_time": 0.00011484117263461333
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 180,
+            "nodes": 3,
+            "share_of_node_time": 9.106348490850397e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 180,
+            "nodes": 3,
+            "share_of_node_time": 9.106348490850397e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 176,
+            "nodes": 3,
+            "share_of_node_time": 8.90398519105372e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 151,
+            "nodes": 3,
+            "share_of_node_time": 7.639214567324499e-05
+          }
+        ],
+        "node_microseconds_total": 1976643
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "total_node_executions": 27,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 24,
+        "vulkan_share": 0.1111111111111111,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 195,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 195,
+        "outputs_bind_declined": 195,
+        "dispatches_executed": 1065,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 360,
+        "ledger_hits": 355,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 5,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 162,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/gather_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/simplified_layer_norm_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "shaders_dispatched_digest": "d8758b6e9bcf067a",
+        "shaders_dispatched_source_digest": "50b9cec003056f9f",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "gemv_packed_spec_constant": "1",
+        "shaders_dispatched_spec_digest": "065e6f5473241d76",
+        "specialisation_delta_forms": [
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=07240d10aafae21e"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "GROWING",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 2,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "ALL-PROVEN",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 2294396976,
+        "session_staging_upload_us": 1094847,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 1372032,
+        "session_staging_readback_us": 526,
+        "session_device_allocs": 1983,
+        "session_device_frees": 1983,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 2297082560,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 323,
+        "weight_cache_release_bytes": 2290839552,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 533,
+        "transient_input_device_bytes": 2294397072,
+        "transient_input_device_peak_bytes": 2292025392,
+        "transient_input_reuses": 0,
+        "transient_input_reused_bytes": 0,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 1065,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 355.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 195,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "cpu",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 1377
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 293890
+        },
+        "by_op": [
+          {
+            "provider_op": "CPUExecutionProvider::MatMulNBits",
+            "microseconds": 259447,
+            "nodes": 483,
+            "share_of_node_time": 0.8828030895913437
+          },
+          {
+            "provider_op": "CPUExecutionProvider::GroupQueryAttention",
+            "microseconds": 11522,
+            "nodes": 96,
+            "share_of_node_time": 0.039205144782061316
+          },
+          {
+            "provider_op": "CPUExecutionProvider::SkipSimplifiedLayerNormalization",
+            "microseconds": 7356,
+            "nodes": 192,
+            "share_of_node_time": 0.025029773044336318
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 7076,
+            "nodes": 294,
+            "share_of_node_time": 0.024077035625574193
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Mul",
+            "microseconds": 4895,
+            "nodes": 192,
+            "share_of_node_time": 0.01665589166014495
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sigmoid",
+            "microseconds": 2385,
+            "nodes": 96,
+            "share_of_node_time": 0.008115281227670216
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 572,
+            "nodes": 3,
+            "share_of_node_time": 0.0019463064411854776
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 206,
+            "nodes": 6,
+            "share_of_node_time": 0.0007009425295178469
+          },
+          {
+            "provider_op": "CPUExecutionProvider::SimplifiedLayerNormalization",
+            "microseconds": 128,
+            "nodes": 3,
+            "share_of_node_time": 0.00043553710571982715
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 91,
+            "nodes": 3,
+            "share_of_node_time": 0.0003096396610976896
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 77,
+            "nodes": 3,
+            "share_of_node_time": 0.0002620027901595835
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 73,
+            "nodes": 3,
+            "share_of_node_time": 0.0002483922556058389
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 62,
+            "nodes": 3,
+            "share_of_node_time": 0.00021096328558304128
+          }
+        ],
+        "node_microseconds_total": 293890
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 1377
+        },
+        "total_node_executions": 1377,
+        "vulkan_node_executions": 0,
+        "cpu_fallback_node_executions": 1377,
+        "vulkan_share": 0.0,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "dispatch": {
+        "islands": null,
+        "compute_calls": null,
+        "dispatches_executed": null,
+        "compute_failures": null,
+        "inferences": 3,
+        "dispatches_per_inference": null,
+        "island_crossings_per_inference": null,
+        "outputs_host_resident": null,
+        "outputs_device_resident": null,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "vulkan_tiled",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M8/past0",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 1566,
+          "VulkanExecutionProvider": 2109155
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_1030414944306789527_0",
+            "microseconds": 2109155,
+            "nodes": 3,
+            "share_of_node_time": 0.9992580734260947
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 715,
+            "nodes": 3,
+            "share_of_node_time": 0.000338746807370562
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 190,
+            "nodes": 6,
+            "share_of_node_time": 9.001663412644305e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 181,
+            "nodes": 3,
+            "share_of_node_time": 8.575268829940101e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 148,
+            "nodes": 3,
+            "share_of_node_time": 7.011822026691354e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 130,
+            "nodes": 3,
+            "share_of_node_time": 6.159032861282945e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 116,
+            "nodes": 3,
+            "share_of_node_time": 5.4957523992986285e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 86,
+            "nodes": 3,
+            "share_of_node_time": 4.074437123617949e-05
+          }
+        ],
+        "node_microseconds_total": 2110721
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "total_node_executions": 27,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 24,
+        "vulkan_share": 0.1111111111111111,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 195,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 195,
+        "outputs_bind_declined": 195,
+        "dispatches_executed": 1065,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 360,
+        "ledger_hits": 355,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 5,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 162,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/gather_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/simplified_layer_norm_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "shaders_dispatched_digest": "d8758b6e9bcf067a",
+        "shaders_dispatched_source_digest": "50b9cec003056f9f",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:8",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,2",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,2",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "gemv_packed_spec_constant": "1",
+        "shaders_dispatched_spec_digest": "d89cd62ce4304bbf",
+        "specialisation_delta_forms": [
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=2bf8e36f9cc463fd",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=2bf8e36f9cc463fd",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=2bf8e36f9cc463fd",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=2bf8e36f9cc463fd",
+          "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/gqa_f16/runtime-extent/past_key+past_value+cos_cache+sin_cache recorded=4f38822ffc5e94a2 current=4f57182ffc789113",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=385c4f39f6a6725c",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=385c4f39f6a6725c",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=385c4f39f6a6725c",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=385c4f39f6a6725c"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "GROWING",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 2,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "ALL-PROVEN",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 2294397144,
+        "session_staging_upload_us": 1156240,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 10976256,
+        "session_staging_readback_us": 4496,
+        "session_device_allocs": 1983,
+        "session_device_frees": 1983,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 2332482672,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 323,
+        "weight_cache_release_bytes": 2290839552,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 533,
+        "transient_input_device_bytes": 2294397216,
+        "transient_input_device_peak_bytes": 2292025440,
+        "transient_input_reuses": 0,
+        "transient_input_reused_bytes": 0,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 1065,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 355.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 195,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "vulkan_untiled",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M8/past0",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 1431,
+          "VulkanExecutionProvider": 2094522
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_1030414944306789527_0",
+            "microseconds": 2094522,
+            "nodes": 3,
+            "share_of_node_time": 0.9993172556827372
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 744,
+            "nodes": 3,
+            "share_of_node_time": 0.00035496979178445317
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 160,
+            "nodes": 3,
+            "share_of_node_time": 7.63375896310652e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 153,
+            "nodes": 6,
+            "share_of_node_time": 7.29978200847061e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 107,
+            "nodes": 3,
+            "share_of_node_time": 5.1050763065774854e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 103,
+            "nodes": 3,
+            "share_of_node_time": 4.914232332499822e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 91,
+            "nodes": 3,
+            "share_of_node_time": 4.3417004102668334e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 73,
+            "nodes": 3,
+            "share_of_node_time": 3.48290252691735e-05
+          }
+        ],
+        "node_microseconds_total": 2095953
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "total_node_executions": 27,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 24,
+        "vulkan_share": 0.1111111111111111,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 195,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 195,
+        "outputs_bind_declined": 195,
+        "dispatches_executed": 1065,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 360,
+        "ledger_hits": 355,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 5,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 162,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/gather_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/simplified_layer_norm_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "shaders_dispatched_digest": "d8758b6e9bcf067a",
+        "shaders_dispatched_source_digest": "50b9cec003056f9f",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:8",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "gemv_packed_spec_constant": "1",
+        "shaders_dispatched_spec_digest": "9fa72f3e43b2a2c9",
+        "specialisation_delta_forms": [
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=2bfc496f9cc74726",
+          "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/gqa_f16/runtime-extent/past_key+past_value+cos_cache+sin_cache recorded=4f38822ffc5e94a2 current=4f57182ffc789113",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=07240d10aafae21e"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "GROWING",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 2,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "ALL-PROVEN",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 2294397144,
+        "session_staging_upload_us": 1005825,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 10976256,
+        "session_staging_readback_us": 2100,
+        "session_device_allocs": 1983,
+        "session_device_frees": 1983,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 2332482672,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 323,
+        "weight_cache_release_bytes": 2290839552,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 533,
+        "transient_input_device_bytes": 2294397216,
+        "transient_input_device_peak_bytes": 2292025440,
+        "transient_input_reuses": 0,
+        "transient_input_reused_bytes": 0,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 1065,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 355.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 195,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "cpu",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M8/past0",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 1377
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 940652
+        },
+        "by_op": [
+          {
+            "provider_op": "CPUExecutionProvider::MatMulNBits",
+            "microseconds": 840893,
+            "nodes": 483,
+            "share_of_node_time": 0.8939469644459375
+          },
+          {
+            "provider_op": "CPUExecutionProvider::GroupQueryAttention",
+            "microseconds": 55271,
+            "nodes": 96,
+            "share_of_node_time": 0.05875818049608144
+          },
+          {
+            "provider_op": "CPUExecutionProvider::SkipSimplifiedLayerNormalization",
+            "microseconds": 15778,
+            "nodes": 192,
+            "share_of_node_time": 0.01677347201728163
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 12096,
+            "nodes": 294,
+            "share_of_node_time": 0.012859165770125403
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Mul",
+            "microseconds": 11118,
+            "nodes": 192,
+            "share_of_node_time": 0.011819461394862287
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sigmoid",
+            "microseconds": 3922,
+            "nodes": 96,
+            "share_of_node_time": 0.0041694484251349065
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 596,
+            "nodes": 3,
+            "share_of_node_time": 0.0006336030753137185
+          },
+          {
+            "provider_op": "CPUExecutionProvider::SimplifiedLayerNormalization",
+            "microseconds": 407,
+            "nodes": 3,
+            "share_of_node_time": 0.00043267861015550916
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 255,
+            "nodes": 6,
+            "share_of_node_time": 0.00027108856410234606
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 96,
+            "nodes": 3,
+            "share_of_node_time": 0.00010205687119147145
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 83,
+            "nodes": 3,
+            "share_of_node_time": 8.823666988429303e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 74,
+            "nodes": 3,
+            "share_of_node_time": 7.866883821009258e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 63,
+            "nodes": 3,
+            "share_of_node_time": 6.697482171940313e-05
+          }
+        ],
+        "node_microseconds_total": 940652
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 1377
+        },
+        "total_node_executions": 1377,
+        "vulkan_node_executions": 0,
+        "cpu_fallback_node_executions": 1377,
+        "vulkan_share": 0.0,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "dispatch": {
+        "islands": null,
+        "compute_calls": null,
+        "dispatches_executed": null,
+        "compute_failures": null,
+        "inferences": 3,
+        "dispatches_per_inference": null,
+        "island_crossings_per_inference": null,
+        "outputs_host_resident": null,
+        "outputs_device_resident": null,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "vulkan_tiled",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 2140,
+          "VulkanExecutionProvider": 6130515
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_1030414944306789527_0",
+            "microseconds": 6130515,
+            "nodes": 3,
+            "share_of_node_time": 0.9996510483632293
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 778,
+            "nodes": 3,
+            "share_of_node_time": 0.0001268618567325245
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 335,
+            "nodes": 6,
+            "share_of_node_time": 5.4625606690739984e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 258,
+            "nodes": 3,
+            "share_of_node_time": 4.206987022749527e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 217,
+            "nodes": 3,
+            "share_of_node_time": 3.5384348214598735e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 202,
+            "nodes": 3,
+            "share_of_node_time": 3.293842552695366e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 189,
+            "nodes": 3,
+            "share_of_node_time": 3.081862586432793e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 161,
+            "nodes": 3,
+            "share_of_node_time": 2.6252903514057125e-05
+          }
+        ],
+        "node_microseconds_total": 6132655
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "total_node_executions": 27,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 24,
+        "vulkan_share": 0.1111111111111111,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 195,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 195,
+        "outputs_bind_declined": 195,
+        "dispatches_executed": 1065,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 360,
+        "ledger_hits": 355,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 5,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 162,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/gather_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/simplified_layer_norm_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "shaders_dispatched_digest": "d8758b6e9bcf067a",
+        "shaders_dispatched_source_digest": "50b9cec003056f9f",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:64",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,2",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,2",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "gemv_packed_spec_constant": "1",
+        "shaders_dispatched_spec_digest": "d8d7c83353ae0129",
+        "specialisation_delta_forms": [
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=2bf8e36f9cc463fd",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=2bf8e36f9cc463fd",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=2bf8e36f9cc463fd",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=2bf8e36f9cc463fd",
+          "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/gqa_f16/runtime-extent/past_key+past_value+cos_cache+sin_cache recorded=4f38822ffc5e94a2 current=15525289e334cc13",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=385c4f39f6a6725c",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=385c4f39f6a6725c",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=385c4f39f6a6725c",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=385c4f39f6a6725c"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "GROWING",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 2,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "ALL-PROVEN",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 2294400024,
+        "session_staging_upload_us": 992361,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 175620096,
+        "session_staging_readback_us": 46689,
+        "session_device_allocs": 1983,
+        "session_device_frees": 1983,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 2939341872,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 323,
+        "weight_cache_release_bytes": 2290839552,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 533,
+        "transient_input_device_bytes": 2294400096,
+        "transient_input_device_peak_bytes": 2292026400,
+        "transient_input_reuses": 0,
+        "transient_input_reused_bytes": 0,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 1065,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 355.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 195,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "vulkan_untiled",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 1752,
+          "VulkanExecutionProvider": 8982812
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_1030414944306789527_0",
+            "microseconds": 8982812,
+            "nodes": 3,
+            "share_of_node_time": 0.9998049988847539
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 759,
+            "nodes": 3,
+            "share_of_node_time": 8.447822287202807e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 223,
+            "nodes": 6,
+            "share_of_node_time": 2.4820347431439076e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 208,
+            "nodes": 3,
+            "share_of_node_time": 2.3150817335153937e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 164,
+            "nodes": 3,
+            "share_of_node_time": 1.8253529052717528e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 150,
+            "nodes": 3,
+            "share_of_node_time": 1.6695300962851397e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 137,
+            "nodes": 3,
+            "share_of_node_time": 1.5248374879404277e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 111,
+            "nodes": 3,
+            "share_of_node_time": 1.2354522712510034e-05
+          }
+        ],
+        "node_microseconds_total": 8984564
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "total_node_executions": 27,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 24,
+        "vulkan_share": 0.1111111111111111,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 195,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 195,
+        "outputs_bind_declined": 195,
+        "dispatches_executed": 1065,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 360,
+        "ledger_hits": 355,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 5,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 162,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/gather_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/simplified_layer_norm_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "shaders_dispatched_digest": "d8758b6e9bcf067a",
+        "shaders_dispatched_source_digest": "50b9cec003056f9f",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:64",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "gemv_packed_spec_constant": "1",
+        "shaders_dispatched_spec_digest": "169c15f19f53880b",
+        "specialisation_delta_forms": [
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=2bfc496f9cc74726",
+          "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/gqa_f16/runtime-extent/past_key+past_value+cos_cache+sin_cache recorded=4f38822ffc5e94a2 current=15525289e334cc13",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=07240d10aafae21e"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "GROWING",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 2,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "ALL-PROVEN",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 2294400024,
+        "session_staging_upload_us": 1035105,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 175620096,
+        "session_staging_readback_us": 58297,
+        "session_device_allocs": 1983,
+        "session_device_frees": 1983,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 2939341872,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 323,
+        "weight_cache_release_bytes": 2290839552,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 533,
+        "transient_input_device_bytes": 2294400096,
+        "transient_input_device_peak_bytes": 2292026400,
+        "transient_input_reuses": 0,
+        "transient_input_reused_bytes": 0,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 1065,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 355.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 195,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "cpu",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 1377
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 4485443
+        },
+        "by_op": [
+          {
+            "provider_op": "CPUExecutionProvider::MatMulNBits",
+            "microseconds": 4027504,
+            "nodes": 483,
+            "share_of_node_time": 0.8979055134576451
+          },
+          {
+            "provider_op": "CPUExecutionProvider::GroupQueryAttention",
+            "microseconds": 171867,
+            "nodes": 96,
+            "share_of_node_time": 0.038316616664173415
+          },
+          {
+            "provider_op": "CPUExecutionProvider::SkipSimplifiedLayerNormalization",
+            "microseconds": 148991,
+            "nodes": 192,
+            "share_of_node_time": 0.033216563001692366
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 55794,
+            "nodes": 294,
+            "share_of_node_time": 0.012438905142702739
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Mul",
+            "microseconds": 55072,
+            "nodes": 192,
+            "share_of_node_time": 0.012277939993886891
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sigmoid",
+            "microseconds": 22627,
+            "nodes": 96,
+            "share_of_node_time": 0.005044540751047332
+          },
+          {
+            "provider_op": "CPUExecutionProvider::SimplifiedLayerNormalization",
+            "microseconds": 1827,
+            "nodes": 3,
+            "share_of_node_time": 0.0004073176272666936
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 747,
+            "nodes": 6,
+            "share_of_node_time": 0.00016653873430116044
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 668,
+            "nodes": 3,
+            "share_of_node_time": 0.0001489262041675705
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 100,
+            "nodes": 3,
+            "share_of_node_time": 2.229434194125307e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 97,
+            "nodes": 3,
+            "share_of_node_time": 2.1625511683015478e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 85,
+            "nodes": 3,
+            "share_of_node_time": 1.895019065006511e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 64,
+            "nodes": 3,
+            "share_of_node_time": 1.4268378842401966e-05
+          }
+        ],
+        "node_microseconds_total": 4485443
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 1377
+        },
+        "total_node_executions": 1377,
+        "vulkan_node_executions": 0,
+        "cpu_fallback_node_executions": 1377,
+        "vulkan_share": 0.0,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "dispatch": {
+        "islands": null,
+        "compute_calls": null,
+        "dispatches_executed": null,
+        "compute_failures": null,
+        "inferences": 3,
+        "dispatches_per_inference": null,
+        "island_crossings_per_inference": null,
+        "outputs_host_resident": null,
+        "outputs_device_resident": null,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "vulkan_tiled",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past1024",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 2470,
+          "VulkanExecutionProvider": 4178923
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_1030414944306789527_0",
+            "microseconds": 4178923,
+            "nodes": 3,
+            "share_of_node_time": 0.9994092877660626
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 835,
+            "nodes": 3,
+            "share_of_node_time": 0.00019969421673590596
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 393,
+            "nodes": 6,
+            "share_of_node_time": 9.398781697869586e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 300,
+            "nodes": 3,
+            "share_of_node_time": 7.174642517457698e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 265,
+            "nodes": 3,
+            "share_of_node_time": 6.337600890420967e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 252,
+            "nodes": 3,
+            "share_of_node_time": 6.026699714664467e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 221,
+            "nodes": 3,
+            "share_of_node_time": 5.285319987860505e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 204,
+            "nodes": 3,
+            "share_of_node_time": 4.8787569118712354e-05
+          }
+        ],
+        "node_microseconds_total": 4181393
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "total_node_executions": 27,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 24,
+        "vulkan_share": 0.1111111111111111,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 195,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 195,
+        "outputs_bind_declined": 195,
+        "dispatches_executed": 1065,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 360,
+        "ledger_hits": 355,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 5,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 162,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/gather_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/simplified_layer_norm_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "shaders_dispatched_digest": "d8758b6e9bcf067a",
+        "shaders_dispatched_source_digest": "50b9cec003056f9f",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "gemv_packed_spec_constant": "1",
+        "shaders_dispatched_spec_digest": "065e6f5473241d76",
+        "specialisation_delta_forms": [
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=07240d10aafae21e"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "SHARED",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 2,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "ALL-PROVEN",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 3502356528,
+        "session_staging_upload_us": 1496438,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 1209331584,
+        "session_staging_readback_us": 189400,
+        "session_device_allocs": 1983,
+        "session_device_frees": 1983,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 2699735744,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 323,
+        "weight_cache_release_bytes": 2290839552,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 533,
+        "transient_input_device_bytes": 2294397072,
+        "transient_input_device_peak_bytes": 2292025392,
+        "transient_input_reuses": 192,
+        "transient_input_reused_bytes": 1207959552,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 1065,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 355.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 195,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "vulkan_untiled",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past1024",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 1596,
+          "VulkanExecutionProvider": 3726006
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_1030414944306789527_0",
+            "microseconds": 3726006,
+            "nodes": 3,
+            "share_of_node_time": 0.9995718427020911
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 752,
+            "nodes": 3,
+            "share_of_node_time": 0.00020173827570647295
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 184,
+            "nodes": 3,
+            "share_of_node_time": 4.936149299200934e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 181,
+            "nodes": 6,
+            "share_of_node_time": 4.855668604105267e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 147,
+            "nodes": 3,
+            "share_of_node_time": 3.943554059687703e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 121,
+            "nodes": 3,
+            "share_of_node_time": 3.246054702191919e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 107,
+            "nodes": 3,
+            "share_of_node_time": 2.870478125078804e-05
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 104,
+            "nodes": 3,
+            "share_of_node_time": 2.7899974299831367e-05
+          }
+        ],
+        "node_microseconds_total": 3727602
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 24,
+          "VulkanExecutionProvider": 3
+        },
+        "total_node_executions": 27,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 24,
+        "vulkan_share": 0.1111111111111111,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 195,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 195,
+        "outputs_bind_declined": 195,
+        "dispatches_executed": 1065,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 360,
+        "ledger_hits": 355,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 5,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 162,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/gather_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/simplified_layer_norm_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/skip_simplified_layer_norm_f16/runtime-extent/none delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "shaders_dispatched_digest": "d8758b6e9bcf067a",
+        "shaders_dispatched_source_digest": "50b9cec003056f9f",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "gemv_packed_spec_constant": "1",
+        "shaders_dispatched_spec_digest": "065e6f5473241d76",
+        "specialisation_delta_forms": [
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=2bfc496f9cc74726",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales recorded=2342c4c82c03b318 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points recorded=9fe56f4d4d461c09 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales recorded=234cf6c82c0c5c93 current=07240d10aafae21e",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points recorded=9fe8d54d4d48ff32 current=07240d10aafae21e"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "SHARED",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 2,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "ALL-PROVEN",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 3502356528,
+        "session_staging_upload_us": 1415136,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 1209331584,
+        "session_staging_readback_us": 190671,
+        "session_device_allocs": 1983,
+        "session_device_frees": 1983,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 2699735744,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 323,
+        "weight_cache_release_bytes": 2290839552,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 533,
+        "transient_input_device_bytes": 2294397072,
+        "transient_input_device_peak_bytes": 2292025392,
+        "transient_input_reuses": 192,
+        "transient_input_reused_bytes": 1207959552,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 1065,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 355.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 195,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "cpu",
+      "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past1024",
+      "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 1377
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 652359
+        },
+        "by_op": [
+          {
+            "provider_op": "CPUExecutionProvider::GroupQueryAttention",
+            "microseconds": 314446,
+            "nodes": 96,
+            "share_of_node_time": 0.4820137378345359
+          },
+          {
+            "provider_op": "CPUExecutionProvider::MatMulNBits",
+            "microseconds": 312754,
+            "nodes": 483,
+            "share_of_node_time": 0.4794200739163559
+          },
+          {
+            "provider_op": "CPUExecutionProvider::SkipSimplifiedLayerNormalization",
+            "microseconds": 8285,
+            "nodes": 192,
+            "share_of_node_time": 0.01270006238896068
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Cast",
+            "microseconds": 7681,
+            "nodes": 294,
+            "share_of_node_time": 0.011774191817695472
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Mul",
+            "microseconds": 5107,
+            "nodes": 192,
+            "share_of_node_time": 0.00782851160174076
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sigmoid",
+            "microseconds": 2607,
+            "nodes": 96,
+            "share_of_node_time": 0.0039962658597490035
+          },
+          {
+            "provider_op": "CPUExecutionProvider::If",
+            "microseconds": 622,
+            "nodes": 3,
+            "share_of_node_time": 0.0009534627406075489
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 273,
+            "nodes": 6,
+            "share_of_node_time": 0.0004184812350254998
+          },
+          {
+            "provider_op": "CPUExecutionProvider::SimplifiedLayerNormalization",
+            "microseconds": 174,
+            "nodes": 3,
+            "share_of_node_time": 0.0002667243036426262
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReduceSum",
+            "microseconds": 147,
+            "nodes": 3,
+            "share_of_node_time": 0.00022533604962911527
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Sub",
+            "microseconds": 106,
+            "nodes": 3,
+            "share_of_node_time": 0.00016248721946045047
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 89,
+            "nodes": 3,
+            "share_of_node_time": 0.0001364279484149065
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Greater",
+            "microseconds": 68,
+            "nodes": 3,
+            "share_of_node_time": 0.00010423708418217577
+          }
+        ],
+        "node_microseconds_total": 652359
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 1377
+        },
+        "total_node_executions": 1377,
+        "vulkan_node_executions": 0,
+        "cpu_fallback_node_executions": 1377,
+        "vulkan_share": 0.0,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "dispatch": {
+        "islands": null,
+        "compute_calls": null,
+        "dispatches_executed": null,
+        "compute_failures": null,
+        "inferences": 3,
+        "dispatches_per_inference": null,
+        "island_crossings_per_inference": null,
+        "outputs_host_resident": null,
+        "outputs_device_resident": null,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "vulkan_tiled",
+      "case": "mobilenetv2-12/batch/N1",
+      "model": "mobilenetv2-12",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "VulkanExecutionProvider": 3,
+          "CPUExecutionProvider": 21
+        },
+        "microseconds": {
+          "VulkanExecutionProvider": 107327,
+          "CPUExecutionProvider": 1354
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_7288223328058673134_0",
+            "microseconds": 107327,
+            "nodes": 3,
+            "share_of_node_time": 0.9875415205969764
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gemm",
+            "microseconds": 744,
+            "nodes": 3,
+            "share_of_node_time": 0.006845722803433903
+          },
+          {
+            "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+            "microseconds": 153,
+            "nodes": 3,
+            "share_of_node_time": 0.0014077897700610043
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 115,
+            "nodes": 3,
+            "share_of_node_time": 0.0010581426376275523
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Concat",
+            "microseconds": 98,
+            "nodes": 3,
+            "share_of_node_time": 0.0009017215520652184
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 91,
+            "nodes": 3,
+            "share_of_node_time": 0.0008373128697748457
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Unsqueeze",
+            "microseconds": 77,
+            "nodes": 3,
+            "share_of_node_time": 0.0007084955051941002
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Reshape",
+            "microseconds": 76,
+            "nodes": 3,
+            "share_of_node_time": 0.0006992942648669041
+          }
+        ],
+        "node_microseconds_total": 108681
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "VulkanExecutionProvider": 3,
+          "CPUExecutionProvider": 21
+        },
+        "total_node_executions": 24,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 21,
+        "vulkan_share": 0.125,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 3,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 3,
+        "outputs_bind_declined": 3,
+        "dispatches_executed": 291,
+        "claimed_nodes": 98,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 2,
+        "net_benefit_gate_evaluations": 2,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 101,
+        "ledger_hits": 100,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 1,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 98,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32/runtime-extent/n3 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Clip/11+/f32,f32,f32>f32/ew_select_clip_f32/runtime-extent/min+max delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::GlobalAveragePool/1+/f32>f32/global_average_pool_f32/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "conv_f32",
+          "ew_binary_add_f32",
+          "ew_select_clip_f32"
+        ],
+        "shaders_dispatched_digest": "5e1e470a99b8468a",
+        "shaders_dispatched_source_digest": "11547a1872c7e794",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "conv_f32:256",
+          "ew_binary_add_f32:256,1",
+          "ew_select_clip_f32:256,0,3"
+        ],
+        "gemv_packed_spec_constant": "UNOBSERVABLE",
+        "shaders_dispatched_spec_digest": "2ca7e9ef37797cf6",
+        "specialisation_delta_forms": [
+          "ai.onnx::Clip/11+/f32,f32>f32/ew_select_clip_f32/static/max recorded=622d3554d9a9daa2 current=62309b54d9acbdcb",
+          "ai.onnx::Clip/11+/f32,f32>f32/ew_select_clip_f32/static/min recorded=6229cf54d9a6f779 current=62309b54d9acbdcb",
+          "ai.onnx::Clip/11+/f32>f32/ew_select_clip_f32/static/none recorded=d89bd55bf692f061 current=62309b54d9acbdcb"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "UNOBSERVABLE",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 0,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "NO-CLAIMS",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 11483800,
+        "session_staging_upload_us": 2404,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 752640,
+        "session_staging_readback_us": 135,
+        "session_device_allocs": 563,
+        "session_device_frees": 563,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 61430576,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 25,
+        "weight_cache_release_bytes": 8402176,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 271,
+        "transient_input_device_bytes": 11483872,
+        "transient_input_device_peak_bytes": 9429408,
+        "transient_input_reuses": 0,
+        "transient_input_reused_bytes": 0,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 291,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 97.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 3,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "vulkan_untiled",
+      "case": "mobilenetv2-12/batch/N1",
+      "model": "mobilenetv2-12",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "VulkanExecutionProvider": 3,
+          "CPUExecutionProvider": 21
+        },
+        "microseconds": {
+          "VulkanExecutionProvider": 91398,
+          "CPUExecutionProvider": 1117
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_7288223328058673134_0",
+            "microseconds": 91398,
+            "nodes": 3,
+            "share_of_node_time": 0.9879262822245042
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gemm",
+            "microseconds": 558,
+            "nodes": 3,
+            "share_of_node_time": 0.006031454358752635
+          },
+          {
+            "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+            "microseconds": 145,
+            "nodes": 3,
+            "share_of_node_time": 0.0015673134086364373
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 99,
+            "nodes": 3,
+            "share_of_node_time": 0.0010700967410690158
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Concat",
+            "microseconds": 89,
+            "nodes": 3,
+            "share_of_node_time": 0.0009620061611630546
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 79,
+            "nodes": 3,
+            "share_of_node_time": 0.0008539155812570935
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Unsqueeze",
+            "microseconds": 74,
+            "nodes": 3,
+            "share_of_node_time": 0.0007998702913041128
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Reshape",
+            "microseconds": 73,
+            "nodes": 3,
+            "share_of_node_time": 0.0007890612333135167
+          }
+        ],
+        "node_microseconds_total": 92515
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "VulkanExecutionProvider": 3,
+          "CPUExecutionProvider": 21
+        },
+        "total_node_executions": 24,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 21,
+        "vulkan_share": 0.125,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 3,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 3,
+        "outputs_bind_declined": 3,
+        "dispatches_executed": 291,
+        "claimed_nodes": 98,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 2,
+        "net_benefit_gate_evaluations": 2,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 101,
+        "ledger_hits": 100,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 1,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 98,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32/runtime-extent/n3 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Clip/11+/f32,f32,f32>f32/ew_select_clip_f32/runtime-extent/min+max delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::GlobalAveragePool/1+/f32>f32/global_average_pool_f32/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "conv_f32",
+          "ew_binary_add_f32",
+          "ew_select_clip_f32"
+        ],
+        "shaders_dispatched_digest": "5e1e470a99b8468a",
+        "shaders_dispatched_source_digest": "11547a1872c7e794",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "conv_f32:256",
+          "ew_binary_add_f32:256,1",
+          "ew_select_clip_f32:256,0,3"
+        ],
+        "gemv_packed_spec_constant": "UNOBSERVABLE",
+        "shaders_dispatched_spec_digest": "2ca7e9ef37797cf6",
+        "specialisation_delta_forms": [
+          "ai.onnx::Clip/11+/f32,f32>f32/ew_select_clip_f32/static/max recorded=622d3554d9a9daa2 current=62309b54d9acbdcb",
+          "ai.onnx::Clip/11+/f32,f32>f32/ew_select_clip_f32/static/min recorded=6229cf54d9a6f779 current=62309b54d9acbdcb",
+          "ai.onnx::Clip/11+/f32>f32/ew_select_clip_f32/static/none recorded=d89bd55bf692f061 current=62309b54d9acbdcb"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "UNOBSERVABLE",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 0,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "NO-CLAIMS",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 11483800,
+        "session_staging_upload_us": 2546,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 752640,
+        "session_staging_readback_us": 132,
+        "session_device_allocs": 563,
+        "session_device_frees": 563,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 61430576,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 25,
+        "weight_cache_release_bytes": 8402176,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 271,
+        "transient_input_device_bytes": 11483872,
+        "transient_input_device_peak_bytes": 9429408,
+        "transient_input_reuses": 0,
+        "transient_input_reused_bytes": 0,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 291,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 97.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 3,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "cpu",
+      "case": "mobilenetv2-12/batch/N1",
+      "model": "mobilenetv2-12",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 183
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 12012
+        },
+        "by_op": [
+          {
+            "provider_op": "CPUExecutionProvider::Conv",
+            "microseconds": 10970,
+            "nodes": 156,
+            "share_of_node_time": 0.9132534132534132
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gemm",
+            "microseconds": 427,
+            "nodes": 3,
+            "share_of_node_time": 0.035547785547785545
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReorderOutput",
+            "microseconds": 190,
+            "nodes": 6,
+            "share_of_node_time": 0.015817515817515816
+          },
+          {
+            "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+            "microseconds": 112,
+            "nodes": 3,
+            "share_of_node_time": 0.009324009324009324
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Concat",
+            "microseconds": 73,
+            "nodes": 3,
+            "share_of_node_time": 0.006077256077256077
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 67,
+            "nodes": 3,
+            "share_of_node_time": 0.005577755577755578
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 60,
+            "nodes": 3,
+            "share_of_node_time": 0.004995004995004995
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Reshape",
+            "microseconds": 58,
+            "nodes": 3,
+            "share_of_node_time": 0.004828504828504829
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Unsqueeze",
+            "microseconds": 55,
+            "nodes": 3,
+            "share_of_node_time": 0.004578754578754579
+          }
+        ],
+        "node_microseconds_total": 12012
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 183
+        },
+        "total_node_executions": 183,
+        "vulkan_node_executions": 0,
+        "cpu_fallback_node_executions": 183,
+        "vulkan_share": 0.0,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "dispatch": {
+        "islands": null,
+        "compute_calls": null,
+        "dispatches_executed": null,
+        "compute_failures": null,
+        "inferences": 3,
+        "dispatches_per_inference": null,
+        "island_crossings_per_inference": null,
+        "outputs_host_resident": null,
+        "outputs_device_resident": null,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "vulkan_tiled",
+      "case": "mobilenetv2-12/batch/N16",
+      "model": "mobilenetv2-12",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "VulkanExecutionProvider": 3,
+          "CPUExecutionProvider": 21
+        },
+        "microseconds": {
+          "VulkanExecutionProvider": 468896,
+          "CPUExecutionProvider": 1716
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_7288223328058673134_0",
+            "microseconds": 468896,
+            "nodes": 3,
+            "share_of_node_time": 0.996353684138951
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gemm",
+            "microseconds": 727,
+            "nodes": 3,
+            "share_of_node_time": 0.0015447969877521186
+          },
+          {
+            "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+            "microseconds": 565,
+            "nodes": 3,
+            "share_of_node_time": 0.0012005643714992392
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 129,
+            "nodes": 3,
+            "share_of_node_time": 0.000274111157386552
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Concat",
+            "microseconds": 83,
+            "nodes": 3,
+            "share_of_node_time": 0.00017636609351227763
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 78,
+            "nodes": 3,
+            "share_of_node_time": 0.0001657416300476826
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Reshape",
+            "microseconds": 68,
+            "nodes": 3,
+            "share_of_node_time": 0.00014449270311849252
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Unsqueeze",
+            "microseconds": 66,
+            "nodes": 3,
+            "share_of_node_time": 0.0001402429177326545
+          }
+        ],
+        "node_microseconds_total": 470612
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "VulkanExecutionProvider": 3,
+          "CPUExecutionProvider": 21
+        },
+        "total_node_executions": 24,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 21,
+        "vulkan_share": 0.125,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 3,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 3,
+        "outputs_bind_declined": 3,
+        "dispatches_executed": 291,
+        "claimed_nodes": 98,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 2,
+        "net_benefit_gate_evaluations": 2,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 101,
+        "ledger_hits": 100,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 1,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 98,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32/runtime-extent/n3 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Clip/11+/f32,f32,f32>f32/ew_select_clip_f32/runtime-extent/min+max delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::GlobalAveragePool/1+/f32>f32/global_average_pool_f32/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "conv_f32",
+          "ew_binary_add_f32",
+          "ew_select_clip_f32"
+        ],
+        "shaders_dispatched_digest": "5e1e470a99b8468a",
+        "shaders_dispatched_source_digest": "11547a1872c7e794",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "conv_f32:256",
+          "ew_binary_add_f32:256,1",
+          "ew_select_clip_f32:256,0,3"
+        ],
+        "gemv_packed_spec_constant": "UNOBSERVABLE",
+        "shaders_dispatched_spec_digest": "2ca7e9ef37797cf6",
+        "specialisation_delta_forms": [
+          "ai.onnx::Clip/11+/f32,f32>f32/ew_select_clip_f32/static/max recorded=622d3554d9a9daa2 current=62309b54d9acbdcb",
+          "ai.onnx::Clip/11+/f32,f32>f32/ew_select_clip_f32/static/min recorded=6229cf54d9a6f779 current=62309b54d9acbdcb",
+          "ai.onnx::Clip/11+/f32>f32/ew_select_clip_f32/static/none recorded=d89bd55bf692f061 current=62309b54d9acbdcb"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "UNOBSERVABLE",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 0,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "NO-CLAIMS",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 38578840,
+        "session_staging_upload_us": 3905,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 12042240,
+        "session_staging_readback_us": 1346,
+        "session_device_allocs": 563,
+        "session_device_frees": 563,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 850479536,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 25,
+        "weight_cache_release_bytes": 8402176,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 271,
+        "transient_input_device_bytes": 38578912,
+        "transient_input_device_peak_bytes": 18461088,
+        "transient_input_reuses": 0,
+        "transient_input_reused_bytes": 0,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 291,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 97.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 3,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "vulkan_untiled",
+      "case": "mobilenetv2-12/batch/N16",
+      "model": "mobilenetv2-12",
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "VulkanExecutionProvider": 3,
+          "CPUExecutionProvider": 21
+        },
+        "microseconds": {
+          "VulkanExecutionProvider": 461964,
+          "CPUExecutionProvider": 3057
+        },
+        "by_op": [
+          {
+            "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_7288223328058673134_0",
+            "microseconds": 461964,
+            "nodes": 3,
+            "share_of_node_time": 0.9934261033372687
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gemm",
+            "microseconds": 1918,
+            "nodes": 3,
+            "share_of_node_time": 0.004124544913025433
+          },
+          {
+            "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+            "microseconds": 617,
+            "nodes": 3,
+            "share_of_node_time": 0.0013268217994456164
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 225,
+            "nodes": 3,
+            "share_of_node_time": 0.0004838491164915133
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 91,
+            "nodes": 3,
+            "share_of_node_time": 0.00019569008711434538
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Concat",
+            "microseconds": 80,
+            "nodes": 3,
+            "share_of_node_time": 0.0001720352414192047
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Unsqueeze",
+            "microseconds": 64,
+            "nodes": 3,
+            "share_of_node_time": 0.00013762819313536379
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Reshape",
+            "microseconds": 62,
+            "nodes": 3,
+            "share_of_node_time": 0.00013332731209988365
+          }
+        ],
+        "node_microseconds_total": 465021
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "VulkanExecutionProvider": 3,
+          "CPUExecutionProvider": 21
+        },
+        "total_node_executions": 24,
+        "vulkan_node_executions": 3,
+        "cpu_fallback_node_executions": 21,
+        "vulkan_share": 0.125,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 3,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 3,
+        "outputs_bind_declined": 3,
+        "dispatches_executed": 291,
+        "claimed_nodes": 98,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 2,
+        "net_benefit_gate_evaluations": 2,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "queue_submit_contentions": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 101,
+        "ledger_hits": 100,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 133,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 1,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 0,
+        "device_unattributed_forms": [],
+        "proven_elsewhere_claims": 98,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32/runtime-extent/n3 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Clip/11+/f32,f32,f32>f32/ew_select_clip_f32/runtime-extent/min+max delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/runtime-extent/n2 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`",
+          "ai.onnx::GlobalAveragePool/1+/f32>f32/global_average_pool_f32/runtime-extent/n1 delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `NVIDIA RTX A1000`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/gather_i64/static/n2"
+        ],
+        "unprovable_decline_forms": [],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "NVIDIA RTX A1000",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "conv_f32",
+          "ew_binary_add_f32",
+          "ew_select_clip_f32"
+        ],
+        "shaders_dispatched_digest": "5e1e470a99b8468a",
+        "shaders_dispatched_source_digest": "11547a1872c7e794",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "conv_f32:256",
+          "ew_binary_add_f32:256,1",
+          "ew_select_clip_f32:256,0,3"
+        ],
+        "gemv_packed_spec_constant": "UNOBSERVABLE",
+        "shaders_dispatched_spec_digest": "2ca7e9ef37797cf6",
+        "specialisation_delta_forms": [
+          "ai.onnx::Clip/11+/f32,f32>f32/ew_select_clip_f32/static/max recorded=622d3554d9a9daa2 current=62309b54d9acbdcb",
+          "ai.onnx::Clip/11+/f32,f32>f32/ew_select_clip_f32/static/min recorded=6229cf54d9a6f779 current=62309b54d9acbdcb",
+          "ai.onnx::Clip/11+/f32>f32/ew_select_clip_f32/static/none recorded=d89bd55bf692f061 current=62309b54d9acbdcb"
+        ],
+        "specialisation_unrecorded_forms": [],
+        "ledger_specialisation_unrecorded_entries": 0,
+        "kv_cache_convention": "UNOBSERVABLE",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 0,
+        "claimed_forms_device_unattributed": 0,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "NO-CLAIMS",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "session_disclosure_infos_to_stderr": 1,
+        "session_disclosure_infos_reached_user": 1,
+        "session_disclosure_info_escalations": 0,
+        "session_disclosure_stderr_failures": 0,
+        "session_disclosure_info_reach": "REACHED_USER",
+        "stderr_fault_injection": "NONE",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+        "session_staging_uploads": 3,
+        "session_staging_upload_bytes": 38578840,
+        "session_staging_upload_us": 5791,
+        "session_staging_readbacks": 3,
+        "session_staging_readback_bytes": 12042240,
+        "session_staging_readback_us": 1563,
+        "session_device_allocs": 563,
+        "session_device_frees": 563,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 850479536,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 25,
+        "weight_cache_release_bytes": 8402176,
+        "weight_cache_bytes_resident": 0,
+        "transient_input_device_allocs": 271,
+        "transient_input_device_bytes": 38578912,
+        "transient_input_device_peak_bytes": 18461088,
+        "transient_input_reuses": 0,
+        "transient_input_reused_bytes": 0,
+        "transient_input_arena_resident_bytes": 0,
+        "transient_input_arena_buffers": 0,
+        "transient_input_arena_releases": 0,
+        "counters_snapshot_writes": 4,
+        "counters_snapshot_write_failures": 0
+      },
+      "dispatch": {
+        "islands": 1,
+        "compute_calls": 3,
+        "dispatches_executed": 291,
+        "compute_failures": 0,
+        "inferences": 3,
+        "dispatches_per_inference": 97.0,
+        "island_crossings_per_inference": 1,
+        "outputs_host_resident": 3,
+        "outputs_device_resident": 0,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    },
+    {
+      "arm": "cpu",
+      "case": "mobilenetv2-12/batch/N16",
+      "model": "mobilenetv2-12",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "inferences": 3,
+      "profile": {
+        "counts": {
+          "CPUExecutionProvider": 183
+        },
+        "microseconds": {
+          "CPUExecutionProvider": 111443
+        },
+        "by_op": [
+          {
+            "provider_op": "CPUExecutionProvider::Conv",
+            "microseconds": 109589,
+            "nodes": 156,
+            "share_of_node_time": 0.9833636926500543
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gemm",
+            "microseconds": 925,
+            "nodes": 3,
+            "share_of_node_time": 0.008300207280852095
+          },
+          {
+            "provider_op": "CPUExecutionProvider::ReorderOutput",
+            "microseconds": 357,
+            "nodes": 6,
+            "share_of_node_time": 0.0032034313505558895
+          },
+          {
+            "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+            "microseconds": 205,
+            "nodes": 3,
+            "share_of_node_time": 0.001839505397378032
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Concat",
+            "microseconds": 90,
+            "nodes": 3,
+            "share_of_node_time": 0.0008075877354342579
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Gather",
+            "microseconds": 77,
+            "nodes": 3,
+            "share_of_node_time": 0.0006909361736493095
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Shape",
+            "microseconds": 70,
+            "nodes": 3,
+            "share_of_node_time": 0.000628123794226645
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Reshape",
+            "microseconds": 70,
+            "nodes": 3,
+            "share_of_node_time": 0.000628123794226645
+          },
+          {
+            "provider_op": "CPUExecutionProvider::Unsqueeze",
+            "microseconds": 60,
+            "nodes": 3,
+            "share_of_node_time": 0.0005383918236228386
+          }
+        ],
+        "node_microseconds_total": 111443
+      },
+      "fallback": {
+        "provider_node_counts": {
+          "CPUExecutionProvider": 183
+        },
+        "total_node_executions": 183,
+        "vulkan_node_executions": 0,
+        "cpu_fallback_node_executions": 183,
+        "vulkan_share": 0.0,
+        "witness": "onnxruntime profile (cat=Node, args.provider)"
+      },
+      "dispatch": {
+        "islands": null,
+        "compute_calls": null,
+        "dispatches_executed": null,
+        "compute_failures": null,
+        "inferences": 3,
+        "dispatches_per_inference": null,
+        "island_crossings_per_inference": null,
+        "outputs_host_resident": null,
+        "outputs_device_resident": null,
+        "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+      }
+    }
+  ]
+}

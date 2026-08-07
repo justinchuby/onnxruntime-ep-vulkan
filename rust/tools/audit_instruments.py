@@ -458,6 +458,12 @@ BENCH_INSTRUMENT_FILES = [
     "cuda_profile.py",
     "cuda_probe.py",
     "bench_models.py",
+    # Arrived with issue #56 (Niobe, the real-model harness). Screened rather than held
+    # out because its `classify_*`/`bitwise_identical` functions decide whether two arms
+    # of a benchmark agree, and `dispatch_diagnosis`/`fallback_diagnosis` decide whether a
+    # run is admissible as evidence about device utilisation. Those are verdicts about a
+    # measurement, which is this list's criterion.
+    "real_model.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -491,6 +497,14 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_import_isolation.py": "test module.",
     "test_island_boundary_cost.py": "test module.",
     "test_marginal_tail_withholds.py": "test module.",
+    # Arrived with PR #72 (the gqa_f16 workgroup-size change) and reproduced the same
+    # defect class as fa5f514/98d5bf3 below: a new bench/ file lands, and nothing in this
+    # dict has been told about it. `test_perf_claims.py` checks the *publication*
+    # (docs/PERF.md section 26 and the shader header) against the artifacts it cites -- it
+    # renders no verdict about a measurement itself, it is a caller of `real_model.py` and
+    # a reader of committed JSON/markdown, so it belongs here rather than in
+    # BENCH_INSTRUMENT_FILES.
+    "test_perf_claims.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_phases.py": "test module.",
     "test_plausible_but_wrong.py": "test module.",
     "test_run_disturbance.py": "test module.",
@@ -503,6 +517,7 @@ BENCH_HELD_OUT: dict[str, str] = {
     # one-line change and this comment is the record that nobody decided it silently.
     "test_paired_ratio.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_ceiling.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_real_model.py": "test module — a caller, screened as polarity, not as an instrument.",
     # Arrived with Switch's fa5f514 and was the frame arm's second live catch. Worth naming
     # what it cost before it was declared: the frame arm runs BEFORE the uninvoked census, so
     # `audit_instruments --check` failed on the frame and never printed

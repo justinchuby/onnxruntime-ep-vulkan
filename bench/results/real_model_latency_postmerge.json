@@ -1,0 +1,1206 @@
+{
+  "schema": "real_model_latency/1",
+  "issue": 56,
+  "depends_on": "PR #53 (squad/7-tile-matmulnbits-prefill) \u2014 the row tile under test",
+  "environment": {
+    "onnxruntime": "1.28.0",
+    "onnxruntime_lib": "<home>/.copilot/repos/onnxruntime-ep-vulkan/<venv>/Lib/site-packages/onnxruntime/capi",
+    "ep_library": "<repo>/rust/target/release/onnxruntime_vulkan_ep.dll",
+    "ep_library_sha256": "752cebcfa00cfcfe0af751e4e8741e46fbb65379a36421fa8ae48cac185e313b",
+    "python": "3.12.10",
+    "os": "Windows 11 10.0.26200",
+    "machine": "AMD64",
+    "device": {
+      "index": 0,
+      "name": "NVIDIA RTX A1000",
+      "driver": "573.44",
+      "transfer_class": "discrete",
+      "timestamp_period_ns": null,
+      "max_compute_shared_memory": 49152,
+      "subgroup_size": 32
+    },
+    "power_and_affinity": {
+      "assumption": "stock Windows power plan, no CPU affinity mask set, no GPU clock lock",
+      "thread_affinity_set": false,
+      "gpu_clocks_locked": false,
+      "note": "this box is shared indefinitely (PERF.md \u00a720), so wall clock is STEADY_UNCERTIFIED by default; arms are interleaved precisely because the machine state cannot be assumed quiet"
+    },
+    "methodology": {
+      "repeats": 3,
+      "iters_per_repeat": 5,
+      "warmup_per_session": 2,
+      "warmups_discarded": true,
+      "arm_order": "alternated per repeat (see real_model.arm_order)",
+      "session_per_arm_per_repeat": true,
+      "tracing_during_timed_pass": false
+    },
+    "build": {
+      "lib": "<repo>/rust/target/release/onnxruntime_vulkan_ep.dll",
+      "present": true,
+      "bytes": 2507264,
+      "mtime": "2026-08-07T01:50:29",
+      "profile": "release",
+      "sha256": "752cebcfa00cfcfe0af751e4e8741e46fbb65379a36421fa8ae48cac185e313b"
+    }
+  },
+  "models": [
+    {
+      "model": {
+        "key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+        "family": "phi3",
+        "path": "<foundry-cache>/Microsoft/Phi-3.5-mini-instruct-cuda-gpu-2/v2/phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+        "sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+        "bytes": 26180848,
+        "provenance": "foundry-resolved",
+        "resolver": "foundry",
+        "recorded_sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+        "agrees_with_recorded_provenance": true,
+        "external_data": {
+          "scanned": true,
+          "files": [
+            {
+              "location": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx.data",
+              "bytes": 2291238912,
+              "sha256": "9ce390a75dd00614031c41af38f0f3a83fdfe4648dcec8514d96800020e92217"
+            }
+          ],
+          "reason": null
+        },
+        "weights_bytes": 2291238912,
+        "note": "Foundry Local Phi-3.5-mini-instruct, int4 RTN block-32, fp16 activations. 32 layers, 32 KV heads, head dim 96, 64 KV inputs and 64 KV outputs."
+      },
+      "rows": [
+        {
+          "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0",
+          "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+          "phase": "prefill",
+          "m": 1,
+          "past": 0,
+          "tokens_advanced": 1,
+          "feeds_sha256": "0bb7560d7b6eddfb1f8bf0340ab4bc1f6153923d0c88a61620dfb52106da0740",
+          "null_control": true,
+          "kv_round_trip": {
+            "bytes_per_past_token": 393216,
+            "past_upload_bytes": 0,
+            "present_readback_bytes": 393216,
+            "total_host_bytes": 393216,
+            "derivation": "shape model (layers x 2 x kv_heads x head_dim x 2 B), not a measurement"
+          },
+          "arms": {
+            "vulkan_tiled": {
+              "role": "subject",
+              "providers": [
+                "VulkanExecutionProvider",
+                "CPUExecutionProvider"
+              ],
+              "env": {
+                "ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS": "4"
+              },
+              "latency": {
+                "n": 15,
+                "median_ms": 27.081200008979067,
+                "mean_ms": 28.222319999864947,
+                "min_ms": 26.469899981748313,
+                "max_ms": 35.344399977475405,
+                "p05_ms": 26.553899989812635,
+                "p95_ms": 32.02807998750358,
+                "mad_ms": 0.4220999835524708,
+                "stdev_ms": 2.3906997756332573,
+                "rsd": 0.08827894535104037
+              },
+              "throughput": {
+                "unit": "tokens/s",
+                "value": 36.92598554231124,
+                "divisor": 1,
+                "divisor_meaning": "tokens advanced by one run"
+              },
+              "session_build_ms": {
+                "n": 3,
+                "median_ms": 411.69400000944734,
+                "mean_ms": 428.3866666664835,
+                "min_ms": 399.83499998925254,
+                "max_ms": 473.63100000075065,
+                "p05_ms": 401.020899991272,
+                "p95_ms": 467.4373000016203,
+                "mad_ms": 11.859000020194799,
+                "stdev_ms": 39.628856210045385,
+                "rsd": 0.09625803681650935
+              },
+              "first_run_ms": {
+                "n": 3,
+                "median_ms": 2084.9689999886323,
+                "mean_ms": 2137.6113333293083,
+                "min_ms": 2044.6205000043847,
+                "max_ms": 2283.2444999949075,
+                "p05_ms": 2048.6553500028094,
+                "p95_ms": 2263.41694999428,
+                "mad_ms": 40.34849998424761,
+                "stdev_ms": 127.72534904055807,
+                "rsd": 0.06126007103283284
+              },
+              "samples_ms": [
+                27.43,
+                26.7697,
+                27.0812,
+                27.5033,
+                30.1941,
+                28.0101,
+                29.7419,
+                30.6068,
+                26.4699,
+                27.0525,
+                26.5899,
+                35.3444,
+                26.7144,
+                26.8799,
+                26.9467
+              ],
+              "per_repeat_median_ms": [
+                27.429999987361953,
+                28.010100009851158,
+                26.879900018684566
+              ],
+              "bandwidth_proxy": {
+                "modelled_host_gib": 0.0003662109375,
+                "implied_gib_per_s": 0.013522699783561245,
+                "assumes": "the shipping host-staged lane; false if outputs are bound device-resident"
+              }
+            },
+            "vulkan_untiled": {
+              "role": "kill-switch",
+              "providers": [
+                "VulkanExecutionProvider",
+                "CPUExecutionProvider"
+              ],
+              "env": {
+                "ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS": "1"
+              },
+              "latency": {
+                "n": 15,
+                "median_ms": 27.73139998316765,
+                "mean_ms": 28.703613328980282,
+                "min_ms": 24.58699999260716,
+                "max_ms": 40.27579998364672,
+                "p05_ms": 25.150429984205402,
+                "p95_ms": 38.12574999174103,
+                "mad_ms": 1.724699977785349,
+                "stdev_ms": 4.3636824929876585,
+                "rsd": 0.1573552902354846
+              },
+              "throughput": {
+                "unit": "tokens/s",
+                "value": 36.06020614202594,
+                "divisor": 1,
+                "divisor_meaning": "tokens advanced by one run"
+              },
+              "session_build_ms": {
+                "n": 3,
+                "median_ms": 437.0028999983333,
+                "mean_ms": 427.4228333379142,
+                "min_ms": 394.2265000077896,
+                "max_ms": 451.0391000076197,
+                "p05_ms": 398.50414000684395,
+                "p95_ms": 449.63548000669107,
+                "mad_ms": 14.036200009286404,
+                "stdev_ms": 29.593092734601598,
+                "rsd": 0.0677182982875273
+              },
+              "first_run_ms": {
+                "n": 3,
+                "median_ms": 1941.6993999911938,
+                "mean_ms": 1892.9892333302025,
+                "min_ms": 1793.4459999960382,
+                "max_ms": 1943.8223000033759,
+                "p05_ms": 1808.2713399955537,
+                "p95_ms": 1943.6100100021577,
+                "mad_ms": 2.122900012182072,
+                "stdev_ms": 86.21350331056244,
+                "rsd": 0.04440105575093315
+              },
+              "samples_ms": [
+                25.3919,
+                26.6127,
+                27.4098,
+                27.7314,
+                28.265,
+                25.8474,
+                26.0067,
+                25.9972,
+                28.1143,
+                29.8751,
+                27.9778,
+                24.587,
+                29.2578,
+                37.2043,
+                40.2758
+              ],
+              "per_repeat_median_ms": [
+                27.40980000817217,
+                26.0067000053823,
+                29.257799993501976
+              ],
+              "bandwidth_proxy": {
+                "modelled_host_gib": 0.0003662109375,
+                "implied_gib_per_s": 0.013205641897714577,
+                "assumes": "the shipping host-staged lane; false if outputs are bound device-resident"
+              }
+            },
+            "cpu": {
+              "role": "baseline",
+              "providers": [
+                "CPUExecutionProvider"
+              ],
+              "env": {},
+              "latency": {
+                "n": 15,
+                "median_ms": 91.94630000274628,
+                "mean_ms": 93.09440666499238,
+                "min_ms": 87.63539997744374,
+                "max_ms": 104.64700000011362,
+                "p05_ms": 88.4669299935922,
+                "p95_ms": 100.39863000274636,
+                "mad_ms": 2.592299977550283,
+                "stdev_ms": 4.466052425249838,
+                "rsd": 0.04857239959755254
+              },
+              "throughput": {
+                "unit": "tokens/s",
+                "value": 10.875913440455262,
+                "divisor": 1,
+                "divisor_meaning": "tokens advanced by one run"
+              },
+              "session_build_ms": {
+                "n": 3,
+                "median_ms": 4276.337399991462,
+                "mean_ms": 4270.212833333062,
+                "min_ms": 4247.309200000018,
+                "max_ms": 4286.991900007706,
+                "p05_ms": 4250.212019999162,
+                "p95_ms": 4285.926450006082,
+                "mad_ms": 10.654500016244128,
+                "stdev_ms": 20.538059975078806,
+                "rsd": 0.004802722061902742
+              },
+              "first_run_ms": {
+                "n": 3,
+                "median_ms": 96.59249999094754,
+                "mean_ms": 97.56363332659627,
+                "min_ms": 93.85410000686534,
+                "max_ms": 102.24429998197593,
+                "p05_ms": 94.12794000527356,
+                "p95_ms": 101.67911998287309,
+                "mad_ms": 2.738399984082207,
+                "stdev_ms": 4.278573228576625,
+                "rsd": 0.04429508739268167
+              },
+              "samples_ms": [
+                88.8233,
+                90.3215,
+                90.1956,
+                92.5958,
+                95.1392,
+                89.354,
+                91.4423,
+                87.6354,
+                91.9463,
+                94.983,
+                98.5779,
+                104.647,
+                96.8392,
+                89.8447,
+                94.0709
+              ],
+              "per_repeat_median_ms": [
+                90.3214999998454,
+                91.44230000674725,
+                96.83920000679791
+              ],
+              "bandwidth_proxy": {
+                "modelled_host_gib": 0.0003662109375,
+                "implied_gib_per_s": 0.003982878457197972,
+                "assumes": "the shipping host-staged lane; false if outputs are bound device-resident"
+              }
+            }
+          },
+          "row_tile_speedup": {
+            "n": 3,
+            "median": 0.9992635807802008,
+            "min": 0.9284757996663967,
+            "max": 1.0884638697749807,
+            "ratios": [
+              0.999264,
+              0.928476,
+              1.088464
+            ]
+          },
+          "vulkan_vs_cpu_tiled": {
+            "n": 3,
+            "median": 3.292799855685744,
+            "min": 3.2646188330133405,
+            "max": 3.602662210033658,
+            "ratios": [
+              3.2928,
+              3.264619,
+              3.602662
+            ]
+          },
+          "vulkan_vs_cpu_untiled": {
+            "n": 3,
+            "median": 3.3098592521756744,
+            "min": 3.2952265238314853,
+            "max": 3.516105464661895,
+            "ratios": [
+              3.295227,
+              3.516105,
+              3.309859
+            ]
+          }
+        },
+        {
+          "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0",
+          "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+          "phase": "prefill",
+          "m": 128,
+          "past": 0,
+          "tokens_advanced": 128,
+          "feeds_sha256": "843d0e67bf1fa037be8e497fce3b1abbf128e98b855c412f9becfa54024b6e14",
+          "null_control": false,
+          "kv_round_trip": {
+            "bytes_per_past_token": 393216,
+            "past_upload_bytes": 0,
+            "present_readback_bytes": 50331648,
+            "total_host_bytes": 50331648,
+            "derivation": "shape model (layers x 2 x kv_heads x head_dim x 2 B), not a measurement"
+          },
+          "arms": {
+            "vulkan_tiled": {
+              "role": "subject",
+              "providers": [
+                "VulkanExecutionProvider",
+                "CPUExecutionProvider"
+              ],
+              "env": {
+                "ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS": "4"
+              },
+              "latency": {
+                "n": 15,
+                "median_ms": 1403.9770999806933,
+                "mean_ms": 1402.149746658203,
+                "min_ms": 1384.4395999913104,
+                "max_ms": 1422.5606999825686,
+                "p05_ms": 1384.5310899952892,
+                "p95_ms": 1416.4784699765733,
+                "mad_ms": 6.309299991698936,
+                "stdev_ms": 10.642951566010282,
+                "rsd": 0.0075805734767017486
+              },
+              "throughput": {
+                "unit": "tokens/s",
+                "value": 91.16957819451626,
+                "divisor": 128,
+                "divisor_meaning": "tokens advanced by one run"
+              },
+              "session_build_ms": {
+                "n": 3,
+                "median_ms": 440.012500010198,
+                "mean_ms": 437.9994666669518,
+                "min_ms": 419.77659999975003,
+                "max_ms": 454.2092999909073,
+                "p05_ms": 421.8001900007948,
+                "p95_ms": 452.7896199928364,
+                "mad_ms": 14.19679998070933,
+                "stdev_ms": 17.30439061628656,
+                "rsd": 0.03932704324510214
+              },
+              "first_run_ms": {
+                "n": 3,
+                "median_ms": 3297.2341000277083,
+                "mean_ms": 3251.834500018352,
+                "min_ms": 3140.591700008372,
+                "max_ms": 3317.677700018976,
+                "p05_ms": 3156.2559400103055,
+                "p95_ms": 3315.633340019849,
+                "mad_ms": 20.443599991267547,
+                "stdev_ms": 96.87985141759907,
+                "rsd": 0.02938215743212923
+              },
+              "samples_ms": [
+                1384.5703,
+                1384.4396,
+                1391.8489,
+                1396.0503,
+                1397.6678,
+                1404.7465,
+                1413.8718,
+                1399.5282,
+                1403.9771,
+                1422.5607,
+                1407.8229,
+                1398.2732,
+                1413.5775,
+                1404.3811,
+                1408.9303
+              ],
+              "per_repeat_median_ms": [
+                1391.8489000061527,
+                1404.7464999894146,
+                1407.8228999860585
+              ],
+              "bandwidth_proxy": {
+                "modelled_host_gib": 0.046875,
+                "implied_gib_per_s": 0.03338729670209336,
+                "assumes": "the shipping host-staged lane; false if outputs are bound device-resident"
+              }
+            },
+            "vulkan_untiled": {
+              "role": "kill-switch",
+              "providers": [
+                "VulkanExecutionProvider",
+                "CPUExecutionProvider"
+              ],
+              "env": {
+                "ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS": "1"
+              },
+              "latency": {
+                "n": 15,
+                "median_ms": 2351.747799984878,
+                "mean_ms": 2357.3321133328136,
+                "min_ms": 2341.13129999605,
+                "max_ms": 2397.773100004997,
+                "p05_ms": 2341.6865400067763,
+                "p95_ms": 2393.683839996811,
+                "mad_ms": 4.51299999258481,
+                "stdev_ms": 17.904622543366724,
+                "rsd": 0.0076133259456995575
+              },
+              "throughput": {
+                "unit": "tokens/s",
+                "value": 54.427604865123314,
+                "divisor": 128,
+                "divisor_meaning": "tokens advanced by one run"
+              },
+              "session_build_ms": {
+                "n": 3,
+                "median_ms": 434.5460000040475,
+                "mean_ms": 444.74596666016924,
+                "min_ms": 419.31579998345114,
+                "max_ms": 480.3760999930091,
+                "p05_ms": 420.8388199855108,
+                "p95_ms": 475.79308999411296,
+                "mad_ms": 15.230200020596385,
+                "stdev_ms": 31.782377965687257,
+                "rsd": 0.07313927171206552
+              },
+              "first_run_ms": {
+                "n": 3,
+                "median_ms": 4158.845199999632,
+                "mean_ms": 4161.89936666827,
+                "min_ms": 4157.1962000161875,
+                "max_ms": 4169.656699988991,
+                "p05_ms": 4157.361100014532,
+                "p95_ms": 4168.575549990055,
+                "mad_ms": 1.64899998344481,
+                "stdev_ms": 6.768453695115559,
+                "rsd": 0.0016274839215261385
+              },
+              "samples_ms": [
+                2352.8659,
+                2342.0773,
+                2341.1313,
+                2352.2733,
+                2351.7478,
+                2349.1269,
+                2346.7315,
+                2341.9245,
+                2351.0013,
+                2351.0688,
+                2352.9311,
+                2356.2608,
+                2381.1368,
+                2391.9313,
+                2397.7731
+              ],
+              "per_repeat_median_ms": [
+                2351.747799984878,
+                2349.12689999328,
+                2381.136799987871
+              ],
+              "bandwidth_proxy": {
+                "modelled_host_gib": 0.046875,
+                "implied_gib_per_s": 0.01993198420353637,
+                "assumes": "the shipping host-staged lane; false if outputs are bound device-resident"
+              }
+            },
+            "cpu": {
+              "role": "baseline",
+              "providers": [
+                "CPUExecutionProvider"
+              ],
+              "env": {},
+              "latency": {
+                "n": 15,
+                "median_ms": 1488.3059000130743,
+                "mean_ms": 1485.1311533382006,
+                "min_ms": 1438.1595000158995,
+                "max_ms": 1577.330100000836,
+                "p05_ms": 1448.951050004689,
+                "p95_ms": 1525.0401000026613,
+                "mad_ms": 13.517999992473051,
+                "stdev_ms": 32.92353391848991,
+                "rsd": 0.022121483169690242
+              },
+              "throughput": {
+                "unit": "tokens/s",
+                "value": 86.0038248849753,
+                "divisor": 128,
+                "divisor_meaning": "tokens advanced by one run"
+              },
+              "session_build_ms": {
+                "n": 3,
+                "median_ms": 4298.263400007272,
+                "mean_ms": 4319.164333331476,
+                "min_ms": 4236.025999998674,
+                "max_ms": 4423.203599988483,
+                "p05_ms": 4242.249739999534,
+                "p95_ms": 4410.709579990362,
+                "mad_ms": 62.23740000859834,
+                "stdev_ms": 95.32313593694536,
+                "rsd": 0.022177127613162116
+              },
+              "first_run_ms": {
+                "n": 3,
+                "median_ms": 1474.046899995301,
+                "mean_ms": 1483.9817999939744,
+                "min_ms": 1471.3186000008136,
+                "max_ms": 1506.5798999858089,
+                "p05_ms": 1471.5914300002623,
+                "p95_ms": 1503.326599986758,
+                "mad_ms": 2.7282999944873154,
+                "stdev_ms": 19.618014620386276,
+                "rsd": 0.013308948731854337
+              },
+              "samples_ms": [
+                1490.1254,
+                1577.3301,
+                1499.8441,
+                1477.8084,
+                1492.6747,
+                1502.6301,
+                1499.9114,
+                1501.8239,
+                1463.0368,
+                1456.4241,
+                1481.5245,
+                1488.3059,
+                1438.1595,
+                1453.7924,
+                1453.576
+              ],
+              "per_repeat_median_ms": [
+                1492.6747000135947,
+                1499.9114000238478,
+                1453.7924000178464
+              ],
+              "bandwidth_proxy": {
+                "modelled_host_gib": 0.046875,
+                "implied_gib_per_s": 0.031495541339712635,
+                "assumes": "the shipping host-staged lane; false if outputs are bound device-resident"
+              }
+            }
+          },
+          "row_tile_speedup": {
+            "n": 3,
+            "median": 1.6896574046036765,
+            "min": 1.6722781654988865,
+            "max": 1.6913610369681096,
+            "ratios": [
+              1.689657,
+              1.672278,
+              1.691361
+            ],
+            "exceeds_noise_floor": true
+          },
+          "vulkan_vs_cpu_tiled": {
+            "n": 3,
+            "median": 1.067745248011047,
+            "min": 1.032652899759084,
+            "max": 1.0724401908906895,
+            "ratios": [
+              1.07244,
+              1.067745,
+              1.032653
+            ]
+          },
+          "vulkan_vs_cpu_untiled": {
+            "n": 3,
+            "median": 0.6347086622227064,
+            "min": 0.6105455175969947,
+            "max": 0.6384973923835867,
+            "ratios": [
+              0.634709,
+              0.638497,
+              0.610546
+            ]
+          }
+        },
+        {
+          "case": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past1024",
+          "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+          "phase": "decode",
+          "m": 1,
+          "past": 1024,
+          "tokens_advanced": 1,
+          "feeds_sha256": "255c299d295a9017b742254939988392ff171ea0aa32c6130802092b9bc0d7a4",
+          "null_control": true,
+          "kv_round_trip": {
+            "bytes_per_past_token": 393216,
+            "past_upload_bytes": 402653184,
+            "present_readback_bytes": 403046400,
+            "total_host_bytes": 805699584,
+            "derivation": "shape model (layers x 2 x kv_heads x head_dim x 2 B), not a measurement"
+          },
+          "arms": {
+            "vulkan_tiled": {
+              "role": "subject",
+              "providers": [
+                "VulkanExecutionProvider",
+                "CPUExecutionProvider"
+              ],
+              "env": {
+                "ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS": "4"
+              },
+              "latency": {
+                "n": 15,
+                "median_ms": 627.499700000044,
+                "mean_ms": 631.7688666691538,
+                "min_ms": 566.742199996952,
+                "max_ms": 722.106300003361,
+                "p05_ms": 568.5346899961587,
+                "p95_ms": 704.8652300029062,
+                "mad_ms": 33.00719999242574,
+                "stdev_ms": 47.05491768759903,
+                "rsd": 0.07498795248443263
+              },
+              "throughput": {
+                "unit": "tokens/s",
+                "value": 1.593626259900889,
+                "divisor": 1,
+                "divisor_meaning": "tokens advanced by one run"
+              },
+              "session_build_ms": {
+                "n": 3,
+                "median_ms": 418.61369999242015,
+                "mean_ms": 492.2126333306854,
+                "min_ms": 414.7647999925539,
+                "max_ms": 643.2594000070821,
+                "p05_ms": 415.1496899925405,
+                "p95_ms": 620.794830005616,
+                "mad_ms": 3.848899999866262,
+                "stdev_ms": 130.8244923565447,
+                "rsd": 0.312518420584213
+              },
+              "first_run_ms": {
+                "n": 3,
+                "median_ms": 2549.972400011029,
+                "mean_ms": 2557.6248000143096,
+                "min_ms": 2455.3593000164255,
+                "max_ms": 2667.542700015474,
+                "p05_ms": 2464.820610015886,
+                "p95_ms": 2655.7856700150296,
+                "mad_ms": 94.61309999460354,
+                "stdev_ms": 106.29848648097826,
+                "rsd": 0.04168613216382989
+              },
+              "samples_ms": [
+                586.1527,
+                566.7422,
+                576.8687,
+                569.3029,
+                612.4646,
+                722.1063,
+                659.2168,
+                675.2875,
+                660.5069,
+                655.8954,
+                617.4459,
+                641.3039,
+                697.4762,
+                627.4997,
+                608.2633
+              ],
+              "per_repeat_median_ms": [
+                576.8687000090722,
+                660.5068999924697,
+                627.499700000044
+              ],
+              "bandwidth_proxy": {
+                "modelled_host_gib": 0.7503662109375,
+                "implied_gib_per_s": 1.1958032982923297,
+                "assumes": "the shipping host-staged lane; false if outputs are bound device-resident"
+              }
+            },
+            "vulkan_untiled": {
+              "role": "kill-switch",
+              "providers": [
+                "VulkanExecutionProvider",
+                "CPUExecutionProvider"
+              ],
+              "env": {
+                "ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS": "1"
+              },
+              "latency": {
+                "n": 15,
+                "median_ms": 630.4619000002276,
+                "mean_ms": 631.3673066615593,
+                "min_ms": 573.844900005497,
+                "max_ms": 735.9583000070415,
+                "p05_ms": 577.6787300041178,
+                "p95_ms": 708.6274300032528,
+                "mad_ms": 19.08320002257824,
+                "stdev_ms": 42.32714551608915,
+                "rsd": 0.06713672232386109
+              },
+              "throughput": {
+                "unit": "tokens/s",
+                "value": 1.586138670710536,
+                "divisor": 1,
+                "divisor_meaning": "tokens advanced by one run"
+              },
+              "session_build_ms": {
+                "n": 3,
+                "median_ms": 551.0844999807887,
+                "mean_ms": 527.5340999942273,
+                "min_ms": 435.66200000350364,
+                "max_ms": 595.8557999983896,
+                "p05_ms": 447.20425000123214,
+                "p95_ms": 591.3786699966295,
+                "mad_ms": 44.77130001760088,
+                "stdev_ms": 82.65276398188782,
+                "rsd": 0.14998201543460063
+              },
+              "first_run_ms": {
+                "n": 3,
+                "median_ms": 2769.6591000130866,
+                "mean_ms": 2787.760299999112,
+                "min_ms": 2440.895299980184,
+                "max_ms": 3152.7265000040643,
+                "p05_ms": 2473.7716799834743,
+                "p95_ms": 3114.4197600049665,
+                "mad_ms": 328.7638000329025,
+                "stdev_ms": 356.2606551565299,
+                "rsd": 0.12862978521611074
+              },
+              "samples_ms": [
+                579.3218,
+                602.2087,
+                573.8449,
+                605.5435,
+                601.5724,
+                648.7635,
+                641.0855,
+                611.3787,
+                632.9367,
+                646.5555,
+                696.9142,
+                735.9583,
+                645.9967,
+                617.9673,
+                630.4619
+              ],
+              "per_repeat_median_ms": [
+                601.572399988072,
+                641.0854999849107,
+                645.9967000118922
+              ],
+              "bandwidth_proxy": {
+                "modelled_host_gib": 0.7503662109375,
+                "implied_gib_per_s": 1.190184864362508,
+                "assumes": "the shipping host-staged lane; false if outputs are bound device-resident"
+              }
+            },
+            "cpu": {
+              "role": "baseline",
+              "providers": [
+                "CPUExecutionProvider"
+              ],
+              "env": {},
+              "latency": {
+                "n": 15,
+                "median_ms": 190.28249999973923,
+                "mean_ms": 192.44176666640365,
+                "min_ms": 183.80810000235215,
+                "max_ms": 204.75050000823103,
+                "p05_ms": 184.58720000635367,
+                "p95_ms": 203.90769998775795,
+                "mad_ms": 5.015500006265938,
+                "stdev_ms": 6.682225027989007,
+                "rsd": 0.03511739139436451
+              },
+              "throughput": {
+                "unit": "tokens/s",
+                "value": 5.2553440279656325,
+                "divisor": 1,
+                "divisor_meaning": "tokens advanced by one run"
+              },
+              "session_build_ms": {
+                "n": 3,
+                "median_ms": 4289.199299993925,
+                "mean_ms": 4174.5482666689595,
+                "min_ms": 3846.257600001991,
+                "max_ms": 4388.187900010962,
+                "p05_ms": 3890.551770001184,
+                "p95_ms": 4378.289040009258,
+                "mad_ms": 98.98860001703724,
+                "stdev_ms": 288.58405551730533,
+                "rsd": 0.06728156826793152
+              },
+              "first_run_ms": {
+                "n": 3,
+                "median_ms": 243.27490001451224,
+                "mean_ms": 242.8553000014896,
+                "min_ms": 235.1986999856308,
+                "max_ms": 250.0923000043258,
+                "p05_ms": 236.00631998851895,
+                "p95_ms": 249.41056000534445,
+                "mad_ms": 6.817399989813566,
+                "stdev_ms": 7.4556608363990335,
+                "rsd": 0.030647061558567185
+              },
+              "samples_ms": [
+                189.6783,
+                188.6895,
+                187.0427,
+                187.1827,
+                183.8081,
+                200.8137,
+                195.298,
+                196.5741,
+                204.7505,
+                203.5465,
+                190.8058,
+                195.8979,
+                187.3351,
+                184.9211,
+                190.2825
+              ],
+              "per_repeat_median_ms": [
+                187.18269999953918,
+                200.8137000084389,
+                190.28249999973923
+              ],
+              "bandwidth_proxy": {
+                "modelled_host_gib": 0.7503662109375,
+                "implied_gib_per_s": 3.9434325854375905,
+                "assumes": "the shipping host-staged lane; false if outputs are bound device-resident"
+              }
+            }
+          },
+          "row_tile_speedup": {
+            "n": 3,
+            "median": 1.0294773049482684,
+            "min": 0.9705962193464135,
+            "max": 1.0428237829138784,
+            "ratios": [
+              1.042824,
+              0.970596,
+              1.029477
+            ]
+          },
+          "vulkan_vs_cpu_tiled": {
+            "n": 3,
+            "median": 0.30402967782884377,
+            "min": 0.3032391887991754,
+            "max": 0.3244805967052735,
+            "ratios": [
+              0.324481,
+              0.30403,
+              0.303239
+            ]
+          },
+          "vulkan_vs_cpu_untiled": {
+            "n": 3,
+            "median": 0.31115573121913614,
+            "min": 0.2945564582547191,
+            "max": 0.3132401216579777,
+            "ratios": [
+              0.311156,
+              0.31324,
+              0.294556
+            ]
+          }
+        }
+      ],
+      "equivalence": {
+        "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0": {
+          "gate": "PASS",
+          "arms": {
+            "vulkan_tiled": {
+              "verdict": "MATCH",
+              "primary": {
+                "shape_candidate": [
+                  1,
+                  1,
+                  32064
+                ],
+                "shape_reference": [
+                  1,
+                  1,
+                  32064
+                ],
+                "top_k": 10,
+                "reference_all_zero": false,
+                "argmax_candidate": 30751,
+                "argmax_reference": 30751,
+                "topk_overlap": 10,
+                "max_abs": 0.0625,
+                "reference_scale": 13.0859375,
+                "abs_budget": 0.654296875,
+                "max_rel": 374.0748291015625,
+                "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+                "max_prob_delta": 0.0003116416555817639,
+                "top1_prob_reference": 0.07200593321956121,
+                "top1_prob_candidate": 0.07202780186482592,
+                "verdict": "MATCH",
+                "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+              },
+              "secondary_outputs": 64,
+              "secondary_divergent": 0,
+              "worst_secondary": null,
+              "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+            },
+            "vulkan_untiled": {
+              "verdict": "MATCH",
+              "primary": {
+                "shape_candidate": [
+                  1,
+                  1,
+                  32064
+                ],
+                "shape_reference": [
+                  1,
+                  1,
+                  32064
+                ],
+                "top_k": 10,
+                "reference_all_zero": false,
+                "argmax_candidate": 30751,
+                "argmax_reference": 30751,
+                "topk_overlap": 10,
+                "max_abs": 0.0625,
+                "reference_scale": 13.0859375,
+                "abs_budget": 0.654296875,
+                "max_rel": 374.0748291015625,
+                "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+                "max_prob_delta": 0.0003116416555817639,
+                "top1_prob_reference": 0.07200593321956121,
+                "top1_prob_candidate": 0.07202780186482592,
+                "verdict": "MATCH",
+                "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+              },
+              "secondary_outputs": 64,
+              "secondary_divergent": 0,
+              "worst_secondary": null,
+              "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+            },
+            "cpu": {
+              "verdict": "MATCH",
+              "self": true,
+              "note": "the reference arm is compared against itself by construction; recorded so the table has no hole"
+            }
+          },
+          "null_control_bitwise": {
+            "outputs": 65,
+            "identical": true,
+            "first_difference": null,
+            "arms": [
+              "vulkan_tiled",
+              "vulkan_untiled"
+            ]
+          }
+        },
+        "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0": {
+          "gate": "PASS",
+          "arms": {
+            "vulkan_tiled": {
+              "verdict": "MATCH",
+              "primary": {
+                "shape_candidate": [
+                  1,
+                  128,
+                  32064
+                ],
+                "shape_reference": [
+                  1,
+                  128,
+                  32064
+                ],
+                "top_k": 10,
+                "reference_all_zero": false,
+                "argmax_candidate": 180,
+                "argmax_reference": 180,
+                "topk_overlap": 10,
+                "max_abs": 0.0625,
+                "reference_scale": 53.1875,
+                "abs_budget": 2.6593750000000003,
+                "max_rel": 155.4178924560547,
+                "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+                "max_prob_delta": 0.000468344301671364,
+                "top1_prob_reference": 0.14271100564820446,
+                "top1_prob_candidate": 0.14317934994987583,
+                "verdict": "MATCH",
+                "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+              },
+              "secondary_outputs": 64,
+              "secondary_divergent": 0,
+              "worst_secondary": null,
+              "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+            },
+            "vulkan_untiled": {
+              "verdict": "MATCH",
+              "primary": {
+                "shape_candidate": [
+                  1,
+                  128,
+                  32064
+                ],
+                "shape_reference": [
+                  1,
+                  128,
+                  32064
+                ],
+                "top_k": 10,
+                "reference_all_zero": false,
+                "argmax_candidate": 180,
+                "argmax_reference": 180,
+                "topk_overlap": 10,
+                "max_abs": 0.078125,
+                "reference_scale": 53.1875,
+                "abs_budget": 2.6593750000000003,
+                "max_rel": 106.67156219482422,
+                "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+                "max_prob_delta": 0.00044410957840645277,
+                "top1_prob_reference": 0.14271100564820446,
+                "top1_prob_candidate": 0.143059161201799,
+                "verdict": "MATCH",
+                "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+              },
+              "secondary_outputs": 64,
+              "secondary_divergent": 0,
+              "worst_secondary": null,
+              "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+            },
+            "cpu": {
+              "verdict": "MATCH",
+              "self": true,
+              "note": "the reference arm is compared against itself by construction; recorded so the table has no hole"
+            }
+          }
+        },
+        "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past1024": {
+          "gate": "PASS",
+          "arms": {
+            "vulkan_tiled": {
+              "verdict": "MATCH",
+              "primary": {
+                "shape_candidate": [
+                  1,
+                  1,
+                  32064
+                ],
+                "shape_reference": [
+                  1,
+                  1,
+                  32064
+                ],
+                "top_k": 10,
+                "reference_all_zero": false,
+                "argmax_candidate": 426,
+                "argmax_reference": 426,
+                "topk_overlap": 10,
+                "max_abs": 0.5576171875,
+                "reference_scale": 26.34375,
+                "abs_budget": 1.3171875000000002,
+                "max_rel": 268.4314880371094,
+                "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+                "max_prob_delta": 0.003445221613853522,
+                "top1_prob_reference": 0.474360084627861,
+                "top1_prob_candidate": 0.4778053062417145,
+                "verdict": "MATCH",
+                "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+              },
+              "secondary_outputs": 64,
+              "secondary_divergent": 0,
+              "worst_secondary": null,
+              "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+            },
+            "vulkan_untiled": {
+              "verdict": "MATCH",
+              "primary": {
+                "shape_candidate": [
+                  1,
+                  1,
+                  32064
+                ],
+                "shape_reference": [
+                  1,
+                  1,
+                  32064
+                ],
+                "top_k": 10,
+                "reference_all_zero": false,
+                "argmax_candidate": 426,
+                "argmax_reference": 426,
+                "topk_overlap": 10,
+                "max_abs": 0.5576171875,
+                "reference_scale": 26.34375,
+                "abs_budget": 1.3171875000000002,
+                "max_rel": 268.4314880371094,
+                "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+                "max_prob_delta": 0.003445221613853522,
+                "top1_prob_reference": 0.474360084627861,
+                "top1_prob_candidate": 0.4778053062417145,
+                "verdict": "MATCH",
+                "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+              },
+              "secondary_outputs": 64,
+              "secondary_divergent": 0,
+              "worst_secondary": null,
+              "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+            },
+            "cpu": {
+              "verdict": "MATCH",
+              "self": true,
+              "note": "the reference arm is compared against itself by construction; recorded so the table has no hole"
+            }
+          },
+          "null_control_bitwise": {
+            "outputs": 65,
+            "identical": true,
+            "first_difference": null,
+            "arms": [
+              "vulkan_tiled",
+              "vulkan_untiled"
+            ]
+          }
+        }
+      },
+      "noise_floor": {
+        "source": "M=1 prefill, tiled vs untiled \u2014 identical specialisation, identical SPIR-V",
+        "n": 3,
+        "median": 0.9992635807802008,
+        "min": 0.9284757996663967,
+        "max": 1.0884638697749807,
+        "ratios": [
+          0.999264,
+          0.928476,
+          1.088464
+        ]
+      }
+    }
+  ],
+  "unavailable_models": [],
+  "second_device": {
+    "present": false,
+    "detail": "vulkaninfo reports exactly one Vulkan device on this box; there is no second GPU and no software ICD installed. Absence is recorded rather than left to inference."
+  }
+}
