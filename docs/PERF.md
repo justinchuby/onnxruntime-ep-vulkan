@@ -4697,3 +4697,22 @@ One of those 62 tests is a scar. `--diagnose` inherited the timed pass's default
 overwrote a completed thirteen-minute matrix with a profiling record of a different schema;
 `test_the_two_passes_do_not_default_to_the_same_file` is the control, and the matrix was re-run
 rather than reconstructed.
+
+### 26.9 The reading survived the merge, which is the only reason it is quoted
+
+Everything above was measured on this branch's first base. The branch then merged PR #53's
+advanced head (`8f12b32`, which carries `bb09871` and `5cd4087`), and a merge that touches no
+kernel is exactly the kind of change a benchmark is assumed to be indifferent to — an assumption
+worth one run rather than one sentence. Three points were re-measured on the merged build, same
+protocol, artifact `bench/results/real_model_latency_postmerge.json`:
+
+| case | §26.6 (ms) | after the merge (ms) | untiled, after (ms) | CPU EP, after (ms) |
+|---|---|---|---|---|
+| prefill M=1 | 27.29 | 27.08 | 27.73 | 91.95 |
+| prefill M=128 | 1407.40 | 1403.98 | 2351.75 | 1488.31 |
+| decode past=1024 | 608.21 | 627.50 | 630.46 | 190.28 |
+
+All three cases are `PASS` on the equivalence gate with `MATCH` on all three arms. The two prefill
+points move by 0.2% and 0.8%; the decode point moves 3.2%, which is inside the host-round-trip
+variance §26.7 already describes and is not a reading about the kernel — decode's dispatch geometry
+is unchanged by this change and by the merge alike. The merge did not move the result.
