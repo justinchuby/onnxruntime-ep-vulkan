@@ -333,6 +333,51 @@ def arm_stale_absence_claim() -> tuple[str, bool, str]:
     )
 
 
+def arm_absence_claim_in_cfg_test_mod() -> tuple[str, bool, str]:
+    """Issue #61's negative control: a symbol defined ONLY inside `#[cfg(test)] mod`
+    must not convict an `absence_claims` entry that names it.
+
+    Without this arm, the fix for issue #61 is a claim, not a control. `_defined_symbols()`
+    could hold out `#[cfg(test)]` spans using `test_line_span()` exactly the way
+    `extract_env_switches()` already does, or it could quietly keep reading test bodies
+    as production the way it did before this issue -- both leave `arm_stale_absence_claim`
+    and `arm_absence_claim_true` above green, because neither of them plants anything
+    inside a test module. Only a symbol whose SOLE definition sits inside
+    `#[cfg(test)] mod tests { ... }` in `rust/src/counters.rs` exercises the exclusion,
+    and the screen must stay PASS (green) here: a scratch production symbol that is
+    reachable only from `cfg(test)` is not a production definition, so an entry naming it
+    in `absence_claims` has made no false claim.
+    """
+    src = _copy_tree("src-cfg-test-only-symbol")
+    _anchor_replace(
+        src / "counters.rs",
+        "#[cfg(test)]\nmod tests {",
+        "#[cfg(test)]\nmod tests {\n"
+        "    // planted by the negative control (issue #61): defined ONLY in this\n"
+        "    // #[cfg(test)] module, never in production.\n"
+        "    fn planted_test_only_symbol_control_61() {}\n",
+    )
+    mapping = _copy_map("map-absence-claim-test-only.json")
+    doc = json.loads(mapping.read_text(encoding="utf-8"))
+    hit = False
+    for entry in doc.get("surfaces", []):
+        if entry["id"] == "ONNXRUNTIME_EP_VULKAN_GEMV_PACKED":
+            entry["absence_claims"] = ["planted_test_only_symbol_control_61"]
+            hit = True
+    if not hit:
+        raise AnchorMissing("no GEMV_PACKED entry in the surface map to plant the claim on")
+    mapping.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    code, out = _run(src, mapping, ARTIFACTS)
+    ok = code == EXIT_PASS and "stale_absence_claim" not in out
+    return (
+        "negative control: a symbol defined ONLY inside #[cfg(test)] mod must not "
+        "convict an absence_claims entry naming it",
+        ok,
+        f"exit={code} (want {EXIT_PASS}); stale_absence_claim raised: "
+        f"{'stale_absence_claim' in out}",
+    )
+
+
 def arm_absence_claim_true() -> tuple[str, bool, str]:
     """The counter-control: a claim naming a symbol that really is absent must not fire.
 
@@ -386,6 +431,7 @@ ARMS = [
     arm_name_claim_contradicted,
     arm_stale_absence_claim,
     arm_absence_claim_true,
+    arm_absence_claim_in_cfg_test_mod,
     arm_map_missing,
     arm_artifacts_missing,
     arm_extractor_blinded,
@@ -432,8 +478,10 @@ def main() -> int:
         "mechanism the census stopped enumerating; refuses a name recorded as verified "
         "against arms that never varied; catches a replayed issue-#58 stale absence "
         "claim against the real tree while leaving a genuinely-absent-symbol claim "
-        "unflagged; and reports a missing map, a missing artifact set, a moved extractor "
-        "anchor and an empty tree as instrument outages rather than as coverage.",
+        "unflagged; stays green when the genuinely-absent symbol is instead a scratch "
+        "production symbol reachable only from a #[cfg(test)] mod (issue #61); and "
+        "reports a missing map, a missing artifact set, a moved extractor anchor and an "
+        "empty tree as instrument outages rather than as coverage.",
         flush=True,
     )
     return EXIT_PASS
