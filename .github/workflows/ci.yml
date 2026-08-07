@@ -336,6 +336,20 @@ jobs:
         # convict.
         run: python ci/negative_control_ledger_census.py
 
+      - name: Ledger-loss probe (the census invariant's falsifier, and it writes nothing)
+        # Issue #14. Seven arms against `check_no_proof_went_missing`, of which arm 3 replays
+        # eb84364 — the real merge that dropped three Cast proofs — rather than a planted
+        # mutation. It was written months before this step and appeared in no workflow, no
+        # register and under no artifact-frame check; what it had instead was a committed
+        # `result.json` produced once on another checkout, which `bfdc0f1` made stale and
+        # nothing detected. THE READING IS NOW THE RUN: this step is the artifact, the tracked
+        # copy is deleted, and an ordinary invocation writes only to an ephemeral scratch
+        # directory outside the repository, so running the diagnostic can never again dirty a
+        # checkout. Needs the same `fetch-depth: 0` as the census arms above (arm 3 does
+        # `git show eb84364:...`); a shallow clone makes that arm UNOBSERVABLE, which this
+        # probe reports as a FAIL rather than swallowing.
+        run: python rust/tools/probe_ledger_loss.py
+
       - name: Verification-subject screen (does a check verify itself?)
         # Mouse's sweep, wired here because it arrived in ci/ at 2832526 in NO workflow
         # step. ci/check_lane_inventory.py could not see that: it asks whether every

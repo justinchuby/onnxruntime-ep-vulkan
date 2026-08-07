@@ -999,6 +999,60 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.ledger_loss_probe",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Ledger-loss probe (the census invariant's falsifier, and it writes nothing)",
+        watches=(
+            "Whether `gen_proof_ledger.check_no_proof_went_missing` — the invariant the "
+            "census above is built on — still fires on a deletion, still exempts a SIGNED "
+            "retirement, still refuses an unsigned one, and still reports "
+            "ERROR(instrument) rather than 'nothing is missing' when the attempt log is "
+            "absent. Seven arms. It also watches its own blast radius: the probe writes "
+            "nothing into a tracked path, so running it can never dirty a checkout."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Arm 3 is not a mutation at all: it is `eb84364`'s two artifacts as they "
+            "really stood, and it convicts them naming all three Cast keys. The planted "
+            "arms sit either side of it — arm 2 deletes one live entry and requires it "
+            "named, arm 4 retires that same key with owner/date/reason and requires "
+            "silence, arm 5 leaves the retirement in place with the key still present and "
+            "requires a failure, arm 5b strips owner and date and requires the PRODUCER to "
+            "refuse rather than the census alone. CLASSIFIED PLANTED, and the classification "
+            "is the conservative one on purpose: the failing arm this entry cites is a "
+            "SYNTHETIC checkout with no attempt log, which I constructed. The probe has "
+            "twice been genuinely red on real input — 2/6 on `main` on 2026-08-05, when "
+            "arms 1/2/4/5 were reading an empty register against a tree carrying 43 real "
+            "retirements, and again the same day when running it dirtied `main` — but "
+            "neither of those reds is reproducible on demand today, and an entry that "
+            "claims OBSERVED on the strength of a red nobody can re-run is exactly the "
+            "overclaim this axis exists to prevent."
+        ),
+        arm_healthy="the working tree: 7/7 arms, exit 0, `git status` byte-identical before and after",
+        arm_broken=(
+            "a checkout carrying a ledger and a register but no proof_attempts.jsonl: "
+            "1/7, exit 1, and the ONE arm that stays green is arm 6, which predicted the "
+            "outage (ci/test_lane_checks.py::test_ledger_loss_probe_fails_loud_when_its_"
+            "subject_is_not_there)"
+        ),
+        observed="2026-08-06",
+        misses=(
+            "Its denominator is the ledger as it stands, so it says nothing about a form "
+            "that was never proven — that is probe_model_op_census.py's question.",
+            "Arm 3 needs `git show eb84364:...`. In a shallow clone that arm cannot reach "
+            "its subject; the probe reports it as a failure rather than dropping it, so "
+            "the lane goes red for a checkout reason. `fetch-depth: 0` on this job is "
+            "therefore load-bearing for this step, exactly as it is for the census "
+            "controls above.",
+            "It rules on the KEY SET only, like the census. An entry whose digests moved "
+            "is present and this probe is silent about it.",
+            "The destination policy consults `git check-ignore` and nothing else. A "
+            "destination outside any repository is trusted without further question, "
+            "which is the right boundary here but is a boundary.",
+        ),
+    ),
+    Check(
         id="hostfree.open_reds",
         falsifier=FALSIFIER_OBSERVED,
         lane=LANE_HOSTFREE,

@@ -48,6 +48,7 @@ except ImportError as exc:  # pragma: no cover - collection-time outage
 
 EXIT_PASS = 0
 EXIT_FAIL_CONDITION = 1
+EXIT_USAGE = 2
 EXIT_ERROR_INSTRUMENT = 4
 
 
@@ -4948,3 +4949,331 @@ def test_main_green_merge_sentence_carries_the_sha_and_url_in_both_colours(tmp_p
     rc, out = _main_green(tmp_path, _runs(("completed", "failure")), "--for-merge")
     assert rc == EXIT_FAIL_CONDITION and "is RED" in out
     assert "https://example.invalid/runs/0" in out
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════
+# rust/tools/probe_ledger_loss.py — the ledger-loss probe's DESTINATION and PROVENANCE
+# contract (issue #14)
+#
+# The probe's ARMS were already two-polarity; what had never been tested is where it WRITES.
+# It wrote its six working files and a `result.json` straight into a tracked directory, so
+# running the diagnostic during a read-only baseline dirtied `main` on 2026-08-05, and the
+# committed reading — unframed, unowned, produced on somebody else's checkout — went stale
+# behind a `pass=true` that no instrument in this repository could see.
+#
+# Every test below is a pair in the sense the module docstring means: the destination that
+# must be allowed and the destination that must be REFUSED, with the token asserted rather
+# than the exit code alone.
+# ══════════════════════════════════════════════════════════════════════════════════════════
+
+PROBE = REPO_ROOT / "rust" / "tools" / "probe_ledger_loss.py"
+
+#: The directory the probe used to write into unconditionally. It is TRACKED-surface (git does
+#: not ignore it) and, since issue #14, holds no committed reading at all.
+CANONICAL_DIR_REL = "bench/results/_probe_ledger_loss"
+
+#: A drive-letter path or a POSIX absolute path into a home/tmp/mount root — the same shape
+#: `probe_ledger_loss._ABSOLUTE_PATH_RE` refuses, restated here on purpose. A test that imported
+#: the tool's own regex would agree with it by construction and could not notice it going wrong.
+_MACHINE_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/])|(?:(?:^|[\s\"'(=])/(?:home|Users|users|mnt|tmp|var|opt|root)/)"
+)
+
+
+def run_probe(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """Run the probe the way a lane does: same interpreter, utf-8 pinned on the child's side."""
+    child_env = dict(os.environ)
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    return subprocess.run(
+        [sys.executable, str(PROBE), *args],
+        cwd=str(cwd or REPO_ROOT),
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        env=child_env,
+    )
+
+
+def _porcelain(paths: list[str] | None = None) -> str:
+    return subprocess.run(
+        ["git", "status", "--porcelain", "--", *(paths or [])],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stdout
+
+
+def test_ledger_loss_probe_default_run_is_green_and_reports_every_arm():
+    """The positive arm. Seven arms, all of them, against this checkout's real evidence."""
+    r = run_probe()
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+    assert "PASS: 7/7 arms" in r.stdout
+    # Arm 3 is the load-bearing one and its absence must not hide inside the total.
+    assert "[PASS] 3 the real eb84364 loss is detected" in r.stdout
+
+
+def test_ledger_loss_probe_default_run_leaves_the_worktree_exactly_as_it_found_it():
+    """THE DEFECT ISSUE #14 IS ABOUT, as a test rather than as a story.
+
+    Not `git status` is empty — this suite must pass in a dirty working tree — but that the
+    probe changed nothing: the porcelain before and after are the same string, and the
+    directory it used to write into is untouched.
+    """
+    before = _porcelain()
+    r = run_probe()
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+    assert _porcelain() == before, (
+        "the probe changed the worktree; a diagnostic that cannot run without leaving a "
+        "tracked diff is a diagnostic people stop running"
+    )
+    assert not (REPO_ROOT / CANONICAL_DIR_REL).exists(), (
+        f"{CANONICAL_DIR_REL} was recreated by an ordinary run"
+    )
+    assert "removed on exit" in r.stdout
+
+
+@pytest.mark.parametrize(
+    "dest",
+    [CANONICAL_DIR_REL, "bench/results", "evidence", "ci", "rust/tools"],
+)
+def test_ledger_loss_probe_refuses_every_tracked_destination_and_writes_nothing(dest):
+    """The path boundary, on the canonical directory AND on four others.
+
+    A rule tested only on the one path that burned us is an allowlist of one path. The
+    refusal is `ERROR(instrument=...)` and not a silent fallback, because a probe that
+    quietly wrote somewhere else would answer a question nobody asked.
+    """
+    before = _porcelain()
+    r = run_probe("--out", dest)
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
+    assert "ERROR(instrument=refused_tracked_destination)" in r.stdout
+    assert "Nothing was written." in r.stdout
+    assert _porcelain() == before
+    assert not (REPO_ROOT / dest / "result.json").exists()
+
+
+def test_ledger_loss_probe_refuses_the_canonical_directory_by_name_not_by_luck():
+    """The accidental-canonical-write arm. The refusal must NAME the path, so a reader of a
+    log knows which destination was refused rather than that `a` destination was."""
+    r = run_probe("--out", CANONICAL_DIR_REL)
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert CANONICAL_DIR_REL in r.stdout
+    assert "--record" in r.stdout, "the refusal must say what the deliberate path is"
+
+
+def test_ledger_loss_probe_record_without_a_destination_is_a_usage_error():
+    """`--record` is a permission, not a path. Letting it pick one would recreate the defect
+    with an extra flag in front of it."""
+    r = run_probe("--record")
+    assert r.returncode == EXIT_USAGE, r.stdout + r.stderr
+    assert "ERROR(instrument=record_without_destination)" in r.stdout
+
+
+def test_ledger_loss_probe_writes_its_reading_only_under_an_explicit_out(tmp_path):
+    """The caller-provided-output arm: outside the repository, so no permission is needed."""
+    out = tmp_path / "scratch"
+    r = run_probe("--out", str(out))
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+    doc = json.loads((out / "result.json").read_text(encoding="utf-8"))
+    assert doc["pass"] is True and doc["arms_total"] == 7
+    assert doc["recorded"] is False, "an --out run is a reading, not a recording"
+
+
+def test_ledger_loss_probe_allows_a_git_ignored_destination_inside_the_repository(tmp_path):
+    """The other side of the path boundary. `target/` is inside the checkout and git ignores
+    it, so writing there cannot dirty anything — refusing it would be a rule about location
+    when the rule is about the TRACKED SURFACE."""
+    out = REPO_ROOT / "target" / "_probe_ledger_loss_test_out"
+    shutil.rmtree(out, ignore_errors=True)
+    try:
+        before = _porcelain()
+        r = run_probe("--out", str(out))
+        assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+        assert (out / "result.json").is_file()
+        assert _porcelain() == before
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+
+def test_ledger_loss_probe_output_is_byte_deterministic_across_runs(tmp_path):
+    """Two runs, two different destinations, identical bytes.
+
+    This is what makes the record comparable at all: if the reading moved with the directory
+    it was written into, a re-run would look like a change in the ledger.
+    """
+    first, second = tmp_path / "a", tmp_path / "b"
+    assert run_probe("--out", str(first)).returncode == EXIT_PASS
+    assert run_probe("--out", str(second)).returncode == EXIT_PASS
+    assert (first / "result.json").read_bytes() == (second / "result.json").read_bytes()
+
+
+def test_ledger_loss_probe_record_carries_subject_and_tool_provenance(tmp_path):
+    """A recorded reading must say WHO took it, WITH WHAT, AT WHICH COMMIT and ABOUT WHAT.
+
+    The committed reading this replaces had none of those four: it was `{"arms": [...],
+    "pass": true}` and nothing else, so `bfdc0f1` retiring two Conv keys could not make it
+    detectably stale.
+    """
+    out = tmp_path / "recorded"
+    r = run_probe("--out", str(out), "--record")
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+    doc = json.loads((out / "result.json").read_text(encoding="utf-8"))
+    assert doc["owner"] == "tank"
+    assert doc["tool"] == "rust/tools/probe_ledger_loss.py"
+    assert doc["recorded"] is True
+    assert re.fullmatch(r"[0-9a-f]{40}", doc["produced_at_commit"]), doc["produced_at_commit"]
+    for name, rel in (
+        ("ledger", "evidence/proof_ledger.jsonl"),
+        ("attempts", "evidence/proof_attempts.jsonl"),
+        ("register", "evidence/retired_proof_keys.json"),
+    ):
+        assert doc["subject"][name]["path"] == rel
+        assert re.fullmatch(r"[0-9a-f]{64}", doc["subject"][name]["sha256"])
+
+    frame = json.loads((out / "artifact-frame.json").read_text(encoding="utf-8"))
+    assert "result.json" in frame["files"], "a recorded reading that no frame names is unframed"
+    assert "evidence/proof_ledger.jsonl" in frame["subject_paths"]
+    assert "rust/tools/probe_ledger_loss.py" in frame["subject_paths"], (
+        "a change to the arms changes what pass=true means, so the tool is part of the subject"
+    )
+
+
+def test_ledger_loss_probe_record_names_no_machine_specific_absolute_path(tmp_path):
+    """The exact defect the committed reading carried: arm details naming an absolute path
+    under one developer's home directory, on a machine nobody else has."""
+    out = tmp_path / "recorded"
+    assert run_probe("--out", str(out), "--record").returncode == EXIT_PASS
+    text = (out / "result.json").read_text(encoding="utf-8")
+    hit = _MACHINE_PATH_RE.search(text)
+    assert hit is None, f"absolute path in the recorded reading: {text[hit.start():hit.end() + 60]!r}"
+    assert str(tmp_path) not in text and str(REPO_ROOT) not in text
+    assert "<out>" in text, "the scratch paths in the arm details must be scrubbed, not deleted"
+
+
+def test_ledger_loss_probe_record_bytes_are_lf_ascii_and_platform_independent(tmp_path):
+    """Windows-path/encoding control.
+
+    Two things break a record on Windows and neither is visible in a `json.loads` of it: a
+    CRLF newline translation on the way to disk, and a non-ASCII arm detail encoded in the
+    shell's cp1252. Both are asserted at the BYTE level here, because both survive parsing.
+    """
+    out = tmp_path / "recorded"
+    assert run_probe("--out", str(out), "--record").returncode == EXIT_PASS
+    raw = (out / "result.json").read_bytes()
+    assert b"\r" not in raw, "platform newline translation reached the record"
+    raw.decode("ascii")  # ensure_ascii=True: no cp1252/utf-8 ambiguity can enter the bytes
+    assert raw.endswith(b"\n")
+
+
+def test_ledger_loss_probe_survives_a_destination_with_spaces_and_non_ascii(tmp_path):
+    """A Windows path is allowed to contain spaces and non-ASCII, and the reading must not
+    change because of it — the scrubber replaces the destination root, so the bytes are the
+    same as a plain ASCII destination's."""
+    plain = tmp_path / "plain"
+    awkward = tmp_path / "scratch dir ünïcode"
+    assert run_probe("--out", str(plain)).returncode == EXIT_PASS
+    r = run_probe("--out", str(awkward))
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+    assert (awkward / "result.json").read_bytes() == (plain / "result.json").read_bytes()
+
+
+def test_ledger_loss_probe_fails_loud_when_its_subject_is_not_there(tmp_path):
+    """The negative control for the probe ITSELF: it must be able to go red.
+
+    A checkout carrying a ledger and a retirement register but NO attempt log is exactly the
+    state arm 6 exists for, and every arm that needs the attempt log must report the outage
+    rather than 'nothing is missing'. Note what stays green: arm 6, which PREDICTS the
+    outage. A run in which everything failed would prove only that the probe crashed.
+    """
+    fake = tmp_path / "checkout"
+    (fake / "evidence").mkdir(parents=True)
+    for rel in ("evidence/proof_ledger.jsonl", "evidence/retired_proof_keys.json"):
+        shutil.copy2(REPO_ROOT / rel, fake / rel)
+    r = run_probe("--repo", str(fake))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    assert "[FAIL] 1 current tree is clean" in r.stdout
+    assert "[PASS] 6 a missing attempt log is ERROR(instrument)" in r.stdout
+    assert "FAIL: 1/7 arms" in r.stdout
+
+
+def test_ledger_loss_probe_reports_an_unreachable_ledger_as_an_outage_not_a_verdict(tmp_path):
+    """No evidence at all is UNOBSERVABLE. A probe that answered `0 arms passed` there would
+    be reporting about a repository it never read."""
+    r = run_probe("--repo", str(tmp_path))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    assert "ERROR(instrument)" in r.stdout
+    assert "evidence/proof_ledger.jsonl" in r.stdout
+
+
+def test_the_ledger_loss_probe_leaves_no_tracked_reading_behind():
+    """The ownership model, asserted rather than described.
+
+    ONE model: the probe is EXECUTED (host-free lane, `ledger_loss_probe` in
+    ci/open_reds.json), not committed. A tracked reading reappearing here is the second,
+    staler answer to a question already asked live on every push — and it is precisely what
+    went unnoticeably out of date.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", CANONICAL_DIR_REL],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    assert tracked == "", (
+        f"{CANONICAL_DIR_REL} has tracked files again: {tracked!r}. If a recorded reading is "
+        "genuinely wanted, it needs an artifact-frame entry in ci/open_reds.json and an owner, "
+        "not a bare commit."
+    )
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "evidence/retired_proof_keys.json",
+        "evidence/proof_ledger.jsonl",
+        "evidence/proof_attempts.jsonl",
+        CANONICAL_DIR_REL + "/result.json",
+    ],
+)
+def test_deletion_bearing_evidence_is_never_union_merged(rel):
+    """Union merge cannot represent a DELETION, and every file here carries one.
+
+    Retiring a proof key removes a claim's exemption; union-merging the register resurrects
+    the key the next time a branch forked before the retirement lands, with nobody's
+    signature on it. That is the `squad-history` defect one directory over
+    (.gitattributes), and the probe writes register-shaped files, so its output path is
+    asserted here too rather than left to be someone's assumption.
+    """
+    out = subprocess.run(
+        ["git", "check-attr", "merge", "--", rel],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        encoding="utf-8",
+    ).stdout
+    assert "union" not in out, f"{rel} is union-merged: {out.strip()!r}"
+
+
+def test_ledger_loss_probe_is_declared_in_the_register_the_lane_and_the_inventory():
+    """The ownership model has three halves and all three must exist, or the probe is back to
+    being a tool nobody runs.
+
+    An unwired tool is invisible to the coverage census by construction
+    (ci/check_verification_subjects.py's own note), which is why the register is the screen
+    that closes the gap: the register RUNS things.
+    """
+    reg = json.loads((CI_DIR / "open_reds.json").read_text(encoding="utf-8"))
+    entry = next((c for c in reg["checks"] if c["id"] == "ledger_loss_probe"), None)
+    assert entry is not None, "ledger_loss_probe is not in ci/open_reds.json"
+    assert entry["expect"] == "green" and entry["owner"] == "tank"
+    assert entry["cmd"] == ["python", "rust/tools/probe_ledger_loss.py"], (
+        "the register must run the probe in its DEFAULT mode — that is the mode the "
+        "non-mutating contract is about"
+    )
+    assert "ledger_loss_probe" in reg["subjects"], "`subjects` is the append-only record"
+
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "rust/tools/probe_ledger_loss.py" in workflow
+
+    inventory = (CI_DIR / "lane_inventory.py").read_text(encoding="utf-8")
+    assert 'id="hostfree.ledger_loss_probe"' in inventory
