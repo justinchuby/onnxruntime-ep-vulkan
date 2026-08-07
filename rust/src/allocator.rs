@@ -2319,10 +2319,64 @@ pub mod ledger {
     /// The ledger is deliberately process-wide — it observes an ABI boundary, not an object — so
     /// two tests asserting on it concurrently would flake. A mutex here is cheaper and more
     /// honest than making the counters per-registry purely to suit the test harness.
+    ///
+    /// This is the **one** mutex in this crate over every process-global family: the tallies, the
+    /// ORT logger pointers, and the process environment. That is not a stylistic preference. Two
+    /// disjoint mutexes over one global are not mutual exclusion — each excludes its own users and
+    /// neither excludes the other's — and the resulting race is invisible in review because both
+    /// call sites read as "guarded". `rust/tools/audit_counter_test_lock.py` enforces the
+    /// single-lock rule statically; `rust/tools/contention_gate.py` is the empirical check.
     #[cfg(test)]
     pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: Mutex<()> = Mutex::new(());
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Puts one environment variable back the way it was found, on **every** exit path from the
+    /// scope that holds it — the normal path and the unwind path alike.
+    ///
+    /// A trailing `std::env::remove_var(..)` at the bottom of a test does not run when an
+    /// assertion above it panics: libtest catches the unwind, reports that one test failed, and
+    /// the variable it set stays set for whatever runs next under the same lock. The first red
+    /// then manufactures a second red in an unrelated test, and neither message names the shared
+    /// cause. Restoring the *prior* value rather than unconditionally removing also means a lane
+    /// that legitimately exports the variable (`ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` is a
+    /// supported production switch) is not silently disarmed by having run the test suite.
+    ///
+    /// Construction borrows the [`test_lock`] guard. The borrow is the point: the type cannot be
+    /// built by a test that has not taken the one project-wide lock, and the borrow checker
+    /// additionally forces the restore to happen *before* the lock is released, so no other test
+    /// can observe the intermediate value.
+    #[cfg(test)]
+    pub struct EnvRestore<'lock> {
+        name: &'static str,
+        prior: Option<std::ffi::OsString>,
+        _held: std::marker::PhantomData<&'lock ()>,
+    }
+
+    #[cfg(test)]
+    impl<'lock> EnvRestore<'lock> {
+        pub fn under(_lock: &'lock std::sync::MutexGuard<'static, ()>, name: &'static str) -> Self {
+            Self {
+                name,
+                prior: std::env::var_os(name),
+                _held: std::marker::PhantomData,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    impl Drop for EnvRestore<'_> {
+        fn drop(&mut self) {
+            match self.prior.take() {
+                // SAFETY: the borrowed guard proves the process-global lock was held when this
+                // value was constructed, and the borrow outlives `self`, so the lock is still held
+                // now. No other thread in this binary may touch the environment meanwhile.
+                Some(prior) => unsafe { std::env::set_var(self.name, prior) },
+                // SAFETY: as above.
+                None => unsafe { std::env::remove_var(self.name) },
+            }
+        }
     }
 
     #[cfg(test)]
@@ -2614,6 +2668,87 @@ mod tests {
 
     fn registry() -> Arc<HandleRegistry> {
         HandleRegistry::new().expect("reserving address space must succeed on a 64-bit host")
+    }
+
+    /// The whole reason [`ledger::EnvRestore`] exists is the unwind path, so the unwind path is
+    /// what is asserted here rather than the tidy one.
+    ///
+    /// PR #54's blocker was a *lock* defect, but it exposed a second, quieter one that no amount
+    /// of locking fixes: four tests set `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` and cleared it in
+    /// a trailing statement. A trailing statement does not run when an assertion above it panics.
+    /// One red would then leave a live selector behind for the next test to inherit under the same
+    /// mutex — a second red, in a different test, with no shared cause named in either message.
+    ///
+    /// Both directions are asserted because they are different code paths in `drop`: a variable
+    /// that was *present* must come back with its own value, and one that was *absent* must come
+    /// back absent rather than as an empty string (the EP treats `""` as "not set" at the
+    /// selector, but `is_device_selector_set` and friends read `var()` directly elsewhere, so an
+    /// empty string is not reliably the same as absence).
+    #[test]
+    fn the_env_restore_guard_puts_the_variable_back_when_the_body_panics() {
+        // Named distinctly rather than `VAR`: the auditor keys env consts on their last path
+        // segment tree-wide, so a second `const VAR` bound to a different literal collapses both
+        // into one `AMBIGUOUS:VAR` pseudo-variable and drags an unrelated sole writer
+        // (`..._DEVICE_MEMORY_BUDGET_MB`, allocator.rs) into a fabricated contention pair.
+        const ENV_RESTORE_SELFTEST: &str = "ONNXRUNTIME_EP_VULKAN_ENV_RESTORE_SELFTEST";
+        let _g = ledger::test_lock();
+
+        /// Runs a body that is *expected* to panic, with the panic hook silenced for exactly the
+        /// duration of that call and restored immediately after.
+        ///
+        /// The silencing is needed at all because the deliberate panics below otherwise print
+        /// `thread '...' panicked at` lines, and `rust/tools/contention_gate.py`'s extractor reads
+        /// exactly those lines to name a failing test — a green repetition would report this test
+        /// as a red. The window is narrow on purpose: silencing for the whole test body also
+        /// swallows the message of an assertion failure *in this test*, which was observed while
+        /// writing it (the negative-control run printed `FAILED` and nothing else). A red with no
+        /// name is the defect that instrument exists to prevent, not one to reproduce here.
+        fn expect_unwind(what: &str, body: impl FnOnce() + std::panic::UnwindSafe) {
+            let prior_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let outcome = std::panic::catch_unwind(body);
+            std::panic::set_hook(prior_hook);
+            assert!(
+                outcome.is_err(),
+                "the {what} specimen must actually have unwound, or this test proves nothing"
+            );
+        }
+
+        // SAFETY: under the process-global test lock; restored by the guards below and by the
+        // explicit `remove_var` at the end.
+        unsafe { std::env::set_var(ENV_RESTORE_SELFTEST, "the-value-that-was-already-there") };
+
+        expect_unwind(
+            "present-variable",
+            std::panic::AssertUnwindSafe(|| {
+                let _env = ledger::EnvRestore::under(&_g, ENV_RESTORE_SELFTEST);
+                // SAFETY: as above.
+                unsafe { std::env::set_var(ENV_RESTORE_SELFTEST, "what-the-failing-test-set") };
+                panic!("a test body that fails after mutating the environment");
+            }),
+        );
+        assert_eq!(
+            std::env::var(ENV_RESTORE_SELFTEST).ok().as_deref(),
+            Some("the-value-that-was-already-there"),
+            "a panicking test must not leak its environment mutation to whatever runs next"
+        );
+
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(ENV_RESTORE_SELFTEST) };
+        expect_unwind(
+            "absent-variable",
+            std::panic::AssertUnwindSafe(|| {
+                let _env = ledger::EnvRestore::under(&_g, ENV_RESTORE_SELFTEST);
+                // SAFETY: as above.
+                unsafe { std::env::set_var(ENV_RESTORE_SELFTEST, "what-the-failing-test-set") };
+                panic!("a test body that fails after setting a previously absent variable");
+            }),
+        );
+        assert_eq!(
+            std::env::var_os(ENV_RESTORE_SELFTEST),
+            None,
+            "absence must be restored as absence — an empty string is a different reading"
+        );
     }
 
     /// A genuinely MIXED run must say "mixed", with the real ratio.

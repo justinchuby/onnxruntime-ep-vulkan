@@ -24,6 +24,17 @@ a guard that works:
   3. every file that holds one imports it from `crate::allocator::ledger`, so all of them
      are the same lock.
 
+Round 38 is (3) again, in the shape the tool was already able to see but had never been
+*shown* to see: `rust/src/vk/instance.rs` guarded `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR`
+with two disjoint mutexes -- three tests on `crate::allocator::ledger::test_lock()` and four
+on a module-private `serial_env()` with the same signature and the same call-site spelling.
+Measured: 14 reds in 25 reps of `contention_gate.py --pool env:device_selector` on Windows.
+The two specimens added for it (`ENV_PRIVATE_LOOKALIKE_SPECIMEN`,
+`ENV_FORWARDING_ALIAS_SPECIMEN`) differ by exactly one thing -- which mutex the local guard
+fn reaches -- so the selftest now demonstrates the discrimination rather than asserting it,
+and demonstrates it in *both* directions: the private lookalike is a finding and the
+`ep.rs::serialize()`-style forwarding helper is not.
+
 **Contended** is the load-bearing word in (2), and it is measured from the tree, not
 declared: a variable is contended when two or more tests in the concurrently-scheduled
 population touch it and at least one of them writes. That definition is also the diagnostic
@@ -455,6 +466,73 @@ fn top_level_reader() {
 }
 """
 
+#: Round 38. A module-private mutex that *looks* exactly like the sanctioned guard: same
+#: signature, same `unwrap_or_else(into_inner)` shape, same `let _g = ..()` call site --
+#: and a different lock. This is PR #54's blocker in miniature: four
+#: `select_device_strict_*` tests held a private `serial_env()` while three tests over the
+#: same variable held `crate::allocator::ledger::test_lock()`. Two disjoint mutexes over one
+#: process-global is not mutual exclusion, and a reviewer reading either test alone sees a
+#: guard. Measured pre-fix: 14 reds in 25 reps of the `env:device_selector` pool.
+#:
+#: The writer must be flagged and the reader must not, because "some tests here are
+#: guarded" is precisely the state that made this survive three reviews.
+ENV_PRIVATE_LOOKALIKE_SPECIMEN = """
+const ENV_THING: &str = "ONNXRUNTIME_EP_VULKAN_SPECIMEN_LOOKALIKE";
+mod tests {
+    use super::*;
+
+    /// Looks like the sanctioned guard. Is a different mutex.
+    fn serial_env() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn writer_under_the_private_mutex() {
+        let _g = serial_env();
+        unsafe { std::env::set_var(ENV_THING, "1") };
+    }
+
+    #[test]
+    fn reader_under_the_project_lock() {
+        let _g = crate::allocator::ledger::test_lock();
+        let _v = std::env::var(ENV_THING);
+    }
+}
+"""
+
+#: Round 38, the other half. The sanctioned *forwarding* helper -- a different name for the
+#: same mutex, which `ep.rs::serialize()` has used since Round 36. It must stay green, or
+#: the only remedy for the lookalike above would be to ban local guard fns outright, and an
+#: auditor that fires on the accepted precedent gets suppressed rather than obeyed.
+#:
+#: This pair and the pair above differ by exactly one thing -- where the body's lock comes
+#: from -- so a green here plus a red there is evidence the tool discriminates on the lock
+#: identity and not on the spelling of the call site.
+ENV_FORWARDING_ALIAS_SPECIMEN = """
+const ENV_THING: &str = "ONNXRUNTIME_EP_VULKAN_SPECIMEN_FORWARD";
+mod tests {
+    use super::*;
+
+    /// Same shape as the lookalike above, forwarding to the one project-wide lock.
+    fn serialize() -> std::sync::MutexGuard<'static, ()> {
+        crate::allocator::ledger::test_lock()
+    }
+
+    #[test]
+    fn writer_through_the_alias() {
+        let _g = serialize();
+        unsafe { std::env::set_var(ENV_THING, "1") };
+    }
+
+    #[test]
+    fn reader_through_the_alias() {
+        let _g = serialize();
+        let _v = std::env::var(ENV_THING);
+    }
+}
+"""
+
 
 def _env_specimen(text: str, whole=False):
     sources = [("specimen.rs", text)]
@@ -522,13 +600,34 @@ def selftest() -> int:
     if f2:
         failures.append("whole-file flag is inert -- it found them without being told")
 
+    # Round 38: the lock's *identity*, not the call site's spelling. These two specimens are
+    # identical except for which mutex the local guard fn reaches, so they only both hold if
+    # the tool is discriminating on the thing that actually decides mutual exclusion.
+    f, c, _s = _env_specimen(ENV_PRIVATE_LOOKALIKE_SPECIMEN)
+    if [name for _f, name, _l, _v in f] != ["writer_under_the_private_mutex"]:
+        failures.append(
+            "a module-private mutex read as a guard (or the project-locked reader was flagged): "
+            f"{f} -- this is PR #54's blocker and it must be exactly one finding"
+        )
+    if "ONNXRUNTIME_EP_VULKAN_SPECIMEN_LOOKALIKE" not in c:
+        failures.append("lookalike specimen was not even seen as contended")
+    f, c, _s = _env_specimen(ENV_FORWARDING_ALIAS_SPECIMEN)
+    if f:
+        failures.append(
+            f"a helper forwarding to ledger::test_lock() was flagged: {f} -- an auditor that "
+            "fires on the accepted `ep.rs::serialize()` precedent gets suppressed, not obeyed"
+        )
+    if "ONNXRUNTIME_EP_VULKAN_SPECIMEN_FORWARD" not in c:
+        failures.append("forwarding-alias specimen was not seen as contended -- vacuously green")
+
     for line in failures:
         print(f"SELFTEST FAIL: {line}")
     if not failures:
         print(
-            "selftest: 9/9 (counters: clean green, unguarded red, foreign-lock red; "
+            "selftest: 11/11 (counters: clean green, unguarded red, foreign-lock red; "
             "env: contended red, guarded green, sole ungated-but-reported, ignored ungated, "
-            "whole-file red and inert without the flag)"
+            "whole-file red and inert without the flag; private-lookalike mutex red on the "
+            "writer only, forwarding alias green and non-vacuously contended)"
         )
     return 1 if failures else 0
 

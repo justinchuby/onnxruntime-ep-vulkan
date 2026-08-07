@@ -3942,7 +3942,9 @@ mod tests {
         tally::note_session_device(1, &second, NAME);
         tally::on_residency_evaluated(false);
 
-        // SAFETY: single-threaded here; removed on the way out.
+        let _env = crate::allocator::ledger::EnvRestore::under(&_g, ENV_COUNTERS_FILE);
+        // SAFETY: under the process-global test lock; `_env` restores the prior value on every
+        // exit path, including the unwind that `.expect(..)` below takes when the dump is absent.
         unsafe { std::env::set_var(ENV_COUNTERS_FILE, &path) };
         dump_observations_if_requested();
         let doc = std::fs::read_to_string(&path).expect("dump must have written the file");

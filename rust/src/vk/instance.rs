@@ -2537,9 +2537,11 @@ mod tests {
     fn the_session_option_outranks_the_environment_and_neither_needs_the_other() {
         let devices = two_device_desk();
         let _g = crate::allocator::ledger::test_lock();
+        let _env = crate::allocator::ledger::EnvRestore::under(&_g, ENV_DEVICE_SELECTOR_STRICT);
 
         // SAFETY: the shared lock above serialises every test in this binary that touches the
-        // process environment; the variable is removed again below.
+        // process environment; `_env` restores the prior value on every exit path, including the
+        // unwind path an assertion below takes.
         unsafe { std::env::set_var(ENV_DEVICE_SELECTOR_STRICT, "index:0") };
 
         assert_eq!(
@@ -2582,7 +2584,9 @@ mod tests {
     fn an_unresolvable_selector_refuses_rather_than_choosing_a_neighbour() {
         let devices = two_device_desk();
         let _g = crate::allocator::ledger::test_lock();
-        // SAFETY: serialised by the lock above; this test must see no ambient selector.
+        let _env = crate::allocator::ledger::EnvRestore::under(&_g, ENV_DEVICE_SELECTOR_STRICT);
+        // SAFETY: serialised by the lock above and restored by `_env`; this test must see no
+        // ambient selector.
         unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
 
         let err = select_device_strict(&devices, Some("uuid:99999999999999999999999999999999"))
@@ -2625,7 +2629,9 @@ mod tests {
                 .unwrap_or_else(|e| panic!("the shared grammar must accept `{raw}`: {e}"));
             let devices = two_device_desk();
             let _g = crate::allocator::ledger::test_lock();
-            // SAFETY: serialised by the lock; the option path must not consult the environment.
+            let _env = crate::allocator::ledger::EnvRestore::under(&_g, ENV_DEVICE_SELECTOR_STRICT);
+            // SAFETY: serialised by the lock and restored by `_env`; the option path must not
+            // consult the environment.
             unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
             assert_eq!(
                 select_device_strict(&devices, Some(raw)),
@@ -2714,8 +2720,10 @@ mod tests {
 
     #[test]
     fn select_device_strict_returns_none_when_nothing_is_set() {
-        let _g = serial_env();
-        // SAFETY: test-only env mutation, serialized by `serial_env`.
+        let _g = crate::allocator::ledger::test_lock();
+        let _env = crate::allocator::ledger::EnvRestore::under(&_g, ENV_DEVICE_SELECTOR_STRICT);
+        // SAFETY: the one project-wide lock above serialises every test in this binary that
+        // touches the process environment; `_env` restores the prior value on every exit path.
         unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
         let devices = two_device_desk();
         assert_eq!(select_device_strict(&devices, None), Ok(None));
@@ -2723,45 +2731,35 @@ mod tests {
 
     #[test]
     fn select_device_strict_reads_the_env_var_when_no_session_override() {
-        let _g = serial_env();
-        // SAFETY: test-only env mutation, serialized by `serial_env`.
+        let _g = crate::allocator::ledger::test_lock();
+        let _env = crate::allocator::ledger::EnvRestore::under(&_g, ENV_DEVICE_SELECTOR_STRICT);
+        // SAFETY: as above.
         unsafe { std::env::set_var(ENV_DEVICE_SELECTOR_STRICT, "index:1") };
         let devices = two_device_desk();
         assert_eq!(select_device_strict(&devices, None), Ok(Some(1)));
-        // SAFETY: test-only env mutation, serialized by `serial_env`.
-        unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
     }
 
     #[test]
     fn select_device_strict_session_override_outranks_the_env_var() {
-        let _g = serial_env();
-        // SAFETY: test-only env mutation, serialized by `serial_env`.
+        let _g = crate::allocator::ledger::test_lock();
+        let _env = crate::allocator::ledger::EnvRestore::under(&_g, ENV_DEVICE_SELECTOR_STRICT);
+        // SAFETY: as above.
         unsafe { std::env::set_var(ENV_DEVICE_SELECTOR_STRICT, "index:1") };
         let devices = two_device_desk();
         assert_eq!(select_device_strict(&devices, Some("index:0")), Ok(Some(0)));
-        // SAFETY: test-only env mutation, serialized by `serial_env`.
-        unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
     }
 
     #[test]
     fn select_device_strict_malformed_env_value_is_an_error_not_a_fallback() {
-        let _g = serial_env();
-        // SAFETY: test-only env mutation, serialized by `serial_env`.
+        let _g = crate::allocator::ledger::test_lock();
+        let _env = crate::allocator::ledger::EnvRestore::under(&_g, ENV_DEVICE_SELECTOR_STRICT);
+        // SAFETY: as above.
         unsafe { std::env::set_var(ENV_DEVICE_SELECTOR_STRICT, "not-a-valid-selector") };
         let devices = two_device_desk();
         assert!(matches!(
             select_device_strict(&devices, None),
             Err(DeviceSelectionError::Malformed { .. })
         ));
-        // SAFETY: test-only env mutation, serialized by `serial_env`.
-        unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
-    }
-
-    /// Serializes tests that mutate `ENV_DEVICE_SELECTOR_STRICT` so they cannot interleave under
-    /// `cargo test`'s default multi-threaded runner (env vars are process-global).
-    fn serial_env() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     // -- Display impls used in log lines: smoke-test they don't panic and carry the selector --

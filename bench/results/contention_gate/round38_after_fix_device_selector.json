@@ -1,0 +1,23 @@
+{
+  "reps": 40,
+  "pools": {
+    "env:device_selector": {
+      "tests": [
+        "an_unresolvable_selector_refuses_rather_than_choosing_a_neighbour",
+        "both_selector_surfaces_share_one_grammar",
+        "select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+        "select_device_strict_reads_the_env_var_when_no_session_override",
+        "select_device_strict_returns_none_when_nothing_is_set",
+        "select_device_strict_session_override_outranks_the_env_var",
+        "the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "reps": 40,
+      "reds": 0,
+      "observed_rate": 0.0,
+      "elapsed_s": 13.4
+    }
+  },
+  "reds": [],
+  "verdict": "GREEN",
+  "extent": "Pools are derived from audit_counter_test_lock: tests touching the process-global counters, the ORT logger pointers, or a contended environment variable. A race reached only through a helper defined outside the test body is outside the auditor's extent and therefore outside this gate's pools."
+}
