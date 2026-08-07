@@ -2480,6 +2480,257 @@ def test_census_completeness_is_registered_and_does_not_close_row_12():
 
 
 # ---------------------------------------------------------------------------
+# Issue #61: `_defined_symbols()` / `check_stale_absence_claims()` must hold out
+# `#[cfg(test)]` spans using `test_line_span()`, exactly as `extract_env_switches()`
+# already does — a symbol defined only inside a test module is not a production
+# definition. These are the reviewer's twelve probes, reproduced directly against the
+# real oracle, plus the nested-module/malformed/cfg_attr/macro edge cases the fix must
+# not regress.
+# ---------------------------------------------------------------------------
+
+
+def _write_rust_tree(tmp_path: Path, files: dict) -> Path:
+    src = tmp_path / "rust_src"
+    src.mkdir()
+    for name, text in files.items():
+        (src / name).write_text(text, encoding="utf-8")
+    return src
+
+
+def _stale_claims_for_multi(tmp_path: Path, rust_text: str, symbols: list) -> tuple:
+    import importlib
+
+    mod = importlib.import_module("check_census_completeness")
+    src = _write_rust_tree(tmp_path, {"probe.rs": rust_text})
+    mapping = {
+        "surfaces": [
+            {
+                "kind": "counter",
+                "id": f"probe_entry_{i}",
+                "disposition": "uncensused",
+                "reason": "probe entry for issue #61's oracle tests",
+                "owner": "Link",
+                "absence_claims": [symbol],
+            }
+            for i, symbol in enumerate(symbols)
+        ]
+    }
+    return mod.check_stale_absence_claims(src, mapping)
+
+
+def _stale_claims_for(tmp_path: Path, rust_text: str, symbol: str) -> tuple:
+    return _stale_claims_for_multi(tmp_path, rust_text, [symbol])
+
+
+def test_probe_01_real_production_fn_is_flagged(tmp_path):
+    stale, _frame = _stale_claims_for(tmp_path, "fn scratch_symbol() {}\n", "scratch_symbol")
+    assert any(c["symbol"] == "scratch_symbol" for c in stale), stale
+
+
+def test_probe_02_genuinely_absent_symbol_is_not_flagged(tmp_path):
+    stale, _frame = _stale_claims_for(tmp_path, "fn something_else() {}\n", "scratch_symbol")
+    assert not stale, stale
+
+
+def test_probe_03_named_only_in_a_line_comment_is_not_flagged(tmp_path):
+    stale, _frame = _stale_claims_for(
+        tmp_path, "// fn scratch_symbol() {}\nfn other() {}\n", "scratch_symbol"
+    )
+    assert not stale, stale
+
+
+def test_probe_04_named_only_in_a_doc_comment_is_not_flagged(tmp_path):
+    stale, _frame = _stale_claims_for(
+        tmp_path, "/// fn scratch_symbol() {}\nfn other() {}\n", "scratch_symbol"
+    )
+    assert not stale, stale
+
+
+def test_probe_05_named_only_inside_a_string_literal_is_not_flagged(tmp_path):
+    stale, _frame = _stale_claims_for(
+        tmp_path, 'fn other() { let s = "fn scratch_symbol() {}"; }\n', "scratch_symbol"
+    )
+    assert not stale, stale
+
+
+def test_probe_06_named_only_in_a_block_comment_is_not_flagged(tmp_path):
+    stale, _frame = _stale_claims_for(
+        tmp_path, "/* fn scratch_symbol() {} */\nfn other() {}\n", "scratch_symbol"
+    )
+    assert not stale, stale
+
+
+def test_probe_07_defined_only_inside_cfg_test_mod_is_not_flagged(tmp_path):
+    """The hole issue #61 found: a symbol reachable only from `#[cfg(test)] mod` is not
+    a production definition, and must not convict an `absence_claims` entry naming it."""
+    rust = (
+        "pub fn production_untouched() {}\n"
+        "\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    use super::*;\n"
+        "\n"
+        "    fn scratch_symbol() {}\n"
+        "\n"
+        "    #[test]\n"
+        "    fn a_test() {\n"
+        "        scratch_symbol();\n"
+        "    }\n"
+        "}\n"
+    )
+    stale, frame = _stale_claims_for(tmp_path, rust, "scratch_symbol")
+    assert not stale, stale
+    assert frame["defined_symbol_lines_held_out"] > 0, frame
+
+
+def test_probe_08_static_definition_is_flagged(tmp_path):
+    stale, _frame = _stale_claims_for(
+        tmp_path, "static SCRATCH_SYMBOL: u32 = 1;\n", "SCRATCH_SYMBOL"
+    )
+    assert any(c["symbol"] == "SCRATCH_SYMBOL" for c in stale), stale
+
+
+def test_probe_09_generic_fn_definition_is_flagged(tmp_path):
+    stale, _frame = _stale_claims_for(
+        tmp_path, "fn scratch_symbol<T: Clone>(x: T) -> T { x }\n", "scratch_symbol"
+    )
+    assert any(c["symbol"] == "scratch_symbol" for c in stale), stale
+
+
+def test_probe_10_prose_only_reason_text_is_never_mined(tmp_path):
+    """The screen only rules on an explicit `absence_claims` entry. A `reason` string
+    asserting an absence in prose, with no `absence_claims`, must never be checked --
+    text-mining free-form prose is exactly the defect class this project's own
+    SOURCE-COSMETIC/digest incidents warn against."""
+    import importlib
+
+    mod = importlib.import_module("check_census_completeness")
+    src = _write_rust_tree(tmp_path, {"probe.rs": "fn scratch_symbol() {}\n"})
+    mapping = {
+        "surfaces": [
+            {
+                "kind": "counter",
+                "id": "probe_entry",
+                "disposition": "uncensused",
+                "reason": "no counter names the variant scratch_symbol",
+                "owner": "Link",
+            }
+        ]
+    }
+    stale, _frame = mod.check_stale_absence_claims(src, mapping)
+    assert not stale, stale
+
+
+def test_probe_11_non_circular_never_reads_its_own_bookkeeping_or_a_census_artifact():
+    """The oracle greps the tree directly; it must never read the map's own
+    `censused`/`uncensused` bookkeeping or a wiring-census artifact to decide a claim's
+    truth. Reading either would make the check circular -- it could never disagree with
+    the very thing it exists to check against."""
+    src = (CI_DIR / "check_census_completeness.py").read_text(encoding="utf-8")
+    start = src.index("def check_stale_absence_claims")
+    body = src[start : src.index("\n\n\n", start)]
+    assert "disposition" not in body, body
+    assert "observations" not in body, body
+    assert "load_census_artifacts" not in body, body
+
+
+def test_probe_12_nested_modules_and_braces_hold_out_correctly(tmp_path):
+    """A `#[cfg(test)] mod` containing further nested `mod`/`match`/block braces must be
+    held out IN FULL -- the brace counter must not close early on an inner block's `}`,
+    and production code textually AFTER the test module must still be read."""
+    rust = (
+        "pub fn production_untouched() {}\n"
+        "\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    mod nested {\n"
+        "        fn scratch_symbol() {\n"
+        "            match 1 {\n"
+        "                1 => { let _x = { 2 }; }\n"
+        "                _ => {}\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "    #[test]\n"
+        "    fn a_test() {}\n"
+        "}\n"
+        "\n"
+        "fn after_test_mod_is_still_production() {}\n"
+    )
+    stale, _frame = _stale_claims_for_multi(
+        tmp_path, rust, ["scratch_symbol", "after_test_mod_is_still_production"]
+    )
+    flagged = {c["symbol"] for c in stale}
+    assert "scratch_symbol" not in flagged, stale
+    assert "after_test_mod_is_still_production" in flagged, stale
+
+
+def test_unterminated_cfg_test_block_holds_out_to_end_of_file_not_a_crash(tmp_path):
+    """A `#[cfg(test)] mod` with no closing brace (a malformed/truncated file) must not
+    crash the oracle -- `test_line_span()`'s brace counter runs to EOF and holds out
+    every remaining line, the conservative-safe direction (a symbol in the unterminated
+    span reads as held-out, never as a confirmed production definition), and the
+    held-out count in the published frame reflects it rather than silently reporting a
+    smaller number."""
+    rust = (
+        "pub fn production_untouched() {}\n"
+        "\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    fn scratch_symbol() {\n"
+        "        let _x = 1;\n"
+    )
+    stale, frame = _stale_claims_for(tmp_path, rust, "scratch_symbol")
+    assert not stale, stale
+    assert frame["defined_symbol_lines_held_out"] >= 3, frame
+
+
+def test_cfg_attr_test_combinations_share_test_line_span_s_existing_limit(tmp_path):
+    """`test_line_span()` recognises the literal `#[cfg(test)]` attribute text, not
+    `#[cfg_attr(test, ...)]` or `#[cfg(all(test, ...))]` -- the same limit
+    `extract_env_switches()` already lives with (both import the one `test_line_span`).
+    This oracle inherits that limit rather than growing a bespoke Rust attribute parser
+    (R11: a decomposition that appears to close every case is the hardest kind of
+    wrong): a `#[cfg(all(test, ...))]`-gated module is NOT held out today, so a symbol
+    defined only inside one still reads as production. Documented here as a known,
+    shared limit rather than discovered later as a surprise."""
+    rust = (
+        '#[cfg(all(test, feature = "x"))]\n'
+        "mod tests {\n"
+        "    fn scratch_symbol() {}\n"
+        "}\n"
+    )
+    stale, _frame = _stale_claims_for(tmp_path, rust, "scratch_symbol")
+    assert any(c["symbol"] == "scratch_symbol" for c in stale), (
+        "expected the documented parser limit (only the literal #[cfg(test)] text is "
+        "recognised) to read this as production; if this now passes, test_line_span's "
+        "recognition grew and this test's premise needs revisiting, not deleting"
+    )
+
+
+def test_macro_templated_fn_name_is_invisible_to_the_regex_oracle(tmp_path):
+    """Known, shared limit: every extractor in this file is a regex over literal source
+    text, never a Rust parser (R11). A function name generated from a `macro_rules!`
+    template (`fn $name() {}`) never appears as the literal identifier after `fn` in the
+    source text, so it is invisible to `_defined_symbols()` -- consistent with, not a
+    regression from, this fix."""
+    rust = (
+        "macro_rules! make_fn {\n"
+        "    ($name:ident) => {\n"
+        "        fn $name() {}\n"
+        "    };\n"
+        "}\n"
+        "make_fn!(scratch_symbol);\n"
+    )
+    stale, _frame = _stale_claims_for(tmp_path, rust, "scratch_symbol")
+    assert not stale, (
+        "the literal identifier 'scratch_symbol' never appears after 'fn' in the "
+        "source text, so the oracle correctly (if conservatively) does not see it"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Issue #47: the two ways this screen went blind, each pinned by its own arm.
 # ---------------------------------------------------------------------------
 #
