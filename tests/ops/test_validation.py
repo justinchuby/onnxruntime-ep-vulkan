@@ -641,6 +641,13 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
     # each env arm above is proven to have applied its overrides before its probe ran:
     # PR #45's criterion-4 twin lost exactly that property and its "registry_disable beat
     # the env arms" reading was a walkover (Morpheus's rejection of head e2b7e00).
+    #
+    # OBSERVED with both competitors in the race: run 31140073862, job 92747912924
+    # (Windows, head 26061ef). `high_integrity_process: true`; `layer_search_path`
+    # (env_applied VK_ADD_LAYER_PATH, VK_LAYER_PATH) and `loader_layer_filter`
+    # (+ VK_LOADER_LAYERS_DISABLE) both left the gate ARMED, and `registry_disable`
+    # produced LAYER-ABSENT. Recorded in that run's
+    # `criterion3d_layer_witness-devunset.json`.
     attempts: list[tuple[str, str, str]] = []
     env_applied_by_arm: dict[str, list[str]] = {}
     stripped_state = stripped_reason = ""

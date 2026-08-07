@@ -311,6 +311,16 @@ def _icd_suppression_arms() -> "list[tuple[str, object]]":
     environment that actually reached its child (`env_applied`) and the VK_* variables the
     child actually observed (`env_observed_in_child`) — and is read from there, not
     predicted from here.
+
+    WHAT *HAS* NOW BEEN OBSERVED, with both competitors demonstrably in the race:
+    run 31140073862, job 92747912924 (Windows, head 26061ef).  `high_integrity_process`
+    was `true`; `driver_search_path` and `loader_driver_filter` each delivered their
+    variables and the child echoed them back
+    (`VK_DRIVER_FILES=D:\\a\\...\\does_not_exist\\no_such_icd.json`,
+    `VK_LOADER_DRIVERS_DISABLE=*`), and each still reported
+    `icd_suppression_ineffective`; `registry_disable` reported `suppressed`.  That is a
+    comparison, not a walkover.  The Linux twin (job 92747912988) recorded
+    `driver_search_path` delivering the same variables and reporting `suppressed`.
     """
     nonexistent = str(REPO / "does_not_exist" / "no_such_icd.json")
     return [
