@@ -303,8 +303,11 @@ CHECKS: tuple[Check, ...] = (
             "Plant a counter field, a trace Phase variant and an env switch in a scratch "
             "copy of rust/src; drop a mechanism from a scratch copy of the census "
             "artifacts; rot the map; record a name as verified against arms that never "
-            "varied. Twelve arms in "
-            "ci/negative_control_census_completeness.py, all fired 2026-08-02."
+            "varied; replay issue #58's stale absence claim and its true-absence "
+            "counter-control; plant a scratch production symbol reachable only from a "
+            "#[cfg(test)] mod and demand the absence_claims arm naming it stays green "
+            "(issue #61). 15 arms in "
+            "ci/negative_control_census_completeness.py, all fired 2026-08-07."
         ),
         arm_healthy=(
             "50 instrumented surfaces enumerated (14 counter fields, 10 trace phases, 26 "
@@ -436,7 +439,7 @@ CHECKS: tuple[Check, ...] = (
             "Its own baseline arm: if the unmutated tree is not green, no red from a "
             "later arm can be attributed to the injection that was supposed to cause it."
         ),
-        arm_healthy="all twelve arms fired 2026-08-02, each naming the surface it planted",
+        arm_healthy="all 15 arms fired 2026-08-07, each naming the surface it planted",
         arm_broken=(
             "a mutation that cannot be performed is reported "
             "ERROR(instrument=anchor_not_found), never as a pass — the same discipline "
