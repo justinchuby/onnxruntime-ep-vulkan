@@ -270,7 +270,11 @@ unreachable — imports, registers, runs, and asserts the EP was selected. Its `
 of `onnx`/`numpy` into that venv defaults to the approved proxy index
 (`https://packagefeedproxy.microsoft.io/pypi/simple`, override with `--index-url` or
 `$ONNXRUNTIME_EP_VULKAN_PYPI_INDEX_URL`) because public PyPI is blocked in the sandboxes
-this tool is actually run from during EP development (issue #40).
+this tool is actually run from during EP development (issue #40). If an override embeds
+credentials (`user:pass@host/...`), those credentials reach `pip` alone, in the argv passed
+directly to it — the tool's own progress echo and its persisted
+`cleanroom_install_dev0.json` record always redact any URL userinfo to a fixed
+`REDACTED@host` placeholder first, never the raw value (issue #55).
 `bench/results/cleanroom_install_dev0.json` records the run: `verdict: PASS`,
 `session_providers: ["VulkanExecutionProvider", "CPUExecutionProvider"]`,
 `artifact_inside_site_packages: true`, on Windows / RTX 4060 / ORT 1.28.0. **It has been

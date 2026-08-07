@@ -36,11 +36,13 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 PY_DIR = Path(__file__).resolve().parent
 REPO = PY_DIR.parent
@@ -56,6 +58,85 @@ DEFAULT_INDEX_URL = os.environ.get(
     "ONNXRUNTIME_EP_VULKAN_PYPI_INDEX_URL",
     "https://packagefeedproxy.microsoft.io/pypi/simple",
 )
+
+# Issue #55: a custom --index-url may embed userinfo (a token, or user:pass@) for a
+# private/authenticated mirror. That is exactly the shape a shell history, a CI log, or
+# this tool's own persisted record must never carry. _REDACTED_USERINFO replaces it
+# everywhere this module *echoes or persists* an index URL; the one place the real,
+# unredacted value must still reach is the argv handed straight to `subprocess.run` for
+# pip itself (never through a shell, so there is no second place credentials could leak
+# via shell history/expansion).
+_REDACTED_USERINFO = "REDACTED"
+
+
+def _redact_url_userinfo(url: str) -> str:
+    """Return *url* with any userinfo (``user:pass@``, ``user@``, percent-encoded
+    credentials) replaced by a fixed placeholder. Scheme, host, port, path, query and
+    fragment are preserved so the redacted value still carries provenance (which index,
+    which mirror, which path) without carrying a secret.
+
+    RFC 3986 puts at most one *unencoded* ``@`` in an authority: it is the delimiter
+    between userinfo and host, and any ``@`` that is logically part of the userinfo
+    itself must be percent-encoded (``%40``) by whoever built the URL. Splitting on the
+    last literal ``@`` in the netloc is therefore correct for plain, username-only and
+    percent-encoded userinfo alike, including IPv6 hosts (``[::1]:8443``) and explicit
+    ports.
+
+    If the value cannot be parsed into a netloc at all, this does not try to be clever
+    about locating credentials inside an unparseable string -- it fails safe: any ``@``
+    still present triggers a conservative whole-string substitution, and if even that
+    cannot find an authority-like split point the caller gets a fixed placeholder
+    instead of ever risking the original bytes.
+    """
+    if not url:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        parts = None
+
+    if parts is not None and parts.netloc:
+        if "@" not in parts.netloc:
+            return url  # no userinfo present -- nothing to redact
+        _, _, hostport = parts.netloc.rpartition("@")
+        new_netloc = f"{_REDACTED_USERINFO}@{hostport}" if hostport else _REDACTED_USERINFO
+        return urlunsplit((parts.scheme, new_netloc, parts.path, parts.query, parts.fragment))
+
+    # urlsplit either raised or found no netloc (e.g. no "//" authority section) --
+    # this is a malformed/unusual index-url. Documented safe fallback: redact
+    # conservatively rather than pass the raw text through.
+    if "@" in url:
+        scrubbed = re.sub(r"//[^/@\s]*@", f"//{_REDACTED_USERINFO}@", url, count=1)
+        if scrubbed != url:
+            return scrubbed
+        return f"<{_REDACTED_USERINFO}-unparseable-index-url>"
+    return url
+
+
+def _scrub_text(text: str, raw_url: str) -> str:
+    """Best-effort scrub of *raw_url*'s literal bytes out of subprocess-produced text
+    (pip's own stdout/stderr can and does echo the index URL it was given, including any
+    credentials, in "Looking in indexes"/error messages -- this is not this module's own
+    echo, but it is still a leak of the same secret if persisted or printed verbatim)."""
+    if not raw_url or raw_url not in text:
+        return text
+    redacted = _redact_url_userinfo(raw_url)
+    if redacted == raw_url:
+        return text
+    return text.replace(raw_url, redacted)
+
+
+def _echo_cmd(cmd: list) -> str:
+    """Render *cmd* for the ``$ ...`` progress echo with any URL-shaped token's userinfo
+    redacted. Applied to every token (not just a token following ``--index-url``) so a
+    future argument that happens to carry a URL is covered by construction rather than
+    by an allowlist of flag names that has to be kept in sync."""
+    rendered = []
+    for c in cmd:
+        s = str(c)
+        rendered.append(_redact_url_userinfo(s) if "://" in s else s)
+    return " ".join(rendered)
+
 
 # Runs inside the fresh interpreter. Prints one JSON line prefixed with @@.
 _CONSUMER = r'''
@@ -104,7 +185,7 @@ print("@@" + json.dumps(out))
 
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    print("$", " ".join(str(c) for c in cmd))
+    print("$", _echo_cmd(cmd))
     return subprocess.run([str(c) for c in cmd], **kw)
 
 
@@ -168,12 +249,17 @@ def main(argv: list[str] | None = None) -> int:
             pip_cmd += ["--index-url", args.index_url]
         pip_cmd += [wheel, "onnx", "numpy"]
         install = _run(pip_cmd, capture_output=True, text=True)
-        record["pip_index_url"] = args.index_url or "(pip default)"
+        record["pip_index_url"] = (
+            _redact_url_userinfo(args.index_url) if args.index_url else "(pip default)"
+        )
         record["pip_returncode"] = install.returncode
         if install.returncode != 0:
             record["verdict"] = "UNOBSERVABLE"
             record["reason"] = "pip install failed in the clean venv"
-            record["pip_stderr"] = install.stderr[-1500:]
+            # pip's own stderr can echo the --index-url it was given verbatim (e.g. in
+            # "Looking in indexes: ..." or a connection-error message), including any
+            # userinfo -- scrub before this is persisted or printed, same as the argv echo.
+            record["pip_stderr"] = _scrub_text(install.stderr[-1500:], args.index_url)
         else:
             frozen = _run([py, "-m", "pip", "freeze"], capture_output=True, text=True)
             record["installed"] = sorted(frozen.stdout.split())
@@ -188,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
             if payload is None:
                 record["verdict"] = "UNOBSERVABLE"
                 record["reason"] = "the clean interpreter emitted no reading"
-                record["stderr_tail"] = proc.stderr[-1500:]
+                record["stderr_tail"] = _scrub_text(proc.stderr[-1500:], args.index_url)
             else:
                 record.update(payload)
     finally:

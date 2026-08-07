@@ -264,29 +264,33 @@ jobs:
         run: python ci/negative_control_build_precondition.py
 
       - name: PowerShell exit-status screen (a verdict step must consume its own code)
-        # Issue #49: both Windows "Gate negative control" steps captured
+        # Issue #49 (PS1): both Windows "Gate negative control" steps captured
         # `ci/gate_chain_fp32.py`'s intentionally non-zero exit into `$code`, printed the
         # verdict with `Write-Host` (which never touches $LASTEXITCODE), and fell
         # through with no `exit`. GitHub's generated pwsh wrapper then appended
         # `if ((Test-Path variable:\LASTEXITCODE)) { exit $LASTEXITCODE }`, so the step's
         # real exit code stayed pinned to the gate's deliberately non-zero $code even
-        # when the step's own log said PASSED. This is a static screen over the workflow
-        # text for the general shape -- a step that captures $LASTEXITCODE into a
-        # variable and does not end its script by explicitly consuming it -- so it fires
-        # on the pull request that introduces the next instance rather than on the
-        # incident that reveals it.
+        # when the step's own log said PASSED.
+        # Issue #55 (PS2): the capture was never what made the verdict lie -- the
+        # un-inspected fall-through is. "Install Mesa lavapipe" had the identical shape
+        # with the capture removed: `vulkaninfoSDK.exe`'s own exit status, never named
+        # into a variable, sat unread behind a final `Write-Host "... OK ..."` with no
+        # `exit`. This is a static screen over the workflow text for both shapes -- a
+        # step that captures $LASTEXITCODE (PS1) or invokes a native command (PS2) and
+        # does not end its script by explicitly consuming/owning its exit status -- so
+        # it fires on the pull request that introduces the next instance rather than on
+        # the incident that reveals it.
         run: |
           python ci/check_powershell_exit_status.py \
             --summary "$GITHUB_STEP_SUMMARY" \
             .github/workflows/ci.yml .github/workflows/conformance.yml
 
       - name: PowerShell exit-status negative control (demand red on the real shape)
-        # Includes a REPLAYED arm: the real stale-exit-code text read out of this
-        # repository's own history at the commit issue #49 was filed against, not a
-        # plant, and it asserts BOTH known offending steps are named -- the one issue
-        # #49 was filed against and its sibling, which carries the identical shape and
-        # had simply never been exercised because Windows' ICD suppression had never
-        # taken until PR #45.
+        # Includes REPLAYED arms: the real stale-exit-code text read out of this
+        # repository's own history at the commit issue #49 was filed against (PS1, both
+        # known offending steps named), and separately at the commit issue #55 was
+        # filed against, d2bf65f (PS2, "Install Mesa lavapipe"'s no-capture sibling
+        # shape) -- neither reconstructed from memory.
         run: python ci/negative_control_powershell_exit_status.py
 
       - name: Flake-witness negative control (demand red on an intermittent)
@@ -1655,6 +1659,15 @@ jobs:
             exit 1
           }
           Write-Host "lavapipe smoke-check: OK (llvmpipe enumerated)"
+          # This step's own verdict is PASS at this point (issue #55): $LASTEXITCODE
+          # here is still vulkaninfoSDK.exe's own exit status, a different proposition
+          # from "the text it printed contained llvmpipe" -- and Write-Host never
+          # touches it. Without this explicit exit, GitHub's generated `pwsh -command`
+          # wrapper appends `if ((Test-Path variable:\LASTEXITCODE)) { exit
+          # $LASTEXITCODE }`, which would report this step's pass/fail on whatever
+          # vulkaninfoSDK.exe happened to exit with, not on whether llvmpipe was
+          # actually enumerated. See ci/check_powershell_exit_status.py PS2.
+          exit 0
 
       # -------------------------------------------------------
       # Python test environment

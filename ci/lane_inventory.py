@@ -1473,8 +1473,8 @@ CHECKS: tuple[Check, ...] = (
         lane=LANE_HOSTFREE,
         step="PowerShell exit-status screen (a verdict step must consume its own code)",
         watches=(
-            "Issue #49: a Windows `run:` step that captures `$LASTEXITCODE` into a "
-            "named variable to brand or print its OWN verdict, but whose success path "
+            "Issue #49 (PS1): a Windows `run:` step that captures `$LASTEXITCODE` into "
+            "a named variable to brand or print its OWN verdict, but whose success path "
             "ends without an explicit `exit`. GitHub's generated `pwsh` wrapper appends "
             "`if ((Test-Path variable:\\LASTEXITCODE)) { exit $LASTEXITCODE }` after the "
             "script body, so the step's real exit code stays pinned to whatever native "
@@ -1483,25 +1483,43 @@ CHECKS: tuple[Check, ...] = (
             "step's own verdict. Both Windows 'Gate negative control' steps carried this "
             "shape; the second is what issue #49 was filed against, the first is a "
             "second, proven-coupled instance that had simply never been exercised "
-            "because ICD suppression never used to take on an elevated Windows runner."
+            "because ICD suppression never used to take on an elevated Windows runner. "
+            "Issue #55 (PS2): the capture was never what made the verdict lie -- a "
+            "step that invokes a native command (`&`, a bare tool name, or a bare "
+            "`*.exe`) ANYWHERE in its body and ends on a `Write-Host` verdict print with "
+            "no intervening `exit` is relying on the SAME implicit wrapper, just without "
+            "ever having named a variable for it. 'Install Mesa lavapipe' carried this "
+            "exact shape -- `vulkaninfoSDK.exe`'s own exit status, unread, behind a "
+            "final `Write-Host \"lavapipe smoke-check: OK\"` with no `exit` -- and PS1's "
+            "`$name = $LASTEXITCODE` regex never reached it."
         ),
         status=DEMONSTRATED,
         mutation=(
-            "REPLAYED: the real ci.yml bytes at the commit issue #49 was filed against, "
-            "which carry the defect on BOTH Windows negative-control steps. PLANTED: a "
-            "renamed step and variable exercising the same shape, plus arms proving the "
-            "screen stays clean on every adjacent, correct shape (`exit $LASTEXITCODE` "
-            "directly, an explicit `exit 0`, a step that never captures the code at all, "
-            "and a two-command accumulate-then-exit pattern)."
+            "REPLAYED (PS1): the real ci.yml bytes at the commit issue #49 was filed "
+            "against, which carry the defect on BOTH Windows negative-control steps. "
+            "REPLAYED (PS2): the real ci.yml bytes at d2bf65f, the commit issue #55 was "
+            "filed against (PR #50 merged, PS1's two steps already fixed), where "
+            "'Install Mesa lavapipe' still carries the no-capture sibling shape -- and a "
+            "companion arm confirming PS1 alone would have left that tree PASS. "
+            "PLANTED: a renamed step/variable exercising PS1's shape and PS2's shape "
+            "each under a different tool/step name, plus arms proving both rules stay "
+            "clean on every adjacent, correct idiom (`exit $LASTEXITCODE` directly, an "
+            "explicit `exit 0`, a two-command accumulate-then-exit pattern, a bare "
+            "`*.exe` invocation, a known bare tool name, a step with no native call at "
+            "all) and a dedicated regression guard proving a `.exe` substring inside a "
+            "quoted URL/path VALUE (never invoked) does not false-positive PS2."
         ),
         arm_healthy=(
             "POWERSHELL-EXIT-STATUS: PASS -- 2 workflow files, 121 named steps scanned, "
-            "0 findings (after both Windows steps gained an explicit `exit 0`)"
+            "0 findings (after both Windows Gate steps and 'Install Mesa lavapipe' all "
+            "gained an explicit `exit 0`)"
         ),
         arm_broken=(
             "POWERSHELL-EXIT-STATUS: FAIL(condition=stale_exit_code_after_native_capture) "
             "naming both `.github/workflows/ci.yml` Gate-negative-control steps by line "
-            "and their last (non-exiting) script line"
+            "and their last (non-exiting) script line, OR "
+            "FAIL(condition=native_exit_stale_at_verdict_print) naming 'Install Mesa "
+            "lavapipe' by line and its last (non-exiting) Write-Host line"
         ),
         observed="2026-08-07",
         misses=(
@@ -1510,16 +1528,20 @@ CHECKS: tuple[Check, ...] = (
             "pytest/onnx/numpy, and a screen skipped because an import failed is a "
             "screen that does not exist. It reports ERROR(instrument=no_steps_parsed) "
             "rather than PASS if its block-structure assumption ever stops matching.",
-            "It keys on the PowerShell-only spelling `$LASTEXITCODE` rather than on "
-            "`runs-on: windows-*`, so it is precise about the MECHANISM rather than the "
-            "platform -- but that also means a step that mishandles a native exit code "
-            "through some OTHER PowerShell idiom (e.g. `$?`, or a `try`/`catch` around a "
-            "native call) is outside its one named rule.",
-            "It only asks whether the LAST line of the script consumes the captured "
-            "code explicitly. A step whose success path passes through a captured "
-            "value and consumes it several statements before genuinely new, unrelated "
-            "native output follows would be a different, unproven shape this rule does "
-            "not reach.",
+            "PS2's native-call detection is a finite, explicit allowlist (`&`, and the "
+            "bare names cargo/rustc/rustup/python/pip/git/7z/gh/npm/node, or a bare "
+            "`*.exe` token), not an interpreter -- a native tool invoked through some "
+            "OTHER PowerShell idiom (`Start-Process`, `$?`, a `try`/`catch` around a "
+            "native call, or a tool name outside that list) is outside both named "
+            "rules. This is the honest remainder of what used to read '... through some "
+            "OTHER PowerShell idiom' before issue #55 closed the specific no-capture "
+            "gap that phrase was covering for.",
+            "It only asks whether the LAST line of the script is a consuming `exit` "
+            "(PS1) or a Write-Host verdict with a native call somewhere before it "
+            "(PS2). A step whose success path passes through a captured value (or a "
+            "native call) and consumes/reports on it several statements before "
+            "genuinely new, unrelated native output follows would be a different, "
+            "unproven shape neither rule reaches.",
         ),
     ),
     Check(
@@ -1528,33 +1550,41 @@ CHECKS: tuple[Check, ...] = (
         lane=LANE_HOSTFREE,
         step="PowerShell exit-status negative control (demand red on the real shape)",
         watches=(
-            "That the PowerShell exit-status screen still goes RED on the real "
-            "defect and on the general shape, not just on the two specific steps this "
-            "repository already fixed. A screen that has stopped firing is "
-            "indistinguishable from a clean tree."
+            "That the PowerShell exit-status screen still goes RED on both real "
+            "defects and on both general shapes (PS1 and PS2), not just on the three "
+            "specific steps this repository already fixed. A screen that has stopped "
+            "firing is indistinguishable from a clean tree."
         ),
         status=DEMONSTRATED,
         mutation=(
-            "12 arms: 1 LIVE (today's ci.yml is clean), 2 REPLAYED (the real bytes at "
-            "the commit issue #49 was filed against, asserting the condition token AND "
-            "that both known offending step names are reported, not just the one filed "
-            "in the issue), 9 PLANTED (the shape under a different name, each adjacent "
-            "correct idiom staying clean, and both instrument paths)."
+            "20 arms: 1 LIVE (today's ci.yml is clean under both rules), 4 REPLAYED "
+            "(the real bytes at the commit issue #49 was filed against, asserting the "
+            "PS1 condition token AND that both known offending step names are "
+            "reported; and separately the real bytes at d2bf65f, the commit issue #55 "
+            "was filed against, asserting the PS2 condition token names 'Install Mesa "
+            "lavapipe' AND that PS1 alone would have missed it), 15 PLANTED (each "
+            "rule's shape under a different name, each adjacent correct idiom staying "
+            "clean under both rules, a dedicated regression guard for the `.exe`-in-a-"
+            "quoted-string false positive, and both instrument paths)."
         ),
-        arm_healthy="12/12 arms fire as specified, exit 0",
+        arm_healthy="20/20 arms fire as specified, exit 0",
         arm_broken=(
             "Caught a real bug in the screen on its first run: the FAIL branch printed "
             "the human-readable report but never the R13 `FAIL(condition=...)` token "
             "itself -- the exact defect class `check_build_precondition.py`'s own "
             "negative control found in that screen on 2026-08-03, in a different "
-            "screen written four days later."
+            "screen written four days later. Issue #55's PS2 widening separately caught "
+            "its own would-be false positive during authoring: an early draft of "
+            "PS2's native-call regex matched a `.exe` substring inside 'Install LunarG "
+            "Vulkan SDK''s quoted download URL, which was never invoked as a command; "
+            "the regression guard arm above pins that case shut."
         ),
         observed="2026-08-07",
         misses=(
-            "The REPLAYED arm pins a commit hash. If that commit is ever unreachable "
-            "(a squashed history, a fresh shallow clone) those two arms "
+            "The REPLAYED arms each pin a commit hash. If either commit is ever "
+            "unreachable (a squashed history, a fresh shallow clone) that pair of arms "
             "ERROR(instrument=...) rather than passing quietly, but that still leaves "
-            "the screen's only non-planted evidence unavailable.",
+            "the corresponding rule's only non-planted evidence unavailable.",
         ),
     ),
     Check(
