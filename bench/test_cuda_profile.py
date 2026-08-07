@@ -19,18 +19,21 @@ The four defects that motivated these tests, in the order they were found:
    single inference.
 
 3. **A blind spot charged to whatever was visible.** The trace's outermost span opened
-   inside ``dispatch_ort``, not at the ``Compute`` entry point, so 27 ms per inference had
-   no row. That 27 ms turned out to be the harness's own counters-file dump.
+   inside ``dispatch_ort``, not at the ``Compute`` entry point, so a large per-inference
+   term had no row. It turned out to be the harness's own counters-file dump. (The pre-fix
+   run is not a committed artifact; the corrected term is ``outside_subgraph_ms`` =
+   **0.056 ms** in ``bench/results/_cuda69/profile_prefill_1.json``.)
 
 4. **The instrument that saw it was emitted and never read.** ``vulkan.compute_call`` was
    added to close (3) and ``compute_calls()`` went on anchoring on ``vulkan.subgraph``, so
-   every span in the 27 ms region landed in the ``None`` bucket and appeared in no per-call
+   every span in that region landed in the ``None`` bucket and appeared in no per-call
    or steady-state total. A blind spot that is measurable but unattributed is renamed, not
    closed — and the accompanying ``Phase::BindCheck``, documented as the explanation for the
-   region, measured a warm median of 0.073 ms against it.
+   region, accounted for a negligible fraction of it.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -39,6 +42,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _polarity
+import cuda_competition as cc
 import cuda_profile as cp  # noqa: E402
 
 
@@ -71,7 +76,7 @@ def _call(ts, dur, inner_ts, inner_dur, nodes=1):
 def test_the_outer_bracket_is_preferred_over_the_inner_one():
     """The defect: the instrument that saw the region was emitted and never read.
 
-    ``vulkan.compute_call`` was added to close a 27 ms blind spot; ``compute_calls()`` went
+    ``vulkan.compute_call`` was added to close a large blind spot; ``compute_calls()`` went
     on anchoring on ``vulkan.subgraph``, so the region stayed in the ``None`` bucket and no
     per-call or steady-state total contained it. Renamed, not closed.
     """
@@ -109,10 +114,14 @@ def test_a_trace_without_the_outer_bracket_still_reduces_and_says_it_is_bounded(
 
 
 def test_the_region_between_the_two_brackets_is_measured_and_reported():
-    """The number Tank's review is about: 62.3 ms outer, 33.9 ms inner, 27.0 ms between.
+    """The region Tank's review is about: a large term between the outer and inner brackets.
 
-    Shaped exactly like the real trace — almost all of the difference falls *after* the
-    inner span closes, not before it.
+    The microsecond figures below are a **synthetic** trace shaped like the real one — every
+    call splits identically, which is what lets this test assert an exact partition. They are
+    not measurements and must not be quoted as any; the committed figures live in
+    ``bench/results/_cuda69/profile_prefill_1.json``. What is modelled from the real trace is
+    the *shape*: almost all of the difference falls **after** the inner span closes, not
+    before it.
     """
     events = []
     for i in range(4):
@@ -156,7 +165,8 @@ def test_the_reconciliation_terms_do_not_overlap_and_stay_on_one_axis():
     assert "untraced" in rec["do_not"]
     assert "UNATTRIBUTED" in rec["outside_subgraph_attribution"], (
         "the region is measured, not explained; the last claim made about it "
-        "(Phase::BindCheck, 'the binding checks') was 0.073 ms against 27.0 ms")
+        "(Phase::BindCheck, 'the binding checks') accounted for a negligible fraction of it "
+        "and was withdrawn")
 
 
 def test_a_reduction_of_an_admissible_traced_run_issues_no_refusals():
@@ -473,3 +483,222 @@ def test_the_committed_profile_artifact_agrees_with_the_module():
     assert "tracer-overhead-immune" not in md, (
         "the rendered report still makes the withdrawn claim in prose")
     assert "withdrawn" in md.lower()
+# ---------------------------------------------------------------------------
+# B3: a record may not be green and refusing at the same time
+# ---------------------------------------------------------------------------
+#
+# `GPU_TIME_MEASURED` beside a non-empty `refusals` list is a record disagreeing with
+# itself, and the verdict is the part people read.  These tests are on `seal_verdict`
+# and on `attribute()`'s live behaviour -- the committed-artifact check further down is
+# deliberately secondary, because an artifact can be regenerated and the invariant has
+# to hold for runs nobody has taken yet.
+
+def test_seal_withholds_a_green_verdict_from_a_refusing_record():
+    out = _polarity.withholds(
+        cp.seal_verdict({"verdict": cp.GPU_TIME_MEASURED, "refusals": ["the trace lied"]}),
+        because="a record that refuses may not also call itself measured")
+    assert out == cp.GPU_TIME_MEASURED
+
+
+def test_seal_leaves_a_clean_green_verdict_alone():
+    """The negative control. A gate that fires on everything screens nothing."""
+    _polarity.publishes(
+        cp.seal_verdict({"verdict": cp.GPU_TIME_MEASURED, "refusals": []}),
+        cp.GPU_TIME_MEASURED, because="nothing refused, so nothing is withheld")
+
+
+def test_seal_does_not_relabel_a_verdict_that_was_never_green():
+    """`TRACE_ABSENT` is already not a claim; downgrading it would erase why it refused."""
+    for v in (cp.TRACE_ABSENT, cp.GPU_TIME_UNAVAILABLE):
+        out = cp.seal_verdict({"verdict": v, "refusals": ["something"]})
+        assert out["verdict"] == v
+        assert "withheld_from" not in out
+
+
+def test_attribute_withholds_the_verdict_when_the_run_refuses():
+    """End to end: a refusal raised anywhere inside `attribute` costs the green token.
+
+    Driven through a *real* refusal path -- the traced record arrives already refusing --
+    rather than by poking `out` directly, so this fails if a future exit forgets the seal.
+    """
+    events = []
+    for i in range(4):
+        base = i * 1_000_000
+        events += _call(base, 60_000, base + 100, 30_000)
+        events.append(_phase("record", base + 200, 5_000))
+        events.append(_phase("fence_wait", base + 6_000, 20_000))
+        events.append(_gpu("matmul", base + 500, 50, ns=50_000))
+    traced = {"workload": "w", "median_ms": 65.0, "warmup_ms": [1.0],
+              "steady_ms": [65.0, 65.0], "verdict": "ADMISSIBLE",
+              "counters_scope": cc.COUNTERS_SCOPE_FIRST_RUN,
+              "refusals": ["the device clock was not read on this run"]}
+    trace_file = Path(__file__).resolve().parent / "_test_trace_seal.json"
+    trace_file.write_text(json.dumps(events), "utf-8")
+    try:
+        out = cp.attribute(traced, {"median_ms": 57.0,
+                                    "counters_scope": cc.COUNTERS_SCOPE_FIRST_RUN},
+                           trace_file)
+    finally:
+        trace_file.unlink()
+    assert _polarity.withholds(out, because="the traced record arrived refusing") == (
+        cp.GPU_TIME_MEASURED)
+    assert out["verdict"] == cp.GPU_TIME_WITHHELD
+    assert "device clock" in " ".join(out["withheld_because"])
+    assert out["refusals"], "the refusal itself is not consumed by the downgrade"
+
+
+def test_every_exit_from_attribute_is_sealed():
+    """Structural, not behavioural: the gate must be on the *code path*, not on one case.
+
+    Reads `attribute`'s source and requires every `return` in it to go through
+    `seal_verdict`. A fifth early exit added later cannot quietly bypass the invariant --
+    which is the failure mode that produced the committed artifact this blocker is about.
+    """
+    src = inspect.getsource(cp.attribute)
+    returns = [ln.strip() for ln in src.splitlines() if ln.strip().startswith("return ")]
+    assert returns, "attribute() has no returns; this test is reading the wrong function"
+    for ln in returns:
+        assert "seal_verdict(" in ln, (
+            f"unsealed exit from attribute(): {ln!r}. Every return must pass through "
+            f"seal_verdict so a refusal cannot ship beside a green verdict.")
+
+
+def test_render_leads_with_the_withheld_verdict_not_a_footnote():
+    """The renderer is what gets pasted into a PR; the withholding has to be above the fold."""
+    md = cp.render({"workload": "w", "verdict": cp.GPU_TIME_MEASURED,
+                    "refusals": ["the device clock was not read"]})
+    headline = next(ln for ln in md.splitlines() if ln.startswith("verdict: "))
+    assert headline == f"verdict: **{cp.GPU_TIME_WITHHELD}**", (
+        f"the headline still reads {headline!r}; the verdict is the part people quote")
+    preamble = md.split("## ")[0]
+    assert "withheld" in preamble.lower(), (
+        "the withholding must appear before the first section, not under the numbers")
+    assert "the device clock was not read" in md, "the reason survives the downgrade"
+
+    clean = cp.render({"workload": "w", "verdict": cp.GPU_TIME_MEASURED, "refusals": []})
+    assert f"verdict: **{cp.GPU_TIME_MEASURED}**" in clean, (
+        "negative control: a renderer that withholds unconditionally teaches readers to "
+        "ignore the token")
+    assert "withheld" not in clean.lower()
+
+
+def test_the_committed_artifact_is_not_green_while_refusing():
+    """Secondary to the structural tests above: one artifact, checked because it is public."""
+    art = (Path(__file__).resolve().parents[1] / "bench" / "results" / "_cuda69"
+           / "profile_prefill_1.json")
+    if not art.exists():
+        pytest.skip("committed artifact not present in this tree")
+    doc = json.loads(art.read_text("utf-8"))
+    if doc.get("verdict") in cp.GREEN_VERDICTS:
+        assert not doc.get("refusals"), (
+            f"{art.name} publishes {doc['verdict']} beside {len(doc['refusals'])} refusal(s)")
+
+
+# ---------------------------------------------------------------------------
+# B2: the documented figure is pinned to the committed artifact
+# ---------------------------------------------------------------------------
+
+#: Every place in the tree that quotes the post-fix `outside_subgraph` figure in prose.
+#: Adding a citation without adding it here is caught by the "no stale value" screen below.
+_OUTSIDE_SUBGRAPH_CITATION_SITES = (
+    "docs/PERF.md",
+    "rust/src/trace.rs",
+    "bench/cuda_profile.py",
+)
+
+#: The value this figure used to be documented as, from a run that was superseded. It must
+#: appear nowhere, or the docs are quoting a number the committed artifact does not contain.
+_SUPERSEDED_OUTSIDE_SUBGRAPH_MS = "0.053"
+
+
+def _committed_profile():
+    art = (Path(__file__).resolve().parents[1] / "bench" / "results" / "_cuda69"
+           / "profile_prefill_1.json")
+    if not art.exists():
+        pytest.skip("committed artifact not present in this tree")
+    return json.loads(art.read_text("utf-8"))
+
+
+def test_the_committed_artifact_agrees_with_itself_about_outside_subgraph():
+    """`outside_subgraph_ms` and `steady.median_outside_subgraph_us` are the same measurement."""
+    doc = _committed_profile()
+    ms = doc["compute_reconciliation"]["outside_subgraph_ms"]
+    us = doc["steady"]["median_outside_subgraph_us"]
+    assert us / 1000.0 == pytest.approx(ms), (
+        f"the artifact publishes {ms} ms and {us} us; they are one number in two units")
+    assert round(ms, 3) == pytest.approx(0.056), (
+        "the pin below is written against 0.056 ms; if the artifact legitimately changed, "
+        "update the artifact, the prose and this pin together -- never the prose alone")
+
+
+def test_every_documented_outside_subgraph_citation_matches_the_artifact():
+    """The provenance pin. Prose may not drift from the artifact it claims to cite.
+
+    The rejection that produced this test was documents citing **0.053 ms** while the
+    committed profile said 0.056. Both were plausible; only one was in the tree. So the
+    figure is read *out of the artifact* here and required to be the one the prose says.
+    """
+    doc = _committed_profile()
+    ms = doc["compute_reconciliation"]["outside_subgraph_ms"]
+    expected = f"{ms:.3f}".rstrip("0")
+    root = Path(__file__).resolve().parents[1]
+    for rel in _OUTSIDE_SUBGRAPH_CITATION_SITES:
+        text = (root / rel).read_text("utf-8")
+        assert expected in text, (
+            f"{rel} cites the outside-subgraph figure but not as {expected} ms, which is "
+            f"what {doc.get('workload')}'s committed profile actually measured")
+        assert _SUPERSEDED_OUTSIDE_SUBGRAPH_MS not in text, (
+            f"{rel} still quotes the superseded {_SUPERSEDED_OUTSIDE_SUBGRAPH_MS} ms figure; "
+            f"the committed artifact says {expected} ms")
+
+
+def test_the_pin_would_notice_a_drifting_document():
+    """Negative control: a pin that cannot fail is decoration."""
+    doc = _committed_profile()
+    ms = doc["compute_reconciliation"]["outside_subgraph_ms"]
+    expected = f"{ms:.3f}".rstrip("0")
+    drifted = f"the term reads {_SUPERSEDED_OUTSIDE_SUBGRAPH_MS} ms"
+    assert expected not in drifted
+    assert _SUPERSEDED_OUTSIDE_SUBGRAPH_MS in drifted
+
+
+# ---------------------------------------------------------------------------
+# Advisory: the medians do not algebraically partition
+# ---------------------------------------------------------------------------
+
+def test_the_reconciliation_says_out_loud_that_medians_do_not_partition():
+    """`sibling + unattributed != subgraph` in the committed artifact, by 0.482 ms.
+
+    Not a leak: each term is an independently-taken median over the warm calls, and the
+    median of a sum is not the sum of the medians. A reader of the JSON alone has no way
+    to know that, so the record has to say it.
+    """
+    doc = _committed_profile()
+    rec = doc["compute_reconciliation"]
+    lhs = rec["sibling_phases_ms"] + rec["unattributed_in_subgraph_ms"]
+    assert lhs != pytest.approx(rec["subgraph_ms"], abs=1e-9), (
+        "if these now partition exactly the artifact was regenerated; keep the note anyway, "
+        "it is a property of the statistic and not of this run")
+    note = rec.get("partition_note")
+    assert note, "the artifact leaves the residual unexplained"
+    assert "not" in note.lower() and "median" in note.lower()
+    assert f"{lhs:.3f}" in note and f"{rec['subgraph_ms']:.3f}" in note, (
+        "the note must show the arithmetic it is explaining, not just assert it")
+
+
+def test_the_partition_note_is_generated_not_pasted():
+    """Computed from the terms, so it cannot survive them changing underneath it."""
+    events = []
+    for i in range(4):
+        base = i * 1_000_000
+        events += _call(base, 60_000, base + 100, 30_000)
+        events.append(_phase("record", base + 200, 5_000))
+        events.append(_phase("fence_wait", base + 6_000, 20_000))
+    per_call = [cp._summarise_bucket(b)
+                for b in cp.bucket_by_call(events, cp.compute_calls(events))]
+    rec = cp.compute_reconciliation(cp.steady_state(per_call), traced_median_ms=70.0,
+                                    overhead_ratio=1.14, anchor=cp.choose_anchor(events))
+    assert "30.000 ms against subgraph_ms 30.000" in rec["partition_note"], rec["partition_note"]
+    assert "+0.000 ms" in rec["partition_note"], (
+        "this synthetic trace splits identically on every call, so its residual is zero; "
+        "the note still states the arithmetic rather than suppressing itself")

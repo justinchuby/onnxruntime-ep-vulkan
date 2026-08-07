@@ -927,10 +927,15 @@ def test_counters_scope_is_recorded_on_every_vulkan_arm():
     """The record must say which regime it was measured under.
 
     A number that was inflated by instrumentation and a number that was not are not
-    interchangeable, and the historical `baseline_main*.json` files contain the former.
-    Without this field on the record there is nothing in the artifact that distinguishes
-    them, and the only way to tell would be to remember — which is how the inflated
-    numbers would have been quoted forever.
+    interchangeable, and the withdrawn `baseline_main*.json` files contained the former:
+    their Vulkan `prefill_1` median read 44.605 ms against 27.733 ms for the same arm in
+    `baseline_fixed.json`, and they said `ADMISSIBLE` with no refusals while carrying no
+    `counters_scope` at all. Without this field on the record there is nothing in the
+    artifact that distinguishes the two regimes, and the only way to tell would be to
+    remember — which is how the inflated numbers would have been quoted forever.
+
+    This is the *shape* half. `test_every_committed_vulkan_record_declares_its_counters_scope`
+    is the half that looks at what actually got committed.
     """
     assert "counters_scope" in {f.name for f in dataclasses.fields(cc.ArmResult)}
     rec = cc.ArmResult(arm=cc.ARM_VULKAN, workload="w", model_key="m")
@@ -958,3 +963,92 @@ def test_keep_counters_flag_reproduces_the_artifact_on_purpose():
         finally:
             os.environ.pop(cc.KEEP_COUNTERS_ENV, None)
     assert cc._env_flag(cc.KEEP_COUNTERS_ENV) is False, "unset must be False"
+
+
+# ---------------------------------------------------------------------------
+# What actually got committed
+# ---------------------------------------------------------------------------
+
+def _committed_evidence_json():
+    """Every JSON under `_cuda69/` that git is actually tracking.
+
+    Reading the directory would also pick up a scratch file an operator happens to have
+    left there, which is not what "committed" means and would make this screen's verdict
+    depend on an untracked working tree.
+    """
+    import subprocess
+    repo = Path(__file__).resolve().parents[1]
+    out = subprocess.run(["git", "ls-files", "-z", "bench/results/_cuda69"],
+                         cwd=repo, capture_output=True, text=True, check=True).stdout
+    return [repo / f for f in out.split("\0") if f.endswith(".json")]
+
+
+def _measurement_records(node, path="$"):
+    """Yield every `(json-path, record)` that looks like one arm's measurement."""
+    if isinstance(node, dict):
+        if "arm" in node and "verdict" in node:
+            yield path, node
+        for k, v in node.items():
+            yield from _measurement_records(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from _measurement_records(v, f"{path}[{i}]")
+
+
+def test_committed_evidence_is_present_and_enumerable():
+    """A screen that silently rules on nothing passes for the wrong reason."""
+    files = _committed_evidence_json()
+    assert files, "no committed evidence JSON found; the screens below would rule on nothing"
+    records = [r for f in files
+               for r in _measurement_records(json.loads(f.read_text("utf-8")))]
+    assert records, "committed evidence contains no measurement records"
+    assert any(rec.get("arm") == cc.ARM_VULKAN for _, rec in records), (
+        "no committed Vulkan record: the counters_scope screen below would be vacuous")
+
+
+def test_every_committed_vulkan_record_declares_its_counters_scope():
+    """A committed Vulkan number must say which instrumentation regime produced it.
+
+    The EP rewrites its counters JSON after every `Compute`. With that dump left inside
+    the timed region a Vulkan median is inflated by the harness's own file write, and the
+    resulting record is indistinguishable from a clean one unless it says so. The
+    withdrawn `baseline_main_v2.json` was exactly that: 64 `ADMISSIBLE` results, no
+    refusals, no `counters_scope`, and a Vulkan `prefill_1` median 1.61x the corrected
+    one.
+
+    Scoped to Vulkan arms because `counters_scope` describes *our* EP's counters; a CUDA
+    or CPU arm has none and carries the field empty rather than absent.
+    """
+    offenders = []
+    for f in _committed_evidence_json():
+        doc = json.loads(f.read_text("utf-8"))
+        for jpath, rec in _measurement_records(doc):
+            if rec.get("arm") != cc.ARM_VULKAN:
+                continue
+            scope = rec.get("counters_scope")
+            if "counters_scope" not in rec:
+                offenders.append(f"{f.name}{jpath}: field absent")
+            elif not scope:
+                offenders.append(f"{f.name}{jpath}: empty ({scope!r})")
+            elif scope not in cc.COUNTERS_SCOPES:
+                offenders.append(f"{f.name}{jpath}: unknown scope {scope!r}")
+    assert not offenders, (
+        "committed Vulkan records without a declared counters scope:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_no_committed_record_calls_itself_admissible_while_refusing():
+    """`ADMISSIBLE` beside a non-empty `refusals` list is a record disagreeing with itself.
+
+    Secondary to the structural gate in `cuda_profile.attribute`; this one catches an
+    artifact produced before that gate existed that is still sitting in the tree.
+    """
+    offenders = []
+    for f in _committed_evidence_json():
+        doc = json.loads(f.read_text("utf-8"))
+        for jpath, rec in _measurement_records(doc):
+            refusals = rec.get("refusals") or []
+            if refusals and rec.get("verdict") in cc.GREEN_VERDICTS:
+                offenders.append(
+                    f"{f.name}{jpath}: {rec['verdict']} with {len(refusals)} refusal(s)")
+    assert not offenders, "\n  ".join(["records that refuse and pass at once:"] + offenders)

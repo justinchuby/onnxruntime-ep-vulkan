@@ -26,6 +26,8 @@ All terms are traced-run warm-call medians, in milliseconds. Do not subtract the
 
 `outside_subgraph`: MEASURED, UNATTRIBUTED. This instrument reports the size of the region and which side of `vulkan.subgraph` it falls on. It does not name its cause.
 
+**Read the table as terms, not as a sum.** these are independently-taken medians, not a partition: sibling_phases_ms + unattributed_in_subgraph_ms = 32.145 ms against subgraph_ms 32.627 ms, a residual of +0.482 ms. The median of a sum is not the sum of the medians unless every warm call splits the same way, so this residual is a property of the statistic and NOT unaccounted-for time. Do not report it as a gap.
+
 ## Device time
 
 - GPU kernel time per run: **18.9043 ms** (basis: warm_call_median, 13 warm calls, 4970 timestamped spans across all calls)

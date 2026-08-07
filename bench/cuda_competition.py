@@ -139,6 +139,24 @@ NOT_EQUIVALENT = "NOT_EQUIVALENT"
 UNMEASURED = "UNMEASURED"
 INSTRUMENT_ERROR = "INSTRUMENT_ERROR"
 
+#: Verdicts that read as "this number may be quoted". A record carrying one of these
+#: beside a non-empty ``refusals`` list is disagreeing with itself, which is the shape
+#: `test_no_committed_record_calls_itself_admissible_while_refusing` screens for.
+GREEN_VERDICTS = frozenset({ADMISSIBLE})
+
+#: Declared vocabulary for :attr:`ArmResult.counters_scope`.
+#:
+#: The EP rewrites its counters JSON after every ``Compute``. Left on for the whole run
+#: that file write lands inside every timed inference and inflates the Vulkan median --
+#: 44.605 ms against 27.733 ms for the same arm and workload on the same machine. The
+#: two numbers are not interchangeable, so the regime is part of the record rather than
+#: something a reader is expected to remember. Empty means "this arm has no Vulkan
+#: counters", which is every non-Vulkan arm; it is *not* a permitted value for a Vulkan
+#: record, and the committed-artifact screen enforces that.
+COUNTERS_SCOPE_FIRST_RUN = "first_run_only"
+COUNTERS_SCOPE_ALL_RUNS = "all_runs_INFLATES_TIMING"
+COUNTERS_SCOPES = frozenset({COUNTERS_SCOPE_FIRST_RUN, COUNTERS_SCOPE_ALL_RUNS})
+
 #: Above this share of *kernel time* on the CPU EP, the arm is a hybrid.
 #:
 #: **Why time and not node count.**  The first version of this gate counted profile
@@ -1014,9 +1032,9 @@ def run_arm(arm: str, workload: Workload, model: bench_models.ResolvedModel,
     # that is timed.  `_read_counters` still reads it below.
     if arm == ARM_VULKAN and not _env_flag(KEEP_COUNTERS_ENV):
         os.environ.pop(COUNTERS_ENV, None)
-        rec.counters_scope = "first_run_only"
+        rec.counters_scope = COUNTERS_SCOPE_FIRST_RUN
     elif arm == ARM_VULKAN:
-        rec.counters_scope = "all_runs_INFLATES_TIMING"
+        rec.counters_scope = COUNTERS_SCOPE_ALL_RUNS
 
     # --- warmup, kept and reported, never silently discarded -----------------
     for _ in range(warmup):

@@ -2577,13 +2577,20 @@ unsafe fn compute_impl(
     // SAFETY: `api` is live for every `make_status` below.
     let fail = |code, msg: String| unsafe { sys::make_status(api, code, &msg) };
 
-    // Opened before anything else this callback does, and closed when it returns.
+    // The instrumented success-path region, NOT the callback's true entry-to-return bracket.
     //
-    // `dispatch_ort` opens `vulkan.subgraph`, but that is not the region ORT charges to this EP:
-    // it starts inside `dispatch_ort` and ends inside it. Without an outer bracket a reduction
-    // cannot state how much of the callback no span covers, so it charges that time to whatever
-    // span it can see. This is a structural span (`cat == "ep"`), not a `Phase`: it is never
-    // summed into a sibling total and it adds no level to the phase tree.
+    // It opens here, inside `compute_impl`, which the `compute` entry point reaches only after
+    // the null check, resolving `this_info`, and entering `guard_ffi_status`; it closes on return
+    // from `compute_impl`, before `disclose_broken_commitment` runs. A call that early-outs in
+    // `compute` emits no span at all. So `vulkan.compute_call` is the widest bracket the EP
+    // instruments on the success path, and any reduction quoting it as ORT's `Compute` wall time
+    // is overstating what it covers — see `SPAN_COMPUTE_CALL` in `trace.rs`.
+    //
+    // It still exists for the reason it was added: `dispatch_ort` opens `vulkan.subgraph`, which
+    // starts and ends *inside* `dispatch_ort`, so without an outer bracket a reduction cannot
+    // state how much of the callback no span covers and charges that time to whatever span it can
+    // see. This is a structural span (`cat == "ep"`), not a `Phase`: it is never summed into a
+    // sibling total and it adds no level to the phase tree.
     let t = crate::trace::tracer();
     let _compute_call = t.compute_region();
 

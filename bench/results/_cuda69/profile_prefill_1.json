@@ -2,6 +2,7 @@
   "arm": "vulkan",
   "workload": "prefill_1",
   "traced_verdict": "ADMISSIBLE",
+  "counters_scope": "first_run_only",
   "refusals": [],
   "instrument_errors": [],
   "trace_events": 15057,
@@ -1296,6 +1297,7 @@
     "sibling_phases_ms": 25.708,
     "unattributed_in_subgraph_ms": 6.437,
     "outside_compute_call_ms": 1.3975999945839845,
+    "partition_note": "these are independently-taken medians, not a partition: sibling_phases_ms + unattributed_in_subgraph_ms = 32.145 ms against subgraph_ms 32.627 ms, a residual of +0.482 ms. The median of a sum is not the sum of the medians unless every warm call splits the same way, so this residual is a property of the statistic and NOT unaccounted-for time. Do not report it as a gap.",
     "outside_subgraph_attribution": "MEASURED, UNATTRIBUTED. This instrument reports the size of the region and which side of `vulkan.subgraph` it falls on. It does not name its cause.",
     "do_not": "subtract these traced-axis terms from `untraced_median_ms`; the traced run is 1.300x the untraced one"
   },

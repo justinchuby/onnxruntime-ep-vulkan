@@ -648,8 +648,13 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
 # actually varies the thing under test.  That is earned by mutation —
 # `bench/test_devices_identity.py` for this instrument, `tests/ops/test_guard_d.py` for
 # the harness domain — and it is not claimed by this screen.
-VALUE_REJECT_FN = frozenset({"refuses"})
-VALUE_ACCEPT_FN = frozenset({"selects"})
+# A verdict gate is total in a second shape: it takes a record and returns the same record
+# with its green verdict either withheld or left standing, because the refusal has to travel
+# with the numbers it disqualifies.  `withholds(...)`/`publishes(...)` name those polarities
+# and enforce them at run time exactly as `refuses`/`selects` do — a gate wired to nothing
+# cannot pass `withholds`, and a gate that fires on everything cannot pass `publishes`.
+VALUE_REJECT_FN = frozenset({"refuses", "withholds"})
+VALUE_ACCEPT_FN = frozenset({"selects", "publishes"})
 
 
 def _polarity_wrapped(fn, wrapper_names: "frozenset[str]") -> "set[int]":

@@ -122,3 +122,67 @@ def selects(result: Any, expected: Any, *, because: str = "") -> Any:
             f"the instrument identified a device{ctx} but gave no reason ({why!r})."
         )
     return value
+# ---------------------------------------------------------------------------
+# Verdict-token instruments
+# ---------------------------------------------------------------------------
+#
+# `refuses`/`selects` above are shaped for a `(value, why)` instrument. A verdict gate is
+# total in a different shape: it takes a record and hands back the same record with the
+# verdict either withheld or left standing, because the refusal has to travel WITH the
+# numbers it disqualifies rather than beside them.
+#
+# The alternative was to make `seal_verdict` return `(None, why)` so the existing helpers
+# could see it. That is option 1 from this module's header with the sign flipped -- making
+# the production path worse so the screen goes green -- and the caller genuinely needs the
+# record back: `attribute()` returns it and `render()` prints from it. So the second
+# polarity source gets a second shape, enforced exactly as strictly.
+
+
+def withholds(record: Any, *, because: str = "") -> str:
+    """Assert a verdict gate WITHHELD a green verdict, and return what it withheld.
+
+    The reject polarity. ``record`` must carry ``withheld_from`` (the verdict it took away)
+    and a non-empty ``withheld_because``. A gate that let a refusing record keep its green
+    token makes the test red -- which is the polarity that catches a gate wired to nothing.
+    """
+    ctx = f" ({because})" if because else ""
+    if not isinstance(record, dict):
+        raise PolarityError(
+            f"withholds{ctx}: a verdict gate must return the record it sealed; got "
+            f"{type(record).__name__} {record!r}.")
+    withheld = record.get("withheld_from")
+    if withheld is None:
+        raise PolarityError(
+            f"expected the verdict to be WITHHELD{ctx}, but the record still publishes "
+            f"{record.get('verdict')!r} with refusals {record.get('refusals')!r}. A record "
+            f"that refuses and calls itself measured is the defect this gate exists for.")
+    why = record.get("withheld_because")
+    if not why:
+        raise PolarityError(
+            f"the verdict was withheld{ctx} but the record does not say which refusals cost "
+            f"it ({why!r}). A verdict withdrawn without a reason is indistinguishable from "
+            f"one that was never issued.")
+    return withheld
+
+
+def publishes(record: Any, expected: Any, *, because: str = "") -> Any:
+    """Assert a verdict gate LEFT a clean verdict standing, and return it.
+
+    The accept polarity. A gate that withholds from everything screens nothing, and it would
+    be far worse than no gate: every reader would learn to ignore the token.
+    """
+    ctx = f" ({because})" if because else ""
+    if not isinstance(record, dict):
+        raise PolarityError(
+            f"publishes{ctx}: a verdict gate must return the record it sealed; got "
+            f"{type(record).__name__} {record!r}.")
+    if "withheld_from" in record:
+        raise PolarityError(
+            f"expected the verdict to STAND{ctx}, but the gate withheld "
+            f"{record['withheld_from']!r} citing {record.get('withheld_because')!r}. This is "
+            f"the polarity that catches a gate which fires on everything.")
+    got = record.get("verdict")
+    if got != expected:
+        raise PolarityError(
+            f"the gate left {got!r} standing{ctx}, expected {expected!r}.")
+    return got

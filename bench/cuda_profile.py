@@ -43,11 +43,14 @@ because getting any of them wrong silently produces a plausible wrong answer:
 **The anchor must be the outer bracket.**  Every span is bucketed into the `Compute` call
 whose window contains it.  Anchor on `vulkan.subgraph` while `vulkan.compute_call` exists
 and everything between the two brackets falls into the "outside any call" bucket, where no
-per-call total and no steady-state median can reach it — measured at a warm median of
-**27.0 ms per call** on Phi-3.5 `prefill_1`, of which 26.9 ms is *after* `vulkan.subgraph`
-closes.  That 27.0 ms was this harness's own counters-file dump running inside every timed
-inference; with the dump scoped to the first run the same term reads **0.053 ms**.  The
-anchor stays, because the region was invisible for as long as nothing bracketed it.
+per-call total and no steady-state median can reach it.  On Phi-3.5 `prefill_1` that hidden
+term was this harness's own counters-file dump running inside every timed inference, and it
+was the same order of magnitude as the inference itself.  The pre-fix run is *not* a
+committed artifact, so no figure is quoted for it here.  With the dump scoped to the first
+run the same term reads **0.056 ms** — `outside_subgraph_ms` in
+`bench/results/_cuda69/profile_prefill_1.json`, pinned by
+`test_cuda_profile.py::test_every_documented_outside_subgraph_citation_matches_the_artifact`.
+The anchor stays, because the region was invisible for as long as nothing bracketed it.
 :func:`choose_anchor` picks the outermost available span and records which one it used;
 matching is by **exact name**, never `startswith`.
 
@@ -142,13 +145,19 @@ NESTED_PHASES = ("upload", "readback", "desc_alloc", "pipeline_lookup", "cmd_upl
 #: ``cat == "ep"`` structural spans.  These bracket regions; they are **not** phases, they are
 #: never summed into any total, and they add no level to the phase tree.
 #:
-#: ``vulkan.compute_call`` is the whole ORT ``Compute`` callback; ``vulkan.subgraph`` opens
-#: inside ``dispatch_ort`` and is contained by it.  Anchoring the per-call bucketing on the
-#: inner span means every span outside it — however large — lands in the ``None`` bucket and
-#: appears in no per-call or steady-state total.  Measured on Phi-3.5 ``prefill_1``, that is a
-#: warm median of **27.0 ms per call**, of which 26.9 ms is *after* ``vulkan.subgraph`` closes.
-#: That region was the harness's own counters dump, not the EP; it reads **0.053 ms** once the
-#: dump is scoped to the first run.  The bracket is what made either number sayable.
+#: ``vulkan.compute_call`` is the **instrumented success-path region inside** ``compute_impl``
+#: — not ORT's literal ``Compute`` bracket.  It opens after the null check, ``this_info`` and
+#: the ``guard_ffi_status`` entry, and closes before ``disclose_broken_commitment``, so an
+#: early-out that never reaches ``compute_impl`` produces no span at all and the FFI guard's
+#: own cost is outside it.  ``vulkan.subgraph`` opens inside ``dispatch_ort`` and is contained
+#: by it.  Anchoring the per-call bucketing on the inner span means every span outside it —
+#: however large — lands in the ``None`` bucket and appears in no per-call or steady-state
+#: total.  On Phi-3.5 ``prefill_1`` that region was the harness's own counters dump, not the
+#: EP, and it was the same order of magnitude as the inference; the pre-fix run is not a
+#: committed artifact, so no figure for it is quoted here.  It reads **0.056 ms** once the
+#: dump is scoped to the first run (``outside_subgraph_ms``,
+#: ``bench/results/_cuda69/profile_prefill_1.json``).  The bracket is what made the number
+#: sayable at all.
 COMPUTE_CALL_SPAN = "vulkan.compute_call"
 SUBGRAPH_SPAN = "vulkan.subgraph"
 
@@ -159,6 +168,37 @@ ANCHOR_PREFERENCE = (COMPUTE_CALL_SPAN, SUBGRAPH_SPAN)
 GPU_TIME_MEASURED = "GPU_TIME_MEASURED"
 GPU_TIME_UNAVAILABLE = "GPU_TIME_UNAVAILABLE"
 TRACE_ABSENT = "TRACE_ABSENT"
+GPU_TIME_WITHHELD = "GPU_TIME_WITHHELD"
+
+#: Verdicts a reader may quote a number from without reading anything else.
+GREEN_VERDICTS = frozenset({GPU_TIME_MEASURED})
+
+
+def seal_verdict(out: dict) -> dict:
+    """Withhold a green verdict from a record that is simultaneously refusing.
+
+    ``GPU_TIME_MEASURED`` beside a non-empty ``refusals`` list is a record disagreeing with
+    itself, and it is the *token* people read: `bench/results/_cuda69`'s profile shipped
+    ``verdict: "GPU_TIME_MEASURED"`` next to a self-declared instrument disagreement and
+    passed as a green result for exactly that reason.
+
+    The gate is structural, applied on every exit from :func:`attribute` rather than at each
+    of the sites that can append a refusal, because "remember to downgrade the verdict when
+    you add a refusal" is the kind of obligation that holds until the next site is added.
+    Whoever appends a refusal does not have to know this rule exists.
+    ``test_every_exit_from_attribute_is_sealed`` reads the source and enforces it.
+
+    Nothing is deleted: the reduction is still on the record and still readable, and
+    ``withheld_because`` says exactly which refusals cost it the green token.  What changes
+    is that no reader can quote the number without meeting them.  Non-green verdicts are
+    left alone — ``TRACE_ABSENT`` is already not a claim, and relabelling it would erase why
+    it refused.
+    """
+    if out.get("verdict") in GREEN_VERDICTS and out.get("refusals"):
+        out["withheld_from"] = out["verdict"]
+        out["verdict"] = GPU_TIME_WITHHELD
+        out["withheld_because"] = list(out["refusals"])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -710,12 +750,25 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
         "refusals": list(traced.get("refusals") or []),
         "instrument_errors": list(traced.get("instrument_errors") or []),
     }
+    # This reduction is itself a Vulkan record, and the regime its inputs were measured
+    # under is the difference between a 27.733 ms median and a 44.605 ms one.  Inheriting it
+    # rather than leaving it absent is what stops the reduction from being the one Vulkan
+    # artifact in the tree that does not say which regime it describes.
+    out["counters_scope"] = traced.get("counters_scope")
+    untraced_scope = (untraced or {}).get("counters_scope")
+    if untraced is not None and untraced_scope != out["counters_scope"]:
+        # `overhead_ratio` divides one by the other, so two different regimes make it a
+        # ratio of two things that were not measured the same way.
+        out["refusals"].append(
+            f"the traced arm was measured with counters_scope={out['counters_scope']!r} and "
+            f"the untraced arm with {untraced_scope!r}. Every term that relates the two "
+            f"(overhead_ratio above all) compares different instrumentation regimes.")
     if not trace_path.is_file():
         out["verdict"] = TRACE_ABSENT
         out["refusals"].append(
             f"the EP wrote no trace to {trace_path}. Without it there is no phase split, "
             f"and a phase split guessed from a total is not a measurement.")
-        return out
+        return seal_verdict(out)
 
     events = load_trace(trace_path)
     out["trace_events"] = len(events)
@@ -769,7 +822,7 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
             "fence_wait is an UPPER BOUND on kernel time and is not substituted here.")
         out["gpu_ms_total"] = None
         out["gpu_share_traced"] = None
-        return out
+        return seal_verdict(out)
 
     out["verdict"] = GPU_TIME_MEASURED
     # Total inferences the traced process actually ran: the compile/first run, the
@@ -829,7 +882,7 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
     }
     out["compute_reconciliation"] = compute_reconciliation(
         steady, traced_median, out.get("overhead_ratio"), anchor)
-    return out
+    return seal_verdict(out)
 
 
 def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
@@ -855,8 +908,17 @@ def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
     ``outside_subgraph`` is the region the previous revision of this module could not see at
     all, because it anchored on the inner span.  It is reported as a number and a side, and
     nothing else: this reduction has no instrument that can name its cause, and the last claim
-    made about it (``Phase::BindCheck``, "the binding checks") measured 0.073 ms against a
-    27.0 ms region and was withdrawn.
+    made about it (``Phase::BindCheck``, "the binding checks") was withdrawn — it accounted for
+    a small fraction of a region orders of magnitude larger.  Neither the claim's magnitude nor
+    the region's is quoted here: the run that produced them is not a committed artifact.
+
+    **These medians do not algebraically partition.**  ``sibling_phases_ms`` +
+    ``unattributed_in_subgraph_ms`` does not equal ``subgraph_ms``, and it is not meant to:
+    each is an independently-taken median over the warm calls, and the median of a sum is not
+    the sum of the medians unless every call splits the same way.  In the committed artifact
+    that is 25.708 + 6.437 = 32.145 against a ``subgraph_ms`` of 32.627 — a 0.482 ms residual
+    that is an artefact of the statistic, not unaccounted time.  ``partition_note`` on the
+    returned dict carries this so a reader of the JSON alone cannot mistake the gap for a leak.
     """
     if not steady or not steady.get("warm_calls"):
         return {"available": False,
@@ -872,6 +934,15 @@ def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
     unattr = ms(steady.get("median_unattributed_in_subgraph_us"))
     out_of_call = (traced_median_ms - call
                    if traced_median_ms is not None and call is not None else None)
+    partition_note = None
+    if sibling is not None and unattr is not None and sub is not None:
+        partition_note = (
+            f"these are independently-taken medians, not a partition: "
+            f"sibling_phases_ms + unattributed_in_subgraph_ms = {sibling + unattr:.3f} ms "
+            f"against subgraph_ms {sub:.3f} ms, a residual of {sub - sibling - unattr:+.3f} ms. "
+            f"The median of a sum is not the sum of the medians unless every warm call splits "
+            f"the same way, so this residual is a property of the statistic and NOT "
+            f"unaccounted-for time. Do not report it as a gap.")
     return {
         "available": True,
         "axis": "traced-run warm-call medians, in milliseconds",
@@ -884,6 +955,7 @@ def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
         "sibling_phases_ms": sibling,
         "unattributed_in_subgraph_ms": unattr,
         "outside_compute_call_ms": out_of_call,
+        "partition_note": partition_note,
         "outside_subgraph_attribution": (
             "MEASURED, UNATTRIBUTED. This instrument reports the size of the region and which "
             "side of `vulkan.subgraph` it falls on. It does not name its cause."
@@ -900,9 +972,18 @@ def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
 # ---------------------------------------------------------------------------
 
 def render(report: dict) -> str:
+    # A rendered report is what people read instead of the JSON, so the withheld verdict
+    # has to arrive before the numbers, not in a REFUSAL footnote under them.
+    seal_verdict(report)
     lines: list = ["# Vulkan vs CUDA — gap attribution", ""]
     lines.append(f"workload: `{report.get('workload')}`  ")
     lines.append(f"verdict: **{report.get('verdict')}**")
+    if report.get("verdict") == GPU_TIME_WITHHELD:
+        lines.append("")
+        lines.append(f"> **{report.get('withheld_from')} is withheld.** This reduction "
+                     f"carries {len(report.get('withheld_because') or [])} unresolved "
+                     f"refusal(s), listed at the end of this report. The numbers below "
+                     f"are printed so they can be checked, not so they can be quoted.")
     lines.append("")
 
     if report.get("untraced_median_ms"):
@@ -950,6 +1031,9 @@ def render(report: dict) -> str:
         if rec.get("outside_subgraph_attribution"):
             lines.append("")
             lines.append(f"`outside_subgraph`: {rec['outside_subgraph_attribution']}")
+        if rec.get("partition_note"):
+            lines.append("")
+            lines.append(f"**Read the table as terms, not as a sum.** {rec['partition_note']}")
         lines.append("")
     for limit in report.get("scope_limits") or []:
         lines.append(f"> SCOPE LIMIT: {limit}")

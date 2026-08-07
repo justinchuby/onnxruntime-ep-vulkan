@@ -168,8 +168,9 @@ pub const ARG_VARIANT: &str = "kernel_variant";
 // `no_trace_name_is_a_prefix_of_another`, because `vulkan.record` is a phase and prefixes it —
 // which is the point of having the invariant as a test rather than as a naming habit.
 
-/// The whole `Compute` callback, from ORT's entry to its return. See
-/// [`VulkanTracer::compute_region`].
+/// The instrumented success-path region inside `compute_impl` — **not** ORT's literal `Compute`
+/// entry, which additionally covers the null check, `this_info`, the `guard_ffi_status` wrapper
+/// and `disclose_broken_commitment`. See [`VulkanTracer::compute_region`].
 pub const SPAN_COMPUTE_CALL: &str = "vulkan.compute_call";
 /// One fused subgraph's dispatch region, opened inside `dispatch_ort`. See
 /// [`VulkanTracer::subgraph_region`].
@@ -862,21 +863,27 @@ impl VulkanTracer {
         )
     }
 
-    /// Span around the *whole* `Compute` callback, opened before anything else in it.
+    /// Span around the instrumented success path of the `Compute` callback.
     ///
-    /// [`subgraph_region`](Self::subgraph_region) opens inside `dispatch_ort`, which is not the
-    /// entry point ORT calls, so it cannot see anything the callback does on either side of that
-    /// call. Measured on Phi-3.5 `prefill_1` (`bench/results/_cuda69/`, 14 `Compute` calls,
-    /// 13 warm), the two spans differed by a **warm median of 27.0 ms** — `vulkan.compute_call`
-    /// 62.3 ms against `vulkan.subgraph` 33.9 ms — and **26.9 ms of that 27.0 ms landed *after*
-    /// `vulkan.subgraph` closed**, not before it (warm median lead-in: 0.086 ms).
+    /// It is **not** ORT's literal `Compute` entry: `compute` does the null check, resolves
+    /// `this_info`, and calls `compute_impl` through `guard_ffi_status`; this span opens inside
+    /// `compute_impl` and closes before `disclose_broken_commitment` runs. So the FFI guard, the
+    /// null check and the post-call disclosure are outside it, and a call that early-outs before
+    /// `compute_impl` emits no span at all. Read it as *the widest bracket the EP instruments on
+    /// the success path*, not as the callback's true wall time.
     ///
-    /// That 27.0 ms was **not the EP**. Re-measured on the same workload with the benchmark
-    /// harness's counters-file dump moved out of the timed region, the same term reads
-    /// **0.053 ms** (`bench/results/_cuda69/profile_prefill_1.json`). The dump ran on every timed
-    /// inference, from `counters::record_dispatches` after `dispatch_ort` returns — which is the
-    /// side the region was on. The span is kept because that is the finding: without an outer
-    /// bracket the harness's own cost was inside the EP's numbers and nothing could see it.
+    /// [`subgraph_region`](Self::subgraph_region) opens inside `dispatch_ort`, deeper still, so it
+    /// cannot see anything the callback does on either side of that call. Measured on Phi-3.5
+    /// `prefill_1` (`bench/results/_cuda69/`), the two spans differed by a large term, nearly all
+    /// of it landing *after* `vulkan.subgraph` closed rather than before it.
+    ///
+    /// That term was **not the EP**. Re-measured on the same workload with the benchmark
+    /// harness's counters-file dump moved out of the timed region, it reads **0.056 ms**
+    /// (`outside_subgraph_ms` in `bench/results/_cuda69/profile_prefill_1.json`; the pre-fix run
+    /// is not a committed artifact, so its magnitude is not quoted here). The dump ran on every
+    /// timed inference, from `counters::record_dispatches` after `dispatch_ort` returns — which
+    /// is the side the region was on. The span is kept because that is the finding: without an
+    /// outer bracket the harness's own cost was inside the EP's numbers and nothing could see it.
     ///
     /// This span is **structural, not a [`Phase`]**: it is `cat == "ep"` like `vulkan.subgraph`,
     /// it is never summed into any sibling total, and it adds no level to the phase tree. It
@@ -1979,12 +1986,13 @@ mod tests {
 
     /// `compute_region` brackets the callback; it must not be modelled as a phase.
     ///
-    /// `Phase::BindCheck` was added to this enum to close a 23 ms blind spot and measured a warm
-    /// median of **0.073 ms** — 0.27% of the 27.0 ms region it was documented as explaining. It
-    /// was also the first sibling phase structurally *outside* `vulkan.subgraph`, which the
-    /// containment contract in `docs/PERF.md` and `bench/phases.py` does not admit, so every
-    /// traced run self-reported a phase-tree disagreement. The region is now bracketed by a
-    /// structural span instead, which needs no place in the phase tree.
+    /// `Phase::BindCheck` was added to this enum to close a large blind spot and accounted for a
+    /// tiny fraction of the region it was documented as explaining — the exact figures came from
+    /// a run that is not a committed artifact, so they are not quoted here. It was also the first
+    /// sibling phase structurally *outside* `vulkan.subgraph`, which the containment contract in
+    /// `docs/PERF.md` and `bench/phases.py` does not admit, so every traced run self-reported a
+    /// phase-tree disagreement. The region is now bracketed by a structural span instead, which
+    /// needs no place in the phase tree.
     #[test]
     fn the_compute_call_bracket_is_not_a_phase() {
         for p in Phase::ALL {
