@@ -1,0 +1,30 @@
+# bench/results/_cuda69/profile_prefill_1.log
+#
+# Corrected re-measurement, 2026-08-07 (Mouse, issue #69 revision).
+#
+# Two earlier generations of this artifact (profile_prefill_1.json and
+# profile_prefill_1_v2.json) were produced before the counters-file dump was moved
+# out of the timed region, and v2 additionally shipped a phase-tree refusal
+# alongside a GPU_TIME_MEASURED verdict. Both fail
+# bench/test_cuda_competition.py::test_a_committed_record_that_refuses_does_not_also_pass
+# and are not committed. The superseded numbers are recorded in
+# .squad/decisions/inbox/mouse-issue69-bindcheck-removed-compute-call-anchor.md.
+#
+# Command (from the worktree root, with the release EP built from this tree):
+#
+#   $env:ONNXRUNTIME_VULKAN_EP_LIB       = "<worktree>/rust/target/release/onnxruntime_vulkan_ep.dll"
+#   $env:ONNXRUNTIME_EP_VULKAN_BENCH_CUDA_PYTHON = "<worktree>/<venv>/Scripts/python.exe"
+#   .venv-cu12/Scripts/python.exe -m bench.cuda_profile \
+#       --workload prefill_1 --iters 10 \
+#       --out bench/results/_cuda69/profile_prefill_1.json \
+#       --scratch bench/results/_cuda69/scratch_profile_v3
+#
+# The scratch directory is gitignored: it is 12 MB of per-worker claim logs, counters
+# dumps, ORT profiles, output tensors and the 5.6 MB Chrome trace this report reduces.
+
+[profile] untraced baseline: vulkan/prefill_1
+[profile] traced run: vulkan/prefill_1
+[profile] cuda reference: cuda/prefill_1
+
+# The report is bench/results/_cuda69/profile_prefill_1.md; the record it was rendered
+# from is bench/results/_cuda69/profile_prefill_1.json (schema cuda_profile/2).
