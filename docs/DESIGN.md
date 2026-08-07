@@ -686,6 +686,7 @@ purpose:
 | Option | Type | Default | Meaning |
 |---|---|---|---|
 | `ep.device_index` | int | auto | Which advertised Vulkan device to bind. |
+| `ep.device_selector` | string | unset | **Issue #18.** Stable-identity device selector — see §2.4.1. Outranks `ep.device_index` and every env var below; refuses to open/advertise any device rather than falling back on an unresolved selector. |
 | `ep.enable_validation` | bool | `false` (release), `true` (debug) | Enable `VK_LAYER_KHRONOS_validation`. |
 | `ep.pipeline_cache_path` | string | platform cache dir | On-disk `VkPipelineCache` blob location. |
 | `ep.max_claim_ops` | string list | unset | Restrict claiming to a named op set. Debugging and bisecting only. |
@@ -696,7 +697,73 @@ Environment variables mirror the MLX EP's convention for observability, and are 
 configuration surface: `ONNXRUNTIME_EP_VULKAN_VERBOSE`, `ONNXRUNTIME_EP_VULKAN_TRACE=<path>`,
 `ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG`, `RUST_LOG=onnxruntime_ep_vulkan=<level>`.
 
-### 2.5 Node claiming (`GetCapability`) and subgraph compilation
+The one exception is `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` (§2.4.1), the environment mirror of
+`ep.device_selector` — it *is* a configuration surface, for hosts that cannot set session options
+(e.g. a process-wide default for every session a launcher creates).
+
+#### 2.4.1 Stable-identity device selection (issue #18)
+
+`ep.device_index` (and its long-standing lenient env-var twin, `ONNXRUNTIME_EP_VULKAN_DEVICE`,
+read across `engine.rs`/`device.rs`/`host_device_memory.rs`/`session.rs`) name a device by its
+**position** in the best-first sorted capable-device list. A position is not an identity: it
+depends on driver enumeration order, which is free to change across a driver update, a reboot, or
+a `VK_ICD_FILENAMES` edit, and it treats two visually identical multi-GPU desks (e.g. two RTX
+A1000s) as indistinguishable. Both of those are exactly what issue #18 asks this EP to stop doing.
+
+`ep.device_selector` (session option) / `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` (env var,
+lower precedence than the session option) name a device by **stable identity** instead, using one
+`<scheme>:<value>` string:
+
+| Scheme | Value | Always available? |
+|---|---|---|
+| `index:<N>` | position in the best-first sorted list | yes, but this is a displayed ordinal, not an identity — included only for scripts that already enumerate with `epctl` |
+| `name:<exact name>` | `VkPhysicalDeviceProperties::deviceName`, exact match (unlike the legacy selector's substring match) | yes |
+| `id:<vendorHex>:<deviceHex>` | `(vendorID, deviceID)` | yes, but ambiguous across two cards of the same model |
+| `uuid:<32 hex>` (dashes/colons tolerated and stripped) | `VkPhysicalDeviceIDProperties::deviceUUID` | yes — core Vulkan 1.1, the identity this EP treats as ground truth |
+| `luid:<16 hex>` | `VkPhysicalDeviceIDProperties::deviceLUID` | only when the driver sets `deviceLUIDValid` — chiefly Windows/D3D-interop; expect absent on most Linux drivers |
+| `pci:<domain:bus:device.function>` (e.g. `pci:0000:01:00.0`) | `VK_EXT_pci_bus_info` | only when that extension is supported; expect absent on MoltenVK and some Android ICDs |
+
+**Resolution never falls back.** `resolve_device_selector` (`rust/src/vk/instance.rs`) returns
+exactly one of:
+
+- `Ok(index)` — the selector named **exactly one** enumerated device.
+- `Err(NotFound)` — the selector's identity kind is supported here, but no device matched. May
+  match later (e.g. after plugging in the right GPU).
+- `Err(Ambiguous)` — the selector matched more than one device (e.g. `id:` on two cards of the
+  same model — resolve with `uuid:` instead, which is always per-card-unique).
+- `Err(UnsupportedIdentity)` — the identity *kind* itself is not reported by any enumerated
+  device on this platform at all (e.g. `pci:` on MoltenVK). This can never resolve here, which is
+  a different fix than `NotFound`'s "plug in the right GPU."
+- `Err(Malformed)` — the raw string did not parse as any known scheme.
+
+On any `Err`, both call sites — `engine::devices_to_advertise` (factory enumeration) and
+`vk::device::acquire_ep_device` (per-session acquisition) — refuse to advertise/open **any**
+Vulkan device and log at `error!` level, rather than silently falling back to `ep.device_index`,
+the legacy env var, or ORT's own binding. A session then runs on the CPU EP (never aborts the
+host, per §2.3), which is a visible correctness gap a caller can fix, not a wrong GPU a caller
+never notices.
+
+**Precedence** (highest wins): `ep.device_selector` > `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` >
+`ep.device_index` > `ONNXRUNTIME_EP_VULKAN_DEVICE` (legacy, lenient, unchanged) > ORT's own
+device binding > the highest-scoring device (§2.3 default).
+
+**Portability.** `uuid:` is core Vulkan 1.1 and is populated on every platform this EP targets,
+including Android and MoltenVK, so it is the one scheme with no capability caveat — the
+recommended selector for any multi-GPU or reproducible-benchmark configuration. `luid:` and
+`pci:` are capability-gated at query time (`query_device_identity`, `rust/src/vk/instance.rs`)
+and are `None` rather than fabricated when the platform does not report them; a selector built on
+either is `UnsupportedIdentity` rather than a false negative in that case.
+
+**Proof-frame binding.** The same UUID/LUID/PCI identity is published to ORT as `OrtEpDevice`
+metadata (`vulkan.device_uuid`, `vulkan.device_luid`, `vulkan.device_pci` — `factory.rs`) and
+surfaced by `rust/modelrunner` in both its device-discovery listing and its evidence JSON, so a
+proof artifact can be checked against the physical device it actually ran on rather than trusted
+by selector ordinal. This is additive to, not a replacement for, the existing §10.0.1 R12
+frame-provenance discipline (`alloc_device_frame` / `alloc_device_frame_device` in
+`counters.rs`), which already classifies `SHARED` vs. `SPLIT-DEVICE` vs. `MIXED` runs by actual
+device name rather than by path correctness.
+
+
 
 **Claim.** For each node in the `OrtGraph`, `ep.rs` builds a `NodeView` (a read-only FFI wrapper
 over `OrtNode` exposing op type, domain, since-version, input/output slot info, and attributes)

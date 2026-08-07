@@ -335,6 +335,28 @@ struct DeviceCapabilities {
 
 This is a living list. Each entry must have: symptom → affected hardware → driver version → workaround → upstream tracking link.
 
+### 6.4 Stable device identity by platform (issue #18)
+
+`ep.device_selector` / `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` (see `DESIGN.md` §2.4.1) resolve a
+device by `uuid:`, `luid:`, or `pci:` in addition to `index:`/`name:`/`id:`. Availability of the
+underlying Vulkan identity fields is platform-dependent; `query_device_identity`
+(`rust/src/vk/instance.rs`) queries each capability-gated and reports `None` rather than a
+fabricated value where the platform does not provide it, and `resolve_device_selector` turns a
+selector built on a field this platform never reports into `UnsupportedIdentity`, not a false
+`NotFound`.
+
+| Field | Source | Windows | Linux (proprietary + Mesa RADV/ANV) | Android (Adreno/Mali/Xclipse) | MoltenVK |
+|---|---|---|---|---|---|
+| `uuid:` | `VkPhysicalDeviceIDProperties::deviceUUID` (core Vulkan 1.1) | always | always | always | always — MoltenVK reports a UUID derived from the Metal device registry ID |
+| `luid:` | `VkPhysicalDeviceIDProperties::deviceLUID` (+ `deviceLUIDValid`) | populated by every desktop driver observed on this project (§1.1) | rarely valid — LUIDs are a Windows/DXGI-interop concept; Mesa RADV/ANV and proprietary Linux drivers were not observed to set `deviceLUIDValid` | not observed valid | not observed valid |
+| `pci:` | `VkPhysicalDevicePCIBusInfoPropertiesEXT` (`VK_EXT_pci_bus_info`) | supported by the NVIDIA/AMD/Intel desktop drivers this project measured (§1.1) | supported by Mesa RADV/ANV and proprietary Linux drivers on discrete/integrated GPUs with a real PCI bus | absent — mobile SoC GPUs have no PCI bus to report, and the extension is correspondingly unavailable on the Adreno/Mali/Xclipse drivers surveyed in §1.3 | absent — Metal devices have no PCI bus in the sense this extension describes, and MoltenVK does not advertise `VK_EXT_pci_bus_info` |
+
+Practical guidance: `uuid:` is the only scheme with no platform caveat and is the one this project
+recommends for reproducible multi-GPU configuration (CI matrices, benchmark pinning, and the
+proof-frame binding in `factory.rs`'s `vulkan.device_uuid` EP metadata). `luid:` and `pci:` are
+conveniences for Windows- and desktop-Linux-specific tooling respectively and should not be relied
+on for a selector that must also work on Android or macOS/iOS.
+
 #### Adreno (Qualcomm)
 
 | # | Symptom | Affected hardware | Driver version | Workaround |

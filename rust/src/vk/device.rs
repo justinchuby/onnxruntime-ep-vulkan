@@ -31,6 +31,8 @@
 
 use ash::vk;
 
+use crate::engine::DeviceInfo;
+
 use super::{
     barrier::Barriers,
     caps::{Capabilities, DeviceFeatureChain},
@@ -200,6 +202,7 @@ static EP_DEVICES: OnceLock<std::sync::Mutex<Vec<&'static EpDeviceOwner>>> = Onc
 pub(crate) unsafe fn acquire_ep_device(
     bound_physical: Option<usize>,
     device_index: Option<usize>,
+    device_selector: Option<&str>,
     enable_validation: bool,
     force_legacy: bool,
 ) -> Option<&'static EpDeviceOwner> {
@@ -222,11 +225,30 @@ pub(crate) unsafe fn acquire_ep_device(
         return None;
     }
 
+    // Stable-identity strict selector (issue #18): highest precedence of everything below, and
+    // it never falls back. Set-but-unresolvable means "open nothing", not "open device 0" —
+    // silently running on a different GPU than the one asked for is exactly what this selector
+    // exists to prevent.
+    let device_infos: Vec<DeviceInfo> = capables.iter().map(|c| c.info.clone()).collect();
+    let strict = match crate::vk::instance::select_device_strict(&device_infos, device_selector) {
+        Ok(strict) => strict,
+        Err(e) => {
+            log::error!(
+                "VulkanSession::create: {} {e}. Refusing to open any Vulkan device rather than \
+                 silently binding a different GPU (issue #18 device-selection contract).",
+                crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT,
+            );
+            return None;
+        }
+    };
+
     // Did a human name a device, or are we choosing on their behalf? Only the second case may be
     // overridden by ORT's binding.
-    let explicit = device_index.is_some() || selector_is_pinned();
+    let explicit = strict.is_some() || device_index.is_some() || selector_is_pinned();
 
-    let idx = if let Some(dev_idx) = device_index {
+    let idx = if let Some(strict_idx) = strict {
+        strict_idx
+    } else if let Some(dev_idx) = device_index {
         if dev_idx < capables.len() {
             dev_idx
         } else {

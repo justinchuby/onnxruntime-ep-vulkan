@@ -866,6 +866,7 @@ impl VulkanSession {
             crate::vk::device::acquire_ep_device(
                 options.bound_physical_index,
                 options.device_index,
+                options.device_selector.as_deref(),
                 options.enable_validation,
                 options.force_legacy_barriers,
             )

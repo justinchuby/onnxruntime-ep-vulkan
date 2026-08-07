@@ -464,6 +464,12 @@ pub fn execute(config: &RunConfig) -> Result<(Outcome, Json)> {
                 ("hardware_type", Json::s(d.hardware_type.clone())),
                 ("vendor_id", Json::int(d.vendor_id as i64)),
                 ("device_id", Json::int(d.device_id as i64)),
+                // Stable identity (issue #18): `null` (never a fabricated placeholder) when the
+                // field is genuinely unavailable on this EP/platform, e.g. `luid`/`pci` on
+                // MoltenVK, or all three on a non-Vulkan EP with no matching metadata key.
+                ("uuid", d.uuid.clone().map(Json::s).unwrap_or(Json::Null)),
+                ("luid", d.luid.clone().map(Json::s).unwrap_or(Json::Null)),
+                ("pci", d.pci.clone().map(Json::s).unwrap_or(Json::Null)),
             ]));
         }
         let ours: Vec<_> = all_devices

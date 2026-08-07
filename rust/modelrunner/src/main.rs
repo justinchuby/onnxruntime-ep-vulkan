@@ -269,6 +269,14 @@ fn list_devices(config: &run::RunConfig) -> Result<()> {
             "  [{}] {:<28} vendor={:<20} {} {:04x}:{:04x}",
             d.index, d.ep_name, d.ep_vendor, d.hardware_type, d.vendor_id, d.device_id
         );
+        // Stable identity (issue #18): printed on its own line, never fabricated when a field is
+        // unavailable (e.g. no LUID/PCI on this platform, or a non-Vulkan EP with no metadata).
+        println!(
+            "      uuid={} luid={} pci={}",
+            d.uuid.as_deref().unwrap_or("(unavailable)"),
+            d.luid.as_deref().unwrap_or("(unavailable)"),
+            d.pci.as_deref().unwrap_or("(unavailable)"),
+        );
     }
     Ok(())
 }

@@ -741,6 +741,30 @@ pub struct DeviceInfo {
     pub driver_version: String,
     /// Discrete / integrated / virtual / CPU. Drives both scoring and the ORT device-type match.
     pub kind: DeviceKind,
+    /// `VkPhysicalDeviceIDProperties::deviceUUID`, 32 lowercase hex characters, no separators.
+    ///
+    /// **The stable identity this EP treats as ground truth.** Unlike `index` (an ordinal that
+    /// depends on enumeration order, which the loader is free to change across driver updates,
+    /// reboots or `VK_ICD_FILENAMES` edits) and unlike `(vendor_id, device_id)` (which is the
+    /// same for every card of the same model), the UUID names *this physical device instance*.
+    /// `VkPhysicalDeviceIDProperties` is Vulkan 1.1 core, so this field is always populated for
+    /// every device this EP can advertise (the §7.2 gate already requires >= 1.1).
+    pub uuid: String,
+    /// `VkPhysicalDeviceIDProperties::deviceLUID`, 16 lowercase hex characters, present only
+    /// when `deviceLUIDValid == VK_TRUE`.
+    ///
+    /// LUIDs are a Windows/D3D-interop concept; most Linux and essentially all Android/MoltenVK
+    /// drivers report `deviceLUIDValid = VK_FALSE`. `None` here means "this driver did not
+    /// provide one," never "absent because unset" — a selector asking for a LUID must be told
+    /// which of those happened (`DeviceSelectionError::UnsupportedIdentity`).
+    pub luid: Option<String>,
+    /// PCI location as `domain:bus:device.function` (all lowercase hex), from
+    /// `VK_EXT_pci_bus_info` when the device advertises that extension.
+    ///
+    /// Capability-gated: MoltenVK and many mobile/virtualized ICDs do not expose PCI location at
+    /// all (there may be no PCI bus to report), so this is `None` there rather than a fabricated
+    /// value. Present on essentially every desktop Linux/Windows discrete or integrated GPU.
+    pub pci: Option<String>,
 }
 
 /// `VkPhysicalDeviceType`, minus the Vulkan type.
@@ -809,8 +833,16 @@ pub fn probe_devices() -> Vec<DeviceInfo> {
 
 /// The devices the factory should advertise to ORT (§6.5).
 ///
-/// Identical to [`probe_devices`] unless `ONNXRUNTIME_EP_VULKAN_DEVICE` is set, in which case the
-/// selector is a **pin** and exactly one device is returned.
+/// Identical to [`probe_devices`] unless a selector is set, in which case exactly one device is
+/// returned — the selector is a **pin**.
+///
+/// **Precedence: [`ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR`][crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT]
+/// (stable identity, strict) outranks [`ONNXRUNTIME_EP_VULKAN_DEVICE`][crate::vk::instance::ENV_DEVICE_SELECTOR]
+/// (index/name-substring, lenient).** If the strict selector is set and cannot be resolved to
+/// exactly one device, **zero devices are advertised** — never a fallback to a different GPU —
+/// and the reason is logged at ERROR (issue #18). If it is not set, behaviour is exactly what it
+/// was before issue #18: the legacy selector pins when set, and an unset selector advertises
+/// every capable device and lets ORT's policy choose.
 ///
 /// **Why the pin has to bite here and not later.** ORT chooses which advertised `OrtEpDevice` to
 /// bind, and it keys the allocator it later asks us for by that choice. If we advertise a device
@@ -824,7 +856,38 @@ pub fn probe_devices() -> Vec<DeviceInfo> {
 /// `CreateEp` then follows whatever it bound.
 pub fn devices_to_advertise() -> Vec<DeviceInfo> {
     let all = probe_devices();
-    if all.is_empty() || !crate::vk::instance::selector_is_pinned() {
+    if all.is_empty() {
+        return all;
+    }
+
+    // Strict, stable-identity selector: highest precedence, and it never falls back (issue #18).
+    match crate::vk::instance::select_device_strict(&all, None) {
+        Ok(Some(sel)) => {
+            let picked = all[sel].clone();
+            log::info!(
+                "VulkanExecutionProvider: {} resolved to '{}' (uuid:{}, physical enumerate index \
+                 {}). Advertising ONLY that device, so ORT cannot bind a device other than the \
+                 one the compute session will open (§6.5).",
+                crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT,
+                picked.name,
+                picked.uuid,
+                picked.index,
+            );
+            return vec![picked];
+        }
+        Ok(None) => { /* not set — fall through to the legacy selector below, unchanged */ }
+        Err(e) => {
+            log::error!(
+                "VulkanExecutionProvider: {} {e}. Refusing to advertise ANY Vulkan device rather \
+                 than silently binding a different GPU (issue #18 device-selection contract). \
+                 Sessions will fall back to the CPU EP until the selector is fixed or unset.",
+                crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT,
+            );
+            return Vec::new();
+        }
+    }
+
+    if !crate::vk::instance::selector_is_pinned() {
         return all;
     }
     let names: Vec<&str> = all.iter().map(|d| d.name.as_str()).collect();

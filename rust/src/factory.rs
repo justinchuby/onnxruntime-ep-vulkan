@@ -345,6 +345,17 @@ unsafe fn get_supported_devices_impl(
         metadata.add(c"vulkan.device_id", &format!("{:#06x}", info.device_id));
         metadata.add(c"vulkan.device_kind", &format!("{:?}", info.kind));
         metadata.add(c"vulkan.device_index", &info.index.to_string());
+        // Stable identity (issue #18): always present (Vulkan 1.1 core), so downstream tooling
+        // (proof ledger, `epctl`, model-identity reports) can bind evidence to the physical
+        // device that actually ran, not to `vulkan.device_index` which is an ordinal that moves
+        // across driver updates, reboots, or `VK_ICD_FILENAMES` edits.
+        metadata.add(c"vulkan.device_uuid", &info.uuid);
+        if let Some(luid) = &info.luid {
+            metadata.add(c"vulkan.device_luid", luid);
+        }
+        if let Some(pci) = &info.pci {
+            metadata.add(c"vulkan.device_pci", pci);
+        }
         metadata.add_cstr(c"vulkan.correlation", correlation_strategy(exact_match));
 
         let mut ep_device: *mut ort::OrtEpDevice = ptr::null_mut();

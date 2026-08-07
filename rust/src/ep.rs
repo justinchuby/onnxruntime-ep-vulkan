@@ -43,6 +43,17 @@ pub struct EpOptions {
     /// It is NOT the `vkEnumeratePhysicalDevices` index, and it is NOT authoritative: the device
     /// ORT bound for the session wins (see [`EpOptions::bound_physical_index`]).
     pub device_index: Option<usize>,
+    /// `ep.device_selector` — a strict, stable-identity Vulkan device selector (issue #18),
+    /// e.g. `uuid:<32 hex chars>`, `id:10de:2900`, `pci:0000:01:00.0`, `name:<exact name>`, or
+    /// `index:<N>` (a displayed ordinal, not a stable identity — see
+    /// [`crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT`] for the full grammar).
+    ///
+    /// Outranks `device_index`, the legacy `ONNXRUNTIME_EP_VULKAN_DEVICE` environment selector,
+    /// and ORT's own binding. Unlike all three, an unresolvable value here is a hard error:
+    /// session creation opens no Vulkan device at all rather than silently picking a different
+    /// GPU. Also settable via the `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` environment variable;
+    /// this option takes precedence when both are set.
+    pub device_selector: Option<String>,
     /// The `vkEnumeratePhysicalDevices` index of the `OrtEpDevice` **ORT bound for this session**,
     /// read from the EP metadata `CreateEp` hands back. `None` when ORT gave us nothing to read.
     ///
@@ -101,6 +112,11 @@ impl EpOptions {
                     log::warn!("ep.device_index: `{v}` is not a non-negative integer; ignoring")
                 }
             }
+        }
+        if let Some(v) = read("ep.device_selector")
+            && !v.trim().is_empty()
+        {
+            out.device_selector = Some(v.trim().to_string());
         }
         if let Some(v) = read("ep.enable_validation") {
             out.enable_validation = parse_bool(&v).unwrap_or_else(|| {

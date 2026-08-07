@@ -188,6 +188,369 @@ pub(crate) fn selector_is_pinned() -> bool {
         .is_empty()
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Stable-identity device selection (issue #18)
+//
+// `ENV_DEVICE_SELECTOR` above is deliberately left as-is: it is a lenient, best-effort pin
+// (index or name substring, silently falls back to device 0 with a warning on a bad value) and
+// changing that behaviour out from under every existing caller — `engine.rs`, `device.rs`,
+// `host_device_memory.rs` all read it today — is not this fix. What issue #18 asks for is a
+// selector that (a) can name a device by identity that survives enumeration-order churn (UUID,
+// vendor+device, PCI location — index is explicitly demoted to "a displayed ordinal", per the
+// issue text) and (b) refuses to guess: an ambiguous or unresolvable request is an error, never
+// a silent fallback to some other GPU. Those two properties don't fit the legacy selector's
+// contract, so this is an additive, higher-precedence mechanism instead of a behaviour change to
+// it. See `ENV_DEVICE_SELECTOR_STRICT` for the env var and `select_device_strict` for the entry
+// point `engine.rs` and `device.rs` both call ahead of the legacy selector.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Environment variable for a strict, stable-identity Vulkan device selector (issue #18).
+///
+/// Takes precedence over [`ENV_DEVICE_SELECTOR`] and over `ep.device_index` when set. Unlike the
+/// legacy selector, an unresolvable value here is a hard error: **no Vulkan device is opened or
+/// advertised** rather than falling back to a different GPU. Unset (the default) defers entirely
+/// to the legacy selector / `ep.device_index` / ORT's own binding — this preserves the portable
+/// default behaviour of running on the best-scoring device with no configuration at all.
+///
+/// Accepted forms, all `<scheme>:<value>` (see [`parse_device_selector`]):
+/// - `index:<N>` — position in the best-first sorted capable-device list. **A displayed ordinal,
+///   not a stable identity** — it can move when a driver update or reboot changes enumeration
+///   order. Prefer one of the identity forms below for anything that must survive that.
+/// - `name:<exact device name>` — exact (not substring) match against `deviceName`. Ambiguous
+///   when two installed GPUs share a model name.
+/// - `id:<vendorHex>:<deviceHex>` — exact `(vendorID, deviceID)` match, e.g. `id:10de:2900` for
+///   an RTX 4060 Laptop GPU. Stable across reboots and driver updates for one GPU *model*, but
+///   still ambiguous if two identical cards are installed.
+/// - `uuid:<32 hex chars>` — exact match against `VkPhysicalDeviceIDProperties::deviceUUID`.
+///   Names one physical device instance unambiguously; always available (Vulkan 1.1 core).
+/// - `luid:<16 hex chars>` — exact match against `deviceLUID`, only when the driver set
+///   `deviceLUIDValid`. Primarily a Windows/D3D-interop identity; returns
+///   [`DeviceSelectionError::UnsupportedIdentity`] where no enumerated device reports one.
+/// - `pci:<domain>:<bus>:<device>.<function>` (e.g. `pci:0000:01:00.0`) — exact PCI location
+///   match, only when `VK_EXT_pci_bus_info` is supported. `UnsupportedIdentity` on MoltenVK and
+///   other platforms without a PCI bus to report.
+pub(crate) const ENV_DEVICE_SELECTOR_STRICT: &str = "ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR";
+
+/// One parsed, typed form of [`ENV_DEVICE_SELECTOR_STRICT`] (or the equivalent `ep.device_selector`
+/// session option).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeviceSelector {
+    /// `index:<N>` — a displayed ordinal into the best-first sorted capable-device list.
+    Index(usize),
+    /// `name:<exact device name>`.
+    Name(String),
+    /// `id:<vendorHex>:<deviceHex>` — exact `(vendor_id, device_id)`.
+    VendorDevice(u32, u32),
+    /// `uuid:<32 lowercase hex chars>`, normalized.
+    Uuid(String),
+    /// `luid:<16 lowercase hex chars>`, normalized.
+    Luid(String),
+    /// `pci:<domain:bus:device.function>`, normalized lowercase.
+    Pci(String),
+}
+
+impl std::fmt::Display for DeviceSelector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeviceSelector::Index(i) => write!(f, "index:{i}"),
+            DeviceSelector::Name(n) => write!(f, "name:{n}"),
+            DeviceSelector::VendorDevice(v, d) => write!(f, "id:{v:04x}:{d:04x}"),
+            DeviceSelector::Uuid(u) => write!(f, "uuid:{u}"),
+            DeviceSelector::Luid(l) => write!(f, "luid:{l}"),
+            DeviceSelector::Pci(p) => write!(f, "pci:{p}"),
+        }
+    }
+}
+
+/// Why [`resolve_device_selector`] could not name exactly one device.
+///
+/// Every variant carries enough context to be logged directly — the issue #18 requirement is
+/// that the failure is loud and diagnostic, never a quiet fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeviceSelectionError {
+    /// The selector was well-formed but named no enumerated device.
+    NotFound {
+        selector: String,
+        /// Human-readable summaries of the devices that *were* available, for the log line.
+        available: Vec<String>,
+    },
+    /// The selector named more than one enumerated device.
+    Ambiguous {
+        selector: String,
+        matches: Vec<String>,
+    },
+    /// The selector's identity kind is not reported by any enumerated device on this platform
+    /// (e.g. `pci:` on MoltenVK, `luid:` on most Linux drivers). Distinguished from `NotFound`
+    /// because the fix is different: a `NotFound` selector might match after plugging in the
+    /// right GPU; an `UnsupportedIdentity` selector cannot match on this platform at all.
+    UnsupportedIdentity { selector: String, reason: String },
+    /// The raw string could not be parsed as any known selector scheme.
+    Malformed { raw: String, reason: String },
+}
+
+impl std::fmt::Display for DeviceSelectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeviceSelectionError::NotFound {
+                selector,
+                available,
+            } => {
+                if available.is_empty() {
+                    write!(f, "no device matches {selector} (no devices enumerated)")
+                } else {
+                    write!(
+                        f,
+                        "no device matches {selector} — available: [{}]",
+                        available.join(", ")
+                    )
+                }
+            }
+            DeviceSelectionError::Ambiguous { selector, matches } => write!(
+                f,
+                "{selector} matches {} devices, not exactly one — matches: [{}]",
+                matches.len(),
+                matches.join(", ")
+            ),
+            DeviceSelectionError::UnsupportedIdentity { selector, reason } => {
+                write!(
+                    f,
+                    "{selector} cannot be resolved on this platform: {reason}"
+                )
+            }
+            DeviceSelectionError::Malformed { raw, reason } => {
+                write!(
+                    f,
+                    "{ENV_DEVICE_SELECTOR_STRICT}={raw:?} is not a valid selector: {reason}"
+                )
+            }
+        }
+    }
+}
+
+/// Normalize a hex string of exactly `expected_len` hex digits, tolerating `-`/`:` separators
+/// (so `uuid:` accepts both `a1b2...` and the canonical `xxxxxxxx-xxxx-...` UUID form).
+fn normalize_hex(raw: &str, expected_len: usize, field: &str) -> Result<String, String> {
+    let cleaned: String = raw.chars().filter(|c| *c != '-' && *c != ':').collect();
+    if cleaned.len() != expected_len || !cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{field} must be exactly {expected_len} hex characters (separators '-'/':' are \
+             tolerated and stripped), got {raw:?}"
+        ));
+    }
+    Ok(cleaned.to_lowercase())
+}
+
+/// Parse one `<scheme>:<value>` selector string into a [`DeviceSelector`].
+///
+/// Pure and total: every input either parses or returns a descriptive `Err`. No environment or
+/// Vulkan access, so this is fully unit-testable.
+pub(crate) fn parse_device_selector(raw: &str) -> Result<DeviceSelector, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("selector is empty".to_string());
+    }
+    let (scheme, rest) = trimmed.split_once(':').ok_or_else(|| {
+        format!(
+            "{trimmed:?} has no 'scheme:value' — expected one of index:, name:, id:, uuid:, \
+             luid:, pci:"
+        )
+    })?;
+    match scheme {
+        "index" => rest
+            .parse::<usize>()
+            .map(DeviceSelector::Index)
+            .map_err(|e| format!("index:{rest:?} is not a non-negative integer ({e})")),
+        "name" => {
+            if rest.is_empty() {
+                Err("name: selector has an empty device name".to_string())
+            } else {
+                Ok(DeviceSelector::Name(rest.to_string()))
+            }
+        }
+        "id" => {
+            let (v, d) = rest.split_once(':').ok_or_else(|| {
+                format!("id:{rest:?} must be 'id:<vendorHex>:<deviceHex>', e.g. id:10de:2900")
+            })?;
+            let vendor = u32::from_str_radix(v.trim_start_matches("0x"), 16)
+                .map_err(|e| format!("id: vendor {v:?} is not hex ({e})"))?;
+            let device = u32::from_str_radix(d.trim_start_matches("0x"), 16)
+                .map_err(|e| format!("id: device {d:?} is not hex ({e})"))?;
+            Ok(DeviceSelector::VendorDevice(vendor, device))
+        }
+        "uuid" => normalize_hex(rest, 32, "uuid").map(DeviceSelector::Uuid),
+        "luid" => normalize_hex(rest, 16, "luid").map(DeviceSelector::Luid),
+        "pci" => {
+            if rest.is_empty() {
+                Err("pci: selector has an empty location".to_string())
+            } else {
+                Ok(DeviceSelector::Pci(rest.to_lowercase()))
+            }
+        }
+        other => Err(format!(
+            "unknown selector scheme {other:?} in {trimmed:?} — expected one of index:, name:, \
+             id:, uuid:, luid:, pci:"
+        )),
+    }
+}
+
+/// Resolve a parsed [`DeviceSelector`] against a best-first sorted device list.
+///
+/// Returns `Ok(i)` only when the selector names **exactly** one device. Never falls back:
+/// zero matches is [`DeviceSelectionError::NotFound`], more than one is
+/// [`DeviceSelectionError::Ambiguous`], and an identity kind absent from every device on this
+/// platform is [`DeviceSelectionError::UnsupportedIdentity`] rather than being folded into
+/// `NotFound` (the two have different fixes — see that variant's doc comment).
+///
+/// Pure over [`DeviceInfo`] (no Vulkan handles), so it is fully unit-testable, including
+/// simulated multi-device and ambiguous configurations that don't require a live ICD.
+pub(crate) fn resolve_device_selector(
+    devices: &[DeviceInfo],
+    selector: &DeviceSelector,
+) -> Result<usize, DeviceSelectionError> {
+    let describe = |i: usize| {
+        format!(
+            "{} (index {}, uuid:{})",
+            devices[i].name, i, devices[i].uuid
+        )
+    };
+    let available = || {
+        devices
+            .iter()
+            .enumerate()
+            .map(|(i, _)| describe(i))
+            .collect::<Vec<_>>()
+    };
+
+    let pick = |matches: Vec<usize>| -> Result<usize, DeviceSelectionError> {
+        match matches.len() {
+            0 => Err(DeviceSelectionError::NotFound {
+                selector: selector.to_string(),
+                available: available(),
+            }),
+            1 => Ok(matches[0]),
+            _ => Err(DeviceSelectionError::Ambiguous {
+                selector: selector.to_string(),
+                matches: matches.into_iter().map(describe).collect(),
+            }),
+        }
+    };
+
+    match selector {
+        DeviceSelector::Index(i) => {
+            if *i < devices.len() {
+                Ok(*i)
+            } else {
+                Err(DeviceSelectionError::NotFound {
+                    selector: selector.to_string(),
+                    available: available(),
+                })
+            }
+        }
+        DeviceSelector::Name(n) => pick(
+            devices
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| &d.name == n)
+                .map(|(i, _)| i)
+                .collect(),
+        ),
+        DeviceSelector::VendorDevice(v, d) => pick(
+            devices
+                .iter()
+                .enumerate()
+                .filter(|(_, dev)| dev.vendor_id == *v && dev.device_id == *d)
+                .map(|(i, _)| i)
+                .collect(),
+        ),
+        DeviceSelector::Uuid(u) => pick(
+            devices
+                .iter()
+                .enumerate()
+                .filter(|(_, dev)| &dev.uuid == u)
+                .map(|(i, _)| i)
+                .collect(),
+        ),
+        DeviceSelector::Luid(l) => {
+            if devices.iter().all(|d| d.luid.is_none()) {
+                return Err(DeviceSelectionError::UnsupportedIdentity {
+                    selector: selector.to_string(),
+                    reason: "no enumerated device reports a Vulkan LUID (deviceLUIDValid was \
+                             false on all of them; LUIDs are primarily a Windows/D3D-interop \
+                             identity)"
+                        .to_string(),
+                });
+            }
+            pick(
+                devices
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| d.luid.as_deref() == Some(l.as_str()))
+                    .map(|(i, _)| i)
+                    .collect(),
+            )
+        }
+        DeviceSelector::Pci(p) => {
+            if devices.iter().all(|d| d.pci.is_none()) {
+                return Err(DeviceSelectionError::UnsupportedIdentity {
+                    selector: selector.to_string(),
+                    reason: "no enumerated device reports VK_EXT_pci_bus_info (unsupported on \
+                             this driver/platform, e.g. MoltenVK)"
+                        .to_string(),
+                });
+            }
+            pick(
+                devices
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| d.pci.as_deref() == Some(p.as_str()))
+                    .map(|(i, _)| i)
+                    .collect(),
+            )
+        }
+    }
+}
+
+/// Whether [`ENV_DEVICE_SELECTOR_STRICT`] is set to anything at all.
+fn strict_selector_requested() -> Option<String> {
+    let v = std::env::var(ENV_DEVICE_SELECTOR_STRICT).unwrap_or_default();
+    (!v.is_empty()).then_some(v)
+}
+
+/// Resolve the strict, stable-identity selector against `devices`.
+///
+/// `session_override` is the `ep.device_selector` session option, if the caller has one (only
+/// `device.rs`'s per-session path does; the factory's advertise path in `engine.rs` runs before
+/// any session exists and always passes `None`). When present it takes precedence over
+/// [`ENV_DEVICE_SELECTOR_STRICT`], mirroring how `ep.device_index` already outranks nothing from
+/// the environment — a session option is the more specific request.
+///
+/// - `Ok(None)` — no selector set (neither the option nor the env var). Callers fall back to
+///   `ep.device_index` / the legacy [`ENV_DEVICE_SELECTOR`] / ORT's own binding, unchanged from
+///   before issue #18.
+/// - `Ok(Some(i))` — resolved unambiguously to device `i`. Callers must treat this as an explicit
+///   request (same as `ep.device_index` today) and must not let anything else override it.
+/// - `Err(e)` — a selector is set but could not be resolved. Callers **must not** fall back to
+///   any other device; the only correct responses are "open nothing" / "advertise nothing" plus
+///   a loud log line, so a session never runs on a GPU other than the one asked for.
+pub(crate) fn select_device_strict(
+    devices: &[DeviceInfo],
+    session_override: Option<&str>,
+) -> Result<Option<usize>, DeviceSelectionError> {
+    let raw = match session_override {
+        Some(v) if !v.is_empty() => Some(v.to_string()),
+        _ => strict_selector_requested(),
+    };
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let selector =
+        parse_device_selector(&raw).map_err(|reason| DeviceSelectionError::Malformed {
+            raw: raw.clone(),
+            reason,
+        })?;
+    resolve_device_selector(devices, &selector).map(Some)
+}
+
 /// Translate a *physical* `vkEnumeratePhysicalDevices` index into a position in a best-first
 /// ordered capable-device list.
 ///
@@ -556,6 +919,10 @@ impl Instance {
             let kind = device_kind_from_type(props.device_type);
             let api_v = props.api_version;
 
+            // SAFETY: handle is live; pdev came from `enumerate_physical_devices` against it,
+            // this loop's own contract.
+            let (uuid, luid, pci) = unsafe { query_device_identity(&self.handle, pdev) };
+
             let info = DeviceInfo {
                 index: idx,
                 name,
@@ -569,6 +936,9 @@ impl Instance {
                 ),
                 driver_version: format_driver_version(props.vendor_id, props.driver_version),
                 kind,
+                uuid,
+                luid,
+                pci,
             };
 
             // ── Probe optional capabilities ───────────────────────────────────
@@ -593,6 +963,78 @@ impl Instance {
         result.sort_by_key(|d| std::cmp::Reverse(d.info.kind.score()));
         result
     }
+}
+
+/// Query the stable per-physical-device identity fields (issue #18 device-selection contract):
+/// UUID, LUID and PCI bus location.
+///
+/// Returns `(uuid_hex, luid_hex, pci_location)`:
+/// - `uuid_hex` is always populated — `VkPhysicalDeviceIDProperties` is Vulkan 1.1 core and the
+///   §7.2 gate already requires >= 1.1, so every device this function is called on has one.
+/// - `luid_hex` is `Some` only when the driver sets `deviceLUIDValid = VK_TRUE` (primarily
+///   Windows/D3D-interop; most Linux, Android and MoltenVK drivers leave it `VK_FALSE`).
+/// - `pci_location` is `Some` only when the device advertises `VK_EXT_pci_bus_info`. Absent on
+///   MoltenVK and many mobile/virtualized ICDs — there may be no PCI bus to report at all.
+///
+/// Never panics and never fabricates a value: a driver that does not report an optional field
+/// yields `None` for it, so a selector that requires that field can distinguish "not this
+/// device" from "this identity kind is not available on this platform"
+/// ([`DeviceSelectionError::UnsupportedIdentity`]).
+///
+/// # Safety
+/// `handle` must be a live `ash::Instance`; `pdev` must be a physical device handle obtained
+/// from that same instance.
+unsafe fn query_device_identity(
+    handle: &ash::Instance,
+    pdev: vk::PhysicalDevice,
+) -> (String, Option<String>, Option<String>) {
+    // SAFETY: handle is live; pdev came from it per this function's contract.
+    let extensions =
+        unsafe { handle.enumerate_device_extension_properties(pdev) }.unwrap_or_default();
+    let has_pci_ext = extensions.iter().any(|p| {
+        // SAFETY: Vulkan guarantees extensionName is a valid null-terminated UTF-8 string.
+        unsafe { CStr::from_ptr(p.extension_name.as_ptr()) }.to_bytes() == b"VK_EXT_pci_bus_info"
+    });
+
+    let mut id_props = vk::PhysicalDeviceIDProperties::default();
+    let mut pci_props = vk::PhysicalDevicePCIBusInfoPropertiesEXT::default();
+
+    // ash 0.38 `push_next` quirk (see `caps.rs::probe` and `device.rs` for the same fix):
+    // `push_next` takes `self` by value and returns `Self`. Discarding the return value leaves
+    // `p_next` unlinked and the chained struct stays zeroed — always re-bind.
+    let mut props2 = {
+        let p = vk::PhysicalDeviceProperties2::default().push_next(&mut id_props);
+        if has_pci_ext {
+            p.push_next(&mut pci_props)
+        } else {
+            p
+        }
+    };
+    // SAFETY: handle is live; pdev came from it. The p_next chain contains only structs that
+    // live on this stack frame and is read only during this call — nothing escapes.
+    unsafe { handle.get_physical_device_properties2(pdev, &mut props2) };
+    let _ = props2; // props2 mutably borrows id_props/pci_props; keep its last use here (NLL).
+
+    let uuid: String = id_props
+        .device_uuid
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let luid = (id_props.device_luid_valid != 0).then(|| {
+        id_props
+            .device_luid
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    });
+    let pci = has_pci_ext.then(|| {
+        format!(
+            "{:04x}:{:02x}:{:02x}.{:x}",
+            pci_props.pci_domain, pci_props.pci_bus, pci_props.pci_device, pci_props.pci_function
+        )
+    });
+
+    (uuid, luid, pci)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1018,6 +1460,20 @@ pub(crate) fn probe_loader_report() -> String {
             out.push(c.row());
         }
 
+        // Stable identity (issue #18): printed for every enumerated device, independent of gate
+        // pass/fail — identity is queryable off `VkPhysicalDeviceIDProperties`
+        // (Vulkan 1.1 core) and `VK_EXT_pci_bus_info`, neither of which the §7.2 gate depends on.
+        // Never fabricated: `(unavailable)` means the driver did not report that field, not that
+        // epctl failed to read it.
+        // SAFETY: inst.handle is live; pdev came from `enumerate_physical_devices` against it,
+        // earlier in this same loop iteration.
+        let (id_uuid, id_luid, id_pci) = unsafe { query_device_identity(&inst.handle, pdev) };
+        out.push(format!(
+            "  identity: uuid={id_uuid} luid={} pci={}",
+            id_luid.as_deref().unwrap_or("(unavailable)"),
+            id_pci.as_deref().unwrap_or("(unavailable)"),
+        ));
+
         // §7.9: show raw capability values so derived booleans can be audited.
         // Only probe when the device passes the gate (has a compute queue family and ≥1.1),
         // which are the preconditions caps::probe assumes.
@@ -1193,6 +1649,43 @@ pub(crate) fn probe_loader_report() -> String {
                     })
             };
             out.push(format!("Would select: {selected_name}"));
+
+            // Stable-identity strict selector (issue #18). Reuses `resolve_device_selector`
+            // against `enumerate_capable_devices()`'s full `DeviceInfo` list — the exact same
+            // resolution the EP itself runs at session-creation time — rather than re-deriving
+            // an ad-hoc match here, so this diagnostic cannot drift from the real selector logic.
+            let strict_val = std::env::var(ENV_DEVICE_SELECTOR_STRICT).unwrap_or_default();
+            out.push(String::new());
+            out.push(format!(
+                "{ENV_DEVICE_SELECTOR_STRICT} = {}",
+                if strict_val.is_empty() {
+                    "<not set — legacy selector above applies>".to_string()
+                } else {
+                    strict_val.clone()
+                }
+            ));
+            if !strict_val.is_empty() {
+                let capable = inst.enumerate_capable_devices();
+                let infos: Vec<DeviceInfo> = capable.iter().map(|c| c.info.clone()).collect();
+                match parse_device_selector(&strict_val) {
+                    Ok(sel) => match resolve_device_selector(&infos, &sel) {
+                        Ok(idx) => out.push(format!(
+                            "Strict selector would select: '{}' (Vulkan enum index {}, \
+                             uuid:{})",
+                            infos[idx].name, infos[idx].index, infos[idx].uuid
+                        )),
+                        Err(e) => out.push(format!(
+                            "Strict selector would REFUSE to select any device: {e} (§6.5: no \
+                             silent fallback — sessions using this selector would advertise zero \
+                             Vulkan devices and fall back to the CPU EP)"
+                        )),
+                    },
+                    Err(e) => out.push(format!(
+                        "Strict selector string is malformed: {e} (would be refused identically \
+                         at session creation)"
+                    )),
+                }
+            }
         }
     }
 
@@ -1626,5 +2119,376 @@ mod tests {
             device_kind_from_type(vk::PhysicalDeviceType::OTHER),
             DeviceKind::Cpu
         );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Stable-identity device selection (issue #18)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// Build a synthetic two-device desk: the RTX A1000 this machine actually has, and a second
+    /// simulated GPU, so ambiguity/uniqueness tests don't need real hardware.
+    fn two_device_desk() -> Vec<DeviceInfo> {
+        vec![
+            DeviceInfo {
+                index: 1, // physical enum index != best-first position, on purpose (see below)
+                name: "NVIDIA RTX A1000 Laptop GPU".to_string(),
+                vendor_id: 0x10de,
+                device_id: 0x27a0,
+                api_version: "1.3.290".to_string(),
+                driver_version: "560.94".to_string(),
+                kind: DeviceKind::Discrete,
+                uuid: "11111111111111111111111111111111".to_string(),
+                luid: Some("aaaaaaaaaaaaaaaa".to_string()),
+                pci: Some("0000:01:00.0".to_string()),
+            },
+            DeviceInfo {
+                index: 0,
+                name: "Intel(R) Iris(R) Xe Graphics".to_string(),
+                vendor_id: 0x8086,
+                device_id: 0x9a49,
+                api_version: "1.3.277".to_string(),
+                driver_version: "31.0.101.5333".to_string(),
+                kind: DeviceKind::Integrated,
+                uuid: "22222222222222222222222222222222".to_string(),
+                luid: None,
+                pci: None,
+            },
+        ]
+    }
+
+    /// Two identical RTX A1000s (e.g. two cards of the same model installed) — the case where
+    /// `id:` (vendor+device) cannot disambiguate but `uuid:` still can.
+    fn two_identical_gpus_desk() -> Vec<DeviceInfo> {
+        vec![
+            DeviceInfo {
+                index: 0,
+                name: "NVIDIA RTX A1000 Laptop GPU".to_string(),
+                vendor_id: 0x10de,
+                device_id: 0x27a0,
+                api_version: "1.3.290".to_string(),
+                driver_version: "560.94".to_string(),
+                kind: DeviceKind::Discrete,
+                uuid: "33333333333333333333333333333333".to_string(),
+                luid: None,
+                pci: Some("0000:01:00.0".to_string()),
+            },
+            DeviceInfo {
+                index: 1,
+                name: "NVIDIA RTX A1000 Laptop GPU".to_string(),
+                vendor_id: 0x10de,
+                device_id: 0x27a0,
+                api_version: "1.3.290".to_string(),
+                driver_version: "560.94".to_string(),
+                kind: DeviceKind::Discrete,
+                uuid: "44444444444444444444444444444444".to_string(),
+                luid: None,
+                pci: Some("0000:02:00.0".to_string()),
+            },
+        ]
+    }
+
+    // -- parse_device_selector ------------------------------------------------------------
+
+    #[test]
+    fn parse_accepts_every_documented_scheme() {
+        assert_eq!(
+            parse_device_selector("index:1").unwrap(),
+            DeviceSelector::Index(1)
+        );
+        assert_eq!(
+            parse_device_selector("name:NVIDIA RTX A1000 Laptop GPU").unwrap(),
+            DeviceSelector::Name("NVIDIA RTX A1000 Laptop GPU".to_string())
+        );
+        assert_eq!(
+            parse_device_selector("id:10de:27a0").unwrap(),
+            DeviceSelector::VendorDevice(0x10de, 0x27a0)
+        );
+        assert_eq!(
+            parse_device_selector("uuid:11111111111111111111111111111111").unwrap(),
+            DeviceSelector::Uuid("11111111111111111111111111111111".to_string())
+        );
+        // Canonical dashed UUID form is also accepted (separators stripped).
+        assert_eq!(
+            parse_device_selector("uuid:11111111-1111-1111-1111-111111111111").unwrap(),
+            DeviceSelector::Uuid("11111111111111111111111111111111".to_string())
+        );
+        assert_eq!(
+            parse_device_selector("luid:aaaaaaaaaaaaaaaa").unwrap(),
+            DeviceSelector::Luid("aaaaaaaaaaaaaaaa".to_string())
+        );
+        assert_eq!(
+            parse_device_selector("pci:0000:01:00.0").unwrap(),
+            DeviceSelector::Pci("0000:01:00.0".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_rejects_malformed_selectors_with_a_reason() {
+        assert!(parse_device_selector("").is_err());
+        assert!(parse_device_selector("bare-no-scheme").is_err());
+        assert!(parse_device_selector("index:not-a-number").is_err());
+        assert!(parse_device_selector("unknownscheme:foo").is_err());
+        assert!(parse_device_selector("id:onlyvendor").is_err());
+        assert!(
+            parse_device_selector("id:zz:27a0").is_err(),
+            "vendor is not hex"
+        );
+        assert!(
+            parse_device_selector("uuid:tooshort").is_err(),
+            "uuid must be exactly 32 hex chars"
+        );
+        assert!(
+            parse_device_selector("uuid:1111111111111111111111111111111g").is_err(),
+            "uuid must be hex, 'g' is not"
+        );
+    }
+
+    // -- resolve_device_selector: exact match -----------------------------------------------
+
+    #[test]
+    fn resolve_exact_uuid_match_picks_the_named_device() {
+        let devices = two_device_desk();
+        let sel = DeviceSelector::Uuid("11111111111111111111111111111111".to_string());
+        assert_eq!(resolve_device_selector(&devices, &sel), Ok(0));
+    }
+
+    #[test]
+    fn resolve_exact_name_match_picks_the_named_device() {
+        let devices = two_device_desk();
+        let sel = DeviceSelector::Name("Intel(R) Iris(R) Xe Graphics".to_string());
+        assert_eq!(resolve_device_selector(&devices, &sel), Ok(1));
+    }
+
+    #[test]
+    fn resolve_vendor_device_id_picks_the_unique_match() {
+        let devices = two_device_desk();
+        let sel = DeviceSelector::VendorDevice(0x8086, 0x9a49);
+        assert_eq!(resolve_device_selector(&devices, &sel), Ok(1));
+    }
+
+    #[test]
+    fn resolve_pci_picks_the_unique_match() {
+        let devices = two_device_desk();
+        let sel = DeviceSelector::Pci("0000:01:00.0".to_string());
+        assert_eq!(resolve_device_selector(&devices, &sel), Ok(0));
+    }
+
+    #[test]
+    fn resolve_luid_picks_the_unique_match() {
+        let devices = two_device_desk();
+        let sel = DeviceSelector::Luid("aaaaaaaaaaaaaaaa".to_string());
+        assert_eq!(resolve_device_selector(&devices, &sel), Ok(0));
+    }
+
+    #[test]
+    fn resolve_index_is_a_displayed_ordinal_not_an_identity() {
+        let devices = two_device_desk();
+        assert_eq!(
+            resolve_device_selector(&devices, &DeviceSelector::Index(0)),
+            Ok(0)
+        );
+        assert_eq!(
+            resolve_device_selector(&devices, &DeviceSelector::Index(1)),
+            Ok(1)
+        );
+    }
+
+    // -- resolve_device_selector: not found --------------------------------------------------
+
+    #[test]
+    fn resolve_not_found_for_an_index_out_of_range_never_falls_back_to_zero() {
+        let devices = two_device_desk();
+        let err = resolve_device_selector(&devices, &DeviceSelector::Index(9)).unwrap_err();
+        assert!(matches!(err, DeviceSelectionError::NotFound { .. }));
+    }
+
+    #[test]
+    fn resolve_not_found_for_an_unmatched_uuid() {
+        let devices = two_device_desk();
+        let sel = DeviceSelector::Uuid("99999999999999999999999999999999".to_string());
+        let err = resolve_device_selector(&devices, &sel).unwrap_err();
+        match err {
+            DeviceSelectionError::NotFound { available, .. } => {
+                assert_eq!(
+                    available.len(),
+                    2,
+                    "both devices should be listed as available"
+                );
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_not_found_for_an_unmatched_name_never_substring_matches() {
+        // The strict selector's `name:` is EXACT, unlike the legacy selector's substring match —
+        // "RTX" must not match "NVIDIA RTX A1000 Laptop GPU".
+        let devices = two_device_desk();
+        let sel = DeviceSelector::Name("RTX".to_string());
+        assert!(matches!(
+            resolve_device_selector(&devices, &sel),
+            Err(DeviceSelectionError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_not_found_on_an_empty_device_list() {
+        let sel = DeviceSelector::Uuid("11111111111111111111111111111111".to_string());
+        let err = resolve_device_selector(&[], &sel).unwrap_err();
+        match err {
+            DeviceSelectionError::NotFound { available, .. } => assert!(available.is_empty()),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    // -- resolve_device_selector: ambiguous --------------------------------------------------
+
+    #[test]
+    fn resolve_ambiguous_when_id_matches_two_identical_gpus() {
+        let devices = two_identical_gpus_desk();
+        let sel = DeviceSelector::VendorDevice(0x10de, 0x27a0);
+        let err = resolve_device_selector(&devices, &sel).unwrap_err();
+        match err {
+            DeviceSelectionError::Ambiguous { matches, .. } => assert_eq!(matches.len(), 2),
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_ambiguous_id_is_resolved_by_the_more_specific_uuid_selector() {
+        // The identical-GPU desk is ambiguous by (vendor, device) but each card still has its
+        // own UUID — the finer-grained identity resolves what the coarser one cannot.
+        let devices = two_identical_gpus_desk();
+        let sel = DeviceSelector::Uuid("44444444444444444444444444444444".to_string());
+        assert_eq!(resolve_device_selector(&devices, &sel), Ok(1));
+    }
+
+    // -- resolve_device_selector: unsupported identity ---------------------------------------
+
+    #[test]
+    fn resolve_pci_is_unsupported_identity_when_no_device_reports_it() {
+        let mut devices = two_device_desk();
+        for d in &mut devices {
+            d.pci = None;
+        }
+        let sel = DeviceSelector::Pci("0000:01:00.0".to_string());
+        let err = resolve_device_selector(&devices, &sel).unwrap_err();
+        assert!(matches!(
+            err,
+            DeviceSelectionError::UnsupportedIdentity { .. }
+        ));
+    }
+
+    #[test]
+    fn resolve_luid_is_unsupported_identity_when_no_device_reports_it() {
+        let mut devices = two_device_desk();
+        for d in &mut devices {
+            d.luid = None;
+        }
+        let sel = DeviceSelector::Luid("aaaaaaaaaaaaaaaa".to_string());
+        let err = resolve_device_selector(&devices, &sel).unwrap_err();
+        assert!(matches!(
+            err,
+            DeviceSelectionError::UnsupportedIdentity { .. }
+        ));
+    }
+
+    #[test]
+    fn unsupported_identity_is_distinct_from_not_found() {
+        // A selector whose identity kind IS available, but whose value matches nothing, is
+        // NotFound (the GPU might show up later). A selector whose identity kind is not
+        // available on this platform AT ALL is UnsupportedIdentity (it never will).
+        let devices = two_device_desk(); // both devices DO have a pci field here
+        let absent_value = DeviceSelector::Pci("ffff:ff:ff.f".to_string());
+        assert!(matches!(
+            resolve_device_selector(&devices, &absent_value),
+            Err(DeviceSelectionError::NotFound { .. })
+        ));
+
+        let mut no_pci_devices = devices;
+        for d in &mut no_pci_devices {
+            d.pci = None;
+        }
+        assert!(matches!(
+            resolve_device_selector(&no_pci_devices, &absent_value),
+            Err(DeviceSelectionError::UnsupportedIdentity { .. })
+        ));
+    }
+
+    // -- select_device_strict: env var + session-option precedence, and the "not set" default --
+
+    #[test]
+    fn select_device_strict_returns_none_when_nothing_is_set() {
+        let _g = serial_env();
+        // SAFETY: test-only env mutation, serialized by `serial_env`.
+        unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
+        let devices = two_device_desk();
+        assert_eq!(select_device_strict(&devices, None), Ok(None));
+    }
+
+    #[test]
+    fn select_device_strict_reads_the_env_var_when_no_session_override() {
+        let _g = serial_env();
+        // SAFETY: test-only env mutation, serialized by `serial_env`.
+        unsafe { std::env::set_var(ENV_DEVICE_SELECTOR_STRICT, "index:1") };
+        let devices = two_device_desk();
+        assert_eq!(select_device_strict(&devices, None), Ok(Some(1)));
+        // SAFETY: test-only env mutation, serialized by `serial_env`.
+        unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
+    }
+
+    #[test]
+    fn select_device_strict_session_override_outranks_the_env_var() {
+        let _g = serial_env();
+        // SAFETY: test-only env mutation, serialized by `serial_env`.
+        unsafe { std::env::set_var(ENV_DEVICE_SELECTOR_STRICT, "index:1") };
+        let devices = two_device_desk();
+        assert_eq!(select_device_strict(&devices, Some("index:0")), Ok(Some(0)));
+        // SAFETY: test-only env mutation, serialized by `serial_env`.
+        unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
+    }
+
+    #[test]
+    fn select_device_strict_malformed_env_value_is_an_error_not_a_fallback() {
+        let _g = serial_env();
+        // SAFETY: test-only env mutation, serialized by `serial_env`.
+        unsafe { std::env::set_var(ENV_DEVICE_SELECTOR_STRICT, "not-a-valid-selector") };
+        let devices = two_device_desk();
+        assert!(matches!(
+            select_device_strict(&devices, None),
+            Err(DeviceSelectionError::Malformed { .. })
+        ));
+        // SAFETY: test-only env mutation, serialized by `serial_env`.
+        unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
+    }
+
+    /// Serializes tests that mutate `ENV_DEVICE_SELECTOR_STRICT` so they cannot interleave under
+    /// `cargo test`'s default multi-threaded runner (env vars are process-global).
+    fn serial_env() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    // -- Display impls used in log lines: smoke-test they don't panic and carry the selector --
+
+    #[test]
+    fn device_selector_display_round_trips_the_scheme() {
+        assert_eq!(DeviceSelector::Index(3).to_string(), "index:3");
+        assert_eq!(
+            DeviceSelector::VendorDevice(0x10de, 0x27a0).to_string(),
+            "id:10de:27a0"
+        );
+    }
+
+    #[test]
+    fn device_selection_error_display_names_the_selector_and_the_candidates() {
+        let err = DeviceSelectionError::Ambiguous {
+            selector: "id:10de:27a0".to_string(),
+            matches: vec!["A (index 0)".to_string(), "B (index 1)".to_string()],
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("id:10de:27a0"));
+        assert!(msg.contains("A (index 0)"));
+        assert!(msg.contains("B (index 1)"));
     }
 }
