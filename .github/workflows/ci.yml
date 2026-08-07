@@ -1756,6 +1756,23 @@ jobs:
         # exercised on the runs that most need it.
         if: always()
         run: |
+          # rust/tools/probe_ledger_loss.py's own 7-arm default run reads a real,
+          # named historical commit (INCIDENT_COMMIT = "eb84364") as arm 3's fixture,
+          # and every ledger_loss_probe test that exercises the default run therefore
+          # needs that commit present locally. This job's own actions/checkout@v4
+          # above has no fetch-depth override (a 1-commit shallow clone), so the
+          # commit is simply absent from the local object store here -- confirmed on
+          # run 31145937171/job 92765255376, where every such test failed with
+          # "ERROR(instrument): cannot read eb84364 from this repo", an instrument
+          # outage from an incomplete checkout, not a destination-policy regression.
+          # Deepen to full history for this step only, so the commit is present
+          # without changing the faster shallow checkout the rest of this job's
+          # build+test steps rely on. `-Unshallow` errors on an already-complete
+          # repository, so only call it when the checkout actually is shallow.
+          if ((git rev-parse --is-shallow-repository).Trim() -eq 'true') {
+            git fetch --quiet --unshallow
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           python -m pytest ci\test_lane_checks.py -q --tb=short `
             -k "ledger_loss_probe" -p no:randomly --strict-markers 2>&1 |
             Tee-Object -FilePath bench\results\ci-lane\pytest-ledger-loss-windows.log
