@@ -3894,48 +3894,94 @@ one artifact over — the register worked, the reader did not exist. Two things 
   than remembered.
 
 **What is still open after the repair, stated rather than left to be found — and stated against the
-API, not against the belief about it.** The step is **advisory**. Read on 2026-08-07:
-`branches/main/protection` is **404 not protected**, and ruleset `20479180` (`main`, active) carries
-exactly `[{"type":"deletion"},{"type":"non_fast_forward"}]`. There are **no required status checks on
-this repository at all**. Three consequences, none of them optional:
+API, not against the belief about it.** The step is **enforced**, and the sentence that had to be
+retired to write that is the one above it in this file's history: for two days this paragraph said
+*advisory*, and it was right to. Read on 2026-08-07, after the change described below:
+`branches/main/protection` is still **404 not protected** — the classic API is unused and always was —
+and ruleset `20479180` (`main`, `active`, `bypass_actors: []`, `~DEFAULT_BRANCH`) now carries
+`deletion`, `non_fast_forward`, and a `required_status_checks` rule with
+`strict_required_status_checks_policy: true` over exactly four contexts: `rustfmt check`,
+`Lane-check self-test (two polarities, no GPU)` — the job this step runs in — `Build + op tests (Linux,
+lavapipe)` and `Build + op tests (Windows, lavapipe via mesa-dist-win)`. Three consequences, none of
+them optional:
 
-* this step's colour is **not a merge precondition** — nothing consumes it, so nothing is blocked by it;
-* there is no required check for GitHub to **invalidate** when the base moves, and "require branches to
-  be up to date before merging" is a `strict` policy *on* required checks, so it has nothing to apply
-  to. Naming only the missing up-to-date rule names a residual **smaller than the one this repository
-  has**;
-* the exact residual is therefore: **the base can move after this step goes green and before the merge
-  button is pressed, and the merge is still permitted.** The screen narrows the window to the interval
-  between the last run and the merge; it does not close it, and nothing today makes it close it.
+* this step's colour **is** a merge precondition now, transitively: its job is required, and the job is
+  red if the step is red;
+* `strict` means GitHub recomputes up-to-dateness at merge time, so when the base moves the pull
+  request is marked **BEHIND** and the merge is refused until the lane has re-run **against the moved
+  base**. That is the exact interval this section spent its length naming, and it is closed;
+* what replaces it is a **smaller residual, and naming it is the whole discipline here: a required
+  context is a JOB, not a step.** What GitHub verifies is that `Lane-check self-test` concluded
+  `success`. A landing gate that stopped running *inside* a green job — a bad `if:`, a gate that
+  decided NOT-REQUIRED because its path derivation broke — would satisfy the rule exactly as well as
+  one that ran. Nothing GitHub offers can require a step, so this residual is not removable at the
+  policy layer; it is held by `ci/negative_control_landing_simulation.py`, which is **unconditional**
+  for precisely this reason, and by reading the run's skipped-step count rather than its colour.
+  A second, smaller one: the rule is scoped to `~DEFAULT_BRANCH`, so nothing here constrains any other
+  branch, and none is claimed to be constrained.
 
-What is unchanged is why that is survivable: the failure mode is **fail-closed**. An unscreened
-collision produces a red on `main` in the `push` job — a red in an inconvenient place, never a green
-over an undeclared move.
+What is unchanged is why the old residual was survivable while it lasted: the failure mode was
+**fail-closed**. An unscreened collision produced a red on `main` in the `push` job — a red in an
+inconvenient place, never a green over an undeclared move.
 
-**Why enforcement is not switched on in this change, and what would switch it on.** `main` is red —
-run `31169478658` at `3e38ae3`, three of four jobs (`Lane-check self-test`, `Build + op tests (Linux,
-lavapipe)`, `Build + op tests (Windows, lavapipe via mesa-dist-win)`). A `required_status_checks` rule
-with `strict_required_status_checks_policy: true` added today would make **every** pull request
-unmergeable, including the ones that close those three reds. That is stopping the workflow, not
-hardening it. So the enforcement is **sequenced behind the condition that makes it satisfiable**, and
-the sequence is written down with an owner and a verification for each step in
-`ci/landing_enforcement_followup.json`: `main` genuinely green (blocked on issue #24) → the
-`main_is_green` open red closed on that evidence → ruleset `20479180` gains `required_status_checks`
-naming `Lane-check self-test (two polarities, no GPU)` with `strict_required_status_checks_policy:
-true` → **base movement demonstrably invalidates a green landing check and forces a re-run** → #60
-closes. `ci/test_lane_checks.py::test_the_landing_simulation_declares_its_enforcement_follow_up` keeps
-that file well-formed and keeps it pointed at an open red that still exists, so "the follow-up is
-sequenced" cannot decay into "the follow-up was forgotten"; and
-`test_no_artifact_claims_the_landing_gate_is_enforced` fails if this paragraph or the lane inventory
-starts claiming an enforcement the repository does not have. **Issue #60 stays open until step 4 is
-evidenced**; the pull request that added this screen says `Refs #60`, not `Closes #60`.
+**How enforcement was switched on, and the two things that had to be true first.** It was sequenced
+behind the condition that made it satisfiable, with an owner and a verification per step, in
+`ci/landing_enforcement_followup.json`; that file is now a record of what happened rather than a plan.
+`main` was red — run `31169478658` at `3e38ae3`, and then run `31178244578` at `ca10bff`, where both
+op-test lanes carried a single regression of their own — and a strict required-check rule added on
+either day would have made **every** pull request unmergeable, including the ones repairing those
+reds. That is stopping the workflow, not hardening it. The order actually walked was: the `ca10bff`
+regression repaired in PR #66 → `main` genuinely green at `fbbb898`, run `31181293838`, **all four
+jobs, zero skipped steps in each** → the ruleset extended by `PUT`, re-sending `deletion` and
+`non_fast_forward` verbatim so that adding a rule could not silently drop the two that were already
+there → **base movement observed to invalidate a green landing check**.
 
-One cheaper variant was investigated rather than assumed: requiring *only* the landing gate. Required
-contexts are per **job** (the check-run name), not per step, and the gate runs inside `Lane-check
-self-test`, which is one of the three currently red jobs — so the cheap version needs the gate lifted
-into its own job first. That is a real and inexpensive option (19 s on the hosted lane) and it is
-recorded in the follow-up file as its own reviewed artifact, because changing the lane's job topology
-as a side effect of a review round is exactly the kind of silent change this section exists to refuse.
+That last step was going to be staged, on a disposable pull request carrying one empty commit, and it
+did not need to be. PR #67 — an unrelated change, another author, its own schedule — merged and moved
+`main` to `8e6417e` while the experiment was still being set up. Two pull requests that had gone green
+on all four required contexts minutes earlier, the disposable one and the one carrying this paragraph,
+both immediately read `mergeable_state: behind`. The label was then tested rather than believed:
+`PUT /repos/.../pulls/70/merge` returned **HTTP 405, `4 of 4 required status checks are expected`**. A
+pull request whose four contexts had all concluded `success` was refused — because they concluded it
+against a base nobody was merging into any more. That is the residual this section spent its length
+naming, arriving as a refusal instead of as a merge, on a base movement nobody arranged.
+
+Direct pushes are refused by the same rule, which was also tested rather than assumed: `git push
+origin HEAD:main` with an empty commit was declined with `GH013 … 4 of 4 required status checks are
+expected`, and `main` was unmoved. A policy that only constrained the merge button would have left the
+push open beside it.
+
+**What the rule now makes possible, said plainly, because it is the price and not an objection.** A
+required context is a **string** in repository settings; the job that produces it is a string in
+`.github/workflows/ci.yml`, and nothing in GitHub relates the two. Rename the job and the context
+never arrives again: every pull request waits forever, **including the one that would rename it
+back**, and the way out is a settings change by somebody who still has the access and has worked out
+what happened. PR #67 edited `ci.yml` in the same hour this rule went live and happened not to touch a
+`name:`. Happening not to is not a control, so
+`ci/test_lane_checks.py::test_every_required_context_is_a_job_this_workflow_still_produces` holds the
+two strings against each other in the lane, on the branch, before a rename can reach the policy.
+
+**One step of the written sequence is deliberately NOT done, and it is not a loose end.** The
+`main_is_green` entry in `ci/open_reds.json` stays open at `expect=red`. It censuses the **last ten
+pushes** to `main`, and three of those ten are still the historical reds of issue #24; flipping it to
+`expect=green` today would make the register red while claiming the opposite, which is the failure that
+entry was written to catch. It closes when the window clears, and that flip belongs to #24's lane. The
+sequence file put it before enforcement because its *purpose* was "do not deadlock the repository"; a
+green latest push discharges that purpose, and a ten-run census does not gate it.
+`ci/test_lane_checks.py::test_the_landing_simulation_declares_its_enforcement_follow_up` and
+`test_no_artifact_claims_the_landing_gate_is_enforced` both moved in the same commit as the settings
+change, because they assert the CURRENT state — and they now fail if any artifact describes the
+enforcement as *larger* than it is, which is the same test with its polarity turned over.
+
+One cheaper variant was investigated rather than assumed, and it is recorded because the finding
+outlived the decision: requiring *only* the landing gate. Required contexts are per **job** (the
+check-run name), not per step, so the gate — which runs inside `Lane-check self-test` — is not
+separately requirable without being lifted into a job of its own. That is why the four required
+contexts are the four jobs the lane already has, and why the per-step residual named above exists
+at all rather than having been designed away. Lifting the gate into its own job remains a real and
+inexpensive option (19 s on the hosted lane) and remains its own reviewed artifact, because changing
+the lane's job topology as a side effect of a settings change is exactly the kind of silent change
+this section exists to refuse.
 
 **The gate and the engine agree about which commit is the branch head.** `check_landing_simulation.py`
 resolves the real head — `HEAD^2` when the checkout is a `pull_request` merge ref, whose *first* parent
@@ -5709,6 +5755,147 @@ reject generated inputs on the **CPU reference arm** (`seqlens_k[0] = 7 is out o
 the model's inputs are interdependent and the runner's input generation cannot satisfy them. That
 has nothing to do with MatMulNBits or with this change, but it does mean **there is no whole-model
 CPU reference to compare a Vulkan run against**, so nothing here is an end-to-end logits claim.
+
+---
+
+### 8.13 The GQA workgroup size — one lane per subgroup was 1/32 of the machine (issue #56)
+
+`gqa_f16.comp` declared `layout(local_size_x = 1, local_size_y = 1, local_size_z = 1)`. That is
+the honest first-pass shape for a kernel written correctness-first — no barriers, no shared memory,
+no wave-level reductions — and §8's account of it said so.
+
+What it costs was never measured until issue #56 measured it. **The hardware's unit of scheduling
+is the subgroup, not the invocation.** A workgroup of one invocation does not occupy one lane; it
+occupies a whole subgroup with one lane enabled. On the RTX A1000 the subgroup is 32 wide, so 31
+of every 32 lanes were masked off for the entire kernel, on every device this EP runs on.
+
+#### The measurement that made it the target
+
+The per-kernel attribution comes from the EP's own GPU timestamp queries
+(`ONNXRUNTIME_EP_VULKAN_TRACE` + `..._TRACE_GPU`) on the real Foundry Phi-3.5 int4 graph — ORT's
+profiler cannot answer this question, because it attributes every Vulkan node to the single fused
+node it hands the EP. **One committed artifact holds that aggregate and this table is read off it:**
+`bench/results/real_model_gqa_local_size.json` → `timing[].points[local_size == 1].by_kernel_us`,
+keys `vulkan.gpu.gqa_f16` and `vulkan.gpu.q_gemv_matmul_nbits_f16`, against that point's `total_us`.
+`local_size = 1` is the pre-change geometry, so those points are the before state.
+
+| case | GPU total | `gqa_f16` | `q_gemv_matmul_nbits_f16` |
+|---|---|---|---|
+| prefill `M=1` | 20.03 ms | 1.48 (7.4%) | 17.46 (87.2%) |
+| prefill `M=128` | 2927.34 ms | **1891.19 (64.6%)** | 1029.21 (35.2%) |
+| decode past=1024 | 287.18 ms | **268.57 (93.5%)** | 17.52 (6.1%) |
+
+`docs/PERF.md` §26.4 prints the same six rows from the same field, and the two tables now agree
+digit for digit. They did not before: an earlier draft of this section cited
+`bench/results/real_model_diagnostics.json` — which carries ORT's node table, counters, fallback
+and dispatch records and **no** per-kernel GPU field at all — and quoted a `M=128` row of
+2911.21 / 1884.19 (64.7%) / 1020.11 and a decode row of 286.24 / 267.68 / 17.47 that appear in no
+artifact in this repository. Both rows are withdrawn and replaced by the surviving artifact's, which
+is why the headline reads 64.6% here and not 64.7%.
+
+GQA, not the quantised GEMM this EP has spent its optimisation effort on, is the largest single
+consumer of device time in Phi-3.5 at every width above `M = 1`. PR #53's own named next levers
+(widen the 32-bit scalar `B` loads, raise the accumulator budget) address the *minority* cost;
+`docs/PERF.md` §26 shows the differential bandwidth measurement that establishes that.
+
+#### The mechanism
+
+The workgroup size becomes specialisation constant 0
+(`layout(local_size_x_id = 0, local_size_x = 1, ...)`), the host picks it with
+`ops::attention::gqa_local_size`, and the dispatch becomes `ceil(total / local)` workgroups
+instead of `total`.
+
+Nothing else changes. Invocation `gid` computes exactly what it computed before, in the same
+order, reading and writing the same addresses; only the *packing* of invocations into workgroups
+moves. The atomics that `gqa_f16.comp` already used for its half-word writes — previously
+described as "never actually contended at local_size=1" — are what make sizes above 1 correct, and
+they were always written for the contended case.
+
+#### Why this is a portability-neutral change
+
+Same test as §8.12: what does it **not** need?
+
+* **No shared memory, no barrier, no subgroup operation.** The kernel is still a plain serial
+  algorithm per invocation. Nothing was added that a device could fail to support.
+* **No new feature, extension, capability or query.** Vulkan 1.1 core, within §7.2's frozen set.
+* **No device-dependent decision.** `GQA_MAX_LOCAL_SIZE = 64` is a *specification* number:
+  `maxComputeWorkGroupInvocations` has a required floor of 128, so 64 is inside the guarantee with
+  a factor of two to spare on every conformant implementation, whatever it reports. Two devices
+  running the same graph pick the same size, exactly as they pick the same row tile.
+* **Vendor-neutral by arithmetic.** 64 is a multiple of every subgroup width in circulation (32
+  NVIDIA, 64 AMD, 8/16/32 Intel), so it fills whole subgroups on all three rather than being tuned
+  to the one machine that measured it.
+
+#### The bound that binds, and why it is the *work*, not the device
+
+The cap is not what usually decides the size — the available parallelism is. Workgroups are the
+unit the hardware distributes, so packing *all* the work into one workgroup hands the kernel to a
+single compute unit. Phi-3.5 decode has `B * Nq * S = 32` invocations in total; at size 64 that is
+one workgroup and the rest of the device idles.
+
+`GQA_MIN_GROUPS = 32` is the floor on workgroups kept, and `gqa_local_size` returns the largest
+power of two at or below the cap that still leaves that many. `docs/PERF.md` §26.5 is the sweep it
+was read off, including the one point where the rule deliberately leaves 16% on the table to
+protect decode.
+
+#### Decode is bit-identical, and its dispatch is unchanged
+
+At 32 invocations the rule returns `local = 1`, so decode's dispatch is `[32, 1, 1]` with
+`spec_constants = [1]` — the same geometry, the same grid, the same pipeline behaviour as before
+issue #56. That is asserted twice, in `translate_gqa_phi35_decode_produces_one_dispatch` (which
+predates this change and still passes untouched) and in
+`gqa_decode_stays_at_one_invocation_per_workgroup`.
+
+For every *other* size, "bit-identical" is a claim about the source text, so it is verified as one
+rather than argued: `bench/results/probe_gqa_local_size.py` compares whole-model outputs
+byte-for-byte against the `local = 1` reference in the same case. Six cases at seven sizes are
+**42 measured points**, and each case contributes **6 non-reference comparisons** — the reference
+is not compared with itself — so the verification is **36 cross-arm comparisons, 36
+`BITWISE-IDENTICAL`**, 65 output tensors each
+(`bench/results/real_model_gqa_local_size.json` → `equivalence[].comparisons[].verdict`). No
+tolerance is involved and none would be appropriate. That count is not the same as the harness's
+whole-model equivalence gate, which is 18 cases and 54 arm verdicts under budgets — of which 18 are
+the reference arm compared with itself (`self: true`) and **36 are independent comparisons**, a
+different 36 from this one, in a different artifact — see `docs/PERF.md` §26.2 and §26.5.
+
+#### The tail
+
+`ceil(total / local)` over-dispatches whenever the size does not divide the invocation count. The
+shader's existing `if (b >= pc.batch_size) return;` is the whole bounds check for it: `gid >= B*Nq*S`
+implies `gid / (Nq*S) >= B`, so every over-dispatched invocation lands at `b >= batch_size` by
+construction and retires before touching a buffer. `gqa_dispatch_grid_covers_every_invocation`
+walks counts that are deliberately not multiples of any candidate size and asserts both halves:
+the grid covers every invocation, and the tail is never a whole wasted workgroup.
+
+As a side effect the dispatch also gains headroom against `maxComputeWorkGroupCount[0]` (65,535
+guaranteed): dividing the x extent by up to 64 moves the first count that could exceed it from
+65,536 invocations to 4,194,304.
+
+#### The kill switch
+
+`ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE` overrides the size, clamped to `[1, GQA_MAX_LOCAL_SIZE]`
+and never trusted — `=0` (which is what the environment can actually produce, and which would be a
+division by zero in `div_ceil`) clamps to 1, under the planted control
+`gqa_local_size_override_of_zero_is_clamped_not_dispatched`. Setting it to `1` restores the
+pre-issue-#56 geometry exactly, so it is the operational fallback and the A/B control at once,
+exactly as `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS=1` is for §8.12. It is mapped in
+`ci/census_surface_map.json` as `uncensused/Switch`, for the same reachability reason: the
+census's six-node elementwise graph carries no `GroupQueryAttention` node, so no run of it can
+build a `gqa_f16` pipeline at all.
+
+The resolved value is witnessed in an artifact the **EP** produced, not in a host-side record of
+what was asked for. `gqa_f16`'s dispatch previously passed an empty `spec_constants` vector; it now
+passes `vec![local]`, so the size rides the unchanged `counters::record_pipeline_variant` call into
+`pipeline_variants` and into the §8.9.20 `spec_digest`.
+
+#### What this does *not* fix, stated rather than implied
+
+Decode. At 32 invocations there is no packing to do — the sweep's own numbers say every size above
+1 makes decode *slower* — and decode is where `gqa_f16` holds 93.5% of GPU time. Making decode
+faster needs a different kernel shape: parallelism over the **KV sequence** inside a workgroup,
+with a reduction, which is a shared-memory and barrier change and therefore a portability question
+of exactly the kind §8.12 declined to open without evidence. `docs/PERF.md` §26.7 names it as the
+next lever and says what it would have to prove.
 
 ---
 

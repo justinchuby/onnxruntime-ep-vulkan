@@ -1,10 +1,47 @@
-// `com.microsoft.GroupQueryAttention` — fused GQA with RoPE (serial, first-pass baseline).
+// `com.microsoft.GroupQueryAttention` — fused GQA with RoPE (serial per invocation).
 //
 // # Correctness before performance
 //
-// One GLSL invocation per (batch, query_head, query_seq_pos).  Local size = (1,1,1) so there
-// are no barriers, no shared memory dependencies, and no wave-level reductions — the correctness
-// surface is a plain serial algorithm.  The dispatch is (B * Nq * S, 1, 1).
+// One GLSL invocation per (batch, query_head, query_seq_pos).  There are no barriers, no shared
+// memory dependencies and no wave-level reductions — the correctness surface is a plain serial
+// algorithm, and it stays that way at every workgroup size.  The dispatch is
+// `(ceil(B * Nq * S / local_size), 1, 1)`.
+//
+// # The workgroup size is a specialisation constant, and why that is a performance fix
+//
+// This kernel shipped with `local_size = (1,1,1)`.  A workgroup of one invocation does not
+// occupy one lane of the machine — it occupies a whole SIMD group with one lane enabled, because
+// the hardware's unit of scheduling is the subgroup, not the invocation.  On the RTX A1000 the
+// subgroup is 32 wide, so **31 of every 32 lanes were masked off for the entire kernel**.
+//
+// MEASURED 2026-08-06 (`bench/results/real_model_gqa_local_size.json` ->
+// `timing[].points[local_size == 1].by_kernel_us`, key `vulkan.gpu.gqa_f16` against that point's
+// `total_us`; Foundry Phi-3.5 int4 on an RTX A1000): `gqa_f16` was **64.6%** of all GPU time at
+// prefill `M = 128` (1891.19 of 2927.34 ms) and **93.5%** at decode with a 1024-token cache
+// (268.57 of 287.18 ms) — the largest single consumer of device time in the model, ahead of the
+// quantised GEMM this EP has spent its optimisation effort on.  `real_model_diagnostics.json` is
+// **not** the source and carries no per-kernel GPU field at all — only ORT's node table, counters,
+// fallback and dispatch records.  An earlier revision of this comment cited it, and quoted 64.7%;
+// both are withdrawn.  `docs/DESIGN.md` §8.13 and `docs/PERF.md` §26.4 print the same rows from
+// the same field.
+//
+// Nothing about the arithmetic changes: invocation `gid` computes exactly what it computed
+// before, in the same order, reading and writing the same addresses.  Only the *packing* of
+// invocations into workgroups changes, so the result is bit-identical by construction.  The
+// atomics an older comment described as "never actually contended at size 1" were never really
+// uncontended either: contention is a function of `seq_len`, not of the workgroup size, and they
+// were always written for the contended case.  Packing does not add an ordering guarantee to
+// anything, which is why step 3's half-word writes stay atomic and why the sibling-key branch in
+// step 4 recomputes from a read-only input rather than reading a sibling's store back.
+//
+// The size is a specialisation constant rather than a literal because the right value is a
+// function of how many invocations there are: a decode step has `B * Nq * S = 32` of them, and
+// packing 32 invocations into one workgroup hands the whole kernel to a single compute unit
+// while 32 workgroups of one invocation are spread across all of them.  `ops::attention::
+// gqa_local_size` picks it, and `ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE` overrides it.
+//
+// Invocations past the end of the grid are guarded: `b >= pc.batch_size` returns, and that is
+// exactly the condition an over-dispatched tail satisfies (see `main`).
 //
 // # Why serial first
 //
@@ -62,12 +99,15 @@
 //   Tensors are stored as uint arrays, two f16 elements per uint.  Element at flat index i is
 //   in word i/2; the lower 16 bits hold element i&~1, the upper 16 bits hold element i|1.
 //   Reads use unpackHalf2x16; writes use atomicAnd/atomicOr to avoid corrupting the neighbour.
-//   (With local_size=1 the atomics are never actually contended, but they are always correct.)
+//   The atomics are what make any workgroup size correct: two invocations of the same workgroup
+//   can hold the two halves of one 32-bit word, and a plain store would lose one of them.
 
 #version 450
 #extension GL_EXT_shader_16bit_storage : require
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+// Specialisation id 0 — the host's `gqa_local_size`. Defaults to 1 so a pipeline built without
+// the constant behaves exactly as this kernel did before the constant existed.
+layout(local_size_x_id = 0, local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 // --------------------------------------------------------------------------
 // Push constants
@@ -98,7 +138,8 @@ layout(set = 0, binding = 4, std430) readonly  buffer BufCos  { uint d[]; } cos_
 layout(set = 0, binding = 5, std430) readonly  buffer BufSin  { uint d[]; } sin_buf;
 // attn_out is NOT declared writeonly: wr_out uses atomicAnd/atomicOr which need read access.
 // Each invocation writes to a disjoint range (different (b,h,s_local)), so the atomics never
-// actually contend — but they must compile.
+// contend for the same *element* — but two invocations of one workgroup can share a 32-bit
+// word, which is precisely what the read-modify-write atomics are for.
 layout(set = 0, binding = 6, std430)           buffer BufOut  { uint d[]; } attn_out;
 layout(set = 0, binding = 7, std430)           buffer BufPresK { uint d[]; } pres_k;
 layout(set = 0, binding = 8, std430)           buffer BufPresV { uint d[]; } pres_v;
@@ -183,6 +224,11 @@ void main() {
     uint rem     = gid % (Nq * S);
     uint h       = rem / S;
     uint s_local = rem % S;
+    // FAIL CLOSED, and the tail guard. `gid` runs to `local_size * ceil(total / local_size)`,
+    // which exceeds `B * Nq * S` whenever the workgroup size does not divide it. Every such
+    // invocation lands at `b >= batch_size` by construction — `gid >= B * Nq * S` implies
+    // `gid / (Nq * S) >= B` — so this one comparison is the whole bounds check, and it was
+    // already here when the grid was exact.
     if (b >= pc.batch_size) return;
 
     uint kv_h    = h / (Nq / Nkv);     // KV head (group_size = Nq/Nkv; MHA has group_size=1)
@@ -240,8 +286,12 @@ void main() {
     // ------------------------------------------------------------------
     // 3. Write rotated K/V into present_key/value at position tok_pos.
     //    present layout: [B, Nkv, present_len, D]
-    //    (Atomic writes — with local_size=1 they are never contended, but must be correct
-    //    for seq_len > 1 where sibling invocations on the same kv_head can co-exist.)
+    //    (Atomic writes — half-word stores into a `uint` array, so two invocations writing the
+    //    two halves of one word must not lose each other's write.  Contention is a function of
+    //    the *data*, not of the workgroup size: sibling invocations on the same kv_head co-exist
+    //    whenever seq_len > 1, in the same workgroup or in different ones.  The workgroup size is
+    //    a specialisation constant chosen by the host and is not knowable here, so nothing in
+    //    this file may assume it is 1.)
     //
     //    Capacity guard. Under the growing convention present_len is past_stride + seq_len and
     //    tok_pos < present_len always. Under the shared-buffer (arena) convention present_len
@@ -371,17 +421,28 @@ void main() {
             // same dispatch*.
             //
             // This used to read it back out of `present_key`, where a sibling invocation had
-            // written it in step 3. Nothing orders those two invocations: they are separate
-            // workgroups (local_size = 1, one workgroup per (b, h, s_local)), and Vulkan
-            // gives no execution or memory ordering between workgroups of one dispatch. The
-            // read was a data race on every prefill — `seq_len > 1` is exactly the regime
-            // this branch exists for, and exactly the regime KV traffic is large enough to be
-            // worth optimising in. It was invisible because decode (`seq_len == 1`) never
-            // reaches this branch at all, so every test we have passes without it.
+            // written it in step 3. Nothing orders those two invocations. Two cases, and
+            // **neither** is fixed by the workgroup size:
+            //
+            //   * The sibling is in another workgroup. Vulkan gives no execution or memory
+            //     ordering between workgroups of one dispatch, full stop.
+            //   * The sibling is in *this* workgroup. Packing invocations together buys
+            //     nothing here either: there is no barrier on this path, the write went to a
+            //     storage buffer rather than to shared memory, and invocations within a
+            //     workgroup progress independently between barriers. A workgroup is not a
+            //     lockstep unit and may not be treated as one.
+            //
+            // So the read was a data race on every prefill at every size — `seq_len > 1` is
+            // exactly the regime this branch exists for, and exactly the regime KV traffic is
+            // large enough to be worth optimising in. It was invisible because decode
+            // (`seq_len == 1`) never reaches this branch at all, so every test we have passes
+            // without it.
             //
             // The value is recomputed from `packed_qkv` instead. That buffer is a read-only
             // dispatch input, so there is no cross-invocation dependency to order and no
-            // barrier to get wrong. It is the *same* arithmetic step 2 applies — the same
+            // barrier to get wrong — the recompute is what makes this branch correct at *any*
+            // workgroup size, which is precisely why it is still necessary now that the size is
+            // a specialisation constant. It is the *same* arithmetic step 2 applies — the same
             // cos/sin row, the same neox pairing — so the result is bit-identical to what the
             // sibling wrote, not an approximation of it. The cost is arithmetic, in a loop
             // that is already memory-bound.
