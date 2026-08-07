@@ -401,6 +401,14 @@ CHECKS: tuple[Check, ...] = (
             "reduce that risk and do not remove it. What remains uncovered: a witness is "
             "a count of distinct finding LINES, so a second loss whose text is identical "
             "to the forgiven one is still invisible.",
+            "The witness binds a COUNT per condition, not the content behind it. "
+            "Replacing an excluded artifact's body with the same number of DIFFERENT "
+            "device-loss lines — a frame substitution, not a widening — passes both the "
+            "screen and the witness-equality test unchanged, because nothing compares "
+            "the lines themselves across runs, only how many there are per condition. "
+            "Bounded by the proof/frame machinery elsewhere (this check touches no "
+            "bench/results/** file), not by this screen; flagged by Morpheus's review of "
+            "PR #65 as the sibling of the de-duplication limit above.",
             "It says nothing about whether the EP executed. A run can be device-loss-free "
             "and still be pure CPU output; that is the verdict's job, not this check's.",
         ),
