@@ -335,6 +335,59 @@ struct DeviceCapabilities {
 
 This is a living list. Each entry must have: symptom → affected hardware → driver version → workaround → upstream tracking link.
 
+### 6.4 Stable device identity by platform (issue #18)
+
+`ep.device_selector` / `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` (see `DESIGN.md` §2.4.1) resolve a
+device by `uuid:`, `luid:`, or `pci:` in addition to `index:`/`name:`/`id:`. Availability of the
+underlying Vulkan identity fields is platform-dependent; `query_device_identity`
+(`rust/src/vk/instance.rs`) queries each capability-gated and reports `None` rather than a
+fabricated value where the platform does not provide it, and `resolve_device_selector` turns a
+selector built on a field this platform never reports into `UnsupportedIdentity`, not a false
+`NotFound`.
+
+| Field | Source | Windows | Linux (proprietary + Mesa RADV/ANV) | Android (Adreno/Mali/Xclipse) | MoltenVK |
+|---|---|---|---|---|---|
+| `uuid:` | `VkPhysicalDeviceIDProperties::deviceUUID` (core Vulkan 1.1) | **observed** on the §1.1 desktop drivers | expected always (spec-mandated since 1.1); *not measured by this project* | expected always (spec-mandated since 1.1); *not measured by this project* | expected always; MoltenVK derives a UUID from the Metal device registry ID; *not measured by this project* |
+| `luid:` | `VkPhysicalDeviceIDProperties::deviceLUID` (+ `deviceLUIDValid`) | **observed** populated by every desktop driver on this project (§1.1) | expected rarely valid — LUIDs are a Windows/DXGI-interop concept; *not measured* | expected invalid; *not measured* | expected invalid; *not measured* |
+| `pci:` | `VkPhysicalDevicePCIBusInfoPropertiesEXT` (`VK_EXT_pci_bus_info`) | **observed** on the NVIDIA driver measured in §1.1 | expected present on discrete/integrated GPUs with a real PCI bus; *not measured* | expected absent — mobile SoC GPUs have no PCI bus and the extension is correspondingly unavailable on the drivers surveyed in §1.3; *not measured* | expected absent — Metal devices have no PCI bus in the sense this extension describes; *not measured* |
+
+Only the Windows column is **observed**; the hardware available to this project is a single
+Windows desktop with one discrete GPU (§1.1). Every other cell is what the Vulkan specification
+and vendor documentation lead us to *expect*, and is labelled as such rather than reported as a
+measurement. The code does not depend on any of these expectations being right: an absent field
+is `None`, a selector built on an absent field is `UnsupportedIdentity`, and — see below — an
+absent UUID degrades attribution rather than corrupting it.
+
+Practical guidance: `uuid:` is the only scheme with no platform caveat and is the one this project
+recommends for reproducible multi-GPU configuration (CI matrices, benchmark pinning, and the
+proof-frame binding in `factory.rs`'s `vulkan.device_uuid` EP metadata). `luid:` and `pci:` are
+conveniences for Windows- and desktop-Linux-specific tooling respectively and should not be relied
+on for a selector that must also work on Android or macOS/iOS.
+
+#### 6.4.1 What happens on a platform that reports no UUID
+
+The proof frame (`DESIGN.md` §2.4.1.1) keys on `DeviceKey`, and its fallback contract is the part
+that has to be portable, because it is what runs if the expectations in the table above turn out
+to be wrong on some driver:
+
+| | UUID reported | No UUID reported |
+|---|---|---|
+| Frame key | `uuid:<32 hex>` | `unidentified:<deviceName>#<physical_index>` |
+| Two same-named cards separate into two frames? | yes | **yes** — the enumeration index disambiguates them within the process |
+| A ledger entry can be attributed to this device? | yes (`PROVEN`) | **no** — always `DEVICE-UNATTRIBUTED`, because an enumeration index means nothing outside the process that observed it |
+| `vulkan.device_uuid` EP metadata | present | **omitted**, never `""` and never all-zero |
+
+So on a hypothetical driver that leaves `deviceUUID` unpopulated, *detection* of a mixed frame
+still works and *attribution* of a proof is refused. Neither degrades into a silently wrong
+answer. An all-zero `deviceUUID` is treated as "not reported" for exactly this reason: an
+unpopulated `VkPhysicalDeviceIDProperties` is all zeros on every device that has one, so reading
+it as an identity would make every anonymous device compare equal to every other one.
+
+`nvidia-smi`, `vulkaninfo`, and any other external tool are **not** required at runtime by any of
+this. The identity comes from `vkGetPhysicalDeviceProperties2` with a
+`VkPhysicalDeviceIDProperties` in the `pNext` chain — core Vulkan 1.1, the same call this EP
+already makes for its §7.2 capability gate.
+
 #### Adreno (Qualcomm)
 
 | # | Symptom | Affected hardware | Driver version | Workaround |
@@ -1924,6 +1977,29 @@ The probe restores `_models.py`, verifies it hashes back to the original, clears
 ### 7.17.4 Known scope gap, not mine to fix
 
 The census scans `rust/src` and `tests/ops` only — **never `bench/`**. Every instrument under `bench/` is outside its frame, so "the census is clean" currently says nothing about them. Found by Niobe, routed to Tank; recorded here so nobody reads the verdict wider than it reaches.
+
+### 7.17.5 A guard the census called `unfalsified` where it was *not* right — added 2026-08-06T22:20-07:00 (Tank)
+
+§7.17 above records two cases where `unfalsified` was correct and the fix was to write the missing always-on polarity. This is the other case, and it is worth separating because the first response to it was wrong and shipped for one commit.
+
+`bench/devices.py::identify_by_uuid` (issue #18) was flagged `unfalsified` with `calls=2 reject_polarity=0 accept_polarity=2`. Two polarity tests for it already existed in `bench/test_phases.py` and were correct. The screen could not see the reject side, because it reads reject polarity from `pytest.raises` and **this instrument never raises**: it returns `(device, why)`, and its refusal is the `None` in the first slot. Its caller `device_identity_check` prints the `why` on the refusal path, so the totality is deliberate, not an oversight.
+
+**The wrong fix, made first:** baseline it under `bench_unfalsified` with a hand note in `hand.harness_notes` saying the screen structurally cannot see it. Every sentence in that note was true. It was still wrong, and the reason is the same one §7.17 turns on — `unfalsified` is a statement about *what has been watched*, and a note changes nothing about what has been watched. It converts an open question into a permanent one, and the permanence is invisible: a baselined row prints nothing on a green run.
+
+**The two other wrong fixes, considered and refused:**
+
+- Give `identify_by_uuid` an exception contract so the existing screen can see it. This makes *production* worse — the caller loses the reason string, or has to carry it out of band on an exception — in order to make a *screen* greener. Changing the subject to fit the instrument.
+- Delete the row from the frame. The frame arm exists precisely to make that a `FAIL(drift)`.
+
+**The fix taken:** teach the screen a second polarity source, held to the same standard as the first. `bench/_polarity.py` supplies `refuses(result)` and `selects(result, expected)`, and `audit_instruments.py::VALUE_REJECT_FN` scores a call to the instrument nested inside `refuses(...)` as reject polarity.
+
+What makes this a credit rather than an annotation is that **`refuses` raises when the thing inside it did not refuse** — the property `pytest.raises` has, and the one a comment does not. `selects` compares by `is`, not `==`, because two probed records for two same-model cards are equal on every field but the UUID, and an `==` assertion would pass against an instrument that returned the wrong card. That is the exact collapse issue #18 exists to prevent, reproduced inside its own test.
+
+**And the credit is earned by mutation, not asserted.** `bench/test_devices_identity.py` runs five deliberately defective reimplementations through the *identical* protocol the real instrument passes — case-sensitive compare; first-match-wins instead of refusing an ambiguity; absent-UUID-matches-anything; falls-back-to-name (the shape rejected at `11a7c69`); refuses-without-saying-why. All five are caught. Without that battery, "the tests pass" would say only that the tests pass.
+
+**The screen's own new polarity is screened too.** `tests/ops/test_harness_census.py` builds synthetic trees around a *total* instrument and requires the screen to disagree about them: two real observations written as bare asserts score `unfalsified` (correctly — nothing in the AST distinguishes `assert got is None` from `assert got is not None`), the same two declared through `refuses`/`selects` score `screened`, and either of them behind `require_vulkan` scores nothing. Guard D's rule is not weakened by the new source.
+
+**Result:** `identify_by_uuid` is `SCREENED` (`reject=5 accept=7`), the baseline row and the hand note are both gone, and the bench domain's `unfalsified` count went 88 → 87. The remaining 87 are now *reachable the same way* — including `identify_by_timestamp`, which is the same total shape and is explicitly **not** claimed to be screened. The note printed under the bench screen used to end "handed to Niobe: a value-polarity model for total instruments, or a note per row"; the model now exists, so what the count means has changed from "a limit of this screen" to "instruments nobody has done this for yet", which is smaller and actionable.
 
 ---
 

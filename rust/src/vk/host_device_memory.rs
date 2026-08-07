@@ -106,9 +106,16 @@ pub(crate) fn budget_bytes() -> u64 {
 
 /// The **exact** surface this provider needs from the EP's device context (§6.5 seam).
 ///
-/// Three methods, all borrows, no construction, no lifetime obligations beyond `Arc`. Switch
-/// implements this on whatever type owns the EP-scoped device and calls [`offer_shared_device`]
-/// once. Adding a fourth method to this trait is a cross-owner change and gets declared as one.
+/// All borrows, no construction, no lifetime obligations beyond `Arc`. Switch implements this on
+/// whatever type owns the EP-scoped device and calls [`offer_shared_device`] once. Adding a
+/// method to this trait is a cross-owner change and gets declared as one.
+///
+/// **[`SharedVkDevice::device_identity`] was added for issue #18 and is such a change** (declared
+/// to Switch, who owns `SessionSharedCtx`). It is the runtime identity surface everything above
+/// this seam was starved of: `allocator::tally` keyed its frames on `device_name` because a name
+/// was the only thing this trait exposed, and two GPUs of the same model therefore collapsed into
+/// one frame. The name stays — an artifact a human reads must say *which card* in words — but it
+/// is no longer what anything is keyed by.
 pub(crate) trait SharedVkDevice: Send + Sync {
     /// The `ash::Instance` the device was created from. Needed only by `Allocator::new`.
     fn instance_ash(&self) -> &ash::Instance;
@@ -123,7 +130,23 @@ pub(crate) trait SharedVkDevice: Send + Sync {
     /// Whether the device uses unified memory (UMA). Drives the `alloc_unified_memory` counter.
     fn is_uma(&self) -> bool;
     /// The physical device's name, for the identity line in the log and the artifact.
+    ///
+    /// **A label, not a key.** Two installed cards of the same model report the same string.
+    /// Anything that must distinguish them keys on [`SharedVkDevice::device_identity`].
     fn device_name(&self) -> &str;
+    /// **The stable canonical identity of the physical device this context is on** (issue #18).
+    ///
+    /// Computed once when the context is built and returned by borrow, so no caller has to know
+    /// how a key is derived, and so the fail-closed fallback is decided in exactly one place
+    /// ([`crate::engine::DeviceIdentity::key`]).
+    fn device_identity(&self) -> &crate::engine::DeviceKey;
+    /// The device's UUID, or `None` when the driver reported none.
+    ///
+    /// The narrow form the review asked for, provided so a caller that genuinely only wants the
+    /// UUID cannot accidentally compare a process-local fallback key across processes.
+    fn device_uuid(&self) -> Option<&str> {
+        self.device_identity().uuid()
+    }
 }
 
 /// Which `VkDevice` this provider's buffers live on, relative to the one that dispatches.
@@ -152,6 +175,9 @@ impl DeviceFrame {
 struct OwnedDevice {
     device: Device,
     device_name: String,
+    /// The stable canonical identity of the physical device (issue #18), resolved once at
+    /// construction from the same `DeviceInfo` the selector sees.
+    device_identity: crate::engine::DeviceKey,
     /// Held so the loader and the instance outlive every buffer.
     instance: Instance,
 }
@@ -178,6 +204,9 @@ impl SharedVkDevice for OwnedDevice {
     fn device_name(&self) -> &str {
         &self.device_name
     }
+    fn device_identity(&self) -> &crate::engine::DeviceKey {
+        &self.device_identity
+    }
 }
 
 // SAFETY: both fields are immutable after construction. `ash::Device` and `ash::Instance` are
@@ -201,6 +230,8 @@ pub(crate) struct HostDeviceMemory {
     /// Recorded so the identity can be *reported* rather than assumed. Whether it agrees with the
     /// device `VulkanSession` picked is a claim, not a given — it must be checkable from a log.
     device_name: String,
+    /// The stable canonical identity of that device (issue #18) — what the frame is keyed by.
+    device_identity: crate::engine::DeviceKey,
 }
 
 // SAFETY: every field is either immutable after construction (`device`, `is_uma`, `_instance`) or
@@ -223,6 +254,7 @@ impl HostDeviceMemory {
     unsafe fn on_shared_device(ctx: Arc<dyn SharedVkDevice>, frame: DeviceFrame) -> Option<Self> {
         let is_uma = ctx.is_uma();
         let device_name = ctx.device_name().to_string();
+        let device_identity = ctx.device_identity().clone();
         // SAFETY: instance and device are live for as long as `ctx`, which is stored below.
         let alloc =
             unsafe { Allocator::new(ctx.instance_ash(), ctx.physical_device(), ctx.ash_device()) }?;
@@ -240,12 +272,18 @@ impl HostDeviceMemory {
             is_uma,
             frame,
             device_name,
+            device_identity,
         })
     }
 
     /// The device this provider's buffers landed on. Reported, never inferred.
     pub(crate) fn device_name(&self) -> &str {
         &self.device_name
+    }
+
+    /// The stable canonical identity of that device (issue #18). What the frame is keyed by.
+    pub(crate) fn device_identity(&self) -> &crate::engine::DeviceKey {
+        &self.device_identity
     }
 
     /// Which world the `alloc_device_*` numbers from this provider were measured in (R12).
@@ -399,11 +437,13 @@ impl OwnedDevice {
         };
         let capable = capables.swap_remove(idx);
         let device_name = capable.info.name.clone();
+        let device_identity = capable.info.key();
         // SAFETY: `instance` is live; `capable` came from its own enumeration.
         let device = unsafe { Device::create(instance.ash(), &capable, false) }?;
         Some(Self {
             device,
             device_name,
+            device_identity,
             instance,
         })
     }
@@ -644,7 +684,15 @@ static OFFERED: OnceLock<Mutex<HashMap<usize, Arc<dyn SharedVkDevice>>>> = OnceL
 pub(crate) fn offer_shared_device(device_index: usize, ctx: Arc<dyn SharedVkDevice>) {
     // R12 obligation 2 (Tank): record WHICH device the session side is on, keyed by the index it
     // offered under. `SPLIT-DEVICE` says the two sides differ; only this says what they are.
-    crate::allocator::tally::note_session_device(device_index, ctx.device_name());
+    //
+    // Issue #18: the *identity* goes with the name. The name is what a human reads; the identity
+    // is what `registry::device_state` compares a proof against, and two cards of the same model
+    // have one name between them.
+    crate::allocator::tally::note_session_device(
+        device_index,
+        ctx.device_identity(),
+        ctx.device_name(),
+    );
     let map = OFFERED.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut map) = map.lock() {
         map.insert(device_index, ctx);
@@ -778,7 +826,11 @@ pub(crate) fn ensure_registered(device_index: usize) {
     match &provider {
         Some(p) => {
             crate::allocator::tally::set_unified_memory(p.is_unified_memory());
-            crate::allocator::tally::set_device_frame(p.frame().as_str(), p.device_name());
+            crate::allocator::tally::set_device_frame(
+                p.frame().as_str(),
+                p.device_identity(),
+                p.device_name(),
+            );
             crate::allocator::tally::set_allocator_device_index(device_index);
             crate::engine::register_device_memory_provider(
                 device_index,

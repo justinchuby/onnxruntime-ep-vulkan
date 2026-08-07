@@ -43,6 +43,17 @@ pub struct EpOptions {
     /// It is NOT the `vkEnumeratePhysicalDevices` index, and it is NOT authoritative: the device
     /// ORT bound for the session wins (see [`EpOptions::bound_physical_index`]).
     pub device_index: Option<usize>,
+    /// `ep.device_selector` — a strict, stable-identity Vulkan device selector (issue #18),
+    /// e.g. `uuid:<32 hex chars>`, `id:10de:2900`, `pci:0000:01:00.0`, `name:<exact name>`, or
+    /// `index:<N>` (a displayed ordinal, not a stable identity — see
+    /// [`crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT`] for the full grammar).
+    ///
+    /// Outranks `device_index`, the legacy `ONNXRUNTIME_EP_VULKAN_DEVICE` environment selector,
+    /// and ORT's own binding. Unlike all three, an unresolvable value here is a hard error:
+    /// session creation opens no Vulkan device at all rather than silently picking a different
+    /// GPU. Also settable via the `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` environment variable;
+    /// this option takes precedence when both are set.
+    pub device_selector: Option<String>,
     /// The `vkEnumeratePhysicalDevices` index of the `OrtEpDevice` **ORT bound for this session**,
     /// read from the EP metadata `CreateEp` hands back. `None` when ORT gave us nothing to read.
     ///
@@ -101,6 +112,11 @@ impl EpOptions {
                     log::warn!("ep.device_index: `{v}` is not a non-negative integer; ignoring")
                 }
             }
+        }
+        if let Some(v) = read("ep.device_selector")
+            && !v.trim().is_empty()
+        {
+            out.device_selector = Some(v.trim().to_string());
         }
         if let Some(v) = read("ep.enable_validation") {
             out.enable_validation = parse_bool(&v).unwrap_or_else(|| {
@@ -3362,6 +3378,159 @@ mod tests {
         // dereferencing either.
         let o = unsafe { EpOptions::from_session_options(ptr::null(), ptr::null()) };
         assert_eq!(o, EpOptions::default());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // `ep.device_selector` (issue #18) — the session-option half of the one selection path.
+    //
+    // The rejected artifact parsed the environment variable and nothing else, so a host that
+    // sets the option got a *silently different* device from a host that sets the env var. These
+    // tests pin the parse, the precedence, and — the part the reviewer asked for — that the
+    // option is a REFUSAL surface, never a second, competing way to pick a GPU.
+    // ---------------------------------------------------------------------------------------
+
+    /// Stands in for an `OrtSessionOptions`: a flat key/value table the fake accessor reads.
+    type FakeConfig = Vec<(String, String)>;
+
+    /// Stands in for `GetSessionConfigEntry`, implementing ORT's two-call (size, then fill)
+    /// protocol exactly — including the "absent key returns a status and leaves size at 0" case,
+    /// which is what distinguishes "unset" from "set to the empty string".
+    unsafe extern "C" fn fake_config_entry(
+        options: *const ort::OrtSessionOptions,
+        key: *const c_char,
+        value: *mut c_char,
+        size: *mut usize,
+    ) -> ort::OrtStatusPtr {
+        // SAFETY: every caller in this test module passes a live `FakeConfig` and a live slot.
+        let table = unsafe { &*options.cast::<FakeConfig>() };
+        // SAFETY: ORT always passes a NUL-terminated key; `read_config_entry` builds it from a
+        // `CString`.
+        let wanted = unsafe { CStr::from_ptr(key) }
+            .to_string_lossy()
+            .into_owned();
+        let Some((_, v)) = table.iter().find(|(k, _)| *k == wanted) else {
+            // Absent: a non-null status with `*size` untouched. `read_config_entry` must read
+            // this as "no entry", not as "an entry of length 0".
+            return NOT_FOUND_STATUS as ort::OrtStatusPtr;
+        };
+        let needed = v.len() + 1;
+        if value.is_null() {
+            // SAFETY: `size` is a live slot per the caller's contract.
+            unsafe { *size = needed };
+            // ORT reports the required size by *failing* the query call.
+            return NOT_FOUND_STATUS as ort::OrtStatusPtr;
+        }
+        // SAFETY: `read_config_entry` allocated exactly `needed` bytes before the fill call.
+        unsafe {
+            std::ptr::copy_nonoverlapping(v.as_ptr().cast::<c_char>(), value, v.len());
+            *value.add(v.len()) = 0;
+            *size = needed;
+        }
+        ptr::null_mut()
+    }
+
+    /// A non-null sentinel status. Released through a no-op `ReleaseStatus`, so it is never
+    /// dereferenced and never freed.
+    const NOT_FOUND_STATUS: usize = 0x1;
+
+    unsafe extern "C" fn fake_release_sentinel(_status: *mut ort::OrtStatus) {}
+
+    /// Read `EpOptions` out of a key/value table, through the real `from_session_options`.
+    fn options_from(pairs: &[(&str, &str)]) -> EpOptions {
+        // SAFETY: `OrtApi` is a `#[repr(C)]` table of `Option<fn>` slots; all-zero is the valid
+        // `None` niche for every one of them.
+        let mut api: ort::OrtApi = unsafe { std::mem::zeroed() };
+        api.GetSessionConfigEntry = Some(fake_config_entry);
+        api.ReleaseStatus = Some(fake_release_sentinel);
+        let table: FakeConfig = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        // SAFETY: `api` and `table` outlive the call; the fake accessor reads `table` back as a
+        // `FakeConfig`, which is what it is.
+        unsafe {
+            EpOptions::from_session_options(
+                &raw const api,
+                (&raw const table).cast::<ort::OrtSessionOptions>(),
+            )
+        }
+    }
+
+    #[test]
+    fn the_session_option_carries_a_stable_identity_selector_verbatim() {
+        let o = options_from(&[(
+            "ep.device_selector",
+            "uuid:11111111111111111111111111111111",
+        )]);
+        assert_eq!(
+            o.device_selector.as_deref(),
+            Some("uuid:11111111111111111111111111111111"),
+            "the option must reach `EpOptions` unaltered; the selector grammar is parsed once, \
+             in `parse_device_selector`, so anything that rewrites the string here creates a \
+             second grammar"
+        );
+        // The rejected artifact had no such field at all; this is the load-bearing difference.
+        assert_eq!(o.device_index, None, "a selector is not an index");
+    }
+
+    #[test]
+    fn every_selector_scheme_survives_the_session_option_round_trip() {
+        // The option is a transport, not a validator: whatever grammar
+        // `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` accepts, the option must accept identically, or
+        // the two surfaces disagree about which devices exist. (The grammar itself is pinned in
+        // `vk::instance`'s own tests — this layer may not reach into the Vulkan tree, layering
+        // rule 4.3, and does not need to: it is a transport.)
+        for raw in [
+            "uuid:11111111-1111-1111-1111-111111111111",
+            "id:10de:27a0",
+            "pci:0000:01:00.0",
+            "name:NVIDIA RTX A1000 Laptop GPU",
+            "index:1",
+            "luid:aaaaaaaaaaaaaaaa",
+        ] {
+            let o = options_from(&[("ep.device_selector", raw)]);
+            assert_eq!(o.device_selector.as_deref(), Some(raw), "scheme `{raw}`");
+        }
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_not_part_of_a_device_name() {
+        let o = options_from(&[(
+            "ep.device_selector",
+            "  uuid:11111111111111111111111111111111  ",
+        )]);
+        assert_eq!(
+            o.device_selector.as_deref(),
+            Some("uuid:11111111111111111111111111111111"),
+            "a value pasted out of a shell transcript carries spaces; trimming them is the \
+             difference between selecting a device and refusing the session"
+        );
+    }
+
+    #[test]
+    fn an_empty_selector_is_absence_not_a_request_for_no_device() {
+        // A strict selector that resolves to nothing is a HARD ERROR (that is the whole point),
+        // so `Some("")` would turn `ep.device_selector=` into "run on no GPU". It must read as
+        // unset instead, leaving the env var / `ep.device_index` / ORT's binding in charge.
+        for raw in ["", "   "] {
+            let o = options_from(&[("ep.device_selector", raw)]);
+            assert_eq!(
+                o.device_selector, None,
+                "an empty option is not a selector; got {:?} for {raw:?}",
+                o.device_selector
+            );
+        }
+    }
+
+    #[test]
+    fn an_absent_selector_leaves_the_other_selection_surfaces_alone() {
+        let o = options_from(&[("ep.device_index", "1")]);
+        assert_eq!(o.device_selector, None);
+        assert_eq!(
+            o.device_index,
+            Some(1),
+            "issue #18 must not disturb the pre-existing index path when no selector is set"
+        );
     }
 
     #[test]

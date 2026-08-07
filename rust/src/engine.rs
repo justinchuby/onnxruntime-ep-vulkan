@@ -741,7 +741,318 @@ pub struct DeviceInfo {
     pub driver_version: String,
     /// Discrete / integrated / virtual / CPU. Drives both scoring and the ORT device-type match.
     pub kind: DeviceKind,
+    /// The stable, driver-reported identity of this physical device (issue #18).
+    ///
+    /// Held as one value rather than three loose fields because every consumer that matters —
+    /// the selector, the proof frame, the ledger, the modelrunner's evidence — needs the whole
+    /// of it or none of it, and because [`DeviceIdentity::key`] is the single place the
+    /// canonical key is derived.
+    pub identity: DeviceIdentity,
 }
+
+impl DeviceInfo {
+    /// This device's canonical frame key: UUID when the driver reported one, the fail-closed
+    /// fallback otherwise. See [`DeviceKey`].
+    pub fn key(&self) -> DeviceKey {
+        self.identity.key(&self.name, self.index)
+    }
+}
+
+/// The stable, driver-reported identity of one physical device (issue #18).
+///
+/// **Never fabricated.** Every field is `Option` and `None` means "this driver/platform did not
+/// report it", which is a different fact from "it did not match" — a selector asking for an
+/// identity kind no enumerated device reports gets
+/// [`DeviceSelectionError::UnsupportedIdentity`][crate::vk::instance::DeviceSelectionError::UnsupportedIdentity],
+/// not `NotFound`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceIdentity {
+    /// `VkPhysicalDeviceIDProperties::deviceUUID`, 32 lowercase hex characters, no separators.
+    ///
+    /// **The stable identity this EP treats as ground truth.** Unlike `index` (an ordinal that
+    /// depends on enumeration order, which the loader is free to change across driver updates,
+    /// reboots or `VK_ICD_FILENAMES` edits) and unlike `(vendor_id, device_id)` (which is the
+    /// same for every card of the same model), the UUID names *this physical device instance*.
+    ///
+    /// `VkPhysicalDeviceIDProperties` is Vulkan 1.1 core and the §7.2 gate already requires at
+    /// least 1.1, so in practice every device this EP advertises has one. It is still an
+    /// `Option`, because a driver that leaves the struct untouched returns all zeros, and an
+    /// all-zero UUID is **not** an identity: it is the absence of one, it compares equal across
+    /// every device that has it, and treating it as a value is exactly the name-collision defect
+    /// one layer down. [`crate::vk::instance::query_device_identity`] maps all-zero to `None`,
+    /// and every reader is then obliged to say `(unavailable)` rather than print 32 zeros.
+    pub uuid: Option<String>,
+    /// `VkPhysicalDeviceIDProperties::deviceLUID`, 16 lowercase hex characters, present only
+    /// when `deviceLUIDValid == VK_TRUE`.
+    ///
+    /// LUIDs are a Windows/D3D-interop concept; most Linux and essentially all Android/MoltenVK
+    /// drivers report `deviceLUIDValid = VK_FALSE`. `None` here means "this driver did not
+    /// provide one," never "absent because unset".
+    pub luid: Option<String>,
+    /// PCI location as `domain:bus:device.function` (all lowercase hex), from
+    /// `VK_EXT_pci_bus_info` when the device advertises that extension.
+    ///
+    /// Capability-gated: MoltenVK and many mobile/virtualized ICDs do not expose PCI location at
+    /// all (there may be no PCI bus to report), so this is `None` there rather than a fabricated
+    /// value. Present on essentially every desktop Linux/Windows discrete or integrated GPU.
+    pub pci: Option<String>,
+}
+
+impl DeviceIdentity {
+    /// A UUID-only identity, for the callers that have nothing else (tests, and the ledger).
+    pub fn from_uuid(uuid: impl Into<String>) -> Self {
+        Self {
+            uuid: Some(uuid.into()),
+            ..Self::default()
+        }
+    }
+
+    /// The canonical key this device is counted, framed and attributed under.
+    ///
+    /// `name` and `physical_index` are used **only** by the fail-closed fallback — see
+    /// [`DeviceKey::Unidentified`]. When a UUID exists it alone decides, so the key of a device
+    /// is the same in every process on every machine that ever opens it.
+    pub fn key(&self, name: &str, physical_index: usize) -> DeviceKey {
+        match &self.uuid {
+            Some(u) if !u.is_empty() => DeviceKey::Uuid(u.clone()),
+            _ => DeviceKey::Unidentified {
+                name: name.to_string(),
+                physical_index,
+            },
+        }
+    }
+}
+
+/// **The canonical identity a proof frame, a counter and a ledger entry are keyed by.**
+///
+/// Issue #18's whole point in one type. Before it, `allocator::tally` keyed frames on
+/// `deviceName`, so two physical GPUs of the same model collapsed into one frame: both declared
+/// `SHARED`, `frames_declared()` returned 1, `MIXED` never fired, and a process standing on two
+/// devices reported a single frame over a population drawn from both. A name is not an identity.
+///
+/// # The fail-closed fallback contract
+///
+/// [`DeviceKey::Uuid`] is the normal case and the only one that can ever prove two observations
+/// were made on the same physical device. [`DeviceKey::Unidentified`] exists because a driver may
+/// leave `VkPhysicalDeviceIDProperties` unpopulated, and the alternatives are both worse:
+/// fabricating a UUID (a false identity) or falling back to the name (the defect being fixed).
+///
+/// Its contract is **fail-closed in both directions**, and both halves are load-bearing:
+///
+/// * **Never collapses.** The key carries the physical enumeration index, so two same-named
+///   devices without UUIDs are two keys and a process on both reports `MIXED`. A false `MIXED`
+///   (same device enumerated at two indices in one process — which `acquire_ep_device`'s
+///   per-physical-index owner map already prevents) costs a disclosed frame; a false `SHARED`
+///   costs an unattributed measurement.
+/// * **Never proves.** It is process-local by construction, so it may not be compared across
+///   processes. [`crate::registry::device_state`] therefore returns `DeviceUnattributed` — never
+///   `Proven` — for any run or entry whose identity is `Unidentified`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeviceKey {
+    /// The driver reported `VkPhysicalDeviceIDProperties::deviceUUID`: 32 lowercase hex
+    /// characters naming this physical device instance, stable across processes and reboots.
+    Uuid(String),
+    /// No UUID was reported. Process-local, never comparable across processes — see the
+    /// fail-closed contract on [`DeviceKey`].
+    Unidentified {
+        /// The device name, for the human reading the artifact. Not an identity.
+        name: String,
+        /// The `vkEnumeratePhysicalDevices` index, which is what keeps two same-named
+        /// unidentified devices from collapsing into one frame within this process.
+        physical_index: usize,
+    },
+}
+
+impl DeviceKey {
+    /// The UUID, or `None` when this device reported none.
+    pub fn uuid(&self) -> Option<&str> {
+        match self {
+            DeviceKey::Uuid(u) => Some(u.as_str()),
+            DeviceKey::Unidentified { .. } => None,
+        }
+    }
+
+    /// Whether this key names a device by an identity that survives leaving this process.
+    pub fn is_identified(&self) -> bool {
+        matches!(self, DeviceKey::Uuid(_))
+    }
+
+    /// The single string form written into artifacts and log lines.
+    ///
+    /// `uuid:<32 hex>` or `unidentified:<name>#<physical index>`. The prefix is not decoration:
+    /// it is what stops a reader — or a future comparison — from mistaking the fallback for an
+    /// identity.
+    pub fn canonical(&self) -> String {
+        match self {
+            DeviceKey::Uuid(u) => format!("{DEVICE_KEY_UUID_PREFIX}{u}"),
+            DeviceKey::Unidentified {
+                name,
+                physical_index,
+            } => format!("{DEVICE_KEY_UNIDENTIFIED_PREFIX}{name}#{physical_index}"),
+        }
+    }
+
+    /// The inverse of [`DeviceKey::canonical`] — read a key back off the wire.
+    ///
+    /// `None` for anything that is not one of the two canonical shapes, including a `uuid:` whose
+    /// body is not 32 hex characters. A key that does not round-trip is not a key: admitting a
+    /// malformed one would let a hand-written or truncated artifact re-enter the comparison as if
+    /// the EP had emitted it.
+    ///
+    /// The `unidentified:` shape is `<name>#<index>` with the index at the **end**, which is what
+    /// makes this parse possible at all: a `deviceName` may contain a colon, so the
+    /// `<index>:<name>` spelling three documents used to claim could not be split back apart
+    /// without already knowing which half was numeric.
+    pub fn from_canonical(s: &str) -> Option<DeviceKey> {
+        if let Some(hex) = s.strip_prefix(DEVICE_KEY_UUID_PREFIX) {
+            return key_is_portable_identity(s).then(|| DeviceKey::Uuid(hex.to_string()));
+        }
+        let rest = s.strip_prefix(DEVICE_KEY_UNIDENTIFIED_PREFIX)?;
+        let (name, index) = rest.rsplit_once('#')?;
+        if name.is_empty() {
+            return None;
+        }
+        Some(DeviceKey::Unidentified {
+            name: name.to_string(),
+            physical_index: index.parse().ok()?,
+        })
+    }
+
+    /// Test-only: a deterministic synthetic UUID key derived from `seed`.
+    ///
+    /// Distinct seeds give distinct 32-hex-character keys, which is exactly what the
+    /// identical-name multi-GPU tests need: two devices whose `name` is byte-identical but whose
+    /// identity is not. Never used outside `#[cfg(test)]`/`#[doc(hidden)]` call sites — a
+    /// fabricated UUID in production would be the very thing [`DeviceKey`] exists to prevent.
+    #[doc(hidden)]
+    pub fn synthetic_for_test(seed: &str) -> DeviceKey {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in seed.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let lo = h.rotate_left(17) ^ 0x9e37_79b9_7f4a_7c15;
+        DeviceKey::Uuid(format!("{h:016x}{lo:016x}"))
+    }
+}
+
+impl std::fmt::Display for DeviceKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.canonical())
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// THE DEVICE-LIST WIRE FORMAT (issue #18, blocker B1)
+//
+// One format, written down once, with one reader per language. What made this a blocker rather
+// than a typo is that the format had never been *stated*: `counters.rs` emitted one shape,
+// `gen_proof_ledger.py` parsed another, and neither side was wrong on its own terms — so nothing
+// failed. `LedgerEntry.device_uuid` was simply `""` on every entry ever written, and the two
+// stable-identity rows of `registry::device_state` (`Proven` / `ProvenElsewhere`) were
+// unreachable. A silent hole in a proof frame is worse than a loud one, and the only structural
+// defence is a single documented format with tests that read the *emitted* string.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The separator between elements of every device list this EP writes.
+///
+/// A device name may contain a comma, a slash, a colon, an `=` and parentheses (`llvmpipe (LLVM
+/// 20.1.2, 256 bits)`, `Intel(R) Iris(R) Xe Graphics`, `… rev=3`). `"; "` is the one separator no
+/// observed `VkPhysicalDeviceProperties::deviceName` has ever contained, which is why it — and
+/// not `,` — is the list separator.
+pub const DEVICE_LIST_SEPARATOR: &str = "; ";
+
+/// Format a device list into **the canonical wire form**: bare values, `"; "`-separated, in
+/// physical enumeration order.
+///
+/// This is the form of the `running_device_names` and `running_device_uuids` counters, and it is
+/// what every artifact in `bench/results/` carries — `"NVIDIA RTX A1000"`,
+/// `"uuid:aadf33d4d118155fcc60c22b5c352463"`, `"Intel(R) Iris(R) Xe Graphics; NVIDIA GeForce RTX
+/// 4060 Laptop GPU"`. There is **no positional prefix**: position in the list *is* the index, so
+/// writing it again would be a second source of truth for the same fact.
+///
+/// The `alloc_device_frame_session_devices` counter is a *different* counter with a *different*
+/// format (`"1=The Session's Device"`): it reports a sparse map keyed by the factory device index
+/// ORT asked for, where position is genuinely not the index. [`parse_device_list`] tolerates that
+/// shape so a reader pointed at the wrong counter degrades to a right answer instead of an empty
+/// one, but nothing this EP writes under `running_device_*` uses it.
+pub fn format_device_list<I>(items: I) -> String
+where
+    I: IntoIterator,
+    I::Item: AsRef<str>,
+{
+    items
+        .into_iter()
+        .map(|s| s.as_ref().to_string())
+        .collect::<Vec<_>>()
+        .join(DEVICE_LIST_SEPARATOR)
+}
+
+/// Read a device list off the wire — **the only reader**, on the Rust side, of the format
+/// [`format_device_list`] writes.
+///
+/// Accepts the canonical bare form and tolerates the indexed `N=value` form of
+/// `alloc_device_frame_session_devices`. The tolerance is deliberately asymmetric with the
+/// writer: a reader that *requires* the prefix returns an empty list against every real counters
+/// file this project has ever produced (that was the defect), whereas a reader that merely
+/// tolerates it cannot be wrong about a value that never carries one.
+///
+/// Only a **purely numeric** prefix is positional, so `llvmpipe (LLVM 20.1.2, 256 bits) rev=3`
+/// survives intact rather than being renamed to ` 3`. Empty elements are dropped: `"0="` is the
+/// absence of an identity, not an identity that happens to be empty, and admitting it would let
+/// one emptiness compare equal to another.
+///
+/// The sentinels `none` and `unknown` — what `allocator::tally` returns for "no session has
+/// opened a device" and "the mutex was poisoned" — are **not** handled here, because they are
+/// statements about the whole list rather than elements of it. Callers reject them first; see
+/// [`crate::registry::running_device_uuids`].
+pub fn parse_device_list(raw: &str) -> Vec<String> {
+    raw.split(DEVICE_LIST_SEPARATOR)
+        .filter_map(strip_positional_index)
+        .collect()
+}
+
+/// Drop a leading `N=` positional prefix, if present, and return the remainder when non-empty.
+///
+/// `"0=uuid:aabb"` → `"uuid:aabb"`; `"uuid:aabb"` → `"uuid:aabb"`; `"0="` → `None`;
+/// `"a name with = in it"` → itself.
+fn strip_positional_index(item: &str) -> Option<String> {
+    let t = item.trim();
+    let body = match t.split_once('=') {
+        Some((head, rest)) if !head.is_empty() && head.bytes().all(|b| b.is_ascii_digit()) => rest,
+        _ => t,
+    };
+    let body = body.trim();
+    (!body.is_empty()).then(|| body.to_string())
+}
+
+/// Whether `key` is a canonical identity that may be compared **across processes**.
+///
+/// `uuid:<hex>` is; `unidentified:<name>#<index>` is not, and neither is anything else. This is
+/// the one predicate that decides whether a comparison is *possible*, and it is separate from
+/// whether the comparison *succeeds* — [`crate::registry::device_state`] needs both, and reading
+/// a failed comparison off an impossible one is how a process-local fallback would launder itself
+/// into a claim about hardware.
+pub fn key_is_portable_identity(key: &str) -> bool {
+    key.strip_prefix(DEVICE_KEY_UUID_PREFIX)
+        .is_some_and(|hex| hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// The prefix on a [`DeviceKey::Uuid`] canonical string.
+pub const DEVICE_KEY_UUID_PREFIX: &str = "uuid:";
+
+/// The prefix on a [`DeviceKey::Unidentified`] canonical string.
+///
+/// The canonical shape is `unidentified:<deviceName>#<physical enumerate index>` — **name first,
+/// index last, separated by `#`**. It is written down here because it was documented in two
+/// mutually exclusive ways (`unidentified:<index>:<name>` in `DESIGN.md`, `PLATFORMS.md` and the
+/// modelrunner fixtures; `unidentified:<name>#<index>` in the code that actually emits it), and a
+/// fallback whose spelling is ambiguous is a fallback a reader cannot recognise.
+///
+/// `#` rather than a second `:` is load-bearing: a device name may contain a colon, so
+/// `unidentified:<index>:<name>` cannot be split back apart without knowing the index is numeric,
+/// while `#` is followed by digits to end of string and always can be.
+pub const DEVICE_KEY_UNIDENTIFIED_PREFIX: &str = "unidentified:";
 
 /// `VkPhysicalDeviceType`, minus the Vulkan type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -809,8 +1120,31 @@ pub fn probe_devices() -> Vec<DeviceInfo> {
 
 /// The devices the factory should advertise to ORT (§6.5).
 ///
-/// Identical to [`probe_devices`] unless `ONNXRUNTIME_EP_VULKAN_DEVICE` is set, in which case the
-/// selector is a **pin** and exactly one device is returned.
+/// Identical to [`probe_devices`] unless a selector is set, in which case exactly one device is
+/// returned — the selector is a **pin**.
+///
+/// **Precedence: [`ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR`][crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT]
+/// (stable identity, strict) outranks [`ONNXRUNTIME_EP_VULKAN_DEVICE`][crate::vk::instance::ENV_DEVICE_SELECTOR]
+/// (index/name-substring, lenient).** If the strict selector is set and cannot be resolved to
+/// exactly one device, **zero devices are advertised** — never a fallback to a different GPU —
+/// and the reason is logged at ERROR (issue #18). If it is not set, behaviour is exactly what it
+/// was before issue #18: the legacy selector pins when set, and an unset selector advertises
+/// every capable device and lets ORT's policy choose.
+///
+/// # One authoritative selection path, and what `ep.device_selector` may and may not do
+///
+/// This function runs inside `GetSupportedDevices`, **before any session exists**, so no session
+/// option can be visible here. That is a fact about ORT's plugin ABI, not a choice, and it has
+/// one dangerous consequence which issue #18's first revision shipped: if the session option
+/// could *redirect* the session to a device this function did not advertise, ORT would bind X,
+/// the session would open Y, and the `OrtEpDevice` metadata a caller reads for evidence would
+/// carry X's identity over kernels that ran on Y.
+///
+/// So the selection path is single and authoritative here, and
+/// [`ep.device_selector`][crate::ep::EpOptions::device_selector] is **subtractive only**: it may
+/// refuse a binding it disagrees with (`acquire_ep_device` returns `None`, the session falls back
+/// to the CPU EP), and it may never move the session to another device. Pinning — choosing which
+/// GPU runs — is the environment variable's job precisely because it is readable from here.
 ///
 /// **Why the pin has to bite here and not later.** ORT chooses which advertised `OrtEpDevice` to
 /// bind, and it keys the allocator it later asks us for by that choice. If we advertise a device
@@ -824,7 +1158,38 @@ pub fn probe_devices() -> Vec<DeviceInfo> {
 /// `CreateEp` then follows whatever it bound.
 pub fn devices_to_advertise() -> Vec<DeviceInfo> {
     let all = probe_devices();
-    if all.is_empty() || !crate::vk::instance::selector_is_pinned() {
+    if all.is_empty() {
+        return all;
+    }
+
+    // Strict, stable-identity selector: highest precedence, and it never falls back (issue #18).
+    match crate::vk::instance::select_device_strict(&all, None) {
+        Ok(Some(sel)) => {
+            let picked = all[sel].clone();
+            log::info!(
+                "VulkanExecutionProvider: {} resolved to '{}' ({}, physical enumerate index \
+                 {}). Advertising ONLY that device, so ORT cannot bind a device other than the \
+                 one the compute session will open (§6.5).",
+                crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT,
+                picked.name,
+                picked.key(),
+                picked.index,
+            );
+            return vec![picked];
+        }
+        Ok(None) => { /* not set — fall through to the legacy selector below, unchanged */ }
+        Err(e) => {
+            log::error!(
+                "VulkanExecutionProvider: {} {e}. Refusing to advertise ANY Vulkan device rather \
+                 than silently binding a different GPU (issue #18 device-selection contract). \
+                 Sessions will fall back to the CPU EP until the selector is fixed or unset.",
+                crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT,
+            );
+            return Vec::new();
+        }
+    }
+
+    if !crate::vk::instance::selector_is_pinned() {
         return all;
     }
     let names: Vec<&str> = all.iter().map(|d| d.name.as_str()).collect();
@@ -1378,5 +1743,153 @@ mod tests {
             Err(EpError::Internal(_)) => {}
             other => panic!("expected Internal, got {:?}", other),
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    // Issue #18 — DeviceIdentity / DeviceKey: the fail-closed contract.
+    //
+    // Every test below is a property of the *key*, not of the selector. The selector was already
+    // right at PR #54's rejected head; what was wrong is that everything downstream of it kept
+    // comparing device NAMES, and a name is shared by every card of a model. These tests are what
+    // make "keyed by identity" checkable rather than asserted.
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    fn info_named(name: &str, physical_index: usize, uuid: Option<&str>) -> DeviceInfo {
+        DeviceInfo {
+            index: physical_index,
+            name: name.to_string(),
+            vendor_id: 0x10de,
+            device_id: 0x27a0,
+            api_version: "1.3.290".to_string(),
+            driver_version: "560.94".to_string(),
+            kind: DeviceKind::Discrete,
+            identity: DeviceIdentity {
+                uuid: uuid.map(str::to_string),
+                luid: None,
+                pci: None,
+            },
+        }
+    }
+
+    #[test]
+    fn two_identically_named_devices_with_different_uuids_are_different_keys() {
+        // THE DEFECT, stated as a test. Before issue #18 the frame ledger keyed on this name, so
+        // these two physical cards collapsed into one entry and a SHARED declaration on each
+        // reported one frame instead of two.
+        let a = info_named(
+            "NVIDIA RTX A1000 Laptop GPU",
+            0,
+            Some("a".repeat(32).as_str()),
+        );
+        let b = info_named(
+            "NVIDIA RTX A1000 Laptop GPU",
+            1,
+            Some("b".repeat(32).as_str()),
+        );
+        assert_eq!(a.name, b.name, "the premise: the NAMES are byte-identical");
+        assert_ne!(a.key(), b.key(), "the identities must not be");
+        assert_ne!(a.key().canonical(), b.key().canonical());
+    }
+
+    #[test]
+    fn the_same_uuid_is_the_same_key_regardless_of_enumeration_position() {
+        // The other half: a stable identity must survive the enumeration order changing, which is
+        // exactly what a driver update or a VK_ICD_FILENAMES edit does. Keying on the index would
+        // make a proof stop applying to the device that produced it.
+        let u = "0123456789abcdef0123456789abcdef";
+        let first = info_named("Some GPU", 0, Some(u));
+        let moved = info_named("Some GPU", 3, Some(u));
+        assert_eq!(first.key(), moved.key());
+    }
+
+    #[test]
+    fn a_device_with_no_uuid_falls_back_without_collapsing() {
+        // FAIL-CLOSED PROPERTY 1: the fallback must never merge two devices. If it did, this
+        // whole change would reintroduce the collision on exactly the platforms (MoltenVK, some
+        // Android ICDs) least able to notice.
+        let a = info_named("Mali-G78", 0, None);
+        let b = info_named("Mali-G78", 1, None);
+        assert_ne!(a.key(), b.key());
+        assert_eq!(
+            a.key(),
+            DeviceKey::Unidentified {
+                name: "Mali-G78".to_string(),
+                physical_index: 0
+            }
+        );
+    }
+
+    #[test]
+    fn the_fallback_key_never_claims_to_be_an_identity() {
+        // FAIL-CLOSED PROPERTY 2: it must never *prove* either. `is_identified()` is what
+        // `registry::device_state` reads to refuse `Proven`, and the `unidentified:` prefix is
+        // what stops a human or a future comparison from reading the fallback as a UUID.
+        let unnamed = info_named("Mali-G78", 0, None);
+        assert!(!unnamed.key().is_identified());
+        assert_eq!(unnamed.key().uuid(), None);
+        assert!(unnamed.key().canonical().starts_with("unidentified:"));
+
+        let identified = info_named("Mali-G78", 0, Some(&"c".repeat(32)));
+        assert!(identified.key().is_identified());
+        assert_eq!(identified.key().uuid(), Some("c".repeat(32).as_str()));
+        assert!(identified.key().canonical().starts_with("uuid:"));
+    }
+
+    #[test]
+    fn canonical_round_trips_through_display() {
+        let k = DeviceKey::Uuid("d".repeat(32));
+        assert_eq!(format!("{k}"), k.canonical());
+        let u = DeviceKey::Unidentified {
+            name: "A Device".to_string(),
+            physical_index: 2,
+        };
+        assert_eq!(format!("{u}"), "unidentified:A Device#2");
+    }
+
+    #[test]
+    fn synthetic_test_keys_are_distinct_per_seed_and_shaped_like_uuids() {
+        // The identical-name tests elsewhere in this crate depend on this: same name, different
+        // seed, different key. A helper that collided would make those tests pass vacuously.
+        let a = DeviceKey::synthetic_for_test("Device A");
+        let b = DeviceKey::synthetic_for_test("Device B");
+        assert_ne!(a, b);
+        assert_eq!(DeviceKey::synthetic_for_test("Device A"), a);
+        for k in [&a, &b] {
+            let u = k.uuid().expect("synthetic keys are uuid keys");
+            assert_eq!(u.len(), 32, "{u} must be 32 hex characters");
+            assert!(
+                u.bytes()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            );
+        }
+    }
+
+    #[test]
+    fn device_identity_from_uuid_is_the_only_way_a_uuid_gets_in() {
+        let id = DeviceIdentity::from_uuid("e".repeat(32));
+        assert_eq!(id.uuid.as_deref(), Some("e".repeat(32).as_str()));
+        assert_eq!(id.luid, None);
+        assert_eq!(id.pci, None);
+        // And the absent case is genuinely absent — not an empty string that would compare equal
+        // to another absent one and rebuild the collision.
+        let none = DeviceIdentity::default();
+        assert_eq!(none.uuid, None);
+        assert_eq!(
+            none.key("X", 4),
+            DeviceKey::Unidentified {
+                name: "X".to_string(),
+                physical_index: 4
+            }
+        );
+        // An empty-string UUID is treated as absence, not as an identity every empty-string
+        // device would share.
+        let empty = DeviceIdentity::from_uuid("");
+        assert_eq!(
+            empty.key("X", 4),
+            DeviceKey::Unidentified {
+                name: "X".to_string(),
+                physical_index: 4
+            }
+        );
     }
 }

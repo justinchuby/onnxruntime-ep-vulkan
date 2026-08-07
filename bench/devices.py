@@ -73,6 +73,15 @@ class DeviceFacts:
     device_local_bytes: "int | None" = None
     has_calibrated_timestamps: "bool | None" = None
     has_host_query_reset: "bool | None" = None
+    # Stable identity (issue #18 — onnxruntime-ep-vulkan/rust's device selector). Sourced from
+    # `VkPhysicalDeviceIDProperties`/`VkPhysicalDevicePCIBusInfoPropertiesEXT` via vulkaninfo's
+    # JSON profile, formatted identically to the Rust EP's `query_device_identity`
+    # (`rust/src/vk/instance.rs`) so a value copied from one side matches the other byte-for-byte:
+    # `uuid` is 32 lowercase hex chars with no separators, `pci` is `domain:bus:device.function`
+    # with domain/bus/device zero-padded hex and function a single hex digit.
+    uuid: "str | None" = None
+    luid: "str | None" = None
+    pci: "str | None" = None
     notes: "list[str]" = field(default_factory=list)
 
     # -- derived ---------------------------------------------------------------------------
@@ -205,6 +214,18 @@ def _device_count(exe: Path) -> int:
     return max(len(re.findall(r"^GPU(\d+)", text, re.M)), 0)
 
 
+def _bytes_to_hex(arr: object) -> "str | None":
+    """`[170, 223, ...]` (vulkaninfo's JSON byte-array encoding) -> `"aadf..."`, lowercase, no
+    separators — the same encoding `query_device_identity` (`rust/src/vk/instance.rs`) produces.
+    """
+    if not isinstance(arr, list) or not arr:
+        return None
+    try:
+        return "".join(f"{int(b) & 0xFF:02x}" for b in arr)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_json_profile(payload: dict, index: int) -> DeviceFacts:
     dev = payload["capabilities"]["device"]
     props = dev.get("properties", {})
@@ -216,6 +237,11 @@ def _parse_json_profile(payload: dict, index: int) -> DeviceFacts:
 
     v11 = props.get("VkPhysicalDeviceVulkan11Properties", {})
     facts.subgroup_size = v11.get("subgroupSize")
+    # Stable identity (issue #18): `deviceUUID` is core Vulkan 1.1 and always present here;
+    # `deviceLUID` is only meaningful when the driver set `deviceLUIDValid` (mostly Windows).
+    facts.uuid = _bytes_to_hex(v11.get("deviceUUID"))
+    if v11.get("deviceLUIDValid"):
+        facts.luid = _bytes_to_hex(v11.get("deviceLUID"))
     v12 = props.get("VkPhysicalDeviceVulkan12Properties", {})
     facts.driver_name = v12.get("driverName") or v12.get("driverID")
     # `driverInfo` is the version a human recognises ("591.55"); the packed `driverVersion`
@@ -226,6 +252,15 @@ def _parse_json_profile(payload: dict, index: int) -> DeviceFacts:
     v13 = props.get("VkPhysicalDeviceVulkan13Properties", {})
     facts.min_subgroup_size = v13.get("minSubgroupSize")
     facts.max_subgroup_size = v13.get("maxSubgroupSize")
+
+    # Stable identity (issue #18): only present when `VK_EXT_pci_bus_info` is supported —
+    # absent on MoltenVK and some mobile ICDs, so `None` here is a fact, not a parsing failure.
+    pci_info = props.get("VkPhysicalDevicePCIBusInfoPropertiesEXT")
+    if pci_info:
+        facts.pci = (
+            f"{pci_info.get('pciDomain', 0):04x}:{pci_info.get('pciBus', 0):02x}:"
+            f"{pci_info.get('pciDevice', 0):02x}.{pci_info.get('pciFunction', 0):x}"
+        )
 
     facts.timestamp_period_ns = limits.get("timestampPeriod")
     facts.max_compute_shared_memory = limits.get("maxComputeSharedMemorySize")
@@ -484,20 +519,58 @@ def identify_by_timestamp(
     )
 
 
+def identify_by_uuid(devices: "list[DeviceFacts]", uuid: "str | None") -> "tuple[DeviceFacts | None, str]":
+    """Name the device an evidence/proof frame came from using the stable Vulkan device UUID.
+
+    This is a strictly stronger discriminator than :func:`identify_by_timestamp`: the UUID (issue
+    #18) is an exact identity, not a fingerprint that can coincide between two identical GPUs.
+    Prefer this whenever the evidence carries a ``uuid`` (e.g. the modelrunner's
+    ``devices_seen``/``ep_device`` JSON fields, or the EP's ``vulkan.device_uuid`` metadata); fall
+    back to :func:`identify_by_timestamp` only when no UUID was recorded (older evidence, or an
+    ICD that never populated one). Returns ``(device, reason)``; ``device`` is ``None`` whenever
+    the UUID is absent or does not name exactly one currently-probed device, because a guess is
+    not an identification.
+    """
+    if not uuid:
+        return None, "evidence carries no device uuid (issue #18 identity was not recorded)"
+
+    normalized = uuid.lower()
+    matches = [d for d in devices if d.uuid and d.uuid.lower() == normalized]
+
+    if len(matches) == 1:
+        return matches[0], f"uuid {uuid} matches exactly one probed device"
+    if not matches:
+        return None, f"uuid {uuid} matches NO probed device (stale evidence or device removed?)"
+    # A UUID is defined to be globally unique per physical device; more than one probed device
+    # reporting the same UUID means `probe()` itself double-counted a device, not a real ambiguity.
+    names = ", ".join(m.name for m in matches)
+    return None, f"uuid {uuid} matches more than one probed device (probe() bug?): {names}"
+
+
 def device_identity_check(
     devices: "list[DeviceFacts]",
     ep_index: int,
     period_ns: "float | None",
     valid_bits: "int | None",
+    uuid: "str | None" = None,
 ) -> dict:
     """Falsifier: does the device we *labelled* the row with match the device that actually ran?
 
-    Goes red when the timestamp fingerprint in the trace names a different device than the one
+    Goes red when the fingerprint in the trace names a different device than the one
     ``ep.device_index = ep_index`` was assumed to select. On red the caller must withhold the
     device name entirely rather than print a plausible wrong one.
+
+    ``uuid`` (issue #18), when the evidence carries one, is checked in preference to the
+    timestamp fingerprint: it is an exact identity rather than a fingerprint that can coincide
+    between two identical GPUs. Callers with no recorded uuid keep the prior timestamp-only
+    behaviour unchanged — this parameter is additive and optional.
     """
     assumed = by_ep_index(devices, ep_index)
-    observed, why = identify_by_timestamp(devices, period_ns, valid_bits)
+    observed, why = (
+        identify_by_uuid(devices, uuid)
+        if uuid
+        else identify_by_timestamp(devices, period_ns, valid_bits)
+    )
 
     out = {
         "check": "device_identity",

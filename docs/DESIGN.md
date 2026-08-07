@@ -724,6 +724,7 @@ purpose:
 | Option | Type | Default | Meaning |
 |---|---|---|---|
 | `ep.device_index` | int | auto | Which advertised Vulkan device to bind. |
+| `ep.device_selector` | string | unset | **Issue #18.** Stable-identity device selector — see §2.4.1. Outranks `ep.device_index` and every env var below; refuses to open/advertise any device rather than falling back on an unresolved selector. |
 | `ep.enable_validation` | bool | `false` (release), `true` (debug) | Enable `VK_LAYER_KHRONOS_validation`. |
 | `ep.pipeline_cache_path` | string | platform cache dir | On-disk `VkPipelineCache` blob location. |
 | `ep.max_claim_ops` | string list | unset | Restrict claiming to a named op set. Debugging and bisecting only. |
@@ -734,7 +735,226 @@ Environment variables mirror the MLX EP's convention for observability, and are 
 configuration surface: `ONNXRUNTIME_EP_VULKAN_VERBOSE`, `ONNXRUNTIME_EP_VULKAN_TRACE=<path>`,
 `ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG`, `RUST_LOG=onnxruntime_ep_vulkan=<level>`.
 
-### 2.5 Node claiming (`GetCapability`) and subgraph compilation
+The one exception is `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` (§2.4.1), the environment mirror of
+`ep.device_selector` — it *is* a configuration surface, for hosts that cannot set session options
+(e.g. a process-wide default for every session a launcher creates).
+
+#### 2.4.1 Stable-identity device selection (issue #18)
+
+`ep.device_index` (and its long-standing lenient env-var twin, `ONNXRUNTIME_EP_VULKAN_DEVICE`,
+read across `engine.rs`/`device.rs`/`host_device_memory.rs`/`session.rs`) name a device by its
+**position** in the best-first sorted capable-device list. A position is not an identity: it
+depends on driver enumeration order, which is free to change across a driver update, a reboot, or
+a `VK_ICD_FILENAMES` edit, and it treats two visually identical multi-GPU desks (e.g. two RTX
+A1000s) as indistinguishable. Both of those are exactly what issue #18 asks this EP to stop doing.
+
+`ep.device_selector` (session option) / `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` (env var,
+lower precedence than the session option) name a device by **stable identity** instead, using one
+`<scheme>:<value>` string:
+
+| Scheme | Value | Always available? |
+|---|---|---|
+| `index:<N>` | position in the best-first sorted list | yes, but this is a displayed ordinal, not an identity — included only for scripts that already enumerate with `epctl` |
+| `name:<exact name>` | `VkPhysicalDeviceProperties::deviceName`, exact match (unlike the legacy selector's substring match) | yes |
+| `id:<vendorHex>:<deviceHex>` | `(vendorID, deviceID)` | yes, but ambiguous across two cards of the same model |
+| `uuid:<32 hex>` (dashes/colons tolerated and stripped) | `VkPhysicalDeviceIDProperties::deviceUUID` | yes — core Vulkan 1.1, the identity this EP treats as ground truth |
+| `luid:<16 hex>` | `VkPhysicalDeviceIDProperties::deviceLUID` | only when the driver sets `deviceLUIDValid` — chiefly Windows/D3D-interop; expect absent on most Linux drivers |
+| `pci:<domain:bus:device.function>` (e.g. `pci:0000:01:00.0`) | `VK_EXT_pci_bus_info` | only when that extension is supported; expect absent on MoltenVK and some Android ICDs |
+
+**Resolution never falls back.** `resolve_device_selector` (`rust/src/vk/instance.rs`) returns
+exactly one of:
+
+- `Ok(index)` — the selector named **exactly one** enumerated device.
+- `Err(NotFound)` — the selector's identity kind is supported here, but no device matched. May
+  match later (e.g. after plugging in the right GPU).
+- `Err(Ambiguous)` — the selector matched more than one device (e.g. `id:` on two cards of the
+  same model — resolve with `uuid:` instead, which is always per-card-unique).
+- `Err(UnsupportedIdentity)` — the identity *kind* itself is not reported by any enumerated
+  device on this platform at all (e.g. `pci:` on MoltenVK). This can never resolve here, which is
+  a different fix than `NotFound`'s "plug in the right GPU."
+- `Err(Malformed)` — the raw string did not parse as any known scheme.
+
+On any `Err`, both call sites — `engine::devices_to_advertise` (factory enumeration) and
+`vk::device::acquire_ep_device` (per-session acquisition) — refuse to advertise/open **any**
+Vulkan device and log at `error!` level, rather than silently falling back to `ep.device_index`,
+the legacy env var, or ORT's own binding. A session then runs on the CPU EP (never aborts the
+host, per §2.3), which is a visible correctness gap a caller can fix, not a wrong GPU a caller
+never notices.
+
+**Precedence** (highest wins): `ep.device_selector` > `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` >
+`ep.device_index` > `ONNXRUNTIME_EP_VULKAN_DEVICE` (legacy, lenient, unchanged) > ORT's own
+device binding > the highest-scoring device (§2.3 default). Both selector surfaces resolve through
+the *same* function, `select_device_strict`, against the same device list; the session option is
+simply the `session_override` argument. There is no second grammar and no second resolver.
+
+**One authoritative selection path, and what the session option may and may not do.** The two
+surfaces are not symmetric, and pretending they are would be the "X advertises, Y binds" split
+this EP has already been bitten by:
+
+- `engine::devices_to_advertise` runs inside `GetSupportedDevices`, **before any session exists**.
+  No session option can be visible there, by construction. It therefore consults only the
+  environment variable, which must be set before `RegisterExecutionProviderLibrary`.
+- `vk::device::acquire_ep_device` runs per session and consults `ep.device_selector` first, then
+  the environment.
+
+Consequently `ep.device_selector` is **subtractive only**: it can cause a session to open *fewer*
+devices (down to none) than were advertised, but it can never cause a session to open a device
+that was not advertised, because it cannot reach the advertise path. A session option naming a
+device the factory did not advertise resolves to `NotFound` and the session opens nothing — a
+loud, visible refusal, not a silent bind to a different GPU. To *change which devices exist*, set
+the environment variable before EP registration; that is the single authoritative selection path,
+and `rust/modelrunner` sets it exactly there (`run.rs`, before `register_ep_library`) for the same
+reason.
+
+**Portability.** `uuid:` is core Vulkan 1.1 and is populated on every platform this EP targets,
+including Android and MoltenVK, so it is the one scheme with no capability caveat — the
+recommended selector for any multi-GPU or reproducible-benchmark configuration. `luid:` and
+`pci:` are capability-gated at query time (`query_device_identity`, `rust/src/vk/instance.rs`)
+and are `None` rather than fabricated when the platform does not report them; a selector built on
+either is `UnsupportedIdentity` rather than a false negative in that case.
+
+`UnsupportedIdentity` is reported only when devices *were* enumerated and none of them reports
+that identity kind. With **zero** enumerated devices the answer is `NotFound` — "your loader
+found nothing" and "your driver does not report UUIDs" are different diagnoses with different
+remedies, and `Iterator::all` answers `true` for both unless the empty case is excluded.
+
+##### 2.4.1.1 Stable identity and the proof frame
+
+Selecting the right device correctly is *not* the same property as knowing which device a number
+came from, and the two must not be conflated. §10.0.1 R12's frame discipline
+(`alloc_device_frame` = `SHARED` / `SPLIT-DEVICE` / `MIXED` / `OFF`) answers the second question,
+and it is only as sound as the key it groups declarations by.
+
+**The key is a stable identity, never a display name.** `VkPhysicalDeviceProperties::deviceName`
+is a *model* name: every card of a model reports the same string. Keying the declared-frame set
+on `(frame, deviceName)` therefore collapses two physically distinct GPUs of the same model into
+one entry, and a process that declared `SHARED` on each of two cards reports a single `SHARED`
+frame — a correct-looking counter about a population that stood on two pieces of hardware. The
+declared-frame set is keyed on `DeviceKey` (`rust/src/engine.rs`) instead:
+
+| `DeviceKey` | Canonical form | Source | Proves? | Collapses? |
+|---|---|---|---|---|
+| `Uuid(u)` | `uuid:<32 hex>` | `VkPhysicalDeviceIDProperties::deviceUUID`, when populated | yes | no — unique per physical device, stable across reboots and driver updates |
+| `Unidentified { name, physical_index }` | `unidentified:<deviceName>#<physical_index>` | fallback when no UUID was reported | **never** | no — the enumeration index disambiguates two same-named cards *within this process* |
+
+**The fallback contract is explicit and fail-closed.** `Unidentified` exists so that a driver
+which does not populate `deviceUUID` still cannot silently merge two devices; it is *not* a
+weaker identity, it is the absence of one, and it carries two guarantees:
+
+1. It **never collapses**: two UUID-less cards of the same model occupy distinct enumeration
+   indices, so a cross-device `SHARED` declaration still produces `MIXED`. Detection survives the
+   loss of UUIDs.
+2. It **never proves**: the enumeration index is meaningful only inside the process that observed
+   it, so it cannot be compared against a ledger entry recorded by any other process. A form whose
+   proof entry carries no `device_uuid`, or whose running device is `Unidentified`, resolves to
+   `DEVICE-UNATTRIBUTED` — never `PROVEN`. Attribution does not survive the loss of UUIDs, and
+   the artifact says so rather than guessing.
+
+The canonical string is prefixed `unidentified:` precisely so it can never be misread as, or
+compared equal to, a UUID. The name comes **first** and the index **last**, separated by `#`
+(`unidentified:Mali-G78#0`) — not `unidentified:<index>:<name>`, which this document and
+`PLATFORMS.md` both stated until issue #18's third revision while every emitter wrote the other
+one. `#` rather than a second `:` is load-bearing: a `deviceName` may contain a colon, so the
+`<index>:<name>` spelling cannot be split back apart without already knowing which half is
+numeric, while `#<digits>` to end of string always can be.
+
+**An absent UUID is an absent key, never an empty or zeroed one.** `query_device_identity` maps
+an all-zero `deviceUUID` to `None`, because an *unpopulated* `VkPhysicalDeviceIDProperties` is
+all zeros on every device that has one — reading that as an identity makes every anonymous device
+compare equal to every other. For the same reason `factory.rs` **omits** `vulkan.device_uuid`
+(and `_luid` / `_pci`) from the `OrtEpDevice` metadata rather than advertising an empty string,
+so a consumer can distinguish "this device has no stable identity" from "this device's identity
+is a string of zeros".
+
+##### 2.4.1.2 The device-list wire format
+
+Everything above is about what one identity *is*. This is the format the identities travel in,
+and it is written down here because not writing it down cost the frame its two stable-identity
+verdicts for a whole revision.
+
+**The canonical form of `running_device_names` and `running_device_uuids` is a bare, `"; "`-separated list in physical enumeration order. There is no positional prefix.**
+
+```
+"running_device_names": "Intel(R) Iris(R) Xe Graphics; NVIDIA GeForce RTX 4060 Laptop GPU"
+"running_device_uuids": "uuid:aadf33d4d118155fcc60c22b5c352463"
+```
+
+Position in the list *is* the index, so writing the index again would be a second source of truth
+for the same fact. Every counters artifact this project has ever produced — 450 of them in
+`bench/results/` — is in this form, including the real RTX A1000 evidence in
+`bench/results/rust-model-runner/mobilenetv2-12-device-selector.json`.
+
+A **different** counter, `alloc_device_frame_session_devices`, uses an indexed `N=value` form
+(`"1=The Session's Device"`) because it reports a *sparse map* keyed by the factory device index
+ORT asked for, where position genuinely is not the index. The two counters share a vocabulary and
+not a format.
+
+**One writer and one reader per language, and the reader tolerates what the writer never emits.**
+
+| | Rust | Python |
+|---|---|---|
+| Write | `engine::format_device_list` | — (the EP is the only writer) |
+| Read | `engine::parse_device_list` | `gen_proof_ledger.device_key_list` |
+
+Both readers accept the canonical bare form and additionally *tolerate* a purely numeric `N=`
+prefix, so a reader pointed at `alloc_device_frame_session_devices` degrades to a right answer
+rather than an empty one. Only a purely numeric prefix is positional, so
+`llvmpipe (LLVM 20.1.2, 256 bits) rev=3` survives intact instead of being renamed to ` 3`. An
+element that is empty after the prefix is dropped: `"0="` is the absence of an identity, not an
+identity that happens to be empty.
+
+The tolerance is deliberately **asymmetric** with the writer. A reader that *requires* the prefix
+is not merely stricter — it returns an empty list for every real counters file, which is
+indistinguishable from "the EP opened no device". That is exactly the defect this section exists
+to prevent: `gen_proof_ledger.py` required it, so `LedgerEntry.device_uuid` was `""` on every
+entry ever written, and the `PROVEN` / `PROVEN-ELSEWHERE` rows of the table below were
+**unreachable** — a proof frame with a silent hole in it, which is worse than one with a loud
+one. `tests/fixtures/device_identity_wire.json` is the shared fixture that pins the format from
+both languages at once, and `tests/ops/test_device_identity_wire.py` carries the planted
+`if '=' in p` mutation as a standing control.
+
+**Propagation.** One identity is read once, at enumeration, and carried unchanged through every
+layer that later has to agree about it:
+
+`query_device_identity` → `DeviceInfo::identity` → `DeviceInfo::key()` →
+`SharedVkDevice::device_uuid()` / `SessionSharedCtx::identity` → `allocator::tally`
+(`DECLARED_FRAMES` keys, `SESSION_DEVICES`) → `counters.rs` (`running_device_uuids` beside
+`running_device_names`) → `rust/modelrunner` (`selected_device.identity`) and
+`gen_proof_ledger.py` (`device_uuid` on each ledger entry) → `registry::device_state`.
+
+**`registry::device_state` compares identities, not names.** Given a ledger entry's recorded
+identity and the identity of the device this process is actually running on:
+
+| Entry `device_uuid` | Running identity | State |
+|---|---|---|
+| present | present and equal | `PROVEN` |
+| present | present and different, both `uuid:` | `PROVEN-ELSEWHERE` — and when the two device *names* are identical, the message says so explicitly, because that is the case a name comparison would have called a match |
+| present | every running key is `unidentified:` | `DEVICE-UNATTRIBUTED` — *not comparable*, which is a different finding from *different* |
+| absent | any | `DEVICE-UNATTRIBUTED` — "a name is shared by every card of a model"; regenerate the entry to record an identity |
+| any | absent (no device open) | `DEVICE-UNATTRIBUTED` |
+
+A name match alone never yields `PROVEN`. Older ledger entries that predate `device_uuid` parse
+unchanged and land in `DEVICE-UNATTRIBUTED`, which is the honest reading of them.
+
+The third row is why `PROVEN-ELSEWHERE` is not simply "the keys are not equal". `PROVEN-ELSEWHERE`
+is a *positive* finding — it asserts the proof came from a different piece of hardware — and that
+assertion needs two portable identities to stand on. A run on a UUID-less device produces a
+process-local `unidentified:` key that can never equal a ledger identity *no matter which device
+it is*, so reading the inevitable inequality as a δ would manufacture an observation nobody made.
+Both states claim and disclose, so the distinction costs no claim; it changes what the disclosure
+says, which is the entire product.
+
+**Evidence records the device that was opened, not the devices that were offered.**
+`rust/modelrunner`'s `execution_provider.devices` is what `GetEpDevices` *listed*;
+`execution_provider.selected_device` is what the session *opened*, read back from the EP's own
+counters. The `device_identity_agreement` guard cross-checks the two and **fails closed** on
+every state in which agreement cannot be established — including the states where nothing is
+provably wrong (no counters, no identity reported, more than one identity, `MIXED`/`SPLIT-DEVICE`
+frame, an identity matching no advertised `vulkan.device_uuid`, or a `uuid:` selector that names
+a different device than the one opened). The cost of a false red is a rerun; the cost of a false
+green is a number in `bench/results/` attributed to hardware it never touched.
+
+
 
 **Claim.** For each node in the `OrtGraph`, `ep.rs` builds a `NodeView` (a read-only FFI wrapper
 over `OrtNode` exposing op type, domain, since-version, input/output slot info, and attributes)

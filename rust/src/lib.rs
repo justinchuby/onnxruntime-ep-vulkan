@@ -63,6 +63,18 @@ pub mod transfer;
 pub mod trace;
 pub(crate) mod vk;
 
+/// `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` — the process-wide stable-identity device selector.
+///
+/// Re-exported from the crate-private `vk::instance` so out-of-crate callers (the model runner,
+/// `epctl`) name the switch through the same constant the EP reads it with, rather than repeating
+/// a string literal that can silently drift from it.
+///
+/// **It must be set before the EP library is registered.** `engine::devices_to_advertise` reads it
+/// inside `GetSupportedDevices`, which runs before any session exists — so this, and not any
+/// session option, is the single authoritative selection path. `ep.device_selector` on a session
+/// can only *refuse* a device ORT already bound; it cannot redirect to another one.
+pub use crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT;
+
 use std::ffi::c_char;
 use std::ptr;
 

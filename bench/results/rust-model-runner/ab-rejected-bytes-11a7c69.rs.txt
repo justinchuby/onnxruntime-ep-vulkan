@@ -1,0 +1,71 @@
+//! A/B regression evidence for PR #54 revision (issue #18).
+//!
+//! This file is written against the **rejected** bytes at `11a7c69` and uses only the API that
+//! existed there. It exists to demonstrate, on the rejected artifact itself rather than by
+//! description, the two defects the revision closes. Both tests below are written to PASS if the
+//! defect is present, so that a green run here is the falsifier's positive control.
+//!
+//! It is not committed to the branch as a compilable test — the API it uses no longer exists.
+//! It is kept here, as a `.rs.txt` evidence artifact, so a reviewer can reproduce the A/B: check
+//! out `11a7c69` into a detached scratch worktree, drop this file in as `rust/tests/`, and run it.
+//! Recorded result (Tank, this revision): both tests PASS on `11a7c69`, i.e. both defects are
+//! present in the rejected bytes. The B side is `counters::tests::
+//! two_cards_of_the_same_model_are_two_frames_not_one` and `registry::tests::
+//! identical_names_with_different_uuids_are_proven_elsewhere_not_proven`, which pass on the new
+//! bytes and fail on the rejected ones.
+
+/// DEFECT 1 — the declared-frame set is keyed on the display name, so two physically distinct
+/// cards of the same model collapse into one frame.
+#[test]
+fn rejected_bytes_collapse_two_identical_name_devices_into_one_frame() {
+    use onnxruntime_vulkan_ep::allocator::tally;
+    tally::reset_for_test();
+
+    // Two cards of the same model. `VkPhysicalDeviceProperties::deviceName` is a MODEL name, so
+    // both report this identical string; only their `deviceUUID`s differ.
+    const NAME: &str = "NVIDIA RTX A1000 Laptop GPU";
+    tally::set_device_frame(tally::FRAME_SHARED, NAME);
+    tally::set_device_frame(tally::FRAME_SHARED, NAME);
+
+    assert_eq!(
+        tally::frames_declared(),
+        1,
+        "REJECTED-BYTES POSITIVE CONTROL: on 11a7c69 the (frame, device_name) key collapses two \
+         physical devices into one declaration, so the process reports ONE frame for a population \
+         that stood on TWO pieces of hardware. If this assertion ever fails, the defect is gone."
+    );
+    assert_eq!(
+        tally::device_frame().0,
+        tally::FRAME_SHARED,
+        "and the reported frame is SHARED — a correct-looking counter about the wrong population. \
+         MIXED, which exists precisely to catch this, is unreachable in the one configuration \
+         where it matters most."
+    );
+
+    tally::reset_for_test();
+}
+
+/// DEFECT 2 — `registry::device_state` proves on a name match, so a proof obtained on card A is
+/// reported as PROVEN while running on card B.
+#[test]
+fn rejected_bytes_prove_a_ledger_entry_by_name_alone() {
+    use onnxruntime_vulkan_ep::allocator::tally;
+    use onnxruntime_vulkan_ep::registry;
+    tally::reset_for_test();
+
+    const NAME: &str = "NVIDIA RTX A1000 Laptop GPU";
+    // This process is running on *one particular* RTX A1000.
+    tally::note_session_device(0, NAME);
+
+    // The ledger entry was recorded on a *different* RTX A1000 — same model, different silicon.
+    // On 11a7c69 there is no field in which to record which one, so the comparison is a string
+    // comparison of model names and it succeeds.
+    let state = registry::device_state(NAME);
+    assert!(
+        matches!(state, registry::ProofState::Proven),
+        "REJECTED-BYTES POSITIVE CONTROL: on 11a7c69 a name match yields PROVEN, which attributes \
+         a proof to hardware that may never have run it. Got {state:?}"
+    );
+
+    tally::reset_for_test();
+}
