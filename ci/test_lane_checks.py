@@ -3185,27 +3185,120 @@ def test_device_loss_checks_are_registered_with_honest_reach():
     assert "exits 0" in spot.defect
 
 
-def _first_commit_adding_path(rel_path: str) -> str:
-    """Short SHA of the first commit in this repo's history that added `rel_path`,
-    read straight from git rather than trusted from any comment or doc."""
-    proc = subprocess.run(
-        [
-            "git",
-            "log",
-            "--diff-filter=A",
-            "--format=%h",
-            "--follow",
-            "--",
-            rel_path,
-        ],
+_LANDING_READING_FORBIDDEN_ARGS = ("--follow", "-M", "-C", "--find-renames", "--find-copies")
+
+
+def _first_commit_adding_current_path(
+    rel_path: str, repo_root: Path = REPO_ROOT
+) -> str:
+    """Short SHA of the commit that added the **incarnation of `rel_path` living at HEAD**.
+
+    Read as: *the* commit that added the current one, not *the first* commit that ever
+    added something at this name. Those differ whenever a path has been deleted and
+    re-added, and this helper deliberately returns the **newest** `--diff-filter=A`
+    event rather than the oldest one — `shas[0]`, since `git log` lists newest first.
+
+    THIS is the source of truth for every "landed at <sha>" claim a doc or a record
+    file makes, and it is deliberately read WITHOUT `git log --follow`.
+
+    Two separate ways a landing claim goes wrong, and this helper is the answer to both:
+
+    **Renames** — issue #24 item (g) (Morpheus): `--follow` answers a *different*
+    question — "where does the content now at this path first appear, across renames" —
+    and for the two `*-devunset-liveness.json` artifacts it answers `b669eb9` /
+    `b262292`, the pre-rename ancestors, rather than `fb5f0b2` / `1f41095`, the commits
+    that actually introduced the paths `docs/PLATFORMS.md` §7.18.11 cites. Both readings
+    are true about the repository; only one of them is the answer to *"when did this
+    file, under this name, land"*. A landing claim checked against the lineage reading
+    silently accepts a pre-rename SHA, so the two readings are separate functions here
+    rather than one function with a comment.
+
+    **Delete-and-re-add** — a path that was removed and later reintroduced has more than
+    one `A` event *at the same name*, and no rename is involved, so the guard above does
+    nothing about it. The oldest such event names a file that no longer exists: its
+    content was deleted, and whatever stands at the path today arrived later and may
+    share nothing with it but a name. A doc that says "landed at <oldest A>" is then
+    citing a dead incarnation — a SHA where the reader will find a *different* file.
+    The current incarnation is the one every "landed at" claim is about, so the newest
+    `A` event is the answer and `test_current_path_landing_uses_the_current_incarnation_issue_24`
+    pins it against a purpose-built repository.
+
+    Fail-closed in three ways, each of them load-bearing rather than documentary:
+
+    1. The argv is asserted free of every rename-following flag at call time, so
+       re-adding `--follow` to this helper fails every caller instead of quietly
+       changing what "landed" means.
+    2. `rel_path` must still be tracked at HEAD. A landing claim about a path this
+       checkout does not have is an instrument outage, not a pass.
+    3. An empty result is an assertion (shallow clone), never a permissive default.
+
+    For the rename lineage, call `_first_commit_in_rename_lineage()` — never this.
+    """
+    argv = ["git", "log", "--diff-filter=A", "--format=%h", "--", rel_path]
+    assert not any(bad in argv for bad in _LANDING_READING_FORBIDDEN_ARGS), (
+        "the landing reading must not cross a rename: with --follow this helper "
+        "returns the pre-rename ancestor (b669eb9 / b262292 for the two "
+        "*-devunset-liveness.json artifacts) instead of the commit that introduced "
+        "the current path (fb5f0b2 / 1f41095). Use _first_commit_in_rename_lineage() "
+        "if the lineage is what you actually want."
+    )
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", rel_path],
         capture_output=True,
         text=True,
-        cwd=str(REPO_ROOT),
+        cwd=str(repo_root),
     )
+    assert tracked.returncode == 0, (
+        f"{rel_path} is not tracked at HEAD, so 'the commit that added this path' is "
+        f"not a question this checkout can answer: {tracked.stderr.strip()!r}"
+    )
+
+    proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(repo_root))
     assert proc.returncode == 0, (rel_path, proc.stderr)
     shas = [s for s in proc.stdout.splitlines() if s.strip()]
     assert shas, f"no commit adds {rel_path} in this checkout's history (shallow clone?)"
-    return shas[-1]  # oldest -> the actual addition, not a later rename hit
+    # `git log` is newest-first, so shas[0] is the most recent `A` event: the commit that
+    # added the incarnation standing at HEAD. shas[-1] would be the oldest `A` event,
+    # which for a deleted-and-re-added path names a file that is no longer there.
+    return shas[0]
+
+
+def _first_commit_in_rename_lineage(rel_path: str) -> str:
+    """Short SHA of the oldest commit in `rel_path`'s **content lineage**, i.e. the
+    `git log --follow` reading, which crosses renames.
+
+    This is NOT a landing commit and must never be used to check, or to author, a
+    "landed at <sha>" claim in a doc or a record — see
+    `_first_commit_adding_current_path()` for that. It exists so the distinction is
+    exercised by tests rather than asserted by a comment: the two helpers demonstrably
+    disagree on the `*-devunset-liveness.json` artifacts, and the tests below pin both
+    answers so neither can drift into the other.
+    """
+    argv = [
+        "git",
+        "log",
+        "--diff-filter=A",
+        "--format=%h",
+        "--follow",
+        "--",
+        rel_path,
+    ]
+    assert "--follow" in argv, (
+        "the lineage reading is defined by --follow; without it this is just a second, "
+        "confusable copy of the landing reading"
+    )
+    proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(REPO_ROOT))
+    assert proc.returncode == 0, (rel_path, proc.stderr)
+    shas = [s for s in proc.stdout.splitlines() if s.strip()]
+    assert shas, f"no commit adds {rel_path} in this checkout's history (shallow clone?)"
+    return shas[-1]
+
+
+def _sha_claims_match(claimed: str, actual: str) -> bool:
+    """True when two abbreviated SHAs are the same commit at their common length."""
+    n = min(len(claimed), len(actual))
+    return claimed[:n] == actual[:n]
 
 
 def test_device_loss_incident_records_landing_commits_match_git_history_issue_65():
@@ -3214,25 +3307,354 @@ def test_device_loss_incident_records_landing_commits_match_git_history_issue_65
     commit for the armA_* capture files) when it actually landed at `1fc2ab6`. This
     reads the claim straight out of ci/device_loss_incident_records.json and checks it
     against real git history instead of trusting the prose, so a future transcription
-    error here fails a test instead of surviving on review-comment memory alone."""
+    error here fails a test instead of surviving on review-comment memory alone.
+
+    Issue #24 item (g): the reading is `_first_commit_adding_current_path()`, the
+    non-`--follow` one. Seven of this file's records name paths whose lineage reading
+    differs from their landing reading, so which helper this test calls decides whether
+    a pre-rename ancestor would be accepted as a landing claim. It would not."""
     doc = json.loads(
         (CI_DIR / "device_loss_incident_records.json").read_text(encoding="utf-8")
     )
     checked = 0
+    diverging = 0
     for rec in doc["records"]:
+        landing = _first_commit_adding_current_path(rec["file"])
+        lineage = _first_commit_in_rename_lineage(rec["file"])
+        if not _sha_claims_match(landing, lineage):
+            diverging += 1
         m = re.search(r"landed committed at ([0-9a-f]{7,40})", rec["reason"])
         if not m:
+            # Fail-closed for the case Morpheus flagged as "nothing is wrong *yet*":
+            # a record that gains a landing claim later is checked by the loop above,
+            # and a record without one may not smuggle the lineage SHA into its prose.
+            if not _sha_claims_match(landing, lineage):
+                assert lineage not in rec["reason"], (
+                    f"{rec['file']}: its prose names {lineage!r}, which is the "
+                    f"pre-rename ancestor, not the commit that introduced this path "
+                    f"({landing!r})"
+                )
             continue
         claimed_sha = m.group(1)
-        actual_sha = _first_commit_adding_path(rec["file"])
-        assert actual_sha.startswith(claimed_sha[: len(actual_sha)]) or claimed_sha.startswith(
-            actual_sha
-        ), (
+        assert _sha_claims_match(claimed_sha, landing), (
             f"{rec['file']}: reason claims it landed at {claimed_sha!r}, but git's own "
-            f"history says the first commit adding this file is {actual_sha!r}"
+            f"history says the first commit adding this path is {landing!r}"
+        )
+        assert not (
+            not _sha_claims_match(landing, lineage)
+            and _sha_claims_match(claimed_sha, lineage)
+        ), (
+            f"{rec['file']}: reason claims {claimed_sha!r}, which is this file's "
+            f"pre-rename ancestor rather than the commit that introduced its current "
+            f"path ({landing!r})"
         )
         checked += 1
     assert checked >= 1, "no record in this file makes a landing-commit claim any more"
+    assert diverging >= 1, (
+        "this test is only meaningful while at least one recorded artifact has a "
+        "rename in its lineage; if that stops being true, the guard below "
+        "(test_landing_reading_does_not_cross_renames_issue_24) is the one that must "
+        "still hold"
+    )
+
+
+def test_landing_reading_does_not_cross_renames_issue_24():
+    """Issue #24 item (g), the behavioural half.
+
+    `_first_commit_adding_path()` used `--follow` and therefore resolved the two
+    `*-devunset-liveness.json` artifacts to their pre-rename ancestors. The repair is
+    two named readings, and this pins both of them on the exact pair Morpheus named, so
+    the distinction cannot be collapsed back into one helper without a red test:
+
+    * current path introduced  -> `fb5f0b2` / `1f41095`  (what §7.18.11 cites)
+    * content lineage reaches  -> `b669eb9` / `b262292`  (true, but not a landing)
+    """
+    probe = "bench/results/validation_phi35_probe-devunset-liveness.json"
+    counters = "bench/results/validation_phi35_counters-devunset-liveness.json"
+
+    assert _sha_claims_match("fb5f0b2", _first_commit_adding_current_path(probe))
+    assert _sha_claims_match("1f41095", _first_commit_adding_current_path(counters))
+
+    assert _sha_claims_match("b669eb9", _first_commit_in_rename_lineage(probe))
+    assert _sha_claims_match("b262292", _first_commit_in_rename_lineage(counters))
+
+    # The whole point: the two readings disagree here. If they ever agreed, this test
+    # would be passing for free, so say so out loud.
+    for path in (probe, counters):
+        assert not _sha_claims_match(
+            _first_commit_adding_current_path(path),
+            _first_commit_in_rename_lineage(path),
+        ), f"{path} no longer exercises the rename distinction this test exists for"
+
+    # And the substitution is rejected in the direction that matters: a pre-rename SHA
+    # is not an acceptable answer to "where did this path land".
+    for path, pre_rename in ((probe, "b669eb9"), (counters, "b262292")):
+        assert not _sha_claims_match(
+            pre_rename, _first_commit_adding_current_path(path)
+        ), f"{path}: the landing reading returned the pre-rename ancestor {pre_rename}"
+
+    # docs/PLATFORMS.md §7.18.11 cites fb5f0b28 / 1f41095 for this pair. Those are the
+    # landing reading and demonstrably *not* the lineage reading, which is the whole of
+    # Morpheus's item (g): a doc claim checked against --follow would have been called
+    # wrong while being right. The positive half of this citation check lives in
+    # test_platforms_doc_7_18_11_incident_counts_are_eight_and_ninth, which is kept
+    # free of the lineage helper on purpose.
+    for cited, path in (("fb5f0b28", probe), ("1f41095", counters)):
+        assert not _sha_claims_match(cited, _first_commit_in_rename_lineage(path)), (
+            f"{path}: the doc's citation {cited} now also matches the lineage reading, "
+            "so this pair no longer distinguishes the two helpers"
+        )
+
+
+def test_current_path_landing_uses_the_current_incarnation_issue_24(tmp_path):
+    """A deleted and re-added path lands at its newest addition, not its dead first one.
+
+    Both `A` events name the same path, so the `--follow` guard on the landing reading is
+    silent here: no rename is involved. The oldest one points at content that has since
+    been deleted, so a "landed at <sha>" claim derived from it sends the reader to a
+    commit where the file they are reading about is a *different* file.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return proc.stdout.strip()
+
+    git("init", "--quiet")
+    git("config", "user.name", "Lane Test")
+    git("config", "user.email", "lane-test@example.invalid")
+    path = repo / "artifact.json"
+    path.write_text('{"incarnation": 1}\n', encoding="utf-8")
+    git("add", "artifact.json")
+    git("commit", "--quiet", "-m", "add first incarnation")
+    first = git("rev-parse", "--short", "HEAD")
+
+    git("rm", "--quiet", "artifact.json")
+    git("commit", "--quiet", "-m", "remove first incarnation")
+    path.write_text('{"incarnation": 2}\n', encoding="utf-8")
+    git("add", "artifact.json")
+    git("commit", "--quiet", "-m", "add current incarnation")
+    current = git("rev-parse", "--short", "HEAD")
+
+    assert first != current
+    assert _first_commit_adding_current_path("artifact.json", repo) == current
+    # The mutant, run here rather than described: the oldest `A` event is a real,
+    # plausible-looking SHA, which is why reading it as the landing is a silent defect
+    # instead of a crash.
+    assert _first_commit_adding_current_path("artifact.json", repo) != first
+
+
+def test_the_landing_helper_documents_the_incarnation_it_actually_returns_issue_24():
+    """Link's blocker on PR #71: the body returned the newest `A` event while the
+    docstring still said "the first commit that added `rel_path` at exactly this path".
+
+    Behaviour was right and the prose was wrong, which is the worse of the two failures
+    to ship: `test_current_path_landing_uses_the_current_incarnation_issue_24` was green,
+    so nothing was red, and the next person to derive a "landed at <sha>" claim would
+    have read the docstring — the only part of this helper a caller normally sees — and
+    written down the dead first incarnation *by following the documentation correctly*.
+
+    So the docstring is checked against the body rather than against a fixed string. The
+    index the `return` actually subscribes to is read out of the AST and required to
+    appear verbatim in the docstring, which makes the two drift together or not at all:
+
+    * flip `shas[0]` to `shas[-1]` and the docstring no longer names the index returned;
+    * "correct" the docstring back to the oldest-`A` reading and it no longer matches the
+      body, plus the stale phrasing is named below and forbidden outright.
+
+    Deliberately narrow. It does not police tone, length, or anything else about the
+    prose — only the one claim that has already been observed to drift out from under
+    the code, and that a reader has no way to falsify from the docstring alone.
+    """
+    import inspect
+    import textwrap
+
+    doc = inspect.getdoc(_first_commit_adding_current_path)
+    assert doc, "the landing helper's docstring is the thing under test here"
+
+    landing_ast = ast.parse(
+        textwrap.dedent(inspect.getsource(_first_commit_adding_current_path))
+    ).body[0]
+    returns = [n for n in ast.walk(landing_ast) if isinstance(n, ast.Return)]
+    assert len(returns) == 1, (
+        "this drift check assumes the landing helper has exactly one return; it now has "
+        f"{len(returns)}, so re-derive it rather than weakening it"
+    )
+    returned = returns[0].value
+    assert isinstance(returned, ast.Subscript), (
+        "the landing helper no longer returns an element of the `A`-event list, so "
+        "'which incarnation does it return' is a different question than this asks"
+    )
+    returned_src = ast.unparse(returned)
+    assert returned_src in doc, (
+        f"the landing helper returns `{returned_src}` and its docstring does not say so. "
+        f"`git log` is newest-first, so `shas[0]` is the current incarnation and "
+        f"`shas[-1]` is the oldest `A` event — for a deleted-and-re-added path those are "
+        f"different commits, and a caller who trusts the docstring over the body writes "
+        f"the wrong SHA into a doc. Whichever one this helper returns, say which."
+    )
+
+    # The exact wording Link rejected. It describes the oldest-`A` reading, which is the
+    # other helper's job description, not this one's.
+    stale = "first commit that added"
+    assert stale not in doc, (
+        f"the landing helper's docstring says {stale!r}, which reads as the oldest `A` "
+        f"event; it returns `{returned_src}`, the newest. Say 'the commit that added the "
+        f"incarnation at HEAD' instead."
+    )
+    assert "newest" in doc, (
+        "the docstring must state the newest-`A` semantics in words as well as by index, "
+        "because `shas[0]` only means 'newest' if you already know git log's order"
+    )
+
+
+def test_landing_reading_is_fail_closed_and_the_mutant_is_visible_issue_24():
+    """Issue #24 item (g), the mutant half — Morpheus asked for the distinction to be
+    enforced rather than commented, so each way of erasing it is shown to be red.
+
+    Mutant 1: put `--follow` back into the landing reading. Run here directly against
+    git, and shown to produce the pre-rename ancestor, i.e. exactly the wrong answer
+    `test_landing_reading_does_not_cross_renames_issue_24` would then fail on.
+
+    Mutant 2: sneak a rename-following flag into the landing helper's argv. The helper
+    asserts its own argv, so this is red at call time rather than at review time.
+
+    Mutant 3: point the landing reading at a path that is not in this checkout. That is
+    an instrument outage and must assert, not return a stale ancestor.
+    """
+    import inspect
+    import textwrap
+
+    probe = "bench/results/validation_phi35_probe-devunset-liveness.json"
+
+    mutant = subprocess.run(
+        ["git", "log", "--diff-filter=A", "--format=%h", "--follow", "--", probe],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert mutant.returncode == 0, mutant.stderr
+    mutant_answer = [s for s in mutant.stdout.splitlines() if s.strip()][-1]
+    assert _sha_claims_match("b669eb9", mutant_answer), (
+        "the --follow mutant no longer reproduces; re-derive this test's fixtures "
+        "before trusting it"
+    )
+    assert not _sha_claims_match(
+        mutant_answer, _first_commit_adding_current_path(probe)
+    ), "the landing reading has silently become the --follow reading"
+
+    # Mutant 2 -- the guard is in the helper, not in a comment above it. Read the
+    # helper's own AST so a rename-following flag cannot hide in its argv while the
+    # docstring still explains why it should not be there.
+    landing_ast = ast.parse(
+        textwrap.dedent(inspect.getsource(_first_commit_adding_current_path))
+    ).body[0]
+    argv_assign = next(
+        n
+        for n in ast.walk(landing_ast)
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "argv" for t in n.targets)
+    )
+    argv_literals = [
+        e.value
+        for e in ast.walk(argv_assign)
+        if isinstance(e, ast.Constant) and isinstance(e.value, str)
+    ]
+    for bad in _LANDING_READING_FORBIDDEN_ARGS:
+        assert bad not in argv_literals, (
+            f"{bad} is back in the landing reading's argv; it would resolve renamed "
+            "artifacts to their pre-rename ancestors"
+        )
+    landing_src = inspect.getsource(_first_commit_adding_current_path)
+    assert "_LANDING_READING_FORBIDDEN_ARGS" in landing_src, (
+        "the landing helper must assert its own argv, so re-adding --follow is a "
+        "failing test rather than a silent change of meaning"
+    )
+    for bad in ("--follow", "-M", "-C", "--find-renames", "--find-copies"):
+        assert bad in _LANDING_READING_FORBIDDEN_ARGS
+
+    lineage_ast = ast.parse(
+        textwrap.dedent(inspect.getsource(_first_commit_in_rename_lineage))
+    ).body[0]
+    lineage_argv = next(
+        n
+        for n in ast.walk(lineage_ast)
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "argv" for t in n.targets)
+    )
+    assert "--follow" in [
+        e.value
+        for e in ast.walk(lineage_argv)
+        if isinstance(e, ast.Constant) and isinstance(e.value, str)
+    ], (
+        "the lineage helper is defined by --follow; if it loses the flag the two "
+        "helpers become indistinguishable and the separation is decorative"
+    )
+
+    # The ambiguous original must not come back under its old, unqualified name.
+    assert not hasattr(sys.modules[__name__], "_first_commit_adding_path"), (
+        "_first_commit_adding_path() was the ambiguous helper issue #24 (g) removed; "
+        "callers must choose _first_commit_adding_current_path() (landing, source of "
+        "truth for doc/record claims) or _first_commit_in_rename_lineage() (ancestry)"
+    )
+
+    # Mutant 3 -- fail-closed on a path this checkout does not carry.
+    with pytest.raises(AssertionError, match="not tracked at HEAD"):
+        _first_commit_adding_current_path(
+            "bench/results/this-path-has-never-existed-issue-24.json"
+        )
+
+
+def test_doc_and_record_claims_never_call_the_rename_lineage_reading_issue_24():
+    """Issue #24 item (g): the separation is only worth anything if the helper used for
+    doc and record claims cannot silently become the lineage one. Reads this module's
+    own AST and requires every call to `_first_commit_in_rename_lineage()` to sit in a
+    test that exists to *demonstrate* the difference — never in one that checks a claim
+    made by `docs/PLATFORMS.md` or by `ci/device_loss_incident_records.json`."""
+    tree = ast.parse((CI_DIR / "test_lane_checks.py").read_text(encoding="utf-8"))
+
+    # Tests allowed to read the lineage, and why: each of them asserts the two readings
+    # *differ*. No test that checks a doc or record claim appears here.
+    lineage_demonstrations = {
+        "test_device_loss_incident_records_landing_commits_match_git_history_issue_65",
+        "test_landing_reading_does_not_cross_renames_issue_24",
+    }
+
+    lineage_callers: set[str] = set()
+    landing_callers: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Call) or not isinstance(sub.func, ast.Name):
+                continue
+            if sub.func.id == "_first_commit_in_rename_lineage":
+                lineage_callers.add(node.name)
+            elif sub.func.id == "_first_commit_adding_current_path":
+                landing_callers.add(node.name)
+
+    assert lineage_callers <= lineage_demonstrations, (
+        f"{sorted(lineage_callers - lineage_demonstrations)} call the --follow reading. "
+        "If any of them checks a landing claim, it will accept a pre-rename ancestor; "
+        "use _first_commit_adding_current_path() instead."
+    )
+    # Both helpers must actually be in use, or this guard is guarding nothing.
+    assert lineage_callers, "no test exercises the lineage reading any more"
+    assert (
+        "test_platforms_doc_7_18_11_incident_counts_are_eight_and_ninth"
+        in landing_callers
+    ), "the §7.18.11 doc guard must read landing commits, not lineage"
+    assert (
+        "test_device_loss_incident_records_landing_commits_match_git_history_issue_65"
+        in landing_callers
+    ), "the record guard must read landing commits, not lineage"
 
 
 def test_platforms_doc_7_18_11_incident_counts_are_eight_and_ninth():
@@ -3240,7 +3662,12 @@ def test_platforms_doc_7_18_11_incident_counts_are_eight_and_ninth():
     produced findings' and then contradicted its own sentence and its own table by
     saying 'Six of them are ... real' and 'The seventh' is derived — the table lists
     eight real-incident rows and one derived row. Locks the corrected wording so it
-    cannot silently regress back to the miscount."""
+    cannot silently regress back to the miscount.
+
+    Issue #24 item (f): a fourth instance survived that review — the paragraph heading
+    *'Why "just add the seven names" was the wrong repair'*. Eight real artifacts plus
+    the derived ninth is **nine** names, so that number is pinned here too, by phrase
+    and not merely by absence."""
     text = (REPO_ROOT / "docs" / "PLATFORMS.md").read_text(encoding="utf-8")
     section_start = text.index("### 7.18.11")
     next_heading = text.index("\n## ", section_start)
@@ -3251,6 +3678,31 @@ def test_platforms_doc_7_18_11_incident_counts_are_eight_and_ninth():
     assert "Eight of them are artifacts" in section
     assert "The ninth," in section
     assert "eight real incidents" in section.splitlines()[0]
+
+    # Issue #24 (f). Positive and negative, because 'seven' merely being absent would
+    # also be satisfied by deleting the sentence that carries the argument.
+    assert 'just add the nine names' in section, (
+        "§7.18.11's 'why not just add the names' paragraph must survive, and must "
+        "count the same nine artifacts its own table lists"
+    )
+    names_phrase = re.search(r"just add the (\w+) names", section)
+    assert names_phrase, "the 'just add the ... names' paragraph is gone entirely"
+    assert names_phrase.group(1) == "nine", (
+        f"§7.18.11 counts {names_phrase.group(1)!r} names, but its table is eight real "
+        "artifacts plus the derived ninth"
+    )
+    assert "seven names" not in section, "the eight/nine miscount must not come back"
+
+    # §7.18.3 is a *dated* reading of the negative control as it stood on 2026-08-02,
+    # and §7.18.11 records the move to 27 arms on 2026-08-07. It is correct history and
+    # explicitly not an instance of the miscount -- pinned so a future sweep for stale
+    # numbers cannot 'fix' evidence that is not stale.
+    s3_start = text.index("### 7.18.3")
+    s3 = text[s3_start : text.index("\n### 7.18.4", s3_start)]
+    assert "14 arms, all fired 2026-08-02" in s3, (
+        "§7.18.3's dated 14-arm reading is historical evidence, not a stale count; "
+        "the current 27-arm state is recorded separately in §7.18.11"
+    )
 
     # And the two provenance corrections from the same review: the table's commit
     # citations must match real git history, not just internally-consistent prose.
@@ -3267,16 +3719,41 @@ def test_platforms_doc_7_18_11_incident_counts_are_eight_and_ninth():
     assert "0db65fe" in kv_chain_row
     assert "1fc2ab6" not in kv_chain_row
 
-    assert _first_commit_adding_path(
-        "bench/results/device_loss_gate-BOTHLANES.json"
-    ).startswith("1fc2ab6"[:7]) or "1fc2ab6".startswith(
-        _first_commit_adding_path("bench/results/device_loss_gate-BOTHLANES.json")
+    assert _sha_claims_match(
+        "1fc2ab6",
+        _first_commit_adding_current_path(
+            "bench/results/device_loss_gate-BOTHLANES.json"
+        ),
     )
-    assert _first_commit_adding_path(
-        "bench/results/phi35_kv_chain-ctx4096-BOTH-dev0.json"
-    ).startswith("0db65fe"[:7]) or "0db65fe".startswith(
-        _first_commit_adding_path("bench/results/phi35_kv_chain-ctx4096-BOTH-dev0.json")
+    assert _sha_claims_match(
+        "0db65fe",
+        _first_commit_adding_current_path(
+            "bench/results/phi35_kv_chain-ctx4096-BOTH-dev0.json"
+        ),
     )
+
+    # Issue #24 (g): the row Morpheus said the helper would disagree with. §7.18.11
+    # cites fb5f0b28 / 1f41095 -- the commits that introduced these paths. Under the
+    # old --follow reading this assertion would have read b669eb9 / b262292 and the
+    # doc would have looked wrong while being right. The complementary demonstration
+    # that those citations do NOT match the lineage reading lives in
+    # test_landing_reading_does_not_cross_renames_issue_24, so that this test -- a
+    # doc-claim test -- never touches the lineage helper at all.
+    devunset_row = next(
+        line
+        for line in section.splitlines()
+        if "validation_phi35_probe-devunset-liveness.json" in line
+    )
+    for path, cited in (
+        ("bench/results/validation_phi35_probe-devunset-liveness.json", "fb5f0b28"),
+        ("bench/results/validation_phi35_counters-devunset-liveness.json", "1f41095"),
+    ):
+        assert cited in devunset_row, f"§7.18.11 no longer cites {cited}"
+        assert _sha_claims_match(cited, _first_commit_adding_current_path(path)), (
+            f"§7.18.11 cites {cited} for {path}, but the commit that introduced that "
+            f"path is {_first_commit_adding_current_path(path)}"
+        )
+
 
 
 def test_ci_yml_device_loss_negative_control_comment_matches_real_arm_count():
