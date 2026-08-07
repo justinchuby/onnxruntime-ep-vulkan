@@ -1114,9 +1114,34 @@ def _observe_flag_frame(
     # value away from `UNOBSERVABLE`, and this segment would report it rather than paper
     # over it, because `_FLAG_MOVED` fires whenever the two arms disagree, and neither arm
     # is hardcoded to `UNOBSERVABLE`.
-    _gemv_a = a_doc.get("gemv_packed_spec_constant", "MISSING-FIELD")
-    _gemv_b = b_doc.get("gemv_packed_spec_constant", "MISSING-FIELD")
-    if _gemv_a == "UNOBSERVABLE" and _gemv_b == "UNOBSERVABLE":
+    # `_GEMV_ABSENT` is a sentinel private to this segment, never a string a real
+    # counters document could contain — using `"MISSING-FIELD"` here (issue #61) made a
+    # missing field indistinguishable from a present field holding that literal text, and
+    # two arms both missing the field compared equal and fell through to `_FLAG_CONSTANT`:
+    # an instrument outage (the field was renamed or dropped) read as "armed, and nothing
+    # moved", the one thing this segment's whole discipline exists to refuse. A missing
+    # field is reported `UNOBSERVABLE` with an explicit missing-field detail instead, and
+    # ONLY the field literally being absent takes this path — a present field that reads
+    # the string `'UNOBSERVABLE'` still falls through to the real-UNOBSERVABLE branch below.
+    _GEMV_ABSENT = object()
+    _gemv_a = a_doc.get("gemv_packed_spec_constant", _GEMV_ABSENT)
+    _gemv_b = b_doc.get("gemv_packed_spec_constant", _GEMV_ABSENT)
+    _gemv_missing_arms = [
+        label
+        for label, val in (("arm A", _gemv_a), ("arm B", _gemv_b))
+        if val is _GEMV_ABSENT
+    ]
+    if _gemv_missing_arms:
+        _gemv_state = _FLAG_UNOBSERVABLE
+        _gemv_detail = (
+            "INSTRUMENT GAP: 'gemv_packed_spec_constant' is absent from the counters "
+            f"document for {' and '.join(_gemv_missing_arms)} — a missing-field "
+            "instrument outage, not a genuine 'no q_gemv pipeline built' reading and not "
+            "a pipeline having been built. Reported as UNOBSERVABLE, never CONSTANT: this "
+            "segment must not read a renamed or dropped counter field as 'armed, and "
+            "nothing moved' (issue #61)."
+        )
+    elif _gemv_a == "UNOBSERVABLE" and _gemv_b == "UNOBSERVABLE":
         _gemv_state = _FLAG_UNOBSERVABLE
         _gemv_detail = (
             "armed in arm A; gemv_packed_spec_constant() reads 'UNOBSERVABLE' in both "
@@ -1372,6 +1397,104 @@ def _observe_flag_frame(
         "in, only the second can fail."
     )
     return header + " || " + " | ".join(segments)
+
+
+# ---------------------------------------------------------------------------
+# Issue #61: `_observe_flag_frame`'s GEMV_PACKED segment must report UNOBSERVABLE, with
+# an explicit missing-field detail, when `gemv_packed_spec_constant` is absent from
+# either arm's counters document — never CONSTANT, and never silently. No GPU is
+# required: `_observe_flag_frame` is a pure function of the docs/logs/envs handed to it,
+# and every other segment settles harmlessly into its own UNOBSERVABLE/CONSTANT default
+# when its own fields are absent, so a minimal doc exercises the GEMV segment alone.
+# ---------------------------------------------------------------------------
+
+
+def _flag_frame_docs(
+    gemv_a=None, gemv_b=None, *, gemv_a_present=True, gemv_b_present=True
+) -> tuple[dict, dict, dict]:
+    """The minimal (clean_doc, a_doc, b_doc) triple that reaches the GEMV_PACKED
+    segment without any other segment's own fields present, so those segments' own
+    UNOBSERVABLE/CONSTANT defaults cannot be mistaken for the segment under test."""
+    clean_doc: dict = {}
+    a_doc: dict = {}
+    b_doc: dict = {}
+    if gemv_a_present:
+        a_doc["gemv_packed_spec_constant"] = gemv_a
+    if gemv_b_present:
+        b_doc["gemv_packed_spec_constant"] = gemv_b
+    return clean_doc, a_doc, b_doc
+
+
+def _gemv_segment_text(result: str) -> str:
+    """Pull just the GEMV_PACKED segment's text out of `_observe_flag_frame`'s report.
+
+    The GEMV segment is always appended first, immediately followed by DEVICE_MEMORY's,
+    so slicing between the two env names is exact regardless of the joiner text.
+    """
+    start = result.index(_ENV_GEMV_PACKED + "[")
+    end = result.index(_ENV_DEVICE_MEMORY + "[", start)
+    return result[start:end]
+
+
+def _run_flag_frame_gemv(gemv_a=None, gemv_b=None, **presence) -> str:
+    clean_doc, a_doc, b_doc = _flag_frame_docs(gemv_a, gemv_b, **presence)
+    result = _observe_flag_frame(
+        clean_doc, "", a_doc, "", b_doc, "", {_ENV_GEMV_PACKED: "1"}, {}
+    )
+    return _gemv_segment_text(result)
+
+
+@pytest.mark.parametrize(
+    "gemv_a, gemv_b, expected_state",
+    [
+        pytest.param("UNOBSERVABLE", "UNOBSERVABLE", _FLAG_UNOBSERVABLE, id="today-real-reading"),
+        pytest.param("1", "UNOBSERVABLE", _FLAG_MOVED, id="moved-armed-vs-unobservable"),
+        pytest.param("1", "1", _FLAG_CONSTANT, id="constant-both-armed"),
+        pytest.param("0", "1", _FLAG_MOVED, id="moved-0-vs-1"),
+    ],
+)
+def test_observe_flag_frame_gemv_preserves_the_four_live_states(gemv_a, gemv_b, expected_state):
+    """The four live states from issue #61's reproduction — must survive the fix
+    untouched: this bug's repair must not turn a real reading into UNOBSERVABLE."""
+    seg = _run_flag_frame_gemv(gemv_a, gemv_b)
+    assert f"] {expected_state}(" in seg, seg
+
+
+def test_observe_flag_frame_gemv_missing_from_arm_a_is_unobservable_not_constant():
+    seg = _run_flag_frame_gemv(gemv_b="UNOBSERVABLE", gemv_a_present=False)
+    assert f"] {_FLAG_UNOBSERVABLE}(" in seg, seg
+    assert "INSTRUMENT GAP" in seg, seg
+    assert "arm A" in seg, seg
+    assert f"] {_FLAG_CONSTANT}(" not in seg, seg
+
+
+def test_observe_flag_frame_gemv_missing_from_arm_b_is_unobservable_not_constant():
+    seg = _run_flag_frame_gemv(gemv_a="UNOBSERVABLE", gemv_b_present=False)
+    assert f"] {_FLAG_UNOBSERVABLE}(" in seg, seg
+    assert "INSTRUMENT GAP" in seg, seg
+    assert "arm B" in seg, seg
+    assert f"] {_FLAG_CONSTANT}(" not in seg, seg
+
+
+def test_observe_flag_frame_gemv_missing_from_both_arms_is_unobservable_not_constant():
+    """The exact regression in issue #61: two missing fields both defaulted to the same
+    sentinel string, compared equal, and read CONSTANT -- 'armed, and nothing moved' --
+    for an instrument outage, never a genuine reading."""
+    seg = _run_flag_frame_gemv(gemv_a_present=False, gemv_b_present=False)
+    assert f"] {_FLAG_UNOBSERVABLE}(" in seg, seg
+    assert "INSTRUMENT GAP" in seg, seg
+    assert "arm A and arm B" in seg, seg
+    assert f"] {_FLAG_CONSTANT}(" not in seg, seg
+
+
+def test_observe_flag_frame_gemv_malformed_value_is_a_real_reading_not_unobservable():
+    """A present-but-garbage value is a genuine (if unexpected) artifact reading, not a
+    missing-field instrument outage -- the fix must not swallow it into UNOBSERVABLE
+    either, only an actually absent field takes that path."""
+    seg = _run_flag_frame_gemv(gemv_a="GARBAGE", gemv_b="GARBAGE")
+    assert f"] {_FLAG_CONSTANT}(" in seg, seg
+    assert "UNEXPECTED" in seg, seg
+    assert "INSTRUMENT GAP" not in seg, seg
 
 
 def _observe_ep_entrypoints(clean_doc: dict, inject_doc: dict) -> str:
