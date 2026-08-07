@@ -1588,8 +1588,114 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
-        id="device.flake_witness",
+        id="hostfree.cleanroom_index_url_privacy",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Cleanroom index-URL privacy tests (nothing echoes or persists a credential)",
+        watches=(
+            "Issue #55: every surface on which `python/verify_cleanroom.py` could expose "
+            "the `--index-url` it was handed. A private mirror's URL can carry userinfo "
+            "(`user:pass@`, a bare username, percent-encoded credentials), a query "
+            "credential (`?token=`, `?api_key=`, `?<whatever the vendor called it>=`) or "
+            "a fragment. The real value must reach pip's argv and NOTHING else: not the "
+            "`$ ...` progress echo, not the persisted "
+            "`bench/results/cleanroom_install_dev0.json`, not an exception's rendered "
+            "text, not the final summary print. The tests drive production `main()` with "
+            "a shell-free fake `subprocess` and a redirected repository root, then assert "
+            "on the bytes that production code actually printed, raised and wrote."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "REPLAYED: `git show d5bab5d:python/verify_cleanroom.py`, the bytes PR #57 "
+            "was rejected at, whose `_echo_cmd` gated on `\"://\" in s` and whose "
+            "`main()` called `_scrub_text(install.stderr[-1500:], url)`. PLANTED: six "
+            "surgical reintroductions of one defect each into today's module -- the "
+            "`://` echo gate, truncate-before-scrub, a denylist-shaped query redaction, "
+            "removal of the record-wide scrub at the write seam, re-chaining the "
+            "exception so the raw message stays reachable through `__context__`, and "
+            "fragment pass-through. Each mutation asserts its anchor occurs exactly once "
+            "before applying, so a drifted anchor is ERROR(instrument=anchor_drift), "
+            "never a silent walkover. See ci/negative_control_cleanroom_redaction.py."
+        ),
+        arm_healthy=(
+            "72 tests pass; `pip_index_url` renders as `https://REDACTED@mirror.example/"
+            "pypi/simple?token=REDACTED#REDACTED` while the unredacted URL is present in "
+            "exactly one observed argv, pip's own"
+        ),
+        arm_broken=(
+            "on d5bab5d's bytes the suite goes RED, and the same synthetic sentinel "
+            "`sentinel-pass` is produced directly by the shipped `_echo_cmd` for a "
+            "schemeless and a scheme-relative URL and by the shipped "
+            "`_scrub_text(stderr[-1500:], url)` for a URL straddling the truncation edge"
+        ),
+        observed="2026-08-07",
+        misses=(
+            "A credential embedded in the URL PATH (`/t/<token>/simple`, as some signing "
+            "mirrors do) is deliberately NOT redacted: after userinfo, query and fragment "
+            "are gone the path is the only provenance left, so it is kept. This is a "
+            "policy decision recorded in README.md and pinned by its own test, not an "
+            "oversight -- but it is a real leak for anyone whose mirror signs that way.",
+            "The scrub covers only what THIS module echoes, persists or raises. pip's own "
+            "logs (`pip.log`, `~/.cache/pip`), the OS process table, and any proxy access "
+            "log are outside its reach, and no test here can see them.",
+            "The redaction is textual. A credential that never appears in a URL-shaped "
+            "span -- an environment variable pip reads on its own, a netrc entry, a "
+            "keyring lookup -- is not a shape this module can recognise, so it is neither "
+            "redacted nor detected.",
+            "OVER-FIRE class, recorded here because a screen's misses prose has until now "
+            "only carried false NEGATIVES: the general scanner will also redact an "
+            "e-mail address and a `#sha256=` fragment in `pip freeze` output, because "
+            "both are indistinguishable from a credential by shape alone. That is chosen "
+            "(the wheel digest is recorded verbatim and independently as `wheel_sha256`) "
+            "and pinned by a test, but it does cost readability in the record.",
+        ),
+    ),
+    Check(
+        id="hostfree.cleanroom_index_url_privacy_control",
         falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Cleanroom index-URL privacy negative control (demand red on the real bytes)",
+        watches=(
+            "That the privacy suite above is load-bearing rather than merely present. A "
+            "suite that has only ever been seen green cannot distinguish 'nothing leaks' "
+            "from 'nothing is asserted' -- and that is not hypothetical here: the "
+            "PREVIOUS version of that suite was green on bytes that echoed a raw "
+            "`user:pass@host` to stdout and wrote a password fragment into a tracked "
+            "artifact, because it re-implemented `main()`'s argv construction locally "
+            "instead of observing production code."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "12 arms: 1 LIVE (today's module is green), 5 REPLAYED (today's suite against "
+            "d5bab5d's module demanding RED, plus B1 reproduced in-process for the "
+            "schemeless and scheme-relative spellings, B2 for the truncation straddle and "
+            "B3 for a query credential -- each asserting the SENTINEL is present in what "
+            "the shipped function returned, so a 'did NOT reproduce' arm is itself a "
+            "failure), 6 PLANTED (one defect surgically reintroduced into today's module "
+            "per arm)."
+        ),
+        arm_healthy="12/12 arms fire as specified, exit 0",
+        arm_broken=(
+            "NEGATIVE-CONTROL: FAIL(condition=arm_did_not_fire) naming the arm and "
+            "whether the suite was GREEN or RED against what was expected; a mutation "
+            "whose anchor text has drifted is "
+            "ERROR(instrument=anchor_drift) naming the mutation, never a quiet pass"
+        ),
+        observed="2026-08-07",
+        misses=(
+            "The REPLAYED arms pin the commit d5bab5d. In a squashed history or a fresh "
+            "shallow clone that ref is unreachable and those arms report ERROR rather "
+            "than passing quietly -- but the suite's only non-planted evidence is then "
+            "unavailable, and the six PLANTED arms alone prove only that defects written "
+            "by the same author as the tests are caught.",
+            "The PLANTED arms are exact-substring surgery on the module's current text. "
+            "They prove each named mechanism is load-bearing; they say nothing about a "
+            "leak mechanism nobody has thought of, which is precisely how B1 survived the "
+            "first round.",
+        ),
+    ),
+    Check(
+        id="device.flake_witness",        falsifier=FALSIFIER_OBSERVED,
         lane="both",
         step="Flake witness (name the failure where truncation cannot reach it)",
         watches=(

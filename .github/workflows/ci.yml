@@ -293,6 +293,26 @@ jobs:
         # shape) -- neither reconstructed from memory.
         run: python ci/negative_control_powershell_exit_status.py
 
+      - name: Cleanroom index-URL privacy tests (nothing echoes or persists a credential)
+        # Issue #55: `python/verify_cleanroom.py --index-url` may carry userinfo, a query
+        # credential or a fragment for a private mirror. The real value must reach pip's
+        # argv and nothing else -- not the `$ ...` progress echo, not the persisted
+        # `bench/results/cleanroom_install_dev0.json`, not an exception's text. These
+        # tests drive production `main()` with a shell-free fake subprocess and assert on
+        # what it actually printed, raised and wrote; nothing here re-implements `main()`.
+        run: |
+          python -m pytest tests/packaging/test_verify_cleanroom_redaction.py \
+            -q -p no:randomly --strict-markers
+
+      - name: Cleanroom index-URL privacy negative control (demand red on the real bytes)
+        # R9 applied to a privacy claim: a suite only ever seen green cannot distinguish
+        # "nothing leaks" from "nothing is asserted" -- the previous suite passed on bytes
+        # that echoed a raw `user:pass@host` and wrote a password fragment into a tracked
+        # artifact. The REPLAYED arm runs today's suite against `git show
+        # d5bab5d:python/verify_cleanroom.py` and demands RED, and reproduces each blocker
+        # in-process so the evidence is a sentinel coming out of the shipped function.
+        run: python ci/negative_control_cleanroom_redaction.py
+
       - name: Flake-witness negative control (demand red on an intermittent)
         # A flake witness on a repo with no reproducing flake is silent, and silence from
         # a check is indistinguishable from silence from no check. This control makes it

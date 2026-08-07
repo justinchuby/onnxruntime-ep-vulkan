@@ -270,11 +270,46 @@ unreachable — imports, registers, runs, and asserts the EP was selected. Its `
 of `onnx`/`numpy` into that venv defaults to the approved proxy index
 (`https://packagefeedproxy.microsoft.io/pypi/simple`, override with `--index-url` or
 `$ONNXRUNTIME_EP_VULKAN_PYPI_INDEX_URL`) because public PyPI is blocked in the sandboxes
-this tool is actually run from during EP development (issue #40). If an override embeds
-credentials (`user:pass@host/...`), those credentials reach `pip` alone, in the argv passed
-directly to it — the tool's own progress echo and its persisted
-`cleanroom_install_dev0.json` record always redact any URL userinfo to a fixed
-`REDACTED@host` placeholder first, never the raw value (issue #55).
+this tool is actually run from during EP development (issue #40).
+
+**Index-URL privacy (issue #55).** An override may point at a private/authenticated mirror,
+so `--index-url` is treated as a secret-bearing string everywhere except `pip`'s own argv.
+`pip` is invoked with a real argv and never through a shell, so no shell history or shell
+expansion sees the value. Everything else this tool *echoes, persists or raises* — the
+`$ ...` progress echo, every field of `bench/results/cleanroom_install_dev0.json`, the text
+of any exception it exits on — is scrubbed first, by policy rather than by a denylist of
+known-sensitive parameter names:
+
+| URL component | What is recorded |
+|---|---|
+| scheme, host, port, path | preserved — this is the provenance an operator needs |
+| userinfo (`user:pass@`, `user@`, percent-encoded) | `REDACTED@host` |
+| every query **value** | `REDACTED`; the parameter **name and count** survive, so `?token=x&sig=y` becomes `?token=REDACTED&sig=REDACTED` |
+| a query segment with no `=` | replaced whole — an `=`-less segment is an opaque token |
+| fragment (`#...`) | `#REDACTED` when non-empty |
+
+This covers absolute (`https://u:p@host/...`), scheme-relative (`//u:p@host/...`) and
+schemeless (`u:p@host/...`) spellings, IPv6 literals with ports, duplicate and blank
+parameters, several URLs on one line, and text in which a URL straddles the point at which
+a captured stream is truncated (the scrub always runs over the whole text; only the
+already-sanitised result is truncated).
+
+Three limitations, stated so nobody has to infer them:
+
+* **A secret in the URL *path* is not redacted.** Some mirrors sign by embedding a token in
+  a path segment (`/t/<token>/simple`); the path is the last provenance left once userinfo,
+  query and fragment are gone, so it is kept.
+* **Only what *this tool* emits is covered.** `pip`'s own logs, the OS process table and any
+  proxy access log are outside its reach.
+* **`pip freeze` output is scrubbed too**, so a local wheel's `file:///...#sha256=<digest>`
+  fragment records as `#REDACTED`. The wheel digest is recorded verbatim and independently
+  as `wheel_sha256`.
+
+`tests/packaging/test_verify_cleanroom_redaction.py` drives the real `main()` against a
+shell-free fake subprocess and asserts these claims on the bytes actually printed, raised
+and written; `ci/negative_control_cleanroom_redaction.py` demands that same suite go **red**
+against the module as it stood at `d5bab5d`, before the fix.
+
 `bench/results/cleanroom_install_dev0.json` records the run: `verdict: PASS`,
 `session_providers: ["VulkanExecutionProvider", "CPUExecutionProvider"]`,
 `artifact_inside_site_packages: true`, on Windows / RTX 4060 / ORT 1.28.0. **It has been
