@@ -386,6 +386,20 @@ jobs:
         # convict.
         run: python ci/negative_control_ledger_census.py
 
+      - name: Ledger-loss probe (the census invariant's falsifier, and it writes nothing)
+        # Issue #14. Seven arms against `check_no_proof_went_missing`, of which arm 3 replays
+        # eb84364 — the real merge that dropped three Cast proofs — rather than a planted
+        # mutation. It was written months before this step and appeared in no workflow, no
+        # register and under no artifact-frame check; what it had instead was a committed
+        # `result.json` produced once on another checkout, which `bfdc0f1` made stale and
+        # nothing detected. THE READING IS NOW THE RUN: this step is the artifact, the tracked
+        # copy is deleted, and an ordinary invocation writes only to an ephemeral scratch
+        # directory outside the repository, so running the diagnostic can never again dirty a
+        # checkout. Needs the same `fetch-depth: 0` as the census arms above (arm 3 does
+        # `git show eb84364:...`); a shallow clone makes that arm UNOBSERVABLE, which this
+        # probe reports as a FAIL rather than swallowing.
+        run: python rust/tools/probe_ledger_loss.py
+
       - name: Verification-subject screen (does a check verify itself?)
         # Mouse's sweep, wired here because it arrived in ci/ at 2832526 in NO workflow
         # step. ci/check_lane_inventory.py could not see that: it asks whether every
@@ -1777,6 +1791,59 @@ jobs:
             bench\results\ci-lane\pytest-windows.log
           if ($LASTEXITCODE -ne 0) { $rc = $LASTEXITCODE }
           exit $rc
+
+      # -------------------------------------------------------
+      # WINDOWS-NAMESPACE DESTINATION-POLICY REGRESSION (issue #14 / PR #51 review).
+      #
+      # `ci/test_lane_checks.py` — the suite that owns every `probe_ledger_loss.py` test,
+      # including the parametrized `\\?\...` extended-length and `\\localhost\C$\...`
+      # admin-share regressions this hardening added — is otherwise only collected by the
+      # `lane-checks` job, which runs on `ubuntu-latest`. A Windows-namespace-spelling bug
+      # can therefore be introduced, "fixed" against a mock, and never actually exercised by
+      # a Windows filesystem again. This step is the falsifying instrument for that gap: it
+      # runs the real suite, unmocked, on this job's own `windows-latest` checkout, so the
+      # literal bypass bytes from the rejected head (`9c15fdf`) are re-tried against a real
+      # NTFS volume on every push, not only inferred from a Linux run and a code reading.
+      #
+      # Deliberately NOT wired into `check_suite_productivity.py` / `check_flake_witness.py`
+      # / `ci/lane_inventory.py`: those name `ci/test_lane_checks.py` as the `lane-checks`
+      # job's own suite already, and giving the same file a second, differently-scoped floor
+      # entry under `build-test-windows` would be a second, competing answer to "how much of
+      # this suite must run" for one file — exactly the duplicated-authority failure mode
+      # `docs/DESIGN.md` §9.4 warns against for a different mechanism. This step's own exit
+      # code is the gate; a bare pytest failure here fails the job with no further indirection.
+      # -------------------------------------------------------
+      - name: Windows-namespace destination-policy regression (probe_ledger_loss)
+        # if: always() — this suite is unrelated to tests/ops (it exercises
+        # rust/tools/probe_ledger_loss.py's destination policy against this
+        # job's own NTFS volume), so it must not be skipped just because an
+        # earlier, unrelated tests/ops step above went red. Without this the
+        # step silently reports "skipped" on any red pytest run and the
+        # Windows-only regression this hardening exists for is never actually
+        # exercised on the runs that most need it.
+        if: always()
+        run: |
+          # rust/tools/probe_ledger_loss.py's own 7-arm default run reads a real,
+          # named historical commit (INCIDENT_COMMIT = "eb84364") as arm 3's fixture,
+          # and every ledger_loss_probe test that exercises the default run therefore
+          # needs that commit present locally. This job's own actions/checkout@v4
+          # above has no fetch-depth override (a 1-commit shallow clone), so the
+          # commit is simply absent from the local object store here -- confirmed on
+          # run 31145937171/job 92765255376, where every such test failed with
+          # "ERROR(instrument): cannot read eb84364 from this repo", an instrument
+          # outage from an incomplete checkout, not a destination-policy regression.
+          # Deepen to full history for this step only, so the commit is present
+          # without changing the faster shallow checkout the rest of this job's
+          # build+test steps rely on. `-Unshallow` errors on an already-complete
+          # repository, so only call it when the checkout actually is shallow.
+          if ((git rev-parse --is-shallow-repository).Trim() -eq 'true') {
+            git fetch --quiet --unshallow
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          python -m pytest ci\test_lane_checks.py -q --tb=short `
+            -k "ledger_loss_probe" -p no:randomly --strict-markers 2>&1 |
+            Tee-Object -FilePath bench\results\ci-lane\pytest-ledger-loss-windows.log
+          exit $LASTEXITCODE
 
       # -------------------------------------------------------
       # CRITERION 10 — see the Linux lane for the full rationale.

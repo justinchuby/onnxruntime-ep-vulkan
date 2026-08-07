@@ -999,6 +999,60 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.ledger_loss_probe",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Ledger-loss probe (the census invariant's falsifier, and it writes nothing)",
+        watches=(
+            "Whether `gen_proof_ledger.check_no_proof_went_missing` — the invariant the "
+            "census above is built on — still fires on a deletion, still exempts a SIGNED "
+            "retirement, still refuses an unsigned one, and still reports "
+            "ERROR(instrument) rather than 'nothing is missing' when the attempt log is "
+            "absent. Seven arms. It also watches its own blast radius: the probe writes "
+            "nothing into a tracked path, so running it can never dirty a checkout."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Arm 3 is not a mutation at all: it is `eb84364`'s two artifacts as they "
+            "really stood, and it convicts them naming all three Cast keys. The planted "
+            "arms sit either side of it — arm 2 deletes one live entry and requires it "
+            "named, arm 4 retires that same key with owner/date/reason and requires "
+            "silence, arm 5 leaves the retirement in place with the key still present and "
+            "requires a failure, arm 5b strips owner and date and requires the PRODUCER to "
+            "refuse rather than the census alone. CLASSIFIED PLANTED, and the classification "
+            "is the conservative one on purpose: the failing arm this entry cites is a "
+            "SYNTHETIC checkout with no attempt log, which I constructed. The probe has "
+            "twice been genuinely red on real input — 2/6 on `main` on 2026-08-05, when "
+            "arms 1/2/4/5 were reading an empty register against a tree carrying 43 real "
+            "retirements, and again the same day when running it dirtied `main` — but "
+            "neither of those reds is reproducible on demand today, and an entry that "
+            "claims OBSERVED on the strength of a red nobody can re-run is exactly the "
+            "overclaim this axis exists to prevent."
+        ),
+        arm_healthy="the working tree: 7/7 arms, exit 0, `git status` byte-identical before and after",
+        arm_broken=(
+            "a checkout carrying a ledger and a register but no proof_attempts.jsonl: "
+            "1/7, exit 1, and the ONE arm that stays green is arm 6, which predicted the "
+            "outage (ci/test_lane_checks.py::test_ledger_loss_probe_fails_loud_when_its_"
+            "subject_is_not_there)"
+        ),
+        observed="2026-08-06",
+        misses=(
+            "Its denominator is the ledger as it stands, so it says nothing about a form "
+            "that was never proven — that is probe_model_op_census.py's question.",
+            "Arm 3 needs `git show eb84364:...`. In a shallow clone that arm cannot reach "
+            "its subject; the probe reports it as a failure rather than dropping it, so "
+            "the lane goes red for a checkout reason. `fetch-depth: 0` on this job is "
+            "therefore load-bearing for this step, exactly as it is for the census "
+            "controls above.",
+            "It rules on the KEY SET only, like the census. An entry whose digests moved "
+            "is present and this probe is silent about it.",
+            "The destination policy consults `git check-ignore` and nothing else. A "
+            "destination outside any repository is trusted without further question, "
+            "which is the right boundary here but is a boundary.",
+        ),
+    ),
+    Check(
         id="hostfree.open_reds",
         falsifier=FALSIFIER_OBSERVED,
         lane=LANE_HOSTFREE,
@@ -2002,6 +2056,46 @@ CHECKS: tuple[Check, ...] = (
             "It cannot tell a test that ran under a REAL absent ICD from one that ran "
             "with the environment override silently ineffective. That is "
             "ci/check_icd_suppression.py's subject.",
+        ),
+    ),
+    Check(
+        id="device.ledger_loss_windows_namespace_regression",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_WINDOWS,
+        step="Windows-namespace destination-policy regression (probe_ledger_loss)",
+        watches=(
+            "That `ci/test_lane_checks.py`'s `probe_ledger_loss` subset — including the "
+            "parametrized `\\\\?\\C:\\...` extended-length and `\\\\localhost\\C$\\...` "
+            "admin-share regressions added for the PR #51 review — actually executes "
+            "against a real Windows filesystem, not only against the `ubuntu-latest` "
+            "`lane-checks` job (where every Windows-only case in that file is "
+            "`skipif(sys.platform != 'win32')` and never runs at all)."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Reverted `rust/tools/probe_ledger_loss.py` to the rejected PR #51 head "
+            "(9c15fdf) in place, keeping the hardened test file, and ran this step's own "
+            "command on a real Windows checkout."
+        ),
+        arm_healthy=(
+            "31 passed, 268 deselected — the fixed `classify_destination()` in place "
+            "(local Windows run, 2026-08-06)"
+        ),
+        arm_broken=(
+            "9 failed, 22 passed — including both literal bypass regressions "
+            "(`...refuses_every_tracked_destination...[extended-length-prefix-\\\\?\\]` "
+            "and `[localhost-admin-share-\\\\localhost\\C$]`) against the unmodified "
+            "9c15fdf source, on the same real Windows checkout (local run, 2026-08-06)"
+        ),
+        observed="2026-08-06",
+        misses=(
+            "It is not wired into ci/check_suite_productivity.py or "
+            "ci/check_flake_witness.py: `ci/test_lane_checks.py` already names those "
+            "under the `lane-checks` job, and a second, differently-scoped floor entry "
+            "for the same file under `build-test-windows` would be a second answer to "
+            "how much of it must run. A silent all-skip here (e.g. every "
+            "`_WINDOWS_ONLY` guard misfiring) would still exit 0 and this table would not "
+            "catch that on its own — the step's own log is the only witness.",
         ),
     ),
     Check(
