@@ -95,6 +95,11 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     # still reporting a classified step.
     ("Proof-ledger census negative control", "hostfree.ledger_census_negative_control"),
     ("Proof-ledger census", "hostfree.ledger_census"),
+    # And once more, for the same reason: "Landing-simulation negative control" and
+    # "Landing simulation" differ by one character at the fifth word, so a substring match
+    # on the shorter one would swallow the control. Control first.
+    ("Landing-simulation negative control", "hostfree.landing_simulation_negative_control"),
+    ("Landing simulation", "hostfree.landing_simulation"),
     ("Ledger-loss probe", "hostfree.ledger_loss_probe"),
     ("Open reds", "hostfree.open_reds"),
     # Same ordering hazard again: "GH-invocation auth negative control" does not

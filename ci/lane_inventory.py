@@ -999,6 +999,98 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.landing_simulation",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Landing simulation (would this branch survive the squash that lands it?)",
+        watches=(
+            "Whether this branch's ledger/register declaration screens the same colour "
+            "under every landing GitHub can build from it — squash, two-parent merge, "
+            "rebase, and one unrelated commit after each. The colour of "
+            "`ci/check_ledger_census.py` on the PR checkout is not that question: on a "
+            "`pull_request` event the checkout IS the two-parent merge ref, and a "
+            "`rewitness/3` cause is green on it while the squash that lands it is red, "
+            "because the origins walk resolves the moved value to a real branch commit "
+            "whose tree does not carry main's concurrent edit."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "PLANTED, and the honest word is planted: the main-side edit to "
+            "`rust/shaders/glsl/templates/q_gemv.comp` was appended by me, not observed "
+            "landing. What is not planted is the mechanism — base `bb09871` plus that one "
+            "line, PR `8f12b32`: the branch head is exit 0, `git merge` of the same "
+            "main-side commit into the head is exit 0, and `git merge --squash` is exit 1 "
+            "`FAIL(condition=uncorroborated_rewitness_cause)`. Nobody has yet landed such a "
+            "collision on this repository, which is why this reads PLANTED and why the step "
+            "exists before somebody does. The two polarities are held by "
+            "ci/negative_control_landing_simulation.py's REPLAYED arms."
+        ),
+        arm_healthy=(
+            "on a branch that moves nothing a corroboration reads: VERDICT: NOT-REQUIRED, "
+            "with the reason printed; on one that does: three landings green, both inner "
+            "controls firing"
+        ),
+        arm_broken=(
+            "squash: FAIL(condition=uncorroborated_rewitness_cause) — cause path "
+            "'rust/shaders/glsl/templates/q_gemv.comp' declares new=5f043e3aa6888dc6… but "
+            "the tree the witness moved in has 3dad6cad1ac4b754…"
+        ),
+        observed="2026-08-07",
+        misses=(
+            "It is GATED. On a branch that writes no declaration and touches nothing in a "
+            "live rewitness/3 corroboration's closure it decides NOT-REQUIRED and runs no "
+            "landing at all. The decision is sound — every input to the landing-sensitive "
+            "part of the census is then byte-identical across the merge base, the base tip "
+            "and the branch — but it is a decision, and a bug in it is a step that silently "
+            "stops running. That is why the negative control below is unconditional.",
+            "It reads the base as it is AT CI TIME. A commit that lands on the base between "
+            "this step and the merge button reopens exactly the window it screens; the "
+            "residual is narrowed to the interval between the last green run and the merge, "
+            "not closed. Branch protection with 'require branches to be up to date' is what "
+            "would close it, and this repository does not have it.",
+            "It only simulates. A landing GitHub refuses to build (a real merge conflict) is "
+            "reported as SIM INVALID and is a failure of this step, not a verdict about the "
+            "declaration.",
+        ),
+    ),
+    Check(
+        id="hostfree.landing_simulation_negative_control",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Landing-simulation negative control (both polarities, the real q_gemv collision)",
+        watches=(
+            "Whether the gated step above still fires when it should and still acquits when "
+            "it should: 9 arms, 2 STRUCTURAL / 4 PLANTED / 3 REPLAYED, the ratio printed. "
+            "The step is skipped on most PRs by design, and a gate that has stopped firing "
+            "looks identical from the outside to one that correctly found nothing."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Its own contrast arm convicts the shape it replaced. `overlay_squash_is_blind` "
+            "builds the squash the way ci/simulate_squash_rewitness.py used to — "
+            "`git checkout <pr> -- .`, an overlay of the branch's paths onto the base — and "
+            "requires the census to be GREEN on it, because an overlay drops a base-side "
+            "edit to a file the branch also touched. Wiring that into the lane would have "
+            "produced a green step on the exact defect the step exists for."
+        ),
+        arm_healthy="9/9 arms passed (2 STRUCTURAL, 4 PLANTED, 3 REPLAYED)",
+        arm_broken=(
+            "with the overlay squash restored: the REPLAYED red arm reports exit=0 and "
+            "`the real squash is RED on the concurrent q_gemv cause-path edit` fails"
+        ),
+        observed="2026-08-07",
+        misses=(
+            "The REPLAYED arms pin ONE historical scenario — bb09871..ca61252 and the one "
+            "rewitness/3 record that exists. A second record, or a cause in a closure with "
+            "an `#include` graph the first does not have, is not covered by them; that is "
+            "ci/negative_control_ledger_census.py's planted block's job.",
+            "It asserts the gate's DECISION and the simulator's COLOUR. It does not assert "
+            "that the workflow step's shell would propagate a non-zero exit — that is "
+            "ci/check_verdict.py's question, and on this `run:` it is a plain `python` call "
+            "whose status the runner consumes directly.",
+        ),
+    ),
+    Check(
         id="hostfree.ledger_loss_probe",
         falsifier=FALSIFIER_PLANTED,
         lane=LANE_HOSTFREE,

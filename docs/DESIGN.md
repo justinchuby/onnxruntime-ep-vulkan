@@ -3600,8 +3600,13 @@ ERROR: the register parsed, and it made a claim the trees refute.
 
 **Why this is not circular.** The corroborating content is *production shader source* — the input the
 build hashes — and never the ledger, the register, or anything generated from either. A cause path
-under `evidence/`, `bench/`, `docs/`, `ci/`, `.github/`, `tests/` or `target/` is **refused outright**:
-a cause read out of the evidence the record is part of is the record proving itself.
+under `evidence/`, `bench/`, `docs/`, `ci/`, `.github/`, `.squad/`, `tests/` or `target/` is **refused
+outright**: a cause read out of the evidence the record is part of is the record proving itself, and a
+cause read out of lane machinery or agent bookkeeping is read from a path the build never hashes. The
+list here is `GENERATED_CAUSE_ROOTS` in `ci/check_ledger_census.py` and it is the same list
+`how_to_add_a_record` prints in `evidence/proof_rewitness.json`; `.squad/` was refused by the code and
+by the register from the first commit of this schema and was missing from *this paragraph* only, until
+issue #60 named it. A design doc that under-states its own refusals is a doc an author writes against.
 
 **Threat model.** The adversary is anyone (or any regeneration, or any bad merge) who can write
 anything into `evidence/`, plus commit messages, branch names, PR numbers and dates. The screen reads
@@ -3614,6 +3619,68 @@ a moved directory fails loudly rather than emptying every closure. Out of scope,
 re-witness caused by anything other than shader source (a registry change, a compiler move, a
 hashing-rule change) must **not** be written as a same-change cause. It fails closed.
 
+**THE RESIDUAL, NAMED: A CONCURRENT EDIT TO A DECLARED CAUSE PATH INSIDE THE MERGE WINDOW (issue #60).**
+This section's own standard is that a ruling which does not name its residual *is* the thing, and this
+one went unnamed for a day. `rewitness/3` is corroborated against the two trees the ledger moved
+between, which is why it survives squash, merge, rebase, cherry-pick and later unrelated edits. It does
+**not** survive somebody landing an edit to a file named in a live `caused_by_content` path *between*
+the declaration being written and the declaring PR landing:
+
+| where the screen is run | colour | why |
+|---|---|---|
+| the PR's branch head | **PASS** | `witness_transitions` resolves `after` to the branch's own ledger-carrying revision, whose tree does not have the other edit |
+| `refs/pull/N/merge` — the two-parent tree GitHub hands CI | **PASS** | same reason; the branch commits are still reachable, so `after` is still one of them |
+| the **squash** landing | **FAIL(condition=`uncorroborated_rewitness_cause`)** | the squash is one commit carrying both edits, so the only revision carrying the declared `new` ledger value has a cause path whose content is no longer the declared `new` |
+
+Reproduced on this repository while reviewing #53, and again as a permanent control: base `bb09871`
+plus one line appended to `rust/shaders/glsl/templates/q_gemv.comp`, PR `8f12b32` — head exit 0, `git
+merge` exit 0, `git merge --squash` exit 1. Note where that red lands: on `main`, **after** the merge,
+in the `push: branches: [main]` job.
+
+**It is conditional, repairable and fail-closed, and those three words are the whole severity
+argument.** *Conditional*, not structural: unlike the `rewitness/2` defect this schema replaced — which
+broke on **every** squash — this needs a collision on the exact declared path inside the merge window.
+*Repairable before the merge*: under v2 there was no value an author could write that was both knowable
+before the merge and valid after it; here there is — update the branch against `main`, regenerate, and
+rewrite the record's `new` content ids. *Fail-closed*: the screen goes **red**. It does not launder an
+undeclared move, and no arrangement of the merge window makes it acquit something it would otherwise
+convict. What it costs is a red in the wrong place at the wrong time, which is a workflow defect, not
+an evidentiary one.
+
+**The repair is a reader, and the reader is `ci/check_landing_simulation.py`.**
+`ci/simulate_squash_rewitness.py` builds all three landings against the real base and screens each; it
+had existed since PR #44 and ran in **no workflow at all**, which is §8.9.27's inert-mechanism shape
+one artifact over — the register worked, the reader did not exist. Two things were wired for #60:
+
+* **the step.** `ci/check_landing_simulation.py` runs the simulation in the `lane-checks` job, on
+  `pull_request`, against `origin/main` fetched with **no `--depth`** (issue #28: a depth-limited fetch
+  marks its own graft point even inside a `fetch-depth: 0` checkout, and both the landing construction
+  and the census denominator are truncated at it). It is **gated** — three landings × four censuses is
+  ~2 min on Linux and ~3 on Windows — and the gate is an argument, not a budget: it runs when the
+  branch writes `evidence/proof_rewitness.json` or `evidence/proof_ledger.jsonl` (**R1**), when the
+  base has moved any path a live `rewitness/3` corroboration reads since the merge base (**R2**, the
+  residual itself), or when the branch moves one of those paths (**R3**); and it declines to run at
+  all — `ERROR(instrument=…)`, exit 2, never a colour — when the base ref cannot be resolved or the
+  checkout is shallow. The path set is *derived* from the register each run (declared cause paths ∪ the
+  source closure of the stems the moved entries name ∪ `shader_variants.txt`), never listed, so it
+  cannot go stale the first time `build.rs` moves a directory.
+* **the landing shape.** The simulator built its squash with `git checkout <pr> -- .`, an *overlay* of
+  the branch's paths onto the base. When the base has not moved since the merge base that is the same
+  tree; when it has — the entire window this covers — it is not, because a file edited on both sides
+  gets the branch's version and the base's edit is silently dropped. GitHub commits the **merge
+  result** with the base as its single parent, so the squash is now built with `git merge --squash`.
+  Wiring the overlay would have produced a **green step on the exact defect the step exists for**, and
+  `ci/negative_control_landing_simulation.py::overlay_squash_is_blind` keeps that fact printed rather
+  than remembered.
+
+**What is still open after the repair, stated rather than left to be found.** The step reads the base
+**as it is at CI time**. A commit that lands on `main` between the last green run and the merge button
+reopens the window; the residual is *narrowed to that interval*, not closed. Closing it needs branch
+protection with "require branches to be up to date before merging", which this repository does not
+have — so this remains a named residual with a named remedy, and the reason it is acceptable without
+that remedy is unchanged: the failure mode is a red in an inconvenient place, never a green over an
+undeclared move.
+
 **How to add a record** is documented in the register itself, under `how_to_add_a_record`, next to the
 records it describes rather than in a document an author may never open.
 
@@ -3623,6 +3690,13 @@ for a wrong `old`, a wrong `new`, a wrong path, an absent content transition, an
 over-broad path, an under-declared closure change, one key's cause vouching for another's, a moved
 subject, and a replay of a cause that already landed. Its contrast arm is the defect itself: the same
 true cause written as `rewitness/2` is green under a merge and red under a squash and a rebase.
+`ci/negative_control_landing_simulation.py` holds the residual's two polarities, unconditionally,
+because the step above is gated and a gate that has stopped firing looks identical from the outside to
+one that correctly found nothing: 9 arms, 2 STRUCTURAL / 4 PLANTED / 3 REPLAYED, the ratio printed. The
+REPLAYED arms rebuild issue #60 from this repository's own history (`bb09871` + the planted `q_gemv`
+line, PR = `ca61252`'s tree, since PR #53's branch was deleted on landing) and require the squash to be
+red on it, the *same* PR to be green against a base that did not move the cause path, and the overlay
+squash to be blind to both.
 `ci/simulate_squash_rewitness.py` runs the whole matrix against the real repository, including a
 re-screen one commit after each landing.
 

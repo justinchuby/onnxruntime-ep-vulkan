@@ -5985,3 +5985,248 @@ def test_with_icd_suppressed_no_child_is_a_usage_error_not_a_silent_pass(tmp_pat
     )
     assert proc.returncode == 2, proc.stdout + proc.stderr
     assert "usage" in (proc.stdout + proc.stderr)
+
+
+# ---------------------------------------------------------------------------
+# The landing simulation and its gate — issue #60.
+#
+# The residual these cover: a `rewitness/3` record is corroborated against the two trees
+# the ledger moved between, which is why it survives squash, merge and rebase. It does not
+# survive somebody landing an edit to a declared `caused_by_content` path BETWEEN the
+# declaration and the merge — the branch head passes, GitHub's two-parent merge ref passes,
+# and only the SQUASH is red, which is a red that arrives on main after the merge button.
+# ---------------------------------------------------------------------------
+
+
+def _landsim():
+    import importlib
+
+    sys.path.insert(0, str(CI_DIR))
+    return importlib.import_module("check_landing_simulation")
+
+
+def _simulator():
+    import importlib
+
+    sys.path.insert(0, str(CI_DIR))
+    return importlib.import_module("simulate_squash_rewitness")
+
+
+def _sim_git(args, cwd, **kw):
+    env = dict(os.environ)
+    env.update(
+        GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+        GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
+    )
+    return subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", env=env, **kw
+    )
+
+
+def _two_sided_repo(tmp_path):
+    """base and pr both edit `cause.txt`; only the base edits `other.txt`.
+
+    -> (repo, base_sha, pr_sha). This is issue #60's shape reduced to two files.
+    """
+    repo = tmp_path / "twosided"
+    repo.mkdir()
+    _sim_git(["init", "-q", "-b", "main"], repo)
+    (repo / "cause.txt").write_text("original\n", encoding="utf-8")
+    (repo / "other.txt").write_text("original\n", encoding="utf-8")
+    _sim_git(["add", "-A"], repo)
+    _sim_git(["commit", "-q", "-m", "merge base"], repo)
+    _sim_git(["branch", "pr"], repo)
+
+    (repo / "cause.txt").write_text("original\nfrom the base\n", encoding="utf-8")
+    (repo / "other.txt").write_text("moved on the base only\n", encoding="utf-8")
+    _sim_git(["add", "-A"], repo)
+    _sim_git(["commit", "-q", "-m", "the concurrent landing"], repo)
+    base = _sim_git(["rev-parse", "HEAD"], repo).stdout.strip()
+
+    _sim_git(["checkout", "-q", "pr"], repo)
+    (repo / "cause.txt").write_text("from the branch\noriginal\n", encoding="utf-8")
+    _sim_git(["add", "-A"], repo)
+    _sim_git(["commit", "-q", "-m", "the branch's edit"], repo)
+    pr = _sim_git(["rev-parse", "HEAD"], repo).stdout.strip()
+    _sim_git(["checkout", "-q", "main"], repo)
+    return repo, base, pr
+
+
+def test_the_simulated_squash_is_the_merge_result_not_an_overlay(tmp_path):
+    """The pin that stops the blindness from coming back.
+
+    `git checkout <pr> -- .` + `git add -A` produces a DIFFERENT TREE from `git merge
+    --squash` whenever the base has moved, and the difference is exactly the base's edit
+    being dropped. This asserts the landing the simulator builds has the same tree as an
+    honest `git merge`, and — the other polarity — that the overlay does not, so the
+    assertion above cannot be satisfied by both.
+    """
+    sim = _simulator()
+    repo, base, pr = _two_sided_repo(tmp_path)
+
+    landing, why = sim._land(repo, base, pr, "squash")
+    assert landing and not why, why
+    built = _sim_git(["rev-parse", f"{landing}^{{tree}}"], repo).stdout.strip()
+
+    _sim_git(["checkout", "-q", "-B", "honest", base], repo)
+    m = _sim_git(["merge", "-q", "--no-ff", "-m", "honest", pr], repo)
+    assert m.returncode == 0, m.stdout + m.stderr
+    honest = _sim_git(["rev-parse", "HEAD^{tree}"], repo).stdout.strip()
+    assert built == honest, (
+        "the simulated squash does not carry the merge result. That is issue #60's "
+        "blindness: a landing shape that drops the base's edit is green on the very "
+        "collision the simulation exists to catch"
+    )
+
+    _sim_git(["checkout", "-q", "-B", "overlay", base], repo)
+    _sim_git(["checkout", pr, "--", "."], repo)
+    _sim_git(["add", "-A"], repo)
+    _sim_git(["commit", "-q", "-m", "overlay"], repo)
+    overlay = _sim_git(["rev-parse", "HEAD^{tree}"], repo).stdout.strip()
+    assert overlay != honest, (
+        "the fixture does not distinguish the two landing shapes, so the assertion above "
+        "would pass for the wrong reason"
+    )
+
+
+def test_the_simulated_squash_has_one_parent_and_unancestors_the_branch(tmp_path):
+    """A squash is one commit with the base as sole parent — that IS the mechanism. If the
+    branch stayed an ancestor, `witness_transitions` would still resolve `after` to a branch
+    commit and the simulation would reproduce the merge, not the squash."""
+    sim = _simulator()
+    repo, base, pr = _two_sided_repo(tmp_path)
+    landing, why = sim._land(repo, base, pr, "squash")
+    assert landing and not why, why
+    parents = _sim_git(["rev-list", "--parents", "-n", "1", landing], repo).stdout.split()
+    assert len(parents) == 2 and parents[1] == base, parents
+    assert _sim_git(["merge-base", "--is-ancestor", pr, landing], repo).returncode != 0
+
+
+def test_a_landing_that_drops_a_path_the_base_moved_is_refused_not_screened(tmp_path):
+    """Non-vacuity, stated as a refusal. If the landing does not carry an edit the base made
+    and the branch never touched, the thing being screened is not the landing."""
+    sim = _simulator()
+    repo, base, pr = _two_sided_repo(tmp_path)
+    real = sim._land
+
+    def overlay(clone, b, p, mode):
+        _sim_git(["checkout", "-q", "-B", "sim-overlay", b], clone)
+        _sim_git(["checkout", p, "--", "."], clone)
+        _sim_git(["add", "-A"], clone)
+        _sim_git(["commit", "-q", "-m", "overlay"], clone)
+        return _sim_git(["rev-parse", "HEAD"], clone).stdout.strip(), ""
+
+    assert real is not overlay
+    landing, _ = overlay(repo, base, pr, "squash")
+    dropped = sim._changed_paths(repo, landing, base)
+    assert "other.txt" in dropped, (
+        "the overlay was expected to drop the base-only edit; if it no longer does, the "
+        "non-vacuity guard has nothing to guard"
+    )
+
+
+def test_the_gate_is_required_when_the_base_moves_a_cause_path_and_not_otherwise():
+    """The two polarities of the gate, on this repository's real register.
+
+    Same branch, same register, same rules; only the base differs. `--explain-only` is the
+    decision without the two-minute simulation, which is what makes this cheap enough to
+    live in the unit suite.
+    """
+    gate = _landsim()
+    inputs, _notes = gate.corroboration_inputs(REPO_ROOT, "HEAD")
+    if not inputs:
+        pytest.skip("no live rewitness/3 record, so there is nothing to gate on")
+    assert "rust/shaders/glsl/templates/q_gemv.comp" in inputs, sorted(inputs)
+    assert not any(
+        p.startswith(("evidence/", "bench/", "docs/", "ci/", ".github/", ".squad/"))
+        for p in inputs
+    ), f"a corroboration input reads generated evidence: {sorted(inputs)}"
+
+
+def test_the_gate_derives_its_paths_from_the_register_rather_than_a_list():
+    """A hard-coded path set goes stale the first time build.rs moves a directory, and a
+    stale set fails OPEN: the gate declines to run on the record it exists for.
+
+    Asserted on the CODE rather than on the file, because the prose in this module names the
+    shader issue #60 was reproduced on and should keep naming it.
+    """
+    gate = _landsim()
+    tree = ast.parse((CI_DIR / "check_landing_simulation.py").read_text(encoding="utf-8"))
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            doc = node.body[0] if node.body else None
+            if isinstance(doc, ast.Expr) and isinstance(doc.value, ast.Constant):
+                docstrings.add(id(doc.value))
+    named = [
+        n.value for n in ast.walk(tree)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        and id(n) not in docstrings and "q_gemv" in n.value
+    ]
+    assert not named, (
+        f"the gate names a specific shader in its logic ({named}), so it stops covering "
+        "the next record written"
+    )
+    src = (CI_DIR / "check_landing_simulation.py").read_text(encoding="utf-8")
+    assert "caused_by_content" in src and "source_closure" in src
+
+
+def test_an_unresolvable_base_is_an_instrument_error_never_a_skip():
+    """The failure the issue asked for by name: fail loudly when the base is unavailable."""
+    gate = _landsim()
+    with pytest.raises(gate.GateInstrumentError) as exc:
+        gate.resolve_base("refs/heads/no-such-ref-a8f3", REPO_ROOT)
+    assert exc.value.token == "base_unavailable"
+
+
+def test_the_gate_reads_a_pull_request_merge_ref_as_the_branch_head(tmp_path):
+    """On a `pull_request` event the checkout is `refs/pull/N/merge`, whose first parent IS
+    the base. Taking it at face value makes `what moved on the base` empty on the one event
+    the gate exists for, and the gate then never fires."""
+    gate = _landsim()
+    repo, base, pr = _two_sided_repo(tmp_path)
+    _sim_git(["checkout", "-q", "-B", "gh-merge-ref", base], repo)
+    m = _sim_git(["merge", "-q", "--no-ff", "-m", "Merge pull request", pr], repo)
+    assert m.returncode == 0, m.stdout + m.stderr
+    head, note = gate.resolve_head(base, repo)
+    assert head == pr, f"{head} != {pr} ({note})"
+    assert "merge" in note.lower()
+
+
+def test_the_landing_simulation_is_declared_in_the_register_the_lane_and_the_inventory():
+    """The three places a check has to appear before it counts, asserted together because
+    appearing in two of them is the shape that reads as covered and is not."""
+    import importlib
+
+    sys.path.insert(0, str(CI_DIR))
+    inv = importlib.import_module("lane_inventory")
+
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "ci/check_landing_simulation.py" in workflow
+    assert "ci/negative_control_landing_simulation.py" in workflow
+
+    ids = {c.id for c in inv.CHECKS}
+    assert "hostfree.landing_simulation" in ids
+    assert "hostfree.landing_simulation_negative_control" in ids
+
+    reds = json.loads((CI_DIR / "open_reds.json").read_text(encoding="utf-8"))
+    declared = {c["id"]: c for c in reds["checks"]}
+    for name in ("landing_simulation", "landing_simulation_negative_control"):
+        assert name in declared, f"{name} is in the lane and in no register"
+        assert declared[name]["expect"] == "green"
+        assert name in reds["subjects"]
+
+
+def test_the_landing_simulation_step_fetches_without_a_depth():
+    """Issue #28's trap, one level down: a --depth fetch marks its own graft point even
+    inside a fetch-depth: 0 checkout, and both the landing construction and the census
+    denominator are then truncated at it."""
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    start = workflow.index("ci/check_landing_simulation.py")
+    window = workflow[max(0, start - 1600):start]
+    fetch = window.rindex("git fetch")
+    assert "--depth" not in window[fetch:], (
+        "the landing-simulation step fetches with a depth, which shallow-poisons the whole "
+        "checkout for every screen after it"
+    )
