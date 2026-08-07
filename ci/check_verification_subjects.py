@@ -222,6 +222,18 @@ TABLE: dict[str, dict[str, str]] = {
         "subject": "evidence/proof_ledger.jsonl's key set over time",
         "oracle": "git history of the same file, taken with --full-history",
     },
+    "ci/check_landing_simulation.py": {
+        "verdict": "EXTERNAL",
+        "subject": "this branch's declaration, as it would read after each landing GitHub "
+                   "can build from it",
+        "oracle": "the REAL base ref (origin/main at CI time) and three landings actually "
+                  "constructed against it in a throwaway clone — a second tree this branch "
+                  "does not contain and cannot edit",
+        "note": "issue #60. The subject is not the checkout: on a `pull_request` event the "
+                "checkout is GitHub's two-parent merge ref, which is green on a cause "
+                "collision the squash is red on. Asking the checkout would be the tautology "
+                "one level up — the screen agreeing with the tree it was handed.",
+    },
     "ci/check_artifact_frame.py": {
         "verdict": "ARTIFACT",
         "subject": "a committed reading (bench/results/.../*) and the frame it carries",
