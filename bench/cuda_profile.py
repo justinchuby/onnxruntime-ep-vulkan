@@ -47,7 +47,7 @@ per-call total and no steady-state median can reach it.  On Phi-3.5 `prefill_1` 
 term was this harness's own counters-file dump running inside every timed inference, and it
 was the same order of magnitude as the inference itself.  The pre-fix run is *not* a
 committed artifact, so no figure is quoted for it here.  With the dump scoped to the first
-run the same term reads **0.056 ms** — `outside_subgraph_ms` in
+run the same term reads **0.036 ms** — `outside_subgraph_ms` in
 `bench/results/_cuda69/profile_prefill_1.json`, pinned by
 `test_cuda_profile.py::test_every_documented_outside_subgraph_citation_matches_the_artifact`.
 The anchor stays, because the region was invisible for as long as nothing bracketed it.
@@ -154,7 +154,7 @@ NESTED_PHASES = ("upload", "readback", "desc_alloc", "pipeline_lookup", "cmd_upl
 #: however large — lands in the ``None`` bucket and appears in no per-call or steady-state
 #: total.  On Phi-3.5 ``prefill_1`` that region was the harness's own counters dump, not the
 #: EP, and it was the same order of magnitude as the inference; the pre-fix run is not a
-#: committed artifact, so no figure for it is quoted here.  It reads **0.056 ms** once the
+#: committed artifact, so no figure for it is quoted here.  It reads **0.036 ms** once the
 #: dump is scoped to the first run (``outside_subgraph_ms``,
 #: ``bench/results/_cuda69/profile_prefill_1.json``).  The bracket is what made the number
 #: sayable at all.
@@ -751,7 +751,7 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
         "instrument_errors": list(traced.get("instrument_errors") or []),
     }
     # This reduction is itself a Vulkan record, and the regime its inputs were measured
-    # under is the difference between a 27.733 ms median and a 44.605 ms one.  Inheriting it
+    # under is the difference between a 31.192 ms median and a 60.519 ms one.  Inheriting it
     # rather than leaving it absent is what stops the reduction from being the one Vulkan
     # artifact in the tree that does not say which regime it describes.
     out["counters_scope"] = traced.get("counters_scope")
@@ -916,8 +916,10 @@ def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
     ``unattributed_in_subgraph_ms`` does not equal ``subgraph_ms``, and it is not meant to:
     each is an independently-taken median over the warm calls, and the median of a sum is not
     the sum of the medians unless every call splits the same way.  In the committed artifact
-    that is 25.708 + 6.437 = 32.145 against a ``subgraph_ms`` of 32.627 — a 0.482 ms residual
-    that is an artefact of the statistic, not unaccounted time.  ``partition_note`` on the
+    that is 24.163 + 3.345 = 27.508 against a ``subgraph_ms`` of 27.377 — a **-0.131 ms**
+    residual that is an artefact of the statistic, not unaccounted time.  The sign is worth
+    noticing: a negative residual cannot be missing work, which is the cleanest possible
+    demonstration that this term is not a gap.  ``partition_note`` on the
     returned dict carries this so a reader of the JSON alone cannot mistake the gap for a leak.
     """
     if not steady or not steady.get("warm_calls"):
@@ -1256,6 +1258,7 @@ def main(argv=None) -> int:
 
     report = attribute(traced, untraced, Path(traced["trace_path"]))
     report["schema"] = SCHEMA
+    report["ep_provenance"] = cc.ep_provenance()
     report["iters"] = a.iters
     report["warmup"] = a.warmup
     report["untraced_record"] = untraced

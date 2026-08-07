@@ -2,37 +2,37 @@
   "arm": "vulkan",
   "workload": "prefill_1",
   "traced_verdict": "ADMISSIBLE",
-  "counters_scope": "first_run_only",
   "refusals": [],
   "instrument_errors": [],
-  "trace_events": 15057,
+  "counters_scope": "first_run_only",
+  "trace_events": 27957,
   "phases": {
     "siblings_us": {
       "fence_wait": {
-        "us": 488135,
-        "count": 14
+        "us": 729793,
+        "count": 26
       },
       "record": {
-        "us": 1296556,
-        "count": 14
+        "us": 1097339,
+        "count": 26
       },
       "submit": {
-        "us": 3155,
-        "count": 14
+        "us": 4770,
+        "count": 26
       }
     },
     "nested_us": {
       "cmd_upload": {
-        "us": 1192049,
-        "count": 14
+        "us": 970810,
+        "count": 26
       },
       "desc_alloc": {
-        "us": 13953,
-        "count": 4970
+        "us": 17083,
+        "count": 9230
       },
       "pipeline_lookup": {
-        "us": 15127,
-        "count": 4970
+        "us": 12807,
+        "count": 9230
       }
     },
     "nested_parent": {
@@ -40,133 +40,133 @@
       "pipeline_lookup": "record",
       "desc_alloc": "record"
     },
-    "sibling_total_us": 1787846,
-    "record_us": 1296556,
-    "record_claimed_children_us": 1221129,
-    "record_residual_us": 75427,
+    "sibling_total_us": 1831902,
+    "record_us": 1097339,
+    "record_claimed_children_us": 1000700,
+    "record_residual_us": 96639,
     "record_residual_underflow": false,
     "phase_tree_disagreements": []
   },
   "gpu": {
     "per_label_ns": {
       "q_gemv_matmul_nbits_f16": {
-        "ns": 249629664,
-        "count": 2254
+        "ns": 454208288,
+        "count": 4186
       },
       "gqa_f16": {
-        "ns": 21450560,
-        "count": 448
+        "ns": 40208032,
+        "count": 832
       },
       "skip_simplified_layer_norm_f16": {
-        "ns": 11739360,
-        "count": 896
+        "ns": 22004352,
+        "count": 1664
       },
       "ew_binary_mul_f16": {
-        "ns": 2619296,
-        "count": 896
+        "ns": 5244992,
+        "count": 1664
       },
       "ew_unary_sigmoid_f16": {
-        "ns": 1345216,
-        "count": 448
+        "ns": 2501120,
+        "count": 832
       },
       "simplified_layer_norm_f16": {
-        "ns": 141536,
-        "count": 14
+        "ns": 260096,
+        "count": 26
       },
       "gather_f16": {
-        "ns": 79968,
-        "count": 14
+        "ns": 154240,
+        "count": 26
       }
     },
-    "total_ns": 287005600,
-    "span_count": 4970
+    "total_ns": 524581120,
+    "span_count": 9230
   },
   "transfer_bytes": {
     "readback": {
-      "bytes": 6402816,
-      "samples": 14
+      "bytes": 11890944,
+      "samples": 26
     },
     "upload": {
-      "bytes": 2307440864,
-      "samples": 14
+      "bytes": 2321670560,
+      "samples": 26
     }
   },
   "record_paths": {},
   "anchor": {
     "span": "vulkan.compute_call",
-    "count": 14,
+    "count": 26,
     "available": {
-      "vulkan.compute_call": 14,
-      "vulkan.subgraph": 14
+      "vulkan.compute_call": 26,
+      "vulkan.subgraph": 26
     },
     "sees_whole_compute": true,
     "basis": "`vulkan.compute_call` brackets the whole ORT Compute callback, so every span the EP emits during the call falls inside a bucket"
   },
-  "compute_calls": 14,
+  "compute_calls": 26,
   "per_call": [
     {
       "index": 0,
       "anchor": "vulkan.compute_call",
-      "call_us": 1975690,
-      "subgraph_us": 1938844,
-      "outside_subgraph_us": 36846,
-      "unattributed_in_subgraph_us": 511326,
-      "sibling_total_us": 1427518,
-      "record_us": 1230592,
-      "record_residual_us": 24222,
+      "call_us": 1748583,
+      "subgraph_us": 1721791,
+      "outside_subgraph_us": 26792,
+      "unattributed_in_subgraph_us": 519455,
+      "sibling_total_us": 1202336,
+      "record_us": 1004338,
+      "record_residual_us": 22649,
       "siblings_us": {
         "fence_wait": {
-          "us": 196624,
+          "us": 197822,
           "count": 1
         },
         "record": {
-          "us": 1230592,
+          "us": 1004338,
           "count": 1
         },
         "submit": {
-          "us": 302,
+          "us": 176,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 1189755,
+          "us": 966812,
           "count": 1
         },
         "desc_alloc": {
-          "us": 3691,
+          "us": 3567,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 12924,
+          "us": 11310,
           "count": 355
         }
       },
-      "gpu_ns": 22706784,
+      "gpu_ns": 22491008,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 19562432,
+          "ns": 19347936,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1828864,
+          "ns": 1835424,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 970304,
+          "ns": 966272,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 214400,
+          "ns": 216288,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 108064,
+          "ns": 107680,
           "count": 32
         },
         "simplified_layer_norm_f16": {
-          "ns": 17600,
+          "ns": 12288,
           "count": 1
         },
         "gather_f16": {
@@ -178,62 +178,62 @@
     {
       "index": 1,
       "anchor": "vulkan.compute_call",
-      "call_us": 54257,
-      "subgraph_us": 54182,
-      "outside_subgraph_us": 75,
-      "unattributed_in_subgraph_us": 6844,
-      "sibling_total_us": 47338,
-      "record_us": 5043,
-      "record_residual_us": 3810,
+      "call_us": 52001,
+      "subgraph_us": 51817,
+      "outside_subgraph_us": 184,
+      "unattributed_in_subgraph_us": 9224,
+      "sibling_total_us": 42593,
+      "record_us": 4658,
+      "record_residual_us": 3369,
       "siblings_us": {
         "fence_wait": {
-          "us": 42055,
+          "us": 37758,
           "count": 1
         },
         "record": {
-          "us": 5043,
+          "us": 4658,
           "count": 1
         },
         "submit": {
-          "us": 240,
+          "us": 177,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 388,
+          "us": 479,
           "count": 1
         },
         "desc_alloc": {
-          "us": 813,
+          "us": 745,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 32,
+          "us": 65,
           "count": 355
         }
       },
-      "gpu_ns": 20245760,
+      "gpu_ns": 19680608,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 17636864,
+          "ns": 17101952,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1452192,
+          "ns": 1476000,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 825216,
+          "ns": 817088,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 210816,
+          "ns": 182688,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 105952,
+          "ns": 88544,
           "count": 32
         },
         "simplified_layer_norm_f16": {
@@ -241,7 +241,7 @@
           "count": 1
         },
         "gather_f16": {
-          "ns": 5504,
+          "ns": 5120,
           "count": 1
         }
       }
@@ -249,70 +249,70 @@
     {
       "index": 2,
       "anchor": "vulkan.compute_call",
-      "call_us": 28714,
-      "subgraph_us": 28673,
-      "outside_subgraph_us": 41,
-      "unattributed_in_subgraph_us": 4627,
-      "sibling_total_us": 24046,
-      "record_us": 3309,
-      "record_residual_us": 2741,
+      "call_us": 29690,
+      "subgraph_us": 29612,
+      "outside_subgraph_us": 78,
+      "unattributed_in_subgraph_us": 4634,
+      "sibling_total_us": 24978,
+      "record_us": 4683,
+      "record_residual_us": 3575,
       "siblings_us": {
         "fence_wait": {
-          "us": 20559,
+          "us": 20114,
           "count": 1
         },
         "record": {
-          "us": 3309,
+          "us": 4683,
           "count": 1
         },
         "submit": {
-          "us": 178,
+          "us": 181,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 135,
+          "us": 196,
           "count": 1
         },
         "desc_alloc": {
-          "us": 418,
+          "us": 743,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 15,
+          "us": 169,
           "count": 355
         }
       },
-      "gpu_ns": 13139040,
-      "gpu_spans": 235,
+      "gpu_ns": 12197536,
+      "gpu_spans": 223,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 11391680,
-          "count": 106
+          "ns": 10565920,
+          "count": 101
         },
         "gqa_f16": {
-          "ns": 1008384,
-          "count": 22
+          "ns": 934112,
+          "count": 20
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 534048,
-          "count": 42
+          "ns": 509568,
+          "count": 40
         },
         "ew_binary_mul_f16": {
-          "ns": 127232,
-          "count": 42
+          "ns": 110048,
+          "count": 40
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 63040,
-          "count": 21
+          "ns": 61728,
+          "count": 20
         },
         "simplified_layer_norm_f16": {
-          "ns": 9216,
+          "ns": 10240,
           "count": 1
         },
         "gather_f16": {
-          "ns": 5440,
+          "ns": 5920,
           "count": 1
         }
       }
@@ -320,24 +320,24 @@
     {
       "index": 3,
       "anchor": "vulkan.compute_call",
-      "call_us": 32682,
-      "subgraph_us": 32627,
-      "outside_subgraph_us": 55,
-      "unattributed_in_subgraph_us": 6045,
-      "sibling_total_us": 26582,
-      "record_us": 4989,
-      "record_residual_us": 3785,
+      "call_us": 29516,
+      "subgraph_us": 29466,
+      "outside_subgraph_us": 50,
+      "unattributed_in_subgraph_us": 3958,
+      "sibling_total_us": 25508,
+      "record_us": 4438,
+      "record_residual_us": 3411,
       "siblings_us": {
         "fence_wait": {
-          "us": 21371,
+          "us": 20869,
           "count": 1
         },
         "record": {
-          "us": 4989,
+          "us": 4438,
           "count": 1
         },
         "submit": {
-          "us": 222,
+          "us": 201,
           "count": 1
         }
       },
@@ -347,43 +347,43 @@
           "count": 1
         },
         "desc_alloc": {
-          "us": 848,
+          "us": 752,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 207,
+          "us": 126,
           "count": 355
         }
       },
-      "gpu_ns": 18904288,
-      "gpu_spans": 321,
+      "gpu_ns": 17812192,
+      "gpu_spans": 311,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 16485312,
-          "count": 146
+          "ns": 15504736,
+          "count": 141
         },
         "gqa_f16": {
-          "ns": 1401728,
-          "count": 29
+          "ns": 1307776,
+          "count": 28
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 752704,
-          "count": 57
+          "ns": 729088,
+          "count": 56
         },
         "ew_binary_mul_f16": {
-          "ns": 163072,
-          "count": 58
+          "ns": 167520,
+          "count": 56
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 84992,
-          "count": 29
+          "ns": 88064,
+          "count": 28
         },
         "simplified_layer_norm_f16": {
-          "ns": 10240,
+          "ns": 9216,
           "count": 1
         },
         "gather_f16": {
-          "ns": 6240,
+          "ns": 5792,
           "count": 1
         }
       }
@@ -391,70 +391,70 @@
     {
       "index": 4,
       "anchor": "vulkan.compute_call",
-      "call_us": 32880,
-      "subgraph_us": 32807,
-      "outside_subgraph_us": 73,
-      "unattributed_in_subgraph_us": 5251,
-      "sibling_total_us": 27556,
-      "record_us": 6372,
-      "record_residual_us": 4847,
+      "call_us": 26093,
+      "subgraph_us": 26059,
+      "outside_subgraph_us": 34,
+      "unattributed_in_subgraph_us": 2673,
+      "sibling_total_us": 23386,
+      "record_us": 2825,
+      "record_residual_us": 2301,
       "siblings_us": {
         "fence_wait": {
-          "us": 20948,
+          "us": 20390,
           "count": 1
         },
         "record": {
-          "us": 6372,
+          "us": 2825,
           "count": 1
         },
         "submit": {
-          "us": 236,
+          "us": 171,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 178,
+          "us": 132,
           "count": 1
         },
         "desc_alloc": {
-          "us": 1013,
+          "us": 388,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 334,
+          "us": 4,
           "count": 355
         }
       },
-      "gpu_ns": 17192640,
-      "gpu_spans": 298,
+      "gpu_ns": 18221952,
+      "gpu_spans": 324,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 14931904,
-          "count": 135
+          "ns": 15752128,
+          "count": 147
         },
         "gqa_f16": {
-          "ns": 1293344,
-          "count": 27
+          "ns": 1453920,
+          "count": 30
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 707584,
-          "count": 54
+          "ns": 750240,
+          "count": 58
         },
         "ew_binary_mul_f16": {
-          "ns": 167392,
-          "count": 53
+          "ns": 163072,
+          "count": 58
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 77984,
-          "count": 27
+          "ns": 85888,
+          "count": 29
         },
         "simplified_layer_norm_f16": {
-          "ns": 9216,
+          "ns": 10240,
           "count": 1
         },
         "gather_f16": {
-          "ns": 5216,
+          "ns": 6464,
           "count": 1
         }
       }
@@ -462,63 +462,773 @@
     {
       "index": 5,
       "anchor": "vulkan.compute_call",
-      "call_us": 30751,
-      "subgraph_us": 30697,
-      "outside_subgraph_us": 54,
-      "unattributed_in_subgraph_us": 6172,
-      "sibling_total_us": 24525,
-      "record_us": 3654,
-      "record_residual_us": 3034,
+      "call_us": 25962,
+      "subgraph_us": 25932,
+      "outside_subgraph_us": 30,
+      "unattributed_in_subgraph_us": 2787,
+      "sibling_total_us": 23145,
+      "record_us": 2635,
+      "record_residual_us": 2129,
       "siblings_us": {
         "fence_wait": {
-          "us": 20672,
+          "us": 20377,
           "count": 1
         },
         "record": {
-          "us": 3654,
+          "us": 2635,
           "count": 1
         },
         "submit": {
-          "us": 199,
+          "us": 133,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 138,
+          "us": 117,
           "count": 1
         },
         "desc_alloc": {
-          "us": 470,
+          "us": 387,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 12,
+          "us": 2,
           "count": 355
         }
       },
-      "gpu_ns": 20949664,
-      "gpu_spans": 366,
+      "gpu_ns": 19410528,
+      "gpu_spans": 344,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 18237760,
-          "count": 166
+          "ns": 16828480,
+          "count": 156
         },
         "gqa_f16": {
-          "ns": 1558912,
+          "ns": 1473440,
+          "count": 31
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 810400,
+          "count": 62
+        },
+        "ew_binary_mul_f16": {
+          "ns": 187936,
+          "count": 62
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 95584,
+          "count": 31
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 9216,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5472,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 6,
+      "anchor": "vulkan.compute_call",
+      "call_us": 29692,
+      "subgraph_us": 29650,
+      "outside_subgraph_us": 42,
+      "unattributed_in_subgraph_us": 5815,
+      "sibling_total_us": 23835,
+      "record_us": 3405,
+      "record_residual_us": 2826,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20295,
+          "count": 1
+        },
+        "record": {
+          "us": 3405,
+          "count": 1
+        },
+        "submit": {
+          "us": 135,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 117,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 452,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 10,
+          "count": 355
+        }
+      },
+      "gpu_ns": 21362208,
+      "gpu_spans": 381,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 18531872,
+          "count": 173
+        },
+        "gqa_f16": {
+          "ns": 1614048,
+          "count": 34
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 899104,
+          "count": 69
+        },
+        "ew_binary_mul_f16": {
+          "ns": 204256,
+          "count": 69
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 96928,
+          "count": 34
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 10240,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5760,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 7,
+      "anchor": "vulkan.compute_call",
+      "call_us": 26750,
+      "subgraph_us": 26718,
+      "outside_subgraph_us": 32,
+      "unattributed_in_subgraph_us": 2555,
+      "sibling_total_us": 24163,
+      "record_us": 3247,
+      "record_residual_us": 2710,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20775,
+          "count": 1
+        },
+        "record": {
+          "us": 3247,
+          "count": 1
+        },
+        "submit": {
+          "us": 141,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 117,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 418,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 2,
+          "count": 355
+        }
+      },
+      "gpu_ns": 16430112,
+      "gpu_spans": 289,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 14248896,
+          "count": 131
+        },
+        "gqa_f16": {
+          "ns": 1242112,
+          "count": 26
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 693760,
+          "count": 52
+        },
+        "ew_binary_mul_f16": {
+          "ns": 147232,
+          "count": 52
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 81920,
+          "count": 26
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 10240,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5952,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 8,
+      "anchor": "vulkan.compute_call",
+      "call_us": 26457,
+      "subgraph_us": 26423,
+      "outside_subgraph_us": 34,
+      "unattributed_in_subgraph_us": 2942,
+      "sibling_total_us": 23481,
+      "record_us": 2733,
+      "record_residual_us": 2207,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20606,
+          "count": 1
+        },
+        "record": {
+          "us": 2733,
+          "count": 1
+        },
+        "submit": {
+          "us": 142,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 127,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 397,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 2,
+          "count": 355
+        }
+      },
+      "gpu_ns": 19530496,
+      "gpu_spans": 342,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 16848416,
+          "count": 155
+        },
+        "gqa_f16": {
+          "ns": 1569824,
+          "count": 31
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 815456,
+          "count": 61
+        },
+        "ew_binary_mul_f16": {
+          "ns": 181824,
+          "count": 62
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 99584,
+          "count": 31
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 10240,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5152,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 9,
+      "anchor": "vulkan.compute_call",
+      "call_us": 27836,
+      "subgraph_us": 27791,
+      "outside_subgraph_us": 45,
+      "unattributed_in_subgraph_us": 3415,
+      "sibling_total_us": 24376,
+      "record_us": 3705,
+      "record_residual_us": 3080,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20519,
+          "count": 1
+        },
+        "record": {
+          "us": 3705,
+          "count": 1
+        },
+        "submit": {
+          "us": 152,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 121,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 483,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 21,
+          "count": 355
+        }
+      },
+      "gpu_ns": 19156768,
+      "gpu_spans": 337,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 16612224,
+          "count": 153
+        },
+        "gqa_f16": {
+          "ns": 1463872,
+          "count": 30
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 801440,
+          "count": 61
+        },
+        "ew_binary_mul_f16": {
+          "ns": 176288,
+          "count": 61
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 88064,
+          "count": 30
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 9216,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5664,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 10,
+      "anchor": "vulkan.compute_call",
+      "call_us": 31378,
+      "subgraph_us": 31341,
+      "outside_subgraph_us": 37,
+      "unattributed_in_subgraph_us": 3181,
+      "sibling_total_us": 28160,
+      "record_us": 7387,
+      "record_residual_us": 5595,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20615,
+          "count": 1
+        },
+        "record": {
+          "us": 7387,
+          "count": 1
+        },
+        "submit": {
+          "us": 158,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 155,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 1230,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 407,
+          "count": 355
+        }
+      },
+      "gpu_ns": 18695744,
+      "gpu_spans": 331,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 16229728,
+          "count": 150
+        },
+        "gqa_f16": {
+          "ns": 1411744,
+          "count": 30
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 783040,
+          "count": 59
+        },
+        "ew_binary_mul_f16": {
+          "ns": 168352,
+          "count": 60
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 88000,
+          "count": 30
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 9216,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5664,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 11,
+      "anchor": "vulkan.compute_call",
+      "call_us": 26582,
+      "subgraph_us": 26546,
+      "outside_subgraph_us": 36,
+      "unattributed_in_subgraph_us": 3001,
+      "sibling_total_us": 23545,
+      "record_us": 3034,
+      "record_residual_us": 2502,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20368,
+          "count": 1
+        },
+        "record": {
+          "us": 3034,
+          "count": 1
+        },
+        "submit": {
+          "us": 143,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 140,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 391,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 1,
+          "count": 355
+        }
+      },
+      "gpu_ns": 19172960,
+      "gpu_spans": 340,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 16620576,
+          "count": 154
+        },
+        "gqa_f16": {
+          "ns": 1466368,
+          "count": 30
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 801696,
+          "count": 61
+        },
+        "ew_binary_mul_f16": {
+          "ns": 179392,
+          "count": 62
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 88064,
+          "count": 31
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 10240,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 6624,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 12,
+      "anchor": "vulkan.compute_call",
+      "call_us": 27541,
+      "subgraph_us": 27495,
+      "outside_subgraph_us": 46,
+      "unattributed_in_subgraph_us": 3441,
+      "sibling_total_us": 24054,
+      "record_us": 3663,
+      "record_residual_us": 3040,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20254,
+          "count": 1
+        },
+        "record": {
+          "us": 3663,
+          "count": 1
+        },
+        "submit": {
+          "us": 137,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 122,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 485,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 16,
+          "count": 355
+        }
+      },
+      "gpu_ns": 18797088,
+      "gpu_spans": 335,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 16305568,
+          "count": 152
+        },
+        "gqa_f16": {
+          "ns": 1422848,
+          "count": 30
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 793120,
+          "count": 61
+        },
+        "ew_binary_mul_f16": {
+          "ns": 174400,
+          "count": 60
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 86752,
+          "count": 30
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 9216,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5184,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 13,
+      "anchor": "vulkan.compute_call",
+      "call_us": 31389,
+      "subgraph_us": 31349,
+      "outside_subgraph_us": 40,
+      "unattributed_in_subgraph_us": 5274,
+      "sibling_total_us": 26075,
+      "record_us": 4625,
+      "record_residual_us": 3673,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20860,
+          "count": 1
+        },
+        "record": {
+          "us": 4625,
+          "count": 1
+        },
+        "submit": {
+          "us": 590,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 121,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 703,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 128,
+          "count": 355
+        }
+      },
+      "gpu_ns": 20889760,
+      "gpu_spans": 364,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 17835520,
+          "count": 165
+        },
+        "gqa_f16": {
+          "ns": 1574560,
           "count": 33
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 858592,
+          "ns": 861600,
           "count": 66
         },
         "ew_binary_mul_f16": {
-          "ns": 181728,
-          "count": 66
+          "ns": 512672,
+          "count": 65
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 96608,
+          "ns": 90720,
           "count": 33
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 9216,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5472,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 14,
+      "anchor": "vulkan.compute_call",
+      "call_us": 29175,
+      "subgraph_us": 29119,
+      "outside_subgraph_us": 56,
+      "unattributed_in_subgraph_us": 3793,
+      "sibling_total_us": 25326,
+      "record_us": 4569,
+      "record_residual_us": 3607,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20599,
+          "count": 1
+        },
+        "record": {
+          "us": 4569,
+          "count": 1
+        },
+        "submit": {
+          "us": 158,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 131,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 676,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 155,
+          "count": 355
+        }
+      },
+      "gpu_ns": 16793312,
+      "gpu_spans": 298,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 14540896,
+          "count": 135
+        },
+        "gqa_f16": {
+          "ns": 1302112,
+          "count": 27
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 696896,
+          "count": 53
+        },
+        "ew_binary_mul_f16": {
+          "ns": 153024,
+          "count": 54
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 83968,
+          "count": 27
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 10240,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 6176,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 15,
+      "anchor": "vulkan.compute_call",
+      "call_us": 27329,
+      "subgraph_us": 27291,
+      "outside_subgraph_us": 38,
+      "unattributed_in_subgraph_us": 2674,
+      "sibling_total_us": 24617,
+      "record_us": 3879,
+      "record_residual_us": 3324,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20609,
+          "count": 1
+        },
+        "record": {
+          "us": 3879,
+          "count": 1
+        },
+        "submit": {
+          "us": 129,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 118,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 430,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 7,
+          "count": 355
+        }
+      },
+      "gpu_ns": 18795648,
+      "gpu_spans": 333,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 16287456,
+          "count": 151
+        },
+        "gqa_f16": {
+          "ns": 1449216,
+          "count": 30
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 785664,
+          "count": 60
+        },
+        "ew_binary_mul_f16": {
+          "ns": 172864,
+          "count": 60
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 84384,
+          "count": 30
         },
         "simplified_layer_norm_f16": {
           "ns": 10240,
@@ -531,135 +1241,64 @@
       }
     },
     {
-      "index": 6,
+      "index": 16,
       "anchor": "vulkan.compute_call",
-      "call_us": 36351,
-      "subgraph_us": 36241,
-      "outside_subgraph_us": 110,
-      "unattributed_in_subgraph_us": 7540,
-      "sibling_total_us": 28701,
-      "record_us": 7440,
-      "record_residual_us": 5536,
+      "call_us": 26528,
+      "subgraph_us": 26498,
+      "outside_subgraph_us": 30,
+      "unattributed_in_subgraph_us": 2308,
+      "sibling_total_us": 24190,
+      "record_us": 3074,
+      "record_residual_us": 2460,
       "siblings_us": {
         "fence_wait": {
-          "us": 20998,
+          "us": 20972,
           "count": 1
         },
         "record": {
-          "us": 7440,
+          "us": 3074,
           "count": 1
         },
         "submit": {
-          "us": 263,
+          "us": 144,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 165,
+          "us": 117,
           "count": 1
         },
         "desc_alloc": {
-          "us": 1271,
+          "us": 493,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 468,
+          "us": 4,
           "count": 355
         }
       },
-      "gpu_ns": 15773568,
-      "gpu_spans": 270,
+      "gpu_ns": 19278048,
+      "gpu_spans": 342,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 13817984,
-          "count": 122
+          "ns": 16698752,
+          "count": 155
         },
         "gqa_f16": {
-          "ns": 1108032,
-          "count": 24
+          "ns": 1483584,
+          "count": 31
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 615904,
-          "count": 48
-        },
-        "ew_binary_mul_f16": {
-          "ns": 135552,
-          "count": 49
-        },
-        "ew_unary_sigmoid_f16": {
-          "ns": 81536,
-          "count": 25
-        },
-        "simplified_layer_norm_f16": {
-          "ns": 9216,
-          "count": 1
-        },
-        "gather_f16": {
-          "ns": 5344,
-          "count": 1
-        }
-      }
-    },
-    {
-      "index": 7,
-      "anchor": "vulkan.compute_call",
-      "call_us": 30323,
-      "subgraph_us": 30279,
-      "outside_subgraph_us": 44,
-      "unattributed_in_subgraph_us": 4991,
-      "sibling_total_us": 25288,
-      "record_us": 4519,
-      "record_residual_us": 3673,
-      "siblings_us": {
-        "fence_wait": {
-          "us": 20579,
-          "count": 1
-        },
-        "record": {
-          "us": 4519,
-          "count": 1
-        },
-        "submit": {
-          "us": 190,
-          "count": 1
-        }
-      },
-      "nested_us": {
-        "cmd_upload": {
-          "us": 164,
-          "count": 1
-        },
-        "desc_alloc": {
-          "us": 651,
-          "count": 355
-        },
-        "pipeline_lookup": {
-          "us": 31,
-          "count": 355
-        }
-      },
-      "gpu_ns": 19612384,
-      "gpu_spans": 346,
-      "gpu_per_label_ns": {
-        "q_gemv_matmul_nbits_f16": {
-          "ns": 17069088,
-          "count": 157
-        },
-        "gqa_f16": {
-          "ns": 1466496,
-          "count": 32
-        },
-        "skip_simplified_layer_norm_f16": {
-          "ns": 792960,
+          "ns": 809568,
           "count": 62
         },
         "ew_binary_mul_f16": {
-          "ns": 178272,
-          "count": 62
+          "ns": 177504,
+          "count": 61
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 89344,
+          "ns": 92416,
           "count": 31
         },
         "simplified_layer_norm_f16": {
@@ -673,97 +1312,239 @@
       }
     },
     {
-      "index": 8,
+      "index": 17,
       "anchor": "vulkan.compute_call",
-      "call_us": 33522,
-      "subgraph_us": 33444,
-      "outside_subgraph_us": 78,
-      "unattributed_in_subgraph_us": 7869,
-      "sibling_total_us": 25575,
-      "record_us": 4724,
-      "record_residual_us": 3592,
+      "call_us": 25823,
+      "subgraph_us": 25792,
+      "outside_subgraph_us": 31,
+      "unattributed_in_subgraph_us": 2501,
+      "sibling_total_us": 23291,
+      "record_us": 2803,
+      "record_residual_us": 2272,
       "siblings_us": {
         "fence_wait": {
-          "us": 20608,
+          "us": 20347,
           "count": 1
         },
         "record": {
-          "us": 4724,
+          "us": 2803,
           "count": 1
         },
         "submit": {
-          "us": 243,
+          "us": 141,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 146,
+          "us": 121,
           "count": 1
         },
         "desc_alloc": {
-          "us": 754,
+          "us": 409,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 232,
+          "us": 1,
           "count": 355
         }
       },
-      "gpu_ns": 19230496,
-      "gpu_spans": 339,
+      "gpu_ns": 19556576,
+      "gpu_spans": 340,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 16744320,
+          "ns": 17007968,
           "count": 154
         },
         "gqa_f16": {
-          "ns": 1434656,
+          "ns": 1466016,
           "count": 31
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 788320,
-          "count": 62
+          "ns": 798304,
+          "count": 61
         },
         "ew_binary_mul_f16": {
-          "ns": 164288,
-          "count": 60
+          "ns": 177984,
+          "count": 61
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 84576,
-          "count": 30
+          "ns": 91744,
+          "count": 31
         },
         "simplified_layer_norm_f16": {
-          "ns": 9248,
+          "ns": 9216,
           "count": 1
         },
         "gather_f16": {
-          "ns": 5088,
+          "ns": 5344,
           "count": 1
         }
       }
     },
     {
-      "index": 9,
+      "index": 18,
       "anchor": "vulkan.compute_call",
-      "call_us": 30071,
-      "subgraph_us": 29997,
-      "outside_subgraph_us": 74,
-      "unattributed_in_subgraph_us": 4289,
-      "sibling_total_us": 25708,
-      "record_us": 4465,
-      "record_residual_us": 3540,
+      "call_us": 27090,
+      "subgraph_us": 27057,
+      "outside_subgraph_us": 33,
+      "unattributed_in_subgraph_us": 3575,
+      "sibling_total_us": 23482,
+      "record_us": 2579,
+      "record_residual_us": 2080,
       "siblings_us": {
         "fence_wait": {
-          "us": 21066,
+          "us": 20756,
           "count": 1
         },
         "record": {
-          "us": 4465,
+          "us": 2579,
           "count": 1
         },
         "submit": {
-          "us": 177,
+          "us": 147,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 127,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 371,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 1,
+          "count": 355
+        }
+      },
+      "gpu_ns": 20115904,
+      "gpu_spans": 355,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 17411840,
+          "count": 161
+        },
+        "gqa_f16": {
+          "ns": 1554432,
+          "count": 32
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 847232,
+          "count": 64
+        },
+        "ew_binary_mul_f16": {
+          "ns": 189344,
+          "count": 64
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 96416,
+          "count": 32
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 10240,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 6400,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 19,
+      "anchor": "vulkan.compute_call",
+      "call_us": 36229,
+      "subgraph_us": 36146,
+      "outside_subgraph_us": 83,
+      "unattributed_in_subgraph_us": 10540,
+      "sibling_total_us": 25606,
+      "record_us": 4690,
+      "record_residual_us": 3627,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20715,
+          "count": 1
+        },
+        "record": {
+          "us": 4690,
+          "count": 1
+        },
+        "submit": {
+          "us": 201,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 151,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 736,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 176,
+          "count": 355
+        }
+      },
+      "gpu_ns": 24099872,
+      "gpu_spans": 423,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 20840192,
+          "count": 192
+        },
+        "gqa_f16": {
+          "ns": 1867008,
+          "count": 38
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 1033760,
+          "count": 77
+        },
+        "ew_binary_mul_f16": {
+          "ns": 226240,
+          "count": 76
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 116000,
+          "count": 38
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 10240,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 6432,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 20,
+      "anchor": "vulkan.compute_call",
+      "call_us": 29873,
+      "subgraph_us": 29809,
+      "outside_subgraph_us": 64,
+      "unattributed_in_subgraph_us": 3902,
+      "sibling_total_us": 25907,
+      "record_us": 4989,
+      "record_residual_us": 3816,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20683,
+          "count": 1
+        },
+        "record": {
+          "us": 4989,
+          "count": 1
+        },
+        "submit": {
+          "us": 235,
           "count": 1
         }
       },
@@ -773,64 +1554,135 @@
           "count": 1
         },
         "desc_alloc": {
-          "us": 715,
+          "us": 812,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 29,
+          "us": 180,
           "count": 355
         }
       },
-      "gpu_ns": 15135360,
-      "gpu_spans": 256,
+      "gpu_ns": 11706624,
+      "gpu_spans": 210,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 12962848,
-          "count": 116
+          "ns": 10106880,
+          "count": 95
         },
         "gqa_f16": {
-          "ns": 1347008,
-          "count": 23
+          "ns": 922624,
+          "count": 19
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 610240,
-          "count": 46
+          "ns": 488832,
+          "count": 37
         },
         "ew_binary_mul_f16": {
-          "ns": 131072,
-          "count": 46
+          "ns": 112640,
+          "count": 38
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 69024,
-          "count": 23
+          "ns": 59392,
+          "count": 19
         },
         "simplified_layer_norm_f16": {
-          "ns": 9216,
+          "ns": 10240,
           "count": 1
         },
         "gather_f16": {
-          "ns": 5952,
+          "ns": 6016,
           "count": 1
         }
       }
     },
     {
-      "index": 10,
+      "index": 21,
       "anchor": "vulkan.compute_call",
-      "call_us": 30541,
-      "subgraph_us": 30489,
-      "outside_subgraph_us": 52,
-      "unattributed_in_subgraph_us": 6437,
-      "sibling_total_us": 24052,
-      "record_us": 3304,
-      "record_residual_us": 2725,
+      "call_us": 26438,
+      "subgraph_us": 26408,
+      "outside_subgraph_us": 30,
+      "unattributed_in_subgraph_us": 2631,
+      "sibling_total_us": 23777,
+      "record_us": 3097,
+      "record_residual_us": 2508,
       "siblings_us": {
         "fence_wait": {
-          "us": 20572,
+          "us": 20484,
           "count": 1
         },
         "record": {
-          "us": 3304,
+          "us": 3097,
+          "count": 1
+        },
+        "submit": {
+          "us": 196,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 199,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 387,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 3,
+          "count": 355
+        }
+      },
+      "gpu_ns": 18489536,
+      "gpu_spans": 328,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 15998720,
+          "count": 149
+        },
+        "gqa_f16": {
+          "ns": 1422848,
+          "count": 30
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 784928,
+          "count": 60
+        },
+        "ew_binary_mul_f16": {
+          "ns": 173536,
+          "count": 58
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 92512,
+          "count": 29
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 10240,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 6752,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 22,
+      "anchor": "vulkan.compute_call",
+      "call_us": 31024,
+      "subgraph_us": 30990,
+      "outside_subgraph_us": 34,
+      "unattributed_in_subgraph_us": 7132,
+      "sibling_total_us": 23858,
+      "record_us": 2879,
+      "record_residual_us": 2316,
+      "siblings_us": {
+        "fence_wait": {
+          "us": 20803,
+          "count": 1
+        },
+        "record": {
+          "us": 2879,
           "count": 1
         },
         "submit": {
@@ -840,110 +1692,110 @@
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 135,
+          "us": 176,
           "count": 1
         },
         "desc_alloc": {
-          "us": 437,
+          "us": 384,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 7,
+          "us": 3,
           "count": 355
         }
       },
-      "gpu_ns": 22241504,
-      "gpu_spans": 392,
+      "gpu_ns": 23742848,
+      "gpu_spans": 419,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 19384640,
-          "count": 178
+          "ns": 20576544,
+          "count": 190
         },
         "gqa_f16": {
-          "ns": 1619360,
-          "count": 35
+          "ns": 1801216,
+          "count": 38
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 915936,
-          "count": 71
+          "ns": 1001408,
+          "count": 75
         },
         "ew_binary_mul_f16": {
-          "ns": 201632,
-          "count": 71
+          "ns": 229056,
+          "count": 76
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 104672,
-          "count": 35
+          "ns": 117760,
+          "count": 38
         },
         "simplified_layer_norm_f16": {
-          "ns": 9216,
+          "ns": 10240,
           "count": 1
         },
         "gather_f16": {
-          "ns": 6048,
+          "ns": 6624,
           "count": 1
         }
       }
     },
     {
-      "index": 11,
+      "index": 23,
       "anchor": "vulkan.compute_call",
-      "call_us": 35451,
-      "subgraph_us": 35336,
-      "outside_subgraph_us": 115,
-      "unattributed_in_subgraph_us": 7489,
-      "sibling_total_us": 27847,
-      "record_us": 6751,
-      "record_residual_us": 5077,
+      "call_us": 26946,
+      "subgraph_us": 26914,
+      "outside_subgraph_us": 32,
+      "unattributed_in_subgraph_us": 2715,
+      "sibling_total_us": 24199,
+      "record_us": 3138,
+      "record_residual_us": 2547,
       "siblings_us": {
         "fence_wait": {
-          "us": 20827,
+          "us": 20838,
           "count": 1
         },
         "record": {
-          "us": 6751,
+          "us": 3138,
           "count": 1
         },
         "submit": {
-          "us": 269,
+          "us": 223,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 197,
+          "us": 170,
           "count": 1
         },
         "desc_alloc": {
-          "us": 1108,
+          "us": 418,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 369,
+          "us": 3,
           "count": 355
         }
       },
-      "gpu_ns": 14506848,
-      "gpu_spans": 252,
+      "gpu_ns": 14829312,
+      "gpu_spans": 257,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 12628288,
-          "count": 114
+          "ns": 12854912,
+          "count": 117
         },
         "gqa_f16": {
-          "ns": 1071104,
+          "ns": 1131904,
           "count": 23
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 587808,
-          "count": 45
+          "ns": 617088,
+          "count": 46
         },
         "ew_binary_mul_f16": {
-          "ns": 136288,
-          "count": 45
+          "ns": 141568,
+          "count": 46
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 67008,
+          "ns": 67680,
           "count": 23
         },
         "simplified_layer_norm_f16": {
@@ -951,149 +1803,149 @@
           "count": 1
         },
         "gather_f16": {
-          "ns": 6112,
+          "ns": 5920,
           "count": 1
         }
       }
     },
     {
-      "index": 12,
+      "index": 24,
       "anchor": "vulkan.compute_call",
-      "call_us": 35802,
-      "subgraph_us": 35760,
-      "outside_subgraph_us": 42,
-      "unattributed_in_subgraph_us": 6814,
-      "sibling_total_us": 28946,
-      "record_us": 8006,
-      "record_residual_us": 6072,
+      "call_us": 26705,
+      "subgraph_us": 26672,
+      "outside_subgraph_us": 33,
+      "unattributed_in_subgraph_us": 2690,
+      "sibling_total_us": 23982,
+      "record_us": 2980,
+      "record_residual_us": 2392,
       "siblings_us": {
         "fence_wait": {
-          "us": 20668,
+          "us": 20811,
           "count": 1
         },
         "record": {
-          "us": 8006,
+          "us": 2980,
           "count": 1
         },
         "submit": {
-          "us": 272,
+          "us": 191,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 180,
+          "us": 201,
           "count": 1
         },
         "desc_alloc": {
-          "us": 1313,
+          "us": 384,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 441,
+          "us": 3,
           "count": 355
         }
       },
-      "gpu_ns": 18748384,
-      "gpu_spans": 329,
+      "gpu_ns": 19193376,
+      "gpu_spans": 336,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 16318880,
-          "count": 149
+          "ns": 16617696,
+          "count": 152
         },
         "gqa_f16": {
-          "ns": 1394304,
+          "ns": 1461248,
           "count": 30
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 764352,
-          "count": 59
+          "ns": 806304,
+          "count": 60
         },
         "ew_binary_mul_f16": {
-          "ns": 169376,
-          "count": 59
+          "ns": 197696,
+          "count": 61
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 86112,
-          "count": 30
+          "ns": 93504,
+          "count": 31
         },
         "simplified_layer_norm_f16": {
-          "ns": 9216,
+          "ns": 10240,
           "count": 1
         },
         "gather_f16": {
-          "ns": 6144,
+          "ns": 6688,
           "count": 1
         }
       }
     },
     {
-      "index": 13,
+      "index": 25,
       "anchor": "vulkan.compute_call",
-      "call_us": 31431,
-      "subgraph_us": 31375,
-      "outside_subgraph_us": 56,
-      "unattributed_in_subgraph_us": 7211,
-      "sibling_total_us": 24164,
-      "record_us": 3388,
-      "record_residual_us": 2773,
+      "call_us": 27410,
+      "subgraph_us": 27377,
+      "outside_subgraph_us": 33,
+      "unattributed_in_subgraph_us": 3345,
+      "sibling_total_us": 24032,
+      "record_us": 3286,
+      "record_residual_us": 2623,
       "siblings_us": {
         "fence_wait": {
-          "us": 20588,
+          "us": 20554,
           "count": 1
         },
         "record": {
-          "us": 3388,
+          "us": 3286,
           "count": 1
         },
         "submit": {
-          "us": 188,
+          "us": 192,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 138,
+          "us": 213,
           "count": 1
         },
         "desc_alloc": {
-          "us": 451,
+          "us": 442,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 26,
+          "us": 8,
           "count": 355
         }
       },
-      "gpu_ns": 22039680,
-      "gpu_spans": 388,
+      "gpu_ns": 19814304,
+      "gpu_spans": 352,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 19184736,
-          "count": 176
+          "ns": 17218144,
+          "count": 160
         },
         "gqa_f16": {
-          "ns": 1622368,
-          "count": 35
+          "ns": 1466368,
+          "count": 31
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 912928,
-          "count": 70
+          "ns": 821312,
+          "count": 63
         },
         "ew_binary_mul_f16": {
-          "ns": 200416,
-          "count": 70
+          "ns": 195872,
+          "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 104064,
-          "count": 35
+          "ns": 95648,
+          "count": 32
         },
         "simplified_layer_norm_f16": {
-          "ns": 9216,
+          "ns": 10240,
           "count": 1
         },
         "gather_f16": {
-          "ns": 5952,
+          "ns": 6720,
           "count": 1
         }
       }
@@ -1110,97 +1962,97 @@
       "record_residual_us": 0,
       "siblings_us": {},
       "nested_us": {},
-      "gpu_ns": 26579200,
-      "gpu_spans": 468,
+      "gpu_ns": 34316800,
+      "gpu_spans": 606,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 23272928,
-          "count": 213
+          "ns": 29714336,
+          "count": 275
         },
         "gqa_f16": {
-          "ns": 1843808,
-          "count": 40
+          "ns": 2633408,
+          "count": 55
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 1102464,
-          "count": 86
+          "ns": 1481184,
+          "count": 112
         },
         "ew_binary_mul_f16": {
-          "ns": 237760,
-          "count": 87
+          "ns": 325696,
+          "count": 110
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 122240,
-          "count": 42
+          "ns": 162176,
+          "count": 54
         }
       }
     }
   ],
   "steady": {
-    "warm_calls": 13,
+    "warm_calls": 25,
     "cold": {
       "index": 0,
       "anchor": "vulkan.compute_call",
-      "call_us": 1975690,
-      "subgraph_us": 1938844,
-      "outside_subgraph_us": 36846,
-      "unattributed_in_subgraph_us": 511326,
-      "sibling_total_us": 1427518,
-      "record_us": 1230592,
-      "record_residual_us": 24222,
+      "call_us": 1748583,
+      "subgraph_us": 1721791,
+      "outside_subgraph_us": 26792,
+      "unattributed_in_subgraph_us": 519455,
+      "sibling_total_us": 1202336,
+      "record_us": 1004338,
+      "record_residual_us": 22649,
       "siblings_us": {
         "fence_wait": {
-          "us": 196624,
+          "us": 197822,
           "count": 1
         },
         "record": {
-          "us": 1230592,
+          "us": 1004338,
           "count": 1
         },
         "submit": {
-          "us": 302,
+          "us": 176,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 1189755,
+          "us": 966812,
           "count": 1
         },
         "desc_alloc": {
-          "us": 3691,
+          "us": 3567,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 12924,
+          "us": 11310,
           "count": 355
         }
       },
-      "gpu_ns": 22706784,
+      "gpu_ns": 22491008,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 19562432,
+          "ns": 19347936,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1828864,
+          "ns": 1835424,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 970304,
+          "ns": 966272,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 214400,
+          "ns": 216288,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 108064,
+          "ns": 107680,
           "count": 32
         },
         "simplified_layer_norm_f16": {
-          "ns": 17600,
+          "ns": 12288,
           "count": 1
         },
         "gather_f16": {
@@ -1210,53 +2062,53 @@
       }
     },
     "anchor": "vulkan.compute_call",
-    "median_call_us": 32682.0,
-    "median_subgraph_us": 32627.0,
-    "median_outside_subgraph_us": 56.0,
-    "median_unattributed_in_subgraph_us": 6437.0,
-    "median_sibling_total_us": 25708.0,
-    "median_record_us": 4724.0,
-    "median_record_residual_us": 3673.0,
-    "median_gpu_ns": 18904288.0,
-    "median_gpu_spans": 329.0,
+    "median_call_us": 27410.0,
+    "median_subgraph_us": 27377.0,
+    "median_outside_subgraph_us": 36.0,
+    "median_unattributed_in_subgraph_us": 3345.0,
+    "median_sibling_total_us": 24163.0,
+    "median_record_us": 3286.0,
+    "median_record_residual_us": 2710.0,
+    "median_gpu_ns": 19172960.0,
+    "median_gpu_spans": 337.0,
     "median_siblings_us": {
-      "fence_wait": 20672.0,
-      "record": 4724.0,
-      "submit": 222.0
+      "fence_wait": 20609.0,
+      "record": 3286.0,
+      "submit": 158.0
     },
     "median_nested_us": {
-      "cmd_upload": 164.0,
-      "desc_alloc": 754.0,
-      "pipeline_lookup": 32.0
+      "cmd_upload": 132.0,
+      "desc_alloc": 442.0,
+      "pipeline_lookup": 7.0
     },
     "median_gpu_per_label_ns": {
       "q_gemv_matmul_nbits_f16": {
-        "ns": 16485312.0,
-        "calls": 13
+        "ns": 16617696.0,
+        "calls": 25
       },
       "gqa_f16": {
-        "ns": 1401728.0,
-        "calls": 13
+        "ns": 1463872.0,
+        "calls": 25
       },
       "skip_simplified_layer_norm_f16": {
-        "ns": 764352.0,
-        "calls": 13
+        "ns": 801440.0,
+        "calls": 25
       },
       "ew_binary_mul_f16": {
-        "ns": 167392.0,
-        "calls": 13
+        "ns": 177504.0,
+        "calls": 25
       },
       "ew_unary_sigmoid_f16": {
-        "ns": 84992.0,
-        "calls": 13
+        "ns": 88544.0,
+        "calls": 25
       },
       "simplified_layer_norm_f16": {
-        "ns": 9216.0,
-        "calls": 13
+        "ns": 10240.0,
+        "calls": 25
       },
       "gather_f16": {
-        "ns": 5952.0,
-        "calls": 13
+        "ns": 5920.0,
+        "calls": 25
       }
     }
   },
@@ -1269,16 +2121,16 @@
     "warm_pipeline_lookup_median": 355.0,
     "basis": "desc_alloc/pipeline_lookup fire once per dispatch during recording only"
   },
-  "traced_median_ms": 34.07959999458399,
-  "untraced_median_ms": 26.206299997284077,
-  "overhead_ratio": 1.3004353914179365,
+  "traced_median_ms": 28.42705001239665,
+  "untraced_median_ms": 28.0215499951737,
+  "overhead_ratio": 1.0144710059683633,
   "verdict": "GPU_TIME_MEASURED",
-  "traced_runs": 14,
-  "gpu_ms_total": 287.0056,
-  "gpu_ms_per_run_mean_all_calls": 20.500400000000003,
-  "gpu_ms_per_run": 18.904288,
+  "traced_runs": 26,
+  "gpu_ms_total": 524.58112,
+  "gpu_ms_per_run_mean_all_calls": 20.176196923076926,
+  "gpu_ms_per_run": 19.17296,
   "gpu_ms_per_run_basis": "warm_call_median",
-  "gpu_share_traced": 0.5547097971515017,
+  "gpu_share_traced": 0.6744618239190818,
   "withdrawn_terms": {
     "gpu_share_untraced_bound": "= gpu_ms_per_run / untraced_median_ms. Withdrawn: numerator is the traced process's device median, denominator is a different process's wall. Not a bound, and not tracer-overhead-immune -- it assumes cross-run device time is identical, which this instrument cannot verify because the untraced arm produces no device timestamps.",
     "host_ms_per_run_residual": "= untraced_median_ms - gpu_ms_per_run. Withdrawn: a subtraction across two processes wearing the clothes of a within-run decomposition. Whatever run-to-run variation separated the two processes is charged to 'host' by construction.",
@@ -1290,20 +2142,35 @@
     "axis": "traced-run warm-call medians, in milliseconds",
     "anchor": "vulkan.compute_call",
     "sees_whole_compute": true,
-    "traced_wall_ms": 34.07959999458399,
-    "compute_call_ms": 32.682,
-    "subgraph_ms": 32.627,
-    "outside_subgraph_ms": 0.056,
-    "sibling_phases_ms": 25.708,
-    "unattributed_in_subgraph_ms": 6.437,
-    "outside_compute_call_ms": 1.3975999945839845,
-    "partition_note": "these are independently-taken medians, not a partition: sibling_phases_ms + unattributed_in_subgraph_ms = 32.145 ms against subgraph_ms 32.627 ms, a residual of +0.482 ms. The median of a sum is not the sum of the medians unless every warm call splits the same way, so this residual is a property of the statistic and NOT unaccounted-for time. Do not report it as a gap.",
+    "traced_wall_ms": 28.42705001239665,
+    "compute_call_ms": 27.41,
+    "subgraph_ms": 27.377,
+    "outside_subgraph_ms": 0.036,
+    "sibling_phases_ms": 24.163,
+    "unattributed_in_subgraph_ms": 3.345,
+    "outside_compute_call_ms": 1.0170500123966484,
+    "partition_note": "these are independently-taken medians, not a partition: sibling_phases_ms + unattributed_in_subgraph_ms = 27.508 ms against subgraph_ms 27.377 ms, a residual of -0.131 ms. The median of a sum is not the sum of the medians unless every warm call splits the same way, so this residual is a property of the statistic and NOT unaccounted-for time. Do not report it as a gap.",
     "outside_subgraph_attribution": "MEASURED, UNATTRIBUTED. This instrument reports the size of the region and which side of `vulkan.subgraph` it falls on. It does not name its cause.",
-    "do_not": "subtract these traced-axis terms from `untraced_median_ms`; the traced run is 1.300x the untraced one"
+    "do_not": "subtract these traced-axis terms from `untraced_median_ms`; the traced run is 1.014x the untraced one"
   },
   "schema": "cuda_profile/2",
-  "iters": 10,
-  "warmup": 3,
+  "ep_provenance": {
+    "pinned_sources": {
+      "rust/shaders/glsl/gqa_f16.comp": "17bef90079cfb278fd4d44f01f1ad17030f0a95e969283c2cc69af7c863632bf",
+      "rust/src/ops/attention.rs": "ceedc42503aad42e87daec2cbf0891383c9b0a83e3eabe68a235e7806bef1a57"
+    },
+    "pinned_source_set": [
+      "rust/shaders/glsl/gqa_f16.comp",
+      "rust/src/ops/attention.rs"
+    ],
+    "lib_sha256": "07c6dfd5f22d23bf6145b01b09be7ed937e74a63d05656e9788249065283064e",
+    "lib_bytes": 2563072,
+    "git_commit": "ecd9e7262ff7c7bb25c2698bd18a64f004a5f552",
+    "git_tree_dirty": true,
+    "pinned_sources_dirty": false
+  },
+  "iters": 20,
+  "warmup": 5,
   "untraced_record": {
     "arm": "vulkan",
     "workload": "prefill_1",
@@ -1319,15 +2186,15 @@
       "VulkanExecutionProvider": 1
     },
     "kernel_time_us": {
-      "CPUExecutionProvider": 5537.0,
-      "VulkanExecutionProvider": 2476421.0
+      "CPUExecutionProvider": 14850.0,
+      "VulkanExecutionProvider": 2995747.0
     },
     "executed_nodes": 9,
     "cpu_fallback_nodes": 8,
     "cpu_fallback_fraction_nodes": 0.8888888888888888,
-    "cpu_fallback_fraction_time": 0.0022308999588228325,
+    "cpu_fallback_fraction_time": 0.004932576495625287,
     "cpu_fallback_fraction_graph": 0.02203856749311295,
-    "cpu_fallback_fraction": 0.0022308999588228325,
+    "cpu_fallback_fraction": 0.004932576495625287,
     "fallback_node_names": [
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather",
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast",
@@ -1343,37 +2210,49 @@
     "vulkan_dispatches": 355,
     "vulkan_fused_nodes": 1,
     "warmup_ms": [
-      55.44860000372864,
-      27.89719999418594,
-      33.56449998682365
+      63.26270001591183,
+      26.63930002017878,
+      26.06149998609908,
+      25.604499998735264,
+      25.460799981374294
     ],
     "steady_ms": [
-      24.683099996764213,
-      26.006200001575053,
-      25.21379999234341,
-      28.29409998957999,
-      30.389799998374656,
-      32.65859998646192,
-      25.675899989437312,
-      26.219399995170534,
-      26.19319999939762,
-      27.710600028513
+      28.354300011415035,
+      33.287999976892024,
+      28.69849998387508,
+      27.27309998590499,
+      25.32819999032654,
+      29.66589998686686,
+      27.688799978932366,
+      26.475899998331442,
+      26.352999993832782,
+      28.785100003005937,
+      25.652799988165498,
+      25.755499984370545,
+      25.377599988132715,
+      33.91369999735616,
+      29.25419999519363,
+      31.73449999303557,
+      26.313700014725327,
+      27.492299996083602,
+      29.67819999321364,
+      41.78830000455491
     ],
-    "session_create_ms": 379.9265999987256,
-    "first_run_ms": 2100.796500017168,
-    "median_ms": 26.206299997284077,
-    "p05_ms": 24.921914994774852,
-    "p95_ms": 31.63763999182265,
-    "rsd_pct": 9.63023193955088,
-    "tokens_per_s": 38.15876335475196,
-    "ort_version": "1.26.0",
+    "session_create_ms": 710.6657999975141,
+    "first_run_ms": 2286.691100016469,
+    "median_ms": 28.0215499951737,
+    "p05_ms": 25.375129988242406,
+    "p95_ms": 34.307429997716106,
+    "rsd_pct": 13.964035146110373,
+    "tokens_per_s": 35.68681961462643,
+    "ort_version": "1.28.0",
     "ort_build_cuda": null,
     "python": "3.12.10",
-    "feed_digest": "b00ecb0a92c47e60fa6d364ac3a1c757dedb9d06c642838ea850a4ee8b8e8677",
+    "feed_digest": "2ecd2f492a9cf4a7d0b1224a368af559a9a0b3daf754240aae81b60e6ac3e7e7",
     "model_bundle_sha256": "92f2fc001302d28cf5e0cf7dea51344fb80b7044dd0b3c77b9bd2f81c469f3fd",
     "device_identity": {},
     "peak_bytes": null,
-    "profile_path": "bench\\results\\_cuda69\\scratch_profile_v3\\untraced\\profile_vulkan_prefill_1_25436_2026-08-07_10-39-43_877.json",
+    "profile_path": "_bench_scratch\\prof\\untraced\\profile_vulkan_prefill_1_26288_2026-08-07_15-02-28_488.json",
     "compute_regime": "float32",
     "provider_options": {
       "VulkanExecutionProvider": {},
@@ -1392,7 +2271,7 @@
           1,
           32064
         ],
-        "file": "bench\\results\\_cuda69\\scratch_profile_v3\\untraced\\outputs_vulkan_prefill_1\\out0.npy"
+        "file": "_bench_scratch\\prof\\untraced\\outputs_vulkan_prefill_1\\out0.npy"
       },
       {
         "name": "present.0.key",
@@ -1403,7 +2282,7 @@
           1,
           96
         ],
-        "sha256": "458b8e102eae20abe3e0a0289589e18650188f4929554174e7fbf87067e631ae"
+        "sha256": "99686dc2ef97a8d9c99891ef8a877b12f74da48066a2916747b62d8228130ac3"
       },
       {
         "name": "present.0.value",
@@ -1414,7 +2293,7 @@
           1,
           96
         ],
-        "sha256": "1a713a2e8ede1e3ab7412e1b6523e1fddb6368485b0b039ae6ae3c20be7e374f"
+        "sha256": "4218e5a72562bacc218bbf3819e4baa2baf9c0c8cb398b6f6e7aea92a26effb3"
       },
       {
         "name": "present.1.key",
@@ -1425,7 +2304,7 @@
           1,
           96
         ],
-        "sha256": "6187cb4289b41b06a3b9784ddcb1b3da19ad29558d67b8a79e40e6e15c3df66e"
+        "sha256": "a1965fe3df1ffa71c5d198ae1e7d5e733bc9079bd5e451abbaab6a8316ea36cc"
       },
       {
         "name": "present.1.value",
@@ -1436,7 +2315,7 @@
           1,
           96
         ],
-        "sha256": "de799e37e39da31c2b6abab476408f96090cb0a3b9570678f2615e5da8d2fb39"
+        "sha256": "c4f859e280c4cacb5490cee0f17bd20a2c6007b234e772fcc8406f7712f9cc4e"
       },
       {
         "name": "present.2.key",
@@ -1447,7 +2326,7 @@
           1,
           96
         ],
-        "sha256": "f28bea0b77bfad17ed8f03d994b4f3491f4892f5421bf0bd80b0bad1e8a01830"
+        "sha256": "ffe62153552015dd0e7e0e8a5abd47a3fe22c72342a8731d3782754843cf7a57"
       },
       {
         "name": "present.2.value",
@@ -1458,7 +2337,7 @@
           1,
           96
         ],
-        "sha256": "8449c23685bf53d1d5a5adb43b7b4e8e264f72b918a7b7d2d744b01da5ab4c46"
+        "sha256": "4d965a6be82dc7474ed1c8d57ee1b73ed971541005da535d7b2144f15597963b"
       },
       {
         "name": "present.3.key",
@@ -1469,7 +2348,7 @@
           1,
           96
         ],
-        "sha256": "5086f8428d1f0c300027e8b734222b32beed94c8278f430ce7e7f5569497bf41"
+        "sha256": "485d7d77514b25d376f60f803758d92d824eb4576a82b9429a53d918c3f16e7f"
       },
       {
         "name": "present.3.value",
@@ -1480,7 +2359,7 @@
           1,
           96
         ],
-        "sha256": "e879f211e530f26bbae8785c9843b695edfeb561ee6817b380a6d822cfaa1a38"
+        "sha256": "ea9d15afcf33507658f1692accaf1b8dc3e9ac2b38b1f8294d6c31a986443521"
       },
       {
         "name": "present.4.key",
@@ -1491,7 +2370,7 @@
           1,
           96
         ],
-        "sha256": "81feaea53e9f3d72cafc10ebebf9602127ea20a8d2d36fca56ecacad245fb403"
+        "sha256": "cdc60084e963cb9a748626d6991beccb482fc377f4d846cfcbb5ef88644a69b6"
       },
       {
         "name": "present.4.value",
@@ -1502,7 +2381,7 @@
           1,
           96
         ],
-        "sha256": "673271ddc86e67fb4d24958404da35e94623b17507d23b59d9c2f8c2e729a751"
+        "sha256": "0a7413e992ae3f457075c054e7a7fba5547a9a0fa83d60991fa8c1fb34d93e6a"
       },
       {
         "name": "present.5.key",
@@ -1513,7 +2392,7 @@
           1,
           96
         ],
-        "sha256": "7b92114a63f682e43c92000dfd77415ae58bf856fbbd82b8258d9c4e8d7a6053"
+        "sha256": "1a473a06b47b610906564200fad3f796401030b3c17b1b90439e510083d95161"
       },
       {
         "name": "present.5.value",
@@ -1524,7 +2403,7 @@
           1,
           96
         ],
-        "sha256": "3ce941efec0c23c1dd3b122f818ac232008654f9698a47fe44e5b4b00725b5a4"
+        "sha256": "630f63c41d745fb7e675b43de7c806317649ef06f32755f8cef516f5b94dee13"
       },
       {
         "name": "present.6.key",
@@ -1535,7 +2414,7 @@
           1,
           96
         ],
-        "sha256": "4b078313e89dd676cb6c7fb487ff2d745ee8efefc24c4ba307c55fac6817390d"
+        "sha256": "ad9f2a8c47aca2d4c5b811d9dbe1c8ce02c415098ee1fea6c0b32d208b9fa77c"
       },
       {
         "name": "present.6.value",
@@ -1546,7 +2425,7 @@
           1,
           96
         ],
-        "sha256": "c845c1dabcd6c263f8a25a16e8c733f66c0a90ef5835a1c3f2d1cc9ff2721580"
+        "sha256": "8d008f45c253c0d96c1dee1654b3601febf581570e747f5e750187738b56bb87"
       },
       {
         "name": "present.7.key",
@@ -1557,7 +2436,7 @@
           1,
           96
         ],
-        "sha256": "a4388032d296abf687d26fd21db757a2c99bf6cbb3e8c31ea0a3f701ce46e14b"
+        "sha256": "ba6b8f9add360a606cc4122c1f6268ec9d76744b879cf3447a5f649018a52a3c"
       },
       {
         "name": "present.7.value",
@@ -1568,7 +2447,7 @@
           1,
           96
         ],
-        "sha256": "aa3bc155247741f597ba23dda0f9c690aceeea4d9026755323567113727e24bc"
+        "sha256": "2052d188b0fedd42e40769d7e69cadf3c85387a21cb1b272d11b644d2a8d53d9"
       },
       {
         "name": "present.8.key",
@@ -1579,7 +2458,7 @@
           1,
           96
         ],
-        "sha256": "3b0188bff7925da69e37eaa543d63090c07c65b417bff3a96d1dee816302d4fd"
+        "sha256": "cbfdf6934f696dec8a1fd6ba21f4d351c63e393fd9b08a8b5275bab3adf1f8b4"
       },
       {
         "name": "present.8.value",
@@ -1590,7 +2469,7 @@
           1,
           96
         ],
-        "sha256": "0e6705c52b5f93ddf98722dd25a71a32e711c30baf20597995360afb16d73bf8"
+        "sha256": "24be9f7c82c6c8f13824e93890ebd90299f5c8536bc746b0281f06b8af03293e"
       },
       {
         "name": "present.9.key",
@@ -1601,7 +2480,7 @@
           1,
           96
         ],
-        "sha256": "db1ef78f1a0b7dc2d0a75bbd1a79adfcb8befbc2049a1d733296e7cc7aa6dd01"
+        "sha256": "c26a5eb7b432f5b296ac602eb276165795a314d5300468f77178d9c80c4bdf53"
       },
       {
         "name": "present.9.value",
@@ -1612,7 +2491,7 @@
           1,
           96
         ],
-        "sha256": "5b651a90c7cdb499f43f28918e521792ab7d982be1ec02bb56480761238a7eee"
+        "sha256": "fbf7af4f2d60030ace278f07cdc5c0927ee55898f4808bb7dd161b3b3ba90b31"
       },
       {
         "name": "present.10.key",
@@ -1623,7 +2502,7 @@
           1,
           96
         ],
-        "sha256": "d09912d2d60aea11de248769bdad63cde1d942a68b450817c92313e2b38e1bba"
+        "sha256": "d417c505cac5ee571491ed17217048da5b5d09bdba360f7904b98504794c380f"
       },
       {
         "name": "present.10.value",
@@ -1634,7 +2513,7 @@
           1,
           96
         ],
-        "sha256": "7b2f49cb5308140ad3b6204412f703fd7a6e385759b00bb1f8df45425eeb07a1"
+        "sha256": "f759c4a2e7bad5c57c64efd52324bf510d1fedc94f57d8219370d11cad739e5a"
       },
       {
         "name": "present.11.key",
@@ -1645,7 +2524,7 @@
           1,
           96
         ],
-        "sha256": "9bb31585bfd7351831bfd0a923df13cfe136ca040fd14a17d21530dbb5b2799e"
+        "sha256": "a52cfa4e2a28c1a482884382ca7622897bbcc88e81c0da17a804e9113e1f20ce"
       },
       {
         "name": "present.11.value",
@@ -1656,7 +2535,7 @@
           1,
           96
         ],
-        "sha256": "239af9bca30a2598dda871b334ef7344701d63024fe4d5a9065d99706f6745c9"
+        "sha256": "3cf7b8b5c175e2e367039ffe4b00818bbf386d482f0fad2250b7af5ed4fd3fad"
       },
       {
         "name": "present.12.key",
@@ -1667,7 +2546,7 @@
           1,
           96
         ],
-        "sha256": "1dc68e6ccfbba2df33edbb5799953f4c6c7c17d0a3d6c2e371a84618be2a6dbc"
+        "sha256": "4c3a6b6989189a29e4de26702da30371300ee8b4ede0d28ceca3864ef6b39036"
       },
       {
         "name": "present.12.value",
@@ -1678,7 +2557,7 @@
           1,
           96
         ],
-        "sha256": "0da6215ce54550741c6ce3cb8ca7c8c08f907c25004c1c685e65b18113c7ce4d"
+        "sha256": "543a695a64a8504600285f031047544296a3ab773da65880aa0e83a760f151c7"
       },
       {
         "name": "present.13.key",
@@ -1689,7 +2568,7 @@
           1,
           96
         ],
-        "sha256": "dc7ca16781784b7892141fc6fe0c2e9602811fde1e86041dd9d61ffeed3506bb"
+        "sha256": "8540467fc54ed88cdda1c707ed3724ae4494247812d49dd068cda3b7b06f8e94"
       },
       {
         "name": "present.13.value",
@@ -1700,7 +2579,7 @@
           1,
           96
         ],
-        "sha256": "c11cde26fd0613ecb58ed50beb0fd06394c337362bc2b675944be34cd912a7d5"
+        "sha256": "7da5f3a976e43aa89ddc6ebd2f5ce1cec58b3b9bb6b401b6483e5702c08a8be8"
       },
       {
         "name": "present.14.key",
@@ -1711,7 +2590,7 @@
           1,
           96
         ],
-        "sha256": "f9565172a16fd6930345b5b4ceedfc4215c3de503d1acb7721eb9eca808aa18e"
+        "sha256": "bc21d9167a9ee6f976dd18a6cb25fab42376bd3b42c43116a12c2c30d1111714"
       },
       {
         "name": "present.14.value",
@@ -1722,7 +2601,7 @@
           1,
           96
         ],
-        "sha256": "82fdccf213d71a2e69a4d5c2f593df6d548b8e9def81044283e2518bb399f992"
+        "sha256": "d9962fe195fd59c99c50bfd2e3ce3646daca3b67e890fd43819fa29591cd2e9d"
       },
       {
         "name": "present.15.key",
@@ -1733,7 +2612,7 @@
           1,
           96
         ],
-        "sha256": "ab55e1ea137b6d00a07ebcefe847479e54e2656d014f857170e268a5fea55e31"
+        "sha256": "7a5960d376f64e1b61bd699929fee4368760f7b40a8fbf288812be7f0b1484db"
       },
       {
         "name": "present.15.value",
@@ -1744,7 +2623,7 @@
           1,
           96
         ],
-        "sha256": "fce211b720bb83818bf589cdb82f3e8767c9cbfdfa9a30475bc248bff1def7c6"
+        "sha256": "e543426662844d8183867e2429844d51db2dbaa64ca3b95585dc144ed99f7b10"
       },
       {
         "name": "present.16.key",
@@ -1755,7 +2634,7 @@
           1,
           96
         ],
-        "sha256": "e28bc8f860aa8d2236effabad2e348cf48ba36d20d6c491a66b8e705735b3aa1"
+        "sha256": "80d08644046a4a58056f9e7fec394abbe40a12a095a20fe30cee9f1bbade03cd"
       },
       {
         "name": "present.16.value",
@@ -1766,7 +2645,7 @@
           1,
           96
         ],
-        "sha256": "3bcd6bb52cad06fe333ac6fc997aba2355e0ab83c0630c1af98830b34737dedc"
+        "sha256": "8a770afa02bcfc8ed892a554f0f28a4b64cdb0497ad0502319a1f8c5c3c6bdfc"
       },
       {
         "name": "present.17.key",
@@ -1777,7 +2656,7 @@
           1,
           96
         ],
-        "sha256": "d40a37592a7806bd5866ac53fba0e6d2218fa114dfb9e0bbe5811e6450fa71a0"
+        "sha256": "d3dbbf251a969e5b07e309bda4063bc91e765d92d869bb2f3f37a2ba9e12f307"
       },
       {
         "name": "present.17.value",
@@ -1788,7 +2667,7 @@
           1,
           96
         ],
-        "sha256": "79a1aeccd03d5a7415122ed2103a3196b5eecddb4ad56b0873097941f98efd6c"
+        "sha256": "9c88f4283388d5d9215f4feeb3d5178cd6358dc365f41dd7c757f7f2f4cd08af"
       },
       {
         "name": "present.18.key",
@@ -1799,7 +2678,7 @@
           1,
           96
         ],
-        "sha256": "5b2a175e87ea530475c1392b36356afd8b663d68b05fed8c28e2495c66f8aa8c"
+        "sha256": "0254ccf86b7eedfdfc76c35ce6902758c04ee87998dceebbf4d856610a279f27"
       },
       {
         "name": "present.18.value",
@@ -1810,7 +2689,7 @@
           1,
           96
         ],
-        "sha256": "3bcd9c481df67be8e00a0e6753058d1d2981ba46577d4b810f90f07df9926daf"
+        "sha256": "4c9cd58b64e0fd95304f38c4719d13c30fb971644f3dcac0a7a8b8dcd0c7019c"
       },
       {
         "name": "present.19.key",
@@ -1821,7 +2700,7 @@
           1,
           96
         ],
-        "sha256": "af7dbd66763a59e3e0ae20cb133eb0b6c762306ebc6a7cbd3df1693202464ef1"
+        "sha256": "f4766b731e1e0d69053eea50e00a0cb7cd3a88eb2cf689dba9cd0fed9ba9ede8"
       },
       {
         "name": "present.19.value",
@@ -1832,7 +2711,7 @@
           1,
           96
         ],
-        "sha256": "66b0e9c94e1da15f1583cc6870863e764345d2c1a1d41df003c87429dbef9d13"
+        "sha256": "74186dcdda29b4d05b9ac36a72d94b485d9e41c01c1c35ec8b72fa7af84a0634"
       },
       {
         "name": "present.20.key",
@@ -1843,7 +2722,7 @@
           1,
           96
         ],
-        "sha256": "dc4a058ecff13e9a5680c86452cdb4e29e947ec85a656f0142295d35f7fdc62a"
+        "sha256": "9a72a6271e2205d8c32b572ab29ee09d4c47b789f5089295397400d44abb1dd5"
       },
       {
         "name": "present.20.value",
@@ -1854,7 +2733,7 @@
           1,
           96
         ],
-        "sha256": "3aeddb2f45e730d58c100e7ceab6f4339e5c8844407c0bb346d0873a6e1ade48"
+        "sha256": "3208e6e769cd605c93e3392467eedd84330d9d767fa611957a15039ea00f2bb7"
       },
       {
         "name": "present.21.key",
@@ -1865,7 +2744,7 @@
           1,
           96
         ],
-        "sha256": "bfb6441877fed31df0b4c8b94e6d290b287771fa69def636f33ad02ded3935b4"
+        "sha256": "dd2f05950bfaf8a9a684e960b1de75269e16b30e9001aef8a189d769c55897f1"
       },
       {
         "name": "present.21.value",
@@ -1876,7 +2755,7 @@
           1,
           96
         ],
-        "sha256": "e1f31d01e900fb70686fe19baed7d1959c432399e34920961ae0ebe1d58974f6"
+        "sha256": "23e3b1adb12bd0c6ed1c525126e26bfe2e7ec11a99b3513562da54995b117748"
       },
       {
         "name": "present.22.key",
@@ -1887,7 +2766,7 @@
           1,
           96
         ],
-        "sha256": "9523cd31b7c4a7b770e085b331dc05d6675c7a9b5f3beff54a1ca7ff2ce87bde"
+        "sha256": "b3a114fdc0e887efa2d80d7c34c359f6482be1397b47d4e3ecf9622d95001412"
       },
       {
         "name": "present.22.value",
@@ -1898,7 +2777,7 @@
           1,
           96
         ],
-        "sha256": "a90f09550e144da82aa7726023007c14ba365f387f17853f47fbdbc1c8b4a608"
+        "sha256": "e56785d7862ab90504144a9e6f6cc86b3527b083edd573e6cdd6803427fc4140"
       },
       {
         "name": "present.23.key",
@@ -1909,7 +2788,7 @@
           1,
           96
         ],
-        "sha256": "80cf5fd143b1e2a35bbc5feafde645c7b045fd3f785ba6377067e32cda0ed530"
+        "sha256": "d32c1c84bd16b53d4e8451c002b20389758588a815d85329da45315437ff4241"
       },
       {
         "name": "present.23.value",
@@ -1920,7 +2799,7 @@
           1,
           96
         ],
-        "sha256": "a801f43b4cd8b210837bc54a4375f2ebdae9c51d0b64af546251ba95bb42f4b0"
+        "sha256": "6bed036d334ec329db015e5260b7b8abbfb42f3fd6768c56ff186f4d2d39e78b"
       },
       {
         "name": "present.24.key",
@@ -1931,7 +2810,7 @@
           1,
           96
         ],
-        "sha256": "26450b8213fa16b890a34d284f578453ab9e019053647a4ae42fabe4ef1760df"
+        "sha256": "944d152f668df7082ea08c7aea168ea1b0f12aa8b7de935c11dad5ea15579f5a"
       },
       {
         "name": "present.24.value",
@@ -1942,7 +2821,7 @@
           1,
           96
         ],
-        "sha256": "6e496c816a0099093eb6f0674651e7d4296af9e3aba9bdf73e4bdb53f156ac66"
+        "sha256": "22e3a593fdb6abf38e806e9ef6b5c1810c4dcef0b50d884a8f2721ec3d2844cc"
       },
       {
         "name": "present.25.key",
@@ -1953,7 +2832,7 @@
           1,
           96
         ],
-        "sha256": "24aa61150989937191aa9b3bf90799f481a2ec4b5bf40919c49b4886f1ce18b6"
+        "sha256": "3e387febf4f7b39b2e6a9e51a4f0461d76de823ad49859ac1fe3243528f4816f"
       },
       {
         "name": "present.25.value",
@@ -1964,7 +2843,7 @@
           1,
           96
         ],
-        "sha256": "85a59136ef7eac7ce77d049ba4eec1e5741d9381ce323a3f98891de50a9e29d3"
+        "sha256": "ac28da29f2ae4b804ee0f5758f3fc84e10b99552d118660f17a7390c0d68f8f3"
       },
       {
         "name": "present.26.key",
@@ -1975,7 +2854,7 @@
           1,
           96
         ],
-        "sha256": "8aa3741852aabc920b90ec82c5f6ea9af1f24bb9deef8ed9f08ea0e2b1fa1a25"
+        "sha256": "45ae5df70d2b5e7a298d2a4b5e8a21a7ddc1689601a72d50fffe2d3c999c4dbb"
       },
       {
         "name": "present.26.value",
@@ -1986,7 +2865,7 @@
           1,
           96
         ],
-        "sha256": "f978fe295d161a835684d12dc5f95e4ff81890a1140ded21acb619d1a53b30c1"
+        "sha256": "41063d6f9379e96ddb24e383c4f409729778bb0cb6eed42de5317751b55a6d23"
       },
       {
         "name": "present.27.key",
@@ -1997,7 +2876,7 @@
           1,
           96
         ],
-        "sha256": "def479dbd25ef7901f53f60a86584072b20d4a99977ac3360a7da06bdb783b9e"
+        "sha256": "6483fbc49e88a8c37fce57509643c02d4765451b0aa2d166315512f5120edf4f"
       },
       {
         "name": "present.27.value",
@@ -2008,7 +2887,7 @@
           1,
           96
         ],
-        "sha256": "944e81642fc7523c8b050e6159647a7a6c6aab92b5ceab0910578e14a34b683d"
+        "sha256": "4921ddf7c0870bbca133a0823f9fa31f30f78e67dd1eff6d85596bd0fed20ec4"
       },
       {
         "name": "present.28.key",
@@ -2019,7 +2898,7 @@
           1,
           96
         ],
-        "sha256": "e16f854fe943a2a147da4c1e188dd44b242a1bdd8739bf2c2efe7211e212b388"
+        "sha256": "09f5112de425a4ea15dec85ec9594e0305603ee56bb5dca5a01172a7778200db"
       },
       {
         "name": "present.28.value",
@@ -2030,7 +2909,7 @@
           1,
           96
         ],
-        "sha256": "9d01dabae10fbeb8e635bd52176094d69a749930ad07353e5eeda0fa07272eb4"
+        "sha256": "43215e68cdb1e1cd6a17dbc8561a0a97f0a90ff5b2a08ad61d9098d4b5abfc8e"
       },
       {
         "name": "present.29.key",
@@ -2041,7 +2920,7 @@
           1,
           96
         ],
-        "sha256": "1d628bb376e5c7b6a060aadf4997cb16f8158c0aff365cb2e7394e3ab02af333"
+        "sha256": "518997409ea766a28064f0914850121469d506d88aa0fdf42cc4b660673bb05b"
       },
       {
         "name": "present.29.value",
@@ -2052,7 +2931,7 @@
           1,
           96
         ],
-        "sha256": "ae88ba64d1ff58ac71bc159b023d4279aff639c65f102f477d974c59104e2c74"
+        "sha256": "49d56acc946b22e38b005b43fba38bb88503f17aea99b970bcadd94c485a2408"
       },
       {
         "name": "present.30.key",
@@ -2063,7 +2942,7 @@
           1,
           96
         ],
-        "sha256": "fd133d09a5607eb252382836db293ea2bec7e6e93deca664d714d39bfe1f4475"
+        "sha256": "e803120cfa39b3c2e6a917c55f5ba7370778b44237fc16e5ea3634b84880f065"
       },
       {
         "name": "present.30.value",
@@ -2074,7 +2953,7 @@
           1,
           96
         ],
-        "sha256": "38d114615645cd0042a7f40430ffcd011e4dcaca4585751015ce18362c81d063"
+        "sha256": "18c67b54be653c5cb05640eea79ae7cd4ffb22dadb465ed79f48bf1f510426b7"
       },
       {
         "name": "present.31.key",
@@ -2085,7 +2964,7 @@
           1,
           96
         ],
-        "sha256": "5b28bdf8b1eb3526829d5d9c61cee18b0e8f13753ae762ed23bc283197fa1d61"
+        "sha256": "51b6f36e7f2610b08de3ffb6a2165e2bfb827091b4bc25095e8158cfa94f5678"
       },
       {
         "name": "present.31.value",
@@ -2096,25 +2975,25 @@
           1,
           96
         ],
-        "sha256": "604ce49e28fa0bc0a75319ca367c6395fd7c10fc29ff94b96d5794b6b35cff44"
+        "sha256": "142a6114e39627d8ecf3f8b71f6b6ed74840348c9d30f771867baf9f7de22ed0"
       }
     ],
     "partition_detail": {
       "CPUExecutionProvider": {
-        "Shape": 14,
-        "Gather": 14,
-        "Cast": 28,
-        "ReduceSum": 14,
-        "Sub": 14,
-        "Greater": 14,
-        "If": 14
+        "Shape": 26,
+        "Gather": 26,
+        "Cast": 52,
+        "ReduceSum": 26,
+        "Sub": 26,
+        "Greater": 26,
+        "If": 26
       },
       "VulkanExecutionProvider": {
-        "VulkanExecutionProvider_1030414944306789527_0": 14
+        "VulkanExecutionProvider_1030414944306789527_0": 26
       }
     },
     "worker_returncode": 0,
-    "outputs_dir": "bench\\results\\_cuda69\\scratch_profile_v3\\untraced\\outputs_vulkan_prefill_1"
+    "outputs_dir": "_bench_scratch\\prof\\untraced\\outputs_vulkan_prefill_1"
   },
   "traced_record": {
     "arm": "vulkan",
@@ -2131,15 +3010,15 @@
       "VulkanExecutionProvider": 1
     },
     "kernel_time_us": {
-      "CPUExecutionProvider": 6515.0,
-      "VulkanExecutionProvider": 2429706.0
+      "CPUExecutionProvider": 9928.0,
+      "VulkanExecutionProvider": 2494369.0
     },
     "executed_nodes": 9,
     "cpu_fallback_nodes": 8,
     "cpu_fallback_fraction_nodes": 0.8888888888888888,
-    "cpu_fallback_fraction_time": 0.002674223726008437,
+    "cpu_fallback_fraction_time": 0.003964386013320305,
     "cpu_fallback_fraction_graph": 0.02203856749311295,
-    "cpu_fallback_fraction": 0.002674223726008437,
+    "cpu_fallback_fraction": 0.003964386013320305,
     "fallback_node_names": [
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather",
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast",
@@ -2155,37 +3034,49 @@
     "vulkan_dispatches": 355,
     "vulkan_fused_nodes": 1,
     "warmup_ms": [
-      56.52650000411086,
-      30.152799998177215,
-      34.68549999524839
+      56.16459998418577,
+      32.59389998856932,
+      31.201900012092665,
+      27.29709999402985,
+      27.010099991457537
     ],
     "steady_ms": [
-      34.88469999865629,
-      32.54590000142343,
-      38.72630000114441,
-      31.942900008289143,
-      35.78959999140352,
-      32.373800000641495,
-      32.26800000993535,
-      38.23460001149215,
-      37.32410000520758,
-      33.274499990511686
+      30.755499989027157,
+      27.660799998557195,
+      27.450099994894117,
+      29.004899988649413,
+      32.56170000531711,
+      27.635700011160225,
+      28.719699999783188,
+      32.54539999761619,
+      30.522000015480444,
+      28.28229998704046,
+      27.347099996404722,
+      26.697900000726804,
+      28.32380001200363,
+      38.59379998175427,
+      33.12540001934394,
+      27.524900011485443,
+      32.030000002123415,
+      28.023700026096776,
+      27.84670001710765,
+      28.530300012789667
     ],
-    "session_create_ms": 390.3530999959912,
-    "first_run_ms": 1977.9064999893308,
-    "median_ms": 34.07959999458399,
-    "p05_ms": 32.089195009029936,
-    "p95_ms": 38.50503500580089,
-    "rsd_pct": 7.726269874840469,
-    "tokens_per_s": 29.34306741155772,
-    "ort_version": "1.26.0",
+    "session_create_ms": 544.4069000077434,
+    "first_run_ms": 1751.1501999979373,
+    "median_ms": 28.42705001239665,
+    "p05_ms": 27.314639996620826,
+    "p95_ms": 33.39882001746446,
+    "rsd_pct": 10.209089111635802,
+    "tokens_per_s": 35.17776201061713,
+    "ort_version": "1.28.0",
     "ort_build_cuda": null,
     "python": "3.12.10",
-    "feed_digest": "b00ecb0a92c47e60fa6d364ac3a1c757dedb9d06c642838ea850a4ee8b8e8677",
+    "feed_digest": "2ecd2f492a9cf4a7d0b1224a368af559a9a0b3daf754240aae81b60e6ac3e7e7",
     "model_bundle_sha256": "92f2fc001302d28cf5e0cf7dea51344fb80b7044dd0b3c77b9bd2f81c469f3fd",
     "device_identity": {},
     "peak_bytes": null,
-    "profile_path": "bench\\results\\_cuda69\\scratch_profile_v3\\traced\\profile_vulkan_prefill_1_16304_2026-08-07_10-39-50_736.json",
+    "profile_path": "_bench_scratch\\prof\\traced\\profile_vulkan_prefill_1_14068_2026-08-07_15-02-36_768.json",
     "compute_regime": "float32",
     "provider_options": {
       "VulkanExecutionProvider": {},
@@ -2204,7 +3095,7 @@
           1,
           32064
         ],
-        "file": "bench\\results\\_cuda69\\scratch_profile_v3\\traced\\outputs_vulkan_prefill_1\\out0.npy"
+        "file": "_bench_scratch\\prof\\traced\\outputs_vulkan_prefill_1\\out0.npy"
       },
       {
         "name": "present.0.key",
@@ -2215,7 +3106,7 @@
           1,
           96
         ],
-        "sha256": "458b8e102eae20abe3e0a0289589e18650188f4929554174e7fbf87067e631ae"
+        "sha256": "99686dc2ef97a8d9c99891ef8a877b12f74da48066a2916747b62d8228130ac3"
       },
       {
         "name": "present.0.value",
@@ -2226,7 +3117,7 @@
           1,
           96
         ],
-        "sha256": "1a713a2e8ede1e3ab7412e1b6523e1fddb6368485b0b039ae6ae3c20be7e374f"
+        "sha256": "4218e5a72562bacc218bbf3819e4baa2baf9c0c8cb398b6f6e7aea92a26effb3"
       },
       {
         "name": "present.1.key",
@@ -2237,7 +3128,7 @@
           1,
           96
         ],
-        "sha256": "6187cb4289b41b06a3b9784ddcb1b3da19ad29558d67b8a79e40e6e15c3df66e"
+        "sha256": "a1965fe3df1ffa71c5d198ae1e7d5e733bc9079bd5e451abbaab6a8316ea36cc"
       },
       {
         "name": "present.1.value",
@@ -2248,7 +3139,7 @@
           1,
           96
         ],
-        "sha256": "de799e37e39da31c2b6abab476408f96090cb0a3b9570678f2615e5da8d2fb39"
+        "sha256": "c4f859e280c4cacb5490cee0f17bd20a2c6007b234e772fcc8406f7712f9cc4e"
       },
       {
         "name": "present.2.key",
@@ -2259,7 +3150,7 @@
           1,
           96
         ],
-        "sha256": "f28bea0b77bfad17ed8f03d994b4f3491f4892f5421bf0bd80b0bad1e8a01830"
+        "sha256": "ffe62153552015dd0e7e0e8a5abd47a3fe22c72342a8731d3782754843cf7a57"
       },
       {
         "name": "present.2.value",
@@ -2270,7 +3161,7 @@
           1,
           96
         ],
-        "sha256": "8449c23685bf53d1d5a5adb43b7b4e8e264f72b918a7b7d2d744b01da5ab4c46"
+        "sha256": "4d965a6be82dc7474ed1c8d57ee1b73ed971541005da535d7b2144f15597963b"
       },
       {
         "name": "present.3.key",
@@ -2281,7 +3172,7 @@
           1,
           96
         ],
-        "sha256": "5086f8428d1f0c300027e8b734222b32beed94c8278f430ce7e7f5569497bf41"
+        "sha256": "485d7d77514b25d376f60f803758d92d824eb4576a82b9429a53d918c3f16e7f"
       },
       {
         "name": "present.3.value",
@@ -2292,7 +3183,7 @@
           1,
           96
         ],
-        "sha256": "e879f211e530f26bbae8785c9843b695edfeb561ee6817b380a6d822cfaa1a38"
+        "sha256": "ea9d15afcf33507658f1692accaf1b8dc3e9ac2b38b1f8294d6c31a986443521"
       },
       {
         "name": "present.4.key",
@@ -2303,7 +3194,7 @@
           1,
           96
         ],
-        "sha256": "81feaea53e9f3d72cafc10ebebf9602127ea20a8d2d36fca56ecacad245fb403"
+        "sha256": "cdc60084e963cb9a748626d6991beccb482fc377f4d846cfcbb5ef88644a69b6"
       },
       {
         "name": "present.4.value",
@@ -2314,7 +3205,7 @@
           1,
           96
         ],
-        "sha256": "673271ddc86e67fb4d24958404da35e94623b17507d23b59d9c2f8c2e729a751"
+        "sha256": "0a7413e992ae3f457075c054e7a7fba5547a9a0fa83d60991fa8c1fb34d93e6a"
       },
       {
         "name": "present.5.key",
@@ -2325,7 +3216,7 @@
           1,
           96
         ],
-        "sha256": "7b92114a63f682e43c92000dfd77415ae58bf856fbbd82b8258d9c4e8d7a6053"
+        "sha256": "1a473a06b47b610906564200fad3f796401030b3c17b1b90439e510083d95161"
       },
       {
         "name": "present.5.value",
@@ -2336,7 +3227,7 @@
           1,
           96
         ],
-        "sha256": "3ce941efec0c23c1dd3b122f818ac232008654f9698a47fe44e5b4b00725b5a4"
+        "sha256": "630f63c41d745fb7e675b43de7c806317649ef06f32755f8cef516f5b94dee13"
       },
       {
         "name": "present.6.key",
@@ -2347,7 +3238,7 @@
           1,
           96
         ],
-        "sha256": "4b078313e89dd676cb6c7fb487ff2d745ee8efefc24c4ba307c55fac6817390d"
+        "sha256": "ad9f2a8c47aca2d4c5b811d9dbe1c8ce02c415098ee1fea6c0b32d208b9fa77c"
       },
       {
         "name": "present.6.value",
@@ -2358,7 +3249,7 @@
           1,
           96
         ],
-        "sha256": "c845c1dabcd6c263f8a25a16e8c733f66c0a90ef5835a1c3f2d1cc9ff2721580"
+        "sha256": "8d008f45c253c0d96c1dee1654b3601febf581570e747f5e750187738b56bb87"
       },
       {
         "name": "present.7.key",
@@ -2369,7 +3260,7 @@
           1,
           96
         ],
-        "sha256": "a4388032d296abf687d26fd21db757a2c99bf6cbb3e8c31ea0a3f701ce46e14b"
+        "sha256": "ba6b8f9add360a606cc4122c1f6268ec9d76744b879cf3447a5f649018a52a3c"
       },
       {
         "name": "present.7.value",
@@ -2380,7 +3271,7 @@
           1,
           96
         ],
-        "sha256": "aa3bc155247741f597ba23dda0f9c690aceeea4d9026755323567113727e24bc"
+        "sha256": "2052d188b0fedd42e40769d7e69cadf3c85387a21cb1b272d11b644d2a8d53d9"
       },
       {
         "name": "present.8.key",
@@ -2391,7 +3282,7 @@
           1,
           96
         ],
-        "sha256": "3b0188bff7925da69e37eaa543d63090c07c65b417bff3a96d1dee816302d4fd"
+        "sha256": "cbfdf6934f696dec8a1fd6ba21f4d351c63e393fd9b08a8b5275bab3adf1f8b4"
       },
       {
         "name": "present.8.value",
@@ -2402,7 +3293,7 @@
           1,
           96
         ],
-        "sha256": "0e6705c52b5f93ddf98722dd25a71a32e711c30baf20597995360afb16d73bf8"
+        "sha256": "24be9f7c82c6c8f13824e93890ebd90299f5c8536bc746b0281f06b8af03293e"
       },
       {
         "name": "present.9.key",
@@ -2413,7 +3304,7 @@
           1,
           96
         ],
-        "sha256": "db1ef78f1a0b7dc2d0a75bbd1a79adfcb8befbc2049a1d733296e7cc7aa6dd01"
+        "sha256": "c26a5eb7b432f5b296ac602eb276165795a314d5300468f77178d9c80c4bdf53"
       },
       {
         "name": "present.9.value",
@@ -2424,7 +3315,7 @@
           1,
           96
         ],
-        "sha256": "5b651a90c7cdb499f43f28918e521792ab7d982be1ec02bb56480761238a7eee"
+        "sha256": "fbf7af4f2d60030ace278f07cdc5c0927ee55898f4808bb7dd161b3b3ba90b31"
       },
       {
         "name": "present.10.key",
@@ -2435,7 +3326,7 @@
           1,
           96
         ],
-        "sha256": "d09912d2d60aea11de248769bdad63cde1d942a68b450817c92313e2b38e1bba"
+        "sha256": "d417c505cac5ee571491ed17217048da5b5d09bdba360f7904b98504794c380f"
       },
       {
         "name": "present.10.value",
@@ -2446,7 +3337,7 @@
           1,
           96
         ],
-        "sha256": "7b2f49cb5308140ad3b6204412f703fd7a6e385759b00bb1f8df45425eeb07a1"
+        "sha256": "f759c4a2e7bad5c57c64efd52324bf510d1fedc94f57d8219370d11cad739e5a"
       },
       {
         "name": "present.11.key",
@@ -2457,7 +3348,7 @@
           1,
           96
         ],
-        "sha256": "9bb31585bfd7351831bfd0a923df13cfe136ca040fd14a17d21530dbb5b2799e"
+        "sha256": "a52cfa4e2a28c1a482884382ca7622897bbcc88e81c0da17a804e9113e1f20ce"
       },
       {
         "name": "present.11.value",
@@ -2468,7 +3359,7 @@
           1,
           96
         ],
-        "sha256": "239af9bca30a2598dda871b334ef7344701d63024fe4d5a9065d99706f6745c9"
+        "sha256": "3cf7b8b5c175e2e367039ffe4b00818bbf386d482f0fad2250b7af5ed4fd3fad"
       },
       {
         "name": "present.12.key",
@@ -2479,7 +3370,7 @@
           1,
           96
         ],
-        "sha256": "1dc68e6ccfbba2df33edbb5799953f4c6c7c17d0a3d6c2e371a84618be2a6dbc"
+        "sha256": "4c3a6b6989189a29e4de26702da30371300ee8b4ede0d28ceca3864ef6b39036"
       },
       {
         "name": "present.12.value",
@@ -2490,7 +3381,7 @@
           1,
           96
         ],
-        "sha256": "0da6215ce54550741c6ce3cb8ca7c8c08f907c25004c1c685e65b18113c7ce4d"
+        "sha256": "543a695a64a8504600285f031047544296a3ab773da65880aa0e83a760f151c7"
       },
       {
         "name": "present.13.key",
@@ -2501,7 +3392,7 @@
           1,
           96
         ],
-        "sha256": "dc7ca16781784b7892141fc6fe0c2e9602811fde1e86041dd9d61ffeed3506bb"
+        "sha256": "8540467fc54ed88cdda1c707ed3724ae4494247812d49dd068cda3b7b06f8e94"
       },
       {
         "name": "present.13.value",
@@ -2512,7 +3403,7 @@
           1,
           96
         ],
-        "sha256": "c11cde26fd0613ecb58ed50beb0fd06394c337362bc2b675944be34cd912a7d5"
+        "sha256": "7da5f3a976e43aa89ddc6ebd2f5ce1cec58b3b9bb6b401b6483e5702c08a8be8"
       },
       {
         "name": "present.14.key",
@@ -2523,7 +3414,7 @@
           1,
           96
         ],
-        "sha256": "f9565172a16fd6930345b5b4ceedfc4215c3de503d1acb7721eb9eca808aa18e"
+        "sha256": "bc21d9167a9ee6f976dd18a6cb25fab42376bd3b42c43116a12c2c30d1111714"
       },
       {
         "name": "present.14.value",
@@ -2534,7 +3425,7 @@
           1,
           96
         ],
-        "sha256": "82fdccf213d71a2e69a4d5c2f593df6d548b8e9def81044283e2518bb399f992"
+        "sha256": "d9962fe195fd59c99c50bfd2e3ce3646daca3b67e890fd43819fa29591cd2e9d"
       },
       {
         "name": "present.15.key",
@@ -2545,7 +3436,7 @@
           1,
           96
         ],
-        "sha256": "ab55e1ea137b6d00a07ebcefe847479e54e2656d014f857170e268a5fea55e31"
+        "sha256": "7a5960d376f64e1b61bd699929fee4368760f7b40a8fbf288812be7f0b1484db"
       },
       {
         "name": "present.15.value",
@@ -2556,7 +3447,7 @@
           1,
           96
         ],
-        "sha256": "fce211b720bb83818bf589cdb82f3e8767c9cbfdfa9a30475bc248bff1def7c6"
+        "sha256": "e543426662844d8183867e2429844d51db2dbaa64ca3b95585dc144ed99f7b10"
       },
       {
         "name": "present.16.key",
@@ -2567,7 +3458,7 @@
           1,
           96
         ],
-        "sha256": "e28bc8f860aa8d2236effabad2e348cf48ba36d20d6c491a66b8e705735b3aa1"
+        "sha256": "80d08644046a4a58056f9e7fec394abbe40a12a095a20fe30cee9f1bbade03cd"
       },
       {
         "name": "present.16.value",
@@ -2578,7 +3469,7 @@
           1,
           96
         ],
-        "sha256": "3bcd6bb52cad06fe333ac6fc997aba2355e0ab83c0630c1af98830b34737dedc"
+        "sha256": "8a770afa02bcfc8ed892a554f0f28a4b64cdb0497ad0502319a1f8c5c3c6bdfc"
       },
       {
         "name": "present.17.key",
@@ -2589,7 +3480,7 @@
           1,
           96
         ],
-        "sha256": "d40a37592a7806bd5866ac53fba0e6d2218fa114dfb9e0bbe5811e6450fa71a0"
+        "sha256": "d3dbbf251a969e5b07e309bda4063bc91e765d92d869bb2f3f37a2ba9e12f307"
       },
       {
         "name": "present.17.value",
@@ -2600,7 +3491,7 @@
           1,
           96
         ],
-        "sha256": "79a1aeccd03d5a7415122ed2103a3196b5eecddb4ad56b0873097941f98efd6c"
+        "sha256": "9c88f4283388d5d9215f4feeb3d5178cd6358dc365f41dd7c757f7f2f4cd08af"
       },
       {
         "name": "present.18.key",
@@ -2611,7 +3502,7 @@
           1,
           96
         ],
-        "sha256": "5b2a175e87ea530475c1392b36356afd8b663d68b05fed8c28e2495c66f8aa8c"
+        "sha256": "0254ccf86b7eedfdfc76c35ce6902758c04ee87998dceebbf4d856610a279f27"
       },
       {
         "name": "present.18.value",
@@ -2622,7 +3513,7 @@
           1,
           96
         ],
-        "sha256": "3bcd9c481df67be8e00a0e6753058d1d2981ba46577d4b810f90f07df9926daf"
+        "sha256": "4c9cd58b64e0fd95304f38c4719d13c30fb971644f3dcac0a7a8b8dcd0c7019c"
       },
       {
         "name": "present.19.key",
@@ -2633,7 +3524,7 @@
           1,
           96
         ],
-        "sha256": "af7dbd66763a59e3e0ae20cb133eb0b6c762306ebc6a7cbd3df1693202464ef1"
+        "sha256": "f4766b731e1e0d69053eea50e00a0cb7cd3a88eb2cf689dba9cd0fed9ba9ede8"
       },
       {
         "name": "present.19.value",
@@ -2644,7 +3535,7 @@
           1,
           96
         ],
-        "sha256": "66b0e9c94e1da15f1583cc6870863e764345d2c1a1d41df003c87429dbef9d13"
+        "sha256": "74186dcdda29b4d05b9ac36a72d94b485d9e41c01c1c35ec8b72fa7af84a0634"
       },
       {
         "name": "present.20.key",
@@ -2655,7 +3546,7 @@
           1,
           96
         ],
-        "sha256": "dc4a058ecff13e9a5680c86452cdb4e29e947ec85a656f0142295d35f7fdc62a"
+        "sha256": "9a72a6271e2205d8c32b572ab29ee09d4c47b789f5089295397400d44abb1dd5"
       },
       {
         "name": "present.20.value",
@@ -2666,7 +3557,7 @@
           1,
           96
         ],
-        "sha256": "3aeddb2f45e730d58c100e7ceab6f4339e5c8844407c0bb346d0873a6e1ade48"
+        "sha256": "3208e6e769cd605c93e3392467eedd84330d9d767fa611957a15039ea00f2bb7"
       },
       {
         "name": "present.21.key",
@@ -2677,7 +3568,7 @@
           1,
           96
         ],
-        "sha256": "bfb6441877fed31df0b4c8b94e6d290b287771fa69def636f33ad02ded3935b4"
+        "sha256": "dd2f05950bfaf8a9a684e960b1de75269e16b30e9001aef8a189d769c55897f1"
       },
       {
         "name": "present.21.value",
@@ -2688,7 +3579,7 @@
           1,
           96
         ],
-        "sha256": "e1f31d01e900fb70686fe19baed7d1959c432399e34920961ae0ebe1d58974f6"
+        "sha256": "23e3b1adb12bd0c6ed1c525126e26bfe2e7ec11a99b3513562da54995b117748"
       },
       {
         "name": "present.22.key",
@@ -2699,7 +3590,7 @@
           1,
           96
         ],
-        "sha256": "9523cd31b7c4a7b770e085b331dc05d6675c7a9b5f3beff54a1ca7ff2ce87bde"
+        "sha256": "b3a114fdc0e887efa2d80d7c34c359f6482be1397b47d4e3ecf9622d95001412"
       },
       {
         "name": "present.22.value",
@@ -2710,7 +3601,7 @@
           1,
           96
         ],
-        "sha256": "a90f09550e144da82aa7726023007c14ba365f387f17853f47fbdbc1c8b4a608"
+        "sha256": "e56785d7862ab90504144a9e6f6cc86b3527b083edd573e6cdd6803427fc4140"
       },
       {
         "name": "present.23.key",
@@ -2721,7 +3612,7 @@
           1,
           96
         ],
-        "sha256": "80cf5fd143b1e2a35bbc5feafde645c7b045fd3f785ba6377067e32cda0ed530"
+        "sha256": "d32c1c84bd16b53d4e8451c002b20389758588a815d85329da45315437ff4241"
       },
       {
         "name": "present.23.value",
@@ -2732,7 +3623,7 @@
           1,
           96
         ],
-        "sha256": "a801f43b4cd8b210837bc54a4375f2ebdae9c51d0b64af546251ba95bb42f4b0"
+        "sha256": "6bed036d334ec329db015e5260b7b8abbfb42f3fd6768c56ff186f4d2d39e78b"
       },
       {
         "name": "present.24.key",
@@ -2743,7 +3634,7 @@
           1,
           96
         ],
-        "sha256": "26450b8213fa16b890a34d284f578453ab9e019053647a4ae42fabe4ef1760df"
+        "sha256": "944d152f668df7082ea08c7aea168ea1b0f12aa8b7de935c11dad5ea15579f5a"
       },
       {
         "name": "present.24.value",
@@ -2754,7 +3645,7 @@
           1,
           96
         ],
-        "sha256": "6e496c816a0099093eb6f0674651e7d4296af9e3aba9bdf73e4bdb53f156ac66"
+        "sha256": "22e3a593fdb6abf38e806e9ef6b5c1810c4dcef0b50d884a8f2721ec3d2844cc"
       },
       {
         "name": "present.25.key",
@@ -2765,7 +3656,7 @@
           1,
           96
         ],
-        "sha256": "24aa61150989937191aa9b3bf90799f481a2ec4b5bf40919c49b4886f1ce18b6"
+        "sha256": "3e387febf4f7b39b2e6a9e51a4f0461d76de823ad49859ac1fe3243528f4816f"
       },
       {
         "name": "present.25.value",
@@ -2776,7 +3667,7 @@
           1,
           96
         ],
-        "sha256": "85a59136ef7eac7ce77d049ba4eec1e5741d9381ce323a3f98891de50a9e29d3"
+        "sha256": "ac28da29f2ae4b804ee0f5758f3fc84e10b99552d118660f17a7390c0d68f8f3"
       },
       {
         "name": "present.26.key",
@@ -2787,7 +3678,7 @@
           1,
           96
         ],
-        "sha256": "8aa3741852aabc920b90ec82c5f6ea9af1f24bb9deef8ed9f08ea0e2b1fa1a25"
+        "sha256": "45ae5df70d2b5e7a298d2a4b5e8a21a7ddc1689601a72d50fffe2d3c999c4dbb"
       },
       {
         "name": "present.26.value",
@@ -2798,7 +3689,7 @@
           1,
           96
         ],
-        "sha256": "f978fe295d161a835684d12dc5f95e4ff81890a1140ded21acb619d1a53b30c1"
+        "sha256": "41063d6f9379e96ddb24e383c4f409729778bb0cb6eed42de5317751b55a6d23"
       },
       {
         "name": "present.27.key",
@@ -2809,7 +3700,7 @@
           1,
           96
         ],
-        "sha256": "def479dbd25ef7901f53f60a86584072b20d4a99977ac3360a7da06bdb783b9e"
+        "sha256": "6483fbc49e88a8c37fce57509643c02d4765451b0aa2d166315512f5120edf4f"
       },
       {
         "name": "present.27.value",
@@ -2820,7 +3711,7 @@
           1,
           96
         ],
-        "sha256": "944e81642fc7523c8b050e6159647a7a6c6aab92b5ceab0910578e14a34b683d"
+        "sha256": "4921ddf7c0870bbca133a0823f9fa31f30f78e67dd1eff6d85596bd0fed20ec4"
       },
       {
         "name": "present.28.key",
@@ -2831,7 +3722,7 @@
           1,
           96
         ],
-        "sha256": "e16f854fe943a2a147da4c1e188dd44b242a1bdd8739bf2c2efe7211e212b388"
+        "sha256": "09f5112de425a4ea15dec85ec9594e0305603ee56bb5dca5a01172a7778200db"
       },
       {
         "name": "present.28.value",
@@ -2842,7 +3733,7 @@
           1,
           96
         ],
-        "sha256": "9d01dabae10fbeb8e635bd52176094d69a749930ad07353e5eeda0fa07272eb4"
+        "sha256": "43215e68cdb1e1cd6a17dbc8561a0a97f0a90ff5b2a08ad61d9098d4b5abfc8e"
       },
       {
         "name": "present.29.key",
@@ -2853,7 +3744,7 @@
           1,
           96
         ],
-        "sha256": "1d628bb376e5c7b6a060aadf4997cb16f8158c0aff365cb2e7394e3ab02af333"
+        "sha256": "518997409ea766a28064f0914850121469d506d88aa0fdf42cc4b660673bb05b"
       },
       {
         "name": "present.29.value",
@@ -2864,7 +3755,7 @@
           1,
           96
         ],
-        "sha256": "ae88ba64d1ff58ac71bc159b023d4279aff639c65f102f477d974c59104e2c74"
+        "sha256": "49d56acc946b22e38b005b43fba38bb88503f17aea99b970bcadd94c485a2408"
       },
       {
         "name": "present.30.key",
@@ -2875,7 +3766,7 @@
           1,
           96
         ],
-        "sha256": "fd133d09a5607eb252382836db293ea2bec7e6e93deca664d714d39bfe1f4475"
+        "sha256": "e803120cfa39b3c2e6a917c55f5ba7370778b44237fc16e5ea3634b84880f065"
       },
       {
         "name": "present.30.value",
@@ -2886,7 +3777,7 @@
           1,
           96
         ],
-        "sha256": "38d114615645cd0042a7f40430ffcd011e4dcaca4585751015ce18362c81d063"
+        "sha256": "18c67b54be653c5cb05640eea79ae7cd4ffb22dadb465ed79f48bf1f510426b7"
       },
       {
         "name": "present.31.key",
@@ -2897,7 +3788,7 @@
           1,
           96
         ],
-        "sha256": "5b28bdf8b1eb3526829d5d9c61cee18b0e8f13753ae762ed23bc283197fa1d61"
+        "sha256": "51b6f36e7f2610b08de3ffb6a2165e2bfb827091b4bc25095e8158cfa94f5678"
       },
       {
         "name": "present.31.value",
@@ -2908,26 +3799,26 @@
           1,
           96
         ],
-        "sha256": "604ce49e28fa0bc0a75319ca367c6395fd7c10fc29ff94b96d5794b6b35cff44"
+        "sha256": "142a6114e39627d8ecf3f8b71f6b6ed74840348c9d30f771867baf9f7de22ed0"
       }
     ],
     "partition_detail": {
       "CPUExecutionProvider": {
-        "Shape": 14,
-        "Gather": 14,
-        "Cast": 28,
-        "ReduceSum": 14,
-        "Sub": 14,
-        "Greater": 14,
-        "If": 14
+        "Shape": 26,
+        "Gather": 26,
+        "Cast": 52,
+        "ReduceSum": 26,
+        "Sub": 26,
+        "Greater": 26,
+        "If": 26
       },
       "VulkanExecutionProvider": {
-        "VulkanExecutionProvider_1030414944306789527_0": 14
+        "VulkanExecutionProvider_1030414944306789527_0": 26
       }
     },
     "worker_returncode": 0,
-    "outputs_dir": "bench\\results\\_cuda69\\scratch_profile_v3\\traced\\outputs_vulkan_prefill_1",
-    "trace_path": "bench\\results\\_cuda69\\scratch_profile_v3\\traced\\trace_prefill_1.json"
+    "outputs_dir": "_bench_scratch\\prof\\traced\\outputs_vulkan_prefill_1",
+    "trace_path": "_bench_scratch\\prof\\traced\\trace_prefill_1.json"
   },
   "cuda_record": {
     "arm": "cuda",
@@ -2944,15 +3835,15 @@
       "CPUExecutionProvider": 3
     },
     "kernel_time_us": {
-      "CUDAExecutionProvider": 209777.0,
-      "CPUExecutionProvider": 799.0
+      "CUDAExecutionProvider": 264131.0,
+      "CPUExecutionProvider": 1227.0
     },
     "executed_nodes": 331,
     "cpu_fallback_nodes": 3,
     "cpu_fallback_fraction_nodes": 0.00906344410876133,
-    "cpu_fallback_fraction_time": 0.00379435453233037,
+    "cpu_fallback_fraction_time": 0.0046239419953421415,
     "cpu_fallback_fraction_graph": null,
-    "cpu_fallback_fraction": 0.00379435453233037,
+    "cpu_fallback_fraction": 0.0046239419953421415,
     "fallback_node_names": [
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather",
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast",
@@ -2963,37 +3854,49 @@
     "vulkan_dispatches": null,
     "vulkan_fused_nodes": null,
     "warmup_ms": [
-      15.805500006536022,
-      15.41610001004301,
-      15.48719999846071
+      15.507399977650493,
+      15.106100006960332,
+      15.697399998316541,
+      15.144700009841472,
+      15.132200001971796
     ],
     "steady_ms": [
-      15.787700016517192,
-      15.366499981610104,
-      15.520699991611764,
-      15.520799992373213,
-      15.369100001407787,
-      15.468800003873184,
-      16.021700022974983,
-      15.937300020596012,
-      15.745500015327707,
-      15.438799979165196
+      15.007399983005598,
+      15.077199990628287,
+      15.19389997702092,
+      15.694300003815442,
+      15.22790000308305,
+      15.016799996374175,
+      15.438599977642298,
+      15.789600001880899,
+      15.677299990784377,
+      15.527400013525039,
+      15.508700016653165,
+      14.913199993316084,
+      14.932599995518103,
+      14.962099987315014,
+      14.916999993147328,
+      14.98060001176782,
+      15.631899994332343,
+      14.885499986121431,
+      14.85169999068603,
+      14.840199990430847
     ],
-    "session_create_ms": 2210.7451999909244,
-    "first_run_ms": 102.5589999917429,
-    "median_ms": 15.520749991992489,
-    "p05_ms": 15.367669990519062,
-    "p95_ms": 15.983720021904446,
-    "rsd_pct": 1.5314377373515649,
-    "tokens_per_s": 64.429876166804,
+    "session_create_ms": 3199.541700014379,
+    "first_run_ms": 85.36369999637827,
+    "median_ms": 15.046999993501231,
+    "p05_ms": 14.85112499067327,
+    "p95_ms": 15.699065003718715,
+    "rsd_pct": 2.177794110991368,
+    "tokens_per_s": 66.45843028058071,
     "ort_version": "1.26.0",
     "ort_build_cuda": null,
     "python": "3.12.10",
-    "feed_digest": "b00ecb0a92c47e60fa6d364ac3a1c757dedb9d06c642838ea850a4ee8b8e8677",
+    "feed_digest": "2ecd2f492a9cf4a7d0b1224a368af559a9a0b3daf754240aae81b60e6ac3e7e7",
     "model_bundle_sha256": "92f2fc001302d28cf5e0cf7dea51344fb80b7044dd0b3c77b9bd2f81c469f3fd",
     "device_identity": {},
     "peak_bytes": null,
-    "profile_path": "bench\\results\\_cuda69\\scratch_profile_v3\\cuda\\profile_cuda_prefill_1_1824_2026-08-07_10-39-57_459.json",
+    "profile_path": "_bench_scratch\\prof\\cuda\\profile_cuda_prefill_1_28280_2026-08-07_15-02-45_475.json",
     "compute_regime": "tf32",
     "provider_options": {
       "CUDAExecutionProvider": {
@@ -3035,7 +3938,7 @@
           1,
           32064
         ],
-        "file": "bench\\results\\_cuda69\\scratch_profile_v3\\cuda\\outputs_cuda_prefill_1\\out0.npy"
+        "file": "_bench_scratch\\prof\\cuda\\outputs_cuda_prefill_1\\out0.npy"
       },
       {
         "name": "present.0.key",
@@ -3046,7 +3949,7 @@
           1,
           96
         ],
-        "sha256": "f65eb0ead15036a9cd3914ef582bad8e0cb57c71d4954ba380cc444990064529"
+        "sha256": "6b245e1389da3f34c8626c8140a67a028b6d7d484ac8674afb183ac026168431"
       },
       {
         "name": "present.0.value",
@@ -3057,7 +3960,7 @@
           1,
           96
         ],
-        "sha256": "956d12583953e7974f80576393e32b3af217ba3d73e0ed8c89cada055b9e921c"
+        "sha256": "d556b6ce0efeb3e12ba2ccdfda3bbc7906b2d163936cc8996cf2319bcd2012e1"
       },
       {
         "name": "present.1.key",
@@ -3068,7 +3971,7 @@
           1,
           96
         ],
-        "sha256": "4d5b61cdcefa09828fe6ac5e2faf280277d67aec387e0a657bd45ef06f39c8aa"
+        "sha256": "1eaf3e60a0d1375b3ad74cf124625a515acd2563c91fbf1b6f2e7065a790cc6a"
       },
       {
         "name": "present.1.value",
@@ -3079,7 +3982,7 @@
           1,
           96
         ],
-        "sha256": "149d41f71c6e0cf44f672b663febd2885c8a3d64f71ba020011feafb273fb6af"
+        "sha256": "319b4e8ece731d1f9b9f8f964c1865ee61812795ccc69d1ac48716a4447a7f49"
       },
       {
         "name": "present.2.key",
@@ -3090,7 +3993,7 @@
           1,
           96
         ],
-        "sha256": "618ea7fff54b3b149555b3a1d22b57f92c527b80eddafd63b39901d8b828e702"
+        "sha256": "59ed9dbe7136265d7e0467b21cdbaba0f3a42c176bae9b1ca622ba228fd01e85"
       },
       {
         "name": "present.2.value",
@@ -3101,7 +4004,7 @@
           1,
           96
         ],
-        "sha256": "e330566022517a3a57f82f96a493d8ce77868d1676d47200e95b213eff9a7be4"
+        "sha256": "e6681a8d527e230d2ea00e72f580278128635e84a07e9d93fbc6b187f7f630ff"
       },
       {
         "name": "present.3.key",
@@ -3112,7 +4015,7 @@
           1,
           96
         ],
-        "sha256": "5fdc1d46e7e84491d067cb76959c02fe754600d8886357def55f0caf9a0f0ce3"
+        "sha256": "1d8a3311e10a0dbad1d48e0489c8adb1a3750c785ae0b52ce2a8d6c5f0035e00"
       },
       {
         "name": "present.3.value",
@@ -3123,7 +4026,7 @@
           1,
           96
         ],
-        "sha256": "5034f152630d8c0a0526732c410a2891235faf4683327acd44d2a3f3caf80101"
+        "sha256": "5139e4935ec0f70ef9c7faf9cc63648f2b2075b53c95ffb7a32328b6199a8881"
       },
       {
         "name": "present.4.key",
@@ -3134,7 +4037,7 @@
           1,
           96
         ],
-        "sha256": "3e3d2dddf84d35b79687764383f8139a56d355cdad8aa31af84f088b10bad853"
+        "sha256": "459d158f8673a93778f4afd431e5af6d75e7f1d40bb20b5815d61b495611cacc"
       },
       {
         "name": "present.4.value",
@@ -3145,7 +4048,7 @@
           1,
           96
         ],
-        "sha256": "9eea2f15b5adfeeb3743d9eee0a79432d5e667a16673fc5c88a0cb505d5888bd"
+        "sha256": "0cee7ad1452494b4a4112a245bf8160aae3345b7fa52389507034bdca936620b"
       },
       {
         "name": "present.5.key",
@@ -3156,7 +4059,7 @@
           1,
           96
         ],
-        "sha256": "ea6c43f93d86bf807fc8850f0d89df0d6600b4870508068c582687499406212a"
+        "sha256": "31c6dec49abf17a931ec2a29613f35ac48aebecf858ed39055ec08ebaf9aa4ef"
       },
       {
         "name": "present.5.value",
@@ -3167,7 +4070,7 @@
           1,
           96
         ],
-        "sha256": "1071bba85a1f53a25a4a3c4f7b1462ea56a099952eafac1d6f1b189d7ddb1b55"
+        "sha256": "356529fd005749ef4b1929716ffb0276124abe8adb62bff390acd6f8d2f269f2"
       },
       {
         "name": "present.6.key",
@@ -3178,7 +4081,7 @@
           1,
           96
         ],
-        "sha256": "60bf59b676a757da2e9649d92f7fd15364dd4e4fbceddf39e3946109f89e9b67"
+        "sha256": "8118e966ae5d67c7c90589bdd5819bee8d87bd5af4c1f3e36ba181e09a1ca604"
       },
       {
         "name": "present.6.value",
@@ -3189,7 +4092,7 @@
           1,
           96
         ],
-        "sha256": "56b68b79a25717d8a09aaaf4f1c4b739dca7a7fefb7311f789629ef1f9c600e8"
+        "sha256": "673ccff1581802f41ede6e292d72fffd68e1c2b40bef4b25bd0834e676e5e749"
       },
       {
         "name": "present.7.key",
@@ -3200,7 +4103,7 @@
           1,
           96
         ],
-        "sha256": "9ab80db31f009ba76ffed90221f71c2d63d3d254a1cbfaa856e071647642fb15"
+        "sha256": "fb8fffa3810e75e56b123e2894e848850eadb82e9f725ac13df35a03d4be045a"
       },
       {
         "name": "present.7.value",
@@ -3211,7 +4114,7 @@
           1,
           96
         ],
-        "sha256": "9c544385bf521d8a32814d2ce304b41f930070a0d35b8ad6cc3fac3aad20a704"
+        "sha256": "7f1c889f6cc43e476c6c4028a44fdb81949bdc88664f222a30b3f38790ed8101"
       },
       {
         "name": "present.8.key",
@@ -3222,7 +4125,7 @@
           1,
           96
         ],
-        "sha256": "a875e429631f60b03914a6f859a3426321e84c72ece802fc2790781d2b9d8420"
+        "sha256": "b4d2b6bfc496d17b8647bfbd82536db5e9a612586f86627da0f6f5af8aab09d9"
       },
       {
         "name": "present.8.value",
@@ -3233,7 +4136,7 @@
           1,
           96
         ],
-        "sha256": "35031d48f3795963db48eaa9b11e4fbcbac2854c32d1ef0ad7bae9a06326e817"
+        "sha256": "e7a827b925e2e272a11e1728c28027282f07e798d4082dba7787e78a251e6098"
       },
       {
         "name": "present.9.key",
@@ -3244,7 +4147,7 @@
           1,
           96
         ],
-        "sha256": "cde7fcbe0c14c8081ec8c1a21212fc396f0322ee25c6927ddd85f1f8803e6f4d"
+        "sha256": "83b63cc96da58abbdd4f8febe632b735c47c5bb38d931ba8fa4f260e0ffc1152"
       },
       {
         "name": "present.9.value",
@@ -3255,7 +4158,7 @@
           1,
           96
         ],
-        "sha256": "89e659b666327e6db854c261db5ccec36c1bbfa728a9bef681634ad48961fd9a"
+        "sha256": "a668d44a068e747d890670057f9438f2cef37fb8ef77d89590557ce791fe01ae"
       },
       {
         "name": "present.10.key",
@@ -3266,7 +4169,7 @@
           1,
           96
         ],
-        "sha256": "c0143142a1063e3da652a7457fbabe26f2de5f25bd5a68e9e4e9b220e5b5c492"
+        "sha256": "7f6be0f01c546728258487e41a5e56b8aa3d6039341047876b9fda93e837d027"
       },
       {
         "name": "present.10.value",
@@ -3277,7 +4180,7 @@
           1,
           96
         ],
-        "sha256": "6688a3ca948c1e08d7a4e8c5306a448ce47dc489a4177f83caeb542a028f77b7"
+        "sha256": "d99b180f0dfe20fcd6cbe3b6a1c48958bda5c0d3dfa0dc0a974b6177edc32ad0"
       },
       {
         "name": "present.11.key",
@@ -3288,7 +4191,7 @@
           1,
           96
         ],
-        "sha256": "20695d6459de4f94d674bceec36985799bfa5a13cbdd1f44cf35badc6b527522"
+        "sha256": "43d4e7cefbd4866b97e2b49717eba1505ee3607189fe6c471295604bde192fd1"
       },
       {
         "name": "present.11.value",
@@ -3299,7 +4202,7 @@
           1,
           96
         ],
-        "sha256": "e217dcb172a1c20a5b0e2125399fe9c377e8dd5d1a653f973c778f92aecb4bcb"
+        "sha256": "149f585c2a489c70668510078a2b1796d42b390ff0f9b5fe65c8499cd6ee0f79"
       },
       {
         "name": "present.12.key",
@@ -3310,7 +4213,7 @@
           1,
           96
         ],
-        "sha256": "582136e802960411e73a7f00257ad68d723cf2ad492208879e06c66d85414dc3"
+        "sha256": "06216b9b8b9284b5c409a3aff4c5a61d33c2189d9e445f11d6370639e1765472"
       },
       {
         "name": "present.12.value",
@@ -3321,7 +4224,7 @@
           1,
           96
         ],
-        "sha256": "c28df5520cd0b956cae806db13ba2aebe1cae6e01fb1aea36f9e6efb1a852780"
+        "sha256": "4f15dfe692bb3750bbdf55da5ea3c25e622b7b5aa00f674375fa0d564d926a23"
       },
       {
         "name": "present.13.key",
@@ -3332,7 +4235,7 @@
           1,
           96
         ],
-        "sha256": "9d2fdc5e907b71f490f8027bbf32d18ceecc4c482c10c57af7ae409e06db456d"
+        "sha256": "2d91a8eafa93be184df66eba4c0df19324d9d782820e58c613387bf7ae9e854b"
       },
       {
         "name": "present.13.value",
@@ -3343,7 +4246,7 @@
           1,
           96
         ],
-        "sha256": "5da47074d9a741426ba8aa8f3994799b3f1cff0639ec5baab52cc11ab1d2c950"
+        "sha256": "cd218dde7ff60c37ece7ac7d8d7a0783ec2e045bc6af894069f02b0f92fd26cd"
       },
       {
         "name": "present.14.key",
@@ -3354,7 +4257,7 @@
           1,
           96
         ],
-        "sha256": "086dfb4aa934e35007c0aa15d8197361d4879181bf773aefc39f43de452a4744"
+        "sha256": "d82d2cf5c2f199907d5719902ecce384c1375918c0581c45ad4df5a3370d3674"
       },
       {
         "name": "present.14.value",
@@ -3365,7 +4268,7 @@
           1,
           96
         ],
-        "sha256": "499f5b1c5ae642d5099576e587372aa092e39d808a0c5e41cc7779a370682b28"
+        "sha256": "a3ee013e554e16e97ba9b482fe6af7193514ef19c58d97e3d70481f29379c9e3"
       },
       {
         "name": "present.15.key",
@@ -3376,7 +4279,7 @@
           1,
           96
         ],
-        "sha256": "3120e5c14158416a26acd88c37fd625102bb2b53c17a3f08c49b9ae8267162c7"
+        "sha256": "e7488bd983ba0e0bac847f5ef4115011426db5f890fe4aabd0d4de6080a0cf3d"
       },
       {
         "name": "present.15.value",
@@ -3387,7 +4290,7 @@
           1,
           96
         ],
-        "sha256": "7a78629ec814d7e7acd3dd99e28459e57b43b20e47a1245c8e89c10e1a1c0b25"
+        "sha256": "62e1e872fe206c3f0c2bff96805e0873dc457eac190f33c1c4d333d5cc518bbe"
       },
       {
         "name": "present.16.key",
@@ -3398,7 +4301,7 @@
           1,
           96
         ],
-        "sha256": "e40c617da1fec9549d8952bc522b10061ba6a51582c74a0129905992c7d1306c"
+        "sha256": "25816784554f321565d04a257a2ad5669e3486310cc0e978f92545b7feb3e763"
       },
       {
         "name": "present.16.value",
@@ -3409,7 +4312,7 @@
           1,
           96
         ],
-        "sha256": "b4f9eb769a10f2e995097e405715ca014e193336d0ea6c9ab86bdd32a47f1950"
+        "sha256": "c424ea93c0ce26296e3f4eaea8b679790dfb04916ba0f2a1c42a30adb5df3644"
       },
       {
         "name": "present.17.key",
@@ -3420,7 +4323,7 @@
           1,
           96
         ],
-        "sha256": "124d88b7f1f91057dd7a628c7ef1801eaef018623159ba691509ab783ed79223"
+        "sha256": "3d5e6008e1ea0761a80d2de1d166ac42b591f13223b6c8d43cb0ce02caef144d"
       },
       {
         "name": "present.17.value",
@@ -3431,7 +4334,7 @@
           1,
           96
         ],
-        "sha256": "c34f0394876bb23ed5b96147ed49206f7571d52dc0c9b040a738bf8b3fdd6df1"
+        "sha256": "e68acbf1e8befe4d9ca4e6f5329e134a77a46fd7a76b535c3576dc7d8ffd1273"
       },
       {
         "name": "present.18.key",
@@ -3442,7 +4345,7 @@
           1,
           96
         ],
-        "sha256": "2dea7e6232daafa0a80c0f5793fa249e228dd7fb532366fc1ca74731ae06f36e"
+        "sha256": "d57710da3991110aa63a9183af1fe356cbd16bb1af1e2f03ef141cdb9262bc4f"
       },
       {
         "name": "present.18.value",
@@ -3453,7 +4356,7 @@
           1,
           96
         ],
-        "sha256": "a13e21783d3c3b2bf4616d7df152e879e70dd06fc965190fcff5b57d08de98ad"
+        "sha256": "b4264b54e801bda49df21ce1b5e17b9ef009d78a8fd9eec600018399a54c8780"
       },
       {
         "name": "present.19.key",
@@ -3464,7 +4367,7 @@
           1,
           96
         ],
-        "sha256": "f7656c8542f4920de196f251526acbac84d89035cc8ea30826ff01d339531f92"
+        "sha256": "9cf14b1811e8fb28907b5a7b0afefc91ab5202e48bb3623115367a6ac2d06633"
       },
       {
         "name": "present.19.value",
@@ -3475,7 +4378,7 @@
           1,
           96
         ],
-        "sha256": "3c7520f42af0448ff7ee638f5b91923ce14388f44bf307d6596ff75eee97430f"
+        "sha256": "769b00038a74e910dc8dcf0350fb7095fc827b3493352ef2afb1d2cd1f35f2b7"
       },
       {
         "name": "present.20.key",
@@ -3486,7 +4389,7 @@
           1,
           96
         ],
-        "sha256": "bbf52938d0456d84de3e87ef025814ae9b26762cca20f9284fbb4816483aed51"
+        "sha256": "2d17ed2f4554dec36a13b95e9e587a81b85d9820bb5734d3f44e8149a89584d1"
       },
       {
         "name": "present.20.value",
@@ -3497,7 +4400,7 @@
           1,
           96
         ],
-        "sha256": "0cee06f2f1e1f3c5539f6a5afa0feb7f0adca3ed28b215ee38c43c6b61f3613b"
+        "sha256": "858bbd864793d834c69029b1f852050760afe30381b1832b62d313f2d9bcad63"
       },
       {
         "name": "present.21.key",
@@ -3508,7 +4411,7 @@
           1,
           96
         ],
-        "sha256": "b0783db7bdc203a9d5634ab685ecced34310e532e62f1e0f7ecad71fbd770efe"
+        "sha256": "d3cbe574c18126a21226cb400f92eabe24e2c30b389d77b5d269b46d4d74e103"
       },
       {
         "name": "present.21.value",
@@ -3519,7 +4422,7 @@
           1,
           96
         ],
-        "sha256": "0659a8c203fad7b7aa9edbd0d60f205e1baf3c8496113e67de1ed4b5a6cb53b0"
+        "sha256": "5b9ba4ed6f5459f10adde9924ba6a1aa911ca7dbdc6126c540a2c99ee74a9d9c"
       },
       {
         "name": "present.22.key",
@@ -3530,7 +4433,7 @@
           1,
           96
         ],
-        "sha256": "22f33998c8d9a9373edc4ce27ef20d1c5bbb799da8d153182963ff91b26832a9"
+        "sha256": "fbd1715895549448fd4518e0cc25f79a0c8e450e6c6b7fd26152936abca306ef"
       },
       {
         "name": "present.22.value",
@@ -3541,7 +4444,7 @@
           1,
           96
         ],
-        "sha256": "2dba1280855204783abf920af3007096604954d17c51865dd140648b7d49734e"
+        "sha256": "e64e1a4ada6378320370d005a5b90a3c14dc8ce6b1f8784e45c531c06a9a0a98"
       },
       {
         "name": "present.23.key",
@@ -3552,7 +4455,7 @@
           1,
           96
         ],
-        "sha256": "9bd58824a72ca01a800b5ad175555c40b5ef091321b0b5d804b58cb686ae2613"
+        "sha256": "36087b1a2cd07ab0a8b22b8919fb4351709a65ae78feeabaf2b8d8c1f72a714c"
       },
       {
         "name": "present.23.value",
@@ -3563,7 +4466,7 @@
           1,
           96
         ],
-        "sha256": "ca6437fc78a41e6cabc965a87fb95618db20e4e7ded43b42aaa90f27fd63963c"
+        "sha256": "5f1200c44a2b0ec472895f2c5b2aa53ca8468e0ca7408091cc2e1c18102855cb"
       },
       {
         "name": "present.24.key",
@@ -3574,7 +4477,7 @@
           1,
           96
         ],
-        "sha256": "76f506fcf78176c551a67fe45769676a602bd43f8aa9a085ca3c53de5725156c"
+        "sha256": "dc8fada7fe94c0ea8f3e7cad310782f886afc5fabfaf0ab3a4595d9730852cf9"
       },
       {
         "name": "present.24.value",
@@ -3585,7 +4488,7 @@
           1,
           96
         ],
-        "sha256": "aa43b4fd7ec536497a219a993a8eb357bd4e8a3975d8c873e8c009332fc7565f"
+        "sha256": "f5ddc2c2f4df12de34ab04985b6aa58409a79973fbcfe4f74d024b78a44ea027"
       },
       {
         "name": "present.25.key",
@@ -3596,7 +4499,7 @@
           1,
           96
         ],
-        "sha256": "b2866f4395613f65f0cecadcb11e94aedaa58d9c03ea0a4ad9c8e57a8c330100"
+        "sha256": "566b89e1de3613ba2452c1ce01b8d845ce1fa5fd9ddf090fdf1597d034ea3d1b"
       },
       {
         "name": "present.25.value",
@@ -3607,7 +4510,7 @@
           1,
           96
         ],
-        "sha256": "f04641939fb45bba1c0369cfcf7131b1f4090a4b92ff46b1ea9fc231ae306c64"
+        "sha256": "0815d22460eb9680f6b46f55d777320e650ad90c86241e8a8c5b20656f2932ee"
       },
       {
         "name": "present.26.key",
@@ -3618,7 +4521,7 @@
           1,
           96
         ],
-        "sha256": "277d76df8523e3b5ec2ceccc68e42e7573c865b02a7698bdaf2898a3cc4bd75b"
+        "sha256": "289767cd35ae5328f5b6ad4049b57645f5a336d12f8c8de3627760923b2d0e18"
       },
       {
         "name": "present.26.value",
@@ -3629,7 +4532,7 @@
           1,
           96
         ],
-        "sha256": "a718cd73392b15fbddd36ec5d8519de9993094d822c692791de2a7e3504a9bb9"
+        "sha256": "f7c09162f92c40a77d9af70e36bec6fca6086488ddd88e7d09846e5844d843e1"
       },
       {
         "name": "present.27.key",
@@ -3640,7 +4543,7 @@
           1,
           96
         ],
-        "sha256": "f190730a0ef53e4083fb77c9d0809dbaeeeca6cae5aa9ebb0d08aa1ddce7ccec"
+        "sha256": "4c1c99c8c105baf4c7c03cb7839d89ad136d01734f3c00190d3c5a9e7ff1de5c"
       },
       {
         "name": "present.27.value",
@@ -3651,7 +4554,7 @@
           1,
           96
         ],
-        "sha256": "9c3f971b8ad070c0dc8772163e21caea3f8e554d6a327984ed8b722b50861672"
+        "sha256": "f2d38bdc927e6277e1e153ef053768c758b8f9afb81650958d7abd177bf9b345"
       },
       {
         "name": "present.28.key",
@@ -3662,7 +4565,7 @@
           1,
           96
         ],
-        "sha256": "cfdf829e8b72b5893932057cf5ace17f651722a06cb19c47fcc5febf1d0a77a2"
+        "sha256": "5500b318b307c4e43c48402ff189bd39076ebe46059c644ae743031413a38efe"
       },
       {
         "name": "present.28.value",
@@ -3673,7 +4576,7 @@
           1,
           96
         ],
-        "sha256": "ee66ca278d24b8a192b1b1dbc19082c03232fc840eaf9355c151309402ae6341"
+        "sha256": "5a854c7c8f443d9d151a72b12d627ea9c1221553e14f287b10c0ff797a338236"
       },
       {
         "name": "present.29.key",
@@ -3684,7 +4587,7 @@
           1,
           96
         ],
-        "sha256": "af76b3aa8e37dea2804b44217453b693b7a7d83690787f66fe354177192662e5"
+        "sha256": "1a3fb76bfbbc226afc962b817fdc53a1d057a1c343c2d9fef450170308c45943"
       },
       {
         "name": "present.29.value",
@@ -3695,7 +4598,7 @@
           1,
           96
         ],
-        "sha256": "19e80b980fe83985f1f7e704df87c96e814638d4638594c5ff778b822290166b"
+        "sha256": "e89ece88cadd666565d66bd5104512f6fafab0ee0afc19bb24f1df39b60a2050"
       },
       {
         "name": "present.30.key",
@@ -3706,7 +4609,7 @@
           1,
           96
         ],
-        "sha256": "a44b82e6705e0a78838b240bd217d184a71e0f44debb0ae7e077400c47f76551"
+        "sha256": "e9f741818b20b61fb846c2288e49ef0bb07f89e01c1bd51edabc1d7b5c506f7a"
       },
       {
         "name": "present.30.value",
@@ -3717,7 +4620,7 @@
           1,
           96
         ],
-        "sha256": "a29479dffabd6503b539e5e9d6fb49bd02f60850479006bd71be649f23f287d7"
+        "sha256": "c93718547de67de25fa106753c2bf17b84439b6c415b00b8ffe49fcf9034000e"
       },
       {
         "name": "present.31.key",
@@ -3728,7 +4631,7 @@
           1,
           96
         ],
-        "sha256": "f2df1d7da442964498ef15fae9aa930712a3a731a8eb86e032dc75f9bbeb49f5"
+        "sha256": "1552bfd60738a3dcc2c81390ad95fee6a6595aaa926a95a5552701e5a44f947d"
       },
       {
         "name": "present.31.value",
@@ -3739,34 +4642,34 @@
           1,
           96
         ],
-        "sha256": "3845e047e4181b75d8b86da500386cafe0c49ddab348143c36be20f8cafe54b6"
+        "sha256": "c0092beced262876d0fe12937356a4bf44bf18559d5aa717e9b15e3d03735208"
       }
     ],
     "partition_detail": {
       "CUDAExecutionProvider": {
-        "Gather": 14,
-        "SimplifiedLayerNormalization": 14,
-        "MatMulNBits": 2254,
-        "Shape": 14,
-        "ReduceSum": 14,
-        "Sub": 14,
-        "Cast": 14,
-        "If": 14,
-        "GroupQueryAttention": 448,
-        "SkipSimplifiedLayerNormalization": 896,
-        "QuickGelu": 448,
-        "Mul": 448
+        "Gather": 26,
+        "SimplifiedLayerNormalization": 26,
+        "MatMulNBits": 4186,
+        "Shape": 26,
+        "ReduceSum": 26,
+        "Sub": 26,
+        "Cast": 26,
+        "If": 26,
+        "GroupQueryAttention": 832,
+        "SkipSimplifiedLayerNormalization": 1664,
+        "QuickGelu": 832,
+        "Mul": 832
       },
       "CPUExecutionProvider": {
-        "Gather": 14,
-        "Cast": 14,
-        "Greater": 14
+        "Gather": 26,
+        "Cast": 26,
+        "Greater": 26
       }
     },
     "worker_returncode": 0,
-    "outputs_dir": "bench\\results\\_cuda69\\scratch_profile_v3\\cuda\\outputs_cuda_prefill_1"
+    "outputs_dir": "_bench_scratch\\prof\\cuda\\outputs_cuda_prefill_1"
   },
-  "cuda_median_ms": 15.520749991992489,
+  "cuda_median_ms": 15.046999993501231,
   "op_comparison": {
     "shared_op_types": [],
     "vulkan_only_op_types": [
@@ -3788,6 +4691,6 @@
     ],
     "comparable": false
   },
-  "gap_ms": 10.685550005291589,
-  "speedup_vulkan_over_cuda": 0.5922526260327098
+  "gap_ms": 12.974550001672469,
+  "speedup_vulkan_over_cuda": 0.5369795745093635
 }

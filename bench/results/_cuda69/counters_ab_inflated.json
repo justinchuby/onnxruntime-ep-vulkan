@@ -1,0 +1,920 @@
+{
+  "schema": "cuda_competition/1",
+  "started_utc": "2026-08-07T22:07:37Z",
+  "device_facts": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 143 Stepping 8, GenuineIntel",
+    "cpu_count": 24,
+    "nvidia": {
+      "producer": "nvidia-smi",
+      "driver_version": "573.44",
+      "cuda_driver_version": "12.8",
+      "device_names": [
+        "NVIDIA RTX A1000"
+      ],
+      "device_uuids": [
+        "GPU-aadf33d4-d118-155f-cc60-c22b5c352463"
+      ],
+      "error": null
+    }
+  },
+  "ep_provenance": {
+    "pinned_sources": {
+      "rust/shaders/glsl/gqa_f16.comp": "17bef90079cfb278fd4d44f01f1ad17030f0a95e969283c2cc69af7c863632bf",
+      "rust/src/ops/attention.rs": "ceedc42503aad42e87daec2cbf0891383c9b0a83e3eabe68a235e7806bef1a57"
+    },
+    "pinned_source_set": [
+      "rust/shaders/glsl/gqa_f16.comp",
+      "rust/src/ops/attention.rs"
+    ],
+    "lib_sha256": "07c6dfd5f22d23bf6145b01b09be7ed937e74a63d05656e9788249065283064e",
+    "lib_bytes": 2563072,
+    "git_commit": "ecd9e7262ff7c7bb25c2698bd18a64f004a5f552",
+    "git_tree_dirty": true,
+    "pinned_sources_dirty": false
+  },
+  "iters": 20,
+  "warmup": 5,
+  "seed": 1234,
+  "repeats": 1,
+  "arms": [
+    "vulkan"
+  ],
+  "fallback_split_threshold": 0.05,
+  "results": [
+    {
+      "arm": "vulkan",
+      "workload": "prefill_1",
+      "model_key": "phi35_int4",
+      "verdict": "ADMISSIBLE",
+      "provider_requested": "VulkanExecutionProvider",
+      "providers_held": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "partition": {
+        "CPUExecutionProvider": 8,
+        "VulkanExecutionProvider": 1
+      },
+      "kernel_time_us": {
+        "CPUExecutionProvider": 18327.0,
+        "VulkanExecutionProvider": 3957712.0
+      },
+      "executed_nodes": 9,
+      "cpu_fallback_nodes": 8,
+      "cpu_fallback_fraction_nodes": 0.8888888888888888,
+      "cpu_fallback_fraction_time": 0.004609361226084553,
+      "cpu_fallback_fraction_graph": 0.02203856749311295,
+      "cpu_fallback_fraction": 0.004609361226084553,
+      "fallback_node_names": [
+        "/model/attn_mask_reformat/attn_mask_subgraph/Gather",
+        "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast",
+        "/model/attn_mask_reformat/attn_mask_subgraph/ReduceSum",
+        "/model/attn_mask_reformat/attn_mask_subgraph/Shape",
+        "/model/attn_mask_reformat/attn_mask_subgraph/Sub",
+        "/model/attn_mask_reformat/attn_mask_subgraph/Sub/Cast",
+        "/model/rotemb_caches_subgraph/Greater",
+        "/model/rotemb_caches_subgraph/If"
+      ],
+      "vulkan_claimed_nodes": 355,
+      "vulkan_probed_nodes": 363,
+      "vulkan_dispatches": 9230,
+      "vulkan_fused_nodes": 1,
+      "warmup_ms": [
+        83.59850000124425,
+        65.7649000058882,
+        54.27459999918938,
+        52.84240000764839,
+        56.8001999927219
+      ],
+      "steady_ms": [
+        60.11269998271018,
+        60.76930000563152,
+        77.75739999487996,
+        64.42609999794513,
+        83.59070000005886,
+        64.81340000755154,
+        64.45050000911579,
+        54.81339999823831,
+        55.292799981543794,
+        60.269399982644245,
+        56.41910000122152,
+        71.94399999571033,
+        54.64639997808263,
+        54.562400007853284,
+        63.71059999219142,
+        75.55439998395741,
+        58.487000002060086,
+        55.79729998135008,
+        63.89260001014918,
+        56.81370000820607
+      ],
+      "session_create_ms": 704.5552000054158,
+      "first_run_ms": 2433.8481000158936,
+      "median_ms": 60.51934999413788,
+      "p05_ms": 54.64219997957116,
+      "p95_ms": 78.0490649951389,
+      "rsd_pct": 13.824191393490844,
+      "tokens_per_s": 16.523640787564034,
+      "ort_version": "1.28.0",
+      "ort_build_cuda": null,
+      "python": "3.12.10",
+      "feed_digest": "2ecd2f492a9cf4a7d0b1224a368af559a9a0b3daf754240aae81b60e6ac3e7e7",
+      "model_bundle_sha256": "92f2fc001302d28cf5e0cf7dea51344fb80b7044dd0b3c77b9bd2f81c469f3fd",
+      "device_identity": {},
+      "peak_bytes": null,
+      "profile_path": "_bench_scratch\\ab\\rep0\\profile_vulkan_prefill_1_14292_2026-08-07_15-07-44_796.json",
+      "compute_regime": "float32",
+      "provider_options": {
+        "VulkanExecutionProvider": {},
+        "CPUExecutionProvider": {}
+      },
+      "counters_scope": "all_runs_INFLATES_TIMING",
+      "equivalence": {},
+      "refusals": [],
+      "instrument_errors": [],
+      "outputs_manifest": [
+        {
+          "name": "logits",
+          "dtype": "float16",
+          "shape": [
+            1,
+            1,
+            32064
+          ],
+          "file": "_bench_scratch\\ab\\rep0\\outputs_vulkan_prefill_1\\out0.npy"
+        },
+        {
+          "name": "present.0.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "99686dc2ef97a8d9c99891ef8a877b12f74da48066a2916747b62d8228130ac3"
+        },
+        {
+          "name": "present.0.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "4218e5a72562bacc218bbf3819e4baa2baf9c0c8cb398b6f6e7aea92a26effb3"
+        },
+        {
+          "name": "present.1.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "a1965fe3df1ffa71c5d198ae1e7d5e733bc9079bd5e451abbaab6a8316ea36cc"
+        },
+        {
+          "name": "present.1.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "c4f859e280c4cacb5490cee0f17bd20a2c6007b234e772fcc8406f7712f9cc4e"
+        },
+        {
+          "name": "present.2.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "ffe62153552015dd0e7e0e8a5abd47a3fe22c72342a8731d3782754843cf7a57"
+        },
+        {
+          "name": "present.2.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "4d965a6be82dc7474ed1c8d57ee1b73ed971541005da535d7b2144f15597963b"
+        },
+        {
+          "name": "present.3.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "485d7d77514b25d376f60f803758d92d824eb4576a82b9429a53d918c3f16e7f"
+        },
+        {
+          "name": "present.3.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "ea9d15afcf33507658f1692accaf1b8dc3e9ac2b38b1f8294d6c31a986443521"
+        },
+        {
+          "name": "present.4.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "cdc60084e963cb9a748626d6991beccb482fc377f4d846cfcbb5ef88644a69b6"
+        },
+        {
+          "name": "present.4.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "0a7413e992ae3f457075c054e7a7fba5547a9a0fa83d60991fa8c1fb34d93e6a"
+        },
+        {
+          "name": "present.5.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "1a473a06b47b610906564200fad3f796401030b3c17b1b90439e510083d95161"
+        },
+        {
+          "name": "present.5.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "630f63c41d745fb7e675b43de7c806317649ef06f32755f8cef516f5b94dee13"
+        },
+        {
+          "name": "present.6.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "ad9f2a8c47aca2d4c5b811d9dbe1c8ce02c415098ee1fea6c0b32d208b9fa77c"
+        },
+        {
+          "name": "present.6.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "8d008f45c253c0d96c1dee1654b3601febf581570e747f5e750187738b56bb87"
+        },
+        {
+          "name": "present.7.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "ba6b8f9add360a606cc4122c1f6268ec9d76744b879cf3447a5f649018a52a3c"
+        },
+        {
+          "name": "present.7.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "2052d188b0fedd42e40769d7e69cadf3c85387a21cb1b272d11b644d2a8d53d9"
+        },
+        {
+          "name": "present.8.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "cbfdf6934f696dec8a1fd6ba21f4d351c63e393fd9b08a8b5275bab3adf1f8b4"
+        },
+        {
+          "name": "present.8.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "24be9f7c82c6c8f13824e93890ebd90299f5c8536bc746b0281f06b8af03293e"
+        },
+        {
+          "name": "present.9.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "c26a5eb7b432f5b296ac602eb276165795a314d5300468f77178d9c80c4bdf53"
+        },
+        {
+          "name": "present.9.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "fbf7af4f2d60030ace278f07cdc5c0927ee55898f4808bb7dd161b3b3ba90b31"
+        },
+        {
+          "name": "present.10.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "d417c505cac5ee571491ed17217048da5b5d09bdba360f7904b98504794c380f"
+        },
+        {
+          "name": "present.10.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "f759c4a2e7bad5c57c64efd52324bf510d1fedc94f57d8219370d11cad739e5a"
+        },
+        {
+          "name": "present.11.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "a52cfa4e2a28c1a482884382ca7622897bbcc88e81c0da17a804e9113e1f20ce"
+        },
+        {
+          "name": "present.11.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "3cf7b8b5c175e2e367039ffe4b00818bbf386d482f0fad2250b7af5ed4fd3fad"
+        },
+        {
+          "name": "present.12.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "4c3a6b6989189a29e4de26702da30371300ee8b4ede0d28ceca3864ef6b39036"
+        },
+        {
+          "name": "present.12.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "543a695a64a8504600285f031047544296a3ab773da65880aa0e83a760f151c7"
+        },
+        {
+          "name": "present.13.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "8540467fc54ed88cdda1c707ed3724ae4494247812d49dd068cda3b7b06f8e94"
+        },
+        {
+          "name": "present.13.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "7da5f3a976e43aa89ddc6ebd2f5ce1cec58b3b9bb6b401b6483e5702c08a8be8"
+        },
+        {
+          "name": "present.14.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "bc21d9167a9ee6f976dd18a6cb25fab42376bd3b42c43116a12c2c30d1111714"
+        },
+        {
+          "name": "present.14.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "d9962fe195fd59c99c50bfd2e3ce3646daca3b67e890fd43819fa29591cd2e9d"
+        },
+        {
+          "name": "present.15.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "7a5960d376f64e1b61bd699929fee4368760f7b40a8fbf288812be7f0b1484db"
+        },
+        {
+          "name": "present.15.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "e543426662844d8183867e2429844d51db2dbaa64ca3b95585dc144ed99f7b10"
+        },
+        {
+          "name": "present.16.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "80d08644046a4a58056f9e7fec394abbe40a12a095a20fe30cee9f1bbade03cd"
+        },
+        {
+          "name": "present.16.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "8a770afa02bcfc8ed892a554f0f28a4b64cdb0497ad0502319a1f8c5c3c6bdfc"
+        },
+        {
+          "name": "present.17.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "d3dbbf251a969e5b07e309bda4063bc91e765d92d869bb2f3f37a2ba9e12f307"
+        },
+        {
+          "name": "present.17.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "9c88f4283388d5d9215f4feeb3d5178cd6358dc365f41dd7c757f7f2f4cd08af"
+        },
+        {
+          "name": "present.18.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "0254ccf86b7eedfdfc76c35ce6902758c04ee87998dceebbf4d856610a279f27"
+        },
+        {
+          "name": "present.18.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "4c9cd58b64e0fd95304f38c4719d13c30fb971644f3dcac0a7a8b8dcd0c7019c"
+        },
+        {
+          "name": "present.19.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "f4766b731e1e0d69053eea50e00a0cb7cd3a88eb2cf689dba9cd0fed9ba9ede8"
+        },
+        {
+          "name": "present.19.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "74186dcdda29b4d05b9ac36a72d94b485d9e41c01c1c35ec8b72fa7af84a0634"
+        },
+        {
+          "name": "present.20.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "9a72a6271e2205d8c32b572ab29ee09d4c47b789f5089295397400d44abb1dd5"
+        },
+        {
+          "name": "present.20.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "3208e6e769cd605c93e3392467eedd84330d9d767fa611957a15039ea00f2bb7"
+        },
+        {
+          "name": "present.21.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "dd2f05950bfaf8a9a684e960b1de75269e16b30e9001aef8a189d769c55897f1"
+        },
+        {
+          "name": "present.21.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "23e3b1adb12bd0c6ed1c525126e26bfe2e7ec11a99b3513562da54995b117748"
+        },
+        {
+          "name": "present.22.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "b3a114fdc0e887efa2d80d7c34c359f6482be1397b47d4e3ecf9622d95001412"
+        },
+        {
+          "name": "present.22.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "e56785d7862ab90504144a9e6f6cc86b3527b083edd573e6cdd6803427fc4140"
+        },
+        {
+          "name": "present.23.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "d32c1c84bd16b53d4e8451c002b20389758588a815d85329da45315437ff4241"
+        },
+        {
+          "name": "present.23.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "6bed036d334ec329db015e5260b7b8abbfb42f3fd6768c56ff186f4d2d39e78b"
+        },
+        {
+          "name": "present.24.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "944d152f668df7082ea08c7aea168ea1b0f12aa8b7de935c11dad5ea15579f5a"
+        },
+        {
+          "name": "present.24.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "22e3a593fdb6abf38e806e9ef6b5c1810c4dcef0b50d884a8f2721ec3d2844cc"
+        },
+        {
+          "name": "present.25.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "3e387febf4f7b39b2e6a9e51a4f0461d76de823ad49859ac1fe3243528f4816f"
+        },
+        {
+          "name": "present.25.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "ac28da29f2ae4b804ee0f5758f3fc84e10b99552d118660f17a7390c0d68f8f3"
+        },
+        {
+          "name": "present.26.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "45ae5df70d2b5e7a298d2a4b5e8a21a7ddc1689601a72d50fffe2d3c999c4dbb"
+        },
+        {
+          "name": "present.26.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "41063d6f9379e96ddb24e383c4f409729778bb0cb6eed42de5317751b55a6d23"
+        },
+        {
+          "name": "present.27.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "6483fbc49e88a8c37fce57509643c02d4765451b0aa2d166315512f5120edf4f"
+        },
+        {
+          "name": "present.27.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "4921ddf7c0870bbca133a0823f9fa31f30f78e67dd1eff6d85596bd0fed20ec4"
+        },
+        {
+          "name": "present.28.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "09f5112de425a4ea15dec85ec9594e0305603ee56bb5dca5a01172a7778200db"
+        },
+        {
+          "name": "present.28.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "43215e68cdb1e1cd6a17dbc8561a0a97f0a90ff5b2a08ad61d9098d4b5abfc8e"
+        },
+        {
+          "name": "present.29.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "518997409ea766a28064f0914850121469d506d88aa0fdf42cc4b660673bb05b"
+        },
+        {
+          "name": "present.29.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "49d56acc946b22e38b005b43fba38bb88503f17aea99b970bcadd94c485a2408"
+        },
+        {
+          "name": "present.30.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "e803120cfa39b3c2e6a917c55f5ba7370778b44237fc16e5ea3634b84880f065"
+        },
+        {
+          "name": "present.30.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "18c67b54be653c5cb05640eea79ae7cd4ffb22dadb465ed79f48bf1f510426b7"
+        },
+        {
+          "name": "present.31.key",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "51b6f36e7f2610b08de3ffb6a2165e2bfb827091b4bc25095e8158cfa94f5678"
+        },
+        {
+          "name": "present.31.value",
+          "dtype": "float16",
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "sha256": "142a6114e39627d8ecf3f8b71f6b6ed74840348c9d30f771867baf9f7de22ed0"
+        }
+      ],
+      "partition_detail": {
+        "CPUExecutionProvider": {
+          "Shape": 26,
+          "Gather": 26,
+          "Cast": 52,
+          "ReduceSum": 26,
+          "Sub": 26,
+          "Greater": 26,
+          "If": 26
+        },
+        "VulkanExecutionProvider": {
+          "VulkanExecutionProvider_1030414944306789527_0": 26
+        }
+      },
+      "worker_returncode": 0,
+      "outputs_dir": "_bench_scratch\\ab\\rep0\\outputs_vulkan_prefill_1",
+      "repeat": 0
+    }
+  ],
+  "equivalence": {
+    "prefill_1": {
+      "reference_arm": "cpu_host",
+      "arms": {},
+      "detail": "reference arm cpu_host produced no outputs; equivalence is UNMEASURED, not passing"
+    }
+  },
+  "comparisons": [
+    {
+      "workload": "prefill_1",
+      "family": "prefill",
+      "seq_len": 1,
+      "past_len": 0,
+      "n_vulkan": 20,
+      "n_cuda": 0,
+      "equivalence_disqualified_arms": [],
+      "verdict": "UNMEASURED",
+      "detail": "no admissible samples for cuda; a missing arm is not a losing arm and no ratio is quotable"
+    }
+  ],
+  "models": {
+    "phi35_int4": {
+      "key": "phi35_int4",
+      "status": "MODEL_OK",
+      "path": "<foundry-cache>/Microsoft/Phi-3.5-mini-instruct-cuda-gpu-2/v2/phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+      "files": [
+        {
+          "name": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+          "path": "<foundry-cache>/Microsoft/Phi-3.5-mini-instruct-cuda-gpu-2/v2/phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+          "bytes": 26180848,
+          "sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f"
+        },
+        {
+          "name": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx.data",
+          "path": "<foundry-cache>/Microsoft/Phi-3.5-mini-instruct-cuda-gpu-2/v2/phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx.data",
+          "bytes": 2291238912,
+          "sha256": "9ce390a75dd00614031c41af38f0f3a83fdfe4648dcec8514d96800020e92217"
+        }
+      ],
+      "bundle_sha256": "92f2fc001302d28cf5e0cf7dea51344fb80b7044dd0b3c77b9bd2f81c469f3fd",
+      "total_bytes": 2317419760,
+      "license_id": "MIT",
+      "license_url": "https://huggingface.co/microsoft/Phi-3.5-mini-instruct/blob/main/LICENSE",
+      "description": "Phi-3.5-mini-instruct, ORT GenAI builder, cuda-int4-rtn-block-32 (MatMulNBits + GroupQueryAttention, fp16 activations, external data)",
+      "producer_note": "com.microsoft contrib ops: MatMulNBits, GroupQueryAttention, SkipSimplifiedLayerNormalization",
+      "source": "foundry",
+      "detail": "resolved by identity through rust/tools/foundry_discovery.py (issue #11 contract: exactly one cached, correctly-provisioned variant, or refuse)"
+    }
+  }
+}

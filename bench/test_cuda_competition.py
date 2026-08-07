@@ -908,7 +908,7 @@ def test_counters_dump_is_not_left_inside_the_timed_region():
 
     Asserted on the source rather than by running a session, because the failure is a
     *timing* artifact: a functional test passes cheerfully while the number it produces
-    is inflated 2.26x. What can be checked cheaply and deterministically is the ordering
+    is inflated ~1.9x. What can be checked cheaply and deterministically is the ordering
     — the pop must appear after the first run and before the warmup loop.
     """
     src = Path(cc.__file__).read_text(encoding="utf-8")
@@ -919,8 +919,8 @@ def test_counters_dump_is_not_left_inside_the_timed_region():
     assert first_run < pop < warmup < steady, (
         "the counters-file env var must be unset after the first run and before the "
         "warmup/steady loops. The EP rewrites that JSON after every Compute, so leaving "
-        "it set puts a file write inside every timed inference — measured at 2.26x on "
-        "Phi-3.5 prefill_1.")
+        "it set puts a file write inside every timed inference — measured at 1.94x on "
+        "Phi-3.5 prefill_1 (bench/results/_cuda69/counters_ab_inflated.json).")
 
 
 def test_counters_scope_is_recorded_on_every_vulkan_arm():
@@ -928,11 +928,16 @@ def test_counters_scope_is_recorded_on_every_vulkan_arm():
 
     A number that was inflated by instrumentation and a number that was not are not
     interchangeable, and the withdrawn `baseline_main*.json` files contained the former:
-    their Vulkan `prefill_1` median read 44.605 ms against 27.733 ms for the same arm in
-    `baseline_fixed.json`, and they said `ADMISSIBLE` with no refusals while carrying no
+    they said `ADMISSIBLE` with no refusals while carrying no
     `counters_scope` at all. Without this field on the record there is nothing in the
     artifact that distinguishes the two regimes, and the only way to tell would be to
     remember — which is how the inflated numbers would have been quoted forever.
+
+    The size of the effect is not remembered here either. It is committed, on the current
+    build, as an A/B: `counters_ab_inflated.json` (dump left live on purpose) against
+    `baseline_postgqa.json` (clean), and
+    `test_result_staleness.py::test_the_documented_inflation_figures_come_out_of_the_artifacts`
+    reads both rather than trusting this docstring.
 
     This is the *shape* half. `test_every_committed_vulkan_record_declares_its_counters_scope`
     is the half that looks at what actually got committed.

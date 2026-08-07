@@ -1,3 +1,8 @@
+> **SUPERSEDED — pre-GQA.** Measured before PR #72 (GroupQueryAttention) merged to main
+> as 0cfa362. Every Vulkan row below describes an attention path that no longer exists in
+> this tree. Superseded by `baseline_postgqa.md`. Retained only as the 'before' side of the
+> delta in docs/PERF.md section 27.1. **Not a current result.**
+
 # Vulkan EP vs ORT CUDA EP — issue #69
 
 device      : ['NVIDIA RTX A1000'] driver=573.44 cuda_driver=12.8

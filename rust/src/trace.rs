@@ -878,7 +878,7 @@ impl VulkanTracer {
     /// of it landing *after* `vulkan.subgraph` closed rather than before it.
     ///
     /// That term was **not the EP**. Re-measured on the same workload with the benchmark
-    /// harness's counters-file dump moved out of the timed region, it reads **0.056 ms**
+    /// harness's counters-file dump moved out of the timed region, it reads **0.036 ms**
     /// (`outside_subgraph_ms` in `bench/results/_cuda69/profile_prefill_1.json`; the pre-fix run
     /// is not a committed artifact, so its magnitude is not quoted here). The dump ran on every
     /// timed inference, from `counters::record_dispatches` after `dispatch_ort` returns — which

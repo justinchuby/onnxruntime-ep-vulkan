@@ -22,7 +22,7 @@ The four defects that motivated these tests, in the order they were found:
    inside ``dispatch_ort``, not at the ``Compute`` entry point, so a large per-inference
    term had no row. It turned out to be the harness's own counters-file dump. (The pre-fix
    run is not a committed artifact; the corrected term is ``outside_subgraph_ms`` =
-   **0.056 ms** in ``bench/results/_cuda69/profile_prefill_1.json``.)
+   **0.036 ms** in ``bench/results/_cuda69/profile_prefill_1.json``.)
 
 4. **The instrument that saw it was emitted and never read.** ``vulkan.compute_call`` was
    added to close (3) and ``compute_calls()`` went on anchoring on ``vulkan.subgraph``, so
@@ -606,9 +606,14 @@ _OUTSIDE_SUBGRAPH_CITATION_SITES = (
     "bench/cuda_profile.py",
 )
 
-#: The value this figure used to be documented as, from a run that was superseded. It must
-#: appear nowhere, or the docs are quoting a number the committed artifact does not contain.
-_SUPERSEDED_OUTSIDE_SUBGRAPH_MS = "0.053"
+#: Values this figure used to be documented as, from runs that were superseded. None may
+#: appear anywhere, or the docs are quoting a number the committed artifact does not contain.
+#:
+#: `0.053` was the original rejection: prose drifted from a committed 0.056.
+#: `0.056` was itself measured *before* PR #72 landed GQA, and the re-measurement on the
+#: landed code moved the term to 0.036.  A superseded figure does not become acceptable by
+#: having once been correct, so it joins the list rather than replacing it.
+_SUPERSEDED_OUTSIDE_SUBGRAPH_MS = ("0.053", "0.056")
 
 
 def _committed_profile():
@@ -648,8 +653,8 @@ def test_the_committed_artifact_agrees_with_itself_about_outside_subgraph():
     us = doc["steady"]["median_outside_subgraph_us"]
     assert us / 1000.0 == pytest.approx(ms), (
         f"the artifact publishes {ms} ms and {us} us; they are one number in two units")
-    assert round(ms, 3) == pytest.approx(0.056), (
-        "the pin below is written against 0.056 ms; if the artifact legitimately changed, "
+    assert round(ms, 3) == pytest.approx(0.036), (
+        "the pin below is written against 0.036 ms; if the artifact legitimately changed, "
         "update the artifact, the prose and this pin together -- never the prose alone")
 
 
@@ -659,6 +664,10 @@ def test_every_documented_outside_subgraph_citation_matches_the_artifact():
     The rejection that produced this test was documents citing **0.053 ms** while the
     committed profile said 0.056. Both were plausible; only one was in the tree. So the
     figure is read *out of the artifact* here and required to be the one the prose says.
+
+    The same mechanism then caught the second drift for free: PR #72 changed the attention
+    path, the re-measurement moved the term to 0.036, and every 0.056 left in prose failed
+    here until it was updated.
     """
     doc = _committed_profile()
     ms = _committed_outside_subgraph_ms()
@@ -669,18 +678,22 @@ def test_every_documented_outside_subgraph_citation_matches_the_artifact():
         assert expected in text, (
             f"{rel} cites the outside-subgraph figure but not as {expected} ms, which is "
             f"what {doc.get('workload')}'s committed profile actually measured")
-        assert _SUPERSEDED_OUTSIDE_SUBGRAPH_MS not in text, (
-            f"{rel} still quotes the superseded {_SUPERSEDED_OUTSIDE_SUBGRAPH_MS} ms figure; "
-            f"the committed artifact says {expected} ms")
+        for stale in _SUPERSEDED_OUTSIDE_SUBGRAPH_MS:
+            if stale == expected:
+                continue
+            assert stale not in text, (
+                f"{rel} still quotes the superseded {stale} ms figure; "
+                f"the committed artifact says {expected} ms")
 
 
 def test_the_pin_would_notice_a_drifting_document():
     """Negative control: a pin that cannot fail is decoration."""
     ms = _committed_outside_subgraph_ms()
     expected = f"{ms:.3f}".rstrip("0")
-    drifted = f"the term reads {_SUPERSEDED_OUTSIDE_SUBGRAPH_MS} ms"
-    assert expected not in drifted
-    assert _SUPERSEDED_OUTSIDE_SUBGRAPH_MS in drifted
+    for stale in _SUPERSEDED_OUTSIDE_SUBGRAPH_MS:
+        drifted = f"the term reads {stale} ms"
+        assert expected not in drifted
+        assert stale in drifted
 
 
 # ---------------------------------------------------------------------------

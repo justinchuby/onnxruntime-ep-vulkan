@@ -1,3 +1,8 @@
+> **SUPERSEDED — pre-GQA.** Measured before PR #72 (GroupQueryAttention) merged to main
+> as 0cfa362. Every Vulkan row below describes an attention path that no longer exists in
+> this tree. Superseded by `baseline_postgqa.md`. Retained only as the 'before' side of the
+> delta in docs/PERF.md section 27.1. **Not a current result.**
+
   prefill_1            vulkan         ADMISSIBLE       27.7328 ms
   prefill_1            cuda           ADMISSIBLE       15.0601 ms
   prefill_1            cpu_host       ADMISSIBLE       93.2316 ms

@@ -79,9 +79,10 @@ inside its `vulkan.subgraph` span. That phase has been removed. The outer bracke
 untouched. No figure is quoted for that pre-fix run: it is **not a committed artifact**, and this
 document does not cite numbers it cannot point at.
 
-The region itself turned out not to be the EP at all. Re-measured on 2026-08-07 with the
-counters-file dump moved out of the timed region, the same term is **0.056 ms** — the source of
-truth is `outside_subgraph_ms` (equivalently `steady.median_outside_subgraph_us = 56.0`) in
+The region itself turned out not to be the EP at all. Re-measured on 2026-08-07 against the
+landed GQA code (PR #72, main `0cfa362`) with the
+counters-file dump moved out of the timed region, the same term is **0.036 ms** — the source of
+truth is `outside_subgraph_ms` (equivalently `steady.median_outside_subgraph_us = 36.0`) in
 `bench/results/_cuda69/profile_prefill_1.json`, and
 `bench/test_cuda_profile.py::test_every_documented_outside_subgraph_citation_matches_the_artifact`
 reads that artifact and fails this document if the two ever drift apart again. The region was the
@@ -554,6 +555,68 @@ skipped. `bench/public_path_legacy.json` declares every one of them with its lea
 than declared, and — the half that keeps it honest — on a declaration whose file has stopped
 leaking or stopped existing. `bench/results/_cuda69/` is declared `never_legacy`: its writers
 were fixed, so a leak there is a regression, not an inheritance.
+
+### 4.0.2 A committed result may not outlive the code it measured
+
+Added 2026-08-07, when PR #72 (GroupQueryAttention) merged to `main` as `0cfa362` while the issue
+\#69 competition evidence on this branch had been measured *before* it. Every Vulkan number in that
+evidence described a program that no longer existed.
+
+Nothing in the artifacts said so. They carried a device, a driver and a timestamp — enough to know
+*where* and *when*, and nothing at all about *what*. Two results measured months and a rewritten
+attention kernel apart were textually indistinguishable, so the only thing standing between a stale
+ranking and a published one was whether somebody remembered.
+
+The repair is provenance plus a screen that reads it.
+`cuda_competition.ep_provenance()` is recorded into every suite record and every profile reduction:
+
+| Field | What it pins |
+|---|---|
+| `pinned_sources` | sha256 of each file that decides what the Vulkan attention path *does* — currently `rust/shaders/glsl/gqa_f16.comp` and `rust/src/ops/attention.rs` |
+| `lib_sha256`, `lib_bytes` | the EP binary that actually ran |
+| `git_commit` | the tree at measurement time |
+| `git_tree_dirty` / `pinned_sources_dirty` | whether that commit fully describes the run, and — the narrower, load-bearing question — whether the *pinned* sources were clean |
+
+The two handles fail differently, which is why both are kept. `lib_sha256` is exact but is not
+committed, so nothing in the tree can ever be compared against it. `pinned_sources` **is**
+committed, and that is what lets a test assert a stored result still describes the current tree:
+
+* `test_committed_suite_is_not_stale_against_this_tree` re-digests each pinned source and fails
+  when a committed record was measured against different bytes.
+* `test_committed_suite_records_the_ep_build_it_measured` fails a record that carries no
+  provenance at all, so the screen cannot be disarmed by omission.
+* `test_committed_suite_was_measured_on_clean_pinned_sources` rejects a `git_commit` that
+  under-describes its own run.
+
+The failure message names the two remedies that are *not* acceptable — editing the recorded digest
+(forging provenance) and renaming the file (leaving the stale numbers in place under a new name) —
+because both are easier than re-running the benchmark and both would pass a screen that only
+checked for a mismatch.
+
+The screen is one-directional by construction. It cannot tell anyone a result is still *correct*;
+it can only prove that a result cannot possibly be, because the code moved underneath it. That is
+the whole claim, and it is the claim that was missing.
+
+**What this branch did about it.** The whole competition was re-run against the landed GQA build,
+and the pre-GQA suite was **retired, not carried forward**: renamed to `baseline_pre_gqa.*`, given
+`superseded_by` / `superseded_because` in its JSON and a SUPERSEDED banner in the first screen of
+its `.md` and `.log`, and exempted from the staleness screen only because it no longer claims to
+describe this tree.
+
+That exemption is the dangerous part, so it is fenced rather than trusted. `superseded_by` must
+name a record that exists and is not itself; `superseded_because` must be non-empty; the prose
+siblings must carry the banner where a human will see it; at least one competition suite must
+remain *un*-superseded, so the tree cannot reach compliance by retiring its last current result;
+and the A/B's clean side is read only from live records, so a retired number cannot be
+silently recruited into a current claim. Two of those tests fired on the first run — the retired
+suite had leaked into the provenance screen and into the A/B comparison — which is the only
+reason this paragraph describes a fence rather than a hole.
+
+The alternative was deletion. It was rejected for one reason: section 27.1's headline is a
+*delta*, and a before/after delta whose "before" is not committed is unfalsifiable. Retaining the
+prior suite is what makes the GQA speedup checkable by someone who does not trust it. A superseded
+ranking kept "for reference" with no machinery around it is a ranking someone will quote; the
+machinery above is the difference.
 
 ### 4.1 OQ-12
 
@@ -1349,8 +1412,8 @@ Per R9: *confidence scales with agreeing instruments; evidence scales only with 
 | every dispatch produced GPU time | `gpu_span_accounting`: `sum(subgraph.nodes) == len(gpu_spans) == dispatches_executed`, integer equality. 5457 on both. |
 | the row names the device that ran | `devices.device_identity_check` — trace's own `timestampPeriod`/`validBits` vs the label. Caught the entire table naming the wrong GPU. |
 | the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span (the **inner** bracket, around `dispatch_ort`, not the outer `vulkan.compute_call`); `unattributed_in_compute_ms` reported, never folded away. |
-| the reconciliation's terms are not mistaken for a sum | `cuda_profile.compute_reconciliation.partition_note` — states the arithmetic it is explaining. In the committed profile `sibling_phases_ms + unattributed_in_subgraph_ms = 32.145 ms` against `subgraph_ms = 32.627 ms`. Each is an **independently-taken median** over the warm calls, and the median of a sum is not the sum of the medians unless every call splits identically, so the **+0.482 ms** residual is a property of the statistic, **not** unaccounted-for time. Do not report it as a gap. Pinned by `test_the_reconciliation_says_out_loud_that_medians_do_not_partition`. |
-| the callback is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` (the instrumented success-path region, not the literal extern entry) and reports the region *outside* `vulkan.subgraph` but inside that bracket as its own term. Measured, and explicitly not attributed. It reads **0.056 ms** in the committed `bench/results/_cuda69/profile_prefill_1.json`; it was far larger before the harness's counters dump was moved out of the timed region, but that pre-fix run is not a committed artifact so no figure is quoted for it. |
+| the reconciliation's terms are not mistaken for a sum | `cuda_profile.compute_reconciliation.partition_note` — states the arithmetic it is explaining. In the committed profile `sibling_phases_ms + unattributed_in_subgraph_ms = 27.508 ms` against `subgraph_ms = 27.377 ms`. Each is an **independently-taken median** over the warm calls, and the median of a sum is not the sum of the medians unless every call splits identically, so the **-0.131 ms** residual is a property of the statistic, **not** unaccounted-for time. The residual is *negative*, which settles it: missing work cannot be less than nothing. Do not report it as a gap. Pinned by `test_the_reconciliation_says_out_loud_that_medians_do_not_partition`. |
+| the callback is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` (the instrumented success-path region, not the literal extern entry) and reports the region *outside* `vulkan.subgraph` but inside that bracket as its own term. Measured, and explicitly not attributed. It reads **0.036 ms** in the committed `bench/results/_cuda69/profile_prefill_1.json`; it was far larger before the harness's counters dump was moved out of the timed region, but that pre-fix run is not a committed artifact so no figure is quoted for it. |
 | GPU time is not over-scaled | `gpu_containment` — per-submission GPU busy ≤ `submit + fence_wait`, **ordinal attribution**, immune to the 314 ms anchor error. |
 | the 52× conversion is applied | `timestamp_conversion_integrality` — `gpu_ns ÷ period` must be a whole integer. **Decisive only where period ≠ 1.0**; reports `VACUOUS`, never "pass", on NVIDIA and lavapipe. `bench/timestamp_audit.py` exits non-zero when no local device can falsify it. |
 | valid bits are masked | `valid_bits_applied` — green on both. |
@@ -5142,3 +5205,104 @@ transition can never be declared, because
 correctly requires every declared transition to end at what the build computes. Rebuilding the
 stack on `main` is the only fix; merging `main` is not, because CI screens `refs/pull/N/merge`,
 which has the same shape.
+
+---
+
+## 27. The competition, re-run on the landed GQA code (2026-08-07)
+
+PR #72 merged to `main` as `0cfa362`, changing `rust/shaders/glsl/gqa_f16.comp` and
+`rust/src/ops/attention.rs`. Every Vulkan number the issue #69 competition had produced was
+measured before that. They were not adjusted, annotated or carried forward: the pre-GQA suite was
+deleted and the whole thing re-run against a `--release` build of the landed code, on the same
+box, with the same seed, iters and warmup as the run it replaces.
+
+Source of truth: `bench/results/_cuda69/baseline_postgqa.json` (+`.md`, `.log`), device
+`NVIDIA RTX A1000`, driver `573.44`, CUDA driver `12.8`, 20 iters / 5 warmup / seed 1234.
+Vulkan arm ORT 1.28.0; CUDA arm ORT 1.26.0 in a separate interpreter — the two runtimes cannot
+coexist in one process, which is what the `cpu_host` / `cpu_cuda_rt` bracket exists to price.
+
+### 27.1 What GQA actually bought
+
+Vulkan against Vulkan, same workload, same machine, same harness — the CUDA arm is not involved
+in this table at all:
+
+| workload | pre-GQA ms | post-GQA ms | change |
+|---|---:|---:|---:|
+| `prefill_1` | 27.73 | 31.19 | 0.89× |
+| `prefill_2` | 41.94 | 35.04 | 1.20× |
+| `prefill_4` | 61.54 | 60.10 | 1.02× |
+| `prefill_8` | 106.57 | 98.15 | 1.09× |
+| `prefill_16` | 209.89 | 180.71 | 1.16× |
+| `prefill_32` | 472.03 | 358.84 | 1.32× |
+| `prefill_64` | 1102.85 | 705.62 | 1.56× |
+| `prefill_128` | 3025.48 | 1435.22 | **2.11×** |
+| `decode_past2048` | 1300.77 | 1354.84 | 0.96× |
+| `mobilenetv2_b1` | 9.47 | 8.89 | 1.07× |
+
+The shape is the claim, not any single row. The gain grows monotonically with sequence length
+across the prefill sweep and is largest where attention dominates — which is what a working
+attention change looks like. Decode barely moves (it is bound by the past-KV pass, not by the
+attention arithmetic GQA changed) and MobileNetV2, which has no attention at all, is flat. That
+last row is the negative control: a "speedup" that also improved MobileNet would have been a
+measurement artifact, not GQA.
+
+`prefill_1` is *slower*, and it is left in. At one token the kernel has nothing to amortise the
+change over, and its 17% RSD is the highest in the sweep — this is the row where run-to-run
+variance is comparable to the effect. It is reported rather than dropped.
+
+**Pre-GQA figures in the left column are quoted from a deleted artifact and are not committed.**
+They appear here to describe a delta and are not available for any other purpose; nothing in the
+tree can check them, which is precisely why the artifact they came from was not kept.
+
+### 27.2 Where the EP actually stands
+
+| workload | Vulkan ms | CUDA ms | speedup (vk/cuda) | verdict |
+|---|---:|---:|---:|---|
+| `prefill_1` | 31.19 | 14.94 | 0.479 [0.426, 0.548] | CUDA_FASTER |
+| `prefill_2` | 35.04 | 99.87 | 2.850 [2.671, 3.034] | VULKAN_FASTER |
+| `prefill_4` | 60.10 | 100.32 | 1.669 [1.653, 1.740] | VULKAN_FASTER |
+| `prefill_8` | 98.15 | 101.84 | 1.038 [1.020, 1.049] | VULKAN_FASTER |
+| `prefill_16` | 180.71 | 103.75 | 0.574 [0.566, 0.579] | CUDA_FASTER |
+| `prefill_32` | 358.84 | 105.11 | 0.293 [0.286, 0.294] | CUDA_FASTER |
+| `prefill_64` | 705.62 | 109.24 | 0.155 [0.154, 0.156] | CUDA_FASTER |
+| `prefill_128` | 1435.22 | 126.02 | 0.088 [0.087, 0.088] | CUDA_FASTER |
+| `decode_past128` | 90.64 | 34.45 | 0.380 [0.367, 0.394] | CUDA_FASTER |
+| `decode_past512` | 409.35 | 65.18 | 0.159 [0.153, 0.162] | CUDA_FASTER |
+| `decode_past1024` | 739.85 | 112.25 | 0.152 [0.150, 0.158] | CUDA_FASTER |
+| `decode_past2048` | 1354.84 | 205.85 | 0.152 [0.150, 0.155] | CUDA_FASTER |
+| `mobilenetv2_b1` | 8.89 | 3.27 | 0.368 [0.338, 0.381] | CUDA_FASTER |
+| `minilm_seq16/64/128` | — | — | — | **UNMEASURED** |
+
+Intervals are 95% bootstrap. CUDA is faster nearly everywhere, and GQA narrowed the gap without
+closing it.
+
+The `prefill_2`–`prefill_8` band where Vulkan wins is **not** a Vulkan achievement: the CUDA arm
+jumps from 14.9 ms at `prefill_1` to ~100 ms and then stays flat to `prefill_128`, which is a
+fixed cost appearing in the CUDA arm rather than Vulkan getting fast. Quoting "2.85× faster than
+CUDA" from that row would be true and useless.
+
+The three MiniLM rows are `UNMEASURED` by refusal, not by omission: 13.5–15.4% of profiled kernel
+time ran on the CPU EP, over the 5% split threshold, so the frame is hybrid and its timing is not
+a property of the Vulkan EP. The harness refuses to publish a ratio it cannot attribute.
+
+### 27.3 What is pinned
+
+`baseline_postgqa.json`, `profile_prefill_1.json` and `counters_ab_inflated.json` each carry
+`ep_provenance` recording the digests of the two attention sources they were measured against,
+the sha256 of the EP binary that ran, and `git_commit` = `ecd9e72` with
+`pinned_sources_dirty: false`. If either source changes without a re-run,
+`bench/test_result_staleness.py` fails and names the file — see §4.0.2.
+
+The profile reduction moved with the code: `outside_subgraph_ms` reads **0.036 ms** on this
+build, against a larger value on the pre-GQA one. The earlier figure is deliberately not quoted
+here — the profile that produced it was replaced rather than retained, so nothing in the tree
+backs it, and `test_every_documented_outside_subgraph_citation_matches_the_artifact` refuses any
+document that still names it. That pin caught this very paragraph on the first run after the
+re-measurement, which is the second time it has paid for itself.
+
+The counters-dump inflation was re-established on this build rather than inherited:
+`counters_ab_inflated.json` holds `prefill_1` at **60.519 ms** with the dump left live on purpose
+against **31.192 ms** clean — a **1.94×** inflation. It is the only committed record permitted to
+carry `counters_scope = all_runs_INFLATES_TIMING`, and
+`test_only_the_declared_ab_artifact_carries_inflated_timings` enforces that, so an inflated number
+cannot re-enter the tree as a ranking.
