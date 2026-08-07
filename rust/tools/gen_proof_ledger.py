@@ -86,6 +86,99 @@ def _sha256(path: pathlib.Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# The device-list wire format — the Python half (issue #18, blocker B1)
+#
+# DESIGN.md §2.4.1.2 states the format; `rust/src/engine.rs::parse_device_list` is the Rust
+# reader; this is the Python one. There are exactly two, both here for a reason: this tool cannot
+# link the EP, and a shell-out to it would make ledger generation depend on a built artifact.
+#
+# The two readers are pinned to each other by `tests/fixtures/device_identity_wire.jsonl`, which
+# `tests/ops/test_device_identity_wire.py` and `rust/src/registry.rs`'s unit tests both read. A
+# doc comment saying "keep these in sync" is what was here before, in spirit, and it is what
+# allowed this parser to require a prefix the emitter has never written.
+# ---------------------------------------------------------------------------
+
+DEVICE_LIST_SEPARATOR = "; "
+DEVICE_KEY_UUID_PREFIX = "uuid:"
+DEVICE_KEY_UNIDENTIFIED_PREFIX = "unidentified:"
+
+# `allocator::tally` returns these for the whole list, not for an element of it, so they are
+# rejected before the split rather than filtered after it.
+_DEVICE_LIST_SENTINELS = ("", "none", "unknown")
+
+
+def _strip_positional_index(item: str) -> str:
+    """Drop a leading purely-numeric ``N=`` prefix, if present, and trim.
+
+    ``"0=uuid:aabb"`` -> ``"uuid:aabb"``; ``"uuid:aabb"`` -> ``"uuid:aabb"``; ``"0="`` -> ``""``;
+    ``"llvmpipe (LLVM 20.1.2, 256 bits) rev=3"`` -> itself.
+
+    ONLY a purely numeric prefix is positional. Splitting on the first ``=`` unconditionally
+    renames a device whose name contains one, and this project has such a device on its Linux
+    lane.
+    """
+    t = item.strip()
+    head, sep, rest = t.partition("=")
+    if sep and head.isdigit():
+        t = rest
+    return t.strip()
+
+
+def device_key_list(raw: str) -> list[str]:
+    """Read a ``running_device_uuids`` / ``running_device_names`` counters value.
+
+    THE CANONICAL FORM IS BARE (DESIGN.md §2.4.1.2): ``"uuid:aa…; uuid:bb…"``, ``"; "``-separated,
+    in physical enumeration order, with no positional prefix. Position in the list is the index.
+
+    The indexed ``N=value`` form of the *different* ``alloc_device_frame_session_devices`` counter
+    is TOLERATED so a reader pointed at the wrong counter degrades to a right answer rather than
+    an empty one — but it is never required.
+
+    THE BUG THIS REPLACES, STATED PLAINLY. This function used to be the expression
+    ``[p.split("=", 1)[1] for p in raw.split("; ") if "=" in p]``: it *required* the prefix. Every
+    counters file the EP has ever written is bare, so the comprehension selected nothing,
+    ``device_uuid`` was ``""`` on every entry ever generated, and the two stable-identity rows of
+    ``registry::device_state`` (``PROVEN`` / ``PROVEN-ELSEWHERE``) were unreachable. Nothing
+    failed, because ``""`` is also the correct value for a run that reported no identity — a
+    silent hole in a proof frame, which is the only kind worth being afraid of.
+
+    Returns ``[]`` for an absent, empty or sentinel value. ``[]`` means *no comparison is
+    possible*; it never means *the identities agree*.
+    """
+    if raw is None:
+        return []
+    raw = raw.strip()
+    if raw in _DEVICE_LIST_SENTINELS:
+        return []
+    return [k for k in (_strip_positional_index(p) for p in raw.split(DEVICE_LIST_SEPARATOR)) if k]
+
+
+def device_uuid_from_counters(running_device_uuids: str, key: str = "<entry>") -> str:
+    """The one 32-hex ``device_uuid`` a proof entry may record, or ``""``.
+
+    ``""`` is the honest answer for a run that opened no device, or opened one whose driver
+    reported no UUID (an ``unidentified:`` key is process-local and cannot attribute anything
+    outside the process that observed it). `registry::device_state` reads ``""`` as
+    ``DEVICE-UNATTRIBUTED`` — never ``PROVEN`` — so an absence degrades attribution instead of
+    corrupting it.
+
+    A run that opened **two or more** distinct physical devices raises: a proof entry names one
+    device, and a run that touched two cannot be attributed to either.
+    """
+    opened = device_key_list(running_device_uuids)
+    uniq = sorted({k for k in opened if k.startswith(DEVICE_KEY_UUID_PREFIX)})
+    if len(uniq) > 1:
+        raise SystemExit(
+            f"REFUSING to write an entry for {key}: the run opened {len(uniq)} distinct "
+            f"physical devices ({', '.join(uniq)}). A proof entry names one device; a run "
+            f"that touched two cannot be attributed to either."
+        )
+    if len(uniq) == 1:
+        return uniq[0][len(DEVICE_KEY_UUID_PREFIX):]
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # The child: one session, one model, in a subprocess.
 #
 # A subprocess because ONNXRUNTIME_EP_VULKAN_CLAIM_LOG and CLAIM_UNPROVEN are read when the EP
@@ -855,7 +948,16 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
     # pass to reproduce the run — it is simply not an identity.
     running = (proof_run.get("running_device_names") or "").strip()
     device_selector = device
-    if running and running not in ("none", "unknown"):
+    # Read through the ONE documented reader (DESIGN.md §2.4.1.2) rather than testing the raw
+    # string against two sentinels by hand. `"none"` and `"unknown"` are not the only values that
+    # name no device: a degenerate `"0="` names none either, and the hand-rolled check stamped it
+    # into the ledger as if it were a GPU. `device_key_list` already knows what an absent identity
+    # looks like, so absence is decided in one place.
+    #
+    # The *whole* reported string is still what gets written when it names anything at all, so
+    # every entry this tool has already produced keeps byte-identical `device` values. Narrowing
+    # it to the first element would be a second change riding along on a repair about identity.
+    if device_key_list(running):
         device = running
     # ISSUE #18: THE NAME IS NOT THE IDENTITY EITHER.
     #
@@ -868,19 +970,14 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
     # a state `registry::device_state` reads as DEVICE-UNATTRIBUTED, and a fabricated one would be
     # read as PROVEN. Entries generated before this field simply lack it, and the parser defaults
     # them to `""` — legacy entries stay readable and stay unattributed, which is correct.
-    device_uuid = ""
-    running_uuids = (proof_run.get("running_device_uuids") or "").strip()
-    if running_uuids and running_uuids not in ("none", "unknown"):
-        opened = [p.split("=", 1)[1].strip() for p in running_uuids.split("; ") if "=" in p]
-        uniq = sorted({k for k in opened if k.startswith("uuid:")})
-        if len(uniq) == 1:
-            device_uuid = uniq[0][len("uuid:"):]
-        elif len(uniq) > 1:
-            raise SystemExit(
-                f"REFUSING to write an entry for {key}: the run opened {len(uniq)} distinct "
-                f"physical devices ({', '.join(uniq)}). A proof entry names one device; a run "
-                f"that touched two cannot be attributed to either."
-            )
+    #
+    # ISSUE #18 BLOCKER B1: read through `device_key_list`, the ONE documented reader of the
+    # counters wire format (DESIGN.md §2.4.1.2). The expression that used to be inline here
+    # required an `N=` prefix the EP has never emitted, so this field was `""` on every entry the
+    # tool has ever written and the identity comparison it feeds was dead code.
+    device_uuid = device_uuid_from_counters(
+        proof_run.get("running_device_uuids") or "", key
+    )
     if claimed <= 0 or dispatches <= 0:
         raise SystemExit(
             f"REFUSING to write an entry for {key}: attribution is "

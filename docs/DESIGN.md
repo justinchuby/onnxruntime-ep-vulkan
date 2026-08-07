@@ -823,7 +823,7 @@ declared-frame set is keyed on `DeviceKey` (`rust/src/engine.rs`) instead:
 | `DeviceKey` | Canonical form | Source | Proves? | Collapses? |
 |---|---|---|---|---|
 | `Uuid(u)` | `uuid:<32 hex>` | `VkPhysicalDeviceIDProperties::deviceUUID`, when populated | yes | no — unique per physical device, stable across reboots and driver updates |
-| `Unidentified { name, physical_index }` | `unidentified:<physical_index>:<name>` | fallback when no UUID was reported | **never** | no — the enumeration index disambiguates two same-named cards *within this process* |
+| `Unidentified { name, physical_index }` | `unidentified:<deviceName>#<physical_index>` | fallback when no UUID was reported | **never** | no — the enumeration index disambiguates two same-named cards *within this process* |
 
 **The fallback contract is explicit and fail-closed.** `Unidentified` exists so that a driver
 which does not populate `deviceUUID` still cannot silently merge two devices; it is *not* a
@@ -839,7 +839,12 @@ weaker identity, it is the absence of one, and it carries two guarantees:
    the artifact says so rather than guessing.
 
 The canonical string is prefixed `unidentified:` precisely so it can never be misread as, or
-compared equal to, a UUID.
+compared equal to, a UUID. The name comes **first** and the index **last**, separated by `#`
+(`unidentified:Mali-G78#0`) — not `unidentified:<index>:<name>`, which this document and
+`PLATFORMS.md` both stated until issue #18's third revision while every emitter wrote the other
+one. `#` rather than a second `:` is load-bearing: a `deviceName` may contain a colon, so the
+`<index>:<name>` spelling cannot be split back apart without already knowing which half is
+numeric, while `#<digits>` to end of string always can be.
 
 **An absent UUID is an absent key, never an empty or zeroed one.** `query_device_identity` maps
 an all-zero `deviceUUID` to `None`, because an *unpopulated* `VkPhysicalDeviceIDProperties` is
@@ -848,6 +853,53 @@ compare equal to every other. For the same reason `factory.rs` **omits** `vulkan
 (and `_luid` / `_pci`) from the `OrtEpDevice` metadata rather than advertising an empty string,
 so a consumer can distinguish "this device has no stable identity" from "this device's identity
 is a string of zeros".
+
+##### 2.4.1.2 The device-list wire format
+
+Everything above is about what one identity *is*. This is the format the identities travel in,
+and it is written down here because not writing it down cost the frame its two stable-identity
+verdicts for a whole revision.
+
+**The canonical form of `running_device_names` and `running_device_uuids` is a bare, `"; "`-separated list in physical enumeration order. There is no positional prefix.**
+
+```
+"running_device_names": "Intel(R) Iris(R) Xe Graphics; NVIDIA GeForce RTX 4060 Laptop GPU"
+"running_device_uuids": "uuid:aadf33d4d118155fcc60c22b5c352463"
+```
+
+Position in the list *is* the index, so writing the index again would be a second source of truth
+for the same fact. Every counters artifact this project has ever produced — 450 of them in
+`bench/results/` — is in this form, including the real RTX A1000 evidence in
+`bench/results/rust-model-runner/mobilenetv2-12-device-selector.json`.
+
+A **different** counter, `alloc_device_frame_session_devices`, uses an indexed `N=value` form
+(`"1=The Session's Device"`) because it reports a *sparse map* keyed by the factory device index
+ORT asked for, where position genuinely is not the index. The two counters share a vocabulary and
+not a format.
+
+**One writer and one reader per language, and the reader tolerates what the writer never emits.**
+
+| | Rust | Python |
+|---|---|---|
+| Write | `engine::format_device_list` | — (the EP is the only writer) |
+| Read | `engine::parse_device_list` | `gen_proof_ledger.device_key_list` |
+
+Both readers accept the canonical bare form and additionally *tolerate* a purely numeric `N=`
+prefix, so a reader pointed at `alloc_device_frame_session_devices` degrades to a right answer
+rather than an empty one. Only a purely numeric prefix is positional, so
+`llvmpipe (LLVM 20.1.2, 256 bits) rev=3` survives intact instead of being renamed to ` 3`. An
+element that is empty after the prefix is dropped: `"0="` is the absence of an identity, not an
+identity that happens to be empty.
+
+The tolerance is deliberately **asymmetric** with the writer. A reader that *requires* the prefix
+is not merely stricter — it returns an empty list for every real counters file, which is
+indistinguishable from "the EP opened no device". That is exactly the defect this section exists
+to prevent: `gen_proof_ledger.py` required it, so `LedgerEntry.device_uuid` was `""` on every
+entry ever written, and the `PROVEN` / `PROVEN-ELSEWHERE` rows of the table below were
+**unreachable** — a proof frame with a silent hole in it, which is worse than one with a loud
+one. `tests/fixtures/device_identity_wire.json` is the shared fixture that pins the format from
+both languages at once, and `tests/ops/test_device_identity_wire.py` carries the planted
+`if '=' in p` mutation as a standing control.
 
 **Propagation.** One identity is read once, at enumeration, and carried unchanged through every
 layer that later has to agree about it:
@@ -864,12 +916,21 @@ identity and the identity of the device this process is actually running on:
 | Entry `device_uuid` | Running identity | State |
 |---|---|---|
 | present | present and equal | `PROVEN` |
-| present | present and different | `PROVEN-ELSEWHERE` — and when the two device *names* are identical, the message says so explicitly, because that is the case a name comparison would have called a match |
+| present | present and different, both `uuid:` | `PROVEN-ELSEWHERE` — and when the two device *names* are identical, the message says so explicitly, because that is the case a name comparison would have called a match |
+| present | every running key is `unidentified:` | `DEVICE-UNATTRIBUTED` — *not comparable*, which is a different finding from *different* |
 | absent | any | `DEVICE-UNATTRIBUTED` — "a name is shared by every card of a model"; regenerate the entry to record an identity |
-| any | absent (no device open, or `Unidentified`) | `DEVICE-UNATTRIBUTED` |
+| any | absent (no device open) | `DEVICE-UNATTRIBUTED` |
 
 A name match alone never yields `PROVEN`. Older ledger entries that predate `device_uuid` parse
 unchanged and land in `DEVICE-UNATTRIBUTED`, which is the honest reading of them.
+
+The third row is why `PROVEN-ELSEWHERE` is not simply "the keys are not equal". `PROVEN-ELSEWHERE`
+is a *positive* finding — it asserts the proof came from a different piece of hardware — and that
+assertion needs two portable identities to stand on. A run on a UUID-less device produces a
+process-local `unidentified:` key that can never equal a ledger identity *no matter which device
+it is*, so reading the inevitable inequality as a δ would manufacture an observation nobody made.
+Both states claim and disclose, so the distinction costs no claim; it changes what the disclosure
+says, which is the entire product.
 
 **Evidence records the device that was opened, not the devices that were offered.**
 `rust/modelrunner`'s `execution_provider.devices` is what `GetEpDevices` *listed*;

@@ -1169,14 +1169,14 @@ mod tests {
     }
 
     /// A counters snapshot for a run that opened exactly the devices listed.
+    ///
+    /// **In the shape the EP actually writes** (issue #18 blocker B1): a bare `"; "`-separated
+    /// list, no positional prefix. It used to build the indexed `"0=uuid:…"` shape, which is the
+    /// wire format of a *different* counter — so every test below was exercising a tolerance
+    /// path rather than the production one, and the production one was broken downstream.
     fn counters_for(devices: &[(&str, &str)], frame: &str, declared: i64) -> Counters {
-        let join = |f: &dyn Fn(usize, &(&str, &str)) -> String| {
-            devices
-                .iter()
-                .enumerate()
-                .map(|(i, d)| f(i, d))
-                .collect::<Vec<_>>()
-                .join("; ")
+        let join = |f: &dyn Fn(&(&str, &str)) -> String| {
+            devices.iter().map(f).collect::<Vec<_>>().join("; ")
         };
         Counters {
             present: true,
@@ -1184,8 +1184,8 @@ mod tests {
             claimed_nodes: Some(1),
             islands_offered: Some(1),
             compute_calls: Some(1),
-            running_device_names: Some(join(&|i, d| format!("{i}={}", d.1))),
-            running_device_uuids: Some(join(&|i, d| format!("{i}=uuid:{}", d.0))),
+            running_device_names: Some(join(&|d| d.1.to_string())),
+            running_device_uuids: Some(join(&|d| format!("uuid:{}", d.0))),
             alloc_device_frame: Some(frame.to_string()),
             alloc_device_frames_declared: Some(declared),
             note: String::new(),

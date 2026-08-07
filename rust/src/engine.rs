@@ -884,12 +884,38 @@ impl DeviceKey {
     /// identity.
     pub fn canonical(&self) -> String {
         match self {
-            DeviceKey::Uuid(u) => format!("uuid:{u}"),
+            DeviceKey::Uuid(u) => format!("{DEVICE_KEY_UUID_PREFIX}{u}"),
             DeviceKey::Unidentified {
                 name,
                 physical_index,
-            } => format!("unidentified:{name}#{physical_index}"),
+            } => format!("{DEVICE_KEY_UNIDENTIFIED_PREFIX}{name}#{physical_index}"),
         }
+    }
+
+    /// The inverse of [`DeviceKey::canonical`] — read a key back off the wire.
+    ///
+    /// `None` for anything that is not one of the two canonical shapes, including a `uuid:` whose
+    /// body is not 32 hex characters. A key that does not round-trip is not a key: admitting a
+    /// malformed one would let a hand-written or truncated artifact re-enter the comparison as if
+    /// the EP had emitted it.
+    ///
+    /// The `unidentified:` shape is `<name>#<index>` with the index at the **end**, which is what
+    /// makes this parse possible at all: a `deviceName` may contain a colon, so the
+    /// `<index>:<name>` spelling three documents used to claim could not be split back apart
+    /// without already knowing which half was numeric.
+    pub fn from_canonical(s: &str) -> Option<DeviceKey> {
+        if let Some(hex) = s.strip_prefix(DEVICE_KEY_UUID_PREFIX) {
+            return key_is_portable_identity(s).then(|| DeviceKey::Uuid(hex.to_string()));
+        }
+        let rest = s.strip_prefix(DEVICE_KEY_UNIDENTIFIED_PREFIX)?;
+        let (name, index) = rest.rsplit_once('#')?;
+        if name.is_empty() {
+            return None;
+        }
+        Some(DeviceKey::Unidentified {
+            name: name.to_string(),
+            physical_index: index.parse().ok()?,
+        })
     }
 
     /// Test-only: a deterministic synthetic UUID key derived from `seed`.
@@ -915,6 +941,118 @@ impl std::fmt::Display for DeviceKey {
         f.write_str(&self.canonical())
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// THE DEVICE-LIST WIRE FORMAT (issue #18, blocker B1)
+//
+// One format, written down once, with one reader per language. What made this a blocker rather
+// than a typo is that the format had never been *stated*: `counters.rs` emitted one shape,
+// `gen_proof_ledger.py` parsed another, and neither side was wrong on its own terms — so nothing
+// failed. `LedgerEntry.device_uuid` was simply `""` on every entry ever written, and the two
+// stable-identity rows of `registry::device_state` (`Proven` / `ProvenElsewhere`) were
+// unreachable. A silent hole in a proof frame is worse than a loud one, and the only structural
+// defence is a single documented format with tests that read the *emitted* string.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The separator between elements of every device list this EP writes.
+///
+/// A device name may contain a comma, a slash, a colon, an `=` and parentheses (`llvmpipe (LLVM
+/// 20.1.2, 256 bits)`, `Intel(R) Iris(R) Xe Graphics`, `… rev=3`). `"; "` is the one separator no
+/// observed `VkPhysicalDeviceProperties::deviceName` has ever contained, which is why it — and
+/// not `,` — is the list separator.
+pub const DEVICE_LIST_SEPARATOR: &str = "; ";
+
+/// Format a device list into **the canonical wire form**: bare values, `"; "`-separated, in
+/// physical enumeration order.
+///
+/// This is the form of the `running_device_names` and `running_device_uuids` counters, and it is
+/// what every artifact in `bench/results/` carries — `"NVIDIA RTX A1000"`,
+/// `"uuid:aadf33d4d118155fcc60c22b5c352463"`, `"Intel(R) Iris(R) Xe Graphics; NVIDIA GeForce RTX
+/// 4060 Laptop GPU"`. There is **no positional prefix**: position in the list *is* the index, so
+/// writing it again would be a second source of truth for the same fact.
+///
+/// The `alloc_device_frame_session_devices` counter is a *different* counter with a *different*
+/// format (`"1=The Session's Device"`): it reports a sparse map keyed by the factory device index
+/// ORT asked for, where position is genuinely not the index. [`parse_device_list`] tolerates that
+/// shape so a reader pointed at the wrong counter degrades to a right answer instead of an empty
+/// one, but nothing this EP writes under `running_device_*` uses it.
+pub fn format_device_list<I>(items: I) -> String
+where
+    I: IntoIterator,
+    I::Item: AsRef<str>,
+{
+    items
+        .into_iter()
+        .map(|s| s.as_ref().to_string())
+        .collect::<Vec<_>>()
+        .join(DEVICE_LIST_SEPARATOR)
+}
+
+/// Read a device list off the wire — **the only reader**, on the Rust side, of the format
+/// [`format_device_list`] writes.
+///
+/// Accepts the canonical bare form and tolerates the indexed `N=value` form of
+/// `alloc_device_frame_session_devices`. The tolerance is deliberately asymmetric with the
+/// writer: a reader that *requires* the prefix returns an empty list against every real counters
+/// file this project has ever produced (that was the defect), whereas a reader that merely
+/// tolerates it cannot be wrong about a value that never carries one.
+///
+/// Only a **purely numeric** prefix is positional, so `llvmpipe (LLVM 20.1.2, 256 bits) rev=3`
+/// survives intact rather than being renamed to ` 3`. Empty elements are dropped: `"0="` is the
+/// absence of an identity, not an identity that happens to be empty, and admitting it would let
+/// one emptiness compare equal to another.
+///
+/// The sentinels `none` and `unknown` — what `allocator::tally` returns for "no session has
+/// opened a device" and "the mutex was poisoned" — are **not** handled here, because they are
+/// statements about the whole list rather than elements of it. Callers reject them first; see
+/// [`crate::registry::running_device_uuids`].
+pub fn parse_device_list(raw: &str) -> Vec<String> {
+    raw.split(DEVICE_LIST_SEPARATOR)
+        .filter_map(strip_positional_index)
+        .collect()
+}
+
+/// Drop a leading `N=` positional prefix, if present, and return the remainder when non-empty.
+///
+/// `"0=uuid:aabb"` → `"uuid:aabb"`; `"uuid:aabb"` → `"uuid:aabb"`; `"0="` → `None`;
+/// `"a name with = in it"` → itself.
+fn strip_positional_index(item: &str) -> Option<String> {
+    let t = item.trim();
+    let body = match t.split_once('=') {
+        Some((head, rest)) if !head.is_empty() && head.bytes().all(|b| b.is_ascii_digit()) => rest,
+        _ => t,
+    };
+    let body = body.trim();
+    (!body.is_empty()).then(|| body.to_string())
+}
+
+/// Whether `key` is a canonical identity that may be compared **across processes**.
+///
+/// `uuid:<hex>` is; `unidentified:<name>#<index>` is not, and neither is anything else. This is
+/// the one predicate that decides whether a comparison is *possible*, and it is separate from
+/// whether the comparison *succeeds* — [`crate::registry::device_state`] needs both, and reading
+/// a failed comparison off an impossible one is how a process-local fallback would launder itself
+/// into a claim about hardware.
+pub fn key_is_portable_identity(key: &str) -> bool {
+    key.strip_prefix(DEVICE_KEY_UUID_PREFIX)
+        .is_some_and(|hex| hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// The prefix on a [`DeviceKey::Uuid`] canonical string.
+pub const DEVICE_KEY_UUID_PREFIX: &str = "uuid:";
+
+/// The prefix on a [`DeviceKey::Unidentified`] canonical string.
+///
+/// The canonical shape is `unidentified:<deviceName>#<physical enumerate index>` — **name first,
+/// index last, separated by `#`**. It is written down here because it was documented in two
+/// mutually exclusive ways (`unidentified:<index>:<name>` in `DESIGN.md`, `PLATFORMS.md` and the
+/// modelrunner fixtures; `unidentified:<name>#<index>` in the code that actually emits it), and a
+/// fallback whose spelling is ambiguous is a fallback a reader cannot recognise.
+///
+/// `#` rather than a second `:` is load-bearing: a device name may contain a colon, so
+/// `unidentified:<index>:<name>` cannot be split back apart without knowing the index is numeric,
+/// while `#` is followed by digits to end of string and always can be.
+pub const DEVICE_KEY_UNIDENTIFIED_PREFIX: &str = "unidentified:";
 
 /// `VkPhysicalDeviceType`, minus the Vulkan type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

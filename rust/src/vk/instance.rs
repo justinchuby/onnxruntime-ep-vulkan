@@ -598,6 +598,113 @@ pub(crate) fn position_of_physical_in(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// THE STRICT-SELECTOR DECISION (issue #18, contract C6)
+//
+// Extracted from `device::acquire_ep_device`, where it was four lines of inline `match` wrapped
+// in a hundred lines of Vulkan setup. That placement made it untestable without a live ICD and a
+// second physical GPU, so the only fail-closed predicate in the device path was the only one with
+// no unit test — and the *behaviour* it guards (refuse rather than warn) is the whole of C6.
+//
+// Pure over integers and a `Result`, so every arm is reachable from a unit test, and a mutation
+// that disables the refusal is caught by one.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// What a caller must do about the strict, stable-identity selector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StrictSelectorDecision {
+    /// No strict selector is set. The rest of the precedence chain (`ep.device_index`, the legacy
+    /// env selector, ORT's binding, best score) decides, exactly as it did before issue #18.
+    NotRequested,
+    /// The selector resolved to this best-first index and nothing contradicts it: either ORT
+    /// bound the same device, or ORT bound nothing at all. Open it.
+    Open(usize),
+    /// Fail closed — open nothing, claim nothing, let ORT fall back to the CPU EP.
+    Refuse(StrictRefusal),
+}
+
+/// Why [`strict_selector_decision`] refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StrictRefusal {
+    /// A selector is set but names no single device: malformed, matching nothing, matching more
+    /// than one, or naming an identity kind this platform does not report.
+    ///
+    /// All four are one refusal because they call for one response. "Fall back to device 0
+    /// because the selector was ambiguous" is the same failure as "fall back to device 0 because
+    /// the selector was misspelled": a run on hardware nobody asked for.
+    Unresolvable(DeviceSelectionError),
+    /// The selector resolved, and ORT bound a *different* device.
+    ///
+    /// This is the divergence a selector set **after** `RegisterExecutionProviderLibrary`, or an
+    /// `ep.device_selector` session option disagreeing with what the factory advertised, both
+    /// produce. `engine::devices_to_advertise` removes it at the source when the env var is set
+    /// early — with one device advertised, the two index spaces have one member each.
+    Diverged {
+        /// The best-first index the selector resolved to.
+        strict_idx: usize,
+        /// The `vkEnumeratePhysicalDevices` index ORT bound.
+        bound_physical: usize,
+        /// That binding translated into the best-first space, or `None` when no §7.2-capable
+        /// device carries it.
+        bound_pos: Option<usize>,
+    },
+}
+
+/// Decide what the strict selector requires, given how it resolved and what ORT bound.
+///
+/// `strict` is [`select_device_strict`]'s result; `bound_physical` is the `OrtEpDevice` ORT bound
+/// for this session in `vkEnumeratePhysicalDevices` space; `bound_pos` is that same binding
+/// translated into best-first space by [`position_of_physical`], or `None` when no capable device
+/// carries it.
+///
+/// # The four fail-closed states, and the one that passes
+///
+/// | `strict` | `bound_physical` | `bound_pos` | decision |
+/// |---|---|---|---|
+/// | `Ok(None)` | any | any | [`StrictSelectorDecision::NotRequested`] |
+/// | `Ok(Some(i))` | `None` | any | `Open(i)` — ORT bound nothing, so nothing can diverge |
+/// | `Ok(Some(i))` | `Some(_)` | `Some(i)` | `Open(i)` — **exact agreement, the only passing case** |
+/// | `Ok(Some(i))` | `Some(p)` | `Some(j≠i)` | `Refuse(Diverged)` |
+/// | `Ok(Some(i))` | `Some(p)` | `None` | `Refuse(Diverged)` — ORT bound a device outside the §7.2-capable list, so agreement is not merely absent, it is unknowable |
+/// | `Err(e)` | any | any | `Refuse(Unresolvable)` |
+///
+/// The last `Ok` row is the one an "obvious" implementation gets wrong: an untranslatable binding
+/// is not "no binding". A caller that treated it as `false` (no divergence) would open the
+/// selector's device while ORT's allocator stayed keyed to a device we could not even name, which
+/// is the `SPLIT-DEVICE` condition with the diagnostic removed.
+///
+/// # Why this refuses where every other selector in the path merely warns
+///
+/// `ep.device_index` and `ONNXRUNTIME_EP_VULKAN_DEVICE` are *preferences*, and a preference that
+/// loses an argument may be reported and continued past. A stable-identity selector is not a
+/// preference: the only reason to name hardware by UUID/LUID/PCI is that a number obtained on
+/// different hardware would be wrong to attribute. Warning and continuing is fail-**open** in the
+/// way that matters — the session runs, the frame reports `SPLIT-DEVICE`, and a reader who does
+/// not chase that token reads a `MATCH` as evidence about the device they asked for. The evidence
+/// is real; the attribution is not. Refusing produces no evidence at all, which is honest.
+pub(crate) fn strict_selector_decision(
+    strict: Result<Option<usize>, DeviceSelectionError>,
+    bound_physical: Option<usize>,
+    bound_pos: Option<usize>,
+) -> StrictSelectorDecision {
+    let strict_idx = match strict {
+        Err(e) => return StrictSelectorDecision::Refuse(StrictRefusal::Unresolvable(e)),
+        Ok(None) => return StrictSelectorDecision::NotRequested,
+        Ok(Some(i)) => i,
+    };
+    match (bound_physical, bound_pos) {
+        // ORT bound nothing for this session: there is no second device to diverge from.
+        (None, _) => StrictSelectorDecision::Open(strict_idx),
+        // The one passing case: ORT bound exactly the device the identity names.
+        (Some(_), Some(pos)) if pos == strict_idx => StrictSelectorDecision::Open(strict_idx),
+        (Some(physical), bound_pos) => StrictSelectorDecision::Refuse(StrictRefusal::Diverged {
+            strict_idx,
+            bound_physical: physical,
+            bound_pos,
+        }),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Instance
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -2678,5 +2785,226 @@ mod tests {
         assert!(msg.contains("id:10de:27a0"));
         assert!(msg.contains("A (index 0)"));
         assert!(msg.contains("B (index 1)"));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    // THE STRICT-SELECTOR DIVERGENCE PREDICATE (issue #18, contract C6)
+    //
+    // The protocol below is written once and run three times: against the real
+    // `strict_selector_decision`, and against two deliberately defective reimplementations. A
+    // test that only ever runs against the correct implementation proves the implementation
+    // agrees with itself. Running the identical protocol against a mutant proves the protocol
+    // would have *noticed* — which is the claim "this predicate is tested" actually makes.
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    /// The C6 predicate's shape, named so the protocol can take any implementation of it —
+    /// the real one and the mutants below.
+    type C6Predicate<'a> = &'a dyn Fn(
+        Result<Option<usize>, DeviceSelectionError>,
+        Option<usize>,
+        Option<usize>,
+    ) -> StrictSelectorDecision;
+
+    /// The C6 protocol: every row of the decision table, stated once.
+    ///
+    /// Returns `Err(description)` on the first row an implementation gets wrong, so a mutant's
+    /// failure names which guarantee it dropped rather than just "assertion failed".
+    fn c6_protocol(under_test: C6Predicate<'_>) -> Result<(), String> {
+        use StrictSelectorDecision as D;
+
+        let ambiguous = || DeviceSelectionError::Ambiguous {
+            selector: "id:10de:27a0".to_string(),
+            matches: vec!["A".to_string(), "B".to_string()],
+        };
+        let unsupported = || DeviceSelectionError::UnsupportedIdentity {
+            selector: "pci:0000:01:00.0".to_string(),
+            reason: "no enumerated device reports PCI addresses".to_string(),
+        };
+        let malformed = || DeviceSelectionError::Malformed {
+            raw: "not-a-selector".to_string(),
+            reason: "unknown scheme".to_string(),
+        };
+        let not_found = || DeviceSelectionError::NotFound {
+            selector: "uuid:00000000000000000000000000000000".to_string(),
+            available: vec!["A".to_string()],
+        };
+
+        let check = |what: &str, got: D, ok: bool| -> Result<(), String> {
+            if ok {
+                Ok(())
+            } else {
+                Err(format!("{what}: got {got:?}"))
+            }
+        };
+
+        // No selector set: the predicate must stand down entirely. A mutant that "helpfully"
+        // opens device 0 here would silently override the whole precedence chain.
+        let got = under_test(Ok(None), Some(3), Some(1));
+        check(
+            "an unset strict selector must be NotRequested even when a binding exists",
+            got.clone(),
+            got == D::NotRequested,
+        )?;
+
+        // Exact agreement — the only case that passes. Note the identity resolved to best-first
+        // position 1 and ORT bound physical device 7: the spaces differ, and agreement is
+        // decided in best-first space, not by comparing raw indices.
+        let got = under_test(Ok(Some(1)), Some(7), Some(1));
+        check(
+            "exact agreement in best-first space must open the selector's device",
+            got.clone(),
+            got == D::Open(1),
+        )?;
+
+        // ORT bound nothing: there is no second device, so there is nothing to diverge from.
+        let got = under_test(Ok(Some(2)), None, None);
+        check(
+            "with no ORT binding the selector stands alone and must open",
+            got.clone(),
+            got == D::Open(2),
+        )?;
+        let got = under_test(Ok(Some(2)), None, Some(5));
+        check(
+            "a stale bound_pos with no bound_physical must not manufacture a divergence",
+            got.clone(),
+            got == D::Open(2),
+        )?;
+
+        // Divergence: ORT bound a different capable device.
+        let got = under_test(Ok(Some(0)), Some(7), Some(1));
+        check(
+            "a selector/binding mismatch must REFUSE, not warn and continue",
+            got.clone(),
+            matches!(
+                got,
+                D::Refuse(StrictRefusal::Diverged {
+                    strict_idx: 0,
+                    bound_physical: 7,
+                    bound_pos: Some(1)
+                })
+            ),
+        )?;
+
+        // Late divergence with an untranslatable binding: ORT bound a device outside the
+        // §7.2-capable list. Agreement is not merely absent, it is unknowable — so refuse.
+        let got = under_test(Ok(Some(0)), Some(9), None);
+        check(
+            "an untranslatable ORT binding is a divergence, not an absent one",
+            got.clone(),
+            matches!(
+                got,
+                D::Refuse(StrictRefusal::Diverged {
+                    strict_idx: 0,
+                    bound_physical: 9,
+                    bound_pos: None
+                })
+            ),
+        )?;
+
+        // All four unresolvable selectors refuse, and none of them falls back.
+        for (label, err) in [
+            ("ambiguous", ambiguous()),
+            ("unsupported identity", unsupported()),
+            ("malformed", malformed()),
+            ("not found", not_found()),
+        ] {
+            for binding in [None, Some(0usize)] {
+                let got = under_test(Err(err.clone()), binding, binding);
+                check(
+                    &format!("an {label} selector must refuse (binding {binding:?})"),
+                    got.clone(),
+                    matches!(got, D::Refuse(StrictRefusal::Unresolvable(_))),
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// The real predicate satisfies C6.
+    #[test]
+    fn the_strict_selector_predicate_fails_closed_on_every_divergence() {
+        if let Err(what) = c6_protocol(&|s, bp, pos| strict_selector_decision(s, bp, pos)) {
+            panic!("strict_selector_decision violates C6 — {what}");
+        }
+    }
+
+    /// Mutant A: the refusal is disabled outright — the selector always wins.
+    ///
+    /// This is what "just log a warning and open what the user asked for" compiles to. It is the
+    /// single most plausible regression, because it makes the symptom (a refused session) go
+    /// away while leaving the misattribution in place.
+    #[test]
+    fn a_predicate_that_never_refuses_divergence_is_caught() {
+        let mutant = |strict: Result<Option<usize>, DeviceSelectionError>,
+                      _bp: Option<usize>,
+                      _pos: Option<usize>| match strict {
+            Ok(None) => StrictSelectorDecision::NotRequested,
+            Ok(Some(i)) => StrictSelectorDecision::Open(i),
+            Err(e) => StrictSelectorDecision::Refuse(StrictRefusal::Unresolvable(e)),
+        };
+        let err = c6_protocol(&mutant).expect_err(
+            "C6 must catch a predicate that opens the selector's device regardless of what ORT \
+             bound — if this passes, the divergence half of C6 has no test",
+        );
+        assert!(
+            err.contains("mismatch") || err.contains("untranslatable"),
+            "the protocol must name the dropped guarantee, not just fail: {err}"
+        );
+    }
+
+    /// Mutant B: an untranslatable binding is read as "no binding".
+    ///
+    /// The subtle one. `bound_pos == None` looks like "ORT did not bind anything relevant", so
+    /// treating it as agreement is the natural mistake — and it is exactly the SPLIT-DEVICE
+    /// condition with its diagnostic deleted.
+    #[test]
+    fn a_predicate_that_treats_an_untranslatable_binding_as_agreement_is_caught() {
+        let mutant = |strict: Result<Option<usize>, DeviceSelectionError>,
+                      bp: Option<usize>,
+                      pos: Option<usize>| match strict {
+            Ok(None) => StrictSelectorDecision::NotRequested,
+            Err(e) => StrictSelectorDecision::Refuse(StrictRefusal::Unresolvable(e)),
+            Ok(Some(i)) => match (bp, pos) {
+                (Some(physical), Some(p)) if p != i => {
+                    StrictSelectorDecision::Refuse(StrictRefusal::Diverged {
+                        strict_idx: i,
+                        bound_physical: physical,
+                        bound_pos: Some(p),
+                    })
+                }
+                _ => StrictSelectorDecision::Open(i),
+            },
+        };
+        let err = c6_protocol(&mutant).expect_err(
+            "C6 must catch a predicate that reads an untranslatable binding as agreement",
+        );
+        assert!(
+            err.contains("untranslatable"),
+            "the protocol must catch this on the untranslatable row specifically: {err}"
+        );
+    }
+
+    /// Mutant C: an unresolvable selector falls back to the best-scoring device.
+    ///
+    /// The pre-#18 behaviour, and the reason C6 exists: a misspelled UUID producing a run on
+    /// whatever GPU happened to score highest, attributed to the UUID that was asked for.
+    #[test]
+    fn a_predicate_that_falls_back_when_the_selector_is_unresolvable_is_caught() {
+        let mutant = |strict: Result<Option<usize>, DeviceSelectionError>,
+                      bp: Option<usize>,
+                      pos: Option<usize>| match strict {
+            Ok(None) => StrictSelectorDecision::NotRequested,
+            Err(_) => StrictSelectorDecision::Open(0),
+            Ok(Some(i)) => strict_selector_decision(Ok(Some(i)), bp, pos),
+        };
+        let err = c6_protocol(&mutant).expect_err(
+            "C6 must catch a predicate that falls back to device 0 when the selector cannot be \
+             resolved",
+        );
+        assert!(
+            err.contains("must refuse"),
+            "the protocol must catch this on an unresolvable row: {err}"
+        );
     }
 }

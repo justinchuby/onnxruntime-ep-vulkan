@@ -137,20 +137,6 @@ pub fn write_json(path: &Path, doc: &Json) -> Result<()> {
 /// guard that requires `dispatches_executed > 0` then fails with that as its reason. Conflating
 /// "the instrument did not report" with "the instrument reported zero" is exactly the confusion
 /// this repository's counters module was written to prevent.
-/// Drop a leading `N=` positional prefix, if present, and return the remainder when non-empty.
-///
-/// `"0=uuid:aabb"` → `"uuid:aabb"`; `"uuid:aabb"` → `"uuid:aabb"`; `"0="` → `None`. Only a purely
-/// numeric prefix is stripped, so a device named `foo=bar` is not silently truncated.
-fn strip_index(pair: &str) -> Option<String> {
-    let t = pair.trim();
-    let body = match t.split_once('=') {
-        Some((head, rest)) if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) => rest,
-        _ => t,
-    };
-    let body = body.trim();
-    (!body.is_empty()).then(|| body.to_string())
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct Counters {
     pub present: bool,
@@ -158,12 +144,15 @@ pub struct Counters {
     pub claimed_nodes: Option<i64>,
     pub islands_offered: Option<i64>,
     pub compute_calls: Option<i64>,
-    /// `"0=NVIDIA RTX A1000 Laptop GPU"` — the device names the EP session actually opened.
+    /// `"NVIDIA RTX A1000 Laptop GPU"` — the device names the EP session actually opened,
+    /// `"; "`-separated and **bare** (position is the index; see
+    /// [`onnxruntime_vulkan_ep::engine::format_device_list`]).
     ///
     /// `None` when the counters file predates issue #18 or the EP never opened a device. That is
     /// a third state, and the identity-agreement guard treats it as *unknown*, not as *agreed*.
     pub running_device_names: Option<String>,
-    /// `"0=uuid:aabb…"` — the stable identities of those same devices (issue #18).
+    /// `"uuid:aabb…"` — the stable identities of those same devices, in the same wire format
+    /// (issue #18).
     ///
     /// This, and not [`Counters::running_device_names`], is what the agreement guard compares the
     /// selected device against: a name is shared by every card of a model, so agreement on a name
@@ -224,18 +213,23 @@ impl Counters {
 
     /// The canonical identity keys the EP session opened, in index order.
     ///
-    /// Accepts both shapes the EP emits: a bare `"uuid:aa…; unidentified:1:Card"` list, and the
-    /// `"0=uuid:aa…; 1=…"` indexed form used by `alloc_device_frame_session_devices`. An `N=`
-    /// prefix is positional decoration, not part of the identity, so it is stripped rather than
-    /// required — requiring it silently produced an *empty* key list against a real EP, which the
-    /// agreement guard then correctly but uselessly reported as "no identity".
+    /// Parsed by [`onnxruntime_vulkan_ep::engine::parse_device_list`] — **the EP's own reader for
+    /// its own format**, not a second implementation of it. That is the whole repair for issue
+    /// #18 blocker B1: three parsers of one undocumented format meant the ledger's was allowed to
+    /// disagree with the emitter's for as long as nobody read a `device_uuid`.
+    ///
+    /// The canonical emitted shape is a **bare** `"uuid:aa…; unidentified:Some Card#1"` list —
+    /// position is the index — and the indexed `"0=…"` shape of the *different*
+    /// `alloc_device_frame_session_devices` counter is tolerated, never required. Requiring it
+    /// silently produced an *empty* key list against a real EP, which the agreement guard then
+    /// correctly but uselessly reported as "no identity".
     ///
     /// Empty means *no comparison is possible* — never *the identities agree*.
     pub fn session_device_keys(&self) -> Vec<String> {
         let Some(raw) = self.running_device_uuids.as_deref() else {
             return Vec::new();
         };
-        raw.split("; ").filter_map(strip_index).collect()
+        onnxruntime_vulkan_ep::engine::parse_device_list(raw)
     }
 
     /// The display names of those same devices, in the same order and with the same two shapes
@@ -244,7 +238,7 @@ impl Counters {
         let Some(raw) = self.running_device_names.as_deref() else {
             return Vec::new();
         };
-        raw.split("; ").filter_map(strip_index).collect()
+        onnxruntime_vulkan_ep::engine::parse_device_list(raw)
     }
 
     pub fn to_json(&self) -> Json {
@@ -313,15 +307,30 @@ mod tests {
 
         let two = Counters {
             present: true,
-            running_device_uuids: Some(format!("0=uuid:{U}; 1=unidentified:1:Some Card")),
-            running_device_names: Some("0=NVIDIA RTX A1000; 1=Some Card".to_string()),
+            running_device_uuids: Some(format!("uuid:{U}; unidentified:Some Card#1")),
+            running_device_names: Some("NVIDIA RTX A1000; Some Card".to_string()),
             ..Default::default()
         };
         assert_eq!(
             two.session_device_keys(),
-            vec![format!("uuid:{U}"), "unidentified:1:Some Card".to_string()],
+            vec![format!("uuid:{U}"), "unidentified:Some Card#1".to_string()],
             "a multi-device list separates on `; ` and keeps the whole identity, including the \
-             colons inside `unidentified:<index>:<name>`"
+             `#<physical index>` suffix inside `unidentified:<name>#<index>` — the production \
+             spelling, name first"
+        );
+
+        // The same list in the *indexed* shape of `alloc_device_frame_session_devices`, which is
+        // tolerated and must parse to byte-identical identities.
+        let two_indexed = Counters {
+            present: true,
+            running_device_uuids: Some(format!("0=uuid:{U}; 1=unidentified:Some Card#1")),
+            running_device_names: Some("0=NVIDIA RTX A1000; 1=Some Card".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(two_indexed.session_device_keys(), two.session_device_keys());
+        assert_eq!(
+            two_indexed.session_device_names(),
+            two.session_device_names()
         );
     }
 

@@ -2709,8 +2709,12 @@ impl VulkanEpCounters {
             unprovable_decline_forms_json(),
             crate::registry::ledger().subject_changed_entries().count(),
             crate::registry::ledger().toolchain_delta_entries().count(),
-            json_escape(&crate::registry::running_device_names().join("; ")),
-            json_escape(&crate::registry::running_device_uuids().join("; ")),
+            json_escape(&crate::engine::format_device_list(
+                crate::registry::running_device_names()
+            )),
+            json_escape(&crate::engine::format_device_list(
+                crate::registry::running_device_uuids()
+            )),
             reproof_forms_admitted_json(),
             shaders_list,
             shaders_digest,

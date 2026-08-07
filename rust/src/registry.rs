@@ -3352,11 +3352,7 @@ pub fn running_device_names() -> Vec<String> {
     if names == "none" || names == "unknown" {
         return Vec::new();
     }
-    names
-        .split("; ")
-        .filter_map(|pair| pair.split_once('='))
-        .map(|(_, name)| name.to_string())
-        .collect()
+    crate::engine::parse_device_list(&names)
 }
 
 /// The **stable identities** of the physical devices this run has actually opened (issue #18).
@@ -3368,16 +3364,18 @@ pub fn running_device_names() -> Vec<String> {
 /// The `unidentified:` form is deliberately **not** comparable to anything a ledger carries: it is
 /// process-local, so a proof generated in another process could never legitimately equal it. It
 /// exists so two same-named UUID-less devices in *this* process still count as two, not so that a
-/// name can be laundered into an identity by another route.
+/// name can be laundered into an identity by another route. [`device_state`] therefore reads it
+/// as *no comparison is possible* rather than as *a comparison that failed*.
+///
+/// The list is parsed by [`crate::engine::parse_device_list`] — the same reader the emitted
+/// `running_device_uuids` counter and `gen_proof_ledger.py` use, so the three cannot drift apart
+/// again (issue #18 blocker B1).
 pub fn running_device_uuids() -> Vec<String> {
     let ids = crate::allocator::tally::session_device_identities();
     if ids == "none" || ids == "unknown" {
         return Vec::new();
     }
-    ids.split("; ")
-        .filter_map(|pair| pair.split_once('='))
-        .map(|(_, key)| key.to_string())
-        .collect()
+    crate::engine::parse_device_list(&ids)
 }
 
 /// Whether `label` is a selector ordinal (`device0`, `device7`) rather than a device name.
@@ -3527,7 +3525,8 @@ impl ProofState {
 /// | entry uuid | running identity | verdict |
 /// |---|---|---|
 /// | present | equal | [`ProofState::Proven`] |
-/// | present | differs | [`ProofState::ProvenElsewhere`] with [`FrameDelta::Device`] — **even when the names match** |
+/// | present | differs, both portable | [`ProofState::ProvenElsewhere`] with [`FrameDelta::Device`] — **even when the names match** |
+/// | present | run opened only `unidentified:` devices | [`ProofState::DeviceUnattributed`] — *not comparable*, which is not the same as *different* |
 /// | present | run opened nothing | [`ProofState::DeviceUnattributed`] |
 /// | absent | anything | [`ProofState::DeviceUnattributed`] — *a name is not an identity* |
 ///
@@ -3567,10 +3566,34 @@ pub fn device_state(entry_device: &str, entry_uuid: &str) -> ProofState {
                      against",
         };
     }
-    let entry_key = format!("uuid:{entry_uuid}");
+    let entry_key = format!("{}{entry_uuid}", crate::engine::DEVICE_KEY_UUID_PREFIX);
     if running.iter().any(|k| k == &entry_key) {
-        ProofState::Proven
-    } else {
+        return ProofState::Proven;
+    }
+    // NOT-EQUAL IS NOT THE SAME QUESTION AS NOT-COMPARABLE (issue #18, blocker B1).
+    //
+    // `ProvenElsewhere` is a positive finding: it asserts that the proof was obtained on a
+    // *different physical device* than the one running now. That assertion needs two portable
+    // identities to stand on. If this run opened a device whose driver reported no UUID, its key
+    // is `unidentified:<name>#<index>` — process-local by construction — and it can never equal a
+    // ledger identity no matter which device it is. Reading the inevitable inequality as "proved
+    // elsewhere" would manufacture a δ nobody observed, and it would do it in exactly the case
+    // where the honest answer (`DEVICE-UNATTRIBUTED`) is what `DESIGN.md` §2.4.1.1 and the
+    // `DeviceKey` fail-closed contract both already promise. Both states claim and disclose, so
+    // this costs no claim; it changes what the disclosure *says*, which is the whole product.
+    if !running
+        .iter()
+        .any(|k| crate::engine::key_is_portable_identity(k))
+    {
+        return ProofState::DeviceUnattributed {
+            entry_label: device_label(entry_device, entry_uuid),
+            reason: "this run opened a device whose driver reported no stable identity, so its \
+                     key is process-local (`unidentified:…`) and cannot be compared with any \
+                     entry's identity — this is 'no comparison is possible', not 'the devices \
+                     differ'",
+        };
+    }
+    {
         let running_names = running_device_names();
         let same_name = !entry_device.is_empty() && running_names.iter().any(|n| n == entry_device);
         let note = if same_name {
@@ -5874,9 +5897,16 @@ mod tests {
         }
     }
 
-    /// The fail-closed fallback must never launder itself into a proof. A run on a device that
-    /// reported no UUID has an `unidentified:` key, which no ledger entry can ever equal — so the
-    /// verdict is `ProvenElsewhere`, and specifically not `Proven`.
+    /// The fail-closed fallback must never launder itself into a proof — **and must not
+    /// manufacture a δ either**. A run on a device that reported no UUID has an `unidentified:`
+    /// key, which no ledger entry can ever equal, so the inequality carries no information about
+    /// *which* device this is. The verdict is `DeviceUnattributed` ("no comparison is possible"),
+    /// specifically not `Proven` and specifically not `ProvenElsewhere`.
+    ///
+    /// It returned `ProvenElsewhere` until issue #18's third revision, which contradicted both
+    /// `DESIGN.md` §2.4.1.1 and the fail-closed contract written on `DeviceKey` itself. Both
+    /// states claim and disclose, so the repair costs no claim; it changes what the disclosure
+    /// asserts, and `ProvenElsewhere` asserts an observation nobody made.
     #[test]
     fn a_run_on_an_unidentified_device_can_never_be_proven() {
         let _guard = crate::allocator::ledger::test_lock();
@@ -5896,12 +5926,256 @@ mod tests {
             "the fallback key must reach the comparison intact, prefix and all"
         );
         let state = device_state(NAME, &"e".repeat(32));
-        assert!(
-            matches!(state, ProofState::ProvenElsewhere { .. }),
-            "a process-local key must never equal a ledger identity; got {state:?}"
-        );
+        match &state {
+            ProofState::DeviceUnattributed { reason, .. } => assert!(
+                reason.contains("process-local"),
+                "the reason must say why no comparison is possible: {reason}"
+            ),
+            other => panic!(
+                "a process-local key is not comparable, so this is neither Proven nor \
+                 ProvenElsewhere; got {other:?}"
+            ),
+        }
         assert_ne!(state, ProofState::Proven);
+        assert!(
+            state.deltas().is_empty(),
+            "an impossible comparison produces no δ — a δ is an observation, and none was made"
+        );
+        assert!(
+            state.claimable(),
+            "DEVICE-UNATTRIBUTED still claims and discloses; the repair must not cost a claim"
+        );
         crate::allocator::tally::clear_session_devices();
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    // THE WIRE-FORMAT CONTRACT, DRIVEN FROM THE SHARED FIXTURE (issue #18, blocker B1)
+    //
+    // `tests/fixtures/device_identity_wire.jsonl` is read here and by
+    // `tests/ops/test_device_identity_wire.py`. One file, two languages, so the Rust reader and
+    // the Python reader cannot disagree about the format again without a test saying so — which
+    // is the only structural defence available, since the two cannot share code.
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    /// A correct-enough JSON string-array reader for the fixture.
+    ///
+    /// `json_str_array_field` splits on `,`, and this fixture deliberately contains device names
+    /// that carry commas (`llvmpipe (LLVM 20.1.2, 256 bits)`, `Intel(R) Iris(R) Xe Graphics` in
+    /// its two-card form) because those are the names that break naive readers. So the fixture
+    /// gets a reader that tracks quotes.
+    fn fixture_string_array(line: &str, field: &str) -> Vec<String> {
+        let needle = format!("\"{field}\":[");
+        let Some(start) = line.find(&needle).map(|i| i + needle.len()) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut in_str = false;
+        let mut escaped = false;
+        for c in line[start..].chars() {
+            if in_str {
+                if escaped {
+                    cur.push(c);
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    out.push(std::mem::take(&mut cur));
+                    in_str = false;
+                } else {
+                    cur.push(c);
+                }
+            } else if c == '"' {
+                in_str = true;
+            } else if c == ']' {
+                break;
+            }
+        }
+        out
+    }
+
+    fn wire_fixture_lines() -> Vec<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("tests")
+            .join("fixtures")
+            .join("device_identity_wire.jsonl");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read the shared wire fixture {path:?}: {e}"));
+        text.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Plant `running_device_uuids` / `running_device_names` exactly as a session would.
+    ///
+    /// Through `note_session_device`, i.e. **the same channel production uses**, so the test
+    /// exercises the real path from `allocator::tally` out through `registry::running_device_*`
+    /// rather than a parallel one built for the occasion.
+    fn plant_running(uuids: &str, names: &str) {
+        crate::allocator::tally::clear_session_devices();
+        if uuids == "none" || uuids == "unknown" || uuids.is_empty() {
+            return;
+        }
+        let keys = crate::engine::parse_device_list(uuids);
+        let names = crate::engine::parse_device_list(names);
+        for (i, key) in keys.iter().enumerate() {
+            let parsed = crate::engine::DeviceKey::from_canonical(key)
+                .unwrap_or_else(|| panic!("fixture key {key:?} is not a canonical DeviceKey"));
+            let name = names.get(i).cloned().unwrap_or_default();
+            crate::allocator::tally::note_session_device(i, &parsed, &name);
+        }
+    }
+
+    /// Every `kind=wire` row: the emitted counters string parses to exactly the stated keys and
+    /// names, through the *production* reader.
+    #[test]
+    fn the_emitted_wire_format_parses_to_the_identities_the_fixture_states() {
+        let mut seen = 0;
+        for line in wire_fixture_lines() {
+            if json_field(&line, "kind").as_deref() != Some("wire") {
+                continue;
+            }
+            seen += 1;
+            let case = json_field(&line, "case").unwrap_or_default();
+            let uuids = json_field(&line, "running_device_uuids").unwrap_or_default();
+            let names = json_field(&line, "running_device_names").unwrap_or_default();
+            let want_keys = fixture_string_array(&line, "keys");
+            let want_names = fixture_string_array(&line, "names");
+
+            // A sentinel is a statement about the whole list; the callers strip it, so the test
+            // exercises the callers' rule rather than restating it here.
+            let got_keys = if uuids == "none" || uuids == "unknown" {
+                Vec::new()
+            } else {
+                crate::engine::parse_device_list(&uuids)
+            };
+            let got_names = if names == "none" || names == "unknown" {
+                Vec::new()
+            } else {
+                crate::engine::parse_device_list(&names)
+            };
+            assert_eq!(got_keys, want_keys, "case {case}: keys from {uuids:?}");
+            assert_eq!(got_names, want_names, "case {case}: names from {names:?}");
+
+            // Every identity the fixture states must round-trip through `DeviceKey`, which is
+            // what proves the `unidentified:<name>#<index>` spelling is parseable at all (B2).
+            for k in &want_keys {
+                let parsed = crate::engine::DeviceKey::from_canonical(k)
+                    .unwrap_or_else(|| panic!("case {case}: {k:?} is not a canonical DeviceKey"));
+                assert_eq!(parsed.canonical(), *k, "case {case}: {k:?} must round-trip");
+            }
+        }
+        assert!(
+            seen >= 10,
+            "the fixture lost its wire rows: only {seen} read"
+        );
+    }
+
+    /// Every `kind=state` row: the same emitted string, planted through the session channel,
+    /// meets a ledger entry and produces the stated verdict.
+    ///
+    /// This is the A/B the third revision was asked for, and it is end-to-end on the Rust side:
+    /// counters wire string → `allocator::tally` → `registry::running_device_uuids` →
+    /// `device_state`. The Python half (`tests/ops/test_device_identity_wire.py`) drives the same
+    /// strings through `gen_proof_ledger.entry_line` and asserts the `device_uuid` these rows
+    /// consume.
+    #[test]
+    fn the_emitted_wire_format_reaches_device_state_with_the_stated_verdict() {
+        let _guard = crate::allocator::ledger::test_lock();
+        let mut seen = 0;
+        for line in wire_fixture_lines() {
+            if json_field(&line, "kind").as_deref() != Some("state") {
+                continue;
+            }
+            seen += 1;
+            let case = json_field(&line, "case").unwrap_or_default();
+            plant_running(
+                &json_field(&line, "running_device_uuids").unwrap_or_default(),
+                &json_field(&line, "running_device_names").unwrap_or_default(),
+            );
+            let entry_device = json_field(&line, "entry_device").unwrap_or_default();
+            let entry_uuid = json_field(&line, "entry_device_uuid").unwrap_or_default();
+            let want = json_field(&line, "state").unwrap_or_default();
+            let state = device_state(&entry_device, &entry_uuid);
+            let got = match &state {
+                ProofState::Proven => "PROVEN",
+                ProofState::ProvenElsewhere { .. } => "PROVEN-ELSEWHERE",
+                ProofState::DeviceUnattributed { .. } => "DEVICE-UNATTRIBUTED",
+                _ => "OTHER",
+            };
+            assert_eq!(got, want, "case {case}: got {state:?}");
+            if let Some(fragment) = json_field(&line, "state_detail") {
+                let said = match &state {
+                    ProofState::ProvenElsewhere { detail, .. } => detail.clone(),
+                    ProofState::DeviceUnattributed { reason, .. } => reason.to_string(),
+                    other => format!("{other:?}"),
+                };
+                assert!(
+                    said.contains(&fragment),
+                    "case {case}: the verdict must SAY why — expected {fragment:?} in {said:?}"
+                );
+            }
+        }
+        crate::allocator::tally::clear_session_devices();
+        assert!(
+            seen >= 7,
+            "the fixture lost its state rows: only {seen} read"
+        );
+    }
+
+    /// The mutation the rejected revision shipped, planted here so the fixture proves it fails.
+    ///
+    /// `gen_proof_ledger.py` filtered `if '=' in p` and took `p.split('=', 1)[1]`. Against the
+    /// bare form every real counters file carries, that selects **nothing**. This test does not
+    /// need Python to say so: the same rule applied to the same fixture strings produces an empty
+    /// identity for every row the contract says carries one.
+    ///
+    /// It is here as well as in `tests/ops/test_device_identity_wire.py` because the Rust suite
+    /// runs on every lane and the Python suite does not — a control that only runs where the
+    /// defect is already known is not a control.
+    #[test]
+    fn the_rejected_prefix_requiring_parser_reads_nothing_from_the_emitted_form() {
+        let rejected = |raw: &str| -> Vec<String> {
+            raw.split("; ")
+                .filter(|p| p.contains('='))
+                .map(|p| p.split_once('=').expect("contains =").1.trim().to_string())
+                .collect()
+        };
+        let mut proved = 0;
+        for line in wire_fixture_lines() {
+            if json_field(&line, "kind").as_deref() != Some("wire") {
+                continue;
+            }
+            let case = json_field(&line, "case").unwrap_or_default();
+            // The tolerance row is written in the indexed shape on purpose, so it is the one row
+            // the rejected parser reads correctly. Excluding it is what makes the rest evidence.
+            if case == "indexed_tolerance" || case == "index_with_no_body" {
+                continue;
+            }
+            let uuids = json_field(&line, "running_device_uuids").unwrap_or_default();
+            let want = fixture_string_array(&line, "keys");
+            if want.is_empty() {
+                continue;
+            }
+            proved += 1;
+            assert_ne!(
+                rejected(&uuids),
+                want,
+                "case {case}: the rejected parser must FAIL on the emitted form — if this ever \
+                 passes, the emitted form has changed and DESIGN.md §2.4.1.2 is stale"
+            );
+            assert!(
+                rejected(&uuids).is_empty(),
+                "case {case}: and it fails by reading NOTHING, which is why it was silent"
+            );
+        }
+        assert!(
+            proved >= 4,
+            "the mutation control lost its subjects: only {proved} rows exercised"
+        );
     }
 
     /// A ledger entry generated before issue #18 has no `device_uuid` key at all, and must parse

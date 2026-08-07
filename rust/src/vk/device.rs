@@ -240,12 +240,63 @@ pub(crate) unsafe fn acquire_ep_device(
     // silently running on a different GPU than the one asked for is exactly what this selector
     // exists to prevent.
     let device_infos: Vec<DeviceInfo> = capables.iter().map(|c| c.info.clone()).collect();
-    let strict = match crate::vk::instance::select_device_strict(&device_infos, device_selector) {
-        Ok(strict) => strict,
-        Err(e) => {
+    let strict_result = crate::vk::instance::select_device_strict(&device_infos, device_selector);
+
+    // The one place the two index spaces are allowed to meet. `bound_physical` is an enumeration
+    // index; every other index here is a position in the best-first sorted list. They are not
+    // interchangeable.
+    let bound_pos = bound_physical.and_then(|p| position_of_physical(&capables, p));
+
+    use crate::vk::instance::{StrictRefusal, StrictSelectorDecision};
+    let strict = match crate::vk::instance::strict_selector_decision(
+        strict_result,
+        bound_physical,
+        bound_pos,
+    ) {
+        StrictSelectorDecision::NotRequested => None,
+        StrictSelectorDecision::Open(i) => Some(i),
+        StrictSelectorDecision::Refuse(StrictRefusal::Unresolvable(e)) => {
             log::error!(
                 "VulkanSession::create: {} {e}. Refusing to open any Vulkan device rather than \
                  silently binding a different GPU (issue #18 device-selection contract).",
+                crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT,
+            );
+            return None;
+        }
+        // ── Issue #18, C6: a STRICT selector fails closed. ───────────────────────────────────
+        //
+        // Every other selector in this function is a preference, and a preference that loses an
+        // argument may be reported and continued past. A strict stable-identity selector is not a
+        // preference: it names one physical device by UUID/LUID/PCI, and the only reason to name
+        // a device that way is that a result obtained on a different one would be wrong to
+        // attribute.
+        //
+        // The pre-#18 behaviour — `warn!` and open the requested device anyway — is fail-**open**
+        // in the way that matters: the session runs, ORT's allocator is keyed to the device *it*
+        // bound, the frame reports `SPLIT-DEVICE`, and a reader who does not chase that token
+        // down reads a `MATCH` as evidence about the device they asked for. The evidence is real;
+        // the attribution is not. Refusing produces no evidence at all, which is the honest
+        // outcome, and ORT falls back to CPU rather than producing an unattributable GPU number.
+        StrictSelectorDecision::Refuse(StrictRefusal::Diverged {
+            strict_idx,
+            bound_physical: physical,
+            bound_pos,
+        }) => {
+            log::error!(
+                "VulkanSession::create: REFUSING to open a device. {} named '{}' (physical \
+                 enumerate index {}, best-first selector index {strict_idx}), but ORT bound \
+                 physical enumerate index {physical} ({}). A strict stable-identity selector \
+                 names one piece of hardware; honouring it here would leave ORT's allocator \
+                 keyed to a different device, and a run whose numbers and whose allocator \
+                 describe two devices cannot be attributed to either. Set {} BEFORE the EP \
+                 library is registered — engine::devices_to_advertise then advertises only that \
+                 device, ORT cannot bind another, and the two index spaces have one member each.",
+                crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT,
+                capables[strict_idx].info.name,
+                capables[strict_idx].info.index,
+                bound_pos
+                    .map(|p| capables[p].info.name.clone())
+                    .unwrap_or_else(|| "not in the §7.2-capable list".to_string()),
                 crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT,
             );
             return None;
@@ -272,52 +323,6 @@ pub(crate) unsafe fn acquire_ep_device(
     } else {
         select_device(&capables).unwrap_or(0)
     };
-
-    // The one place the two index spaces are allowed to meet. `bound_physical` is an enumeration
-    // index; `idx` is a position in the best-first sorted list. They are not interchangeable.
-    let bound_pos = bound_physical.and_then(|p| position_of_physical(&capables, p));
-
-    // ── Issue #18, C6: a STRICT selector fails closed. ───────────────────────────────────────
-    //
-    // Every other selector in this function is a preference, and a preference that loses an
-    // argument may be reported and continued past. A strict stable-identity selector is not a
-    // preference: it names one physical device by UUID/LUID/PCI, and the only reason to name a
-    // device that way is that a result obtained on a different one would be wrong to attribute.
-    //
-    // The pre-#18 behaviour — `warn!` and open the requested device anyway — is fail-**open** in
-    // the way that matters: the session runs, ORT's allocator is keyed to the device *it* bound,
-    // the frame reports `SPLIT-DEVICE`, and a reader who does not chase that token down reads a
-    // `MATCH` as evidence about the device they asked for. The evidence is real; the attribution
-    // is not. Refusing produces no evidence at all, which is the honest outcome, and ORT falls
-    // back to CPU rather than producing an unattributable GPU number.
-    if let Some(strict_idx) = strict {
-        let diverges = match (bound_physical, bound_pos) {
-            (None, _) => false,
-            (Some(_), Some(pos)) => pos != strict_idx,
-            (Some(_), None) => true,
-        };
-        if diverges {
-            log::error!(
-                "VulkanSession::create: REFUSING to open a device. {} named '{}' (physical \
-                 enumerate index {}, best-first selector index {strict_idx}), but ORT bound \
-                 physical enumerate index {} ({}). A strict stable-identity selector names one \
-                 piece of hardware; honouring it here would leave ORT's allocator keyed to a \
-                 different device, and a run whose numbers and whose allocator describe two \
-                 devices cannot be attributed to either. Set {} BEFORE the EP library is \
-                 registered — engine::devices_to_advertise then advertises only that device, ORT \
-                 cannot bind another, and the two index spaces have one member each.",
-                crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT,
-                capables[strict_idx].info.name,
-                capables[strict_idx].info.index,
-                bound_physical.map(|p| p.to_string()).unwrap_or_default(),
-                bound_pos
-                    .map(|p| capables[p].info.name.clone())
-                    .unwrap_or_else(|| "not in the §7.2-capable list".to_string()),
-                crate::vk::instance::ENV_DEVICE_SELECTOR_STRICT,
-            );
-            return None;
-        }
-    }
 
     let idx = match (bound_physical, bound_pos) {
         (None, _) => idx,

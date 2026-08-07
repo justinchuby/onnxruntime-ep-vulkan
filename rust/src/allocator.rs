@@ -1393,6 +1393,14 @@ pub mod tally {
     /// **This is what a proof may be compared against**, and the names above are not: a name is
     /// shared by every card of a model, so `Proven` derived from a name equality is a claim about
     /// a model rather than about the hardware the evidence came from.
+    ///
+    /// THIS INDEXED SHAPE IS INTERNAL AND IS NOT THE WIRE FORMAT. `SESSION_DEVICES` is a sparse
+    /// map keyed by the factory device index, so its rendering carries the key. The
+    /// `running_device_uuids` counter that leaves this process is **bare** —
+    /// `registry::running_device_uuids` strips the index and `counters.rs` emits the result
+    /// through `engine::format_device_list`. Confusing the two is exactly issue #18's blocker B1:
+    /// `gen_proof_ledger.py` was written against this shape and pointed at that counter, so it
+    /// read nothing and every ledger entry's `device_uuid` was empty. See `DESIGN.md` §2.4.1.2.
     pub fn session_device_identities() -> String {
         let Ok(m) = SESSION_DEVICES.lock() else {
             return "unknown".to_string();

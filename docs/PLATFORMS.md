@@ -372,7 +372,7 @@ to be wrong on some driver:
 
 | | UUID reported | No UUID reported |
 |---|---|---|
-| Frame key | `uuid:<32 hex>` | `unidentified:<physical_index>:<deviceName>` |
+| Frame key | `uuid:<32 hex>` | `unidentified:<deviceName>#<physical_index>` |
 | Two same-named cards separate into two frames? | yes | **yes** — the enumeration index disambiguates them within the process |
 | A ledger entry can be attributed to this device? | yes (`PROVEN`) | **no** — always `DEVICE-UNATTRIBUTED`, because an enumeration index means nothing outside the process that observed it |
 | `vulkan.device_uuid` EP metadata | present | **omitted**, never `""` and never all-zero |
