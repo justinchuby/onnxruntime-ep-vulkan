@@ -271,6 +271,89 @@ of `onnx`/`numpy` into that venv defaults to the approved proxy index
 (`https://packagefeedproxy.microsoft.io/pypi/simple`, override with `--index-url` or
 `$ONNXRUNTIME_EP_VULKAN_PYPI_INDEX_URL`) because public PyPI is blocked in the sandboxes
 this tool is actually run from during EP development (issue #40).
+
+**Index-URL privacy (issue #55).** An override may point at a private/authenticated mirror,
+so `--index-url` is treated as a secret-bearing string everywhere except `pip`'s own argv.
+`pip` is invoked with a real argv and never through a shell, so no shell history or shell
+expansion sees the value. Everything else this tool *echoes, persists or raises* — the
+`$ ...` progress echo, every field of `bench/results/cleanroom_install_dev0.json`, the text
+of any exception it exits on — is scrubbed first, by policy rather than by a denylist of
+known-sensitive parameter names:
+
+| URL component | What is recorded |
+|---|---|
+| scheme, host, port, path | preserved — this is the provenance an operator needs |
+| userinfo (`user:pass@`, `user@`, percent-encoded) | `REDACTED@host` |
+| every query **value** | `REDACTED`; the parameter **name and count** survive, so `?token=x&sig=y` becomes `?token=REDACTED&sig=REDACTED` |
+| a query segment with no `=` | replaced whole — an `=`-less segment is an opaque token |
+| fragment (`#...`) | `#REDACTED` when non-empty |
+
+This covers absolute (`https://u:p@host/...`), scheme-relative (`//u:p@host/...`) and
+schemeless (`u:p@host/...`, `host/simple?token=...`, `host:8443/simple#...`) spellings,
+IPv6 literals with ports, duplicate and blank parameters, several URLs on one line, and
+text in which a URL straddles the point at which a captured stream is truncated (the scrub
+always runs over the whole text; only the already-sanitised result is truncated).
+
+**One seam, three passes.** Every echoed, persisted and raised string goes through a
+single function, `_scrub_text(text, raw_url)` — the general URL scanner is not reachable
+from anywhere else, and a test enforces that by AST. The seam runs:
+
+1. **by value** — the exact `--index-url` this run was handed is replaced by its sanitised
+   rendering. No shape recognition is involved, so it holds for any spelling;
+2. **by literal** — the credential substrings *derived from* that URL (userinfo, each
+   query value, the fragment) are replaced wherever they appear, because `pip`, `keyring`
+   and the OS quote a credential back *without* its URL. Literals shorter than three
+   characters, and any that survive into the sanitised rendering, are skipped, so the
+   host, path and parameter names are never shredded;
+3. **by syntax** — a scan for URL-shaped spans, which catches a URL this run never handed
+   out (an `extra-index-url` inherited from `pip`'s own config, say).
+
+The echo additionally sanitises a token by **argument position** — the value of
+`--index-url`/`--extra-index-url`, in both `--flag value` and `--flag=value` spellings —
+so a URL-valued argument is covered even when the raw value is not to hand.
+
+Four limitations, stated so nobody has to infer them:
+
+* **A secret in the URL *path* is not redacted.** Some mirrors sign by embedding a token in
+  a path segment (`/t/<token>/simple`); the path is the last provenance left once userinfo,
+  query and fragment are gone, so it is kept.
+* **Only what *this tool* emits is covered.** `pip`'s own logs, the OS process table and any
+  proxy access log are outside its reach.
+* **`pip freeze` output is scrubbed too**, so a local wheel's `file:///...#sha256=<digest>`
+  fragment records as `#REDACTED`. The wheel digest is recorded verbatim and independently
+  as `wheel_sha256`.
+* **The syntactic scan requires an explicit `//` authority marker**, so a *foreign*
+  schemeless credential URL — one this run was never given, appearing only in text `pip` or
+  the OS produced — is not redacted by shape. This is the deliberate price of never
+  corrupting ordinary text: an earlier revision treated any `@`-bearing run of characters
+  as a URL authority and rewrote `C:\Users\first.last@corp\AppData\...` to
+  `REDACTED@corp\AppData\...`, destroying the drive letter and every directory before the
+  `@` in provenance paths it was only supposed to record. Ordinary drive paths, UNC paths,
+  wheel specs, PEP 508 `package@ file://` references, e-mail addresses and mixed prose are
+  now byte-identical through every surface, pinned by a 16-entry never-mangle table. The
+  run's own URL is unaffected by this limitation: passes 1 and 2 and argument position
+  cover it in every spelling.
+
+The scrub is **idempotent** and never lengthens its own output — `_scrub_obj` re-scrubs the
+whole record at the write seam, so a scrub that rewrote or grew already-scrubbed text would
+break the documented size bound on `pip_stderr` (≤ 1500 characters).
+
+`tests/packaging/test_verify_cleanroom_redaction.py` drives the real `main()` against a
+shell-free fake subprocess and asserts these claims on the bytes actually printed, raised
+and written. `ci/negative_control_cleanroom_redaction.py` demands that same suite go **red**
+against the module as it really stood at each of two rejected heads. Those bytes are
+committed as **content-addressed replay fixtures** under `ci/fixtures/cleanroom-redaction/`,
+each pinned by a sha256 in that directory's `manifest.json` and verified before use — not
+fetched by commit ref, because this repository squash-merges and deletes branches, so a
+control that says `git show <sha>` stops working the moment the change it guards lands. A
+tampered fixture is refused rather than replayed, and a `LANDING` arm re-runs the whole
+control against a copy of the tree with **no `.git` at all** to prove the evidence needs no
+history to fire. `ci/simulate_squash_cleanroom_redaction.py` is the pre-landing harness for
+the same claim against real git: it clones the repository, applies this branch's tree onto
+`origin/main` as one squash commit, deletes every other ref, expires the reflog and prunes,
+then demands the suite and all 29 arms still fire there — and that the control still goes
+red when the module is replaced by a rejected head's fixture bytes.
+
 `bench/results/cleanroom_install_dev0.json` records the run: `verdict: PASS`,
 `session_providers: ["VulkanExecutionProvider", "CPUExecutionProvider"]`,
 `artifact_inside_site_packages: true`, on Windows / RTX 4060 / ORT 1.28.0. **It has been

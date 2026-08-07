@@ -1530,8 +1530,8 @@ CHECKS: tuple[Check, ...] = (
         lane=LANE_HOSTFREE,
         step="PowerShell exit-status screen (a verdict step must consume its own code)",
         watches=(
-            "Issue #49: a Windows `run:` step that captures `$LASTEXITCODE` into a "
-            "named variable to brand or print its OWN verdict, but whose success path "
+            "Issue #49 (PS1): a Windows `run:` step that captures `$LASTEXITCODE` into "
+            "a named variable to brand or print its OWN verdict, but whose success path "
             "ends without an explicit `exit`. GitHub's generated `pwsh` wrapper appends "
             "`if ((Test-Path variable:\\LASTEXITCODE)) { exit $LASTEXITCODE }` after the "
             "script body, so the step's real exit code stays pinned to whatever native "
@@ -1540,25 +1540,43 @@ CHECKS: tuple[Check, ...] = (
             "step's own verdict. Both Windows 'Gate negative control' steps carried this "
             "shape; the second is what issue #49 was filed against, the first is a "
             "second, proven-coupled instance that had simply never been exercised "
-            "because ICD suppression never used to take on an elevated Windows runner."
+            "because ICD suppression never used to take on an elevated Windows runner. "
+            "Issue #55 (PS2): the capture was never what made the verdict lie -- a "
+            "step that invokes a native command (`&`, a bare tool name, or a bare "
+            "`*.exe`) ANYWHERE in its body and ends on a `Write-Host` verdict print with "
+            "no intervening `exit` is relying on the SAME implicit wrapper, just without "
+            "ever having named a variable for it. 'Install Mesa lavapipe' carried this "
+            "exact shape -- `vulkaninfoSDK.exe`'s own exit status, unread, behind a "
+            "final `Write-Host \"lavapipe smoke-check: OK\"` with no `exit` -- and PS1's "
+            "`$name = $LASTEXITCODE` regex never reached it."
         ),
         status=DEMONSTRATED,
         mutation=(
-            "REPLAYED: the real ci.yml bytes at the commit issue #49 was filed against, "
-            "which carry the defect on BOTH Windows negative-control steps. PLANTED: a "
-            "renamed step and variable exercising the same shape, plus arms proving the "
-            "screen stays clean on every adjacent, correct shape (`exit $LASTEXITCODE` "
-            "directly, an explicit `exit 0`, a step that never captures the code at all, "
-            "and a two-command accumulate-then-exit pattern)."
+            "REPLAYED (PS1): the real ci.yml bytes at the commit issue #49 was filed "
+            "against, which carry the defect on BOTH Windows negative-control steps. "
+            "REPLAYED (PS2): the real ci.yml bytes at d2bf65f, the commit issue #55 was "
+            "filed against (PR #50 merged, PS1's two steps already fixed), where "
+            "'Install Mesa lavapipe' still carries the no-capture sibling shape -- and a "
+            "companion arm confirming PS1 alone would have left that tree PASS. "
+            "PLANTED: a renamed step/variable exercising PS1's shape and PS2's shape "
+            "each under a different tool/step name, plus arms proving both rules stay "
+            "clean on every adjacent, correct idiom (`exit $LASTEXITCODE` directly, an "
+            "explicit `exit 0`, a two-command accumulate-then-exit pattern, a bare "
+            "`*.exe` invocation, a known bare tool name, a step with no native call at "
+            "all) and a dedicated regression guard proving a `.exe` substring inside a "
+            "quoted URL/path VALUE (never invoked) does not false-positive PS2."
         ),
         arm_healthy=(
             "POWERSHELL-EXIT-STATUS: PASS -- 2 workflow files, 121 named steps scanned, "
-            "0 findings (after both Windows steps gained an explicit `exit 0`)"
+            "0 findings (after both Windows Gate steps and 'Install Mesa lavapipe' all "
+            "gained an explicit `exit 0`)"
         ),
         arm_broken=(
             "POWERSHELL-EXIT-STATUS: FAIL(condition=stale_exit_code_after_native_capture) "
             "naming both `.github/workflows/ci.yml` Gate-negative-control steps by line "
-            "and their last (non-exiting) script line"
+            "and their last (non-exiting) script line, OR "
+            "FAIL(condition=native_exit_stale_at_verdict_print) naming 'Install Mesa "
+            "lavapipe' by line and its last (non-exiting) Write-Host line"
         ),
         observed="2026-08-07",
         misses=(
@@ -1567,16 +1585,20 @@ CHECKS: tuple[Check, ...] = (
             "pytest/onnx/numpy, and a screen skipped because an import failed is a "
             "screen that does not exist. It reports ERROR(instrument=no_steps_parsed) "
             "rather than PASS if its block-structure assumption ever stops matching.",
-            "It keys on the PowerShell-only spelling `$LASTEXITCODE` rather than on "
-            "`runs-on: windows-*`, so it is precise about the MECHANISM rather than the "
-            "platform -- but that also means a step that mishandles a native exit code "
-            "through some OTHER PowerShell idiom (e.g. `$?`, or a `try`/`catch` around a "
-            "native call) is outside its one named rule.",
-            "It only asks whether the LAST line of the script consumes the captured "
-            "code explicitly. A step whose success path passes through a captured "
-            "value and consumes it several statements before genuinely new, unrelated "
-            "native output follows would be a different, unproven shape this rule does "
-            "not reach.",
+            "PS2's native-call detection is a finite, explicit allowlist (`&`, and the "
+            "bare names cargo/rustc/rustup/python/pip/git/7z/gh/npm/node, or a bare "
+            "`*.exe` token), not an interpreter -- a native tool invoked through some "
+            "OTHER PowerShell idiom (`Start-Process`, `$?`, a `try`/`catch` around a "
+            "native call, or a tool name outside that list) is outside both named "
+            "rules. This is the honest remainder of what used to read '... through some "
+            "OTHER PowerShell idiom' before issue #55 closed the specific no-capture "
+            "gap that phrase was covering for.",
+            "It only asks whether the LAST line of the script is a consuming `exit` "
+            "(PS1) or a Write-Host verdict with a native call somewhere before it "
+            "(PS2). A step whose success path passes through a captured value (or a "
+            "native call) and consumes/reports on it several statements before "
+            "genuinely new, unrelated native output follows would be a different, "
+            "unproven shape neither rule reaches.",
         ),
     ),
     Check(
@@ -1585,33 +1607,192 @@ CHECKS: tuple[Check, ...] = (
         lane=LANE_HOSTFREE,
         step="PowerShell exit-status negative control (demand red on the real shape)",
         watches=(
-            "That the PowerShell exit-status screen still goes RED on the real "
-            "defect and on the general shape, not just on the two specific steps this "
-            "repository already fixed. A screen that has stopped firing is "
-            "indistinguishable from a clean tree."
+            "That the PowerShell exit-status screen still goes RED on both real "
+            "defects and on both general shapes (PS1 and PS2), not just on the three "
+            "specific steps this repository already fixed. A screen that has stopped "
+            "firing is indistinguishable from a clean tree."
         ),
         status=DEMONSTRATED,
         mutation=(
-            "12 arms: 1 LIVE (today's ci.yml is clean), 2 REPLAYED (the real bytes at "
-            "the commit issue #49 was filed against, asserting the condition token AND "
-            "that both known offending step names are reported, not just the one filed "
-            "in the issue), 9 PLANTED (the shape under a different name, each adjacent "
-            "correct idiom staying clean, and both instrument paths)."
+            "20 arms: 1 LIVE (today's ci.yml is clean under both rules), 4 REPLAYED "
+            "(the real bytes at the commit issue #49 was filed against, asserting the "
+            "PS1 condition token AND that both known offending step names are "
+            "reported; and separately the real bytes at d2bf65f, the commit issue #55 "
+            "was filed against, asserting the PS2 condition token names 'Install Mesa "
+            "lavapipe' AND that PS1 alone would have missed it), 15 PLANTED (each "
+            "rule's shape under a different name, each adjacent correct idiom staying "
+            "clean under both rules, a dedicated regression guard for the `.exe`-in-a-"
+            "quoted-string false positive, and both instrument paths)."
         ),
-        arm_healthy="12/12 arms fire as specified, exit 0",
+        arm_healthy="20/20 arms fire as specified, exit 0",
         arm_broken=(
             "Caught a real bug in the screen on its first run: the FAIL branch printed "
             "the human-readable report but never the R13 `FAIL(condition=...)` token "
             "itself -- the exact defect class `check_build_precondition.py`'s own "
             "negative control found in that screen on 2026-08-03, in a different "
-            "screen written four days later."
+            "screen written four days later. Issue #55's PS2 widening separately caught "
+            "its own would-be false positive during authoring: an early draft of "
+            "PS2's native-call regex matched a `.exe` substring inside 'Install LunarG "
+            "Vulkan SDK''s quoted download URL, which was never invoked as a command; "
+            "the regression guard arm above pins that case shut."
         ),
         observed="2026-08-07",
         misses=(
-            "The REPLAYED arm pins a commit hash. If that commit is ever unreachable "
-            "(a squashed history, a fresh shallow clone) those two arms "
+            "The REPLAYED arms each pin a commit hash. If either commit is ever "
+            "unreachable (a squashed history, a fresh shallow clone) that pair of arms "
             "ERROR(instrument=...) rather than passing quietly, but that still leaves "
-            "the screen's only non-planted evidence unavailable.",
+            "the corresponding rule's only non-planted evidence unavailable.",
+        ),
+    ),
+    Check(
+        id="hostfree.cleanroom_index_url_privacy",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Cleanroom index-URL privacy tests (nothing echoes or persists a credential)",
+        watches=(
+            "Issue #55: every surface on which `python/verify_cleanroom.py` could expose "
+            "the `--index-url` it was handed. A private mirror's URL can carry userinfo "
+            "(`user:pass@`, a bare username, percent-encoded credentials), a query "
+            "credential (`?token=`, `?api_key=`, `?<whatever the vendor called it>=`) or "
+            "a fragment. The real value must reach pip's argv and NOTHING else: not the "
+            "`$ ...` progress echo, not the persisted "
+            "`bench/results/cleanroom_install_dev0.json`, not an exception's rendered "
+            "text, not the final summary print. The tests drive production `main()` with "
+            "a shell-free fake `subprocess` and a redirected repository root, then assert "
+            "on the bytes that production code actually printed, raised and wrote."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "REPLAYED from committed, content-addressed fixtures rather than from a "
+            "commit ref: `ci/fixtures/cleanroom-redaction/verify_cleanroom.rejected-r1"
+            ".pysrc` and `...rejected-r2.pysrc` are the exact module bytes PR #57 was "
+            "rejected at twice, each pinned by a sha256 in that directory's "
+            "`manifest.json` and verified before use, so the evidence survives a squash "
+            "landing that deletes the branch. r1 gated `_echo_cmd` on `\"://\" in s` and "
+            "truncated before scrubbing; r2 echoed a schemeless `--index-url` raw and "
+            "mangled ordinary `@`-bearing Windows paths. PLANTED: twelve surgical "
+            "reintroductions of one defect each into today's module -- the `://` echo "
+            "gate, the echo losing the run's own URL, loss of argument-context "
+            "recognition, the `@`-guessing scanner, removal of the raw-derived literal "
+            "pass, truncate-before-scrub, a denylist-shaped query redaction, removal of "
+            "the record-wide scrub at the write seam, re-chaining the exception so the "
+            "raw message stays reachable through `__context__`, widening `except "
+            "Exception` back to `BaseException`, swallowing the traceback instead of "
+            "scrubbing and recording it, and fragment pass-through. Each mutation "
+            "asserts its anchor occurs exactly once before applying, so a drifted anchor "
+            "is ERROR(instrument=anchor_drift), never a silent walkover. See "
+            "ci/negative_control_cleanroom_redaction.py."
+        ),
+        arm_healthy=(
+            "365 tests pass; `pip_index_url` renders as `https://REDACTED@mirror.example/"
+            "pypi/simple?token=REDACTED#REDACTED` while the unredacted URL is present in "
+            "exactly one observed argv, pip's own"
+        ),
+        arm_broken=(
+            "on either rejected fixture's bytes the suite goes RED, and the same "
+            "synthetic sentinel is produced directly by the shipped functions: "
+            "`sentinel-pass` by r1's `_echo_cmd` for a schemeless and a scheme-relative "
+            "URL and by r1's `_scrub_text(stderr[-1500:], url)` for a URL straddling the "
+            "truncation edge; `sentinel-token-value` by r2's `_echo_cmd` for three "
+            "schemeless spellings; and r2 rewrites "
+            "`C:\\Users\\justin.chu@contoso.example\\...` to "
+            "`REDACTED@contoso.example\\...`"
+        ),
+        observed="2026-08-07",
+        misses=(
+            "A credential embedded in the URL PATH (`/t/<token>/simple`, as some signing "
+            "mirrors do) is deliberately NOT redacted: after userinfo, query and fragment "
+            "are gone the path is the only provenance left, so it is kept. This is a "
+            "policy decision recorded in README.md and pinned by its own test, not an "
+            "oversight -- but it is a real leak for anyone whose mirror signs that way.",
+            "The scrub covers only what THIS module echoes, persists or raises. pip's own "
+            "logs (`pip.log`, `~/.cache/pip`), the OS process table, and any proxy access "
+            "log are outside its reach, and no test here can see them.",
+            "The redaction is textual. A credential that never appears in a URL-shaped "
+            "span -- an environment variable pip reads on its own, a netrc entry, a "
+            "keyring lookup -- is not a shape this module can recognise, so it is neither "
+            "redacted nor detected.",
+            "UNDER-FIRE class, and the price of fixing issue #55 R3: the general scan now "
+            "requires an explicit `//` authority marker, so a FOREIGN schemeless "
+            "credential URL -- one this run was never handed, appearing only in text pip "
+            "or the OS produced, e.g. `other.example/simple?token=...` -- is not redacted "
+            "by shape. The run's OWN URL is still covered in every spelling, by value and "
+            "by argument position, and its credential literals are redacted even when "
+            "quoted back without their URL. The alternative was corrupting every ordinary "
+            "`C:\\Users\\first.last@corp\\...` path in the record, which is what revision "
+            "2 did.",
+            "OVER-FIRE class, recorded here because a screen's misses prose has until now "
+            "only carried false NEGATIVES: the general scanner will still redact an "
+            "e-mail address and a `#sha256=` fragment inside a genuine `//`-anchored URL "
+            "in `pip freeze` output, because both are indistinguishable from a credential "
+            "by shape alone. That is chosen (the wheel digest is recorded verbatim and "
+            "independently as `wheel_sha256`) and pinned by a test, but it does cost "
+            "readability in the record. A bare e-mail address outside a URL is no longer "
+            "touched, and a 16-entry never-mangle table pins that.",
+        ),
+    ),
+    Check(
+        id="hostfree.cleanroom_index_url_privacy_control",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Cleanroom index-URL privacy negative control (demand red on the real bytes)",
+        watches=(
+            "That the privacy suite above is load-bearing rather than merely present. A "
+            "suite that has only ever been seen green cannot distinguish 'nothing leaks' "
+            "from 'nothing is asserted' -- and that is not hypothetical here: the "
+            "PREVIOUS version of that suite was green on bytes that echoed a raw "
+            "`user:pass@host` to stdout and wrote a password fragment into a tracked "
+            "artifact, because it re-implemented `main()`'s argv construction locally "
+            "instead of observing production code."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "29 arms: 3 INTEGRITY (each replay fixture matches the sha256 declared in "
+            "`ci/fixtures/cleanroom-redaction/manifest.json`, and a deliberately tampered "
+            "fixture is REFUSED -- a stale or edited fixture fails loudly rather than "
+            "replaying the wrong bytes), 1 LIVE (today's module is green), 12 REPLAYED "
+            "(today's suite against each rejected fixture demanding RED, plus each "
+            "measured defect reproduced in-process: B1 for the schemeless and "
+            "scheme-relative spellings, B2 for the truncation straddle, B3 for a query "
+            "credential, R2 for three schemeless spellings, R3 for a corrupted Windows "
+            "profile path and a corrupted e-mail address, and N1 for non-idempotence -- "
+            "each asserting the SENTINEL is present in what the shipped function "
+            "returned, so a 'did NOT reproduce' arm is itself a failure), 12 PLANTED (one "
+            "defect surgically reintroduced into today's module per arm), 1 LANDING (the "
+            "control re-runs itself against a copy of the tree with NO `.git` at all and "
+            "demands the replay arms still fire there)."
+        ),
+        arm_healthy="29/29 arms fire as specified, exit 0",
+        arm_broken=(
+            "NEGATIVE-CONTROL: FAIL(condition=arm_did_not_fire) naming the arm and "
+            "whether the suite was GREEN or RED against what was expected; a mutation "
+            "whose anchor text has drifted is "
+            "ERROR(instrument=anchor_drift) naming the mutation, never a quiet pass"
+        ),
+        observed="2026-08-07",
+        misses=(
+            "The replay fixtures are bytes, not history. They prove what the module DID "
+            "at each rejected head and that today's suite is red on it; they cannot prove "
+            "the fixture is what that head really contained to anyone who does not trust "
+            "the commit that added it. The `origin` field in the manifest is provenance "
+            "prose, deliberately NOT an arm -- when the ref is still reachable the "
+            "INTEGRITY arms report that it matches, and when a squash landing has made it "
+            "unreachable they say so and pass on the digest alone. Substituting a "
+            "flattering fixture would take a reviewed commit, which is the same trust "
+            "boundary as the tests themselves.",
+            "OVER-FIRE class: the digest is over CRLF-normalised bytes, so a fixture that "
+            "differs only in line endings still verifies. That is deliberate on a repo "
+            "with `core.autocrlf=true` (the alternative is a control that fails on every "
+            "Windows checkout), but it means the arms cannot detect a line-ending-only "
+            "tamper -- which for Python source cannot change behaviour.",
+            "The PLANTED arms are exact-substring surgery on the module's current text. "
+            "They prove each named mechanism is load-bearing; they say nothing about a "
+            "leak mechanism nobody has thought of, which is precisely how B1 survived the "
+            "first round and R2 the second.",
+            "The LANDING arm proves the replay arms survive the ABSENCE of history. It "
+            "does not exercise a real squash-merge conflict, and it cannot prove the "
+            "fixture files themselves were carried across the landing -- only that "
+            "nothing in the control needs `git` once they are.",
         ),
     ),
     Check(

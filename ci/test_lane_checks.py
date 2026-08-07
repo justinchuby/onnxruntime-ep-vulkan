@@ -4008,6 +4008,139 @@ def test_powershell_exit_status_no_args_is_usage_not_a_pass():
     assert rc == 2
 
 
+# ---------------------------------------------------------------------------
+# PS2 -- issue #55. The capture was never what made the verdict lie: a step that
+# invokes a native command anywhere in its body (the call operator, a bare tool name,
+# or a bare `*.exe`) and ends its script on a `Write-Host` verdict print with no
+# intervening `exit` is relying on the SAME un-consumed implicit wrapper as PS1, just
+# without ever having named a variable for it. "Install Mesa lavapipe" carried this
+# shape and PS1's `$name = $LASTEXITCODE` regex never reached it.
+# ---------------------------------------------------------------------------
+
+def test_powershell_exit_status_reds_on_the_real_issue_55_shape(tmp_path):
+    """The real 'Install Mesa lavapipe' shape: a native call (`&`), no capture into a
+    named variable, and a final Write-Host verdict with no `exit` -- must be caught
+    under the PS2 condition token, distinct from PS1's.
+    """
+    bad = tmp_path / "lavapipe-like.yml"
+    bad.write_text(
+        "jobs:\n"
+        "  build-test-windows:\n"
+        "    steps:\n"
+        "      - name: Install Mesa lavapipe (mesa-dist-win)\n"
+        "        run: |\n"
+        "          $vulkInfo = & \"$env:VULKAN_SDK\\Bin\\vulkaninfoSDK.exe\" --summary 2>&1\n"
+        "          Write-Host $vulkInfo\n"
+        "          if (-not ($vulkInfo | Select-String -Quiet -SimpleMatch \"llvmpipe\")) {\n"
+        "            Write-Error \"lavapipe (llvmpipe) not found\"\n"
+        "            exit 1\n"
+        "          }\n"
+        "          Write-Host \"lavapipe smoke-check: OK (llvmpipe enumerated)\"\n",
+        encoding="utf-8",
+    )
+    rc, out = _pwsh_exit(str(bad))
+    assert rc == 1, "a step whose own printed verdict is OK must not silently exit on a stale native code"
+    assert "FAIL(condition=native_exit_stale_at_verdict_print)" in out
+    assert "stale_exit_code_after_native_capture" not in out, (
+        "PS1's token must not fire here -- no `$name = $LASTEXITCODE` capture exists "
+        "in this step; only PS2's wider, capture-free rule should"
+    )
+    assert "Install Mesa lavapipe" in out
+
+
+def test_powershell_exit_status_ps2_clears_on_an_explicit_exit_0(tmp_path):
+    """The actual fix applied for issue #55: an explicit `exit 0` on the success path
+    of a step that has no $LASTEXITCODE capture at all.
+    """
+    fixed = tmp_path / "lavapipe-fixed.yml"
+    fixed.write_text(
+        "jobs:\n"
+        "  build-test-windows:\n"
+        "    steps:\n"
+        "      - name: Install Mesa lavapipe (mesa-dist-win)\n"
+        "        run: |\n"
+        "          $vulkInfo = & \"$env:VULKAN_SDK\\Bin\\vulkaninfoSDK.exe\" --summary 2>&1\n"
+        "          Write-Host $vulkInfo\n"
+        "          if (-not ($vulkInfo | Select-String -Quiet -SimpleMatch \"llvmpipe\")) {\n"
+        "            Write-Error \"lavapipe (llvmpipe) not found\"\n"
+        "            exit 1\n"
+        "          }\n"
+        "          Write-Host \"lavapipe smoke-check: OK (llvmpipe enumerated)\"\n"
+        "          exit 0\n",
+        encoding="utf-8",
+    )
+    rc, out = _pwsh_exit(str(fixed))
+    assert rc == 0, out
+    assert "POWERSHELL-EXIT-STATUS: PASS" in out
+
+
+def test_powershell_exit_status_ps2_reaches_a_bare_exe_invocation(tmp_path):
+    """PS2's native-call detection is not limited to the `&` call operator: a bare,
+    unquoted `*.exe` path invoked directly also sets $LASTEXITCODE.
+    """
+    bad = tmp_path / "bare-exe.yml"
+    bad.write_text(
+        "jobs:\n"
+        "  build-test-windows:\n"
+        "    steps:\n"
+        "      - name: Probe something\n"
+        "        run: |\n"
+        "          rust\\target\\release\\probeCtl.exe --probe-loader\n"
+        "          Write-Host \"probe finished\"\n",
+        encoding="utf-8",
+    )
+    rc, out = _pwsh_exit(str(bad))
+    assert rc == 1
+    assert "FAIL(condition=native_exit_stale_at_verdict_print)" in out
+
+
+def test_powershell_exit_status_ps2_does_not_flag_an_exe_substring_inside_a_quoted_url(tmp_path):
+    """Regression guard: a `.exe` substring appearing only inside a quoted URL/path
+    VALUE -- never invoked as a command -- must not trip PS2. An early draft of PS2's
+    native-call regex matched this shape on 'Install LunarG Vulkan SDK'-like steps
+    (`$url = "https://.../Installer.exe"`, downloaded with `Invoke-WebRequest` and run
+    via `Start-Process`, neither of which sets $LASTEXITCODE).
+    """
+    clean = tmp_path / "url-string.yml"
+    clean.write_text(
+        "jobs:\n"
+        "  build-test-windows:\n"
+        "    steps:\n"
+        "      - name: Install some other SDK\n"
+        "        run: |\n"
+        "          $url = \"https://example.invalid/download/SomeSdk-Installer.exe\"\n"
+        "          Write-Host \"Downloading SDK from $url\"\n"
+        "          Invoke-WebRequest -Uri $url -OutFile \"$env:TEMP\\SomeSdk.exe\"\n"
+        "          Start-Process -Wait -FilePath \"$env:TEMP\\SomeSdk.exe\" -ArgumentList '/quiet'\n"
+        "          Write-Host \"SDK installed\"\n",
+        encoding="utf-8",
+    )
+    rc, out = _pwsh_exit(str(clean))
+    assert rc == 0, out
+    assert "POWERSHELL-EXIT-STATUS: PASS" in out
+
+
+def test_powershell_exit_status_ps2_does_not_flag_a_verdict_with_no_native_call(tmp_path):
+    """A Write-Host verdict with no native call anywhere earlier has nothing for the
+    implicit trailer to disagree with -- cmdlets (Get-ChildItem, New-Item, ...) never
+    set $LASTEXITCODE.
+    """
+    clean = tmp_path / "no-native.yml"
+    clean.write_text(
+        "jobs:\n"
+        "  build-test-windows:\n"
+        "    steps:\n"
+        "      - name: Pure cmdlet step\n"
+        "        run: |\n"
+        "          $items = Get-ChildItem -Recurse -Path \"C:\\some\\dir\"\n"
+        "          New-Item -ItemType Directory -Force -Path \"C:\\some\\other\" | Out-Null\n"
+        "          Write-Host \"housekeeping complete: $($items.Count) item(s)\"\n",
+        encoding="utf-8",
+    )
+    rc, out = _pwsh_exit(str(clean))
+    assert rc == 0, out
+
+
 NEGATIVE_CONTROL_POWERSHELL_EXIT_STATUS = CI_DIR / "negative_control_powershell_exit_status.py"
 
 
