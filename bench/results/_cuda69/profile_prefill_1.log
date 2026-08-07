@@ -14,7 +14,7 @@
 #
 #   $env:ONNXRUNTIME_VULKAN_EP_LIB       = "<worktree>/rust/target/release/onnxruntime_vulkan_ep.dll"
 #   $env:ONNXRUNTIME_EP_VULKAN_BENCH_CUDA_PYTHON = "<worktree>/<venv>/Scripts/python.exe"
-#   .venv-cu12/Scripts/python.exe -m bench.cuda_profile \
+#   /<venv>/Scripts/python.exe -m bench.cuda_profile \
 #       --workload prefill_1 --iters 10 \
 #       --out bench/results/_cuda69/profile_prefill_1.json \
 #       --scratch bench/results/_cuda69/scratch_profile_v3
