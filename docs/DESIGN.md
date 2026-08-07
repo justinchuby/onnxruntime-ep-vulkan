@@ -83,12 +83,38 @@ a real deletion rather than a planted one.** Every check before it compared the 
 *present* against the build; none could see an entry that is absent, which is the one failure a
 merge produces. `ci/check_ledger_census.py` compares the ledger against the attempt log and fails on
 a key that was recorded `MATCH` and is no longer there, with retirement by name and reason as the
-only exemption. Its controls are `ci/negative_control_ledger_census.py`, six arms, all passing
-(`bench/results/_probe_ledger_loss/result.json`): arm 3 **replays `eb84364`**, a real merge in this
-repository whose conflict resolution silently dropped three real `Cast` proofs, and convicts it. The
-same probe records why nothing caught it at the time — default history simplification hid the
-proving commit from the file's own log, so the census is run with `--full-history` and asserts the
-denominator by the numbers (13 revisions simplified, 55 unsimplified).
+only exemption. **Two separate instruments falsify it, and they are not the same instrument with two
+names** — this document conflated them until issue #14:
+
+* `ci/negative_control_ledger_census.py` — the census's own negative control, **53 arms** (3 LIVE,
+  44 PLANTED, 6 REPLAYED), the ratio printed because a control made only of plants proves only that
+  the rule works on the shape it was written for. Among the REPLAYED arms, `eb84364` — a real merge
+  in this repository whose conflict resolution silently dropped three real `Cast` proofs — is
+  convicted, and `26fd93f` is acquitted.
+* `rust/tools/probe_ledger_loss.py` — the falsifier for the *producer-side* invariant
+  `gen_proof_ledger.check_no_proof_went_missing`, **7 arms**, of which arm 3 replays the same
+  `eb84364` pair and requires all three lost `Cast` keys to be named. Arms 1/2/4/5 read **today's**
+  retirement register (handing them an empty one asked about a repository that does not exist and
+  read all 43 §8.9.23 withdrawals as losses); arm 3 keeps the empty register because it is a
+  historical replay. Arm 5b requires the *producer* — not merely the census — to refuse a
+  retirement carrying no `owner` and no `date`.
+
+**The probe's evidence is its run, not a file.** It is executed in the host-free `lane-checks` job
+and declared `expect: green` as `ledger_loss_probe` in `ci/open_reds.json`, owner **tank**. It
+writes nothing into any tracked path: an ordinary invocation puts its six working files and its
+`result.json` in an ephemeral scratch directory outside the repository and removes it on exit,
+`--out` into a tracked destination is `ERROR(instrument=refused_tracked_destination)`, and `--record`
+is the one explicit mode that may write a reading in-tree — which it stamps with an
+`artifact-frame.json` and a `subject`/`owner`/`produced_at_commit` block, in repo-relative paths
+only. The tracked reading that used to live at `bench/results/_probe_ledger_loss/result.json` is
+**deleted**: it was produced once on a different checkout, still named that machine's home
+directory, and `bfdc0f1` retiring two `Conv` metadata-form keys made its `pass=true` stale with no
+instrument able to notice (issue #14).
+
+Both instruments record why nothing caught the original loss at the time — default history
+simplification hid the proving commit from the file's own log, so the census is run with
+`--full-history` and asserts the denominator by the numbers (13 revisions simplified, 55
+unsimplified).
 
 **The KV cache can decline the host round trip.** `bench/results/kv_chain_readback-{nvidia,intel}.json`
 both read `ROUND_TRIP_REMOVED`: steady-state device→host traffic falls from **1792 to 0 bytes per
@@ -5962,6 +5988,69 @@ any host-side check. `cargo ci --cross` compiles the workspace for `x86_64-unkno
 a Windows host using parse-only C header stubs in `rust/ci/linux-stub-include/` (no sysroot). It
 refuses rather than skips when a prerequisite is missing. It is deliberately **not** a new CI lane:
 CI's Linux job already compiles for real, and the gap was on developer machines.
+
+### 9.4 A diagnostic must not mutate its subject — probe artifact ownership and provenance (issue #14)
+
+`rust/tools/probe_ledger_loss.py` wrote its six working files and its `result.json` into
+`bench/results/_probe_ledger_loss/`, a **tracked** directory. Running the diagnostic during a
+read-only baseline therefore dirtied `main` on 2026-08-05. The cost is not the diff: a diagnostic
+that cannot be run without leaving one is a diagnostic people stop running, and this one was already
+absent from every workflow, from `ci/open_reds.json` and from every artifact-frame check. Its
+committed reading had been produced once, on a different checkout, and still carried that machine's
+absolute paths in two arm details; `bfdc0f1` then retired two `Conv` metadata-form keys and made the
+committed `pass=true` stale, with no instrument in this repository able to notice.
+
+**RULING — the contract every diagnostic probe in this repository is held to.**
+
+1. **Ordinary execution writes nothing a checkout can see.** The default destination is an ephemeral
+   scratch directory created *outside* the repository and removed on exit. A local run, a negative
+   control and a CI run all take this path; `git status` is byte-identical before and after, and
+   `ci/test_lane_checks.py` asserts exactly that rather than asserting the weaker "`git status` is
+   empty", which would be untestable in a working tree.
+2. **The tracked surface is a boundary, not a convention.** `--out` into a path that is inside the
+   repository and not `git check-ignore`d is
+   `ERROR(instrument=refused_tracked_destination)` and **nothing is written**. The classification
+   consults git and nothing else — a hand-written path list would be a second answer to "what is
+   tracked" — and it fails **closed**: an unresolvable answer is treated as tracked surface, because
+   a destination policy that opens up when its instrument breaks is not a policy. **Hardened
+   2026-08-06 (PR #51 review):** string-based `Path.resolve().relative_to(repo)` is not that policy
+   on Windows — an extended-length (`\\?\C:\...`) or admin-share UNC (`\\localhost\C$\...`) spelling
+   of a tracked path raises `ValueError` there and the old handler answered `DEST_OUTSIDE`,
+   inferring "outside" from "the comparison failed," which is the exact inversion the sentence above
+   forbids. The classification now walks `--out` upward by filesystem *identity*
+   (`os.stat().st_dev`/`st_ino`, which extended-length, UNC-admin-share, `subst`, case and
+   dot-segment spellings of the same file all share) rather than by string comparison, and treats
+   every stat it cannot complete — not only a raised exception on the final comparison — as
+   uncertain and therefore tracked. The claim is unchanged; the mechanism that used to falsify it on
+   two Windows spellings does not exist anymore.
+3. **Recording a canonical artifact is an explicit, signed act.** `--record` is the only way to write
+   a reading in-tree. It is not merely permission: it adds `owner`, `tool`, `produced_at_commit` and
+   a `subject` block digesting each evidence file the reading is *about*, and it stamps the directory
+   with `artifact-frame.json` by importing `ci/check_artifact_frame.py` rather than re-implementing
+   it — a second implementation of "what a frame is" is how the retirement register came to have two
+   readers that disagreed about the same 43 keys (`ci/proof_retirement.py`).
+4. **A recorded reading is portable and deterministic, and both are asserted.** Every path in the
+   record is repo-relative with forward slashes; machine roots are scrubbed to `<repo>`/`<out>` and a
+   surviving absolute path is a hard `ERROR(instrument=provenance_leaked_absolute_path)`. Bytes are
+   sorted-key, `ensure_ascii=True`, LF-terminated and written as bytes, with no clock anywhere, so
+   two runs into two different destinations — including a destination containing spaces and non-ASCII
+   characters, which is an ordinary Windows path — produce the identical file. Subject digests are
+   taken through the same line-ending normalisation `ci/check_artifact_frame.py` uses, so a Windows
+   checkout with `core.autocrlf=true` and a Linux one agree.
+5. **The probe's scratch files are deletion-bearing and must never be union-merged.** Three of them
+   are retirement registers, and a retirement is the *removal* of a claim's exemption. Union merge
+   cannot represent a removal, so a branch forked before a retirement would resurrect the key with
+   nobody's signature on it — the `squad-history` defect one directory over. `.gitattributes` gives
+   `evidence/` no merge driver by design, and `ci/test_lane_checks.py` asserts, via `git check-attr`,
+   that neither the three evidence files nor the probe's output path is `merge=union`.
+
+**Ownership, stated once: this probe is EXECUTED, not committed.** Its canonical evidence is the run
+in the host-free `lane-checks` job, declared `expect: green` as `ledger_loss_probe` in
+`ci/open_reds.json` and classified as `hostfree.ledger_loss_probe` in `ci/lane_inventory.py`. Owner:
+**tank**. The tracked reading is deleted, because a committed reading of a check that runs on every
+push is a second, staler answer to a question already being asked live — and staleness is precisely
+what it delivered. `--record` remains for a deliberate archival reading; anything it writes carries
+the frame above, so such a reading can go stale *detectably* instead of silently.
 
 ---
 

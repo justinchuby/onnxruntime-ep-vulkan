@@ -142,6 +142,20 @@
       "timeout": 900
     },
     {
+      "id": "ledger_loss_probe",
+      "cmd": [
+        "python",
+        "rust/tools/probe_ledger_loss.py"
+      ],
+      "expect": "green",
+      "owner": "tank",
+      "opened": "2026-08-06",
+      "review_by": "2026-11-01",
+      "reason": "Issue #14. This is the falsifier for `gen_proof_ledger.check_no_proof_went_missing` — seven arms, of which arm 3 replays eb84364, the real merge that dropped three Cast proofs — and until 2026-08-06 it was in NO workflow, NO register and under NO artifact-frame check. What it had instead was a committed reading at bench/results/_probe_ledger_loss/result.json, written once on somebody else's checkout (its arm details still named that machine's home directory) and stale from bfdc0f1, which retired two Conv metadata-form keys. Nothing could see that, because nothing was asking. THE OWNERSHIP MODEL IS THAT THE PROBE IS EXECUTED, NOT COMMITTED: this entry is the artifact, the tracked reading is deleted, and the default run writes only to an ephemeral scratch directory outside the repository — `--out` into a tracked path is ERROR(instrument=refused_tracked_destination) and `--record` is the one explicit, frame-stamping way to record a reading. Its destination and provenance contract is two-polarity tested in ci/test_lane_checks.py (positive, five refused tracked destinations, git-ignored destination allowed, byte-determinism, absolute-path scrub, LF/ASCII bytes, non-ASCII destination, and the probe's own red arm on a checkout with no attempt log).",
+      "closes_when": "n/a — this is expected green and must stay green. It goes red when an arm goes red, which is the point; it does NOT go red on a ledger change, because it reads today's register by design (see the arm 1/2/4/5 note in the probe).",
+      "timeout": 600
+    },
+    {
       "id": "artifact_frame",
       "cmd": [
         "python",
@@ -262,6 +276,7 @@
     "verification_subjects",
     "ledger_census",
     "ledger_census_negative_control",
+    "ledger_loss_probe",
     "artifact_frame",
     "artifact_frame_negative_control",
     "main_is_green"
