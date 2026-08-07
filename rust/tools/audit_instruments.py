@@ -483,6 +483,14 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_import_isolation.py": "test module.",
     "test_island_boundary_cost.py": "test module.",
     "test_marginal_tail_withholds.py": "test module.",
+    # Arrived with PR #72 (the gqa_f16 workgroup-size change) and reproduced the same
+    # defect class as fa5f514/98d5bf3 below: a new bench/ file lands, and nothing in this
+    # dict has been told about it. `test_perf_claims.py` checks the *publication*
+    # (docs/PERF.md section 26 and the shader header) against the artifacts it cites -- it
+    # renders no verdict about a measurement itself, it is a caller of `real_model.py` and
+    # a reader of committed JSON/markdown, so it belongs here rather than in
+    # BENCH_INSTRUMENT_FILES.
+    "test_perf_claims.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_phases.py": "test module.",
     "test_plausible_but_wrong.py": "test module.",
     "test_run_disturbance.py": "test module.",
