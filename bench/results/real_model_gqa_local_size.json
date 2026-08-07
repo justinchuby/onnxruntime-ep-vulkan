@@ -1,0 +1,1217 @@
+{
+  "schema": "real_model_gqa_local_size/1",
+  "issue": 56,
+  "subject": "rust/shaders/glsl/gqa_f16.comp local_size_x (specialisation constant 0)",
+  "depends_on": "PR #53 (squad/7-tile-matmulnbits-prefill)",
+  "model": {
+    "key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+    "family": "phi3",
+    "path": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu-2\\v2\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    "sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+    "bytes": 26180848,
+    "provenance": "foundry-resolved",
+    "resolver": "foundry",
+    "recorded_sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+    "agrees_with_recorded_provenance": true,
+    "external_data": {
+      "scanned": true,
+      "files": [
+        {
+          "location": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx.data",
+          "bytes": 2291238912,
+          "sha256": "9ce390a75dd00614031c41af38f0f3a83fdfe4648dcec8514d96800020e92217"
+        }
+      ],
+      "reason": null
+    },
+    "weights_bytes": 2291238912,
+    "note": "Foundry Local Phi-3.5-mini-instruct, int4 RTN block-32, fp16 activations. 32 layers, 32 KV heads, head dim 96, 64 KV inputs and 64 KV outputs."
+  },
+  "sizes": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64
+  ],
+  "iters_per_point": 3,
+  "ep_library": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-56\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+  "ep_library_sha256": "2684bb6fea730bc8bbe6980e94fa6d8ae6e5c4600959c9acdc4ba7802eca0dc9",
+  "device_index": 0,
+  "equivalence": [
+    {
+      "case": "prefill/M1/past0",
+      "invocations": 32,
+      "reference_local_size": 1,
+      "comparisons": [
+        {
+          "local_size": 2,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 4,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 8,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 16,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 32,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 64,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        }
+      ],
+      "all_identical": true
+    },
+    {
+      "case": "prefill/M8/past0",
+      "invocations": 256,
+      "reference_local_size": 1,
+      "comparisons": [
+        {
+          "local_size": 2,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 4,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 8,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 16,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 32,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 64,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        }
+      ],
+      "all_identical": true
+    },
+    {
+      "case": "prefill/M32/past0",
+      "invocations": 1024,
+      "reference_local_size": 1,
+      "comparisons": [
+        {
+          "local_size": 2,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 4,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 8,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 16,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 32,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 64,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        }
+      ],
+      "all_identical": true
+    },
+    {
+      "case": "prefill/M128/past0",
+      "invocations": 4096,
+      "reference_local_size": 1,
+      "comparisons": [
+        {
+          "local_size": 2,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 4,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 8,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 16,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 32,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 64,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        }
+      ],
+      "all_identical": true
+    },
+    {
+      "case": "decode/M1/past512",
+      "invocations": 32,
+      "reference_local_size": 1,
+      "comparisons": [
+        {
+          "local_size": 2,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 4,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 8,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 16,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 32,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 64,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        }
+      ],
+      "all_identical": true
+    },
+    {
+      "case": "decode/M1/past1024",
+      "invocations": 32,
+      "reference_local_size": 1,
+      "comparisons": [
+        {
+          "local_size": 2,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 4,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 8,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 16,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 32,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        },
+        {
+          "local_size": 64,
+          "outputs": 65,
+          "identical": true,
+          "first_difference": null,
+          "verdict": "BITWISE-IDENTICAL"
+        }
+      ],
+      "all_identical": true
+    }
+  ],
+  "equivalence_complete": true,
+  "timing": [
+    {
+      "case": "prefill/M1/past0",
+      "invocations": 32,
+      "points": [
+        {
+          "local_size": 1,
+          "process_wall_s": 6.427,
+          "gqa_us": 1475.3333333333333,
+          "total_us": 20030.333333333332,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17463.666666666668,
+            "vulkan.gpu.gqa_f16": 1475.3333333333333,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 799.6666666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 179.33333333333334,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 98.33333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.333333333333334,
+            "vulkan.gpu.gather_f16": 4.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 2,
+          "process_wall_s": 6.267,
+          "gqa_us": 1761.3333333333333,
+          "total_us": 20754.666666666668,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17871.666666666668,
+            "vulkan.gpu.gqa_f16": 1761.3333333333333,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 825.3333333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 188.66666666666666,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 93.33333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.333333333333334,
+            "vulkan.gpu.gather_f16": 5.0
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 4,
+          "process_wall_s": 6.297,
+          "gqa_us": 1692.3333333333333,
+          "total_us": 20234.666666666668,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17467.333333333332,
+            "vulkan.gpu.gqa_f16": 1692.3333333333333,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 797.3333333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 174.33333333333334,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 89.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.333333333333334,
+            "vulkan.gpu.gather_f16": 5.0
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 8,
+          "process_wall_s": 6.283,
+          "gqa_us": 1704.0,
+          "total_us": 20279.333333333332,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17486.0,
+            "vulkan.gpu.gqa_f16": 1704.0,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 802.6666666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 179.33333333333334,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 92.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+            "vulkan.gpu.gather_f16": 5.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 16,
+          "process_wall_s": 6.267,
+          "gqa_us": 1893.0,
+          "total_us": 21304.0,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 18256.333333333332,
+            "vulkan.gpu.gqa_f16": 1893.0,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 857.6666666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 189.66666666666666,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 92.66666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+            "vulkan.gpu.gather_f16": 5.0
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 32,
+          "process_wall_s": 6.353,
+          "gqa_us": 1967.6666666666667,
+          "total_us": 21297.333333333332,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 18174.0,
+            "vulkan.gpu.gqa_f16": 1967.6666666666667,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 852.3333333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 193.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 95.33333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+            "vulkan.gpu.gather_f16": 5.333333333333333
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 64,
+          "process_wall_s": 6.321,
+          "gqa_us": 1814.0,
+          "total_us": 20350.333333333332,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17459.333333333332,
+            "vulkan.gpu.gqa_f16": 1814.0,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 796.3333333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 176.33333333333334,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 89.33333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+            "vulkan.gpu.gather_f16": 5.0
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        }
+      ],
+      "best_local_size": 1,
+      "best_gqa_us": 1475.3333333333333,
+      "baseline_gqa_us": 1475.3333333333333,
+      "speedup_vs_size_1": 1.0,
+      "graph_speedup_vs_size_1": 1.0
+    },
+    {
+      "case": "prefill/M8/past0",
+      "invocations": 256,
+      "points": [
+        {
+          "local_size": 1,
+          "process_wall_s": 6.592,
+          "gqa_us": 20964.333333333332,
+          "total_us": 96043.66666666667,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 73618.66666666667,
+            "vulkan.gpu.gqa_f16": 20964.333333333332,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 930.3333333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 338.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 175.33333333333334,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.666666666666666,
+            "vulkan.gpu.gather_f16": 6.333333333333333
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 2,
+          "process_wall_s": 6.296,
+          "gqa_us": 16580.666666666668,
+          "total_us": 89710.33333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 71742.33333333333,
+            "vulkan.gpu.gqa_f16": 16580.666666666668,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 881.3333333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 325.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 165.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.333333333333334,
+            "vulkan.gpu.gather_f16": 5.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 4,
+          "process_wall_s": 6.594,
+          "gqa_us": 11096.666666666666,
+          "total_us": 86578.66666666667,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 74006.33333333333,
+            "vulkan.gpu.gqa_f16": 11096.666666666666,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 927.0,
+            "vulkan.gpu.ew_binary_mul_f16": 352.3333333333333,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 179.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.666666666666666,
+            "vulkan.gpu.gather_f16": 6.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 8,
+          "process_wall_s": 6.577,
+          "gqa_us": 5916.0,
+          "total_us": 79021.66666666667,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 71725.33333333333,
+            "vulkan.gpu.gqa_f16": 5916.0,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 875.3333333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 323.3333333333333,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 166.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+            "vulkan.gpu.gather_f16": 5.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 16,
+          "process_wall_s": 8.098,
+          "gqa_us": 5297.666666666667,
+          "total_us": 80820.33333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 74054.0,
+            "vulkan.gpu.gqa_f16": 5297.666666666667,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 929.6666666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 347.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 176.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.333333333333334,
+            "vulkan.gpu.gather_f16": 5.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 32,
+          "process_wall_s": 6.768,
+          "gqa_us": 5095.666666666667,
+          "total_us": 78522.33333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 72035.66666666667,
+            "vulkan.gpu.gqa_f16": 5095.666666666667,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 885.6666666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 318.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 170.33333333333334,
+            "vulkan.gpu.simplified_layer_norm_f16": 11.0,
+            "vulkan.gpu.gather_f16": 6.0
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 64,
+          "process_wall_s": 6.726,
+          "gqa_us": 6089.333333333333,
+          "total_us": 80084.66666666667,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 72587.33333333333,
+            "vulkan.gpu.gqa_f16": 6089.333333333333,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 895.3333333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 329.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 167.33333333333334,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.666666666666666,
+            "vulkan.gpu.gather_f16": 5.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        }
+      ],
+      "best_local_size": 32,
+      "best_gqa_us": 5095.666666666667,
+      "baseline_gqa_us": 20964.333333333332,
+      "speedup_vs_size_1": 4.114149277163603,
+      "graph_speedup_vs_size_1": 1.2231382154546266
+    },
+    {
+      "case": "prefill/M32/past0",
+      "invocations": 1024,
+      "points": [
+        {
+          "local_size": 1,
+          "process_wall_s": 8.043,
+          "gqa_us": 154588.0,
+          "total_us": 433292.3333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 276458.0,
+            "vulkan.gpu.gqa_f16": 154588.0,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 1004.3333333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 804.3333333333334,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 418.6666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.666666666666666,
+            "vulkan.gpu.gather_f16": 8.333333333333334
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 2,
+          "process_wall_s": 8.08,
+          "gqa_us": 90778.33333333333,
+          "total_us": 376193.0,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 283110.0,
+            "vulkan.gpu.gqa_f16": 90778.33333333333,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 1033.0,
+            "vulkan.gpu.ew_binary_mul_f16": 818.6666666666666,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 433.3333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 11.0,
+            "vulkan.gpu.gather_f16": 8.666666666666666
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 4,
+          "process_wall_s": 8.04,
+          "gqa_us": 60567.666666666664,
+          "total_us": 347564.3333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 284669.3333333333,
+            "vulkan.gpu.gqa_f16": 60567.666666666664,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 1042.6666666666667,
+            "vulkan.gpu.ew_binary_mul_f16": 827.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 437.3333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 11.666666666666666,
+            "vulkan.gpu.gather_f16": 8.666666666666666
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 8,
+          "process_wall_s": 8.143,
+          "gqa_us": 49429.333333333336,
+          "total_us": 340855.6666666667,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 289069.6666666667,
+            "vulkan.gpu.gqa_f16": 49429.333333333336,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 1048.3333333333333,
+            "vulkan.gpu.ew_binary_mul_f16": 841.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 448.3333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.333333333333334,
+            "vulkan.gpu.gather_f16": 8.666666666666666
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 16,
+          "process_wall_s": 7.24,
+          "gqa_us": 35365.333333333336,
+          "total_us": 321746.0,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 284059.3333333333,
+            "vulkan.gpu.gqa_f16": 35365.333333333336,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 1032.3333333333333,
+            "vulkan.gpu.ew_binary_mul_f16": 827.3333333333334,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 442.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 11.0,
+            "vulkan.gpu.gather_f16": 8.666666666666666
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 32,
+          "process_wall_s": 7.268,
+          "gqa_us": 25479.0,
+          "total_us": 313837.3333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 286027.6666666667,
+            "vulkan.gpu.gqa_f16": 25479.0,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 1039.0,
+            "vulkan.gpu.ew_binary_mul_f16": 830.3333333333334,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 441.3333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 11.0,
+            "vulkan.gpu.gather_f16": 9.0
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 64,
+          "process_wall_s": 7.151,
+          "gqa_us": 25689.0,
+          "total_us": 314049.6666666667,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 286022.3333333333,
+            "vulkan.gpu.gqa_f16": 25689.0,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 1042.6666666666667,
+            "vulkan.gpu.ew_binary_mul_f16": 832.6666666666666,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 444.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.666666666666666,
+            "vulkan.gpu.gather_f16": 8.333333333333334
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        }
+      ],
+      "best_local_size": 32,
+      "best_gqa_us": 25479.0,
+      "baseline_gqa_us": 154588.0,
+      "speedup_vs_size_1": 6.0672710859923855,
+      "graph_speedup_vs_size_1": 1.3806271189321007
+    },
+    {
+      "case": "prefill/M128/past0",
+      "invocations": 4096,
+      "points": [
+        {
+          "local_size": 1,
+          "process_wall_s": 15.233,
+          "gqa_us": 1891186.6666666667,
+          "total_us": 2927335.3333333335,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 1891186.6666666667,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 1029206.3333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 3128.6666666666665,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 2449.6666666666665,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 1323.6666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 21.666666666666668,
+            "vulkan.gpu.gather_f16": 18.666666666666668
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 2,
+          "process_wall_s": 13.387,
+          "gqa_us": 1002681.0,
+          "total_us": 2087132.0,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 1077198.3333333333,
+            "vulkan.gpu.gqa_f16": 1002681.0,
+            "vulkan.gpu.ew_binary_mul_f16": 3189.3333333333335,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 2609.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 1415.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 21.333333333333332,
+            "vulkan.gpu.gather_f16": 18.0
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 4,
+          "process_wall_s": 11.505,
+          "gqa_us": 549557.6666666666,
+          "total_us": 1669608.3333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 1112604.3333333333,
+            "vulkan.gpu.gqa_f16": 549557.6666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 3223.3333333333335,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 2729.6666666666665,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 1452.6666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 22.333333333333332,
+            "vulkan.gpu.gather_f16": 18.333333333333332
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 8,
+          "process_wall_s": 12.626,
+          "gqa_us": 315984.0,
+          "total_us": 1458804.6666666667,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 1135031.6666666667,
+            "vulkan.gpu.gqa_f16": 315984.0,
+            "vulkan.gpu.ew_binary_mul_f16": 3269.6666666666665,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 2991.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 1489.3333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 21.333333333333332,
+            "vulkan.gpu.gather_f16": 17.666666666666668
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 16,
+          "process_wall_s": 11.183,
+          "gqa_us": 229618.33333333334,
+          "total_us": 1383199.3333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 1145949.0,
+            "vulkan.gpu.gqa_f16": 229618.33333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 3265.6666666666665,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 2828.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 1498.6666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 21.333333333333332,
+            "vulkan.gpu.gather_f16": 18.333333333333332
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 32,
+          "process_wall_s": 10.672,
+          "gqa_us": 201706.0,
+          "total_us": 1356892.0,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 1147521.6666666667,
+            "vulkan.gpu.gqa_f16": 201706.0,
+            "vulkan.gpu.ew_binary_mul_f16": 3271.0,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 2850.3333333333335,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 1501.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 22.666666666666668,
+            "vulkan.gpu.gather_f16": 19.333333333333332
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 64,
+          "process_wall_s": 11.84,
+          "gqa_us": 194274.66666666666,
+          "total_us": 1347225.3333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 1145312.6666666667,
+            "vulkan.gpu.gqa_f16": 194274.66666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 3274.0,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 2821.3333333333335,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 1502.6666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 21.666666666666668,
+            "vulkan.gpu.gather_f16": 18.333333333333332
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        }
+      ],
+      "best_local_size": 64,
+      "best_gqa_us": 194274.66666666666,
+      "baseline_gqa_us": 1891186.6666666667,
+      "speedup_vs_size_1": 9.734602555831607,
+      "graph_speedup_vs_size_1": 2.1728624461733204
+    },
+    {
+      "case": "decode/M1/past512",
+      "invocations": 32,
+      "points": [
+        {
+          "local_size": 1,
+          "process_wall_s": 8.891,
+          "gqa_us": 135560.66666666666,
+          "total_us": 154115.66666666666,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 135560.66666666666,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17461.333333333332,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 804.3333333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 182.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 91.66666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+            "vulkan.gpu.gather_f16": 6.0
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 2,
+          "process_wall_s": 8.856,
+          "gqa_us": 139720.33333333334,
+          "total_us": 158516.33333333334,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 139720.33333333334,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17634.333333333332,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 803.0,
+            "vulkan.gpu.ew_binary_mul_f16": 186.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 92.33333333333333,
+            "vulkan.gpu.gather_f16": 70.66666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 4,
+          "process_wall_s": 8.988,
+          "gqa_us": 141109.33333333334,
+          "total_us": 159628.33333333334,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 141109.33333333334,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17430.666666666668,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 803.6666666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 179.33333333333334,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 88.66666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.333333333333334,
+            "vulkan.gpu.gather_f16": 7.333333333333333
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 8,
+          "process_wall_s": 9.089,
+          "gqa_us": 146842.33333333334,
+          "total_us": 165385.0,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 146842.33333333334,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17441.333333333332,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 808.0,
+            "vulkan.gpu.ew_binary_mul_f16": 182.66666666666666,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 93.66666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+            "vulkan.gpu.gather_f16": 7.333333333333333
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 16,
+          "process_wall_s": 9.412,
+          "gqa_us": 166964.33333333334,
+          "total_us": 185768.33333333334,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 166964.33333333334,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17695.0,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 810.6666666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 185.33333333333334,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 95.33333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+            "vulkan.gpu.gather_f16": 7.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 32,
+          "process_wall_s": 9.655,
+          "gqa_us": 209192.66666666666,
+          "total_us": 228279.66666666666,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 209192.66666666666,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17949.666666666668,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 828.0,
+            "vulkan.gpu.ew_binary_mul_f16": 194.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 96.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 12.0,
+            "vulkan.gpu.gather_f16": 7.333333333333333
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 64,
+          "process_wall_s": 9.708,
+          "gqa_us": 203797.66666666666,
+          "total_us": 222603.66666666666,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 203797.66666666666,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17697.333333333332,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 817.6666666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 183.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 91.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.333333333333334,
+            "vulkan.gpu.gather_f16": 6.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        }
+      ],
+      "best_local_size": 1,
+      "best_gqa_us": 135560.66666666666,
+      "baseline_gqa_us": 135560.66666666666,
+      "speedup_vs_size_1": 1.0,
+      "graph_speedup_vs_size_1": 1.0
+    },
+    {
+      "case": "decode/M1/past1024",
+      "invocations": 32,
+      "points": [
+        {
+          "local_size": 1,
+          "process_wall_s": 11.692,
+          "gqa_us": 268568.6666666667,
+          "total_us": 287178.3333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 268568.6666666667,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17523.666666666668,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 803.3333333333334,
+            "vulkan.gpu.ew_binary_mul_f16": 177.66666666666666,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 90.66666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.333333333333334,
+            "vulkan.gpu.gather_f16": 5.0
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 2,
+          "process_wall_s": 11.944,
+          "gqa_us": 273773.3333333333,
+          "total_us": 292396.6666666667,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 273773.3333333333,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17529.333333333332,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 808.0,
+            "vulkan.gpu.ew_binary_mul_f16": 182.33333333333334,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 89.0,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+            "vulkan.gpu.gather_f16": 4.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 4,
+          "process_wall_s": 11.896,
+          "gqa_us": 278687.0,
+          "total_us": 297299.0,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 278687.0,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17514.333333333332,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 806.6666666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 184.66666666666666,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 92.33333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.333333333333334,
+            "vulkan.gpu.gather_f16": 4.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 8,
+          "process_wall_s": 12.132,
+          "gqa_us": 291807.6666666667,
+          "total_us": 310579.3333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 291807.6666666667,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17680.333333333332,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 803.6666666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 181.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 91.33333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.333333333333334,
+            "vulkan.gpu.gather_f16": 5.0
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 16,
+          "process_wall_s": 12.523,
+          "gqa_us": 322718.3333333333,
+          "total_us": 341310.3333333333,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 322718.3333333333,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17495.333333333332,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 803.0,
+            "vulkan.gpu.ew_binary_mul_f16": 186.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 93.33333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+            "vulkan.gpu.gather_f16": 4.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 32,
+          "process_wall_s": 12.387,
+          "gqa_us": 392423.6666666667,
+          "total_us": 411009.6666666667,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 392423.6666666667,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17494.333333333332,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 808.0,
+            "vulkan.gpu.ew_binary_mul_f16": 180.0,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 89.66666666666667,
+            "vulkan.gpu.simplified_layer_norm_f16": 9.333333333333334,
+            "vulkan.gpu.gather_f16": 4.666666666666667
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        },
+        {
+          "local_size": 64,
+          "process_wall_s": 12.648,
+          "gqa_us": 390532.6666666667,
+          "total_us": 409164.6666666667,
+          "by_kernel_us": {
+            "vulkan.gpu.gqa_f16": 390532.6666666667,
+            "vulkan.gpu.q_gemv_matmul_nbits_f16": 17538.666666666668,
+            "vulkan.gpu.skip_simplified_layer_norm_f16": 807.6666666666666,
+            "vulkan.gpu.ew_binary_mul_f16": 178.33333333333334,
+            "vulkan.gpu.ew_unary_sigmoid_f16": 92.33333333333333,
+            "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+            "vulkan.gpu.gather_f16": 5.0
+          },
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ]
+        }
+      ],
+      "best_local_size": 1,
+      "best_gqa_us": 268568.6666666667,
+      "baseline_gqa_us": 268568.6666666667,
+      "speedup_vs_size_1": 1.0,
+      "graph_speedup_vs_size_1": 1.0
+    }
+  ],
+  "limitations": [
+    "GPU time is the EP's own timestamp-query total per kernel, not a hardware occupancy counter: it says the kernel finished sooner, not why.",
+    "Wall clock on this box is STEADY_UNCERTIFIED (PERF.md \u00a720); the kernel-time column is the claim and process_wall_s is context, not evidence.",
+    "One device (RTX A1000). The rule this table justifies is a function of the invocation count, which is a property of the model, but the best size is a property of the machine \u2014 hence the environment kill switch."
+  ]
+}

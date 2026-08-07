@@ -359,6 +359,13 @@
     },
     {
       "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE",
+      "disposition": "uncensused",
+      "reason": "Overrides the GroupQueryAttention workgroup size (issue #56); the sole reader is gqa_local_size_override() in rust/src/ops/attention.rs, which feeds gqa_local_size() and thence SPECIALIZATION CONSTANT index 0 (local_size_x_id) of gqa_f16.comp, and rust/src/vk/pipeline.rs keys the pipeline cache on (shader_stem, spec_constants) -- so two settings really are two different pipelines. Setting it to 1 restores the pre-issue-#56 dispatch geometry exactly (one invocation per workgroup, an exact grid) without a rebuild, so it is the operational fallback as well as the A/B control, exactly as ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS=1 is for issue #7. It is NOT one of flag_frame's nine switches, and it is unreachable from the census's frame regardless: the census's six-node elementwise graph carries no GroupQueryAttention node, so no run of it can build a gqa_f16 pipeline at all -- the same unreachability as ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS and ONNXRUNTIME_EP_VULKAN_GEMV_PACKED. The resolved value is witnessed in an EP-produced artifact rather than in a host-side record of what was asked for, and by the same pre-existing mechanism issue #7 used: gqa_f16's dispatch previously passed an EMPTY spec_constants vector, so counters::record_pipeline_variant recorded `gqa_f16:` with nothing after the colon; it now passes vec![local], so the resolved size rides the unchanged full-vector recording into pipeline_variants and into every entry's spec_digest. Outside the census the switch is falsified directly by bench/results/probe_gqa_local_size.py, which sweeps it over seven values on the real Foundry Phi-3.5 graph and records both gqa_f16's own GPU nanoseconds and a byte-for-byte output comparison against size 1 at every point (bench/results/real_model_gqa_local_size.json), and by ops::attention's gqa_local_size unit tests (the clamping, the cap, the zero-override planted control, and the grid-coverage boundary). None of those is the wiring census. Owed by Switch: a census lane carrying a GroupQueryAttention node, or a flag_frame segment discriminating on the pipeline_variants entry rather than on the env value itself.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "env_switch",
       "id": "ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES",
       "disposition": "uncensused",
       "reason": "Dumps output bytes. Unobserved by the census.",
