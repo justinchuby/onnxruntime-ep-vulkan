@@ -232,7 +232,12 @@ LEAK_PATTERNS: "list[tuple[str, re.Pattern]]" = [
     ("posix_home", re.compile(r"/home/([^/\"'\s,;)]+)")),
     ("macos_home", re.compile(r"/Users/([^/\"'\s,;)]+)")),
     ("windows_drive_abs", re.compile(r"[A-Za-z]:[\\/]{1,2}(?:Program Files|ProgramData)")),
-    ("virtualenv", re.compile(r"[\\/]\.?venv[\w.-]*[\\/]")),
+    # Anchored on a non-word boundary, not on a leading separator: a reproduction
+    # command printed at line start (``.venv-cu12/Scripts/python.exe -m ...``) is a
+    # local interpreter path with no separator in front of it, and the previous form
+    # walked straight past it into a committed log. The lookbehind still refuses to
+    # match a word that merely ends in "venv".
+    ("virtualenv", re.compile(r"(?<![\w.-])\.?venv[\w.-]*[\\/]")),
 ]
 
 #: Directory names that identify a private checkout rather than a project.
