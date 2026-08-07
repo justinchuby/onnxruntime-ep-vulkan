@@ -96,6 +96,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -135,6 +136,33 @@ JSON_SUFFIXES = {".json"}
 #: it, it is counted and printed on every run, and an entry pointing at a file that no
 #: longer exists is itself a finding.
 INCIDENT_RECORDS = Path(__file__).resolve().parent / "device_loss_incident_records.json"
+
+#: Conditions this check decides about its own EXCLUSION LIST rather than about a run.
+#: They are decided on every invocation that has an exclusion list, whatever the paths.
+#:
+#: WHY THE FIRST TWO ARE NOT ENOUGH, MEASURED ON `main` 2026-08-07 (issue #24)
+#: --------------------------------------------------------------------------
+#: Until today an entry excluded its file *wholesale and forever*, and said nothing about
+#: WHAT it excluded. Two failures follow from that and both were live on `main`:
+#:
+#:   1. Six artifacts of real, already-diagnosed device losses (Tank's ctx-4096 gate
+#:      captures, Switch's ctx-4096 KV-chain record, Trinity's criterion-3(a) devunset
+#:      liveness arm) landed committed with NO record at all. The lane screen went red and
+#:      stayed red on every run that reached it, which is the state the exclusion list
+#:      exists to prevent: a check that is always red is a check nobody reads.
+#:   2. The obvious repair — name the six files and move on — would have bought green with
+#:      an exclusion that also blinds the screen to the NEXT loss recorded in the same
+#:      file. `kv_bytes_earned-armed.json` has been excluded whole since 2026-08-02; a new
+#:      truncated point appended to it would have been invisible.
+#:
+#: So an exclusion now has to declare the findings it accounts for, and the check re-reads
+#: every excluded file to hold it to that. An exclusion that covers nothing is deleted; an
+#: exclusion that covers more than it declares is a NEW incident hiding behind an old one.
+RECORD_CONDITIONS = (
+    "incident_record_rot",
+    "incident_record_covers_nothing",
+    "incident_record_widened",
+)
 
 
 def report_pass(detail: str) -> int:
@@ -195,32 +223,59 @@ def gather(paths: list[Path]) -> tuple[list[Path], list[str]]:
     return files, skipped
 
 
-def load_incident_records() -> tuple[dict[Path, dict], list[str], str]:
+def load_incident_records(
+    records_path: "Path | None" = None,
+) -> tuple[dict[Path, dict], list[str], str]:
     """Return {resolved path: entry}, rot findings, and an instrument-error reason.
 
     Rot is a finding, not a silent no-op: an entry naming a file that is gone is an
     exclusion nobody can check any more.
     """
-    if not INCIDENT_RECORDS.exists():
+    path = records_path or INCIDENT_RECORDS
+    if not path.exists():
         return {}, [], ""
     try:
-        doc = json.loads(INCIDENT_RECORDS.read_text(encoding="utf-8"))
+        doc = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
-        return {}, [], f"{INCIDENT_RECORDS} is not readable JSON: {exc}"
+        return {}, [], f"{path} is not readable JSON: {exc}"
     entries = doc.get("records", [])
     if not isinstance(entries, list):
-        return {}, [], f"{INCIDENT_RECORDS}: 'records' is not a list"
+        return {}, [], f"{path}: 'records' is not a list"
     mapping: dict[Path, dict] = {}
     rot: list[str] = []
     for entry in entries:
         if not isinstance(entry, dict) or not entry.get("file"):
-            return {}, [], f"{INCIDENT_RECORDS}: a record has no 'file'"
+            return {}, [], f"{path}: a record has no 'file'"
         for field in ("reason", "owner", "date"):
             if not entry.get(field):
                 return {}, [], (
-                    f"{INCIDENT_RECORDS}: record {entry['file']} has no '{field}'. "
+                    f"{path}: record {entry['file']} has no '{field}'. "
                     "An exclusion without a reason, an owner and a date is an "
                     "exclusion nobody can review."
+                )
+        # `witness` is what makes the exclusion BOUNDED. Without it an entry silences a
+        # file for all time and for all conditions, so the day a second, different loss is
+        # recorded in the same file nothing says so. Refusing to run without it is
+        # deliberate: a missing bound is an instrument outage, not a permissive default.
+        witness = entry.get("witness")
+        if not isinstance(witness, dict) or not witness:
+            return {}, [], (
+                f"{path}: record {entry['file']} has no 'witness'. An exclusion must "
+                "name the finding(s) it accounts for, by condition and count, or it is "
+                "an exclusion over everything that file will ever say."
+            )
+        for condition, count in witness.items():
+            if condition not in TIER_TREE_WIDE or condition in RECORD_CONDITIONS:
+                return {}, [], (
+                    f"{path}: record {entry['file']} accounts for {condition!r}, which "
+                    "is not a condition a directory scan decides on an artifact "
+                    f"({', '.join(c for c in TIER_TREE_WIDE if c not in RECORD_CONDITIONS)})."
+                )
+            if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+                return {}, [], (
+                    f"{path}: record {entry['file']} accounts for {condition} with "
+                    f"{count!r}. A witness count below 1 excludes nothing and cannot be "
+                    "reviewed."
                 )
         target = (REPO_ROOT / entry["file"]).resolve()
         if not target.exists():
@@ -509,6 +564,135 @@ TIER_NAMED_RUN_ONLY = (
     "marker_list_misses_real_line",
 )
 
+#: What a directory scan decides about an ARTIFACT, as opposed to about the record file.
+#: These are the only conditions an exclusion may account for.
+ARTIFACT_TREE_WIDE = tuple(c for c in TIER_TREE_WIDE if c not in RECORD_CONDITIONS)
+
+
+class Scan(NamedTuple):
+    """One artifact, read once.
+
+    Extracted so the EXCLUDED files go through the identical reader as the scanned ones.
+    A second, private reader for the exclusion audit would be a second dialect, and the
+    audit would then be checking a file this screen never actually reads that way.
+    """
+
+    hits: dict[str, list[str]]
+    decidable: bool
+    declared_rejections: int
+    embedded: bool
+    searchable: str
+    error: str
+
+
+def scan_artifact(path: Path, named: bool) -> Scan:
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:  # noqa: BLE001
+        return Scan({}, False, 0, False, "", f"{path}: {exc}")
+    searchable = searchable_text(raw)
+    hits: dict[str, list[str]] = {}
+    decidable = False
+    declared = 0
+    embedded = False
+    if path.suffix.lower() in JSON_SUFFIXES:
+        try:
+            doc = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            doc = None
+        if doc is not None:
+            found, decidable, declared = scan_counters(doc)
+            if found:
+                hits["observation_ended_early"] = list(found)
+            # A captured log stored inside a JSON string is not visible in the file's raw
+            # text once its NULs are `\u0000` escapes. Scan the decoded values too. See
+            # `json_embedded_text` — this blindness was measured, not supposed.
+            emb = searchable_text(json_embedded_text(doc))
+            if emb.strip():
+                embedded = True
+                searchable = searchable + "\n" + emb
+    for condition, lines in scan_text(path, searchable).items():
+        if not lines:
+            continue
+        if condition in TIER_NAMED_RUN_ONLY and not named:
+            continue
+        # De-duplicated: a line present in both the raw text and the decoded values of the
+        # same file is one finding, not two.
+        seen = hits.setdefault(condition, [])
+        for line in lines:
+            if line not in seen:
+                seen.append(line)
+    return Scan(hits, decidable, declared, embedded, searchable, "")
+
+
+def audit_exclusions(
+    excluded: list[Path], records: dict[Path, dict]
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Hold every exclusion to the findings it declared it accounts for.
+
+    Returns (findings by condition, frame notes).
+
+    Two findings, and the asymmetry between them is the point:
+
+    * **covers_nothing** — the file yields no finding at all. The entry silences nothing
+      today and can only silence something tomorrow. That is an exclusion nobody will ever
+      have a reason to look at again, which is how an exclusion list rots into a blindfold.
+
+    * **widened** — the file yields a finding under a condition the record never named, or
+      MORE findings of a named condition than it accounted for. That is a second incident
+      arriving inside a file that was already forgiven, which is precisely the defect a
+      whole-file exclusion cannot express.
+
+    A *narrowed* witness (fewer findings than declared, none new) is printed in the frame
+    and is deliberately NOT a finding. Every remaining finding is still inside a condition
+    somebody reviewed, and every finding that vanished is one fewer thing excluded; a
+    shrinking witness set cannot hide an incident. Making it red would only teach people to
+    keep the numbers loose.
+    """
+    findings: dict[str, list[str]] = {}
+    notes: list[str] = []
+    for path in excluded:
+        entry = records[path.resolve()]
+        declared: dict[str, int] = entry.get("witness", {})
+        scan = scan_artifact(path, named=False)
+        if scan.error:
+            findings.setdefault("incident_record_covers_nothing", []).append(
+                f"{entry['file']}: excluded by name but could not be re-read "
+                f"({scan.error}), so the exclusion cannot be held to what it accounts "
+                f"for (owner {entry['owner']}, recorded {entry['date']})"
+            )
+            continue
+        observed = {c: len(v) for c, v in scan.hits.items() if v and c in ARTIFACT_TREE_WIDE}
+        if not observed:
+            findings.setdefault("incident_record_covers_nothing", []).append(
+                f"{entry['file']}: the exclusion is in force, but the file yields no "
+                f"finding for {', '.join(ARTIFACT_TREE_WIDE)}. It excludes nothing today "
+                f"and can only blind this check tomorrow — delete the entry "
+                f"(owner {entry['owner']}, recorded {entry['date']})"
+            )
+            continue
+        widened = [
+            f"{condition}: {count} finding(s) present, {declared.get(condition, 0)} "
+            "accounted for"
+            for condition, count in sorted(observed.items())
+            if count > declared.get(condition, 0)
+        ]
+        if widened:
+            findings.setdefault("incident_record_widened", []).append(
+                f"{entry['file']}: "
+                + "; ".join(widened)
+                + f" — the exclusion was reviewed for less than this file now says "
+                f"(owner {entry['owner']}, recorded {entry['date']})"
+            )
+        narrowed = [
+            f"{condition}: {observed.get(condition, 0)} of {count} accounted for"
+            for condition, count in sorted(declared.items())
+            if observed.get(condition, 0) < count
+        ]
+        if narrowed and not widened:
+            notes.append(f"{entry['file']}: " + "; ".join(narrowed))
+    return findings, notes
+
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(add_help=True)
@@ -526,6 +710,18 @@ def main(argv=None) -> int:
         ),
     )
     ap.add_argument("--lane-marker", default="")
+    ap.add_argument(
+        "--incident-records",
+        type=Path,
+        default=None,
+        help=(
+            "read the exclusion list from PATH instead of ci/"
+            "device_loss_incident_records.json. Exists so the negative control can plant "
+            "a bad exclusion without editing the shipped one — a diagnostic must not "
+            "mutate its subject. The path in use is printed whenever it is not the "
+            "default, so an override can never be silent."
+        ),
+    )
     ap.add_argument(
         "--no-marker-cross-check",
         action="store_true",
@@ -545,7 +741,8 @@ def main(argv=None) -> int:
 
     files, skipped = gather(paths)
     explicit = {p.resolve() for p in paths if p.is_file()}
-    records, record_rot, record_error = load_incident_records()
+    records_path = args.incident_records or INCIDENT_RECORDS
+    records, record_rot, record_error = load_incident_records(records_path)
     if record_error:
         return report_instrument_error("incident_record_file_unreadable", record_error)
     excluded = [f for f in files if f.resolve() in records and f.resolve() not in explicit]
@@ -580,45 +777,19 @@ def main(argv=None) -> int:
     embedded_scanned = 0
     for path in files:
         named = path.resolve() in explicit
-        try:
-            raw = path.read_text(encoding="utf-8", errors="replace")
-        except Exception as exc:  # noqa: BLE001
-            unreadable.append(f"{path}: {exc}")
+        scan = scan_artifact(path, named)
+        if scan.error:
+            unreadable.append(scan.error)
             continue
-        searchable = searchable_text(raw)
-        if path.suffix.lower() in JSON_SUFFIXES:
-            try:
-                doc = json.loads(raw)
-            except Exception:  # noqa: BLE001
-                doc = None
-            if doc is not None:
-                found, decidable, declared = scan_counters(doc)
-                structural_decidable += 1 if decidable else 0
-                declared_rejections += declared
-                if found:
-                    findings.setdefault("observation_ended_early", []).extend(
-                        f"{path}: {f}" for f in found
-                    )
-                # A captured log stored inside a JSON string is not visible in the file's
-                # raw text once its NULs are `\u0000` escapes. Scan the decoded values too.
-                # See `json_embedded_text` — this blindness was measured, not supposed.
-                embedded = searchable_text(json_embedded_text(doc))
-                if embedded.strip():
-                    embedded_scanned += 1
-                    searchable = searchable + "\n" + embedded
-        hits = scan_text(path, searchable)
+        structural_decidable += 1 if scan.decidable else 0
+        declared_rejections += scan.declared_rejections
+        embedded_scanned += 1 if scan.embedded else 0
         if named:
-            samples.append((path, searchable))
-        for condition, lines in hits.items():
-            if not lines:
-                continue
-            if condition in TIER_NAMED_RUN_ONLY and not named:
-                continue
-            # De-duplicated: a line present in both the raw text and the decoded values of
-            # the same file is one finding, not two.
+            samples.append((path, scan.searchable))
+        for condition, lines in scan.hits.items():
             seen = findings.setdefault(condition, [])
-            for ln in lines:
-                entry = f"{path}: {ln}"
+            for line in lines:
+                entry = f"{path}: {line}"
                 if entry not in seen:
                     seen.append(entry)
     findings = {k: v for k, v in findings.items() if v}
@@ -653,15 +824,43 @@ def main(argv=None) -> int:
     if excluded:
         print(
             f"  {len(excluded)} file(s) excluded by name as historical incident records "
-            f"(ci/{INCIDENT_RECORDS.name}), each with a reason, an owner and a date:"
+            f"({records_path.name}), each with a reason, an owner, a date and the "
+            "finding(s) it accounts for:"
         )
         for path in excluded:
             entry = records[path.resolve()]
-            print(f"    {entry['file']} — {entry['reason']} ({entry['owner']}, {entry['date']})")
+            witness = ", ".join(
+                f"{condition}×{count}" for condition, count in sorted(entry["witness"].items())
+            )
+            print(
+                f"    {entry['file']} [accounts for {witness}] — {entry['reason']} "
+                f"({entry['owner']}, {entry['date']})"
+            )
         print(
             "  These are artifacts OF a device loss, kept deliberately. They are excluded "
             "so a past incident cannot make this check permanently red and therefore "
             "unread; they are named here so the exclusion is never silent."
+        )
+        audit_findings, audit_notes = audit_exclusions(excluded, records)
+        for condition, lines in audit_findings.items():
+            findings.setdefault(condition, []).extend(lines)
+        print(
+            f"  exclusion audit: all {len(excluded)} excluded file(s) re-read through the "
+            "same reader. An exclusion that covers NO finding is red "
+            "(incident_record_covers_nothing) because it silences nothing today and can "
+            "only blind this check tomorrow; an exclusion that covers MORE than it "
+            "accounts for is red (incident_record_widened) because that is a new incident "
+            "inside a file that was already forgiven."
+        )
+        for note in audit_notes:
+            print(
+                f"    narrowed, not a finding — {note}. Fewer findings than accounted for "
+                "cannot hide an incident; the count is stale, not permissive."
+            )
+    if records_path != INCIDENT_RECORDS:
+        print(
+            f"  exclusion list read from {records_path}, NOT the shipped "
+            f"{INCIDENT_RECORDS}. An override is never silent."
         )
     if record_rot:
         findings.setdefault("incident_record_rot", []).extend(record_rot)
@@ -693,6 +892,8 @@ def main(argv=None) -> int:
             "runtime_fallback_announced",
             "marker_list_misses_real_line",
             "incident_record_rot",
+            "incident_record_covers_nothing",
+            "incident_record_widened",
         )
         primary = next(c for c in order if c in findings)
         blocks = []
@@ -733,6 +934,19 @@ def main(argv=None) -> int:
                     "is no longer present. The exclusion is still in force and nobody "
                     "can review what it excludes. Delete the entry or restore the file."
                 ),
+                "incident_record_covers_nothing": (
+                    "An exclusion is in force over a file that produces no finding. It "
+                    "silences nothing today, so nobody will ever have a reason to look at "
+                    "it again — and it will silence whatever that file says next. Delete "
+                    "the entry."
+                ),
+                "incident_record_widened": (
+                    "A file excluded as the record of ONE past incident now carries more "
+                    "than that incident. The exclusion was reviewed against a smaller "
+                    "witness, so this evidence has never been read by anyone. Read it, "
+                    "then either raise it as the new incident it is or re-account for it "
+                    "with the reason it is the same one."
+                ),
             }[condition]
             body = "\n".join(f"  {ln}" for ln in findings[condition])
             blocks.append(f"[{condition}]\n{head}\n{body}")
@@ -743,9 +957,11 @@ def main(argv=None) -> int:
             )
         return report_fail(primary, detail)
 
-    observed = [c for c in TIER_TREE_WIDE if c != "incident_record_rot"]
+    observed = list(ARTIFACT_TREE_WIDE)
     if named_count:
         observed += list(TIER_NAMED_RUN_ONLY)
+    if excluded:
+        observed += list(RECORD_CONDITIONS)
     return report_pass(
         f"{len(files)} artifact(s) read; nothing found for: " + ", ".join(observed) + ".\n"
         "What this does NOT claim: that the EP executed anything (that is the verdict's "

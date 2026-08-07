@@ -353,28 +353,34 @@ CHECKS: tuple[Check, ...] = (
         ),
         status=DEMONSTRATED,
         mutation=(
-            "ci/negative_control_device_loss.py, 18 arms, all fired 2026-08-02: red on "
+            "ci/negative_control_device_loss.py, 27 arms, all fired 2026-08-07: red on "
             "Tank's real artifact (REPLAYED); red on trinity-suite-dev1.log, a second "
             "device loss from 2026-07-31 nobody had reported (LIVE — a file the screen "
             "was not written against); red on a synthesised iters=25/compute_calls=9 "
             "artifact with no log text at all; green on the same truncation once the "
             "producer has moved it under rejected_points; green on a clean log; and an "
-            "instrument error, never a pass, when it is given nothing to read."
+            "instrument error, never a pass, when it is given nothing to read. Since "
+            "issue #24 it also arms the exclusion list itself: red when an exclusion "
+            "covers no finding, red when Tank's real ctx-4096 capture carries one more "
+            "loss than its shipped record accounts for (REPLAYED), green on the same "
+            "file once the record accounts for both, and an instrument error, never a "
+            "pass, on a record that declares no witness at all."
         ),
         arm_healthy=(
-            "284 artifacts read across bench/results, 7 excluded by name as records of "
-            "known incidents with reason/owner/date, 126 decidable by the structural rule"
+            "746 artifacts read across bench/results, 18 excluded by name as records of "
+            "known incidents with reason/owner/date and the finding(s) each accounts "
+            "for, 290 decidable by the structural rule"
         ),
         arm_broken=(
             "DEVICE-LOSS: FAIL(condition=device_lost_reported) quoting "
             "'[vulkan-ep] ERROR: vkQueueSubmit failed: The logical device has been lost' "
             "from bench/results/trinity-suite-dev1.log:3216"
         ),
-        observed="2026-08-02",
+        observed="2026-08-07",
         misses=(
             "Its structural rule needs the producer to declare what it expected. An "
             "artifact carrying no iters/compute_calls pair is UNOBSERVABLE to it, not "
-            "clean — 158 of 284 artifacts were undecidable on the run above.",
+            "clean — 456 of 746 artifacts were undecidable on the run above.",
             "Three of its conditions (broken_commitment_reported, "
             "runtime_fallback_announced, marker_list_misses_real_line) are only decided "
             "on files the caller NAMES as one run's evidence. Controls on this project "
@@ -386,7 +392,12 @@ CHECKS: tuple[Check, ...] = (
             "ci/device_loss_incident_records.json is an exclusion list, and every "
             "exclusion list is a place to hide a defect. Its mitigations — reason, owner "
             "and date required; excluded files printed every run; an entry naming a "
-            "missing file is itself a finding — reduce that risk and do not remove it.",
+            "missing file is itself a finding; and, since issue #24, a mandatory witness "
+            "naming the finding(s) the entry accounts for, re-read through the same "
+            "reader every run so an exclusion cannot cover a finding it never declared — "
+            "reduce that risk and do not remove it. What remains uncovered: a witness is "
+            "a count of distinct finding LINES, so a second loss whose text is identical "
+            "to the forgiven one is still invisible.",
             "It says nothing about whether the EP executed. A run can be device-loss-free "
             "and still be pure CPU output; that is the verdict's job, not this check's.",
         ),
@@ -404,18 +415,18 @@ CHECKS: tuple[Check, ...] = (
         mutation=(
             "Its own provenance line: it counts LIVE, REPLAYED and PLANTED arms "
             "separately and prints that a PLANTED arm evidences nothing about whether "
-            "the event occurs in reality. 1 LIVE, 4 REPLAYED, 13 PLANTED on 2026-08-02."
+            "the event occurs in reality. 1 LIVE, 6 REPLAYED, 20 PLANTED on 2026-08-07."
         ),
-        arm_healthy="all 18 arms fired 2026-08-02",
+        arm_healthy="all 27 arms fired 2026-08-07",
         arm_broken=(
             "a missing bench/results/ctx512_device_lost.txt is reported as an arm that "
             "DID NOT FIRE — an outage in the control, never a pass"
         ),
-        observed="2026-08-02",
+        observed="2026-08-07",
         misses=(
-            "Ten of its fourteen arms are PLANTED. They prove each rule fires on an "
-            "input built to make it fire; only the LIVE and REPLAYED arms evidence that "
-            "the event occurs.",
+            "Twenty of its twenty-seven arms are PLANTED. They prove each rule fires on "
+            "an input built to make it fire; only the LIVE and REPLAYED arms evidence "
+            "that the event occurs.",
             "It has never induced a real device loss. Inducing one deliberately (a TDR) "
             "would make the red arm live rather than replayed, and would also tell us "
             "whether the EP's own text prints at all when the loss is hard enough.",
@@ -2612,7 +2623,9 @@ BLIND_SPOTS: tuple[BlindSpot, ...] = (
             "change. Falsified 2026-08-02 by 18 arms including a LIVE catch: a second, "
             "earlier device loss in bench/results/trinity-suite-dev1.log (2026-07-31, "
             "Intel, vkQueueSubmit) that had been read as a test failure and never "
-            "reported as a lost device."
+            "reported as a lost device. Re-falsified 2026-08-07 (issue #24) by 27 arms, "
+            "which now include the exclusion list itself: an entry that accounts for no "
+            "finding, or for fewer findings than its file carries, is red."
         ),
         substitute_status=DEMONSTRATED,
     ),

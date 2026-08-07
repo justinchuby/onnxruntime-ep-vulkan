@@ -2678,6 +2678,133 @@ def test_device_loss_exclusion_list_has_no_rot():
         assert (REPO_ROOT / rec["file"]).exists(), rec["file"]
 
 
+def test_device_loss_exclusion_entries_declare_the_findings_they_account_for():
+    """Issue #24. Before 2026-08-07 an entry silenced its file wholesale and forever and
+    said nothing about what it silenced, so a NEW loss appended to an already-excluded
+    file was invisible. An exclusion now names the finding(s) it accounts for."""
+    import importlib
+
+    mod = importlib.import_module("check_device_loss")
+    doc = json.loads(
+        (CI_DIR / "device_loss_incident_records.json").read_text(encoding="utf-8")
+    )
+    for rec in doc["records"]:
+        witness = rec.get("witness")
+        assert isinstance(witness, dict) and witness, rec["file"]
+        for condition, count in witness.items():
+            assert condition in mod.ARTIFACT_TREE_WIDE, (rec["file"], condition)
+            assert isinstance(count, int) and count > 0, (rec["file"], condition)
+
+
+def test_device_loss_exclusion_witness_counts_are_what_the_reader_actually_sees():
+    """The number in the file is only worth something if it is the number the check
+    holds the exclusion to. Re-read every excluded artifact through the check's own
+    reader and compare. A drift here is a silenced finding."""
+    import importlib
+
+    mod = importlib.import_module("check_device_loss")
+    doc = json.loads(
+        (CI_DIR / "device_loss_incident_records.json").read_text(encoding="utf-8")
+    )
+    for rec in doc["records"]:
+        path = REPO_ROOT / rec["file"]
+        scan = mod.scan_artifact(path, named=False)
+        assert not scan.error, (rec["file"], scan.error)
+        observed = {c: len(v) for c, v in scan.hits.items() if v}
+        assert observed == rec["witness"], (rec["file"], observed, rec["witness"])
+
+
+def test_device_loss_exclusion_that_covers_nothing_is_red():
+    """An exclusion over a file with no finding silences nothing today and can only
+    blind the screen tomorrow. Green here would let an exclusion be parked in advance."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "bystander.log").write_text("a run that kept its device\n", encoding="utf-8")
+        quiet = d / "quiet.log"
+        quiet.write_text("nothing happened\n", encoding="utf-8")
+        recs = d / "records.json"
+        recs.write_text(
+            json.dumps(
+                {
+                    "records": [
+                        {
+                            "file": str(quiet),
+                            "witness": {"device_lost_reported": 1},
+                            "reason": "planted by test_lane_checks to prove the audit fires",
+                            "owner": "link",
+                            "date": "2026-08-07",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        r = run_check("check_device_loss.py", "--incident-records", str(recs), str(d))
+        assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+        assert "incident_record_covers_nothing" in r.stdout
+
+
+def test_device_loss_exclusion_is_red_when_the_file_says_more_than_it_accounts_for():
+    """The whole point of the witness: a second loss recorded in an already-forgiven
+    file must reach a human, not inherit the first loss's forgiveness."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "bystander.log").write_text("a run that kept its device\n", encoding="utf-8")
+        loss = d / "loss.log"
+        loss.write_text(
+            DEVICE_LOSS_LINE.rstrip("\n") + " after 1775 dispatches\n"
+            + DEVICE_LOSS_LINE.rstrip("\n") + " after 0 dispatches\n",
+            encoding="utf-8",
+        )
+        entry = {
+            "file": str(loss),
+            "witness": {"device_lost_reported": 1},
+            "reason": "planted by test_lane_checks to prove the audit bounds the exclusion",
+            "owner": "link",
+            "date": "2026-08-07",
+        }
+        recs = d / "records.json"
+        recs.write_text(json.dumps({"records": [entry]}), encoding="utf-8")
+        r = run_check("check_device_loss.py", "--incident-records", str(recs), str(d))
+        assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+        assert "incident_record_widened" in r.stdout
+
+        # ...and green once it accounts for both, so the audit bounds exclusions rather
+        # than abolishing them.
+        entry["witness"] = {"device_lost_reported": 2}
+        recs.write_text(json.dumps({"records": [entry]}), encoding="utf-8")
+        ok = run_check("check_device_loss.py", "--incident-records", str(recs), str(d))
+        assert ok.returncode == EXIT_PASS, ok.stdout
+
+
+def test_device_loss_exclusion_without_a_witness_is_an_outage_not_a_pass():
+    """A record the check cannot bound is an unreadable instrument. Accepting it would
+    restore exactly the unbounded exclusion this machinery replaced."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        loss = d / "loss.log"
+        loss.write_text(DEVICE_LOSS_LINE, encoding="utf-8")
+        recs = d / "records.json"
+        recs.write_text(
+            json.dumps(
+                {
+                    "records": [
+                        {
+                            "file": str(loss),
+                            "reason": "an exclusion over everything this file will ever say",
+                            "owner": "link",
+                            "date": "2026-08-07",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        r = run_check("check_device_loss.py", "--incident-records", str(recs), str(d))
+        assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+        assert "incident_record_file_unreadable" in r.stdout
+
+
 def test_device_loss_screen_and_fatal_log_have_different_extents():
     """They are two mechanisms and must never be quoted as one guarantee. The evidence
     is a file one is red on and the other is green on."""
