@@ -145,12 +145,12 @@ INCIDENT_RECORDS = Path(__file__).resolve().parent / "device_loss_incident_recor
 #: Until today an entry excluded its file *wholesale and forever*, and said nothing about
 #: WHAT it excluded. Two failures follow from that and both were live on `main`:
 #:
-#:   1. Six artifacts of real, already-diagnosed device losses (Tank's ctx-4096 gate
+#:   1. Eight artifacts of real, already-diagnosed device losses (Tank's ctx-4096 gate
 #:      captures, Switch's ctx-4096 KV-chain record, Trinity's criterion-3(a) devunset
 #:      liveness arm) landed committed with NO record at all. The lane screen went red and
 #:      stayed red on every run that reached it, which is the state the exclusion list
 #:      exists to prevent: a check that is always red is a check nobody reads.
-#:   2. The obvious repair — name the six files and move on — would have bought green with
+#:   2. The obvious repair — name the eight files and move on — would have bought green with
 #:      an exclusion that also blinds the screen to the NEXT loss recorded in the same
 #:      file. `kv_bytes_earned-armed.json` has been excluded whole since 2026-08-02; a new
 #:      truncated point appended to it would have been invisible.

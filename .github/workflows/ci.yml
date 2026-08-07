@@ -622,8 +622,8 @@ jobs:
         run: python ci/check_device_loss.py --lane
 
       - name: Device-loss screen negative control (demand red)
-        # 14 arms, and it counts LIVE / REPLAYED / PLANTED separately rather than
-        # reporting "14 passed", because those three are worth very different amounts.
+        # 27 arms, and it counts LIVE / REPLAYED / PLANTED separately rather than
+        # reporting "27 passed", because those three are worth very different amounts.
         run: python ci/negative_control_device_loss.py
 
       - name: README usage screen (does the documented import exist?)
@@ -1931,15 +1931,18 @@ jobs:
           # named historical commit (INCIDENT_COMMIT = "eb84364") as arm 3's fixture,
           # and every ledger_loss_probe test that exercises the default run therefore
           # needs that commit present locally. This job's own actions/checkout@v4
-          # above has no fetch-depth override (a 1-commit shallow clone), so the
-          # commit is simply absent from the local object store here -- confirmed on
-          # run 31145937171/job 92765255376, where every such test failed with
+          # above now declares `fetch-depth: 0` (full history, added for issue #24),
+          # so the commit is present without this step doing anything -- confirmed by
+          # `git rev-parse --is-shallow-repository` reading `false` and the guard below
+          # skipping the fetch. Before that fix (run 31145937171/job 92765255376, when
+          # the checkout was still a 1-commit shallow clone), every such test failed with
           # "ERROR(instrument): cannot read eb84364 from this repo", an instrument
           # outage from an incomplete checkout, not a destination-policy regression.
-          # Deepen to full history for this step only, so the commit is present
-          # without changing the faster shallow checkout the rest of this job's
-          # build+test steps rely on. `-Unshallow` errors on an already-complete
-          # repository, so only call it when the checkout actually is shallow.
+          # This guard is kept as a defence-in-depth no-op rather than deleted: if the
+          # checkout above ever regresses to a shallow clone, this step still deepens
+          # history for itself rather than silently reading UNOBSERVABLE again.
+          # `-Unshallow` errors on an already-complete repository, so only call it when
+          # the checkout actually is shallow.
           if ((git rev-parse --is-shallow-repository).Trim() -eq 'true') {
             git fetch --quiet --unshallow
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

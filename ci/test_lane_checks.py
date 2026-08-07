@@ -3166,6 +3166,13 @@ def test_device_loss_checks_are_registered_with_honest_reach():
     assert screen.falsifier == inv.FALSIFIER_OBSERVED
     assert any("UNOBSERVABLE" in m for m in screen.misses)
     assert any("exclusion list" in m for m in screen.misses)
+    # PR #65 review (Morpheus): the witness binds a count per condition, not the
+    # content behind it, so a frame substitution (same count, different lines) is
+    # invisible to both the screen and the witness-equality test. This is the sibling
+    # of the de-duplication limit already recorded, and must not silently disappear.
+    assert any(
+        "COUNT per condition" in m and "frame substitution" in m for m in screen.misses
+    ), "the count-not-content / frame-substitution residual must stay named in misses"
     control = next(
         x for x in inv.CHECKS if x.id == "hostfree.device_loss_negative_control"
     )
@@ -3176,6 +3183,158 @@ def test_device_loss_checks_are_registered_with_honest_reach():
         b for b in inv.BLIND_SPOTS if b.id == "runtime_device_loss_exits_zero"
     )
     assert "exits 0" in spot.defect
+
+
+def _first_commit_adding_path(rel_path: str) -> str:
+    """Short SHA of the first commit in this repo's history that added `rel_path`,
+    read straight from git rather than trusted from any comment or doc."""
+    proc = subprocess.run(
+        [
+            "git",
+            "log",
+            "--diff-filter=A",
+            "--format=%h",
+            "--follow",
+            "--",
+            rel_path,
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert proc.returncode == 0, (rel_path, proc.stderr)
+    shas = [s for s in proc.stdout.splitlines() if s.strip()]
+    assert shas, f"no commit adds {rel_path} in this checkout's history (shallow clone?)"
+    return shas[-1]  # oldest -> the actual addition, not a later rename hit
+
+
+def test_device_loss_incident_records_landing_commits_match_git_history_issue_65():
+    """PR #65's review (Morpheus) found two landing-commit citations were wrong:
+    `device_loss_gate-BOTHLANES.json` was attributed to `5353886` (that is really the
+    commit for the armA_* capture files) when it actually landed at `1fc2ab6`. This
+    reads the claim straight out of ci/device_loss_incident_records.json and checks it
+    against real git history instead of trusting the prose, so a future transcription
+    error here fails a test instead of surviving on review-comment memory alone."""
+    doc = json.loads(
+        (CI_DIR / "device_loss_incident_records.json").read_text(encoding="utf-8")
+    )
+    checked = 0
+    for rec in doc["records"]:
+        m = re.search(r"landed committed at ([0-9a-f]{7,40})", rec["reason"])
+        if not m:
+            continue
+        claimed_sha = m.group(1)
+        actual_sha = _first_commit_adding_path(rec["file"])
+        assert actual_sha.startswith(claimed_sha[: len(actual_sha)]) or claimed_sha.startswith(
+            actual_sha
+        ), (
+            f"{rec['file']}: reason claims it landed at {claimed_sha!r}, but git's own "
+            f"history says the first commit adding this file is {actual_sha!r}"
+        )
+        checked += 1
+    assert checked >= 1, "no record in this file makes a landing-commit claim any more"
+
+
+def test_platforms_doc_7_18_11_incident_counts_are_eight_and_ninth():
+    """PR #65's review (Morpheus): docs/PLATFORMS.md §7.18.11 said 'Nine artifacts
+    produced findings' and then contradicted its own sentence and its own table by
+    saying 'Six of them are ... real' and 'The seventh' is derived — the table lists
+    eight real-incident rows and one derived row. Locks the corrected wording so it
+    cannot silently regress back to the miscount."""
+    text = (REPO_ROOT / "docs" / "PLATFORMS.md").read_text(encoding="utf-8")
+    section_start = text.index("### 7.18.11")
+    next_heading = text.index("\n## ", section_start)
+    section = text[section_start:next_heading]
+
+    assert "Six of them" not in section, "the eight/nine miscount must not come back"
+    assert "The seventh" not in section, "the eight/nine miscount must not come back"
+    assert "Eight of them are artifacts" in section
+    assert "The ninth," in section
+    assert "eight real incidents" in section.splitlines()[0]
+
+    # And the two provenance corrections from the same review: the table's commit
+    # citations must match real git history, not just internally-consistent prose.
+    bothlanes_row = next(
+        line for line in section.splitlines() if "device_loss_gate-BOTHLANES.json" in line
+    )
+    assert "1fc2ab6" in bothlanes_row
+    assert "5353886" not in bothlanes_row
+    kv_chain_row = next(
+        line
+        for line in section.splitlines()
+        if "phi35_kv_chain-ctx4096-BOTH-dev0.json" in line
+    )
+    assert "0db65fe" in kv_chain_row
+    assert "1fc2ab6" not in kv_chain_row
+
+    assert _first_commit_adding_path(
+        "bench/results/device_loss_gate-BOTHLANES.json"
+    ).startswith("1fc2ab6"[:7]) or "1fc2ab6".startswith(
+        _first_commit_adding_path("bench/results/device_loss_gate-BOTHLANES.json")
+    )
+    assert _first_commit_adding_path(
+        "bench/results/phi35_kv_chain-ctx4096-BOTH-dev0.json"
+    ).startswith("0db65fe"[:7]) or "0db65fe".startswith(
+        _first_commit_adding_path("bench/results/phi35_kv_chain-ctx4096-BOTH-dev0.json")
+    )
+
+
+def test_ci_yml_device_loss_negative_control_comment_matches_real_arm_count():
+    """PR #65's review (Morpheus): the *Device-loss screen negative control* step's
+    comment in ci.yml still said '14 arms' after the tool it describes was raised to
+    27. Reads the real arm count out of a live run of the tool rather than a second
+    hand-typed number, so the comment and the tool cannot drift apart silently again."""
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    step_start = ci_text.index("Device-loss screen negative control (demand red)")
+    window = ci_text[step_start : step_start + 400]
+    m = re.search(r"(\d+) arms", window)
+    assert m, "comment no longer states an arm count at all"
+    documented_count = int(m.group(1))
+    assert "14 arms" not in window
+
+    proc = subprocess.run(
+        [sys.executable, str(CI_DIR / "negative_control_device_loss.py")],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    out = proc.stdout + proc.stderr
+    real_m = re.search(r"of (\d+) arms\.", out)
+    assert real_m, f"could not read the real arm count from the tool's own output: {out!r}"
+    assert documented_count == int(real_m.group(1)), (
+        f"ci.yml's comment says {documented_count} arms but the tool itself ran "
+        f"{real_m.group(1)} — the comment has drifted from the tool again"
+    )
+
+
+def test_ci_yml_windows_ledger_loss_probe_comment_is_not_stale():
+    """PR #65's review (Morpheus, item c): the Windows ledger-loss-probe step's comment
+    claimed 'This job's own actions/checkout@v4 above has no fetch-depth override (a
+    1-commit shallow clone)' and 'without changing the faster shallow checkout' -- both
+    false since the fetch-depth: 0 repair landed for issue #24. Asserts the stale claim
+    is gone and the job's checkout really does declare fetch-depth: 0, so the comment
+    and the checkout cannot silently diverge again."""
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    step_start = ci_text.index("Windows-namespace destination-policy regression")
+    next_step = ci_text.index("\n      - name:", step_start + 1)
+    step_body = ci_text[step_start:next_step]
+
+    assert "no fetch-depth override" not in step_body
+    assert "above has no fetch-depth override" not in step_body
+    assert "without changing the faster shallow checkout" not in step_body
+
+    # The job's own checkout, above this step, must actually declare fetch-depth: 0 --
+    # otherwise the corrected comment would itself become the new stale claim.
+    job_start = ci_text.rindex("\n  build-test-windows:\n", 0, step_start)
+    checkout_start = ci_text.index("uses: actions/checkout@", job_start)
+    checkout_window = ci_text[checkout_start : checkout_start + 150]
+    assert "fetch-depth: 0" in checkout_window
+
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────

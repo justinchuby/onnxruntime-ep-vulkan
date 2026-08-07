@@ -400,10 +400,10 @@ def main() -> int:
     #
     # WHY THESE ARMS EXIST. Until 2026-08-07 an entry in
     # ci/device_loss_incident_records.json silenced its file WHOLESALE and FOREVER, and
-    # said nothing about what it silenced. Six artifacts of real, already-diagnosed losses
+    # said nothing about what it silenced. Eight artifacts of real, already-diagnosed losses
     # had landed committed with no entry at all, so the lane screen was red on every run
     # that reached it — the state the list exists to prevent. The obvious repair, naming
-    # the six files, would have bought green with an exclusion that ALSO blinds the screen
+    # the eight files, would have bought green with an exclusion that ALSO blinds the screen
     # to the next loss recorded in the same file. So an exclusion now declares the
     # finding(s) it accounts for and the check re-reads every excluded file to hold it
     # there. These arms are what make that claim falsifiable.
