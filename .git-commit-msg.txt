@@ -1,0 +1,33 @@
+ci: give the op-test jobs the history their screens read (#24)
+
+With the device-loss screen green, main at 5113a0a was still red in BOTH
+op-test jobs (run 31164215291) — on the same single test:
+
+  tests/ops/test_proof_ledger.py::test_the_declaration_screen_survives_a_squash_of_this_branch
+  ERROR(instrument=truncated_history) in all four columns of its landing matrix
+
+`build-test-linux` and `build-test-windows` used the default depth-1
+checkout. The landing-safety simulation lands HEAD's tree onto origin/main
+and screens the result; rust/tools/probe_ledger_loss.py's default run reads a
+named historical commit. Neither can be answered from one commit of history.
+The test's own guard skipped only when origin/main was ABSENT — on a push to
+main that ref is present but the history behind it is not, so the intended
+UNOBSERVABLE branch never fired and the screen failed for a checkout reason.
+
+The repair is to supply the history, not to widen the test's unobservable
+branch: a screen that skips itself on every push to main is a screen nobody
+is running. Both jobs now declare `fetch-depth: 0`, which is what the
+lane-checks job has declared all along. This also makes the Windows
+ledger-loss-probe step's `git fetch --unshallow` guard the no-op its own
+comment already anticipated.
+
+test_history_reading_op_test_jobs_check_out_full_history_issue_24 derives the
+set of history-reading jobs from ci.yml's own text (lane-checks,
+build-test-linux, build-test-windows today) and requires each one's first
+checkout to declare it, so the wiring fails on the change that loses it
+rather than on the next push to main. It also fails if it matches no job at
+all, because a guard matching nothing is not a green.
+
+Refs #24
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

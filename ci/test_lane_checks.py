@@ -1567,6 +1567,54 @@ def test_lane_checks_job_has_no_depth_limited_fetch_before_the_ledger_census_iss
         )
 
 
+def test_history_reading_op_test_jobs_check_out_full_history_issue_24():
+    """ISSUE #24. `tests/ops/test_proof_ledger.py`'s landing-safety simulation lands
+    HEAD's tree onto `origin/main` and screens the result, and
+    `rust/tools/probe_ledger_loss.py`'s default run reads a named historical commit.
+    Both need history. On the default depth-1 shallow clone they produce
+    `ERROR(instrument=truncated_history)` -- an outage from an incomplete checkout, not
+    a defect in the register -- and that is exactly how `main` was red at 5113a0a on run
+    31164215291: both op-test jobs failed on the same single test, for a checkout reason.
+
+    The repair is to supply the history, not to widen the test's unobservable branch: a
+    screen that skips itself on every push is a screen nobody is running. This asserts on
+    ci.yml's own text so a checkout that quietly loses `fetch-depth: 0` fails on the
+    change that loses it, rather than on the next push to main.
+    """
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    job_bounds = [
+        (m.group(1), m.start())
+        for m in re.finditer(r"\n  ([a-zA-Z][\w-]*):\n", ci_text)
+    ]
+    bodies = {}
+    for i, (name, start) in enumerate(job_bounds):
+        end = job_bounds[i + 1][1] if i + 1 < len(job_bounds) else len(ci_text)
+        bodies[name] = ci_text[start:end]
+
+    needs_history = [
+        name
+        for name, body in bodies.items()
+        if "test_proof_ledger" in body
+        or "probe_ledger_loss" in body
+        or "check_ledger_census.py" in body
+        or "pytest tests/ops" in body
+        or "pytest tests\\ops" in body
+    ]
+    assert needs_history, (
+        "no job reads history any more — either the screens moved or this guard is "
+        "matching on stale names, and a guard matching nothing is not a green"
+    )
+    for name in needs_history:
+        first_checkout = bodies[name].index("uses: actions/checkout@")
+        window = bodies[name][first_checkout : first_checkout + 200]
+        assert "fetch-depth: 0" in window, (
+            f"job {name!r} runs a history-reading screen but its checkout does not "
+            f"declare fetch-depth: 0. On a depth-1 clone that screen reports "
+            f"ERROR(instrument=truncated_history) and the lane goes red for a checkout "
+            f"reason (issue #24, run 31164215291)."
+        )
+
+
 # ---------------------------------------------------------------------------------------
 # ISSUE #24 -- a real import-closure contract, not a string search.
 #

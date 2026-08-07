@@ -597,7 +597,19 @@ jobs:
       VK_LOADER_DEBUG: warn
 
     steps:
+      # fetch-depth: 0, for the same reason the lane-checks job declares it. Several
+      # tests/ops screens READ HISTORY: tests/ops/test_proof_ledger.py's landing-safety
+      # simulation lands HEAD's tree onto origin/main and screens the result, and
+      # rust/tools/probe_ledger_loss.py's default run reads a named historical commit.
+      # On the default depth-1 shallow clone those produce
+      # ERROR(instrument=truncated_history) -- an outage from an incomplete checkout,
+      # not a defect in the register -- which is exactly how main went red at 5113a0a
+      # on run 31164215291 (both op-test jobs, the same single test). The screen must be
+      # OBSERVED here, not skipped, so the repair is to supply the history rather than
+      # to widen the test's unobservable branch.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain (rustup, no third-party action)
         run: |
@@ -1414,7 +1426,14 @@ jobs:
       VK_LOADER_DEBUG: warn
 
     steps:
+      # fetch-depth: 0 — see the Linux lane's checkout for the full rationale. Same
+      # history-reading screens, same ERROR(instrument=truncated_history) on a depth-1
+      # clone, same red on main at 5113a0a (run 31164215291). This also makes the
+      # `git fetch --unshallow` guard in the ledger-loss-probe step below the no-op its
+      # own comment already anticipates, rather than the only place history arrives.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain (rustup, no third-party action)
         run: |
