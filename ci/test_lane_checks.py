@@ -3188,7 +3188,9 @@ def test_device_loss_checks_are_registered_with_honest_reach():
 _LANDING_READING_FORBIDDEN_ARGS = ("--follow", "-M", "-C", "--find-renames", "--find-copies")
 
 
-def _first_commit_adding_current_path(rel_path: str) -> str:
+def _first_commit_adding_current_path(
+    rel_path: str, repo_root: Path = REPO_ROOT
+) -> str:
     """Short SHA of the first commit that added `rel_path` **at exactly this path**.
 
     THIS is the source of truth for every "landed at <sha>" claim a doc or a record
@@ -3228,18 +3230,18 @@ def _first_commit_adding_current_path(rel_path: str) -> str:
         ["git", "ls-files", "--error-unmatch", "--", rel_path],
         capture_output=True,
         text=True,
-        cwd=str(REPO_ROOT),
+        cwd=str(repo_root),
     )
     assert tracked.returncode == 0, (
         f"{rel_path} is not tracked at HEAD, so 'the commit that added this path' is "
         f"not a question this checkout can answer: {tracked.stderr.strip()!r}"
     )
 
-    proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(REPO_ROOT))
+    proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(repo_root))
     assert proc.returncode == 0, (rel_path, proc.stderr)
     shas = [s for s in proc.stdout.splitlines() if s.strip()]
     assert shas, f"no commit adds {rel_path} in this checkout's history (shallow clone?)"
-    return shas[-1]  # oldest -> the introduction of *this* path
+    return shas[0]  # newest -> the introduction of the current path incarnation
 
 
 def _first_commit_in_rename_lineage(rel_path: str) -> str:
@@ -3382,6 +3384,41 @@ def test_landing_reading_does_not_cross_renames_issue_24():
             f"{path}: the doc's citation {cited} now also matches the lineage reading, "
             "so this pair no longer distinguishes the two helpers"
         )
+
+
+def test_current_path_landing_uses_the_current_incarnation_issue_24(tmp_path):
+    """A deleted and re-added path lands at its newest addition, not its dead first one."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return proc.stdout.strip()
+
+    git("init", "--quiet")
+    git("config", "user.name", "Lane Test")
+    git("config", "user.email", "lane-test@example.invalid")
+    path = repo / "artifact.json"
+    path.write_text('{"incarnation": 1}\n', encoding="utf-8")
+    git("add", "artifact.json")
+    git("commit", "--quiet", "-m", "add first incarnation")
+    first = git("rev-parse", "--short", "HEAD")
+
+    git("rm", "--quiet", "artifact.json")
+    git("commit", "--quiet", "-m", "remove first incarnation")
+    path.write_text('{"incarnation": 2}\n', encoding="utf-8")
+    git("add", "artifact.json")
+    git("commit", "--quiet", "-m", "add current incarnation")
+    current = git("rev-parse", "--short", "HEAD")
+
+    assert first != current
+    assert _first_commit_adding_current_path("artifact.json", repo) == current
 
 
 def test_landing_reading_is_fail_closed_and_the_mutant_is_visible_issue_24():
