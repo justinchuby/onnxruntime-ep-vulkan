@@ -868,15 +868,29 @@ impl VulkanTracer {
     /// entry point ORT calls, so it cannot see anything the callback does on either side of that
     /// call. Measured on Phi-3.5 `prefill_1` (`bench/results/_cuda69/`, 14 `Compute` calls,
     /// 13 warm), the two spans differed by a **warm median of 27.0 ms** — `vulkan.compute_call`
-    /// 62.3 ms against `vulkan.subgraph` 33.9 ms — and **26.9 ms of that 27.0 ms landed *after*
+    /// 62.329 ms against `vulkan.subgraph` 33.868 ms — and **26.9 ms of that landed *after*
     /// `vulkan.subgraph` closed**, not before it (warm median lead-in: 0.086 ms).
     ///
-    /// That 27.0 ms was **not the EP**. Re-measured on the same workload with the benchmark
-    /// harness's counters-file dump moved out of the timed region, the same term reads
-    /// **0.053 ms** (`bench/results/_cuda69/profile_prefill_1.json`). The dump ran on every timed
-    /// inference, from `counters::record_dispatches` after `dispatch_ort` returns — which is the
-    /// side the region was on. The span is kept because that is the finding: without an outer
-    /// bracket the harness's own cost was inside the EP's numbers and nothing could see it.
+    /// That region was **not the EP**, and the evidence for that is an A/B rather than a
+    /// before/after. A before/after across two EP builds would confound the build change with
+    /// the change under test; on one release build, one workload and one machine, varying only
+    /// `ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS`, the region outside `vulkan.subgraph` reads
+    /// **25.269 ms** with the benchmark harness's counters-file dump retained inside the timed
+    /// region and **0.056 ms** without it, while `vulkan.subgraph` itself barely moves
+    /// (30.509 ms against 32.627 ms). The dump runs from `counters::record_dispatches` after
+    /// `dispatch_ort` returns — the side the region is on. Both arms are committed:
+    /// `bench/results/_cuda69/profile_prefill_1_counters_retained.json` and
+    /// `bench/results/_cuda69/profile_prefill_1.json`.
+    ///
+    /// Scoped to `prefill_1`. Cross-workload deltas are non-uniform and are not pure counter
+    /// costs, so this does not generalise to other workloads without re-running the A/B there.
+    ///
+    /// The span is kept because that is the finding: without an outer bracket the harness's own
+    /// cost was inside the EP's numbers and nothing could see it. ORT's own profiler confirms
+    /// which bracket is the honest one — on the counters-retained arm it charged the fused node
+    /// a warm median of 57.118 ms, against `vulkan.compute_call` 56.108 ms (−1.8%) and
+    /// `vulkan.subgraph` 30.509 ms (−46.6%). Two instruments sharing no code, bracketing the
+    /// same callback in the same process.
     ///
     /// This span is **structural, not a [`Phase`]**: it is `cat == "ep"` like `vulkan.subgraph`,
     /// it is never summed into any sibling total, and it adds no level to the phase tree. It

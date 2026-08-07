@@ -70,20 +70,91 @@ added to it. Ten in total; `Phase::ALL` is the list of record, and a Rust test a
 | `vulkan.subgraph` | The `dispatch_ort` call inside `Compute`. | The bracket every phase lies inside. This is the denominator for "share of time inside `Compute`" throughout this document. |
 
 The distinction is load-bearing, and was learned the expensive way. In the 2026-08-07 CUDA
-competition work the gap between the two brackets measured a **26.976 ms warm-call median** —
-larger than the 13.3 ms of device time the same trace saw — and a `bind_check` *phase* was added
-outside `vulkan.subgraph` to try to explain it. It explained 0.073 ms of it (0.27%), and being
-the first phase outside the subgraph bracket it broke `phase_containment`'s standing contract
-that every phase span lies inside its `vulkan.subgraph` span. That phase has been removed. The
-outer bracket stays, as a *structural* span: it exposes the region without claiming to explain
-it, and the phase tree is untouched.
+competition work the two brackets read a warm median of **62.329 ms** (`vulkan.compute_call`)
+against **33.868 ms** (`vulkan.subgraph`), a per-call gap with a warm median of **26.976 ms** —
+the gap median and the difference of the two medians are not the same statistic and are not
+expected to match exactly. A `bind_check` *phase* was added outside `vulkan.subgraph` to try to
+explain that gap. It explained 0.073 ms of it (0.27%), and being the first phase outside the
+subgraph bracket it broke `phase_containment`'s standing contract that every phase span lies
+inside its `vulkan.subgraph` span. That phase has been removed. The outer bracket stays, as a
+*structural* span: it exposes the region without claiming to explain it, and the phase tree is
+untouched.
 
-The region itself turned out not to be the EP at all. Re-measured on 2026-08-07 with the
-counters-file dump moved out of the timed region, the same term is **0.053 ms** — the 27 ms was
-the benchmark harness's own counters dump running inside every timed inference, which is exactly
-what `bench/test_cuda_competition.py::test_counters_dump_is_not_left_inside_the_timed_region`
-now forbids. An instrument that can see a region is worth having even when the answer is "this
-was never ours".
+The region itself turned out not to be the EP at all — and the way that was established matters
+as much as the answer. The first version of this claim rested on a before/after across two
+different EP builds, which confounds the build change with the change under test. The claim now
+rests on a **single-variable A/B**: one release build, one workload (`prefill_1`), one machine,
+runs minutes apart, varying only `ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS`.
+
+| traced-run warm-call median | counters retained | counters `first_run_only` |
+|---|---:|---:|
+| outside `vulkan.subgraph`, inside the callback | **25.269 ms** | **0.056 ms** |
+| `vulkan.subgraph` | 30.509 ms | 32.627 ms |
+| `vulkan.compute_call` | 56.108 ms | 32.682 ms |
+| device time per run | 20.136 ms | 18.904 ms |
+
+The inner span barely moves; the region outside it moves 25.2 ms. The benchmark harness's own
+counters dump runs inside every timed inference, after `dispatch_ort` returns — exactly the side
+the region is on — which is what
+`bench/test_cuda_competition.py::test_counters_dump_is_not_left_inside_the_timed_region`
+now forbids. Both arms are committed: `bench/results/_cuda69/profile_prefill_1.json` and
+`bench/results/_cuda69/profile_prefill_1_counters_retained.json`.
+
+Two limits on that result, stated because they are easy to forget:
+
+* **It is scoped to `prefill_1`.** Cross-workload deltas are non-uniform and are not pure counter
+  costs; the A/B has to be re-run per workload to say anything about another one.
+* **Device time moved 6.5% between those two runs of the same build** (20.136 vs 18.904 ms). Any
+  comparison that crosses a run boundary inherits at least that spread.
+
+An instrument that can see a region is worth having even when the answer is "this was never
+ours".
+
+### The anchor is checked against an instrument that is not ours
+
+Every other number in the attribution is the EP's tracer describing the EP. ORT's own profiler
+brackets the same `Compute` callback from the other side and shares no code with it, so it is the
+only term that can *falsify* the anchor rather than restate it — and on the counters-retained arm
+it does:
+
+| bracket | warm median | vs ORT |
+|---|---:|---:|
+| ORT fused node (`*_kernel_time`, provider `Vulkan*`) | 57.118 ms | — |
+| `vulkan.compute_call` | 56.108 ms | **−1.8%** |
+| `vulkan.subgraph` | 30.509 ms | **−46.6%** |
+
+A reduction anchored on the inner span was not describing the callback ORT timed. No amount of
+internal consistency among our own spans would have shown that.
+`bench/test_cuda_competition.py::test_the_anchor_is_corroborated_by_an_instrument_that_is_not_ours`
+requires every committed profile to carry this check and to agree within 10%.
+
+### Two fields were withdrawn for subtracting across processes
+
+`cuda_profile` runs **two sequential subprocesses** — an untraced timing arm and a traced arm —
+and only the traced one produces device time at all, because the tracer is what arms the query
+pool. The untraced arm has no device measurement and never can have one from this instrument.
+Two shipped fields crossed that boundary anyway and are withdrawn in `cuda_profile/3`:
+
+| withdrawn | was | why |
+|---|---|---|
+| `host_ms_per_run_residual` | untraced wall − traced device | On the artifact under review it read **43.819254 ms** from `57.16655 − 13.347296`. The minuend came from a process that was not traced, and that run *also* retained the counters dump inside its timed region. |
+| `gpu_share_untraced_bound` | traced device ÷ untraced wall, described as immune to tracer overhead | Not a bound. Two device medians from separate runs on this machine on one afternoon read 12.17456 ms and 13.347296 ms — 9.6% apart. |
+
+The replacements are renamed rather than redefined in place, so that a reader grepping for a
+familiar field does not get a different meaning without noticing:
+`host_ms_per_run_residual_traced_axis` (traced wall − traced device, one process) and
+`gpu_share_untraced_cross_run` (same division, labelled cross-run and carrying the spread). The
+sound untraced-axis decomposition uses ORT instead: in the untraced arm of the 08:31 run, ORT
+charged the fused node **54.506 ms** against that arm's own **57.16655 ms** wall — both from one
+process. Every committed record now carries a `provenance` block naming which process each
+headline number came out of, and
+`bench/test_cuda_competition.py::test_a_committed_profile_does_not_subtract_across_two_processes`
+fails if either withdrawn key reappears.
+
+Nothing here ranks the optimisation candidates against each other. Command-buffer re-recording is
+*supported* by the descriptor-allocation counts, and the counters dump is *sized* by the A/B
+above; neither has been ablated against the others, so neither is claimed to be the thing to fix
+first.
 
 **No emitted name may be a prefix of another.** Reducers match span names, and Python's
 `str.startswith` made `vulkan.compute` silently capture `vulkan.compute_region_...`; the
@@ -1293,7 +1364,9 @@ Per R9: *confidence scales with agreeing instruments; evidence scales only with 
 | every dispatch produced GPU time | `gpu_span_accounting`: `sum(subgraph.nodes) == len(gpu_spans) == dispatches_executed`, integer equality. 5457 on both. |
 | the row names the device that ran | `devices.device_identity_check` — trace's own `timestampPeriod`/`validBits` vs the label. Caught the entire table naming the wrong GPU. |
 | the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span (the **inner** bracket, around `dispatch_ort`, not the outer `vulkan.compute_call`); `unattributed_in_compute_ms` reported, never folded away. |
-| the callback is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` and reports the region *outside* `vulkan.subgraph` but inside the callback as its own term. Measured, and explicitly not attributed. It read 26.976 ms before the harness's counters dump was moved out of the timed region and 0.053 ms after. |
+| the callback is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` and reports the region *outside* `vulkan.subgraph` but inside the callback as its own term. Measured, and explicitly not attributed. A single-variable A/B on one build sizes it at 25.269 ms with the harness's counters dump inside the timed region and 0.056 ms without, on `prefill_1` only. |
+| the anchor is not just our tracer agreeing with itself | `cuda_profile.ort_fused_node_cross_check` — ORT's own `*_kernel_time` warm median for the fused Vulkan node, from the same process, against our bracket. It agreed with `vulkan.compute_call` to 1.8% and disagreed with `vulkan.subgraph` by 46.6%, which is how the anchor was settled on evidence rather than argument. |
+| no number is subtracted across two runs | `cuda_profile.run_provenance` plus `cross_run_terms` — the untraced arm emits no GPU timestamps, so `host_ms_per_run_residual` (43.819254 = 57.16655 − 13.347296) and `gpu_share_untraced_bound` are **withdrawn**, not corrected in place. A committed record must carry the provenance block and must not carry either key. |
 | GPU time is not over-scaled | `gpu_containment` — per-submission GPU busy ≤ `submit + fence_wait`, **ordinal attribution**, immune to the 314 ms anchor error. |
 | the 52× conversion is applied | `timestamp_conversion_integrality` — `gpu_ns ÷ period` must be a whole integer. **Decisive only where period ≠ 1.0**; reports `VACUOUS`, never "pass", on NVIDIA and lavapipe. `bench/timestamp_audit.py` exits non-zero when no local device can falsify it. |
 | valid bits are masked | `valid_bits_applied` — green on both. |

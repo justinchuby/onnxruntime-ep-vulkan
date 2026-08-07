@@ -30,6 +30,7 @@ if str(_HERE) not in sys.path:
 import cuda_competition as cc  # noqa: E402
 import cuda_workloads as cw  # noqa: E402
 import bench_models as bm  # noqa: E402
+import cuda_profile  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +875,198 @@ def test_committed_records_are_readable_and_self_describing(path):
             "VULKAN_FASTER", "CUDA_FASTER", "INDISTINGUISHABLE",
             cc.UNMEASURED, cc.NOT_EQUIVALENT,
         }, f"{path.name}: unknown comparison verdict {comp.get('verdict')!r}"
+
+
+WITHDRAWN_CROSS_RUN_KEYS = {
+    "host_ms_per_run_residual": (
+        "untraced-process wall median minus traced-process device median. On the artifact "
+        "that prompted the withdrawal it read 43.819254 = 57.16655 - 13.347296."),
+    "gpu_share_untraced_bound": (
+        "traced-process device median over untraced-process wall, presented as a bound "
+        "that tracer overhead could not inflate. It is not a bound."),
+}
+
+
+@pytest.mark.parametrize("path", sorted(
+    (_HERE / "results" / "_cuda69").glob("*.json")))
+def test_a_committed_profile_does_not_subtract_across_two_processes(path):
+    """The withdrawn cross-run terms must not reappear on any committed record.
+
+    ``cuda_profile`` runs **two sequential subprocesses**: an untraced timing arm and a
+    traced arm.  Only the traced one produces device time at all — the tracer is what arms
+    the query pool — so there is no untraced device measurement, and there never can be
+    from this instrument.
+
+    Two shipped fields subtracted or divided across that boundary anyway and were presented
+    as production facts about a run nobody traced:
+
+    * ``host_ms_per_run_residual`` = untraced wall - traced device.  On the artifact under
+      review it read **43.819254 ms** from ``57.16655 - 13.347296``.  Both defects at once:
+      the minuend came from a process that was not traced, and the run it came from also
+      retained the counters dump inside its timed region, so the number described the
+      harness as much as the EP.
+    * ``gpu_share_untraced_bound`` — the same division, additionally described as immune to
+      tracer overhead.  Two device medians from separate runs on this machine on one
+      afternoon read 12.17456 ms and 13.347296 ms, 9.6% apart, so a cross-run device ratio
+      is not a bound on anything.
+
+    This asserts the keys are *gone*, not merely corrected, because a reader who greps an
+    artifact for a familiar field name will not notice that its definition changed
+    underneath them.  The replacements are deliberately renamed:
+    ``host_ms_per_run_residual_traced_axis`` and ``gpu_share_untraced_cross_run``.
+    """
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not (payload.get("schema") or "").startswith("cuda_profile/"):
+        return
+
+    for key, why in WITHDRAWN_CROSS_RUN_KEYS.items():
+        assert key not in payload, (
+            f"{path.name} carries the withdrawn field {key!r} ({why}) — it subtracts or "
+            f"divides across two processes. Re-reduce with `--reanalyse`.")
+
+    if payload.get("verdict") != "GPU_TIME_MEASURED":
+        return
+
+    # The withdrawal must be recorded, not silently dropped: a reader comparing this
+    # artifact against an older one needs to find out what happened to the number.
+    terms = payload.get("cross_run_terms") or {}
+    assert terms.get("withdrawn"), (
+        f"{path.name}: the withdrawn cross-run residual is absent but unexplained. An "
+        f"artifact that quietly drops a field a previous generation published cannot be "
+        f"reconciled against it.")
+    assert "43.819254" in terms["withdrawn"], (
+        f"{path.name}: the withdrawal note does not carry the arithmetic it withdraws")
+
+    # And the sound replacement must actually be there, on the traced axis.
+    residual = payload.get("host_ms_per_run_residual_traced_axis")
+    traced_median = payload.get("traced_median_ms")
+    gpu = payload.get("gpu_ms_per_run")
+    assert residual is not None and traced_median and gpu, (
+        f"{path.name}: no traced-axis host residual")
+    assert abs(residual - (traced_median - gpu)) < 1e-6, (
+        f"{path.name}: host_ms_per_run_residual_traced_axis is not "
+        f"traced_median_ms - gpu_ms_per_run; it is subtracting something else")
+
+
+@pytest.mark.parametrize("path", sorted(
+    (_HERE / "results" / "_cuda69").glob("*.json")))
+def test_a_committed_profile_records_which_process_each_number_came_from(path):
+    """Provenance is on the artifact, not in whoever remembers how the harness works.
+
+    Every reduction defect this module has shipped has been a subtraction between the two
+    arms presented as if it came from one run.  The fix that survives is not "be careful":
+    it is writing the mapping onto the record, so the next reader can see the boundary
+    without reconstructing the harness from source.
+    """
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not (payload.get("schema") or "").startswith("cuda_profile/"):
+        return
+    if payload.get("verdict") != "GPU_TIME_MEASURED":
+        return
+
+    prov = payload.get("provenance") or {}
+    assert prov.get("processes"), f"{path.name}: no run provenance"
+    for arm in ("untraced_process", "traced_process"):
+        assert prov.get(arm, {}).get("supplies"), (
+            f"{path.name}: provenance does not say what the {arm} supplies")
+    assert prov.get("unsafe_subtractions"), (
+        f"{path.name}: provenance lists no unsafe subtractions. The one thing a reader "
+        f"needs from this block is which arithmetic is forbidden.")
+    # The untraced arm has no device measurement.  If a future change makes the record
+    # claim otherwise, the cross-run caveats below it become unreadable.
+    stated = str(prov["untraced_process"].get("gpu_timestamps", ""))
+    assert stated.upper().startswith("NONE"), (
+        f"{path.name}: provenance says the untraced arm's GPU timestamps are {stated!r}. "
+        f"That arm runs with tracing off and the tracer is what queries the pool, so the "
+        f"only honest answer is NONE — and every cross-run caveat on this record depends "
+        f"on it saying so.")
+
+
+@pytest.mark.parametrize("path", sorted(
+    (_HERE / "results" / "_cuda69").glob("*.json")))
+def test_the_anchor_is_corroborated_by_an_instrument_that_is_not_ours(path):
+    """A committed profile must check its own bracket against ORT's measurement of it.
+
+    Everything else on the record is the EP's tracer describing the EP.  ORT's profiler
+    brackets the same ``Compute`` callback from the other side and shares no code with it,
+    so it is the only term that can falsify the anchor rather than restate it.
+
+    On the counters-retained arm it does exactly that: ORT charged the fused node a warm
+    median of 57.118 ms, ``vulkan.compute_call`` read 56.108 ms (-1.77%) and the inner
+    ``vulkan.subgraph`` read 30.509 ms (-46.59%).  A reduction anchored on the inner span
+    was not describing the callback ORT timed, and no amount of internal consistency in our
+    own spans would have revealed that.
+    """
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not (payload.get("schema") or "").startswith("cuda_profile/"):
+        return
+    if payload.get("verdict") != "GPU_TIME_MEASURED":
+        return
+
+    ort = payload.get("ort_fused_node") or {}
+    assert ort.get("available"), (
+        f"{path.name}: no ORT fused-node cross-check. The anchor is then supported only by "
+        f"our own tracer agreeing with itself.")
+    av = ort.get("anchor_vs_ort") or {}
+    assert av.get("ort_ms") and av.get("anchor_ms"), (
+        f"{path.name}: cross-check present but the anchor is not compared against it")
+    assert abs(av["agreement_pct"]) < 10.0, (
+        f"{path.name}: the anchor {av.get('anchor')!r} reads {av['anchor_ms']:.3f} ms "
+        f"against ORT's {av['ort_ms']:.3f} ms ({av['agreement_pct']:+.2f}%). Two "
+        f"instruments bracketing the same callback in the same process should not differ "
+        f"by that much; the anchor is measuring a different region.")
+
+    # Per-arm terms must stay within one process.
+    for tag in ("traced", "untraced"):
+        entry = ort.get(tag)
+        if not entry or entry.get("outside_the_fused_node_ms") is None:
+            continue
+        assert abs(entry["outside_the_fused_node_ms"]
+                   - (entry["wall_median_ms"] - entry["ort_warm_median_ms"])) < 1e-6, (
+            f"{path.name}: the {tag} arm's outside-the-fused-node term is not that arm's "
+            f"own wall minus that arm's own ORT median")
+
+
+def test_no_committed_profile_ranks_an_optimisation_it_did_not_ablate():
+    """`rerecord_evidence` sizes a term. It must not present it as the thing to fix first.
+
+    Command-buffer re-recording is *supported* by the descriptor-allocation counts — warm
+    calls allocating as many descriptor sets as the cold call are demonstrably rebuilding
+    the command stream every inference.  What is **not** supported is that fixing it is the
+    highest-priority change.  Nothing in this harness ablates the candidates against each
+    other; the counters A/B moved a term of its own, and cross-workload deltas are
+    non-uniform and are not pure counter costs, so a ranking would need per-candidate
+    ablations that have not been run.
+
+    This is a docstring-level guard on the report text rather than on a number, because the
+    failure mode is prose: a verdict string that reads like a recommendation.
+    """
+    per_call = [
+        {"index": 0, "dur": 2000.0,
+         "nested_us": {"desc_alloc": {"count": 400}, "pipeline_lookup": {"count": 400}}},
+        {"index": 1, "dur": 30.0,
+         "nested_us": {"desc_alloc": {"count": 400}, "pipeline_lookup": {"count": 4}}},
+        {"index": 2, "dur": 30.0,
+         "nested_us": {"desc_alloc": {"count": 400}, "pipeline_lookup": {"count": 4}}},
+    ]
+    ev = cuda_profile.rerecord_evidence(per_call)
+    assert ev["verdict"] == "RERECORDED_EVERY_CALL"
+    assert ev.get("not_ranked"), "the re-recording verdict carries no anti-ranking caveat"
+
+    banned = ("highest priority", "biggest win", "first thing to fix", "the bottleneck",
+              "most important", "largest remaining cost")
+    detail = ev["detail"].lower()
+    for phrase in banned:
+        assert phrase not in detail, (
+            f"the re-recording verdict ranks itself in `detail`: {phrase!r}. `detail` "
+            f"states what was measured; a ranking is not among the things measured.")
+    # And the caveat must actually deny a ranking rather than merely exist.
+    caveat = ev["not_ranked"].lower()
+    assert "does not" in caveat or "not " in caveat, (
+        "the anti-ranking caveat does not deny anything")
+    assert "ablat" in caveat, (
+        "the caveat should say what evidence a ranking would need — a per-candidate "
+        "ablation — otherwise it reads as hedging rather than as a stated gap")
 
 
 # ---------------------------------------------------------------------------

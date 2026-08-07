@@ -1,0 +1,53 @@
+# bench/results/_cuda69/profile_prefill_1_counters_retained.log
+#
+# ARM A of the counters A/B, 2026-08-07 ~11:19 (Mouse, issue #69 revision).
+#
+# Why this run exists
+# -------------------
+# The revision claimed that the ~25 ms sitting outside `vulkan.subgraph` but inside the
+# Compute callback was the benchmark harness's own counters-file dump. That claim was
+# originally supported only by a before/after across two different EP builds, which
+# confounds the build change with the counters change. This run isolates the variable.
+#
+# Single variable: ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS=1.
+# Everything else is held: the same release DLL, the same workload (prefill_1), the same
+# machine, the same iteration counts, minutes apart from ARM B.
+#
+#   $env:ONNXRUNTIME_VULKAN_EP_LIB               = "<worktree>/rust/target/release/onnxruntime_vulkan_ep.dll"
+#   $env:ONNXRUNTIME_EP_VULKAN_BENCH_CUDA_PYTHON = "<worktree>/.venv-cu12/Scripts/python.exe"
+#   $env:ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS = "1"
+#   .venv-cu12/Scripts/python.exe bench/cuda_profile.py \
+#       --workload prefill_1 --iters 10 --skip-cuda \
+#       --out bench/results/_cuda69/scratch_ab/profile_counters_on.json \
+#       --scratch bench/results/_cuda69/scratch_ab/on
+#
+# The record was then copied to this name and re-reduced under cuda_profile/3 with
+# `--reanalyse` (no new measurement). Its `traced_record.trace_path` still points into
+# the gitignored scratch_ab/ directory, which is 12 MB of per-worker logs, ORT profiles,
+# counters dumps and the Chrome trace this report reduces.
+#
+# Result (traced-run warm-call medians, ms)
+# -----------------------------------------
+#   term                  ARM A (retained)   ARM B (first_run_only)
+#   outside_subgraph_ms          25.269               0.056
+#   subgraph_ms                  30.509              32.627
+#   compute_call_ms              56.108              32.682
+#   traced median                59.365              34.080
+#   untraced median              46.964              26.206
+#   gpu_ms_per_run               20.136              18.904
+#
+# The inner span barely moves; the region outside it moves 25.2 ms. The dump lands after
+# dispatch_ort returns, exactly where the outer bracket sees it and the inner one does
+# not. This is a measurement of that one term, on one build.
+#
+# It is also the cleanest available demonstration that the anchor choice mattered: ORT's
+# own fused-node warm median here is 57.118 ms. `vulkan.compute_call` reads 56.108 ms
+# (-1.77%); `vulkan.subgraph` reads 30.509 ms (-46.59%). Two instruments sharing no code.
+#
+# Scope and limits
+# ----------------
+# * prefill_1 only. Cross-workload deltas are non-uniform and are not pure counter costs.
+# * Device time moved 6.5% between these two runs of the same build (20.136 vs 18.904).
+#   Any cross-run device comparison inherits at least that spread.
+# * This ranks nothing. It sizes one term; it does not establish that term, or command
+#   buffer re-recording, or anything else, as the highest-priority thing to fix.

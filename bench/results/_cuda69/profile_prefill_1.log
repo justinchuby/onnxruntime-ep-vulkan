@@ -27,4 +27,13 @@
 [profile] cuda reference: cuda/prefill_1
 
 # The report is bench/results/_cuda69/profile_prefill_1.md; the record it was rendered
-# from is bench/results/_cuda69/profile_prefill_1.json (schema cuda_profile/2).
+# from is bench/results/_cuda69/profile_prefill_1.json.
+#
+# Re-reduced 2026-08-07 under cuda_profile/3 (`--reanalyse`, same stored trace, no new
+# measurement) after the Fact Checker's verification of Tank's rejection. That revision
+# withdrew `host_ms_per_run_residual` and renamed `gpu_share_untraced_bound`; see
+# `cross_run_terms.withdrawn` on the record for the exact arithmetic that was wrong.
+# `reanalysed_from_schema` on the record names the generation it replaced.
+#
+# This is ARM B of the counters A/B: counters_scope == "first_run_only" on both arms.
+# ARM A is bench/results/_cuda69/profile_prefill_1_counters_retained.json.

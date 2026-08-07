@@ -26,11 +26,23 @@ All terms are traced-run warm-call medians, in milliseconds. Do not subtract the
 
 `outside_subgraph`: MEASURED, UNATTRIBUTED. This instrument reports the size of the region and which side of `vulkan.subgraph` it falls on. It does not name its cause.
 
+## Cross-check: ORT's own measurement of the same callback
+
+| arm | ORT fused-node warm median | that arm's wall median | outside the fused node | counters in timed region |
+|---|---:|---:|---:|---|
+| traced | 33.453 ms | 34.080 ms | 0.627 ms | `first_run_only` |
+| untraced | 26.792 ms | 26.206 ms | -0.586 ms | `first_run_only` |
+
+Each row subtracts within **one** process. ORT's profiler shares no code with our tracer, so this is the only line in the report that is not the EP measuring itself.
+
+- anchor `vulkan.compute_call`: **32.682 ms** vs ORT's **33.453 ms** — **-2.30%**
+- inner `vulkan.subgraph`: 32.627 ms vs ORT's 33.453 ms — **-2.47%**
+
 ## Device time
 
 - GPU kernel time per run: **18.9043 ms** (basis: warm_call_median, 13 warm calls, 4970 timestamped spans across all calls)
-- share of untraced wall: **72.1%** (tracer-overhead-immune bound)
-- host-side residual: **7.3020 ms** — work the GPU never sees. On the **untraced** axis; the table above is on the traced axis and the two must not be subtracted from each other.
+- share of untraced wall: **72.1%** — **cross-run**: traced-process device median over untraced-process wall. Not a bound. Two device medians taken on this machine on the same afternoon differ by 9.6% (12.17456 / 13.347296 ms), and the untraced arm emits no device timestamps at all, so this cannot be checked here.
+- host-side residual (traced axis): **15.1753 ms** — traced wall median minus traced device median, both from the same process. The untraced-axis version of this number (`host_ms_per_run_residual`) is withdrawn: it subtracted across two runs.
 
 | kernel | device ms (warm-call median) | dispatches/call |
 |---|---:|---:|
@@ -87,6 +99,8 @@ Cumulative totals are not shown as a per-run figure: on this EP the first `Compu
 ## Command-buffer reuse: **RERECORDED_EVERY_CALL**
 
 warm calls allocate a median of 355 descriptor sets against 355 on the cold call — the command buffer is rebuilt from scratch on every inference, so per-dispatch host cost is paid every time rather than once.
+
+_This says re-recording happens and that it costs something per dispatch. It does not say it is the largest remaining cost, and nothing measured here ranks it against the other candidates. The counters A/B below moves a term of its own, and the cross-workload deltas are non-uniform, so a ranking would need a per-candidate ablation that has not been run._
 
 _(`ep.path` instants are absent from this EP build, so this is inferred from per-dispatch recording work rather than read from a marker; an absent marker is not evidence of replay.)_
 

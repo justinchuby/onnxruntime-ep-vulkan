@@ -75,10 +75,21 @@ The `overhead_ratio` field is exactly that: traced wall / untraced wall.  A shar
 computed from a run that is 1.3x slower than the run being explained is still the right
 share as long as the inflation is spread over the phases proportionally — and where it
 is not (it inflates host phases, not GPU ones), the direction of the bias is *toward*
-host overhead, which is the hypothesis being tested.  So a host-overhead conclusion
-drawn from a traced run needs the untraced cross-check that `gpu_share_untraced_bound`
-provides: GPU device time is unaffected by host tracing, so `gpu_ns_total` divided by
-the *untraced* median is a bound that no amount of tracer overhead can inflate.
+host overhead, which is the hypothesis being tested.
+
+**The untraced arm has no device measurement.**  GPU timestamps come from a query pool the
+tracer arms, so an untraced run emits none — there is no untraced device time to compare
+against, and there cannot be from this instrument.  Earlier revisions papered over that by
+dividing the *traced* process's device median by the *untraced* process's wall and calling
+the result a "tracer-overhead-immune bound", and by subtracting the same two to get a
+"host-side residual" (43.819254 ms, from 57.16655 − 13.347296).  Both are subtractions
+across two processes wearing the clothes of a within-run decomposition, and the second one
+was additionally taken against a run that still had the counters dump inside its timed
+region.  They are withdrawn in `cuda_profile/3`.  What replaces them:
+`host_ms_per_run_residual_traced_axis` (both terms from the traced process),
+`gpu_share_untraced_cross_run` (kept, but named for what it is, and carrying the 9.6%
+cross-run device spread observed on this machine: 12.17456 ms vs 13.347296 ms), and a
+`provenance` block saying which process every headline number came out of.
 
 # The CUDA side
 
@@ -110,8 +121,9 @@ if str(_HERE) not in sys.path:
 
 import cuda_competition as cc  # noqa: E402
 import cuda_workloads  # noqa: E402
+from public_paths import dump_public_json, write_public_text  # noqa: E402
 
-SCHEMA = "cuda_profile/2"
+SCHEMA = "cuda_profile/3"
 
 TRACE_ENV = "ONNXRUNTIME_EP_VULKAN_TRACE"
 TRACE_GPU_ENV = "ONNXRUNTIME_EP_VULKAN_TRACE_GPU"
@@ -573,12 +585,67 @@ def rerecord_evidence(per_call: list) -> dict:
         "warm_pipeline_lookup_median": (float(statistics.median(warm_pipe))
                                         if warm_pipe else 0.0),
         "basis": "desc_alloc/pipeline_lookup fire once per dispatch during recording only",
+        "not_ranked": (
+            "This says re-recording happens and that it costs something per dispatch. It "
+            "does not say it is the largest remaining cost, and nothing measured here "
+            "ranks it against the other candidates. The counters A/B below moves a term "
+            "of its own, and the cross-workload deltas are non-uniform, so a ranking "
+            "would need a per-candidate ablation that has not been run."),
     }
 
 
 # ---------------------------------------------------------------------------
 # ORT-profile reduction (the CUDA side)
 # ---------------------------------------------------------------------------
+
+def ort_fused_node_warm_median_us(profile_path: Path) -> dict:
+    """ORT's **own** warm-call median for the fused Vulkan node, from the same process.
+
+    This is the one number in the whole report that does not come out of our tracer, and
+    that is exactly why it is here. Everything else the EP says about how long `Compute`
+    took is the EP measuring itself; ORT's profiler brackets the same callback from the
+    other side and has no idea what a `vulkan.subgraph` span is.
+
+    It settles which anchor is right, on evidence rather than on argument. With the
+    counters dump retained inside the timed region (single-variable A/B, same build,
+    Phi-3.5 `prefill_1`) ORT charged the fused node a warm median of **57.118 ms**;
+    `vulkan.compute_call` read **56.108 ms** and `vulkan.subgraph` read **30.509 ms**.
+    The outer bracket agrees with ORT to 1.8%; the inner one is short by 26.6 ms. A
+    reduction anchored on the inner span was not describing the callback ORT timed.
+
+    It also gives the **untraced** arm a decomposition of its own, without the tracer:
+    ORT's fused-node warm median in the untraced arm of the 2026-08-07 08:31 profile run
+    is **54.506 ms** against that arm's 57.16655 ms wall — both from one process, so the
+    subtraction is legitimate, unlike the withdrawn `host_ms_per_run_residual`.
+
+    The first call is dropped: it carries the whole weight upload and runs ~2 000 ms.
+    Returns `{}` rather than a guess when the profile is unreadable or has no such node.
+    """
+    try:
+        events = json.loads(profile_path.read_text("utf-8", errors="replace"))
+    except Exception:
+        return {}
+    if isinstance(events, dict):
+        events = events.get("traceEvents", [])
+    node_evs = [
+        ev for ev in events
+        if ev.get("cat") == "Node"
+        and str(ev.get("name", "")).endswith("_kernel_time")
+        and str((ev.get("args") or {}).get("provider", "")).startswith("Vulkan")
+    ]
+    if len(node_evs) < 2:
+        return {}
+    node_evs.sort(key=lambda e: e.get("ts", 0))
+    durs = [float(e.get("dur") or 0) for e in node_evs]
+    return {
+        "calls": len(durs),
+        "cold_us": durs[0],
+        "warm_median_us": statistics.median(durs[1:]),
+        "basis": "ORT profiler `*_kernel_time` events with provider=Vulkan*, first call "
+                 "dropped as cold",
+        "source": "ONNX Runtime's own profiler, not our tracer",
+    }
+
 
 def op_kernel_times(profile_path: Path) -> dict:
     """Per-op-type kernel time and node count from an ORT profile, by provider.
@@ -760,7 +827,7 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
             "fence_wait is an UPPER BOUND on kernel time and is not substituted here.")
         out["gpu_ms_total"] = None
         out["gpu_share_traced"] = None
-        out["gpu_share_untraced_bound"] = None
+        out["gpu_share_untraced_cross_run"] = None
         return out
 
     out["verdict"] = GPU_TIME_MEASURED
@@ -786,27 +853,144 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
     out["gpu_ms_per_run_basis"] = ("warm_call_median" if steady_gpu_ms is not None
                                    else "mean_over_all_calls")
     out["gpu_share_traced"] = (gpu_ms_per_run / traced_median) if traced_median else None
-    # Device time is not inflated by host-side tracing, so dividing it by the *untraced*
-    # median gives a share that tracer overhead cannot have manufactured.  If this is
-    # small, the bottleneck is provably not our shaders.
-    out["gpu_share_untraced_bound"] = (gpu_ms_per_run / untraced_median
-                                       if untraced_median else None)
-    out["host_ms_per_run_residual"] = (untraced_median - gpu_ms_per_run
-                                       if untraced_median else None)
+    # `untraced_median` comes from a DIFFERENT PROCESS than `gpu_ms_per_run`: the untraced
+    # arm emits no GPU timestamps at all (the tracer is what queries the query pool), so
+    # there is no untraced device measurement to divide, and there never can be from this
+    # instrument.  Dividing the traced run's device median by the untraced run's wall is
+    # therefore a CROSS-RUN quantity resting on an assumption this harness cannot check
+    # here, and the assumption is not free: two device medians taken on this machine on the
+    # same afternoon read 12.17456 ms and 13.347296 ms — a 9.6% spread between separate
+    # runs, before tracing is even considered.  It is reported, named as cross-run, and
+    # carries that spread; it is NOT "tracer-overhead-immune", and nothing is "provably"
+    # anything on the strength of it.
+    out["gpu_share_untraced_cross_run"] = (gpu_ms_per_run / untraced_median
+                                           if untraced_median else None)
+    # The sound residual: both terms are warm-call medians from the SAME traced process, so
+    # the subtraction is within one run and one axis.
+    out["host_ms_per_run_residual_traced_axis"] = (
+        traced_median - gpu_ms_per_run if traced_median else None)
+    out["cross_run_terms"] = {
+        "gpu_share_untraced_cross_run": (
+            "traced-process warm-call device median / untraced-process wall median. Two "
+            "processes, two runs. Not a bound and not tracer-overhead-immune: it assumes "
+            "device time is the same in both runs, which this instrument cannot check "
+            "because the untraced arm emits no GPU timestamps."),
+        "observed_cross_run_device_spread": (
+            "12.17456 ms and 13.347296 ms — two device medians from separate runs on this "
+            "machine, 9.6% apart. Any cross-run device ratio inherits at least this."),
+        "withdrawn": (
+            "`host_ms_per_run_residual` (untraced wall - traced-process device median) was "
+            "reported by cuda_profile/1 and cuda_profile/2 and is withdrawn in "
+            "cuda_profile/3. On the artifact that prompted this it read 43.819254 ms from "
+            "57.16655 - 13.347296: a subtraction across two processes, one of which also "
+            "retained the counters dump inside its timed region. Use "
+            "`host_ms_per_run_residual_traced_axis`, or compare wall to wall."),
+    }
+    out["provenance"] = run_provenance(untraced, traced, gpu_ms_per_run, gpu)
     out["compute_reconciliation"] = compute_reconciliation(
         steady, traced_median, out.get("overhead_ratio"), anchor)
+    out["ort_fused_node"] = ort_fused_node_cross_check(untraced, traced, out)
     return out
+
+
+def ort_fused_node_cross_check(untraced: dict | None, traced: dict, out: dict) -> dict:
+    """Check our own `Compute` bracket against ORT's independent measurement of it.
+
+    Our anchor and ORT's fused-node event bracket the same callback with two instruments
+    that share no code. If they disagree, the anchor is wrong — and that is the only way
+    this report can find that out, because every other term in it is our tracer describing
+    itself.
+
+    Reported per arm, each against its own process's wall, so nothing is subtracted across
+    runs. `agreement_pct` is signed relative to ORT: positive means our bracket read longer.
+    """
+    result: dict = {"available": False}
+    recon = out.get("compute_reconciliation") or {}
+    for tag, rec in (("traced", traced), ("untraced", untraced)):
+        prof = (rec or {}).get("profile_path")
+        if not prof:
+            continue
+        fused = ort_fused_node_warm_median_us(Path(prof))
+        if not fused:
+            continue
+        result["available"] = True
+        entry = {
+            "ort_warm_median_ms": fused["warm_median_us"] / 1000.0,
+            "wall_median_ms": (rec or {}).get("median_ms"),
+            "calls": fused["calls"],
+            "counters_scope": (rec or {}).get("counters_scope"),
+            "basis": fused["basis"],
+        }
+        if entry["wall_median_ms"]:
+            # Same process, so this subtraction is legitimate.
+            entry["outside_the_fused_node_ms"] = (
+                entry["wall_median_ms"] - entry["ort_warm_median_ms"])
+        result[tag] = entry
+
+    anchor_ms = recon.get("compute_call_ms")
+    traced_ort = (result.get("traced") or {}).get("ort_warm_median_ms")
+    if anchor_ms and traced_ort:
+        result["anchor_vs_ort"] = {
+            "anchor": recon.get("anchor"),
+            "anchor_ms": anchor_ms,
+            "ort_ms": traced_ort,
+            "agreement_pct": round((anchor_ms - traced_ort) / traced_ort * 100.0, 2),
+            "subgraph_ms": recon.get("subgraph_ms"),
+            "subgraph_vs_ort_pct": (
+                round((recon["subgraph_ms"] - traced_ort) / traced_ort * 100.0, 2)
+                if recon.get("subgraph_ms") else None),
+            "note": "two instruments sharing no code, bracketing the same callback in the "
+                    "same process. The anchor is credible to the extent these agree.",
+        }
+    return result
+
+
+def run_provenance(untraced: dict, traced: dict, gpu_ms_per_run, gpu: dict) -> dict:
+    """Which process each headline number came out of.
+
+    This report mixes numbers from two sequential subprocesses — an untraced timing arm and
+    a traced arm — and one of them is the only source of device time. Every defect this
+    module has shipped so far has been a subtraction between them presented as if it came
+    from one run, so the mapping is written onto the artifact rather than left to whoever
+    remembers how the harness works.
+    """
+    def med(rec, key="median_ms"):
+        return (rec or {}).get(key)
+
+    return {
+        "processes": "two sequential subprocesses, one session each, same machine and build",
+        "untraced_process": {
+            "supplies": ["untraced_median_ms"],
+            "median_ms": med(untraced),
+            "tracing": "off",
+            "gpu_timestamps": "NONE — the tracer is what queries the pool, so this arm has "
+                              "no device measurement of any kind",
+            "counters_scope": (untraced or {}).get("counters_scope"),
+        },
+        "traced_process": {
+            "supplies": ["traced_median_ms", "gpu_ms_per_run", "every phase and span term",
+                         "compute_reconciliation"],
+            "median_ms": med(traced),
+            "gpu_ms_per_run": gpu_ms_per_run,
+            "gpu_span_count": (gpu or {}).get("span_count"),
+            "tracing": "on",
+            "counters_scope": (traced or {}).get("counters_scope"),
+        },
+        "safe_subtractions": "within one process only",
+        "unsafe_subtractions": "any term from one process minus a term from the other",
+    }
 
 
 def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
                            anchor: dict) -> dict:
     """Split one warm inference into named, measured, non-overlapping regions.
 
-    Every term is a **warm-call median from the traced run**, so they are on one axis and may
-    be subtracted from each other.  They may **not** be subtracted from the untraced wall:
-    tracing costs host time (``overhead_ratio`` here), and mixing the two scales is how a
-    decomposition closes falsely.  ``host_ms_per_run_residual`` above is on the untraced axis
-    and is deliberately *not* decomposed by this function.
+    Every term is a **warm-call median from the traced run**, so they are on one axis, from
+    one process, and may be subtracted from each other.  They may **not** be subtracted from
+    the untraced wall: that is a different process, tracing costs host time
+    (``overhead_ratio`` here), and mixing the two scales is how a decomposition closes
+    falsely.  The withdrawn ``host_ms_per_run_residual`` was exactly that mistake; see
+    ``cross_run_terms`` on the report.
 
     The regions, outermost first::
 
@@ -916,6 +1100,50 @@ def render(report: dict) -> str:
             lines.append("")
             lines.append(f"`outside_subgraph`: {rec['outside_subgraph_attribution']}")
         lines.append("")
+    ab = report.get("ab_experiment") or {}
+    if ab:
+        lines.append(f"## A/B experiment: {ab.get('role')}")
+        lines.append("")
+        lines.append(f"- paired with: `{ab.get('paired_with')}`")
+        lines.append(f"- single variable: {ab.get('single_variable')}")
+        lines.append(f"- what it isolates: {ab.get('what_it_isolates')}")
+        lines.append(f"- device time moved too: {ab.get('device_time_moved_too')}")
+        lines.append(f"- SCOPE: {ab.get('scope')}")
+        lines.append(f"- {ab.get('not_a_ranking')}")
+        lines.append("")
+    ort = report.get("ort_fused_node") or {}
+    if ort.get("available"):
+        lines.append("## Cross-check: ORT's own measurement of the same callback")
+        lines.append("")
+        lines.append("| arm | ORT fused-node warm median | that arm's wall median | "
+                     "outside the fused node | counters in timed region |")
+        lines.append("|---|---:|---:|---:|---|")
+        for tag in ("traced", "untraced"):
+            e = ort.get(tag)
+            if not e:
+                continue
+            outside = e.get("outside_the_fused_node_ms")
+            lines.append(
+                f"| {tag} | {e['ort_warm_median_ms']:.3f} ms | "
+                f"{e['wall_median_ms']:.3f} ms | "
+                f"{outside:.3f} ms | `{e.get('counters_scope')}` |"
+                if outside is not None else
+                f"| {tag} | {e['ort_warm_median_ms']:.3f} ms | ? | ? | "
+                f"`{e.get('counters_scope')}` |")
+        lines.append("")
+        lines.append("Each row subtracts within **one** process. ORT's profiler shares no "
+                     "code with our tracer, so this is the only line in the report that is "
+                     "not the EP measuring itself.")
+        lines.append("")
+        av = ort.get("anchor_vs_ort")
+        if av:
+            lines.append(f"- anchor `{av['anchor']}`: **{av['anchor_ms']:.3f} ms** vs ORT's "
+                         f"**{av['ort_ms']:.3f} ms** — **{av['agreement_pct']:+.2f}%**")
+            if av.get("subgraph_vs_ort_pct") is not None:
+                lines.append(f"- inner `vulkan.subgraph`: {av['subgraph_ms']:.3f} ms vs "
+                             f"ORT's {av['ort_ms']:.3f} ms — "
+                             f"**{av['subgraph_vs_ort_pct']:+.2f}%**")
+            lines.append("")
     for limit in report.get("scope_limits") or []:
         lines.append(f"> SCOPE LIMIT: {limit}")
         lines.append("")
@@ -927,16 +1155,21 @@ def render(report: dict) -> str:
                      f"(basis: {basis}, {steady.get('warm_calls', 0)} warm calls, "
                      f"{report.get('gpu', {}).get('span_count', 0)} timestamped spans "
                      f"across all calls)")
-        if report.get("gpu_share_untraced_bound") is not None:
+        if report.get("gpu_share_untraced_cross_run") is not None:
             lines.append(f"- share of untraced wall: **"
-                         f"{report['gpu_share_untraced_bound'] * 100:.1f}%** "
-                         f"(tracer-overhead-immune bound)")
-        if report.get("host_ms_per_run_residual") is not None:
-            lines.append(f"- host-side residual: **"
-                         f"{report['host_ms_per_run_residual']:.4f} ms** "
-                         f"— work the GPU never sees. On the **untraced** axis; the table "
-                         f"above is on the traced axis and the two must not be subtracted "
-                         f"from each other.")
+                         f"{report['gpu_share_untraced_cross_run'] * 100:.1f}%** "
+                         f"— **cross-run**: traced-process device median over "
+                         f"untraced-process wall. Not a bound. Two device medians taken "
+                         f"on this machine on the same afternoon differ by 9.6% "
+                         f"(12.17456 / 13.347296 ms), and the untraced arm emits no "
+                         f"device timestamps at all, so this cannot be checked here.")
+        if report.get("host_ms_per_run_residual_traced_axis") is not None:
+            lines.append(f"- host-side residual (traced axis): **"
+                         f"{report['host_ms_per_run_residual_traced_axis']:.4f} ms** "
+                         f"— traced wall median minus traced device median, both from the "
+                         f"same process. The untraced-axis version of this number "
+                         f"(`host_ms_per_run_residual`) is withdrawn: it subtracted across "
+                         f"two runs.")
         lines.append("")
         per_med = steady.get("median_gpu_per_label_ns")
         if per_med:
@@ -1034,6 +1267,9 @@ def render(report: dict) -> str:
         lines.append("")
         lines.append(rr.get("detail", ""))
         lines.append("")
+        if rr.get("not_ranked"):
+            lines.append(f"_{rr['not_ranked']}_")
+            lines.append("")
         if not rp:
             lines.append("_(`ep.path` instants are absent from this EP build, so this is "
                          "inferred from per-dispatch recording work rather than read from "
@@ -1114,7 +1350,7 @@ def main(argv=None) -> int:
         report = attribute(traced, untraced, Path(traced["trace_path"]))
         for k in ("schema", "iters", "warmup", "untraced_record", "traced_record",
                   "cuda_record", "cuda_median_ms", "op_comparison", "gap_ms",
-                  "speedup_vulkan_over_cuda"):
+                  "speedup_vulkan_over_cuda", "ab_experiment"):
             if k in prior:
                 report[k] = prior[k]
         report["reanalysed_from"] = str(out_path)
@@ -1123,9 +1359,9 @@ def main(argv=None) -> int:
         # `cuda_profile/1` and make a reader who checks the schema read the wrong field list.
         report["schema"] = SCHEMA
         report["reanalysed_from_schema"] = prior.get("schema")
-        out_path.write_text(json.dumps(report, indent=2, default=str), "utf-8")
+        dump_public_json(report, out_path)
         md = render(report)
-        out_path.with_suffix(".md").write_text(md, "utf-8")
+        write_public_text(md, out_path.with_suffix(".md"))
         print(md)
         return 0
 
@@ -1161,9 +1397,9 @@ def main(argv=None) -> int:
             report["speedup_vulkan_over_cuda"] = (
                 report["cuda_median_ms"] / report["untraced_median_ms"])
 
-    out_path.write_text(json.dumps(report, indent=2, default=str), "utf-8")
+    dump_public_json(report, out_path)
     md = render(report)
-    out_path.with_suffix(".md").write_text(md, "utf-8")
+    write_public_text(md, out_path.with_suffix(".md"))
     print(md)
     return 0
 
