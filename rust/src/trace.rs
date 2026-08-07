@@ -47,17 +47,44 @@
 //!
 //! # The span vocabulary
 //!
+//! This table is **load-bearing**: `bench/phases.py` and `bench/cuda_profile.py` cite it as the
+//! declaration of what the artifact contains, and `bench/trace_vocabulary.py` parses this module
+//! so a phase that exists here and not there (or the reverse) is a test failure rather than a
+//! silently dropped row. A span added to this module and not to this table is a defect.
+//!
+//! **Structural spans** (`cat == "ep"`) bracket regions. They are never summed, never enter a
+//! sibling total, and are not [`Phase`]s:
+//!
 //! | Span | cat | Clock | What it means |
 //! |---|---|---|---|
-//! | `vulkan.subgraph` | `ep` | host | One fused subgraph's whole `Compute` call. |
+//! | `vulkan.compute_call` | `ep` | host | The **whole** `Compute` callback, ORT entry to return. Contains `vulkan.subgraph`. |
+//! | `vulkan.subgraph` | `ep` | host | One fused subgraph's dispatch region, opened inside `dispatch_ort`. |
+//!
+//! **Phases** (`cat == "ep.phase"`) are the summable vocabulary; each carries `nested_in`:
+//!
+//! | Span | cat | Clock | What it means |
+//! |---|---|---|---|
 //! | `vulkan.compile` | `ep.phase` | host | `Compile`: plan build, pipeline/SPIR-V creation, descriptor layout. Once per subgraph. |
 //! | `vulkan.prepack` | `ep.phase` | host | Weight prepack + upload of block-quantised initializers. Once per `PackKey`. |
 //! | `vulkan.record` | `ep.phase` | host | The `Compute` recording bracket. **Despite the name, dominated by the staging upload it contains (~96-98% on Phi-3.5), not by command recording (1-3%).** See `Phase::Record::caveat`. |
-//! | `vulkan.upload` | `ep.phase` | host | Host→device staging copy of inference inputs. Carries `bytes`. |
+//! | `vulkan.upload` | `ep.phase` | host | Host→device staging copy of inference inputs. Carries `bytes`. **Nested in `record`.** |
+//! | `vulkan.cmd_upload` | `ep.phase` | host | The command-buffer-side bracket around the same memcpy as `upload`. **Nested in `record`; overlaps `upload` — take the larger, never the sum.** |
+//! | `vulkan.desc_alloc` | `ep.phase` | host | Descriptor-set allocation, once per dispatch while recording. **Nested in `record`.** |
+//! | `vulkan.pipeline_lookup` | `ep.phase` | host | Pipeline cache lookup, once per dispatch while recording. **Nested in `record`.** |
 //! | `vulkan.submit` | `ep.phase` | host | **`vkQueueSubmit` only.** Host bookkeeping. Measures no GPU work. |
 //! | `vulkan.fence_wait` | `ep.phase` | host | CPU blocked on the fence. Upper bound on GPU time, not GPU time. |
-//! | `vulkan.readback` | `ep.phase` | host | Device→host copy of outputs. Carries `bytes`. |
-//! | `vulkan.gpu.*` | `gpu` | **device** | GPU execution, from `VkQueryPool` timestamp queries only. Emitted on a separate device lane. |
+//! | `vulkan.readback` | `ep.phase` | host | Device→host copy of outputs. Carries `bytes`. **Nested in `record`.** |
+//!
+//! **Other events:**
+//!
+//! | Event | cat | ph | What it means |
+//! |---|---|---|---|
+//! | `vulkan.gpu.*` | `gpu` | `X` | GPU execution, from `VkQueryPool` timestamp queries only. Emitted on a separate device lane. |
+//! | `vulkan.path[FIRST_RECORD\|REPLAY\|RERECORD]` | `ep.path` | `i` | Instant: did this call reuse the command buffer? Carries `path`, `nodes`, `subgraph`, `shape_key`. |
+//! | `vulkan.transfer_bytes`, `vulkan.transfer_gib_s` | `counter` | `C` | Explicit host↔device transfer volume and rate. |
+//! | `vulkan.island_count`, `vulkan.largest_island_flops`, `vulkan.concentration`, `vulkan.boundary_bytes` | `counter` | `C` | Partition shape, once per session. |
+//! | `vulkan.getcapability` | `ep.claim` | `i` | What the EP claimed at partitioning time. |
+//! | `vulkan.session_summary` | `summary` | `i` | End-of-session fold. |
 //!
 //! # GPU timing
 //!
@@ -125,6 +152,33 @@ pub const ARG_BYTES: &str = "bytes";
 pub const ARG_FLOPS: &str = "flops";
 /// Trace arg key: selected shader variant.
 pub const ARG_VARIANT: &str = "kernel_variant";
+
+// --- Structural span names ------------------------------------------------------------------
+//
+// These are `cat == "ep"` *structural* spans, not [`Phase`]s. They bracket regions; they are
+// never summed into a sibling total and they are not part of the phase tree. They are named as
+// constants because three Python modules match on these strings and a name that is a prefix of
+// another name is a defect, not a style question:
+//
+// `record_path()` emits **instants** whose names used to be `vulkan.compute[REPLAY]` and friends.
+// Every subgraph matcher in `bench/` matched with `startswith`, so a whole-`Compute` span called
+// `vulkan.compute` would have been captured by the same matcher as those instants and the
+// reduction would have silently mixed a span vocabulary with an instant vocabulary. The instants
+// are now `vulkan.path[...]`. `vulkan.record_path[...]` was tried first and rejected by
+// `no_trace_name_is_a_prefix_of_another`, because `vulkan.record` is a phase and prefixes it —
+// which is the point of having the invariant as a test rather than as a naming habit.
+
+/// The whole `Compute` callback, from ORT's entry to its return. See
+/// [`VulkanTracer::compute_region`].
+pub const SPAN_COMPUTE_CALL: &str = "vulkan.compute_call";
+/// One fused subgraph's dispatch region, opened inside `dispatch_ort`. See
+/// [`VulkanTracer::subgraph_region`].
+pub const SPAN_SUBGRAPH: &str = "vulkan.subgraph";
+/// Name prefix of the `cat == "ep.path"` **instants** emitted by
+/// [`VulkanTracer::record_path`] — `vulkan.path[FIRST_RECORD|REPLAY|RERECORD]`.
+///
+/// Deliberately shares no prefix with [`SPAN_COMPUTE_CALL`] or [`SPAN_SUBGRAPH`].
+pub const INSTANT_RECORD_PATH: &str = "vulkan.path";
 
 /// The `device` arg value for host-side spans. Deliberately not `"gpu"`: a host span that claims
 /// to be GPU work is how a trace starts lying.
@@ -799,13 +853,42 @@ impl VulkanTracer {
     /// "GPU time" anywhere.
     pub fn subgraph_region(&self, node_count: usize) -> SpanGuard {
         if !self.is_enabled() {
-            return self.ctx.span("vulkan.subgraph", "ep");
+            return self.ctx.span(SPAN_SUBGRAPH, "ep");
         }
-        self.ctx.span("vulkan.subgraph", "ep").with_args(
+        self.ctx.span(SPAN_SUBGRAPH, "ep").with_args(
             Args::new()
                 .with("nodes", node_count as u64)
                 .with(ARG_DEVICE, DEVICE_HOST),
         )
+    }
+
+    /// Span around the *whole* `Compute` callback, opened before anything else in it.
+    ///
+    /// [`subgraph_region`](Self::subgraph_region) opens inside `dispatch_ort`, which is not the
+    /// entry point ORT calls, so it cannot see anything the callback does on either side of that
+    /// call. Measured on Phi-3.5 `prefill_1` (`bench/results/_cuda69/`, 14 `Compute` calls,
+    /// 13 warm), the two spans differed by a **warm median of 27.0 ms** — `vulkan.compute_call`
+    /// 62.3 ms against `vulkan.subgraph` 33.9 ms — and **26.9 ms of that 27.0 ms landed *after*
+    /// `vulkan.subgraph` closed**, not before it (warm median lead-in: 0.086 ms).
+    ///
+    /// That 27.0 ms was **not the EP**. Re-measured on the same workload with the benchmark
+    /// harness's counters-file dump moved out of the timed region, the same term reads
+    /// **0.053 ms** (`bench/results/_cuda69/profile_prefill_1.json`). The dump ran on every timed
+    /// inference, from `counters::record_dispatches` after `dispatch_ort` returns — which is the
+    /// side the region was on. The span is kept because that is the finding: without an outer
+    /// bracket the harness's own cost was inside the EP's numbers and nothing could see it.
+    ///
+    /// This span is **structural, not a [`Phase`]**: it is `cat == "ep"` like `vulkan.subgraph`,
+    /// it is never summed into any sibling total, and it adds no level to the phase tree. It
+    /// exists so a reduction has an anchor that brackets the *whole* callback and can therefore
+    /// state how much of it no phase covers, instead of charging that time to whatever span it
+    /// can see.
+    ///
+    /// It does not by itself explain the region it exposes. What is measured is the size and the
+    /// side of the region; naming its cause needs a separate instrument, and
+    /// `bench/cuda_profile.py` reports it as `outside_subgraph_us` — measured and unattributed.
+    pub fn compute_region(&self) -> SpanGuard {
+        self.ctx.span(SPAN_COMPUTE_CALL, "ep")
     }
 
     /// Start a timing phase: a span plus a summary fold on drop. `None` (zero cost) when nothing
@@ -906,7 +989,7 @@ impl VulkanTracer {
                 args = args.with("shape_key", shape_key.to_string());
             }
             self.ctx.instant(
-                format!("vulkan.compute[{}]", resolved.as_str()),
+                format!("{}[{}]", INSTANT_RECORD_PATH, resolved.as_str()),
                 "ep.path",
                 Some(args),
             );
@@ -1834,6 +1917,85 @@ mod tests {
             );
         }
         assert_eq!(Phase::FenceWait.as_str(), "fence_wait");
+    }
+
+    /// No structural span name may be a prefix of another trace name.
+    ///
+    /// Every subgraph matcher in `bench/` matched with `startswith`. A whole-`Compute` span named
+    /// `vulkan.compute` was therefore captured by the same matcher as the `record_path()` instants
+    /// `vulkan.compute[REPLAY]` — separable only by `cat`/`ph`, which the matchers did not read.
+    /// The two vocabularies would have been mixed inside one reduction with nothing raising.
+    ///
+    /// This is the falsifier for the whole class, not for that one pair: it fails if any future
+    /// span, phase or instant name is a prefix of any other.
+    #[test]
+    fn no_trace_name_is_a_prefix_of_another() {
+        let mut names: Vec<String> = vec![
+            SPAN_COMPUTE_CALL.to_string(),
+            SPAN_SUBGRAPH.to_string(),
+            format!("{INSTANT_RECORD_PATH}["),
+            "vulkan.gpu.".to_string(),
+        ];
+        names.extend(Phase::ALL.iter().map(|p| format!("vulkan.{}", p.as_str())));
+        for a in &names {
+            for b in &names {
+                if std::ptr::eq(a, b) {
+                    continue;
+                }
+                assert!(
+                    !(a != b && b.starts_with(a.as_str())),
+                    "{b:?} starts with {a:?}; a prefix matcher cannot tell them apart"
+                );
+            }
+        }
+    }
+
+    /// The span-vocabulary table in this module's header must list every name the module emits.
+    ///
+    /// `bench/phases.py` cites that table as "the artifact declares its own structure" and
+    /// `bench/trace_vocabulary.py` parses it. A span added to the code and not to the table is a
+    /// module of record that cannot see the phase — which is exactly how a phase reached a
+    /// committed profile that no consumer could read.
+    #[test]
+    fn every_emitted_span_name_appears_in_the_header_vocabulary_table() {
+        let header = include_str!("trace.rs");
+        let header = &header[..header
+            .find("use std::cell::Cell;")
+            .expect("header ends at `use`")];
+        for name in [SPAN_COMPUTE_CALL, SPAN_SUBGRAPH, INSTANT_RECORD_PATH] {
+            assert!(
+                header.contains(name),
+                "{name} is emitted but not declared in the span vocabulary table"
+            );
+        }
+        for p in Phase::ALL {
+            let name = format!("vulkan.{}", p.as_str());
+            assert!(
+                header.contains(&name),
+                "{name} is emitted but not declared in the span vocabulary table"
+            );
+        }
+    }
+
+    /// `compute_region` brackets the callback; it must not be modelled as a phase.
+    ///
+    /// `Phase::BindCheck` was added to this enum to close a 23 ms blind spot and measured a warm
+    /// median of **0.073 ms** — 0.27% of the 27.0 ms region it was documented as explaining. It
+    /// was also the first sibling phase structurally *outside* `vulkan.subgraph`, which the
+    /// containment contract in `docs/PERF.md` and `bench/phases.py` does not admit, so every
+    /// traced run self-reported a phase-tree disagreement. The region is now bracketed by a
+    /// structural span instead, which needs no place in the phase tree.
+    #[test]
+    fn the_compute_call_bracket_is_not_a_phase() {
+        for p in Phase::ALL {
+            assert_ne!(
+                format!("vulkan.{}", p.as_str()),
+                SPAN_COMPUTE_CALL,
+                "the whole-Compute bracket must not be a summable phase"
+            );
+            assert_ne!(format!("vulkan.{}", p.as_str()), SPAN_SUBGRAPH);
+        }
+        assert_eq!(Phase::ALL.len(), 10);
     }
 
     #[test]

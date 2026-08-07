@@ -2577,6 +2577,16 @@ unsafe fn compute_impl(
     // SAFETY: `api` is live for every `make_status` below.
     let fail = |code, msg: String| unsafe { sys::make_status(api, code, &msg) };
 
+    // Opened before anything else this callback does, and closed when it returns.
+    //
+    // `dispatch_ort` opens `vulkan.subgraph`, but that is not the region ORT charges to this EP:
+    // it starts inside `dispatch_ort` and ends inside it. Without an outer bracket a reduction
+    // cannot state how much of the callback no span covers, so it charges that time to whatever
+    // span it can see. This is a structural span (`cat == "ep"`), not a `Phase`: it is never
+    // summed into a sibling total and it adds no level to the phase tree.
+    let t = crate::trace::tracer();
+    let _compute_call = t.compute_region();
+
     counters::record_compute_call();
 
     // The planted control (see [`ENV_FORCE_COMPUTE_FAILURE`]). Placed after `record_compute_call`

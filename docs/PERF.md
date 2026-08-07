@@ -58,6 +58,43 @@ So our span vocabulary is different, and the difference is the whole point:
 | `fence_wait` | Waiting for the submission's fence. | An **upper bound** on GPU execution, inflated by queue contention, other clients' work, and driver scheduling. Not kernel time. |
 | `readback` | Device→host transfer of outputs. | Host time plus a real transfer. Bytes + GiB/s counters. |
 
+Those seven are *phases* (`cat == "ep.phase"`), plus three sub-`record` phases — `desc_alloc`,
+`pipeline_lookup`, `cmd_upload` — that are nested inside `record` and therefore must never be
+added to it. Ten in total; `Phase::ALL` is the list of record, and a Rust test asserts its length.
+
+**Two structural spans (`cat == "ep"`) are not phases and never enter a total:**
+
+| Span | Brackets | Why it exists |
+|---|---|---|
+| `vulkan.compute_call` | The whole ORT `Compute` callback, opened first thing in `compute_impl`. | It is the only span that can tell you whether the phases account for the callback. Without it the reduction can only see its own inner bracket and cannot notice work that happens on either side of it. |
+| `vulkan.subgraph` | The `dispatch_ort` call inside `Compute`. | The bracket every phase lies inside. This is the denominator for "share of time inside `Compute`" throughout this document. |
+
+The distinction is load-bearing, and was learned the expensive way. In the 2026-08-07 CUDA
+competition work the gap between the two brackets measured a **26.976 ms warm-call median** —
+larger than the 13.3 ms of device time the same trace saw — and a `bind_check` *phase* was added
+outside `vulkan.subgraph` to try to explain it. It explained 0.073 ms of it (0.27%), and being
+the first phase outside the subgraph bracket it broke `phase_containment`'s standing contract
+that every phase span lies inside its `vulkan.subgraph` span. That phase has been removed. The
+outer bracket stays, as a *structural* span: it exposes the region without claiming to explain
+it, and the phase tree is untouched.
+
+The region itself turned out not to be the EP at all. Re-measured on 2026-08-07 with the
+counters-file dump moved out of the timed region, the same term is **0.053 ms** — the 27 ms was
+the benchmark harness's own counters dump running inside every timed inference, which is exactly
+what `bench/test_cuda_competition.py::test_counters_dump_is_not_left_inside_the_timed_region`
+now forbids. An instrument that can see a region is worth having even when the answer is "this
+was never ours".
+
+**No emitted name may be a prefix of another.** Reducers match span names, and Python's
+`str.startswith` made `vulkan.compute` silently capture `vulkan.compute_region_...`; the
+`RecordPath` instants were likewise renamed from `vulkan.record_path[...]` to `vulkan.path[...]`
+because `vulkan.record` is a phase. Both the Rust test `no_trace_name_is_a_prefix_of_another`
+and `bench/test_trace_vocabulary.py` enforce it now, in both languages.
+
+The vocabulary is declared once, in the module header of `rust/src/trace.rs`, and
+`bench/trace_vocabulary.py` parses it so that `bench/phases.py` and `bench/cuda_profile.py` can
+be checked against it rather than trusted to have been updated.
+
 Two further span-adjacent facts we record because they are the ones that mislead people:
 
 * **`RecordPath`** — `first_record` / `replay` / `rerecord`. This is our analogue of MLX's cache
@@ -461,6 +498,54 @@ in a hurry.
 
 `bench/test_plausible_but_wrong.py` tests each of these against the shape of the wrong answer it
 prevents, using the real device values from §1.4 as fixtures.
+
+### 4.0.1 A committed artifact may not name the machine that produced it
+
+Added 2026-08-07 after eight evidence JSONs from the issue #69 CUDA competition were rejected in
+review for carrying the operator's account name, private checkout directory and model-cache
+location in `profile_path`, `outputs_dir`, `outputs_manifest[].file`, `models.*.path`,
+`models.*.detail` and `cache_root`.
+
+The repair is a **write boundary**, not a cleanup pass. `bench/public_paths.py` is the only place
+the CUDA harness serialises evidence:
+
+| Function | Guarantee |
+|---|---|
+| `dump_public_json(payload, path)` | roots every path, scrubs every string, then **re-scans the serialised text** and raises `PathLeak` rather than write. |
+| `write_public_text(text, path)` | the same, for the `.md` reports and captured logs. |
+| `public_path(p)` | one path → `<root>/relative/posix/path`. |
+| `sanitise_file(p)` | repairs an artifact produced before the boundary existed. |
+
+Paths are **rooted, not redacted**. Which root a file came from is provenance a reader needs;
+the account name is not:
+
+| Token | Root |
+|---|---|
+| `<repo>` | this checkout — including a *different* checkout of this project, so an artifact repaired from another worktree still reads repo-relative |
+| `<model-cache>` | `$ONNXRUNTIME_EP_VULKAN_BENCH_MODEL_CACHE`, else `~/.cache/onnxruntime-ep-vulkan/bench-models` |
+| `<foundry-cache>` | `~/.foundry/cache/models` — where `bench_models._resolve_foundry` resolves Phi-3.5 by identity |
+| `<tmp>` | the platform temp directory |
+| `<home>`, `<elsewhere>` | a home-rooted path under no declared root; `<elsewhere>` keeps only the basename |
+
+Three things are load-bearing and were each learned from a wrong first cut:
+
+* **The screen runs on the serialised text, not the object.** `json.dumps(..., default=str)`
+  stringifies a `Path` *after* an object-level walk would have skipped it, so an object-level
+  screen passes and the file leaks. `bench/test_public_paths.py` plants exactly that.
+* **Containment is decided by path parts, never by string prefix.** `str.startswith` says a
+  home directory named `ann-backup` is inside one named `ann`; a path rewritten under the wrong
+  root is worse than one left alone, because it looks sanitised.
+* **The in-memory record keeps real, openable paths.** `cuda_profile` reads `profile_path` back
+  out of the very record it is about to write. Rooting the field in place would produce a clean
+  file and a broken harness.
+
+Repository-wide, this is a **ratchet, not a gate**: 299 committed evidence files named a machine
+before any of this existed, and a screen that is red on the day it lands is a screen that gets
+skipped. `bench/public_path_legacy.json` declares every one of them with its leak count;
+`bench/test_public_paths.py` fails on an undeclared leak, on a declared file that leaks *more*
+than declared, and — the half that keeps it honest — on a declaration whose file has stopped
+leaking or stopped existing. `bench/results/_cuda69/` is declared `never_legacy`: its writers
+were fixed, so a leak there is a regression, not an inheritance.
 
 ### 4.1 OQ-12
 
@@ -1255,7 +1340,8 @@ Per R9: *confidence scales with agreeing instruments; evidence scales only with 
 | every island executed on every inference | `dispatch_accounting`: `compute_calls == islands × inferences`, **integer equality, no tolerance**. Caught a subgraph never invoked — which raises nothing and leaves `compute_failures` at 0. |
 | every dispatch produced GPU time | `gpu_span_accounting`: `sum(subgraph.nodes) == len(gpu_spans) == dispatches_executed`, integer equality. 5457 on both. |
 | the row names the device that ran | `devices.device_identity_check` — trace's own `timestampPeriod`/`validBits` vs the label. Caught the entire table naming the wrong GPU. |
-| the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span; `unattributed_in_compute_ms` reported, never folded away. |
+| the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span (the **inner** bracket, around `dispatch_ort`, not the outer `vulkan.compute_call`); `unattributed_in_compute_ms` reported, never folded away. |
+| the callback is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` and reports the region *outside* `vulkan.subgraph` but inside the callback as its own term. Measured, and explicitly not attributed. It read 26.976 ms before the harness's counters dump was moved out of the timed region and 0.053 ms after. |
 | GPU time is not over-scaled | `gpu_containment` — per-submission GPU busy ≤ `submit + fence_wait`, **ordinal attribution**, immune to the 314 ms anchor error. |
 | the 52× conversion is applied | `timestamp_conversion_integrality` — `gpu_ns ÷ period` must be a whole integer. **Decisive only where period ≠ 1.0**; reports `VACUOUS`, never "pass", on NVIDIA and lavapipe. `bench/timestamp_audit.py` exits non-zero when no local device can falsify it. |
 | valid bits are masked | `valid_bits_applied` — green on both. |

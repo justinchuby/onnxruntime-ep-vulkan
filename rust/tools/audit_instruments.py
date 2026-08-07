@@ -444,6 +444,20 @@ BENCH_INSTRUMENT_FILES = [
     # to keep, so it is screened rather than treated as capture.
     "ceiling.py",
     "clock_log.py",
+    # Arrived with the issue #69 CUDA competition harness. All four render a verdict about
+    # a measurement rather than record one, which is the line this list draws:
+    #   `cuda_competition.py`  -- ADMISSIBLE / SPLIT_FRAME / INSTRUMENT_ERROR per arm, plus
+    #                             the numeric-equivalence verdict across arms.
+    #   `cuda_profile.py`      -- GPU_TIME_MEASURED / GPU_TIME_UNAVAILABLE / TRACE_ABSENT,
+    #                             and refuses rather than sums when the phase tree disagrees.
+    #   `cuda_probe.py`        -- decides whether a node partition actually ran on the EP it
+    #                             names, which is a verdict about what was measured.
+    #   `bench_models.py`      -- MODEL_OK / MODEL_ABSENT / MODEL_DIGEST_MISMATCH. The digest
+    #                             mismatch is explicitly "a finding, not a re-pin".
+    "cuda_competition.py",
+    "cuda_profile.py",
+    "cuda_probe.py",
+    "bench_models.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -514,6 +528,37 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_devices_identity.py": (
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."
+    ),
+    # Arrived with the issue #69 CUDA competition harness (2026-08-07, Tank). Declared by
+    # hand rather than left to drift, and each with the reason it is NOT an instrument.
+    "cuda_workloads.py": (
+        "workload table — data. It builds feeds and digests them so two arms can be shown "
+        "the same bytes; it renders no verdict about any measurement taken on them."
+    ),
+    "trace_vocabulary.py": (
+        "parser — reads the span vocabulary declared in rust/src/trace.rs so bench/ can be "
+        "checked against it instead of trusted. `prefix_collisions` reports a list; the "
+        "verdict that a collision is fatal is asserted by bench/test_trace_vocabulary.py "
+        "and by the Rust test `no_trace_name_is_a_prefix_of_another`, in both languages."
+    ),
+    "public_paths.py": (
+        "provenance sanitiser — it renders a verdict about a PAYLOAD (does this artifact "
+        "name a machine?), not about a measurement, which is the line this list draws. It "
+        "refuses by raising `PathLeak`; both polarities of every function it exports are "
+        "screened in bench/test_public_paths.py, including the `sanitise=False` path that "
+        "proves the refusal fires."
+    ),
+    "gen_public_path_legacy.py": (
+        "generator for the checked-in legacy ratchet bench/public_path_legacy.json — the "
+        "same relationship rust/tools/instrument_census.json's generator has to this file. "
+        "It surveys; the ratchet's verdict is asserted in bench/test_public_paths.py."
+    ),
+    "test_cuda_competition.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_cuda_profile.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_trace_vocabulary.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_public_paths.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries both "
+        "polarities of the provenance sanitiser and the repository-wide leak ratchet."
     ),
 }
 
