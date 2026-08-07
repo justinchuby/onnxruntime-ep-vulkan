@@ -3522,8 +3522,83 @@ branch-only `caused_by`, an unresolvable `caused_by` — plus two backwards-comp
 unmigrated v1 record stays green and that v1 and v2 coexist without shadowing each other. Schema
 defects are **exit 2** (`ERROR(instrument=register_unusable)`), never a colour: a register the checker
 could not parse has ruled on nothing. `ci/simulate_squash_rewitness.py` runs the same proof against the
-real repository — it squashes the current branch onto `origin/main` in a throwaway clone and screens
-the result, with the v1 form of the same record as the negative control.
+real repository — it lands the current branch onto `origin/main` in a throwaway clone and screens the
+result, with two deliberately broken registers as the negative controls.
+
+**PART 5b — `rewitness/3`: A CAUSE THAT ARRIVES IN THE SAME CHANGE (added 2026-08-06, PR #53).**
+
+v2 fixed the *transitions*. It did not fix the *cause*. `caused_by` is required to be **landed**, and
+for the common case — a shader edit and the re-witness it forces, in one PR — no landed commit exists at
+writing time. The only sha an author can write is a branch commit, and `unlanded_rewitness_cause` is
+exactly what that produces after a squash. PR #53 demonstrated the whole failure end to end: green on
+its own head, green under a merge commit, **red under a squash**, on `main`, after the merge, in the
+`push: main` job. A screen whose colour depends on which merge button a maintainer presses is not a
+screen. Re-spelling the sha does not fix it; only removing shas from the cause does.
+
+**`rewitness/3` names the cause as CONTENT.** The record carries no commit reference of any kind:
+
+```json
+"caused_by_content": {
+  "kind": "same_change",
+  "paths": [{"path": "rust/shaders/glsl/templates/q_gemv.comp",
+             "old": "<sha256 of the normalised file in the base tree>",
+             "new": "<sha256 of the normalised file in the tree the witness moved in>"}]
+}
+```
+
+| field | meaning |
+|---|---|
+| `schema` | literally `"rewitness/3"`. |
+| `field` | must be `source_digest`. The corroboration reads the shader source closure that witness is a hash of; no other frame witness is a function of that content, so any other field would assert a check that is never performed. |
+| `caused_by_content.kind` | `same_change` — the only kind. An unknown kind is **refused** (exit 2), never read as this one. |
+| `caused_by_content.paths` | the exact production source transition(s) that caused the move. `old`/`new` are sha256 over **normalised** bytes (BOM stripped, `\r\n` and lone `\r` folded to `\n` — byte-for-byte what `normalize_shader_text` in `rust/build_support/shader_source_digest.rs` does), so `core.autocrlf` cannot flip a verdict. |
+| `caused_by` | **must not be present.** One record declares one cause rule; carrying both leaves the checker to choose, and a checker that chooses excuses the other half silently. |
+| `transitions`, `owner`, `date`, `reason` | unchanged from v2. |
+
+**What the screen actually does with it.** For each comparison `(before, after)` in which one of the
+record's declared moves really happened — `before` being the last ledger revision carrying `old`,
+`after` the one carrying `new` — all five of these must hold, and each is a separate sentence in the
+output because each is a different way to launder an undeclared move:
+
+1. every declared cause path reads `old` in `before` and `new` in `after`;
+2. every declared path is in the **source closure** of a stem one of the moved ledger entries names —
+   the closure being re-derived from the trees (`shader_variants.txt` row → template → transitive
+   `#include` graph, resolved own-dir → `-I include` → `shaders/glsl`, exactly as the Rust does);
+3. every path in that closure whose content *did* move is declared;
+4. every moved key has a declared, changed path in **its own** stems' closure;
+5. the entry's `shaders` list is identical in both trees — if the subject moved, source content is not
+   what explains the witness.
+
+**`uncorroborated_rewitness_cause`** is the condition when any of those fails. It is a FAIL, not an
+ERROR: the register parsed, and it made a claim the trees refute.
+
+**Why this is not circular.** The corroborating content is *production shader source* — the input the
+build hashes — and never the ledger, the register, or anything generated from either. A cause path
+under `evidence/`, `bench/`, `docs/`, `ci/`, `.github/`, `tests/` or `target/` is **refused outright**:
+a cause read out of the evidence the record is part of is the record proving itself.
+
+**Threat model.** The adversary is anyone (or any regeneration, or any bad merge) who can write
+anything into `evidence/`, plus commit messages, branch names, PR numbers and dates. The screen reads
+*none* of those as evidence. To pass while lying, an author would have to make the production shader
+source itself carry the exact declared transition — which is the change the record claims happened, at
+which point the claim is true. Still trusted, stated so nobody has to discover it: the ledger entry's
+`shaders` list, the ledger's digests (covered by `gen_proof_ledger.py --check` against a built EP), and
+`rust/build.rs`'s shader directories — the last pinned by `tests/ops/test_rewitness_cause_paths.py` so
+a moved directory fails loudly rather than emptying every closure. Out of scope, deliberately: a
+re-witness caused by anything other than shader source (a registry change, a compiler move, a
+hashing-rule change) must **not** be written as a same-change cause. It fails closed.
+
+**How to add a record** is documented in the register itself, under `how_to_add_a_record`, next to the
+records it describes rather than in a document an author may never open.
+
+**Controls.** All three schemas coexist; migration stays per record. `ci/negative_control_ledger_census.py`
+plants the v3 cause green under **squash, merge and rebase** landings, and red — one lie at a time —
+for a wrong `old`, a wrong `new`, a wrong path, an absent content transition, an evidence-only path, an
+over-broad path, an under-declared closure change, one key's cause vouching for another's, a moved
+subject, and a replay of a cause that already landed. Its contrast arm is the defect itself: the same
+true cause written as `rewitness/2` is green under a merge and red under a squash and a rebase.
+`ci/simulate_squash_rewitness.py` runs the whole matrix against the real repository, including a
+re-screen one commit after each landing.
 
 **PART 6 — `source_digest` IS DETERMINISTIC, AND THAT IS NOW TESTABLE (added 2026-08-06, issue #43).**
 

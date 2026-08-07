@@ -354,12 +354,19 @@ jobs:
         run: python ci/check_ledger_census.py --json bench/results/ledger-census.json
 
       - name: Proof-ledger census negative control
-        # 13 arms, 2 LIVE / 5 REPLAYED / 6 PLANTED, ratio printed. The REPLAYED arms are
+        # 83 arms, 3 LIVE / 6 REPLAYED / 74 PLANTED, ratio printed. The REPLAYED arms are
         # not plants: they run the screen against eb84364 and 26fd93f as they really are
         # and require conviction of the first and acquittal of the second. One arm exists
         # only to assert that --full-history is load-bearing, by the revision counts,
         # because without it the replay reported PASS on the merge it was written to
         # convict.
+        #
+        # The `rewitness/3` block is the newest: a same-change cause, planted green under
+        # all three of GitHub's landings and red for every way it can lie (wrong old, wrong
+        # new, wrong path, absent transition, evidence-only path, over-broad path,
+        # under-declared closure, cross-key laundering, moved subject, replay of a spent
+        # cause). Its contrast arm is the defect itself — the SAME true cause written as
+        # `rewitness/2` is green under a merge and red under a squash and a rebase.
         run: python ci/negative_control_ledger_census.py
 
       - name: Verification-subject screen (does a check verify itself?)
