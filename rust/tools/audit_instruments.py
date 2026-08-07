@@ -444,6 +444,12 @@ BENCH_INSTRUMENT_FILES = [
     # to keep, so it is screened rather than treated as capture.
     "ceiling.py",
     "clock_log.py",
+    # Arrived with issue #56 (Niobe, the real-model harness). Screened rather than held
+    # out because its `classify_*`/`bitwise_identical` functions decide whether two arms
+    # of a benchmark agree, and `dispatch_diagnosis`/`fallback_diagnosis` decide whether a
+    # run is admissible as evidence about device utilisation. Those are verdicts about a
+    # measurement, which is this list's criterion.
+    "real_model.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -489,6 +495,7 @@ BENCH_HELD_OUT: dict[str, str] = {
     # one-line change and this comment is the record that nobody decided it silently.
     "test_paired_ratio.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_ceiling.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_real_model.py": "test module — a caller, screened as polarity, not as an instrument.",
     # Arrived with Switch's fa5f514 and was the frame arm's second live catch. Worth naming
     # what it cost before it was declared: the frame arm runs BEFORE the uninvoked census, so
     # `audit_instruments --check` failed on the frame and never printed

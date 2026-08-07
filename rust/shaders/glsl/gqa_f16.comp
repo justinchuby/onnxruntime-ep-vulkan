@@ -1,10 +1,38 @@
-// `com.microsoft.GroupQueryAttention` — fused GQA with RoPE (serial, first-pass baseline).
+// `com.microsoft.GroupQueryAttention` — fused GQA with RoPE (serial per invocation).
 //
 // # Correctness before performance
 //
-// One GLSL invocation per (batch, query_head, query_seq_pos).  Local size = (1,1,1) so there
-// are no barriers, no shared memory dependencies, and no wave-level reductions — the correctness
-// surface is a plain serial algorithm.  The dispatch is (B * Nq * S, 1, 1).
+// One GLSL invocation per (batch, query_head, query_seq_pos).  There are no barriers, no shared
+// memory dependencies and no wave-level reductions — the correctness surface is a plain serial
+// algorithm, and it stays that way at every workgroup size.  The dispatch is
+// `(ceil(B * Nq * S / local_size), 1, 1)`.
+//
+// # The workgroup size is a specialisation constant, and why that is a performance fix
+//
+// This kernel shipped with `local_size = (1,1,1)`.  A workgroup of one invocation does not
+// occupy one lane of the machine — it occupies a whole SIMD group with one lane enabled, because
+// the hardware's unit of scheduling is the subgroup, not the invocation.  On the RTX A1000 the
+// subgroup is 32 wide, so **31 of every 32 lanes were masked off for the entire kernel**.
+//
+// MEASURED 2026-08-06 (`bench/results/real_model_diagnostics.json`, Foundry Phi-3.5 int4 on an
+// RTX A1000): `gqa_f16` was 64.7% of all GPU time at prefill `M = 128` and 93.5% at decode with
+// a 1024-token cache — the largest single consumer of device time in the model, ahead of the
+// quantised GEMM this EP has spent its optimisation effort on.
+//
+// Nothing about the arithmetic changes: invocation `gid` computes exactly what it computed
+// before, in the same order, reading and writing the same addresses.  Only the *packing* of
+// invocations into workgroups changes, so the result is bit-identical by construction and the
+// atomics that were "never actually contended" at size 1 are what make sizes above 1 correct —
+// they were always written for the contended case.
+//
+// The size is a specialisation constant rather than a literal because the right value is a
+// function of how many invocations there are: a decode step has `B * Nq * S = 32` of them, and
+// packing 32 invocations into one workgroup hands the whole kernel to a single compute unit
+// while 32 workgroups of one invocation are spread across all of them.  `ops::attention::
+// gqa_local_size` picks it, and `ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE` overrides it.
+//
+// Invocations past the end of the grid are guarded: `b >= pc.batch_size` returns, and that is
+// exactly the condition an over-dispatched tail satisfies (see `main`).
 //
 // # Why serial first
 //
@@ -62,12 +90,15 @@
 //   Tensors are stored as uint arrays, two f16 elements per uint.  Element at flat index i is
 //   in word i/2; the lower 16 bits hold element i&~1, the upper 16 bits hold element i|1.
 //   Reads use unpackHalf2x16; writes use atomicAnd/atomicOr to avoid corrupting the neighbour.
-//   (With local_size=1 the atomics are never actually contended, but they are always correct.)
+//   The atomics are what make any workgroup size correct: two invocations of the same workgroup
+//   can hold the two halves of one 32-bit word, and a plain store would lose one of them.
 
 #version 450
 #extension GL_EXT_shader_16bit_storage : require
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+// Specialisation id 0 — the host's `gqa_local_size`. Defaults to 1 so a pipeline built without
+// the constant behaves exactly as this kernel did before the constant existed.
+layout(local_size_x_id = 0, local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 // --------------------------------------------------------------------------
 // Push constants
@@ -98,7 +129,8 @@ layout(set = 0, binding = 4, std430) readonly  buffer BufCos  { uint d[]; } cos_
 layout(set = 0, binding = 5, std430) readonly  buffer BufSin  { uint d[]; } sin_buf;
 // attn_out is NOT declared writeonly: wr_out uses atomicAnd/atomicOr which need read access.
 // Each invocation writes to a disjoint range (different (b,h,s_local)), so the atomics never
-// actually contend — but they must compile.
+// contend for the same *element* — but two invocations of one workgroup can share a 32-bit
+// word, which is precisely what the read-modify-write atomics are for.
 layout(set = 0, binding = 6, std430)           buffer BufOut  { uint d[]; } attn_out;
 layout(set = 0, binding = 7, std430)           buffer BufPresK { uint d[]; } pres_k;
 layout(set = 0, binding = 8, std430)           buffer BufPresV { uint d[]; } pres_v;
@@ -183,6 +215,11 @@ void main() {
     uint rem     = gid % (Nq * S);
     uint h       = rem / S;
     uint s_local = rem % S;
+    // FAIL CLOSED, and the tail guard. `gid` runs to `local_size * ceil(total / local_size)`,
+    // which exceeds `B * Nq * S` whenever the workgroup size does not divide it. Every such
+    // invocation lands at `b >= batch_size` by construction — `gid >= B * Nq * S` implies
+    // `gid / (Nq * S) >= B` — so this one comparison is the whole bounds check, and it was
+    // already here when the grid was exact.
     if (b >= pc.batch_size) return;
 
     uint kv_h    = h / (Nq / Nkv);     // KV head (group_size = Nq/Nkv; MHA has group_size=1)

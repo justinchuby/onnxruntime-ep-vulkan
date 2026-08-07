@@ -4397,3 +4397,303 @@ Reproduce: `python bench/results/probe_weight_reread.py`;
 `python bench/results/ab_row_tile.py`; `python bench/results/probe_real_matmulnbits_rows.py`.
 Locked by `bench/test_weight_reread.py` (26 tests), `tests/ops/test_matmulnbits.py` (77 tests),
 `rust/tests/validation_control.rs` (5 tests), and the `ops::quant` unit tests.
+
+---
+
+## 26. The real model, end to end — and the kernel nobody had timed (2026-08-06/07)
+
+Every performance section before this one measured a **part**: a weight-read count, an operator
+lifted out of the graph, an island boundary, a synthetic chain. §25 closed with a limitation stated
+plainly — `rust/modelrunner` reports `UNSUPPORTED` for Phi-3.5, so there was no whole-model
+reference and no whole-model timing on this branch.
+
+Issue #56 is that gap. This section is a **real-model** harness: the exact Foundry Phi-3.5 int4
+file this repository's own tooling resolves, a second real ONNX model for broad-EP overhead, an
+`M` sweep, decode with a genuinely non-empty KV cache, three arms with an identical-pipeline null
+control, output verification on every compared arm, and per-kernel GPU attribution.
+
+It is also a correction. The lever PR #53 named next for itself — widening `q_gemv`'s 32-bit
+scalar `B` loads — targets a **minority** of the time. The measurement says the largest single
+consumer of device time in Phi-3.5 is `gqa_f16`, and the reason is one line of GLSL.
+
+> **Dependency.** This section's branch is stacked on PR #53 (`squad/7-tile-matmulnbits-prefill`).
+> The `vulkan_tiled` arm below *is* PR #53's row tile; `vulkan_untiled` is its kill switch. Nothing
+> here re-litigates §25 — it measures the whole model that §25 could only measure an operator of.
+
+### 26.1 What is under test, exactly
+
+**Models.** Both resolved by repository tooling, both hashed, neither a hard-coded path:
+
+| model | resolver | sha256 | bytes |
+|---|---|---|---|
+| `phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx` | `foundry_discovery` (no cache-version literal) | `3dbdd4b5…04dac3f` | 26,180,848 |
+| ↳ its external weights `…onnx.data` | — | `9ce390a7…0e92217` | **2,291,238,912** |
+| `mobilenetv2-12.onnx` | repo model cache, checksum-pinned | `c0c3f76d…0432ad5` | 13,964,571 |
+
+The `.data` row is not padding. The `.onnx` file is 26 MB of graph; **2.29 GB of int4 weights live
+outside it**, and a provenance record that hashed only the graph would have certified a file that
+contains almost none of the model. `real_model.external_data_provenance` parses the graph's
+`external_data` locations, hashes each blob, and reports `missing: True` rather than skipping —
+three tests in `bench/test_real_model.py` lock that.
+
+MobileNetV2 is the second model rather than a second transformer, and the reason is stated rather
+than glossed: it is the only other real ONNX file in this repository's pinned cache, the Hugging
+Face cache on this box is empty, and downloading a second quantised transformer was not necessary
+to answer the question. What it buys is a **negative control on scope** — a graph with no
+`MatMulNBits` and no `GroupQueryAttention`, where both of this branch's changes must show *nothing*.
+
+**Arms.** Three, fresh session each, order alternated per repeat:
+
+| arm | providers | environment | role |
+|---|---|---|---|
+| `vulkan_tiled` | Vulkan, CPU | `GEMV_MAX_ROWS=4` | subject |
+| `vulkan_untiled` | Vulkan, CPU | `GEMV_MAX_ROWS=1` | kill switch (§25's A/B) |
+| `cpu` | CPU only | — | baseline |
+
+**Device.** `NVIDIA RTX A1000`, driver 573.44, discrete, subgroup 32, 48 KB shared memory, device
+index pinned. **There is exactly one Vulkan device on this box** — no second GPU, no software ICD —
+and the artifact records that absence explicitly in `second_device` rather than leaving it to
+inference. This is **not** the RTX 4060 that most of this repository's canonical proof-ledger
+evidence was taken on, and no number here should be compared with one from that machine.
+
+**Environment.** ORT 1.28.0, Python 3.12.10, Windows 11 10.0.26200, EP `2c080583a1e295bf…`.
+Stock power plan, no affinity mask, no clock lock — so §20 applies and wall clock is
+`STEADY_UNCERTIFIED` by default. Arms are interleaved *because* the box cannot be assumed quiet.
+
+**Method.** 3 repeats × 5 timed iterations, 2 warmups discarded per session, median of per-repeat
+medians. Session build time and first-run time are recorded **separately** and never folded into
+the median: at `M = 128` the first run costs 3,254 ms against a steady-state 1,407 ms, and a
+harness that averaged those together would be reporting a number no steady-state user ever sees.
+
+**Feeds.** `input_ids [1, M]`, `attention_mask [1, past+M]`, and 64 real `past_key_values.*`
+tensors of `[1, 32, past, 96]` fp16 at `past ∈ {128, 512, 1024}`. Decode is measured with a
+**non-empty cache**; `past = 0` is kept only as the empty-cache control.
+
+### 26.2 Correctness first — and the two instrument bugs caught before publication
+
+Every arm's outputs are compared against the CPU EP's before any timing is reported. That gate
+found two defects **in this harness**, both before any number was published:
+
+1. A naive relative-tolerance gate called *every* Vulkan arm `DIVERGENT` over a one-fp16-ULP
+   difference. A relative error over logits is a cancellation meter, not an accuracy meter.
+2. The first fix was an aggregate OR across elements — and a **planted 7.0 error walked straight
+   through it**. `test_activation_gate_is_elementwise_not_an_aggregate_or` is the control that
+   now keeps it elementwise.
+
+The gates were then *calibrated* rather than loosened. The obvious calibration was unavailable:
+the CPU EP is **bit-identical to itself** across `intra_op_num_threads ∈ {1,2,4}`, so there is no
+reference-side reorder noise to measure a budget against. The budgets are therefore argued from
+fp16 numerics and made falsifiable:
+
+* **Logits** — argmax equal, top-10 identical, not-all-zero, `|Δ| ≤ 0.05 × scale(reference)`
+  (against a `sqrt(3072·32)·2^-11 ≈ 0.15` theoretical fp16 accumulation envelope, so 3× tighter),
+  **and** `max |Δp| ≤ 0.02` on the induced softmax distribution. The observed reading at `M = 1`
+  is `max_abs 0.0625` against a budget of `0.654`, with `max_prob_delta 3.1e-04`.
+* **KV activations** — a three-band structure: clean below `16·ε_fp16·max|ref| + 0.05·|ref|`,
+  marginal up to 8× that for at most 1e-4 of elements, gross anywhere ⇒ `DIVERGENT`.
+
+**Result: 18/18 cases, 3/3 arms each, `MATCH`.** Both before and after the change in §26.4.
+
+### 26.3 The baseline, and the honest headline
+
+Median-of-per-repeat-medians, milliseconds. `vk/cpu` above 1 means the EP wins.
+
+| case | Vulkan tiled | Vulkan untiled | CPU EP | row-tile | vk/cpu | tokens/s |
+|---|---|---|---|---|---|---|
+| prefill M=1 | 27.52 | 28.12 | 87.87 | 0.994× | 3.07× | 36.3 |
+| prefill M=2 | 38.19 | 49.67 | 220.33 | 1.323× | 5.80× | 52.4 |
+| prefill M=4 | 60.72 | 88.83 | 234.97 | 1.447× | 3.89× | 65.9 |
+| prefill M=8 | 108.39 | 165.02 | 313.38 | 1.506× | 2.88× | 73.8 |
+| prefill M=16 | 210.19 | 325.33 | 358.66 | 1.557× | 1.74× | 76.1 |
+| prefill M=32 | 462.03 | 704.44 | 541.85 | 1.520× | 1.18× | 69.3 |
+| prefill M=64 | 1094.28 | 1588.54 | 843.05 | 1.448× | **0.79×** | 58.5 |
+| prefill M=128 | 3004.55 | 4016.45 | 1535.79 | 1.336× | **0.51×** | 42.6 |
+| decode past=0 | 29.94 | 27.65 | 87.57 | 0.935× | 2.98× | 33.4 |
+| decode past=128 | 80.53 | 83.27 | 114.29 | 1.032× | 1.43× | 12.4 |
+| decode past=512 | 328.59 | 336.25 | 138.15 | **0.42×** | 0.42× | 3.0 |
+| decode past=1024 | 642.62 | 628.90 | 184.30 | 0.970× | **0.28×** | 1.6 |
+
+The headline nobody had written down: **the EP wins at narrow prefill and loses badly at wide
+prefill and at real decode.** §25's operator-level win is real and it does not survive contact with
+the whole model at `M ≥ 64`. Token throughput *falls* as `M` grows past 16 — the opposite of what
+batching is for.
+
+The noise floor is the `M = 1` null control, where the tiled and untiled arms bind identical SPIR-V
+under identical specialisation and must be the same pipeline: ratios `0.93 – 1.00`. Row-tile ratios
+near `1.0` in the decode rows are therefore **inside the floor and are not readings**; §20's
+`STEADY_UNCERTIFIED` applies to them. MobileNetV2's floor has a 3.1× contaminated outlier in one
+repeat, which is exactly why it is reported rather than averaged away.
+
+### 26.4 Where the time actually goes
+
+ORT's own profiler cannot answer this: it attributes every Vulkan node to the **single fused node**
+it hands the EP, so its op table shows one row. The attribution below is from the EP's own GPU
+timestamp queries (`ONNXRUNTIME_EP_VULKAN_TRACE` + `..._TRACE_GPU`), aggregated by kernel name.
+
+| case | GPU total | `gqa_f16` | `q_gemv_matmul_nbits_f16` |
+|---|---|---|---|
+| prefill M=1 | 20.04 ms | 1.48 (7.4%) | 17.47 (87.2%) |
+| prefill M=8 | 96.04 | 20.96 (21.8%) | 73.62 (76.7%) |
+| prefill M=32 | 433.29 | 154.59 (35.7%) | 276.46 (63.8%) |
+| prefill M=128 | 2927.34 | **1891.19 (64.6%)** | 1029.21 (35.2%) |
+| decode past=512 | 154.12 | 135.56 (88.0%) | 17.46 (11.3%) |
+| decode past=1024 | 287.18 | **268.57 (93.5%)** | 17.52 (6.1%) |
+
+Two facts fall out, and both were surprises:
+
+* **`q_gemv` decode time is flat at ~17.5 ms at every cache length.** All of decode's growth is
+  GQA. The quantised GEMM is not the decode problem; it is not even a large part of it.
+* **Weight streaming is a minority cost at width.** Differencing the tiled and untiled arms across
+  all seven `M` points — the two arms differ *only* in how many passes they make over the same 2.291
+  GB of packed weights — gives a marginal streaming bandwidth of **217–245 GB/s** (median ~238),
+  remarkably consistent across seven independent points and above the ~192 GB/s spec sheet, which
+  is what L2 reuse looks like. One full weight pass is 9.6–10.4 ms. At `M = 128` that is ~10% of
+  tiled time.
+
+So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — would be
+optimising a tenth of the wide-prefill cost. The data said to go elsewhere, so this branch did.
+
+### 26.5 The finding: one lane per subgroup
+
+`gqa_f16.comp` declared:
+
+```glsl
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+```
+
+**The hardware's unit of scheduling is the subgroup, not the invocation.** A workgroup of one
+invocation does not occupy one lane; it occupies a whole subgroup with one lane enabled. On this
+device the subgroup is 32 wide, so **31 of every 32 lanes were masked off for the entire kernel** —
+consistent with the independent arithmetic that GQA decode reads only ~12.6 MB of K+V per layer yet
+takes 8.37 ms/layer, roughly 158× off memory-bandwidth peak.
+
+The fix is to make the size specialisation constant 0 and dispatch `ceil(total/local)` workgroups.
+`bench/results/probe_gqa_local_size.py` sweeps it on the real graph. `gqa_f16`'s own GPU
+milliseconds per inference, one process per point:
+
+| invocations (`B·Nq·S`) | 1 | 2 | 4 | 8 | 16 | 32 | 64 | rule picks |
+|---|---|---|---|---|---|---|---|---|
+| 32 — prefill M=1 | **1.48** | 1.76 | 1.69 | 1.70 | 1.89 | 1.97 | 1.81 | 1 ✔ |
+| 32 — decode past=512 | **135.56** | 139.72 | 141.11 | 146.84 | 166.96 | 209.19 | 203.80 | 1 ✔ |
+| 32 — decode past=1024 | **268.57** | 273.77 | 278.69 | 291.81 | 322.72 | 392.42 | 390.53 | 1 ✔ |
+| 256 — prefill M=8 | 20.96 | 16.58 | 11.10 | 5.92 | 5.30 | **5.10** | 6.09 | 8 |
+| 1024 — prefill M=32 | 154.59 | 90.78 | 60.57 | 49.43 | 35.37 | **25.48** | 25.69 | 32 ✔ |
+| 4096 — prefill M=128 | 1891.19 | 1002.68 | 549.56 | 315.98 | 229.62 | 201.71 | **194.27** | 64 ✔ |
+
+Up to **9.7×** on the kernel. The curve is not monotone in the size — it is monotone in the
+*ratio* of invocations to workgroups, which is why the rule is a function of the work available
+(`gqa_local_size`: largest power of two ≤ 64 leaving ≥ 32 workgroups) and not a constant.
+
+The rule is best or tied-best at five of six points. At `M = 8` it picks 8 (5.92 ms) over the
+sweep's best 32 (5.10 ms) — 16% on the smallest absolute number in the table. Buying that 0.8 ms
+means lowering `GQA_MIN_GROUPS` to 8, which moves the 32-invocation rows from size 1 to size 4 and
+costs 135.56 → 141.11 ms and 268.57 → 278.69 ms on the two decode rows. **Decode is where a
+generation loop lives, so the trade is declined and the 16% is left on the table deliberately.**
+
+**Equivalence.** The packing changes scheduling, not arithmetic — a claim about the source text, so
+it is verified as one. Whole-model outputs were compared byte-for-byte against `local = 1` at every
+size and case: **42 comparisons, 42 BITWISE-IDENTICAL.** No tolerance is involved and none would be
+appropriate.
+
+### 26.6 The result
+
+Same harness, same box, same method, same day. `before` is §26.3's table; `after` is a full re-run.
+
+| case | before | after | gain | vk/cpu before → after | tokens/s |
+|---|---|---|---|---|---|
+| prefill M=1 (null control) | 27.52 | 27.29 | 1.008× | 3.07 → 3.32 | 36.6 |
+| prefill M=2 | 38.19 | 33.67 | 1.134× | 5.80 → 6.67 | 59.4 |
+| prefill M=4 | 60.72 | 54.40 | 1.116× | 3.89 → 4.41 | 73.5 |
+| prefill M=8 | 108.39 | 94.13 | 1.151× | 2.88 → 3.15 | 85.0 |
+| prefill M=16 | 210.19 | 181.02 | 1.161× | 1.74 → 1.98 | 88.4 |
+| prefill M=32 | 462.03 | 345.98 | 1.335× | 1.18 → 1.55 | 92.5 |
+| prefill M=64 | 1094.28 | 691.26 | **1.583×** | 0.79 → **1.18** | 92.6 |
+| prefill M=128 | 3004.55 | 1407.40 | **2.135×** | 0.51 → **1.05** | 90.9 |
+| decode past=0 | 29.94 | 29.92 | 1.001× | 2.98 → 3.01 | 33.4 |
+| decode past=128 | 80.53 | 88.05 | 0.915× | 1.43 → 1.29 | 11.4 |
+| decode past=512 | 328.59 | 331.16 | 0.992× | 0.42 → 0.43 | 3.0 |
+| decode past=1024 | 642.62 | 608.21 | 1.057× | 0.28 → 0.31 | 1.6 |
+| mobilenet N=1…32 | 8.12–271.03 | 8.19–269.75 | 0.992–1.010× | unchanged | 118–139 |
+
+Read this table with three cautions on the face of it:
+
+* **The decode rows are not readings.** At 32 invocations the rule returns `local = 1`, so decode's
+  dispatch is *literally the same geometry, the same grid and the same pipeline* as before. The
+  0.915–1.057× spread is the box, and it sits inside the `M = 1` null control's own floor
+  (0.995–1.200 in this run). Reporting it as an effect would be reporting §20's noise as a result.
+* **MobileNetV2 is the scope control and it did what a control should**: 0.992–1.010×, a graph with
+  no GQA node showing nothing. Had it moved, the change would not have been what this section says
+  it is.
+* **The `M = 1` prefill row is the null control** and stayed at 1.008×.
+
+What *is* a reading: **wide prefill.** `M = 128` is 2.14× faster and the EP crosses from losing to
+the CPU EP (0.51×) to beating it (1.05×); `M = 64` crosses from 0.79× to 1.18×. Peak prefill
+throughput rises from 76 tok/s to **92.6 tok/s**, and — the part that matters for "utilise the
+device" — throughput now *stays* near its peak from `M = 16` to `M = 128` instead of collapsing.
+Dispersion is tight where the claim is largest: at `M = 128`, `rsd = 0.008`, p05 1398.59, p95
+1427.42 over 15 samples.
+
+Per-kernel, at the sizes the rule picks:
+
+| case | GPU total before → after | `gqa_f16` before → after |
+|---|---|---|
+| prefill M=8 | 96.04 → 79.02 ms | 20.96 → 5.92 (21.8% → 7.5%) |
+| prefill M=32 | 433.29 → 313.84 | 154.59 → 25.48 (35.7% → 8.1%) |
+| prefill M=128 | 2927.34 → 1347.23 | 1891.19 → 194.27 (64.6% → **14.4%**) |
+
+At `M = 128` the graph's GPU time is now 85% `q_gemv` again — which is where PR #53's own next
+levers become the right thing to do, and were not before.
+
+**Device utilisation, grounded.** Islands stay at **1** (no fragmentation), dispatches at 355 per
+inference, CPU fallback at 24 node executions on Vulkan against 1,377 on the CPU EP — all unchanged
+by this edit, which is the point: the change moved lane occupancy, not graph partitioning.
+
+### 26.7 Limitations, stated rather than implied
+
+* **Decode is still bad, and this change does not fix it.** At `past = 1024` the EP is 0.31× the
+  CPU EP and `gqa_f16` holds 93.5% of GPU time. There is no packing to do at 32 invocations. The
+  next lever is parallelism over the **KV sequence** inside a workgroup with a reduction — which is
+  a shared-memory and barrier change, i.e. a portability question of exactly the kind §25 declined
+  to open without evidence. It should be opened now; it has evidence.
+* **The harness feeds KV from host numpy.** At `past = 1024` the wall is 608 ms against 287 ms of
+  GPU, so ~320 ms is host-side round trip — roughly 805 MB staged at ~2.3 GB/s. A real generation
+  loop would use IO binding and keep the cache device-resident. The decode wall numbers here are
+  therefore an **upper bound** on a real loop's, and the GPU-time column is the fairer comparison.
+* **One device.** RTX A1000 only; there is no second GPU and no software ICD on this box. The
+  *rule* is a function of the invocation count (a property of the model), but the best *size* is a
+  property of the machine — which is why `ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE` exists.
+* **GPU time is a timestamp-query total, not an occupancy counter.** It says the kernel finished
+  sooner. The subgroup-occupancy explanation is consistent with it and with the 158×-off-peak
+  arithmetic, but this harness cannot read a hardware occupancy counter and does not claim to.
+* **`rust/modelrunner` still reports `UNSUPPORTED` for Phi-3.5** (its GQA nodes reject generated
+  inputs on the CPU *reference* arm). §25's limitation is unchanged; what this section adds is a
+  harness that supplies interdependent inputs itself, which is why it can compare whole-model
+  outputs where the runner cannot.
+* **The bandwidth figure is differential, not instrumented.** It comes from Δtime ÷ Δ(weight passes
+  × 2.291 GB) between two arms, so it inherits both arms' noise and assumes the arms differ only in
+  weight passes — which is true by construction of the `QB_ROWS` specialisation, but is an argument
+  about the source, not a counter reading.
+
+### 26.8 Reproduce
+
+```
+python bench/results/probe_real_model_latency.py                 # the matrix -> real_model_latency.json
+python bench/results/probe_real_model_latency.py --diagnose      # -> real_model_diagnostics.json
+python bench/results/probe_gqa_local_size.py                     # -> real_model_gqa_local_size.json
+```
+
+Artifacts: `bench/results/real_model_latency.json`,
+`real_model_latency_before_gqa.json` (§26.3's baseline, kept so the before column is a file and not
+a memory), `real_model_diagnostics.json`, `real_model_diagnostics_before_gqa.json`,
+`real_model_gqa_local_size.json`.
+
+Locked by `bench/test_real_model.py` (62 GPU-free tests) and the `ops::attention` unit tests
+(`gqa_decode_stays_at_one_invocation_per_workgroup`,
+`gqa_local_size_matches_the_measured_sweep`, `gqa_local_size_never_exceeds_the_portable_cap`,
+`gqa_local_size_override_of_zero_is_clamped_not_dispatched`,
+`gqa_dispatch_grid_covers_every_invocation`, and the two `translate_gqa` dispatch tests).
+
+One of those 62 tests is a scar. `--diagnose` inherited the timed pass's default `--out` and
+overwrote a completed thirteen-minute matrix with a profiling record of a different schema;
+`test_the_two_passes_do_not_default_to_the_same_file` is the control, and the matrix was re-run
+rather than reconstructed.
