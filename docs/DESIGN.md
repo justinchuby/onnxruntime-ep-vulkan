@@ -5808,8 +5808,9 @@ is not compared with itself — so the verification is **36 cross-arm comparison
 `BITWISE-IDENTICAL`**, 65 output tensors each
 (`bench/results/real_model_gqa_local_size.json` → `equivalence[].comparisons[].verdict`). No
 tolerance is involved and none would be appropriate. That count is not the same as the harness's
-whole-model equivalence gate, which is 18 cases and 54 arm verdicts under budgets — see
-`docs/PERF.md` §26.2 and §26.5.
+whole-model equivalence gate, which is 18 cases and 54 arm verdicts under budgets — of which 18 are
+the reference arm compared with itself (`self: true`) and **36 are independent comparisons**, a
+different 36 from this one, in a different artifact — see `docs/PERF.md` §26.2 and §26.5.
 
 #### The tail
 

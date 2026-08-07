@@ -4502,8 +4502,29 @@ fp16 numerics and made falsifiable:
 
 **Result: 18/18 cases `PASS`, 54/54 arm verdicts `MATCH`** (3 arms × 18 cases,
 `models[].equivalence` in `real_model_latency_before_gqa.json` and `real_model_latency.json`) —
-both before and after the change in §26.4. These are budgeted verdicts, not bitwise ones; the only
-bitwise comparison in this section is §26.5's 36-comparison local-size sweep.
+both before and after the change in §26.4.
+
+**Of those 54 arm verdicts, 18 are the reference checked against itself and 36 are independent.**
+The `cpu` arm *is* the reference, so its record carries `"self": true` and the note *"the reference
+arm is compared against itself by construction; recorded so the table has no hole"*. Its `MATCH` is
+a schema artefact, not evidence. The evidence is the **36 independent comparisons** — 18 cases ×
+`{vulkan_tiled, vulkan_untiled}` vs the CPU reference — and no claim in this section may be
+supported by counting the self-checks. Verified by reading the field:
+`sum(1 for arm in case.arms if arm.self)` is 18 in each of the two matrix artifacts, 3 in each of
+§26.9's and §26.10's.
+
+**That 36 is not §26.5's 36.** The coincidence is unlucky and is called out rather than left to
+trip someone: §26.5's 36 are *bitwise* comparisons between local-size arms of one build, from
+`real_model_gqa_local_size.json`; the 36 here are *budgeted* comparisons between EP arms and the
+CPU reference, from the latency matrices. Different artifacts, different populations, different
+gates. The counts this section supports are therefore, in full: **18 cases**, **54 arm verdicts**,
+**36 independent comparisons**, **18 reference self-checks**.
+
+These are budgeted verdicts, not bitwise ones — with one exception the artifacts *do* record
+bitwise: each `M = 1` null-control case also carries `null_control_bitwise`, which compares the two
+Vulkan arms' **65 output tensors byte-for-byte** and reads `identical: true` in every case of every
+run (6 cases in each matrix artifact, 2 in each of §26.9's and §26.10's). That is a comparison
+between two arms of one build, not between builds.
 
 ### 26.3 The baseline, and the honest headline
 
@@ -4539,6 +4560,43 @@ MobileNetV2's floor in this same run is worse still, `[0.988282, 5.605136, 0.939
 contaminated repeat, which is exactly why the ratios are reported rather than averaged away. (The
 3.1× outlier is `real_model_latency.json`'s MobileNetV2 floor — the *after* run of §26.6, not this
 one; an earlier draft of this paragraph quoted it here.)
+
+#### The null control is worse than "noisy": in one run the two arms do not overlap at all
+
+A ratio range understates it, so here are the per-repeat medians themselves. `M = 1`, phi-3.5,
+`per_repeat_median_ms`, tiled against untiled, in each of the four runs:
+
+| run | tiled (ms) | untiled (ms) | per-repeat ratios | ranges overlap? |
+|---|---|---|---|---|
+| §26.3 before | 27.83, 28.80, 27.31 | 27.66, 26.68, 34.53 | 1.006, 1.080, 0.791 | yes |
+| §26.6 after | 29.19, 27.29, 27.02 | 29.04, 32.74, 29.42 | 1.005, 0.834, 0.918 | yes |
+| §26.9 postmerge | 27.43, 28.01, 26.88 | 27.41, 26.01, 29.26 | 1.001, 1.077, 0.919 | yes |
+| **§26.10 proposed head** | **31.32, 31.02, 28.51** | **26.83, 25.35, 27.46** | **1.167, 1.224, 1.038** | **no** |
+
+In the last row the two arms' per-repeat spans are **disjoint** — `[28.51, 31.32]` against
+`[25.35, 27.46]`, a 1.05 ms gap between the closest pair — with tiled slower in **every** repeat
+by **3.8% to 22.4%** (median ratio 1.143, i.e. **~14%**). These two arms produce **byte-identical
+outputs from an identical pipeline**: at `M = 1`, `gemv_tile_with` returns `(base_cols, 1)` before
+it ever reads `max_rows` (`rust/src/ops/quant.rs:491`), so `GEMV_MAX_ROWS = 4` and `= 1` specialise
+the same way and dispatch the same grid — and the same artifact's `null_control_bitwise` records
+all **65 output tensors identical** in that run. A systematic ~14% separation between two arms that
+are the same computation is therefore **an asymmetry of the harness or the machine, not of the
+code**: arm order within a repeat, session rebuild, thermal and residency drift, and a shared box
+are all live and none is controlled for.
+
+**What that limits.** Read the null control as the *width of this harness's arm-to-arm asymmetry*,
+not as a symmetric ±noise band. Two consequences, both binding on everything above:
+
+* **A ratio inside 0.79 – 1.26 is not a reading**, in either direction, whatever its sign. That
+  covers every decode row and the MobileNetV2 scope control.
+* **A run can be internally consistent and still wrong.** Non-overlapping spans do not make a
+  1.14× separation real; §26.10's `M = 1` row is the proof, since there the "effect" is known to be
+  zero by construction. No conclusion in §26 rests on any single run's `M = 1` row, and none may.
+
+This is *not* a claim that the wide-prefill result is noise: §26.6's `M = 128` reads 2.135× where
+the floor is 1.26 wide at worst, and it reproduces at 1407.40 / 1403.98 / 1410.09 ms across three
+separate builds (§26.10). The floor bounds what may be *read*, and 2.135× clears it by a margin
+that 1.057× does not.
 
 ### 26.4 Where the time actually goes
 
@@ -4629,10 +4687,12 @@ non-reference sizes = 36 cross-arm comparisons**, and
 `BITWISE-IDENTICAL`**, 65 output tensors per comparison. No tolerance is involved and none would be
 appropriate.
 
-Do not confuse that 36 with §26.2's equivalence gate, which is a different artifact and a different
-schema: `real_model_latency*.json` → `models[].equivalence` records **18 cases**, each with a
-`PASS`/`FAIL` gate, and **54 arm verdicts** (3 arms × 18 cases), those under the recorded budgets
-rather than bitwise.
+Do not confuse that 36 with §26.2's equivalence gate, which is a different artifact, a different
+schema and — unluckily — the same number: `real_model_latency*.json` → `models[].equivalence`
+records **18 cases**, each with a `PASS`/`FAIL` gate, and **54 arm verdicts** (3 arms × 18 cases),
+of which **18 are the reference arm compared with itself** (`self: true`) and **36 are independent
+comparisons**, those under the recorded budgets rather than bitwise. Two different 36s, from two
+different files.
 
 ### 26.6 The result
 
@@ -4659,11 +4719,14 @@ Read this table with three cautions on the face of it:
 * **The decode rows are not readings.** At 32 invocations the rule returns `local = 1`, so decode's
   dispatch is *literally the same geometry, the same grid and the same pipeline* as before. The
   0.915–1.057× spread is the box, and it sits inside the `M = 1` null control's own floor
-  (0.995–1.200 in this run). Reporting it as an effect would be reporting §20's noise as a result.
+  (0.995–1.200 in this run; 0.79–1.26 taken across all four runs, §26.3). Reporting it as an effect
+  would be reporting §20's noise as a result.
 * **MobileNetV2 is the scope control and it did what a control should**: 0.992–1.010×, a graph with
   no GQA node showing nothing. Had it moved, the change would not have been what this section says
   it is.
-* **The `M = 1` prefill row is the null control** and stayed at 1.008×.
+* **The `M = 1` prefill row is the null control** and stayed at 1.008× *here*. It does not stay
+  there in every run — §26.10's reads 1.143 between two arms that are the same computation — which
+  is why §26.3 quotes the control's width rather than any single run's value.
 
 What *is* a reading: **wide prefill.** `M = 128` is 2.14× faster and the EP crosses from losing to
 the CPU EP (0.51×) to beating it (1.05×); `M = 64` crosses from 0.79× to 1.18×. Peak prefill
@@ -4712,6 +4775,13 @@ by this edit, which is the point: the change moved lane occupancy, not graph par
   × 2.291 GB) between two arms, so it inherits both arms' noise and assumes the arms differ only in
   weight passes — which is true by construction of the `QB_ROWS` specialisation, but is an argument
   about the source, not a counter reading.
+* **The null control is an arm-asymmetry width, not a symmetric noise band.** In §26.10's run the
+  two arms' per-repeat spans are disjoint at `M = 1` — where the effect is zero by construction —
+  with a median ratio of 1.143. Any row whose arm ratio sits inside 0.79 – 1.26 is not a reading,
+  in either direction; see §26.3. This is the limitation that governs every decode row.
+* **Equivalence counts include the reference checked against itself.** The `cpu` arm carries
+  `"self": true`, so 54 arm verdicts are 36 independent comparisons plus 18 self-checks (and 9 are
+  6 plus 3). Verdict totals in this section always name which they mean.
 * **No reading here identifies its device beyond index, name and driver.** Every §26 artifact was
   taken before `main` grew stable device identity (#54: `uuid`/`luid`/`pci`), so on a box with two
   identical cards these artifacts could not say which one ran. This box has exactly one Vulkan
@@ -4763,7 +4833,9 @@ protocol, artifact `bench/results/real_model_latency_postmerge.json`:
 | decode past=1024 | 608.21 | 627.50 | 630.46 | 190.28 |
 
 All three cases are `PASS` on the equivalence gate, with `MATCH` on all 9 arm verdicts (3 arms ×
-3 cases), under §26.2's budgets rather than bitwise. The two prefill
+3 cases) — **6 independent comparisons and 3 reference self-checks** (`self: true` on the `cpu`
+arm), under §26.2's budgets rather than bitwise, plus `null_control_bitwise` on the 2 `M = 1` cases
+(65 outputs, `identical: true`). The two prefill
 points move by 0.2% and 0.8%; the decode point moves 3.2%, which is inside the host-round-trip
 variance §26.7 already describes and is not a reading about the kernel — decode's dispatch geometry
 is unchanged by this change and by the merge alike. The merge did not move the result.
@@ -4813,15 +4885,26 @@ What reproduces across the three builds, stated as narrowly as the artifacts sup
   — each within 0.25% of §26.6 and a total spread of 0.44% (6.11 ms) — and the advantage over the
   untiled arm reproduces at 1.681× / 1.675× / 1.676×.
 * **Outputs, under the recorded budgets.** 3/3 cases `PASS` and 9/9 arm verdicts `MATCH` in each
-  run's `models[].equivalence`. Those are the §26.2 logit and activation budgets, **not** a bitwise
-  claim: nothing in these three artifacts compares output bytes. The only bitwise evidence on this
-  branch is §26.5's 36 local-size comparisons, and it is a comparison between arms of one build,
-  not between builds.
+  run's `models[].equivalence` — and, counted honestly, that is **6 independent comparisons plus 3
+  reference self-checks** per run, because the `cpu` arm is the reference and its record carries
+  `"self": true`. Those six are the §26.2 logit and activation budgets, **not** a claim that the
+  three builds agree byte-for-byte with each other: no artifact here compares one build's output
+  bytes with another's. Each run *does* carry bitwise evidence *within* itself —
+  `null_control_bitwise` on its 2 `M = 1` cases, 65 output tensors, `identical: true` — as does
+  §26.5's 36-comparison local-size sweep; both compare arms of one build.
 
-The two rows that move more are the two rows §26.7 already declines to read: the M=1 null control
-moves 9% *and inverts sign* between the two Vulkan arms that compile the identical SPIR-V, which is
-the noise floor doing exactly what a null control is for; decode moves 4% for the same
-host-round-trip reason as §26.9. Neither is a kernel reading, and neither is claimed as one.
+Read together with the §26.3 null-control analysis, that is the ceiling on what these three runs
+can show: **the M = 128 timing reproduces, and no output claim between builds is available at all.**
+
+The two rows that move more are the two rows §26.7 already declines to read. The `M = 1` null
+control is the sharper of the two and is understated by calling it a sign inversion: in **this**
+run the tiled arm is slower in **every** repeat and the two arms' per-repeat spans do not overlap —
+`[28.51, 31.32]` against `[25.35, 27.46]` ms, a **median ratio of 1.143** and a per-repeat range of
+1.038 – 1.224. Both arms specialise identically at `M = 1` and this run's own
+`null_control_bitwise` records their 65 outputs as identical, so a systematic ~14% separation is
+a property of the harness or the box, never of the code. §26.3 quantifies it and bounds what may be
+read from it. Decode moves 4% for the same host-round-trip reason as §26.9. Neither is a kernel
+reading, and neither is claimed as one.
 
 Reproduce:
 
