@@ -619,10 +619,32 @@ def _committed_profile():
     return json.loads(art.read_text("utf-8"))
 
 
+def _committed_outside_subgraph_ms():
+    """The pinned figure, or a failure that says what happened rather than a KeyError.
+
+    A restructuring of `compute_reconciliation` that renames this term is a legitimate
+    thing to do, but it must not be able to silently disarm the pin: an absent key would
+    otherwise surface as a `KeyError` in a test whose name is about documents, and the
+    obvious repair would be to delete the test.
+    """
+    doc = _committed_profile()
+    rec = doc.get("compute_reconciliation") or {}
+    ms = rec.get("outside_subgraph_ms")
+    if ms is None:
+        pytest.fail(
+            "the committed profile no longer publishes "
+            "`compute_reconciliation.outside_subgraph_ms`, which is the figure "
+            f"{list(_OUTSIDE_SUBGRAPH_CITATION_SITES)} cite. If the reduction was "
+            "restructured, repoint this pin at the term that replaced it and update the "
+            "prose in the same change -- do not drop the pin, which is the failure this "
+            "test exists to prevent.")
+    return ms
+
+
 def test_the_committed_artifact_agrees_with_itself_about_outside_subgraph():
     """`outside_subgraph_ms` and `steady.median_outside_subgraph_us` are the same measurement."""
     doc = _committed_profile()
-    ms = doc["compute_reconciliation"]["outside_subgraph_ms"]
+    ms = _committed_outside_subgraph_ms()
     us = doc["steady"]["median_outside_subgraph_us"]
     assert us / 1000.0 == pytest.approx(ms), (
         f"the artifact publishes {ms} ms and {us} us; they are one number in two units")
@@ -639,7 +661,7 @@ def test_every_documented_outside_subgraph_citation_matches_the_artifact():
     figure is read *out of the artifact* here and required to be the one the prose says.
     """
     doc = _committed_profile()
-    ms = doc["compute_reconciliation"]["outside_subgraph_ms"]
+    ms = _committed_outside_subgraph_ms()
     expected = f"{ms:.3f}".rstrip("0")
     root = Path(__file__).resolve().parents[1]
     for rel in _OUTSIDE_SUBGRAPH_CITATION_SITES:
@@ -654,8 +676,7 @@ def test_every_documented_outside_subgraph_citation_matches_the_artifact():
 
 def test_the_pin_would_notice_a_drifting_document():
     """Negative control: a pin that cannot fail is decoration."""
-    doc = _committed_profile()
-    ms = doc["compute_reconciliation"]["outside_subgraph_ms"]
+    ms = _committed_outside_subgraph_ms()
     expected = f"{ms:.3f}".rstrip("0")
     drifted = f"the term reads {_SUPERSEDED_OUTSIDE_SUBGRAPH_MS} ms"
     assert expected not in drifted
