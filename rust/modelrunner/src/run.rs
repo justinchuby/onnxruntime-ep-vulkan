@@ -70,6 +70,14 @@ pub struct RunConfig {
     /// Skip the Vulkan arm entirely and record only the CPU reference. Used to prove the harness
     /// itself works on a machine with no Vulkan device -- and it can never report PASS.
     pub cpu_only: bool,
+    /// Pin the Vulkan device by **stable identity** for this run (issue #18).
+    ///
+    /// Set into `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` before the EP library is registered, which
+    /// is the only point at which it can reach `engine::devices_to_advertise` — there is exactly
+    /// one authoritative selection path and this is it. When present, the run additionally
+    /// enforces that the device the session *opened* is the device that was *requested*, and
+    /// fails closed when they differ.
+    pub device_selector: Option<String>,
     pub keep_profile: bool,
 }
 
@@ -90,6 +98,7 @@ impl Default for RunConfig {
             atol: None,
             fetch: false,
             cpu_only: false,
+            device_selector: None,
             keep_profile: false,
         }
     }
@@ -264,6 +273,236 @@ fn read_profile(path: &Path) -> (BTreeMap<String, u64>, String) {
     }
 }
 
+/// Compare the device the EP session **actually opened** against the devices ORT **advertised**,
+/// and describe the selected device (issue #18, blocker 3 / contract C7).
+///
+/// Returns the `device_identity_agreement` guard and the `execution_provider.selected_device`
+/// object that goes into the evidence document beside `execution_provider.devices`.
+///
+/// # Why the enumeration is not the answer
+///
+/// `execution_provider.devices` records what `GetEpDevices` listed. That list is what was *on
+/// offer*. Which one the session opened is a different fact, held only by the EP, and the whole
+/// §6.5 family of defects lives in the gap between them: ORT binds one `OrtEpDevice`, the EP's
+/// selector indexes a differently-sorted list, and the session opens a third device while the
+/// document proudly records all four as "devices seen". An evidence artifact that cannot name the
+/// device its numbers came from is not evidence about a device.
+///
+/// # Fail closed
+///
+/// Every branch that cannot *establish* agreement returns a red guard, including the ones where
+/// nothing is provably wrong (no identity reported, identity unattributable to any advertised
+/// device). That asymmetry is deliberate. The cost of a false red is a rerun; the cost of a false
+/// green is a number in `bench/results/` attributed to hardware it never touched, which is the
+/// failure this repository exists to make impossible.
+fn device_identity_agreement(
+    counters: &Counters,
+    advertised: &[crate::ortapi::EpDeviceInfo],
+    config: &RunConfig,
+) -> (Guard, Json) {
+    let keys = counters.session_device_keys();
+    let names = counters.session_device_names();
+    let selected_name = names.first().map(String::as_str).unwrap_or("");
+    let selected_key = keys.first().cloned();
+
+    let advertised_match = selected_key.as_deref().and_then(|k| {
+        let want = k.strip_prefix("uuid:")?;
+        advertised
+            .iter()
+            .find(|d| d.uuid.as_deref() == Some(want))
+            .map(|d| d.index)
+    });
+
+    let selected_device = Json::obj(vec![
+        (
+            "identity",
+            match &selected_key {
+                Some(k) => Json::s(k.clone()),
+                None => Json::Null,
+            },
+        ),
+        (
+            "name",
+            if selected_name.is_empty() {
+                Json::Null
+            } else {
+                Json::s(selected_name)
+            },
+        ),
+        (
+            "advertised_index",
+            match advertised_match {
+                Some(i) => Json::int(i as i64),
+                None => Json::Null,
+            },
+        ),
+        (
+            "requested_selector",
+            match &config.device_selector {
+                Some(s) => Json::s(s.clone()),
+                None => Json::Null,
+            },
+        ),
+        (
+            "selector_source",
+            Json::s(if config.device_selector.is_some() {
+                "--device-selector (ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR, set before EP \
+                 registration)"
+            } else {
+                "none: ORT's binding chose the device"
+            }),
+        ),
+        (
+            "alloc_device_frame",
+            match &counters.alloc_device_frame {
+                Some(f) => Json::s(f.clone()),
+                None => Json::Null,
+            },
+        ),
+    ]);
+
+    // Each arm answers: can this run attribute its numbers to exactly one piece of hardware that
+    // ORT actually offered it?
+    let guard = if config.cpu_only {
+        Guard::new(
+            "device_identity_agreement",
+            false,
+            "--cpu-only: no Vulkan device was opened, so no number in this document can be \
+             attributed to one",
+        )
+    } else if !counters.present {
+        Guard::new(
+            "device_identity_agreement",
+            false,
+            format!(
+                "no counters snapshot, so the EP reported no session device identity. {} This is \
+                 an absent instrument, not agreement.",
+                counters.note
+            ),
+        )
+    } else if keys.is_empty() {
+        Guard::new(
+            "device_identity_agreement",
+            false,
+            "the EP reported no running device identity (running_device_uuids is absent or \
+             empty). Either no VkDevice was opened, or this EP build predates the stable-identity \
+             surface — either way this run cannot say which hardware produced its numbers.",
+        )
+    } else if keys.len() > 1 {
+        Guard::new(
+            "device_identity_agreement",
+            false,
+            format!(
+                "the EP opened {} distinct physical devices in one run ({}). The outputs compared \
+                 above came from more than one piece of hardware and cannot be attributed to \
+                 either.",
+                keys.len(),
+                keys.join(", ")
+            ),
+        )
+    } else if counters.alloc_device_frames_declared.unwrap_or(1) > 1
+        || counters.alloc_device_frame.as_deref() == Some("MIXED")
+    {
+        Guard::new(
+            "device_identity_agreement",
+            false,
+            format!(
+                "the EP declared {} distinct (frame, device identity) pairs — alloc_device_frame \
+                 = {:?}. The allocator numbers and the session describe different devices.",
+                counters.alloc_device_frames_declared.unwrap_or(0),
+                counters.alloc_device_frame.as_deref().unwrap_or("<absent>"),
+            ),
+        )
+    } else if counters.alloc_device_frame.as_deref() == Some("SPLIT-DEVICE") {
+        Guard::new(
+            "device_identity_agreement",
+            false,
+            format!(
+                "alloc_device_frame = SPLIT-DEVICE: the session opened `{}` while the allocator \
+                 was stood up on another device. Set --device-selector so only one device is \
+                 advertised.",
+                selected_key.clone().unwrap_or_default()
+            ),
+        )
+    } else if advertised.is_empty() {
+        Guard::new(
+            "device_identity_agreement",
+            false,
+            format!(
+                "the EP opened `{}` but ORT advertised no {EP_NAME} device to compare it against",
+                selected_key.clone().unwrap_or_default()
+            ),
+        )
+    } else if advertised_match.is_none() {
+        let key = selected_key.clone().unwrap_or_default();
+        Guard::new(
+            "device_identity_agreement",
+            false,
+            format!(
+                "the device the session opened (`{key}`{}) does not match any device ORT \
+                 advertised for {EP_NAME}: [{}]. Either the session opened a device that was \
+                 never offered, or the advertised devices carry no vulkan.device_uuid metadata to \
+                 compare against — in both cases this run's numbers cannot be attributed to \
+                 advertised hardware, so it fails rather than warning.",
+                if selected_name.is_empty() {
+                    String::new()
+                } else {
+                    format!(", '{selected_name}'")
+                },
+                advertised
+                    .iter()
+                    .map(|d| format!(
+                        "{}={}",
+                        d.index,
+                        d.uuid
+                            .as_deref()
+                            .map(|u| format!("uuid:{u}"))
+                            .unwrap_or_else(|| "(no uuid metadata)".to_string())
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+    } else {
+        let key = selected_key.clone().unwrap_or_default();
+        let idx = advertised_match.unwrap_or(0);
+        // A `uuid:` selector is checked against the opened identity directly as well, so the
+        // agreement does not rest solely on the EP having advertised what it later opened.
+        let requested_uuid = config
+            .device_selector
+            .as_deref()
+            .and_then(|s| s.strip_prefix("uuid:"))
+            .map(|u| u.trim().to_ascii_lowercase());
+        match requested_uuid {
+            Some(want) if key != format!("uuid:{want}") => Guard::new(
+                "device_identity_agreement",
+                false,
+                format!(
+                    "--device-selector requested uuid:{want} but the session opened `{key}` \
+                     ('{selected_name}'). The selector is a stable identity, not a preference: a \
+                     run that answers a question about different hardware than the one it was \
+                     asked about is unattributed, so it fails."
+                ),
+            ),
+            _ => Guard::new(
+                "device_identity_agreement",
+                true,
+                format!(
+                    "the session opened exactly one device, `{key}` ('{selected_name}'), and it \
+                     is advertised OrtEpDevice index {idx}{}. alloc_device_frame = {}.",
+                    match &config.device_selector {
+                        Some(s) => format!(", which is the device --device-selector {s} requested"),
+                        None => String::new(),
+                    },
+                    counters.alloc_device_frame.as_deref().unwrap_or("<absent>"),
+                ),
+            ),
+        }
+    };
+
+    (guard, selected_device)
+}
+
 /// The complete run: both arms, all guards, one document.
 pub fn execute(config: &RunConfig) -> Result<(Outcome, Json)> {
     let repo = crate::repo::root()?;
@@ -419,6 +658,10 @@ pub fn execute(config: &RunConfig) -> Result<(Outcome, Json)> {
     let mut vulkan_arm: Option<ArmResult> = None;
     let mut ep_identity: Option<FileIdentity> = None;
     let mut devices_seen: Vec<Json> = Vec::new();
+    // The `OrtEpDevice`s ORT advertised for *our* EP, hoisted out of the Vulkan block so the
+    // identity-agreement guard can resolve the device the session actually opened against the
+    // devices that were actually offered.
+    let mut our_devices: Vec<crate::ortapi::EpDeviceInfo> = Vec::new();
     let mut tolerance: Option<Tolerance> = None;
 
     if config.cpu_only {
@@ -454,6 +697,20 @@ pub fn execute(config: &RunConfig) -> Result<(Outcome, Json)> {
             );
         }
 
+        // Issue #18: the ONE authoritative selection path. This must be set before
+        // `register_ep_library`, because `engine::devices_to_advertise` reads it inside
+        // `GetSupportedDevices` — which runs before any session, and therefore before any session
+        // option could possibly be visible. Setting it here means ORT is *offered* only the
+        // requested device, so ORT's binding and the session's selection cannot diverge by
+        // construction rather than by hope.
+        //
+        // SAFETY: as above -- single-threaded, before registration, before any ORT worker exists.
+        if let Some(sel) = &config.device_selector {
+            unsafe {
+                std::env::set_var(onnxruntime_vulkan_ep::ENV_DEVICE_SELECTOR_STRICT, sel);
+            }
+        }
+
         env.register_ep_library(EP_NAME, &ep_lib)?;
         let all_devices = env.ep_devices()?;
         for d in &all_devices {
@@ -464,6 +721,12 @@ pub fn execute(config: &RunConfig) -> Result<(Outcome, Json)> {
                 ("hardware_type", Json::s(d.hardware_type.clone())),
                 ("vendor_id", Json::int(d.vendor_id as i64)),
                 ("device_id", Json::int(d.device_id as i64)),
+                // Stable identity (issue #18): `null` (never a fabricated placeholder) when the
+                // field is genuinely unavailable on this EP/platform, e.g. `luid`/`pci` on
+                // MoltenVK, or all three on a non-Vulkan EP with no matching metadata key.
+                ("uuid", d.uuid.clone().map(Json::s).unwrap_or(Json::Null)),
+                ("luid", d.luid.clone().map(Json::s).unwrap_or(Json::Null)),
+                ("pci", d.pci.clone().map(Json::s).unwrap_or(Json::Null)),
             ]));
         }
         let ours: Vec<_> = all_devices
@@ -471,6 +734,7 @@ pub fn execute(config: &RunConfig) -> Result<(Outcome, Json)> {
             .filter(|d| d.ep_name == EP_NAME)
             .cloned()
             .collect();
+        our_devices = ours.clone();
         guards.push(Guard::new(
             "vulkan_ep_device_present",
             !ours.is_empty(),
@@ -593,8 +857,31 @@ pub fn execute(config: &RunConfig) -> Result<(Outcome, Json)> {
         },
     ));
 
+    // -- Guard 5b: the device the session OPENED is the device that was ADVERTISED (issue #18) --
+    //
+    // Every device fact in this document up to here describes what ORT *enumerated*. Enumeration
+    // is not selection: the runner can list four devices, ORT can bind one, and the EP session can
+    // open a third — that is exactly the §6.5 index-space defect, and a document that records only
+    // the enumeration cannot tell you it happened. So the EP reports the identity it actually
+    // opened through its counters, and this compares the two.
+    //
+    // It fails **closed**. A run whose selected device cannot be matched to an advertised one is
+    // not a run with a caveat, it is a run whose numbers cannot be attributed to any hardware; the
+    // previous behaviour of warning and continuing let an unattributable MATCH be read as
+    // evidence about the device the operator asked for.
+    let (identity_guard, selected_device) =
+        device_identity_agreement(&counters, &our_devices, config);
+    let identity_diverged = !identity_guard.held;
+    if !config.cpu_only {
+        guards.push(identity_guard);
+    }
+
     // Disagreement between the primary and corroborating witnesses is itself a finding.
-    let split_frame = (vulkan_nodes > 0) != (dispatches.unwrap_or(0) > 0);
+    //
+    // Issue #18 widens it: a device-identity divergence is a split frame in the same sense — the
+    // numbers in this document and the hardware they are attributed to are not the same subject.
+    let split_frame = (vulkan_nodes > 0) != (dispatches.unwrap_or(0) > 0)
+        || (!config.cpu_only && identity_diverged);
 
     // -- Guard 6: the numbers ----------------------------------------------------------------
     if let Some(vulkan) = &vulkan_arm {
@@ -711,6 +998,16 @@ pub fn execute(config: &RunConfig) -> Result<(Outcome, Json)> {
                     },
                 ),
                 ("devices", Json::Arr(devices_seen)),
+                // What ORT *offered*. `selected_device` below is what the session *opened* — the
+                // two are different facts and only the second one attributes these numbers.
+                ("selected_device", selected_device),
+                (
+                    "device_selector",
+                    match &config.device_selector {
+                        Some(s) => Json::s(s.clone()),
+                        None => Json::Null,
+                    },
+                ),
             ]),
         ),
         (
@@ -838,7 +1135,311 @@ pub fn worst_verdict(comparisons: &[OutputComparison]) -> Verdict {
 mod tests {
     use super::*;
 
+    // ---------------------------------------------------------------------------------------
+    // `device_identity_agreement` (issue #18, blocker 3 / contract C7).
+    //
+    // The rejected artifact recorded the ENUMERATED devices and nothing else, so an evidence
+    // document could list four `OrtEpDevice`s while the session ran on a fifth, and the reader
+    // had no way to tell. These tests pin the opposite property: the document names the device
+    // that was OPENED, and every state in which that cannot be established is RED.
+    //
+    // The asymmetry is the point. There is no branch below in which "we could not tell" is green.
+    // ---------------------------------------------------------------------------------------
+
+    const UUID_A: &str = "11111111111111111111111111111111";
+    const UUID_B: &str = "22222222222222222222222222222222";
+    const NAME: &str = "NVIDIA RTX A1000 Laptop GPU";
+
+    fn advertised(pairs: &[(usize, Option<&str>)]) -> Vec<crate::ortapi::EpDeviceInfo> {
+        pairs
+            .iter()
+            .map(|(index, uuid)| crate::ortapi::EpDeviceInfo {
+                index: *index,
+                raw: std::ptr::null(),
+                ep_name: EP_NAME.to_string(),
+                ep_vendor: "onnxruntime-ep-vulkan".to_string(),
+                hardware_type: "GPU".to_string(),
+                vendor_id: 0x10de,
+                device_id: 0x27a0,
+                uuid: uuid.map(str::to_string),
+                luid: None,
+                pci: None,
+            })
+            .collect()
+    }
+
+    /// A counters snapshot for a run that opened exactly the devices listed.
+    ///
+    /// **In the shape the EP actually writes** (issue #18 blocker B1): a bare `"; "`-separated
+    /// list, no positional prefix. It used to build the indexed `"0=uuid:…"` shape, which is the
+    /// wire format of a *different* counter — so every test below was exercising a tolerance
+    /// path rather than the production one, and the production one was broken downstream.
+    fn counters_for(devices: &[(&str, &str)], frame: &str, declared: i64) -> Counters {
+        let join = |f: &dyn Fn(&(&str, &str)) -> String| {
+            devices.iter().map(f).collect::<Vec<_>>().join("; ")
+        };
+        Counters {
+            present: true,
+            dispatches_executed: Some(1),
+            claimed_nodes: Some(1),
+            islands_offered: Some(1),
+            compute_calls: Some(1),
+            running_device_names: Some(join(&|d| d.1.to_string())),
+            running_device_uuids: Some(join(&|d| format!("uuid:{}", d.0))),
+            alloc_device_frame: Some(frame.to_string()),
+            alloc_device_frames_declared: Some(declared),
+            note: String::new(),
+        }
+    }
+
+    fn cfg(selector: Option<&str>) -> RunConfig {
+        RunConfig {
+            device_selector: selector.map(str::to_string),
+            ..RunConfig::default()
+        }
+    }
+
+    fn green(g: &Guard) -> bool {
+        g.held
+    }
+
+    fn detail(g: &Guard) -> String {
+        g.detail.clone()
+    }
+
     #[test]
+    fn one_opened_device_that_ort_advertised_is_agreement() {
+        let (g, doc) = device_identity_agreement(
+            &counters_for(&[(UUID_A, NAME)], "SHARED", 1),
+            &advertised(&[(0, Some(UUID_B)), (1, Some(UUID_A))]),
+            &cfg(None),
+        );
+        assert!(green(&g), "{}", detail(&g));
+        assert_eq!(
+            doc.get("identity"),
+            Some(&Json::s(format!("uuid:{UUID_A}"))),
+            "the document must name the device that was OPENED, by identity"
+        );
+        assert_eq!(
+            doc.get("advertised_index"),
+            Some(&Json::int(1)),
+            "and say which advertised OrtEpDevice that was — index 1, not the enumeration order"
+        );
+        assert_eq!(doc.get("name"), Some(&Json::s(NAME)));
+    }
+
+    #[test]
+    fn a_selector_that_names_the_opened_device_is_agreement_and_is_recorded() {
+        let (g, doc) = device_identity_agreement(
+            &counters_for(&[(UUID_A, NAME)], "SHARED", 1),
+            &advertised(&[(0, Some(UUID_A))]),
+            &cfg(Some(&format!("uuid:{UUID_A}"))),
+        );
+        assert!(green(&g), "{}", detail(&g));
+        assert!(
+            detail(&g).contains("--device-selector"),
+            "a green guard on a selected run must say the selector was honoured: {}",
+            detail(&g)
+        );
+        assert_eq!(
+            doc.get("requested_selector"),
+            Some(&Json::s(format!("uuid:{UUID_A}"))),
+            "the request belongs in the document beside the outcome"
+        );
+    }
+
+    /// Blocker 3: divergence FAILS CLOSED. The rejected artifact warned and continued.
+    #[test]
+    fn a_selector_that_names_a_different_device_than_the_one_opened_fails_closed() {
+        let (g, _) = device_identity_agreement(
+            &counters_for(&[(UUID_A, NAME)], "SHARED", 1),
+            &advertised(&[(0, Some(UUID_A)), (1, Some(UUID_B))]),
+            &cfg(Some(&format!("uuid:{UUID_B}"))),
+        );
+        assert!(
+            !green(&g),
+            "the run answered a question about card A while being asked about card B; that is \
+             not a warning, it is an unattributed measurement"
+        );
+        let d = detail(&g);
+        assert!(d.contains(UUID_A) && d.contains(UUID_B), "{d}");
+    }
+
+    #[test]
+    fn a_run_that_reports_no_identity_is_unknown_never_agreed() {
+        let mut c = counters_for(&[(UUID_A, NAME)], "SHARED", 1);
+        c.running_device_uuids = None;
+        let (g, doc) = device_identity_agreement(&c, &advertised(&[(0, Some(UUID_A))]), &cfg(None));
+        assert!(
+            !green(&g),
+            "an EP build that predates the identity surface reports nothing; treating silence as \
+             agreement is exactly how the enumerated list got read as the selected device"
+        );
+        assert_eq!(doc.get("identity"), Some(&Json::Null));
+        assert!(
+            detail(&g).contains("running_device_uuids"),
+            "{}",
+            detail(&g)
+        );
+    }
+
+    #[test]
+    fn an_absent_counters_snapshot_is_an_absent_instrument() {
+        let (g, _) = device_identity_agreement(
+            &Counters {
+                present: false,
+                note: "no counters snapshot".to_string(),
+                ..Default::default()
+            },
+            &advertised(&[(0, Some(UUID_A))]),
+            &cfg(None),
+        );
+        assert!(!green(&g));
+        assert!(detail(&g).contains("absent instrument"), "{}", detail(&g));
+    }
+
+    #[test]
+    fn two_opened_devices_cannot_be_attributed_to_either_of_them() {
+        let (g, _) = device_identity_agreement(
+            &counters_for(&[(UUID_A, NAME), (UUID_B, NAME)], "MIXED", 2),
+            &advertised(&[(0, Some(UUID_A)), (1, Some(UUID_B))]),
+            &cfg(None),
+        );
+        assert!(!green(&g));
+        let d = detail(&g);
+        assert!(
+            d.contains(UUID_A) && d.contains(UUID_B),
+            "both devices must be named or the failure is undiagnosable: {d}"
+        );
+    }
+
+    /// The identical-name case, at the evidence layer. Both cards report the same `deviceName`;
+    /// on the rejected bytes the frame collapsed to `SHARED` and this guard would have gone
+    /// green on a two-device run.
+    #[test]
+    fn two_cards_of_the_same_model_do_not_agree_merely_because_their_names_match() {
+        let mut c = counters_for(&[(UUID_A, NAME), (UUID_B, NAME)], "MIXED", 2);
+        // The names are byte-identical — the only thing that separates these rows is the identity.
+        c.running_device_names = Some(format!("0={NAME}; 1={NAME}"));
+        assert_eq!(c.session_device_keys().len(), 2);
+        let (g, _) = device_identity_agreement(
+            &c,
+            &advertised(&[(0, Some(UUID_A)), (1, Some(UUID_B))]),
+            &cfg(None),
+        );
+        assert!(
+            !green(&g),
+            "identical names must not be read as one device: {}",
+            detail(&g)
+        );
+    }
+
+    #[test]
+    fn a_mixed_or_split_frame_fails_even_when_one_identity_was_reported() {
+        for frame in ["MIXED", "SPLIT-DEVICE"] {
+            let (g, _) = device_identity_agreement(
+                &counters_for(
+                    &[(UUID_A, NAME)],
+                    frame,
+                    if frame == "MIXED" { 2 } else { 1 },
+                ),
+                &advertised(&[(0, Some(UUID_A))]),
+                &cfg(None),
+            );
+            assert!(
+                !green(&g),
+                "frame {frame} means the allocator numbers and the session describe different \
+                 devices: {}",
+                detail(&g)
+            );
+        }
+    }
+
+    #[test]
+    fn an_opened_device_that_was_never_advertised_fails_closed() {
+        let (g, doc) = device_identity_agreement(
+            &counters_for(&[(UUID_A, NAME)], "SHARED", 1),
+            &advertised(&[(0, Some(UUID_B))]),
+            &cfg(None),
+        );
+        assert!(!green(&g));
+        assert_eq!(
+            doc.get("advertised_index"),
+            Some(&Json::Null),
+            "no advertised device matches, and the document must say so rather than guess 0"
+        );
+    }
+
+    #[test]
+    fn advertised_devices_without_uuid_metadata_cannot_confirm_anything() {
+        let (g, _) = device_identity_agreement(
+            &counters_for(&[(UUID_A, NAME)], "SHARED", 1),
+            &advertised(&[(0, None), (1, None)]),
+            &cfg(None),
+        );
+        assert!(
+            !green(&g),
+            "a host too old to carry vulkan.device_uuid leaves nothing to compare against; that \
+             is unknown, not agreed: {}",
+            detail(&g)
+        );
+        assert!(detail(&g).contains("no uuid metadata"), "{}", detail(&g));
+    }
+
+    #[test]
+    fn no_advertised_devices_at_all_fails_closed() {
+        let (g, _) = device_identity_agreement(
+            &counters_for(&[(UUID_A, NAME)], "SHARED", 1),
+            &[],
+            &cfg(None),
+        );
+        assert!(!green(&g));
+    }
+
+    #[test]
+    fn a_cpu_only_run_never_claims_a_device() {
+        let mut c = cfg(None);
+        c.cpu_only = true;
+        let (g, _) = device_identity_agreement(
+            &counters_for(&[(UUID_A, NAME)], "SHARED", 1),
+            &advertised(&[(0, Some(UUID_A))]),
+            &c,
+        );
+        assert!(!green(&g), "{}", detail(&g));
+        assert!(detail(&g).contains("--cpu-only"), "{}", detail(&g));
+    }
+
+    #[test]
+    fn the_selected_device_object_always_records_how_the_device_was_chosen() {
+        let (_, none) = device_identity_agreement(
+            &counters_for(&[(UUID_A, NAME)], "SHARED", 1),
+            &advertised(&[(0, Some(UUID_A))]),
+            &cfg(None),
+        );
+        assert_eq!(none.get("requested_selector"), Some(&Json::Null));
+        match none.get("selector_source") {
+            Some(Json::Str(s)) => assert!(s.contains("ORT's binding"), "{s}"),
+            other => panic!("selector_source must be a string, got {other:?}"),
+        }
+
+        let (_, sel) = device_identity_agreement(
+            &counters_for(&[(UUID_A, NAME)], "SHARED", 1),
+            &advertised(&[(0, Some(UUID_A))]),
+            &cfg(Some("uuid:11111111111111111111111111111111")),
+        );
+        match sel.get("selector_source") {
+            Some(Json::Str(s)) => assert!(
+                s.contains("before EP registration"),
+                "the document must state WHERE the selection happened — the env var is read once, \
+                 before `register_ep_library`, which is what makes it the single authoritative \
+                 path: {s}"
+            ),
+            other => panic!("selector_source must be a string, got {other:?}"),
+        }
+    }
+
+    #[test]
+
     fn the_default_seed_is_fixed_rather_than_drawn_from_a_clock() {
         // Two configs built a moment apart must feed identical bytes, or a reported disagreement
         // cannot be reproduced from the command line that produced it.

@@ -610,6 +610,106 @@ def test_lavapipe_and_nvidia_share_a_fingerprint_so_identity_is_refused_not_gues
     assert got is None and "ambiguous" in why
 
 
+# ---------------------------------------------------------------------------
+# Stable device identity (issue #18) — uuid/luid/pci carried by DeviceFacts.
+# ---------------------------------------------------------------------------
+
+def test_bytes_to_hex_matches_the_rust_query_device_identity_encoding():
+    # Real RTX A1000 uuid bytes, cross-validated against nvidia-smi and the Rust EP.
+    raw = [170, 223, 51, 212, 209, 24, 21, 95, 204, 96, 194, 43, 92, 53, 36, 99]
+    assert devices._bytes_to_hex(raw) == "aadf33d4d118155fcc60c22b5c352463"
+    assert devices._bytes_to_hex(None) is None
+    assert devices._bytes_to_hex([]) is None
+    assert devices._bytes_to_hex("not-a-list") is None
+
+
+def test_parse_json_profile_extracts_uuid_luid_and_pci():
+    payload = {
+        "capabilities": {
+            "device": {
+                "properties": {
+                    "VkPhysicalDeviceProperties": {
+                        "deviceName": "NVIDIA RTX A1000",
+                        "limits": {},
+                    },
+                    "VkPhysicalDeviceVulkan11Properties": {
+                        "deviceUUID": [170, 223, 51, 212, 209, 24, 21, 95,
+                                       204, 96, 194, 43, 92, 53, 36, 99],
+                        "deviceLUID": [122, 223, 7, 0, 0, 0, 0, 0],
+                        "deviceLUIDValid": True,
+                    },
+                    "VkPhysicalDevicePCIBusInfoPropertiesEXT": {
+                        "pciDomain": 0,
+                        "pciBus": 159,
+                        "pciDevice": 0,
+                        "pciFunction": 0,
+                    },
+                },
+                "queueFamiliesProperties": [],
+            }
+        }
+    }
+    facts = devices._parse_json_profile(payload, index=0)
+    assert facts.uuid == "aadf33d4d118155fcc60c22b5c352463"
+    assert facts.luid == "7adf070000000000"
+    assert facts.pci == "0000:9f:00.0"
+
+
+def test_parse_json_profile_leaves_identity_none_when_extensions_are_absent():
+    """MoltenVK / some mobile ICDs never report LUID or VK_EXT_pci_bus_info: absence, not guess."""
+    payload = {
+        "capabilities": {
+            "device": {
+                "properties": {
+                    "VkPhysicalDeviceProperties": {"deviceName": "Apple M-series", "limits": {}},
+                    "VkPhysicalDeviceVulkan11Properties": {
+                        "deviceUUID": [1] * 16,
+                        "deviceLUIDValid": False,
+                    },
+                },
+                "queueFamiliesProperties": [],
+            }
+        }
+    }
+    facts = devices._parse_json_profile(payload, index=0)
+    assert facts.uuid == "01" * 16
+    assert facts.luid is None
+    assert facts.pci is None
+
+
+def test_identify_by_uuid_is_exact_even_for_two_identical_gpus():
+    """Two identical GPUs share every timestamp fingerprint; uuid still tells them apart."""
+    gpu0 = devices.DeviceFacts(index=0, name="NVIDIA RTX A1000", uuid="aa" * 16)
+    gpu1 = devices.DeviceFacts(index=1, name="NVIDIA RTX A1000", uuid="bb" * 16)
+    got, why = devices.identify_by_uuid([gpu0, gpu1], "BB" * 16)  # case-insensitive match
+    assert got is gpu1 and "matches exactly one" in why
+
+
+def test_identify_by_uuid_refuses_when_absent_or_unmatched():
+    gpu0 = devices.DeviceFacts(index=0, name="NVIDIA RTX A1000", uuid="aa" * 16)
+    got, why = devices.identify_by_uuid([gpu0], None)
+    assert got is None and "no device uuid" in why
+    got, why = devices.identify_by_uuid([gpu0], "cc" * 16)
+    assert got is None and "matches NO probed device" in why
+
+
+def test_device_identity_check_prefers_uuid_over_timestamp_when_both_are_present():
+    """A uuid mismatch must win over an ambiguous/matching timestamp fingerprint."""
+    gpu0 = devices.DeviceFacts(index=0, name="NVIDIA RTX A1000",
+                               timestamp_period_ns=1.0, timestamp_valid_bits=64, uuid="aa" * 16)
+    gpu1 = devices.DeviceFacts(index=1, name="NVIDIA RTX A1000 (second)",
+                               timestamp_period_ns=1.0, timestamp_valid_bits=64, uuid="bb" * 16)
+    probed = [gpu0, gpu1]
+
+    # Timestamps alone are ambiguous between identical GPUs; uuid resolves it exactly.
+    result = devices.device_identity_check(probed, 0, 1.0, 64, uuid="bb" * 16)
+    assert result["ok"] is False and result["verdict"] == "MISLABELLED"
+    assert result["device"].name == gpu1.name
+
+    result_match = devices.device_identity_check(probed, 0, 1.0, 64, uuid="aa" * 16)
+    assert result_match["ok"] and result_match["verdict"] == "MATCH"
+
+
 
 # ---------------------------------------------------------------------------
 # Steady state — the cold inference is a different workload after residency

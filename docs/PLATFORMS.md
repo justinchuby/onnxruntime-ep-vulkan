@@ -335,6 +335,59 @@ struct DeviceCapabilities {
 
 This is a living list. Each entry must have: symptom → affected hardware → driver version → workaround → upstream tracking link.
 
+### 6.4 Stable device identity by platform (issue #18)
+
+`ep.device_selector` / `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` (see `DESIGN.md` §2.4.1) resolve a
+device by `uuid:`, `luid:`, or `pci:` in addition to `index:`/`name:`/`id:`. Availability of the
+underlying Vulkan identity fields is platform-dependent; `query_device_identity`
+(`rust/src/vk/instance.rs`) queries each capability-gated and reports `None` rather than a
+fabricated value where the platform does not provide it, and `resolve_device_selector` turns a
+selector built on a field this platform never reports into `UnsupportedIdentity`, not a false
+`NotFound`.
+
+| Field | Source | Windows | Linux (proprietary + Mesa RADV/ANV) | Android (Adreno/Mali/Xclipse) | MoltenVK |
+|---|---|---|---|---|---|
+| `uuid:` | `VkPhysicalDeviceIDProperties::deviceUUID` (core Vulkan 1.1) | **observed** on the §1.1 desktop drivers | expected always (spec-mandated since 1.1); *not measured by this project* | expected always (spec-mandated since 1.1); *not measured by this project* | expected always; MoltenVK derives a UUID from the Metal device registry ID; *not measured by this project* |
+| `luid:` | `VkPhysicalDeviceIDProperties::deviceLUID` (+ `deviceLUIDValid`) | **observed** populated by every desktop driver on this project (§1.1) | expected rarely valid — LUIDs are a Windows/DXGI-interop concept; *not measured* | expected invalid; *not measured* | expected invalid; *not measured* |
+| `pci:` | `VkPhysicalDevicePCIBusInfoPropertiesEXT` (`VK_EXT_pci_bus_info`) | **observed** on the NVIDIA driver measured in §1.1 | expected present on discrete/integrated GPUs with a real PCI bus; *not measured* | expected absent — mobile SoC GPUs have no PCI bus and the extension is correspondingly unavailable on the drivers surveyed in §1.3; *not measured* | expected absent — Metal devices have no PCI bus in the sense this extension describes; *not measured* |
+
+Only the Windows column is **observed**; the hardware available to this project is a single
+Windows desktop with one discrete GPU (§1.1). Every other cell is what the Vulkan specification
+and vendor documentation lead us to *expect*, and is labelled as such rather than reported as a
+measurement. The code does not depend on any of these expectations being right: an absent field
+is `None`, a selector built on an absent field is `UnsupportedIdentity`, and — see below — an
+absent UUID degrades attribution rather than corrupting it.
+
+Practical guidance: `uuid:` is the only scheme with no platform caveat and is the one this project
+recommends for reproducible multi-GPU configuration (CI matrices, benchmark pinning, and the
+proof-frame binding in `factory.rs`'s `vulkan.device_uuid` EP metadata). `luid:` and `pci:` are
+conveniences for Windows- and desktop-Linux-specific tooling respectively and should not be relied
+on for a selector that must also work on Android or macOS/iOS.
+
+#### 6.4.1 What happens on a platform that reports no UUID
+
+The proof frame (`DESIGN.md` §2.4.1.1) keys on `DeviceKey`, and its fallback contract is the part
+that has to be portable, because it is what runs if the expectations in the table above turn out
+to be wrong on some driver:
+
+| | UUID reported | No UUID reported |
+|---|---|---|
+| Frame key | `uuid:<32 hex>` | `unidentified:<deviceName>#<physical_index>` |
+| Two same-named cards separate into two frames? | yes | **yes** — the enumeration index disambiguates them within the process |
+| A ledger entry can be attributed to this device? | yes (`PROVEN`) | **no** — always `DEVICE-UNATTRIBUTED`, because an enumeration index means nothing outside the process that observed it |
+| `vulkan.device_uuid` EP metadata | present | **omitted**, never `""` and never all-zero |
+
+So on a hypothetical driver that leaves `deviceUUID` unpopulated, *detection* of a mixed frame
+still works and *attribution* of a proof is refused. Neither degrades into a silently wrong
+answer. An all-zero `deviceUUID` is treated as "not reported" for exactly this reason: an
+unpopulated `VkPhysicalDeviceIDProperties` is all zeros on every device that has one, so reading
+it as an identity would make every anonymous device compare equal to every other one.
+
+`nvidia-smi`, `vulkaninfo`, and any other external tool are **not** required at runtime by any of
+this. The identity comes from `vkGetPhysicalDeviceProperties2` with a
+`VkPhysicalDeviceIDProperties` in the `pNext` chain — core Vulkan 1.1, the same call this EP
+already makes for its §7.2 capability gate.
+
 #### Adreno (Qualcomm)
 
 | # | Symptom | Affected hardware | Driver version | Workaround |
@@ -1925,6 +1978,29 @@ The probe restores `_models.py`, verifies it hashes back to the original, clears
 
 The census scans `rust/src` and `tests/ops` only — **never `bench/`**. Every instrument under `bench/` is outside its frame, so "the census is clean" currently says nothing about them. Found by Niobe, routed to Tank; recorded here so nobody reads the verdict wider than it reaches.
 
+### 7.17.5 A guard the census called `unfalsified` where it was *not* right — added 2026-08-06T22:20-07:00 (Tank)
+
+§7.17 above records two cases where `unfalsified` was correct and the fix was to write the missing always-on polarity. This is the other case, and it is worth separating because the first response to it was wrong and shipped for one commit.
+
+`bench/devices.py::identify_by_uuid` (issue #18) was flagged `unfalsified` with `calls=2 reject_polarity=0 accept_polarity=2`. Two polarity tests for it already existed in `bench/test_phases.py` and were correct. The screen could not see the reject side, because it reads reject polarity from `pytest.raises` and **this instrument never raises**: it returns `(device, why)`, and its refusal is the `None` in the first slot. Its caller `device_identity_check` prints the `why` on the refusal path, so the totality is deliberate, not an oversight.
+
+**The wrong fix, made first:** baseline it under `bench_unfalsified` with a hand note in `hand.harness_notes` saying the screen structurally cannot see it. Every sentence in that note was true. It was still wrong, and the reason is the same one §7.17 turns on — `unfalsified` is a statement about *what has been watched*, and a note changes nothing about what has been watched. It converts an open question into a permanent one, and the permanence is invisible: a baselined row prints nothing on a green run.
+
+**The two other wrong fixes, considered and refused:**
+
+- Give `identify_by_uuid` an exception contract so the existing screen can see it. This makes *production* worse — the caller loses the reason string, or has to carry it out of band on an exception — in order to make a *screen* greener. Changing the subject to fit the instrument.
+- Delete the row from the frame. The frame arm exists precisely to make that a `FAIL(drift)`.
+
+**The fix taken:** teach the screen a second polarity source, held to the same standard as the first. `bench/_polarity.py` supplies `refuses(result)` and `selects(result, expected)`, and `audit_instruments.py::VALUE_REJECT_FN` scores a call to the instrument nested inside `refuses(...)` as reject polarity.
+
+What makes this a credit rather than an annotation is that **`refuses` raises when the thing inside it did not refuse** — the property `pytest.raises` has, and the one a comment does not. `selects` compares by `is`, not `==`, because two probed records for two same-model cards are equal on every field but the UUID, and an `==` assertion would pass against an instrument that returned the wrong card. That is the exact collapse issue #18 exists to prevent, reproduced inside its own test.
+
+**And the credit is earned by mutation, not asserted.** `bench/test_devices_identity.py` runs five deliberately defective reimplementations through the *identical* protocol the real instrument passes — case-sensitive compare; first-match-wins instead of refusing an ambiguity; absent-UUID-matches-anything; falls-back-to-name (the shape rejected at `11a7c69`); refuses-without-saying-why. All five are caught. Without that battery, "the tests pass" would say only that the tests pass.
+
+**The screen's own new polarity is screened too.** `tests/ops/test_harness_census.py` builds synthetic trees around a *total* instrument and requires the screen to disagree about them: two real observations written as bare asserts score `unfalsified` (correctly — nothing in the AST distinguishes `assert got is None` from `assert got is not None`), the same two declared through `refuses`/`selects` score `screened`, and either of them behind `require_vulkan` scores nothing. Guard D's rule is not weakened by the new source.
+
+**Result:** `identify_by_uuid` is `SCREENED` (`reject=5 accept=7`), the baseline row and the hand note are both gone, and the bench domain's `unfalsified` count went 88 → 87. The remaining 87 are now *reachable the same way* — including `identify_by_timestamp`, which is the same total shape and is explicitly **not** claimed to be screened. The note printed under the bench screen used to end "handed to Niobe: a value-polarity model for total instruments, or a note per row"; the model now exists, so what the count means has changed from "a limit of this screen" to "instruments nobody has done this for yet", which is smaller and actionable.
+
 ---
 
 ## 7.18 A lost device that exits 0 — added 2026-08-02T17:20-07:00
@@ -2071,12 +2147,13 @@ The control is now **18 arms, 1 LIVE / 4 REPLAYED / 13 PLANTED**, all fired. The
 
 ### 7.18.6 The exclusion list, which is the dangerous part
 
-`bench/results/ctx512_device_lost.txt` **is** a device loss — kept deliberately, as evidence. A directory scan finds it forever, so without an exclusion the check would be permanently red on an incident it did not catch live, and **a check that is always red is a check nobody reads**. `ci/device_loss_incident_records.json` names seven such files. It is an exclusion list, so it is the easiest place on this project to hide a defect. Four rules hold it honest:
+`bench/results/ctx512_device_lost.txt` **is** a device loss — kept deliberately, as evidence. A directory scan finds it forever, so without an exclusion the check would be permanently red on an incident it did not catch live, and **a check that is always red is a check nobody reads**. `ci/device_loss_incident_records.json` names those files (eighteen as of 2026-08-07). It is an exclusion list, so it is the easiest place on this project to hide a defect. Five rules hold it honest:
 
 1. Every entry carries a **reason, an owner and a date**. An exclusion nobody can review is an exclusion nobody will review.
 2. Excluded files are **counted and printed in the frame line of every run**, with their reasons. The check never says "clean" without also saying what it did not look at.
 3. An entry naming a file that **no longer exists** is itself a finding (`incident_record_rot`), never a silent no-op.
 4. Naming a file **explicitly** on the command line overrides its exclusion, so the red arm can still read them.
+5. Every entry declares a **`witness`** — the exact finding(s), by condition and count, that it accounts for — and the check **re-reads every excluded file through the same reader** each run. An entry that accounts for **no** finding is red (`incident_record_covers_nothing`); an entry whose file carries a finding it never declared, or more of one than it declared, is red (`incident_record_widened`). Rule 5 was added on 2026-08-07 for issue #24; §7.18.11 records why.
 
 Two entries carry work owed rather than history: `kv_bytes_earned-armed.json` and `-default.json` still hold the truncated ctx-512 points under `points`. The roll-up correctly moved them to `rejected_points`; **the per-lane files did not**, so a reader differencing those files gets the ghost 6.7% again. Owed by Tank.
 
@@ -2110,6 +2187,35 @@ I have **not** re-dispositioned the twelve gaps on the strength of Trinity's dec
 §7.18.8 above said, of `GEMV_PACKED`: *"What no artifact says: nothing we produce records a pipeline key or a spec constant"* and *"Closing this requires an EP-side change"*. That was true when written, earlier the same day, but it stopped being true **later that same 2026-08-02 session**: §7.22–§7.23 of `docs/OP_COVERAGE.md` (§8.9.20) built exactly the EP-side change §7.18.8 called for — `counters.rs`'s `record_pipeline_variant` is called from `vk/session.rs` with the fully-resolved `(eff_shader, eff_spec_constants)` pair at every `PipelineKey` construction, and `pipeline_variants()` / `gemv_packed_spec_constant()` expose it. §7.18.8's prose was never revisited after that landed, and `ci/census_surface_map.json`'s `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED` entry inherited the same stale "no artifact records" wording — issue #58 is that inheritance, filed independently of this section.
 
 **What is actually still open is narrower than §7.18.8 claims, and it is not an EP-side gap.** The recording exists and predates PR #53's `GEMV_MAX_ROWS` work. The surviving blocker is **census-graph reachability**: `tests/ops/test_wiring_census.py`'s own graph is a six-node elementwise `Add`/`Mul` chain with no `MatMulNBits`, so no `q_gemv` pipeline is ever built inside that harness, and `gemv_packed_spec_constant()` reads `UNOBSERVABLE` in that frame regardless of the switch's polarity — a frame limitation, not a missing observable. Confirmed two ways without relying on this prose: `rust/tools/probe_gemv_kernel_identity.py`'s `C_elementwise_armed` arm reads `UNOBSERVABLE` against the built DLL, and the strengthened `_observe_flag_frame` in `tests/ops/test_wiring_census.py` now reads `gemv_packed_spec_constant` out of the actual `wiring_census-*.json` artifact rather than asserting it in prose. Disposition stays `uncensused` (a census graph reaching `q_gemv` is still owed, by Switch with Trinity per `ci/census_surface_map.json`), but the *reason* is reachability, not absence of an observer.
+
+---
+
+### 7.18.11 The screen was right and had been red for five days: six real incidents committed with no record (2026-08-07, issue #24)
+**The red.** `ci/check_device_loss.py --lane` was `FAIL(condition=device_lost_reported)` plus `observation_ended_early` on **every** main run that reached it — CI runs 31138704981, 31154323693 and 31164215291 all failed at the *Device-loss screen (artifacts, no GPU)* step of the lane-check self-test; on earlier runs the *Open-reds negative control* step failed first and the device-loss step read `skipped`, which is why the red looked newer than it was. Reproduced locally at main `5113a0a`, identical condition set, identical files.
+
+**The finding was not a false positive, and not one thing.** Nine artifacts produced findings. Six of them are artifacts **of real, already-diagnosed device losses**, kept deliberately as evidence, that landed committed with **no entry in the exclusion list at all**:
+
+| artifact | incident | landed |
+| --- | --- | --- |
+| `device_loss_gate/armA_baseline.log`, `armA_rep000/001/002.capture.txt`, `device_loss_gate-BOTHLANES.json` | Tank's ctx-4096 device-loss gate, arm A = 3 losses in 5 reps; external witness `nvlddmkm` Event Id 153 at the same second (driver unified-memory paging path, **not** an EP footprint) — provenance in `bench/results/device_loss_gate/README.md` | `5353886`, 2026-08-04 |
+| `phi35_kv_chain-ctx4096-BOTH-dev0.json` | Switch's ctx-4096 signature run; already cited by `json_embedded_text`'s own docstring and replayed by an arm of the negative control | `1fc2ab6` |
+| `validation_phi35_probe-devunset-liveness.json`, `validation_phi35_counters-devunset-liveness.json` | Trinity's criterion 3(a) device-unset liveness probe (§7.19): `device_losses: 1`, `compute_failures: 1`, `broken_commitments: 1`, `dispatches_executed: 0`, `outputs_bind_declined: 65`, on **NVIDIA GeForce RTX 4060 Laptop GPU** with real Foundry Phi-3.5 | `fb5f0b28` / `1f41095` |
+
+The seventh, `bench/results/census-completeness.json`, is a **derived** artifact regenerated by the lane's own earlier *Census extent* step; it merely quotes `ci/census_surface_map.json`'s prose describing the `device_losses` counter. That is a precedented class — `device-memory-flip-gates-prediction.md` is excluded for exactly this reason, under the ruling *"a detector that forces its own subject matter out of the project's writing is a detector shaping the evidence."*
+
+**Why "just add the seven names" was the wrong repair, and is the reason rule 5 exists.** Adding names would have bought green with an instrument that is *worse* than the one that was red. Until today an entry silenced its file **wholesale and forever** and said nothing about what it silenced. `kv_bytes_earned-armed.json` has been excluded whole since 2026-08-02; a device loss appended to it tomorrow would never be seen by anyone. So the exclusion is now **bounded by a witness**: the entry states the finding(s) it accounts for, the check re-reads every excluded file through the *same* `scan_artifact` reader every run, and drift in either direction is visible — more than declared is red, fewer is a printed frame note (fewer means the incident was repaired, which is not a defect).
+
+**Both polarities are armed.** `ci/negative_control_device_loss.py` is now **27 arms, 1 LIVE / 6 REPLAYED / 20 PLANTED**, all fired: an exclusion covering no finding is red; **Tank's real `armA_rep000.capture.txt` with one more loss appended, held against the count in the shipped record file, is red** (REPLAYED — this is the arm that proves the number in the shipped file is the number the check enforces); the same file is **green** once the record accounts for both, so the audit bounds exclusions rather than abolishing them; and a record with no witness is `ERROR(instrument=incident_record_file_unreadable)` — an outage, never a permissive default. `ci/test_lane_checks.py` additionally re-reads **every** shipped record's file and asserts its witness is what the reader actually sees, so the eighteen numbers cannot rot in place.
+
+**Nothing was regenerated, and that was deliberate.** Every artifact above was taken on the **RTX 4060 Laptop GPU** proof frame with the real Foundry Phi-3.5. The machine available for this round is an **RTX A1000**; re-running would have produced A1000 evidence sitting under RTX 4060 filenames, which is the frame-substitution R13 forbids. Recording an incident is not the same act as re-observing it, and only recording was warranted here.
+
+**What this did not fix.** The other main reds are separate subjects and are not touched: the Linux and Windows `Asin`/`Acos` fp32 tolerance failures (issue #4, Switch) and the Windows ICD/layer `ERROR(instrument)` negative controls (issue #1). `ci/open_reds.json` and `main_is_green` are deliberately **not** edited here — they may only move after a genuine green run of current main.
+
+**A second red on the same push, and it was a checkout, not a defect.** With the device-loss screen green, the run at 5113a0a still had **both** op-test jobs red — on the **same single test**, `tests/ops/test_proof_ledger.py::test_the_declaration_screen_survives_a_squash_of_this_branch`, with `ERROR(instrument=truncated_history)` in all four columns of its landing matrix. `build-test-linux` and `build-test-windows` used the default **depth-1** checkout. The landing-safety simulation lands HEAD's tree onto `origin/main` and screens the result, and `rust/tools/probe_ledger_loss.py`'s default run reads a named historical commit; neither can be answered from one commit of history. The test's own guard skipped only when `origin/main` was *absent* — on a push to `main` that ref is present but the history behind it is not, so the intended UNOBSERVABLE branch never fired and the screen failed for a checkout reason.
+
+The repair is `fetch-depth: 0` on both op-test jobs, matching what `lane-checks` already declares — **supply the history, do not widen the test's unobservable branch**, because a screen that skips itself on every push to main is a screen nobody is running. `ci/test_lane_checks.py::test_history_reading_op_test_jobs_check_out_full_history_issue_24` derives the set of history-reading jobs from `ci.yml`'s own text (it currently resolves to `lane-checks`, `build-test-linux`, `build-test-windows`) and requires each one's first checkout to declare it, so the wiring fails on the change that loses it rather than on the next push. This also makes the Windows ledger-loss-probe step's `git fetch --unshallow` guard the no-op its own comment already anticipated.
+
+**What rule 5 still does not cover.** A witness counts *distinct finding lines*. A second device loss whose captured text is byte-identical to the forgiven one is still invisible, because the reader de-duplicates by line. That limit is recorded in `ci/lane_inventory.py`'s `misses` for this check and armed by a control arm that asserts the de-duplication rather than leaving it to be discovered.
 
 ---
 

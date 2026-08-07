@@ -1567,6 +1567,54 @@ def test_lane_checks_job_has_no_depth_limited_fetch_before_the_ledger_census_iss
         )
 
 
+def test_history_reading_op_test_jobs_check_out_full_history_issue_24():
+    """ISSUE #24. `tests/ops/test_proof_ledger.py`'s landing-safety simulation lands
+    HEAD's tree onto `origin/main` and screens the result, and
+    `rust/tools/probe_ledger_loss.py`'s default run reads a named historical commit.
+    Both need history. On the default depth-1 shallow clone they produce
+    `ERROR(instrument=truncated_history)` -- an outage from an incomplete checkout, not
+    a defect in the register -- and that is exactly how `main` was red at 5113a0a on run
+    31164215291: both op-test jobs failed on the same single test, for a checkout reason.
+
+    The repair is to supply the history, not to widen the test's unobservable branch: a
+    screen that skips itself on every push is a screen nobody is running. This asserts on
+    ci.yml's own text so a checkout that quietly loses `fetch-depth: 0` fails on the
+    change that loses it, rather than on the next push to main.
+    """
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    job_bounds = [
+        (m.group(1), m.start())
+        for m in re.finditer(r"\n  ([a-zA-Z][\w-]*):\n", ci_text)
+    ]
+    bodies = {}
+    for i, (name, start) in enumerate(job_bounds):
+        end = job_bounds[i + 1][1] if i + 1 < len(job_bounds) else len(ci_text)
+        bodies[name] = ci_text[start:end]
+
+    needs_history = [
+        name
+        for name, body in bodies.items()
+        if "test_proof_ledger" in body
+        or "probe_ledger_loss" in body
+        or "check_ledger_census.py" in body
+        or "pytest tests/ops" in body
+        or "pytest tests\\ops" in body
+    ]
+    assert needs_history, (
+        "no job reads history any more — either the screens moved or this guard is "
+        "matching on stale names, and a guard matching nothing is not a green"
+    )
+    for name in needs_history:
+        first_checkout = bodies[name].index("uses: actions/checkout@")
+        window = bodies[name][first_checkout : first_checkout + 200]
+        assert "fetch-depth: 0" in window, (
+            f"job {name!r} runs a history-reading screen but its checkout does not "
+            f"declare fetch-depth: 0. On a depth-1 clone that screen reports "
+            f"ERROR(instrument=truncated_history) and the lane goes red for a checkout "
+            f"reason (issue #24, run 31164215291)."
+        )
+
+
 # ---------------------------------------------------------------------------------------
 # ISSUE #24 -- a real import-closure contract, not a string search.
 #
@@ -2927,6 +2975,133 @@ def test_device_loss_exclusion_list_has_no_rot():
     )
     for rec in doc["records"]:
         assert (REPO_ROOT / rec["file"]).exists(), rec["file"]
+
+
+def test_device_loss_exclusion_entries_declare_the_findings_they_account_for():
+    """Issue #24. Before 2026-08-07 an entry silenced its file wholesale and forever and
+    said nothing about what it silenced, so a NEW loss appended to an already-excluded
+    file was invisible. An exclusion now names the finding(s) it accounts for."""
+    import importlib
+
+    mod = importlib.import_module("check_device_loss")
+    doc = json.loads(
+        (CI_DIR / "device_loss_incident_records.json").read_text(encoding="utf-8")
+    )
+    for rec in doc["records"]:
+        witness = rec.get("witness")
+        assert isinstance(witness, dict) and witness, rec["file"]
+        for condition, count in witness.items():
+            assert condition in mod.ARTIFACT_TREE_WIDE, (rec["file"], condition)
+            assert isinstance(count, int) and count > 0, (rec["file"], condition)
+
+
+def test_device_loss_exclusion_witness_counts_are_what_the_reader_actually_sees():
+    """The number in the file is only worth something if it is the number the check
+    holds the exclusion to. Re-read every excluded artifact through the check's own
+    reader and compare. A drift here is a silenced finding."""
+    import importlib
+
+    mod = importlib.import_module("check_device_loss")
+    doc = json.loads(
+        (CI_DIR / "device_loss_incident_records.json").read_text(encoding="utf-8")
+    )
+    for rec in doc["records"]:
+        path = REPO_ROOT / rec["file"]
+        scan = mod.scan_artifact(path, named=False)
+        assert not scan.error, (rec["file"], scan.error)
+        observed = {c: len(v) for c, v in scan.hits.items() if v}
+        assert observed == rec["witness"], (rec["file"], observed, rec["witness"])
+
+
+def test_device_loss_exclusion_that_covers_nothing_is_red():
+    """An exclusion over a file with no finding silences nothing today and can only
+    blind the screen tomorrow. Green here would let an exclusion be parked in advance."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "bystander.log").write_text("a run that kept its device\n", encoding="utf-8")
+        quiet = d / "quiet.log"
+        quiet.write_text("nothing happened\n", encoding="utf-8")
+        recs = d / "records.json"
+        recs.write_text(
+            json.dumps(
+                {
+                    "records": [
+                        {
+                            "file": str(quiet),
+                            "witness": {"device_lost_reported": 1},
+                            "reason": "planted by test_lane_checks to prove the audit fires",
+                            "owner": "link",
+                            "date": "2026-08-07",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        r = run_check("check_device_loss.py", "--incident-records", str(recs), str(d))
+        assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+        assert "incident_record_covers_nothing" in r.stdout
+
+
+def test_device_loss_exclusion_is_red_when_the_file_says_more_than_it_accounts_for():
+    """The whole point of the witness: a second loss recorded in an already-forgiven
+    file must reach a human, not inherit the first loss's forgiveness."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "bystander.log").write_text("a run that kept its device\n", encoding="utf-8")
+        loss = d / "loss.log"
+        loss.write_text(
+            DEVICE_LOSS_LINE.rstrip("\n") + " after 1775 dispatches\n"
+            + DEVICE_LOSS_LINE.rstrip("\n") + " after 0 dispatches\n",
+            encoding="utf-8",
+        )
+        entry = {
+            "file": str(loss),
+            "witness": {"device_lost_reported": 1},
+            "reason": "planted by test_lane_checks to prove the audit bounds the exclusion",
+            "owner": "link",
+            "date": "2026-08-07",
+        }
+        recs = d / "records.json"
+        recs.write_text(json.dumps({"records": [entry]}), encoding="utf-8")
+        r = run_check("check_device_loss.py", "--incident-records", str(recs), str(d))
+        assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+        assert "incident_record_widened" in r.stdout
+
+        # ...and green once it accounts for both, so the audit bounds exclusions rather
+        # than abolishing them.
+        entry["witness"] = {"device_lost_reported": 2}
+        recs.write_text(json.dumps({"records": [entry]}), encoding="utf-8")
+        ok = run_check("check_device_loss.py", "--incident-records", str(recs), str(d))
+        assert ok.returncode == EXIT_PASS, ok.stdout
+
+
+def test_device_loss_exclusion_without_a_witness_is_an_outage_not_a_pass():
+    """A record the check cannot bound is an unreadable instrument. Accepting it would
+    restore exactly the unbounded exclusion this machinery replaced."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        loss = d / "loss.log"
+        loss.write_text(DEVICE_LOSS_LINE, encoding="utf-8")
+        recs = d / "records.json"
+        recs.write_text(
+            json.dumps(
+                {
+                    "records": [
+                        {
+                            "file": str(loss),
+                            "reason": "an exclusion over everything this file will ever say",
+                            "owner": "link",
+                            "date": "2026-08-07",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        r = run_check("check_device_loss.py", "--incident-records", str(recs), str(d))
+        assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+        assert "incident_record_file_unreadable" in r.stdout
 
 
 def test_device_loss_screen_and_fatal_log_have_different_extents():

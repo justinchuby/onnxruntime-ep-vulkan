@@ -520,7 +520,7 @@ published vectors. A runner whose purpose is "works where PyPI is blocked" must 
 to `dlopen` ONNX Runtime — the same thing ORT's own C API examples do, and the reason the EP crate
 itself never links against `onnxruntime`.
 
-### The six guards
+### The seven guards
 
 Every one must hold for `PASS`. Each is written into the evidence JSON with its reason, whether it
 held or not, because a guard that is silent when it passes cannot be audited later.
@@ -532,6 +532,7 @@ held or not, because a guard that is silent when it passes cannot be audited lat
 | `vulkan_ep_in_session` | Was the EP selected for *this* session? | `SessionOptionsAppendExecutionProvider_V2` succeeded against that device |
 | `vulkan_executed_nodes` | Did ORT attribute executed nodes to us? | **ORT's own profile JSON** — `cat == "Node"`, tallied by provider |
 | `vulkan_dispatched_work` | Did the GPU do anything? | the EP's counters snapshot, `dispatches_executed > 0` |
+| `device_identity_agreement` | Which physical device produced these numbers? | the EP's `running_device_uuids`, cross-checked against the `vulkan.device_uuid` metadata of the advertised `OrtEpDevice`s |
 | `outputs_agree` | Is the answer right? | the CPU EP's outputs for the same bytes, under a written-in-advance tolerance |
 
 The fourth guard is the point of the tool. `rust/tools/probe_model_output_agreement.py` documents a
@@ -544,6 +545,51 @@ outside the frame under question — ORT decides what ran where, and it has no s
 claims. Our own counter is **corroborating** only, because it is inside that frame. When they
 disagree, the evidence records `split_frame` and the run does not pass; it is not resolved in the
 EP's favour.
+
+### Which device produced the numbers (`--device-selector`, issue #18)
+
+`execution_provider.devices` in the evidence records what `GetEpDevices` **listed**. That is the
+set of devices that were *on offer*, and it is not the same fact as which one the session actually
+**opened**. The gap between those two is where §6.5's family of defects lives: ORT binds one
+`OrtEpDevice`, the EP's selector indexes a differently-sorted list, and the session opens a third
+device while the document proudly records all four as "devices seen".
+
+So the evidence also carries `execution_provider.selected_device`, read back from the EP's own
+counters rather than from the enumeration:
+
+```json
+"selected_device": {
+  "identity": "uuid:0123456789abcdef0123456789abcdef",
+  "name": "NVIDIA RTX A1000 Laptop GPU",
+  "advertised_index": 0,
+  "requested_selector": "uuid:0123456789abcdef0123456789abcdef",
+  "selector_source": "--device-selector (ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR, set before EP registration)",
+  "alloc_device_frame": "SHARED"
+}
+```
+
+`--device-selector <scheme>:<value>` pins the device. It is exported as
+`ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` **before `RegisterExecutionProviderLibrary`**, which is
+the only point at which it can affect which devices the EP advertises — a session option is read
+too late to do that (see `DESIGN.md` §2.4.1). One selection path, no X-advertises/Y-binds split.
+The grammar is the EP's: `uuid:`, `luid:`, `pci:`, `id:`, `name:`, `index:`.
+
+`device_identity_agreement` **fails closed**. It is red not only when the opened device disagrees
+with the selector, but in every state where agreement cannot be *established*:
+
+| State | Why it is not green |
+| --- | --- |
+| `--cpu-only` | no Vulkan device was opened, so no number here belongs to one |
+| no counters snapshot | absent instrument, not agreement |
+| no `running_device_uuids` | the EP reported no identity — either nothing was opened, or this EP build predates the identity surface |
+| more than one identity | the outputs came from more than one piece of hardware |
+| `alloc_device_frame` is `MIXED` or `SPLIT-DEVICE` | the allocator numbers and the session describe different devices |
+| the identity matches no advertised `vulkan.device_uuid` | either a device was opened that was never offered, or the host is too old to carry the metadata — in both cases nothing can be confirmed |
+| `--device-selector uuid:X` but the session opened `uuid:Y` | the run answered a question about different hardware than the one it was asked about |
+
+The asymmetry is deliberate: there is no branch in which "we could not tell" is green. A false red
+costs a rerun; a false green puts a number in `bench/results/` attributed to hardware it never
+touched.
 
 ### Tolerance is policy, not a knob
 
@@ -562,7 +608,7 @@ feeds real bytes for models whose inputs are interdependent.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | `PASS` — all six guards held |
+| 0 | `PASS` — all seven guards held |
 | 1 | `FAIL(condition=…)` — a claim about the EP is false (outputs disagreed, nothing dispatched, the pin did not match) |
 | 2 | `ERROR(instrument=…)` — the harness could not ask the question (no ONNX Runtime, ambiguous library, unreadable model) |
 | 3 | `UNSUPPORTED(reason=…)` — the model is outside what this runner can drive, stated as such and never as a pass |
@@ -571,6 +617,13 @@ feeds real bytes for models whose inputs are interdependent.
 then cannot be driven with generated inputs, because `GroupQueryAttention` requires a KV cache
 consistent with `seqlens_k`. The runner reports exit 3 with the model's exact path and SHA-256 still
 stamped in the evidence, so the identity is on record even though the comparison is not.
+
+Re-checked with `--device-selector` (Tank, 2026-08-06): still `UNSUPPORTED`, and for the same
+reason — `seqlens_k[0] = 7 is out of range [0, 1)` from `/model/layers.0/attn/GroupQueryAttention`.
+Identity re-resolves (`sha256 3dbdd4b5…`, `provenance=resolved`). Pinning the device does not
+change this and was never expected to: the CPU reference arm never ran, so there is no reference to
+compare against and no claim about any device is being made. Evidence:
+`bench/results/rust-model-runner/phi-3.5-mini-device-selector.json`.
 
 ### Finding ONNX Runtime
 

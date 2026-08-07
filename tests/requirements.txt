@@ -43,3 +43,15 @@ pytest>=8.0
 # Source: https://github.com/justinchuby/onnx-shape-inference
 onnx-shape-inference>=0.1
 
+# psutil — CPU/process occupancy sampling for the contention screen.
+#
+# Recorded here 2026-08-06 (Tank) because its absence was silently costing a lane.
+# `bench/contention.py` imports it OPTIONALLY and degrades to an explicit
+# "psutil not importable" refusal, which is correct. `bench/test_device_state.py`
+# imports it UNCONDITIONALLY, so without it that file raises a COLLECTION error —
+# 16 tests that never ran, reported as a collection failure rather than as a red,
+# which is the one shape a reader is most likely to skim past. An optional
+# production dependency that a test module depends on hard is a test dependency;
+# saying so here is what stops it being rediscovered as "a pre-existing blocker".
+psutil>=5.9
+

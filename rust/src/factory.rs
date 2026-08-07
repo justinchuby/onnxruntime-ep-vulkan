@@ -345,6 +345,33 @@ unsafe fn get_supported_devices_impl(
         metadata.add(c"vulkan.device_id", &format!("{:#06x}", info.device_id));
         metadata.add(c"vulkan.device_kind", &format!("{:?}", info.kind));
         metadata.add(c"vulkan.device_index", &info.index.to_string());
+        // Stable identity (issue #18): present whenever the driver populated
+        // `VkPhysicalDeviceIDProperties` (Vulkan 1.1 core, which the §7.2 gate already requires),
+        // so downstream tooling (proof ledger, `epctl`, model-identity reports) can bind evidence
+        // to the physical device that actually ran, not to `vulkan.device_index` which is an
+        // ordinal that moves across driver updates, reboots, or `VK_ICD_FILENAMES` edits.
+        //
+        // The key is **omitted**, never emitted empty or all-zero, when no UUID was reported: a
+        // consumer must be able to tell "this device has no stable identity" from "this device's
+        // identity is a string of zeros", because the second one compares equal across every
+        // device that has it.
+        if let Some(uuid) = &info.identity.uuid {
+            metadata.add(c"vulkan.device_uuid", uuid);
+        }
+        if let Some(luid) = &info.identity.luid {
+            metadata.add(c"vulkan.device_luid", luid);
+        }
+        if let Some(pci) = &info.identity.pci {
+            metadata.add(c"vulkan.device_pci", pci);
+        }
+        debug_assert_eq!(
+            identity_metadata_keys(&info.identity).len(),
+            [&info.identity.uuid, &info.identity.luid, &info.identity.pci]
+                .iter()
+                .filter(|f| f.is_some())
+                .count(),
+            "the emitted identity keys and `identity_metadata_keys` must not drift apart"
+        );
         metadata.add_cstr(c"vulkan.correlation", correlation_strategy(exact_match));
 
         let mut ep_device: *mut ort::OrtEpDevice = ptr::null_mut();
@@ -668,6 +695,31 @@ unsafe fn advertise_device_memory(
 /// that's mine" to one of those would put our handles where real pointers are expected.
 pub(crate) fn memory_info_name(index: usize) -> String {
     format!("VulkanExecutionProvider:{index}")
+}
+
+/// Which `vulkan.device_*` identity keys `devices_to_advertise` will attach for `identity`, in
+/// emission order.
+///
+/// Issue #18: a key is attached **only** when the driver reported that identity. An absent
+/// identity must be an absent key — never `""` and never `00000000…`, because an unpopulated
+/// `VkPhysicalDeviceIDProperties` is all zeros on *every* device that has one, so a consumer that
+/// reads a zero UUID as an identity concludes that two different GPUs are the same GPU. That is
+/// the exact failure the proof frame exists to prevent.
+///
+/// Exists so the omission rule is testable without a live `OrtApi`; the emission site above
+/// `debug_assert`s that the two agree.
+fn identity_metadata_keys(identity: &engine::DeviceIdentity) -> Vec<&'static CStr> {
+    let mut keys = Vec::new();
+    if identity.uuid.is_some() {
+        keys.push(c"vulkan.device_uuid");
+    }
+    if identity.luid.is_some() {
+        keys.push(c"vulkan.device_luid");
+    }
+    if identity.pci.is_some() {
+        keys.push(c"vulkan.device_pci");
+    }
+    keys
 }
 
 /// RAII wrapper over an `OrtKeyValuePairs` built for EP-device metadata.
@@ -1242,6 +1294,105 @@ mod tests {
         assert!(
             v.starts_with(&format!("0.{}.", sys::ORT_API_VERSION_EXPECTED)),
             "crate version {v} must be 0.<ORT_API_VERSION>.<patch>"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // `vulkan.device_uuid` — the EP-device metadata half of the stable identity (issue #18).
+    //
+    // This is the key `device_identity_agreement` in the modelrunner cross-checks the OPENED
+    // device against, and the key `gen_proof_ledger.py` bakes into ledger entries. If it is ever
+    // emitted empty or all-zero, every device that fails to report an identity compares equal to
+    // every other one, and the proof frame silently attributes proofs to the wrong hardware.
+    // ---------------------------------------------------------------------------------------
+
+    fn identity(
+        uuid: Option<&str>,
+        luid: Option<&str>,
+        pci: Option<&str>,
+    ) -> engine::DeviceIdentity {
+        engine::DeviceIdentity {
+            uuid: uuid.map(str::to_string),
+            luid: luid.map(str::to_string),
+            pci: pci.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_reported_uuid_is_attached_as_ep_device_metadata() {
+        let keys = identity_metadata_keys(&identity(
+            Some("11111111111111111111111111111111"),
+            Some("aaaaaaaaaaaaaaaa"),
+            Some("0000:01:00.0"),
+        ));
+        assert_eq!(
+            keys,
+            vec![
+                c"vulkan.device_uuid",
+                c"vulkan.device_luid",
+                c"vulkan.device_pci"
+            ],
+            "all three identities were reported, so all three keys are attached"
+        );
+    }
+
+    #[test]
+    fn an_unreported_identity_is_an_absent_key_never_an_empty_one() {
+        assert_eq!(
+            identity_metadata_keys(&identity(None, None, None)),
+            Vec::<&CStr>::new(),
+            "a device that reports no identity must advertise NO identity keys. Emitting \
+             `vulkan.device_uuid=\"\"` (or all zeros) makes every such device compare equal to \
+             every other, which is how a proof obtained on card A gets attributed to card B"
+        );
+        assert_eq!(
+            identity_metadata_keys(&identity(
+                Some("11111111111111111111111111111111"),
+                None,
+                None
+            )),
+            vec![c"vulkan.device_uuid"],
+            "UUID is Vulkan 1.1 core and portable; LUID is Windows-only and PCI is Linux-mostly, \
+             so the common portable case is exactly one key. MoltenVK and Android must not be \
+             forced to invent the other two"
+        );
+        assert_eq!(
+            identity_metadata_keys(&identity(None, None, Some("0000:01:00.0"))),
+            vec![c"vulkan.device_pci"],
+            "and a partial identity attaches only the parts that exist"
+        );
+    }
+
+    /// The metadata key and the `DeviceKey` that keys the proof frame must be derived from the
+    /// same field, or the advertised identity and the proven identity can disagree.
+    #[test]
+    fn the_advertised_uuid_is_the_same_string_the_proof_frame_is_keyed_on() {
+        let info = engine::DeviceInfo {
+            index: 3,
+            name: "NVIDIA RTX A1000 Laptop GPU".to_string(),
+            vendor_id: 0x10de,
+            device_id: 0x27a0,
+            api_version: "1.3.290".to_string(),
+            driver_version: "560.94".to_string(),
+            kind: engine::DeviceKind::Discrete,
+            identity: identity(Some("11111111111111111111111111111111"), None, None),
+        };
+        assert!(identity_metadata_keys(&info.identity).contains(&c"vulkan.device_uuid"));
+        assert_eq!(
+            info.key().uuid(),
+            Some("11111111111111111111111111111111"),
+            "what we advertise and what we key frames on must be one field, read once"
+        );
+
+        let anonymous = engine::DeviceInfo {
+            identity: identity(None, None, None),
+            ..info
+        };
+        assert!(identity_metadata_keys(&anonymous.identity).is_empty());
+        assert!(
+            !anonymous.key().is_identified(),
+            "no advertised identity means no proving identity either; the fallback key is \
+             process-local by construction so it can never be mistaken for a stable one"
         );
     }
 

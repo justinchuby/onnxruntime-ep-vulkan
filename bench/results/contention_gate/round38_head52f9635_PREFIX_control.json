@@ -1,0 +1,627 @@
+{
+  "reps": 40,
+  "pools": {
+    "env:backend_probe": {
+      "tests": [
+        "backend_probe_noop_when_env_unset",
+        "backend_probe_writes_legacy_token",
+        "backend_probe_writes_sync2_token"
+      ],
+      "reps": 40,
+      "reds": 0,
+      "observed_rate": 0.0,
+      "elapsed_s": 33.0
+    },
+    "env:counters_file": {
+      "tests": [
+        "a_pinned_authoritative_counter_reports_unobservable_and_never_zero",
+        "the_dispatch_path_dump_carries_the_allocator_keys_too",
+        "two_cards_of_the_same_model_are_two_frames_not_one",
+        "two_frames_in_one_process_are_never_reported_as_one_frame"
+      ],
+      "reps": 40,
+      "reds": 0,
+      "observed_rate": 0.0,
+      "elapsed_s": 18.6
+    },
+    "env:device_selector": {
+      "tests": [
+        "an_unresolvable_selector_refuses_rather_than_choosing_a_neighbour",
+        "both_selector_surfaces_share_one_grammar",
+        "select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+        "select_device_strict_reads_the_env_var_when_no_session_override",
+        "select_device_strict_returns_none_when_nothing_is_set",
+        "select_device_strict_session_override_outranks_the_env_var",
+        "the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "reps": 40,
+      "reds": 24,
+      "observed_rate": 0.6,
+      "elapsed_s": 13.4
+    },
+    "env:quarantine_spans": {
+      "tests": [
+        "quarantine_exhaustion_reaches_the_process_wide_counters",
+        "quarantine_retirement_is_counted_so_the_window_is_never_silently_exhausted"
+      ],
+      "reps": 40,
+      "reds": 0,
+      "observed_rate": 0.0,
+      "elapsed_s": 13.3
+    },
+    "counters": {
+      "tests": [
+        "a_claim_without_a_proof_key_is_unmeasured",
+        "a_gemv_vector_too_short_to_hold_the_field_says_unrecorded_not_zero",
+        "a_half_bound_shader_set_is_not_a_specialisation_delta",
+        "a_lost_device_is_recorded_and_reaches_the_json_artifact",
+        "a_mixed_claim_set_warns_only_about_the_unproven_form",
+        "a_pinned_authoritative_counter_reports_unobservable_and_never_zero",
+        "a_pipeline_that_is_not_a_gemv_leaves_the_gemv_field_unobservable",
+        "a_proof_backed_disclosure_informs_whichever_branch_carried_it",
+        "a_proof_backed_disclosure_reaches_the_user_on_some_channel",
+        "a_proof_replayed_under_another_specialisation_is_a_different_frame",
+        "a_refused_stderr_write_is_counted",
+        "a_variant_is_named_by_its_spec_constants_and_not_by_its_stem",
+        "an_all_proven_claim_set_does_not_warn",
+        "an_override_reports_which_verdict_it_overrode",
+        "an_unmatched_free_cannot_make_the_next_alloc_panic",
+        "an_unmeasured_claimed_form_warns",
+        "appending_the_row_tile_constant_leaves_the_packed_field_where_it_was",
+        "attach_rejects_null_pointers",
+        "counters_record_what_they_claim_to_record",
+        "extract_equivalence_parses_the_five_states",
+        "forwarding_is_a_noop_without_an_attached_logger",
+        "queue_lock_excludes_and_counts_contention",
+        "staging_bytes_are_recorded_without_any_tracing_flag",
+        "the_blind_axes_caveat_travels_with_the_claim_line",
+        "the_claimed_form_evidence_token_is_unobservable_before_it_is_anything_else",
+        "the_escalation_fires_only_when_no_quiet_channel_carried_the_info",
+        "the_info_channel_token_distinguishes_offered_from_merely_emitted",
+        "the_info_reach_token_says_whether_a_user_was_reachable",
+        "the_override_reason_is_typed_so_arithmetic_on_it_fails_loudly",
+        "the_staging_sentence_separates_itself_from_the_allocator_upload_counters",
+        "two_cards_of_the_same_model_are_two_frames_not_one",
+        "variants_are_a_set_and_reach_the_json_as_typed_values",
+        "with_no_ort_logger_the_event_is_still_recorded_and_the_channel_is_not_claimed",
+        "zero_staging_bytes_refuses_to_claim_residency"
+      ],
+      "reps": 40,
+      "reds": 0,
+      "observed_rate": 0.0,
+      "elapsed_s": 16.3
+    },
+    "all-contended": {
+      "tests": [
+        "a_claim_without_a_proof_key_is_unmeasured",
+        "a_disk_ledger_that_disagrees_with_the_baked_one_refuses_to_claim",
+        "a_gemv_vector_too_short_to_hold_the_field_says_unrecorded_not_zero",
+        "a_half_bound_shader_set_is_not_a_specialisation_delta",
+        "a_lost_device_is_recorded_and_reaches_the_json_artifact",
+        "a_mixed_claim_set_warns_only_about_the_unproven_form",
+        "a_pinned_authoritative_counter_reports_unobservable_and_never_zero",
+        "a_pipeline_that_is_not_a_gemv_leaves_the_gemv_field_unobservable",
+        "a_proof_backed_disclosure_informs_whichever_branch_carried_it",
+        "a_proof_backed_disclosure_reaches_the_user_on_some_channel",
+        "a_proof_replayed_under_another_specialisation_is_a_different_frame",
+        "a_refused_stderr_write_is_counted",
+        "a_variant_is_named_by_its_spec_constants_and_not_by_its_stem",
+        "an_all_proven_claim_set_does_not_warn",
+        "an_override_reports_which_verdict_it_overrode",
+        "an_unmatched_free_cannot_make_the_next_alloc_panic",
+        "an_unmeasured_claimed_form_warns",
+        "an_unresolvable_selector_refuses_rather_than_choosing_a_neighbour",
+        "appending_the_row_tile_constant_leaves_the_packed_field_where_it_was",
+        "attach_rejects_null_pointers",
+        "backend_probe_noop_when_env_unset",
+        "backend_probe_writes_legacy_token",
+        "backend_probe_writes_sync2_token",
+        "both_selector_surfaces_share_one_grammar",
+        "checked_in_manifest_is_in_sync",
+        "counter_events_splice_into_an_empty_and_a_populated_array",
+        "counters_record_what_they_claim_to_record",
+        "every_spelling_of_the_device_memory_flag_reads_the_same_in_both_places",
+        "every_spelling_of_the_kv_arena_flag_reads_the_same_at_both_ends",
+        "every_spelling_of_the_kv_prefix_alias_flag_reads_the_same_at_both_ends",
+        "extract_equivalence_parses_the_five_states",
+        "forwarding_is_a_noop_without_an_attached_logger",
+        "quarantine_exhaustion_reaches_the_process_wide_counters",
+        "quarantine_retirement_is_counted_so_the_window_is_never_silently_exhausted",
+        "queue_lock_excludes_and_counts_contention",
+        "select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+        "select_device_strict_reads_the_env_var_when_no_session_override",
+        "select_device_strict_returns_none_when_nothing_is_set",
+        "select_device_strict_session_override_outranks_the_env_var",
+        "staging_bytes_are_recorded_without_any_tracing_flag",
+        "the_audit_line_is_one_line_of_valid_json_lines",
+        "the_blind_axes_caveat_travels_with_the_claim_line",
+        "the_claimed_form_evidence_token_is_unobservable_before_it_is_anything_else",
+        "the_device_memory_budget_is_uncapped_unless_it_parses",
+        "the_dispatch_path_dump_carries_the_allocator_keys_too",
+        "the_escalation_fires_only_when_no_quiet_channel_carried_the_info",
+        "the_info_channel_token_distinguishes_offered_from_merely_emitted",
+        "the_info_reach_token_says_whether_a_user_was_reachable",
+        "the_override_reason_is_typed_so_arithmetic_on_it_fails_loudly",
+        "the_record_is_off_unless_the_env_var_names_a_file",
+        "the_session_option_outranks_the_environment_and_neither_needs_the_other",
+        "the_staging_sentence_separates_itself_from_the_allocator_upload_counters",
+        "the_tracer_is_inert_without_the_env_var",
+        "two_cards_of_the_same_model_are_two_frames_not_one",
+        "two_frames_in_one_process_are_never_reported_as_one_frame",
+        "variants_are_a_set_and_reach_the_json_as_typed_values",
+        "with_no_ort_logger_the_event_is_still_recorded_and_the_channel_is_not_claimed",
+        "zero_staging_bytes_refuses_to_claim_residency"
+      ],
+      "reps": 40,
+      "reds": 0,
+      "observed_rate": 0.0,
+      "elapsed_s": 20.5
+    }
+  },
+  "reds": [
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+        "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+          "at": "src\\vk\\instance.rs:2752:9:"
+        },
+        {
+          "test": "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override",
+          "at": "src\\vk\\instance.rs:2730:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 1,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep1.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+        "vk::instance::tests::select_device_strict_returns_none_when_nothing_is_set"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+          "at": "src\\vk\\instance.rs:2752:9:"
+        },
+        {
+          "test": "vk::instance::tests::select_device_strict_returns_none_when_nothing_is_set",
+          "at": "src\\vk\\instance.rs:2721:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 2,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep2.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+          "at": "src\\vk\\instance.rs:2752:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 3,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep3.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override",
+          "at": "src\\vk\\instance.rs:2730:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 4,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep4.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_returns_none_when_nothing_is_set"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_returns_none_when_nothing_is_set",
+          "at": "src\\vk\\instance.rs:2721:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 6,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep6.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+          "at": "src\\vk\\instance.rs:2752:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 7,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep7.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override",
+          "at": "src\\vk\\instance.rs:2730:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 8,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep8.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override",
+        "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other",
+          "at": "src\\vk\\instance.rs:2557:9:"
+        },
+        {
+          "test": "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override",
+          "at": "src\\vk\\instance.rs:2730:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 11,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep11.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override",
+          "at": "src\\vk\\instance.rs:2730:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 12,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep12.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+        "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+          "at": "src\\vk\\instance.rs:2752:9:"
+        },
+        {
+          "test": "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override",
+          "at": "src\\vk\\instance.rs:2730:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 13,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep13.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+        "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+          "at": "src\\vk\\instance.rs:2752:9:"
+        },
+        {
+          "test": "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other",
+          "at": "src\\vk\\instance.rs:2557:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 14,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep14.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override",
+          "at": "src\\vk\\instance.rs:2730:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 16,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep16.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other",
+          "at": "src\\vk\\instance.rs:2566:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 18,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep18.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other",
+          "at": "src\\vk\\instance.rs:2566:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 19,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep19.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+          "at": "src\\vk\\instance.rs:2752:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 23,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep23.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+          "at": "src\\vk\\instance.rs:2752:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 24,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep24.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+        "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+          "at": "src\\vk\\instance.rs:2752:9:"
+        },
+        {
+          "test": "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other",
+          "at": "src\\vk\\instance.rs:2545:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 26,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep26.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other",
+          "at": "src\\vk\\instance.rs:2566:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 28,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep28.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other",
+          "at": "src\\vk\\instance.rs:2545:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 30,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep30.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other",
+          "at": "src\\vk\\instance.rs:2545:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 31,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep31.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other",
+          "at": "src\\vk\\instance.rs:2545:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 34,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep34.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_reads_the_env_var_when_no_session_override",
+          "at": "src\\vk\\instance.rs:2730:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 35,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep35.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::select_device_strict_malformed_env_value_is_an_error_not_a_fallback",
+          "at": "src\\vk\\instance.rs:2752:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 36,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep36.txt",
+      "exit_code": 101
+    },
+    {
+      "tests": [
+        "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other"
+      ],
+      "panics": [
+        {
+          "test": "vk::instance::tests::the_session_option_outranks_the_environment_and_neither_needs_the_other",
+          "at": "src\\vk\\instance.rs:2545:9:"
+        }
+      ],
+      "result_lines": [
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.00s"
+      ],
+      "pool": "env:device_selector",
+      "rep": 37,
+      "capture": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\bench\\results\\contention_gate\\red-env_device_selector-rep37.txt",
+      "exit_code": 101
+    }
+  ],
+  "verdict": "RED",
+  "extent": "Pools are derived from audit_counter_test_lock: tests touching the process-global counters, the ORT logger pointers, or a contended environment variable. A race reached only through a helper defined outside the test body is outside the auditor's extent and therefore outside this gate's pools."
+}

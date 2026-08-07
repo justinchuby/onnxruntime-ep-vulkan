@@ -54,6 +54,12 @@ OPTIONS
                                     its SHA-256 before it enters the cache).
     --cpu-only                      Run only the CPU reference. Never reports PASS; for proving
                                     the harness works where no Vulkan device exists.
+    --device-selector <sel>         Pin the Vulkan device by STABLE IDENTITY before the EP library
+                                    is registered: uuid:<32 hex>, luid:<16 hex>, pci:<D:B:D.F>,
+                                    id:<vendor>:<device>, name:<substring> or index:<n>. The run
+                                    then records execution_provider.selected_device and the
+                                    device_identity_agreement guard fails the run if the device
+                                    the session actually opened is not the one requested.
     --keep-profile                  Keep the ONNX Runtime profile JSON instead of deleting it.
     --quiet                         Print only the outcome line.
     -h, --help                      This text.
@@ -147,6 +153,9 @@ fn parse_args(argv: &[String]) -> Result<Command> {
                 config.atol = Some(parse_f64(&raw, "--atol")?);
             }
             "--fetch" => config.fetch = true,
+            "--device-selector" => {
+                config.device_selector = Some(take("--device-selector")?);
+            }
             "--cpu-only" => config.cpu_only = true,
             "--keep-profile" => config.keep_profile = true,
             "--quiet" => quiet = true,
@@ -268,6 +277,14 @@ fn list_devices(config: &run::RunConfig) -> Result<()> {
         println!(
             "  [{}] {:<28} vendor={:<20} {} {:04x}:{:04x}",
             d.index, d.ep_name, d.ep_vendor, d.hardware_type, d.vendor_id, d.device_id
+        );
+        // Stable identity (issue #18): printed on its own line, never fabricated when a field is
+        // unavailable (e.g. no LUID/PCI on this platform, or a non-Vulkan EP with no metadata).
+        println!(
+            "      uuid={} luid={} pci={}",
+            d.uuid.as_deref().unwrap_or("(unavailable)"),
+            d.luid.as_deref().unwrap_or("(unavailable)"),
+            d.pci.as_deref().unwrap_or("(unavailable)"),
         );
     }
     Ok(())

@@ -1,0 +1,184 @@
+{
+  "schema": "ort-model-runner/1",
+  "tool": "rust/modelrunner (ort-model-runner)",
+  "pass": true,
+  "outcome": "PASS",
+  "model": "mobilenetv2-12",
+  "onnx_file": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\models\\mobilenetv2-12.onnx",
+  "onnx_sha256": "c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5",
+  "onnx_bytes": 13964571,
+  "model_provenance": "pinned",
+  "onnxruntime": {
+    "library": {
+      "path": "\\\\?\\C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan\\.venv\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime.dll",
+      "sha256": "3d6bd02dc137b9a1dfdac045a52b147ffb920bb06ab812b08fc8e14279859855",
+      "bytes": 17766752
+    },
+    "api_version": 28,
+    "version": "1.28.0",
+    "discovered_via": "--ort-lib"
+  },
+  "execution_provider": {
+    "registration_name": "VulkanExecutionProvider",
+    "library": {
+      "path": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "sha256": "a7e6a3af23f450c8310e62fb77a4f70811d441885fc6d89fce2151c359f51980",
+      "bytes": 2543616
+    },
+    "devices": [
+      {
+        "index": 0,
+        "ep_name": "CPUExecutionProvider",
+        "ep_vendor": "Microsoft",
+        "hardware_type": "CPU",
+        "vendor_id": 32902,
+        "device_id": 7,
+        "uuid": null,
+        "luid": null,
+        "pci": null
+      },
+      {
+        "index": 1,
+        "ep_name": "VulkanExecutionProvider",
+        "ep_vendor": "onnxruntime-ep-vulkan",
+        "hardware_type": "GPU",
+        "vendor_id": 4318,
+        "device_id": 9648,
+        "uuid": "aadf33d4d118155fcc60c22b5c352463",
+        "luid": "7adf070000000000",
+        "pci": "0000:9f:00.0"
+      }
+    ],
+    "selected_device": {
+      "identity": "uuid:aadf33d4d118155fcc60c22b5c352463",
+      "name": "NVIDIA RTX A1000",
+      "advertised_index": 1,
+      "requested_selector": "uuid:aadf33d4d118155fcc60c22b5c352463",
+      "selector_source": "--device-selector (ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR, set before EP registration)",
+      "alloc_device_frame": "OFF"
+    },
+    "device_selector": "uuid:aadf33d4d118155fcc60c22b5c352463"
+  },
+  "inputs": [
+    {
+      "name": "input",
+      "dtype": "float32",
+      "shape": [
+        1,
+        3,
+        224,
+        224
+      ],
+      "elements": 150528,
+      "source": "generated"
+    }
+  ],
+  "free_dim_pins": [
+    {
+      "input": "input",
+      "axis": 0,
+      "symbol": "batch_size",
+      "value": 1,
+      "source": "default"
+    }
+  ],
+  "seed": "0x5EED000000000001",
+  "tolerance": {
+    "rtol": 0.01,
+    "atol": 0.0001,
+    "source": "policy",
+    "rationale": "Fifty-plus layers of Conv/BatchNorm/Clip in f32. Depth compounds rounding, and the post-softmax outputs are small, so the absolute floor is one decade looser than mnist-12 while the relative bound stays at the repository's 1e-2."
+  },
+  "attribution": {
+    "primary_witness": "onnxruntime profile (cat=Node)",
+    "corroborating_witness": "onnxruntime-ep-vulkan counters (dispatches_executed)",
+    "provider_node_counts": {
+      "CPUExecutionProvider": 7,
+      "VulkanExecutionProvider": 1
+    },
+    "profile_note": "",
+    "counters": {
+      "present": true,
+      "dispatches_executed": 97,
+      "claimed_nodes": 98,
+      "islands_offered": 1,
+      "compute_calls": 1,
+      "running_device_names": "NVIDIA RTX A1000",
+      "running_device_uuids": "uuid:aadf33d4d118155fcc60c22b5c352463",
+      "alloc_device_frame": "OFF",
+      "alloc_device_frames_declared": 0,
+      "note": ""
+    },
+    "split_frame": false
+  },
+  "outputs": [
+    {
+      "name": "output",
+      "verdict": "AGREE",
+      "dtype": "float32",
+      "reference_shape": [
+        1,
+        1000
+      ],
+      "candidate_shape": [
+        1,
+        1000
+      ],
+      "elements": 1000,
+      "max_abs_diff": 1.3470649719238281e-5,
+      "max_rel_diff": 0.002256589240582501,
+      "worst_index": 580,
+      "reference_at_worst": 0.001981019973754883,
+      "candidate_at_worst": 0.001985490322113037,
+      "nan_reference": 0,
+      "nan_candidate": 0,
+      "reference_all_zero": false,
+      "detail": "max_rel=2.256589e-3 (<= 1.0e-2) or max_abs=1.347065e-5 (<= 1.0e-4)"
+    }
+  ],
+  "timings_ms": {
+    "cpu_session_load": 59.8256,
+    "cpu_run": 6.3915999999999995,
+    "vulkan_session_load": 121.6763,
+    "vulkan_run": 107.0917,
+    "total": 764.1348
+  },
+  "guards": [
+    {
+      "name": "model_identity_pinned",
+      "held": true,
+      "detail": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\models\\mobilenetv2-12.onnx sha256 c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5 (13964571 bytes), provenance=pinned"
+    },
+    {
+      "name": "vulkan_ep_device_present",
+      "held": true,
+      "detail": "1 device(s) named VulkanExecutionProvider: GPU 10de:25b0"
+    },
+    {
+      "name": "vulkan_ep_in_session",
+      "held": true,
+      "detail": "SessionOptionsAppendExecutionProvider_V2 accepted the Vulkan EpDevice and the session was created with it"
+    },
+    {
+      "name": "vulkan_executed_nodes",
+      "held": true,
+      "detail": "ORT's profile attributed 1 of 8 node executions to VulkanExecutionProvider: {\"CPUExecutionProvider\": 7, \"VulkanExecutionProvider\": 1}"
+    },
+    {
+      "name": "vulkan_dispatched_work",
+      "held": true,
+      "detail": "dispatches_executed=97 (claimed_nodes=Some(98), islands_offered=Some(1))"
+    },
+    {
+      "name": "device_identity_agreement",
+      "held": true,
+      "detail": "the session opened exactly one device, `uuid:aadf33d4d118155fcc60c22b5c352463` ('NVIDIA RTX A1000'), and it is advertised OrtEpDevice index 1, which is the device --device-selector uuid:aadf33d4d118155fcc60c22b5c352463 requested. alloc_device_frame = OFF."
+    },
+    {
+      "name": "outputs_agree",
+      "held": true,
+      "detail": "1 output(s); worst AGREE on \"output\": max_rel=2.256589e-3 (<= 1.0e-2) or max_abs=1.347065e-5 (<= 1.0e-4)"
+    }
+  ]
+}
+

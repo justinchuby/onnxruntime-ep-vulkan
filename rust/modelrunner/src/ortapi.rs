@@ -320,6 +320,37 @@ impl Env {
                 };
                 (kind.to_string(), vendor_id, device_id)
             };
+            // Stable identity (issue #18): the EP publishes `vulkan.device_uuid` (always, when
+            // it has a device at all) and `vulkan.device_luid` / `vulkan.device_pci` (only when
+            // the driver/platform reports them) as `OrtEpDevice` metadata — see
+            // `factory.rs::get_supported_devices_impl`. Reading them here is what lets a model
+            // run's discovery/report attribute its evidence to the *physical* device ORT bound,
+            // not just to `(vendor_id, device_id)`, which two identical GPUs would share.
+            let metadata = match self.api.raw.EpDevice_EpMetadata {
+                // SAFETY: non-null ep device from `GetEpDevices`; the returned `OrtKeyValuePairs`
+                // is owned by the device and lives at least as long as it.
+                Some(f) => unsafe { f(device) },
+                None => ptr::null(),
+            };
+            let metadata_get = |key: &str| -> Option<String> {
+                let get = self.api.raw.GetKeyValue?;
+                if metadata.is_null() {
+                    return None;
+                }
+                let key = std::ffi::CString::new(key).ok()?;
+                // SAFETY: `metadata` is non-null (checked above) and owned by `device`, which is
+                // live for this call; `key` is a valid NUL-terminated string for its duration.
+                let v = unsafe { get(metadata, key.as_ptr()) };
+                if v.is_null() {
+                    None
+                } else {
+                    // SAFETY: ORT returns a NUL-terminated string owned by the key-value pairs.
+                    Some(unsafe { CStr::from_ptr(v) }.to_string_lossy().into_owned())
+                }
+            };
+            let uuid = metadata_get("vulkan.device_uuid");
+            let luid = metadata_get("vulkan.device_luid");
+            let pci = metadata_get("vulkan.device_pci");
             out.push(EpDeviceInfo {
                 index: i,
                 raw: device,
@@ -328,6 +359,9 @@ impl Env {
                 hardware_type: kind,
                 vendor_id,
                 device_id,
+                uuid,
+                luid,
+                pci,
             });
         }
         Ok(out)
@@ -353,6 +387,15 @@ pub struct EpDeviceInfo {
     pub hardware_type: String,
     pub vendor_id: u32,
     pub device_id: u32,
+    /// `vulkan.device_uuid` EP metadata (issue #18 stable identity). `None` for non-Vulkan EPs,
+    /// or a Vulkan EP device seen through a host too old to advertise it.
+    pub uuid: Option<String>,
+    /// `vulkan.device_luid` EP metadata, only when the driver reported a valid LUID (mainly
+    /// Windows/D3D-interop; expect `None` on most Linux/Android/MoltenVK drivers).
+    pub luid: Option<String>,
+    /// `vulkan.device_pci` EP metadata, only when `VK_EXT_pci_bus_info` is supported; expect
+    /// `None` on MoltenVK and some mobile ICDs.
+    pub pci: Option<String>,
 }
 
 pub struct SessionOptions {

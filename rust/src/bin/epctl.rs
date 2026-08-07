@@ -228,6 +228,13 @@ fn usage() {
     eprintln!(
         "                         Vulkan is functional on the runner independently of the EP."
     );
+    eprintln!("                         Also reports per-device stable identity (uuid/luid/pci,");
+    eprintln!(
+        "                         issue #18) and, when ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR is"
+    );
+    eprintln!("                         set, what that strict selector would resolve to or why it");
+    eprintln!("                         would be refused — using the same resolution the EP");
+    eprintln!("                         itself runs at session creation.");
     eprintln!("    --probe-validation   report whether VK_LAYER_KHRONOS_validation is installed,");
     eprintln!("                         enabled, AND being listened to by a debug messenger.");
     eprintln!("                         Exit 3 when absent: that is no answer, not a clean one.");
