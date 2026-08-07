@@ -575,6 +575,11 @@ BENCH_HELD_OUT: dict[str, str] = {
         "test module — a caller, screened as polarity, not as an instrument. Carries both "
         "polarities of the provenance sanitiser and the repository-wide leak ratchet."
     ),
+    "test_result_staleness.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries both "
+        "polarities of `cuda_competition.ep_provenance` and the screen that stops a "
+        "committed result outliving the EP build it measured."
+    ),
 }
 
 
@@ -668,8 +673,8 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
 # with the numbers it disqualifies.  `withholds(...)`/`publishes(...)` name those polarities
 # and enforce them at run time exactly as `refuses`/`selects` do — a gate wired to nothing
 # cannot pass `withholds`, and a gate that fires on everything cannot pass `publishes`.
-VALUE_REJECT_FN = frozenset({"refuses", "withholds"})
-VALUE_ACCEPT_FN = frozenset({"selects", "publishes"})
+VALUE_REJECT_FN = frozenset({"refuses", "withholds", "omits"})
+VALUE_ACCEPT_FN = frozenset({"selects", "publishes", "records"})
 
 
 def _polarity_wrapped(fn, wrapper_names: "frozenset[str]") -> "set[int]":

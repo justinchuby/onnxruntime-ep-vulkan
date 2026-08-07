@@ -186,3 +186,70 @@ def publishes(record: Any, expected: Any, *, because: str = "") -> Any:
         raise PolarityError(
             f"the gate left {got!r} standing{ctx}, expected {expected!r}.")
     return got
+
+
+# ---------------------------------------------------------------------------
+# Third pair: a PROVENANCE instrument, which records a fact or explains its absence
+# ---------------------------------------------------------------------------
+#
+# `cuda_competition.ep_provenance` fits neither pair above.  It is not a selector
+# returning `(value, why)` and it is not a verdict gate returning a sealed record: it
+# returns a dict in which each fact it could take is a key, and each fact it could NOT
+# take is a *different* key saying why.  That shape is deliberate -- a provenance block
+# that raised when the EP library was absent could not be written at all on a machine
+# without one, and a provenance block that silently omitted the field would be
+# indistinguishable from one taken against a library of zero bytes.
+#
+# The polarity that matters for it is therefore: did it record the fact when the fact was
+# available, and did it decline *audibly* when it was not.
+
+
+def omits(record: Any, field: str, *, reason_field: str, because: str = "") -> str:
+    """Assert a provenance instrument DECLINED to record ``field``, and return its reason.
+
+    The reject polarity.  A provenance block that quietly leaves a field out, or leaves it
+    out while claiming no reason, is the failure this watches for: a later reader cannot
+    tell "not measured" from "measured as nothing".
+    """
+    ctx = f" ({because})" if because else ""
+    if not isinstance(record, dict):
+        raise PolarityError(
+            f"omits{ctx}: a provenance instrument must return a record; got "
+            f"{type(record).__name__} {record!r}.")
+    if record.get(field) is not None:
+        raise PolarityError(
+            f"expected {field!r} to be OMITTED{ctx}, but the instrument recorded "
+            f"{record[field]!r}. This is the polarity that catches provenance invented "
+            f"where none was available.")
+    why = record.get(reason_field)
+    if not isinstance(why, str) or not why.strip():
+        raise PolarityError(
+            f"{field!r} was omitted{ctx} but {reason_field!r} does not say why ({why!r}). "
+            f"An unexplained gap in provenance reads as an oversight and gets 'fixed' by "
+            f"deleting the check.")
+    return why
+
+
+def records(record: Any, field: str, expected: Any, *, because: str = "") -> Any:
+    """Assert a provenance instrument RECORDED ``field`` as exactly ``expected``.
+
+    The accept polarity.  An instrument that omits everything documents nothing, and would
+    be worse than absent: every reader would learn the block is always empty and stop
+    reading it.
+    """
+    ctx = f" ({because})" if because else ""
+    if not isinstance(record, dict):
+        raise PolarityError(
+            f"records{ctx}: a provenance instrument must return a record; got "
+            f"{type(record).__name__} {record!r}.")
+    got = record.get(field)
+    if got is None:
+        raise PolarityError(
+            f"expected {field!r} to be RECORDED{ctx}, but the instrument omitted it and "
+            f"said: {record.get('lib_unavailable_because')!r}. This is the polarity that "
+            f"catches an instrument which records nothing.")
+    if got != expected:
+        raise PolarityError(
+            f"the instrument recorded {field!r} as {got!r}{ctx}, expected {expected!r}. "
+            f"Provenance that does not match the thing it describes is worse than none.")
+    return got

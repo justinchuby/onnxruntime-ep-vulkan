@@ -751,7 +751,10 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
         "instrument_errors": list(traced.get("instrument_errors") or []),
     }
     # This reduction is itself a Vulkan record, and the regime its inputs were measured
-    # under is the difference between a 27.733 ms median and a 44.605 ms one.  Inheriting it
+    # under is the difference between a clean median and a counter-inflated one, which on
+    # the measured build was close to a factor of two.  No figure is quoted: the artifact
+    # that carried the inflated side is no longer committed, and a number the tree cannot
+    # back is the defect this branch removes.  Inheriting it
     # rather than leaving it absent is what stops the reduction from being the one Vulkan
     # artifact in the tree that does not say which regime it describes.
     out["counters_scope"] = traced.get("counters_scope")
@@ -1256,6 +1259,7 @@ def main(argv=None) -> int:
 
     report = attribute(traced, untraced, Path(traced["trace_path"]))
     report["schema"] = SCHEMA
+    report["ep_provenance"] = cc.ep_provenance()
     report["iters"] = a.iters
     report["warmup"] = a.warmup
     report["untraced_record"] = untraced

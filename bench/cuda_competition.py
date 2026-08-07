@@ -69,6 +69,7 @@ allocator state the next arm starts from.  The parent never imports onnxruntime.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -148,7 +149,12 @@ GREEN_VERDICTS = frozenset({ADMISSIBLE})
 #:
 #: The EP rewrites its counters JSON after every ``Compute``. Left on for the whole run
 #: that file write lands inside every timed inference and inflates the Vulkan median --
-#: 44.605 ms against 27.733 ms for the same arm and workload on the same machine. The
+#: substantially, for the same arm and workload on the same machine. The magnitude is
+#: deliberately *not* quoted here. The A/B that measured it was taken on a superseded
+#: build and its inflated side is no longer committed, so any figure named here would be
+#: a number the tree cannot back -- which is the defect this branch exists to remove, not
+#: one to leave in the harness that screens for it. It is re-established from a committed
+#: artifact by the measurement this harness is under review for. The
 #: two numbers are not interchangeable, so the regime is part of the record rather than
 #: something a reader is expected to remember. Empty means "this arm has no Vulkan
 #: counters", which is every non-Vulkan arm; it is *not* a permitted value for a Vulkan
@@ -1324,6 +1330,71 @@ def cross_arm_equivalence(records: "list[dict]", reference_arm: str = ARM_CPU_HO
     return result
 
 
+#: Sources that decide what the Vulkan attention path *does*.  A suite record pins
+#: their digests so that a result cannot outlive the code it measured: change one of
+#: these without re-running, and the staleness screen fails instead of letting the old
+#: ranking pose as current.  Paths are repo-relative on purpose -- they are identity,
+#: not location.
+EP_PINNED_SOURCES = (
+    "rust/shaders/glsl/gqa_f16.comp",
+    "rust/src/ops/attention.rs",
+)
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 22), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def ep_provenance() -> dict:
+    """Identity of the Vulkan EP build under measurement.
+
+    Two independent handles, because they fail differently.  ``lib_sha256`` is the
+    binary that actually ran -- exact, but not committed, so nothing in the tree can
+    be compared against it later.  ``pinned_sources`` *is* committed, which is what
+    lets a test assert that a stored result still describes the current tree.
+    """
+    repo = _HERE.parent
+    prov: dict = {"pinned_sources": {}, "pinned_source_set": list(EP_PINNED_SOURCES)}
+
+    lib = os.environ.get(EP_LIB_ENV)
+    if lib and Path(lib).is_file():
+        prov["lib_sha256"] = _sha256_file(Path(lib))
+        prov["lib_bytes"] = Path(lib).stat().st_size
+    else:
+        prov["lib_sha256"] = None
+        prov["lib_unavailable_because"] = (
+            f"{EP_LIB_ENV} is unset or does not point at a file")
+
+    for rel in EP_PINNED_SOURCES:
+        p = repo / rel
+        prov["pinned_sources"][rel] = _sha256_file(p) if p.is_file() else None
+
+    try:
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=30)
+        prov["git_commit"] = head.stdout.strip() or None
+        dirty = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=60)
+        # Recorded, not hidden: a measurement taken on a dirty tree is still a
+        # measurement, but the reader is entitled to know the commit under-describes it.
+        prov["git_tree_dirty"] = bool(dirty.stdout.strip())
+        # The narrower and more load-bearing question.  Edits to the harness do not
+        # change what the EP computes; edits to the pinned sources do.  A commit
+        # reference is only a fair label for a measurement when *these* were clean.
+        pinned = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain", "--"] + list(EP_PINNED_SOURCES),
+            capture_output=True, text=True, timeout=60)
+        prov["pinned_sources_dirty"] = bool(pinned.stdout.strip())
+    except Exception as exc:
+        prov["git_commit"] = None
+        prov["git_error"] = repr(exc)
+    return prov
+
+
 def device_facts() -> dict:
     """Selected device identity + host facts, recorded once per suite run."""
     facts: dict = {
@@ -1348,6 +1419,7 @@ def run_suite(workloads: "list[Workload]", arms: "list[str]", *, iters: int, war
         "schema": "cuda_competition/1",
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "device_facts": device_facts(),
+        "ep_provenance": ep_provenance(),
         "iters": iters, "warmup": warmup, "seed": seed, "repeats": repeats,
         "arms": list(arms),
         "fallback_split_threshold": FALLBACK_SPLIT_THRESHOLD,
