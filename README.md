@@ -266,7 +266,11 @@ locally from a source tree you control.
 
 **This path is demonstrated, not asserted.** `python/verify_cleanroom.py` creates a fresh
 venv *outside* this repository, installs only the wheel, and — with the repository
-unreachable — imports, registers, runs, and asserts the EP was selected.
+unreachable — imports, registers, runs, and asserts the EP was selected. Its `pip install`
+of `onnx`/`numpy` into that venv defaults to the approved proxy index
+(`https://packagefeedproxy.microsoft.io/pypi/simple`, override with `--index-url` or
+`$ONNXRUNTIME_EP_VULKAN_PYPI_INDEX_URL`) because public PyPI is blocked in the sandboxes
+this tool is actually run from during EP development (issue #40).
 `bench/results/cleanroom_install_dev0.json` records the run: `verdict: PASS`,
 `session_providers: ["VulkanExecutionProvider", "CPUExecutionProvider"]`,
 `artifact_inside_site_packages: true`, on Windows / RTX 4060 / ORT 1.28.0. **It has been

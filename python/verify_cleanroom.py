@@ -46,6 +46,17 @@ PY_DIR = Path(__file__).resolve().parent
 REPO = PY_DIR.parent
 DEFAULT_ENV = REPO.parent / "onnxruntime-ep-vulkan-cleanroom"
 
+# Issue #40: public PyPI (files.pythonhosted.org) is blocked in the sandboxes this tool
+# is actually run from during EP development, so an unqualified `pip install` here fails
+# with an SSL handshake error before a single assertion runs -- not a wheel or EP defect,
+# a package-index reachability defect. The approved internal proxy mirrors PyPI and is
+# used unless the caller overrides it (a machine that can reach public PyPI directly, or
+# an internal mirror change, both stay one flag/env-var away, never a code edit).
+DEFAULT_INDEX_URL = os.environ.get(
+    "ONNXRUNTIME_EP_VULKAN_PYPI_INDEX_URL",
+    "https://packagefeedproxy.microsoft.io/pypi/simple",
+)
+
 # Runs inside the fresh interpreter. Prints one JSON line prefixed with @@.
 _CONSUMER = r'''
 import json, sys, sysconfig, os
@@ -103,6 +114,15 @@ def main(argv: list[str] | None = None) -> int:
                     help="wheel to install (default: newest in python/dist)")
     ap.add_argument("--env", type=Path, default=DEFAULT_ENV)
     ap.add_argument("--keep", action="store_true", help="do not delete the venv afterwards")
+    ap.add_argument(
+        "--index-url", default=DEFAULT_INDEX_URL,
+        help=(
+            "package index for the clean venv's `pip install` (default: "
+            "%(default)s, or $ONNXRUNTIME_EP_VULKAN_PYPI_INDEX_URL). Pass '' to fall "
+            "back to pip's own default index (issue #40: public PyPI is blocked in the "
+            "sandboxes this tool is run from during EP development)."
+        ),
+    )
     args = ap.parse_args(argv)
 
     wheel = args.wheel
@@ -143,8 +163,12 @@ def main(argv: list[str] | None = None) -> int:
         py = env_dir / ("Scripts" if os.name == "nt" else "bin") / (
             "python.exe" if os.name == "nt" else "python")
 
-        install = _run([py, "-m", "pip", "install", "--disable-pip-version-check",
-                        "-q", wheel, "onnx", "numpy"], capture_output=True, text=True)
+        pip_cmd = [py, "-m", "pip", "install", "--disable-pip-version-check", "-q"]
+        if args.index_url:
+            pip_cmd += ["--index-url", args.index_url]
+        pip_cmd += [wheel, "onnx", "numpy"]
+        install = _run(pip_cmd, capture_output=True, text=True)
+        record["pip_index_url"] = args.index_url or "(pip default)"
         record["pip_returncode"] = install.returncode
         if install.returncode != 0:
             record["verdict"] = "UNOBSERVABLE"
