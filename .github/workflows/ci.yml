@@ -308,9 +308,13 @@ jobs:
         # R9 applied to a privacy claim: a suite only ever seen green cannot distinguish
         # "nothing leaks" from "nothing is asserted" -- the previous suite passed on bytes
         # that echoed a raw `user:pass@host` and wrote a password fragment into a tracked
-        # artifact. The REPLAYED arm runs today's suite against `git show
-        # d5bab5d:python/verify_cleanroom.py` and demands RED, and reproduces each blocker
-        # in-process so the evidence is a sentinel coming out of the shipped function.
+        # artifact. The REPLAYED arms run today's suite against the module bytes of BOTH
+        # rejected heads and demand RED, then reproduce each measured blocker in-process
+        # so the evidence is a sentinel coming out of the shipped function. Those bytes
+        # are committed, content-addressed fixtures under ci/fixtures/cleanroom-redaction/
+        # verified against a sha256 manifest -- NOT `git show <sha>`, which stops working
+        # the moment this branch is squash-merged and deleted. A LANDING arm re-runs the
+        # control in a copy of the tree with no `.git` to prove exactly that.
         run: python ci/negative_control_cleanroom_redaction.py
 
       - name: Flake-witness negative control (demand red on an intermittent)

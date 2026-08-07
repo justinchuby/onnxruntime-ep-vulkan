@@ -1660,27 +1660,40 @@ CHECKS: tuple[Check, ...] = (
         ),
         status=DEMONSTRATED,
         mutation=(
-            "REPLAYED: `git show d5bab5d:python/verify_cleanroom.py`, the bytes PR #57 "
-            "was rejected at, whose `_echo_cmd` gated on `\"://\" in s` and whose "
-            "`main()` called `_scrub_text(install.stderr[-1500:], url)`. PLANTED: six "
-            "surgical reintroductions of one defect each into today's module -- the "
-            "`://` echo gate, truncate-before-scrub, a denylist-shaped query redaction, "
-            "removal of the record-wide scrub at the write seam, re-chaining the "
-            "exception so the raw message stays reachable through `__context__`, and "
-            "fragment pass-through. Each mutation asserts its anchor occurs exactly once "
-            "before applying, so a drifted anchor is ERROR(instrument=anchor_drift), "
-            "never a silent walkover. See ci/negative_control_cleanroom_redaction.py."
+            "REPLAYED from committed, content-addressed fixtures rather than from a "
+            "commit ref: `ci/fixtures/cleanroom-redaction/verify_cleanroom.rejected-r1"
+            ".pysrc` and `...rejected-r2.pysrc` are the exact module bytes PR #57 was "
+            "rejected at twice, each pinned by a sha256 in that directory's "
+            "`manifest.json` and verified before use, so the evidence survives a squash "
+            "landing that deletes the branch. r1 gated `_echo_cmd` on `\"://\" in s` and "
+            "truncated before scrubbing; r2 echoed a schemeless `--index-url` raw and "
+            "mangled ordinary `@`-bearing Windows paths. PLANTED: twelve surgical "
+            "reintroductions of one defect each into today's module -- the `://` echo "
+            "gate, the echo losing the run's own URL, loss of argument-context "
+            "recognition, the `@`-guessing scanner, removal of the raw-derived literal "
+            "pass, truncate-before-scrub, a denylist-shaped query redaction, removal of "
+            "the record-wide scrub at the write seam, re-chaining the exception so the "
+            "raw message stays reachable through `__context__`, widening `except "
+            "Exception` back to `BaseException`, swallowing the traceback instead of "
+            "scrubbing and recording it, and fragment pass-through. Each mutation "
+            "asserts its anchor occurs exactly once before applying, so a drifted anchor "
+            "is ERROR(instrument=anchor_drift), never a silent walkover. See "
+            "ci/negative_control_cleanroom_redaction.py."
         ),
         arm_healthy=(
-            "72 tests pass; `pip_index_url` renders as `https://REDACTED@mirror.example/"
+            "365 tests pass; `pip_index_url` renders as `https://REDACTED@mirror.example/"
             "pypi/simple?token=REDACTED#REDACTED` while the unredacted URL is present in "
             "exactly one observed argv, pip's own"
         ),
         arm_broken=(
-            "on d5bab5d's bytes the suite goes RED, and the same synthetic sentinel "
-            "`sentinel-pass` is produced directly by the shipped `_echo_cmd` for a "
-            "schemeless and a scheme-relative URL and by the shipped "
-            "`_scrub_text(stderr[-1500:], url)` for a URL straddling the truncation edge"
+            "on either rejected fixture's bytes the suite goes RED, and the same "
+            "synthetic sentinel is produced directly by the shipped functions: "
+            "`sentinel-pass` by r1's `_echo_cmd` for a schemeless and a scheme-relative "
+            "URL and by r1's `_scrub_text(stderr[-1500:], url)` for a URL straddling the "
+            "truncation edge; `sentinel-token-value` by r2's `_echo_cmd` for three "
+            "schemeless spellings; and r2 rewrites "
+            "`C:\\Users\\justin.chu@contoso.example\\...` to "
+            "`REDACTED@contoso.example\\...`"
         ),
         observed="2026-08-07",
         misses=(
@@ -1696,12 +1709,23 @@ CHECKS: tuple[Check, ...] = (
             "span -- an environment variable pip reads on its own, a netrc entry, a "
             "keyring lookup -- is not a shape this module can recognise, so it is neither "
             "redacted nor detected.",
+            "UNDER-FIRE class, and the price of fixing issue #55 R3: the general scan now "
+            "requires an explicit `//` authority marker, so a FOREIGN schemeless "
+            "credential URL -- one this run was never handed, appearing only in text pip "
+            "or the OS produced, e.g. `other.example/simple?token=...` -- is not redacted "
+            "by shape. The run's OWN URL is still covered in every spelling, by value and "
+            "by argument position, and its credential literals are redacted even when "
+            "quoted back without their URL. The alternative was corrupting every ordinary "
+            "`C:\\Users\\first.last@corp\\...` path in the record, which is what revision "
+            "2 did.",
             "OVER-FIRE class, recorded here because a screen's misses prose has until now "
-            "only carried false NEGATIVES: the general scanner will also redact an "
-            "e-mail address and a `#sha256=` fragment in `pip freeze` output, because "
-            "both are indistinguishable from a credential by shape alone. That is chosen "
-            "(the wheel digest is recorded verbatim and independently as `wheel_sha256`) "
-            "and pinned by a test, but it does cost readability in the record.",
+            "only carried false NEGATIVES: the general scanner will still redact an "
+            "e-mail address and a `#sha256=` fragment inside a genuine `//`-anchored URL "
+            "in `pip freeze` output, because both are indistinguishable from a credential "
+            "by shape alone. That is chosen (the wheel digest is recorded verbatim and "
+            "independently as `wheel_sha256`) and pinned by a test, but it does cost "
+            "readability in the record. A bare e-mail address outside a URL is no longer "
+            "touched, and a 16-entry never-mangle table pins that.",
         ),
     ),
     Check(
@@ -1720,15 +1744,22 @@ CHECKS: tuple[Check, ...] = (
         ),
         status=DEMONSTRATED,
         mutation=(
-            "12 arms: 1 LIVE (today's module is green), 5 REPLAYED (today's suite against "
-            "d5bab5d's module demanding RED, plus B1 reproduced in-process for the "
-            "schemeless and scheme-relative spellings, B2 for the truncation straddle and "
-            "B3 for a query credential -- each asserting the SENTINEL is present in what "
-            "the shipped function returned, so a 'did NOT reproduce' arm is itself a "
-            "failure), 6 PLANTED (one defect surgically reintroduced into today's module "
-            "per arm)."
+            "29 arms: 3 INTEGRITY (each replay fixture matches the sha256 declared in "
+            "`ci/fixtures/cleanroom-redaction/manifest.json`, and a deliberately tampered "
+            "fixture is REFUSED -- a stale or edited fixture fails loudly rather than "
+            "replaying the wrong bytes), 1 LIVE (today's module is green), 12 REPLAYED "
+            "(today's suite against each rejected fixture demanding RED, plus each "
+            "measured defect reproduced in-process: B1 for the schemeless and "
+            "scheme-relative spellings, B2 for the truncation straddle, B3 for a query "
+            "credential, R2 for three schemeless spellings, R3 for a corrupted Windows "
+            "profile path and a corrupted e-mail address, and N1 for non-idempotence -- "
+            "each asserting the SENTINEL is present in what the shipped function "
+            "returned, so a 'did NOT reproduce' arm is itself a failure), 12 PLANTED (one "
+            "defect surgically reintroduced into today's module per arm), 1 LANDING (the "
+            "control re-runs itself against a copy of the tree with NO `.git` at all and "
+            "demands the replay arms still fire there)."
         ),
-        arm_healthy="12/12 arms fire as specified, exit 0",
+        arm_healthy="29/29 arms fire as specified, exit 0",
         arm_broken=(
             "NEGATIVE-CONTROL: FAIL(condition=arm_did_not_fire) naming the arm and "
             "whether the suite was GREEN or RED against what was expected; a mutation "
@@ -1737,19 +1768,33 @@ CHECKS: tuple[Check, ...] = (
         ),
         observed="2026-08-07",
         misses=(
-            "The REPLAYED arms pin the commit d5bab5d. In a squashed history or a fresh "
-            "shallow clone that ref is unreachable and those arms report ERROR rather "
-            "than passing quietly -- but the suite's only non-planted evidence is then "
-            "unavailable, and the six PLANTED arms alone prove only that defects written "
-            "by the same author as the tests are caught.",
+            "The replay fixtures are bytes, not history. They prove what the module DID "
+            "at each rejected head and that today's suite is red on it; they cannot prove "
+            "the fixture is what that head really contained to anyone who does not trust "
+            "the commit that added it. The `origin` field in the manifest is provenance "
+            "prose, deliberately NOT an arm -- when the ref is still reachable the "
+            "INTEGRITY arms report that it matches, and when a squash landing has made it "
+            "unreachable they say so and pass on the digest alone. Substituting a "
+            "flattering fixture would take a reviewed commit, which is the same trust "
+            "boundary as the tests themselves.",
+            "OVER-FIRE class: the digest is over CRLF-normalised bytes, so a fixture that "
+            "differs only in line endings still verifies. That is deliberate on a repo "
+            "with `core.autocrlf=true` (the alternative is a control that fails on every "
+            "Windows checkout), but it means the arms cannot detect a line-ending-only "
+            "tamper -- which for Python source cannot change behaviour.",
             "The PLANTED arms are exact-substring surgery on the module's current text. "
             "They prove each named mechanism is load-bearing; they say nothing about a "
             "leak mechanism nobody has thought of, which is precisely how B1 survived the "
-            "first round.",
+            "first round and R2 the second.",
+            "The LANDING arm proves the replay arms survive the ABSENCE of history. It "
+            "does not exercise a real squash-merge conflict, and it cannot prove the "
+            "fixture files themselves were carried across the landing -- only that "
+            "nothing in the control needs `git` once they are.",
         ),
     ),
     Check(
-        id="device.flake_witness",        falsifier=FALSIFIER_OBSERVED,
+        id="device.flake_witness",
+        falsifier=FALSIFIER_OBSERVED,
         lane="both",
         step="Flake witness (name the failure where truncation cannot reach it)",
         watches=(

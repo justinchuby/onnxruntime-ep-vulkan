@@ -32,36 +32,9 @@ the wheel does not and cannot carry.
 Package-index URL privacy (issue #55)
 -------------------------------------
 ``--index-url`` may point at a private/authenticated mirror, so its value is treated as a
-**secret-bearing string** everywhere except pip's own argv.
-
-There is exactly **one** scrub seam, :func:`_scrub_text`. Every echo, every persisted
-field and every raised message goes through it and through nothing else; a caller cannot
-pick a weaker one, because there is no weaker one to pick. It runs three passes, in order:
-
-1. **exact** — the literal bytes of *this run's* ``--index-url``, replaced by their
-   sanitised rendering. This is what makes the run's own value safe in a spelling the
-   generic scanner deliberately does not recognise (a schemeless ``u:p@host/x``).
-2. **raw-derived literals** — the credential-bearing byte sequences of that same URL
-   (userinfo, each query value, the fragment), replaced wherever they appear, so a
-   re-spelling that keeps the credential bytes (pip re-quoting, re-ordering or
-   percent-decoding around them) is caught too. A literal that also occurs in the
-   sanitised rendering (a credential that happens to equal a host or path segment) is
-   skipped rather than shredding the provenance the rendering exists to keep.
-3. **structural scan** — every span in the text that is *syntactically* a URL, meaning it
-   carries an explicit ``//`` authority marker (``https://...`` or ``//...``). This is the
-   pass that covers a URL this run never handed out: pip's config-inherited
-   ``extra-index-url``, a redirect target, a proxy.
-
-Pass 3 requires that ``//``. It does **not** treat arbitrary ``@``-bearing text as a URL
-authority, because that is not a redaction, it is corruption: ``C:\\Users\\a.b@corp.com\\...``
-is the default profile shape on an Entra-joined Windows box, and rewriting it makes this
-tool's own evidence record disagree with the run that produced it. Where an argument's
-*position* says a token is a URL (the value of ``--index-url`` / ``--extra-index-url`` in
-an argv being echoed), that context is used instead of guessing from the bytes.
-
-The component policy below is deliberately *redact-by-default* rather than a denylist of
-known-sensitive parameter names, because a denylist is only ever as good as the last mirror
-vendor's naming choice:
+**secret-bearing string** everywhere except pip's own argv. The policy is deliberately
+*redact-by-default* rather than a denylist of known-sensitive parameter names, because a
+denylist is only ever as good as the last mirror vendor's naming choice:
 
 ============================  ==============================================================
 URL component                 Policy
@@ -77,15 +50,10 @@ fragment (``#...``)           **redacted** to ``#REDACTED`` when non-empty
 ============================  ==============================================================
 
 This covers absolute (``https://u:p@h/x``), scheme-relative (``//u:p@h/x``) and schemeless
-(``u:p@h/x``) spellings of the run's own index URL, percent-encoded userinfo, IPv6 literals
-with ports, duplicate and blank query parameters, several URLs on one line, and text where
-a URL straddles the point at which a captured stream is truncated (the scrub always runs
-over the **whole** text and the already-sanitised result is what gets truncated).
-
-The scrub is **idempotent**: scrubbing already-scrubbed text returns it unchanged and never
-lengthens it. That matters because ``_scrub_obj`` scrubs the whole record a second time at
-the write seam, and ``pip_stderr``'s documented ``_TAIL_CHARS`` bound would otherwise be a
-bound on the first pass only.
+(``u:p@h/x``) spellings, percent-encoded userinfo, IPv6 literals with ports, duplicate and
+blank query parameters, several URLs on one line, and text where a URL straddles the point
+at which a captured stream is truncated (the scrub always runs over the **whole** text and
+the already-sanitised result is what gets truncated).
 
 Known and accepted limitations, stated so nobody has to infer them:
 
@@ -93,13 +61,6 @@ Known and accepted limitations, stated so nobody has to infer them:
   embedding a token in a path segment (``/t/<token>/simple``). The path is the last piece
   of provenance left after userinfo, query and fragment are gone, so it is kept. Put
   credentials in userinfo or the query, not the path, if you need this tool to hide them.
-* **A *foreign* schemeless URL is not recognised.** Pass 3 requires a ``//`` authority
-  marker, so a credential-bearing ``other:pw@other.example/simple`` that this run never
-  handed out — inherited by pip from its own config, say — is not redacted by shape alone.
-  This is the deliberate side of the trade: the previous version of this module recognised
-  it, and paid by rewriting every Windows profile path containing an ``@`` in its own
-  evidence record. The run's own URL is covered in every spelling by passes 1 and 2, and
-  any URL carrying a scheme — which is every URL pip renders for itself — by pass 3.
 * **The redaction covers only what *this* module echoes, persists or raises.** pip's own
   logs (``pip.log``, ``~/.cache/pip``), the OS process table, and any proxy access log are
   outside its reach. pip is invoked with ``shell=False`` and a real argv, so no shell
@@ -120,7 +81,6 @@ import shutil
 import subprocess
 import sys
 import time
-import traceback
 from pathlib import Path
 
 PY_DIR = Path(__file__).resolve().parent
@@ -161,49 +121,30 @@ _TAIL_CHARS = 1500
 _AUTHORITY_MARKER_RE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.\-]*:)?//")
 
 # URL-shaped spans inside arbitrary text (an argv token, pip's stderr, an exception
-# message), for the general/structural scan.
+# message). Two alternatives, tried in order at every position:
 #
-# ONE alternative, and it requires an explicit ``//`` authority marker -- ``scheme://x``
-# or scheme-relative ``//x``. Issue #55 R3: the previous version also matched a schemeless
-# ``user[:pass]@host[/path]`` gated on a literal ``@``, which is not a URL grammar, it is a
-# guess. It rewrote ``C:\Users\justin.chu@contoso.com\...`` to ``REDACTED@contoso.com\...``
-# -- drive letter and every directory before the ``@`` destroyed -- in the echoed argv AND
-# in ``record["venv"]``/``record["wheel"]``/``registered_path``, on the default profile
-# shape of an Entra-joined Windows box, with no ``--index-url`` given at all. An evidence
-# record that disagrees with the run that produced it is a worse defect than the leak it
-# was guarding against, and the guess was never needed: the run's OWN index URL is removed
-# exactly, by value, in `_scrub_text` passes 1 and 2, in every spelling including the
-# schemeless one.
-#
-# Consequences of requiring the marker, all deliberate:
-#   * ordinary Windows drive/UNC paths, e-mail addresses, PEP 508 direct references
-#     (``pkg@file:///...``) and wheel filenames come back byte-identical;
-#   * a URL with any scheme (which is every URL pip renders for itself) is still scanned;
-#   * a FOREIGN schemeless credential URL this run never handed out is not recognised --
-#     stated in the module docstring as an accepted limitation rather than paid for with
-#     the corruption above.
-_URL_SPAN_RE = re.compile(r"""(?:[A-Za-z][A-Za-z0-9+.\-]*:)?//[^\s"'<>]*""")
-
-# Argument positions whose VALUE is a URL by the argument's own grammar, so no guessing
-# from the bytes is needed. Used by `_echo_cmd` (issue #55 R2/R3: syntax- and
-# argument-context-aware recognition, never "arbitrary text containing an @").
-_URL_VALUED_FLAGS = ("--index-url", "--extra-index-url")
-
-#: A raw-derived literal shorter than this is not removed by pass 2. A one- or two-byte
-#: credential cannot be told apart from ordinary text, and shredding every "a" in the
-#: record to hide a one-character password would destroy the evidence to protect nothing.
-_MIN_SECRET_LITERAL = 3
-
-
-class _CleanroomFailure(RuntimeError):
-    """This module's own fail-loud signal for "the run cannot continue".
-
-    An ordinary ``Exception``, deliberately: ``main``'s recovery block catches ``Exception``
-    and not ``BaseException``, so KeyboardInterrupt/SystemExit/GeneratorExit -- process
-    control, not run outcomes -- pass straight through. Raising ``SystemExit`` here instead
-    (as this module used to) would mean the recovery block had to trap process control to
-    keep writing its record.
-    """
+#   1. absolute or scheme-relative: an explicit ``//`` authority marker. This is the
+#      unambiguous case and is allowed to run to the next whitespace/quote/angle bracket.
+#   2. schemeless authority: ``user[:pass]@host[:port][/path...]``. Gated on a literal
+#      ``@`` so ordinary arguments (``onnx``, ``--disable-pip-version-check``,
+#      ``C:\dist\pkg.whl``) can never match, and the host must be followed by something
+#      that is not more host-ish text, so a PEP 508 direct reference (``pkg@file:///...``)
+#      is left to alternative 1 rather than being mangled here.
+_URL_SPAN_RE = re.compile(
+    r"""
+    (?:[A-Za-z][A-Za-z0-9+.\-]*:)?//[^\s"'<>]*
+  |
+    (?<![\w%.+\-@])
+    [\w.\-~%!$&'*+,;=]+
+    (?::[^\s/@"'<>]*)?
+    @
+    (?:\[[0-9A-Fa-f:.]+\]|[\w.\-~%]+)
+    (?::\d+)?
+    (?![\w:.\-])
+    (?:/[^\s"'<>]*)?
+    """,
+    re.VERBOSE,
+)
 
 
 def _sanitize_query(query: str) -> str:
@@ -301,104 +242,30 @@ def _sanitize_url(url: str) -> str:
     return rendered
 
 
-def _scan_url_spans(text: str) -> str:
-    """Sanitise every *syntactically* URL-shaped span in *text*; leave everything else.
+def _sanitize_urls_in_text(text: str) -> str:
+    """Sanitise every URL-shaped span in *text*, leaving everything else byte-identical.
 
-    Pass 3 of the single scrub seam, and **only** reachable through :func:`_scrub_text` --
-    a structural test in the suite asserts that, because two seams where one is strictly
-    stronger is how issue #55's B1 survived two review rounds: the next consumer picks the
-    weaker one.
-
-    Deliberately independent of *which* URL this run was given: pip normalises, re-quotes
-    and re-spells URLs in its own diagnostics, a run can involve more than one
-    credential-bearing URL on the same line, and a URL this module never saw (a redirect
-    target, a proxy, an ``extra-index-url`` inherited from pip config) is exactly as
-    sensitive as the one it did see. It is equally deliberately *syntactic*: it recognises
-    an RFC 3986 ``//`` authority marker and nothing else, so it cannot mistake a filesystem
-    path or an e-mail address for a credential-bearing URL.
+    This is the single scrub seam every echoed, persisted or raised string goes through.
+    It is deliberately independent of *which* URL this run was given: pip normalises,
+    re-quotes and re-spells the index URL in its own diagnostics, a run can involve more
+    than one credential-bearing URL on the same line, and a URL this module never saw
+    (a redirect target, a proxy, an ``extra-index-url`` inherited from pip config) is
+    exactly as sensitive as the one it did see.
     """
     if not text:
         return text
     return _URL_SPAN_RE.sub(lambda m: _sanitize_url(m.group(0)), text)
 
 
-def _secret_literals(raw_url: str) -> tuple[str, ...]:
-    """The credential-bearing byte sequences of *raw_url*, longest first.
-
-    Pass 2 of the scrub. Pass 1 removes the raw URL when it appears verbatim; this removes
-    the *credential itself* when it appears in a spelling pass 1 cannot match and pass 3
-    will not look for -- pip re-quoting the value, an OS error message quoting only the
-    userinfo, a mirror echoing back the token it rejected.
-
-    Only bytes that are secret **by position in this run's own URL** are returned:
-    userinfo, every query value (and every ``=``-less query segment), and the fragment.
-    Host, port, path and parameter names are provenance and are never in this list, so this
-    pass cannot corrupt an unrelated string the way a shape-guessing scanner can.
-
-    Two guards keep it from over-firing:
-
-    * a literal shorter than :data:`_MIN_SECRET_LITERAL` is dropped -- see that constant;
-    * a literal that also occurs in the sanitised rendering of *raw_url* is dropped. A
-      credential that happens to equal a host or path segment would otherwise shred the
-      very provenance the rendering exists to preserve, and it is unremovable anyway:
-      those bytes are published by the URL's own structure.
-    """
-    if not raw_url:
-        return ()
-
-    marker = _AUTHORITY_MARKER_RE.match(raw_url)
-    rest = raw_url[marker.end():] if marker else raw_url
-
-    cut = len(rest)
-    for delimiter in "/?#":
-        found = rest.find(delimiter)
-        if found != -1 and found < cut:
-            cut = found
-    authority, tail = rest[:cut], rest[cut:]
-
-    fragment_at = tail.find("#")
-    path_query = tail if fragment_at == -1 else tail[:fragment_at]
-    fragment = "" if fragment_at == -1 else tail[fragment_at + 1:]
-    query_at = path_query.find("?")
-    query = "" if query_at == -1 else path_query[query_at + 1:]
-
-    candidates: list[str] = []
-    if "@" in authority and not any(ch.isspace() for ch in authority):
-        userinfo, _, _host = authority.rpartition("@")
-        candidates.append(userinfo)
-        # `user:pass@` -- the password alone is the part most likely to be re-quoted on
-        # its own by a mirror or an auth error.
-        if ":" in userinfo:
-            candidates.extend(part for part in userinfo.split(":") if part)
-    for segment in query.split("&"):
-        if not segment:
-            continue
-        candidates.append(segment.partition("=")[2] if "=" in segment else segment)
-    if fragment:
-        candidates.append(fragment)
-
-    rendered = _sanitize_url(raw_url)
-    literals = {c for c in candidates
-                if len(c) >= _MIN_SECRET_LITERAL and c not in rendered}
-    return tuple(sorted(literals, key=len, reverse=True))
-
-
 def _scrub_text(text: str, raw_url: str) -> str:
-    """**The** scrub seam. Every echoed, persisted and raised string goes through this.
+    """Scrub *text* of credentials: the literal bytes of *raw_url* first, then every
+    URL-shaped span found anywhere in the result.
 
-    Three passes, in order (see the module docstring):
-
-    1. the literal bytes of *raw_url*, replaced by their sanitised rendering -- this is
-       what makes this run's own URL safe in the schemeless spelling pass 3 deliberately
-       does not recognise;
-    2. the credential-bearing byte sequences derived from *raw_url*;
-    3. the syntactic scan for any other URL.
-
-    Idempotent, and never longer on a second application: passes 1 and 2 remove byte
-    sequences that their own output does not contain, and pass 3 is idempotent because a
-    sanitised URL re-sanitises to itself. ``_scrub_obj`` scrubs the record a second time at
-    the write seam, so this is a property the ``_TAIL_CHARS`` bound depends on, not a
-    nicety.
+    The literal pass exists so that a *raw_url* spelling the general scanner would not
+    recognise as a URL is still removed when this run is the one that produced it; the
+    general pass exists so that a spelling this run never handed out (pip's own
+    re-rendering, a second index, a redirect) is removed too. Both passes are idempotent,
+    so running them in this order is safe.
     """
     if not text:
         return text
@@ -406,11 +273,7 @@ def _scrub_text(text: str, raw_url: str) -> str:
         sanitized = _sanitize_url(raw_url)
         if sanitized != raw_url:
             text = text.replace(raw_url, sanitized)
-    for literal in _secret_literals(raw_url):
-        if literal in text:
-            text = text.replace(literal, _REDACTED)
-    return _scan_url_spans(text)
-
+    return _sanitize_urls_in_text(text)
 
 
 def _scrub_tail(text: str, raw_url: str, limit: int = _TAIL_CHARS) -> str:
@@ -456,38 +319,16 @@ def _scrub_obj(obj, raw_url: str):
     return obj
 
 
-def _echo_cmd(cmd: list, raw_url: str = "") -> str:
+def _echo_cmd(cmd: list) -> str:
     """Render *cmd* for the ``$ ...`` progress echo, credential-scrubbed.
 
-    EVERY token goes through :func:`_scrub_text` -- the one seam -- carrying *raw_url*, so
-    the echo is exactly as strong as the record and the exception text. Issue #55 R2: the
-    previous version called the general scanner directly and therefore never knew what this
-    run's own ``--index-url`` was, so a schemeless URL whose credential sat in the query or
-    the fragment (no ``@`` anywhere, nothing for a shape-based scanner to see) was printed
-    raw to stdout while the record redacted the identical input. The echo runs *before*
-    pip, so that leaked whether or not pip would have accepted the value.
-
-    A token in a URL-valued argument position (:data:`_URL_VALUED_FLAGS`, in both
-    ``--flag value`` and ``--flag=value`` spellings) is additionally sanitised as a URL by
-    *context* rather than by shape. That is belt to the raw-value braces: it holds for a
-    URL-valued argument this function is handed that is not the one ``main`` recorded.
-
-    Tokens with no credential and no URL-shaped span come back byte-identical -- including
-    Windows drive and UNC paths that contain an ``@`` (issue #55 R3).
+    EVERY token goes through the scrub -- not the ones containing ``://`` (issue #55
+    blocker B1: that gate let ``//user:pass@host/...`` and ``user:pass@host/...`` through
+    raw), and not the one token following ``--index-url`` (an allowlist of flag names has
+    to be kept in sync with every future argument). Tokens with no URL-shaped span in them
+    come back byte-identical.
     """
-    rendered: list[str] = []
-    url_valued = False
-    for item in cmd:
-        token = str(item)
-        if url_valued:
-            token, url_valued = _sanitize_url(token), False
-        elif token in _URL_VALUED_FLAGS:
-            url_valued = True
-        elif token.partition("=")[0] in _URL_VALUED_FLAGS and "=" in token:
-            name, _, value = token.partition("=")
-            token = f"{name}={_sanitize_url(value)}"
-        rendered.append(_scrub_text(token, raw_url))
-    return " ".join(rendered)
+    return " ".join(_sanitize_urls_in_text(str(c)) for c in cmd)
 
 
 # Runs inside the fresh interpreter. Prints one JSON line prefixed with @@.
@@ -536,8 +377,8 @@ print("@@" + json.dumps(out))
 '''
 
 
-def _run(cmd: list[str], raw_url: str = "", **kw) -> subprocess.CompletedProcess:
-    print("$", _echo_cmd(cmd, raw_url))
+def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    print("$", _echo_cmd(cmd))
     return subprocess.run([str(c) for c in cmd], **kw)
 
 
@@ -610,8 +451,8 @@ def main(argv: list[str] | None = None) -> int:
 
     fatal: str | None = None
     try:
-        if _run([sys.executable, "-m", "venv", env_dir], raw_index_url).returncode != 0:
-            raise _CleanroomFailure("venv creation failed")
+        if _run([sys.executable, "-m", "venv", env_dir]).returncode != 0:
+            raise SystemExit("venv creation failed")
         py = env_dir / ("Scripts" if os.name == "nt" else "bin") / (
             "python.exe" if os.name == "nt" else "python")
 
@@ -619,7 +460,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.index_url:
             pip_cmd += ["--index-url", args.index_url]
         pip_cmd += [wheel, "onnx", "numpy"]
-        install = _run(pip_cmd, raw_index_url, capture_output=True, text=True)
+        install = _run(pip_cmd, capture_output=True, text=True)
         record["pip_index_url"] = (
             _sanitize_url(args.index_url) if args.index_url else "(pip default)"
         )
@@ -634,13 +475,12 @@ def main(argv: list[str] | None = None) -> int:
             # unmatched and write it into this record (issue #55 blocker B2).
             record["pip_stderr"] = _scrub_tail(install.stderr, raw_index_url)
         else:
-            frozen = _run([py, "-m", "pip", "freeze"], raw_index_url,
-                          capture_output=True, text=True)
+            frozen = _run([py, "-m", "pip", "freeze"], capture_output=True, text=True)
             record["installed"] = sorted(frozen.stdout.split())
             # cwd is deliberately outside the repository too, so nothing on sys.path[0]
             # can reach it either.
-            proc = _run([py, "-c", _CONSUMER], raw_index_url, capture_output=True,
-                        text=True, cwd=str(env_dir))
+            proc = _run([py, "-c", _CONSUMER], capture_output=True, text=True,
+                        cwd=str(env_dir))
             payload = None
             for line in proc.stdout.splitlines():
                 if line.startswith("@@"):
@@ -651,8 +491,9 @@ def main(argv: list[str] | None = None) -> int:
                 record["stderr_tail"] = _scrub_tail(proc.stderr, raw_index_url)
             else:
                 record.update(payload)
-    except Exception as exc:  # noqa: BLE001 -- see below; the object is dropped, the
-        #                        text and a scrubbed traceback are kept
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:  # noqa: BLE001 -- not re-raised; only its TEXT survives
         # Third leak surface (issue #55 blocker B4): an exception rendered by the default
         # excepthook, or by a caller that logs str(exc), can carry the index URL that a
         # failing subprocess/OS call embedded in its message. The original exception
@@ -660,22 +501,9 @@ def main(argv: list[str] | None = None) -> int:
         # __suppress_context__, leaving the raw message reachable through __context__,
         # so the replacement SystemExit is raised below, outside any handler, where
         # __context__ is None.
-        #
-        # `Exception`, NOT `BaseException`: KeyboardInterrupt, SystemExit and GeneratorExit
-        # are process control, not run outcomes, and a diagnostic that swallows them into
-        # an UNOBSERVABLE record is a tool that cannot be interrupted and that can convert
-        # a caller's `sys.exit()` into a different exit code. The one SystemExit this block
-        # used to need to catch was its own `raise SystemExit("venv creation failed")`,
-        # which is now `_CleanroomFailure` -- an ordinary Exception, so it still lands here
-        # and still writes the record.
-        #
-        # Dropping the object is not the same as swallowing the diagnosis: the formatted
-        # traceback is scrubbed through the one seam and persisted as `error_traceback`,
-        # so the frame that failed survives in the record without the credential doing so.
         record["verdict"] = "UNOBSERVABLE"
         record["reason"] = "the clean-room run raised before a reading could be taken"
         record["error"] = _scrub_text(f"{type(exc).__name__}: {exc}", raw_index_url)
-        record["error_traceback"] = _scrub_text(traceback.format_exc(), raw_index_url)
         out, scrubbed = _write_record(record, raw_index_url)
         print(f"record: {out}")
         fatal = scrubbed["error"]
