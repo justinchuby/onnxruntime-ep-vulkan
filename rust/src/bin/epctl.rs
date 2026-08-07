@@ -234,6 +234,13 @@ fn usage() {
     eprintln!("    --plant-violation    with --probe-validation, deliberately commit an invalid");
     eprintln!("                         Vulkan call. The positive control: if this does NOT");
     eprintln!("                         produce a caught error, a clean run proves nothing.");
+    eprintln!("    --plant-dispatch-overflow");
+    eprintln!("                         with --probe-validation, record a vkCmdDispatch whose");
+    eprintln!("                         groupCountY exceeds maxComputeWorkGroupCount[1]. The");
+    eprintln!("                         control for the GEMV row tile's y clamp: it shows that");
+    eprintln!("                         VUID-vkCmdDispatch-groupCountY-00418 is observable here.");
+    eprintln!("                         Needs a compute device; says so distinctly if there is");
+    eprintln!("                         none, which --plant-violation never needs to.");
     eprintln!("    --check-counters <file>");
     eprintln!("                         read the execution-counter snapshot the EP writes when");
     eprintln!(
@@ -898,6 +905,32 @@ enum ValidationProbe {
     NoLoader(String),
     /// The loader is present but `VK_LAYER_KHRONOS_validation` is not installed.
     LayerAbsent,
+    /// The layer is armed, but the requested plant needs a device and none is usable.
+    ///
+    /// Kept apart from `LayerAbsent` on purpose. The stateless plant deliberately needs no
+    /// device (design note 3 below) precisely so that "no GPU" and "no validation" cannot be
+    /// confused; the dispatch-overflow plant cannot have that property, because
+    /// `maxComputeWorkGroupCount` is a device limit and `vkCmdDispatch` needs a command buffer.
+    /// So it reports its own distinct state instead of borrowing one that would mislead.
+    NoDevice(String),
+}
+
+/// Which deliberate violation `--probe-validation` should commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Plant {
+    /// Commit nothing; just report whether the layer is armed.
+    None,
+    /// The stateless, device-free parameter violation. See `probe_validation`.
+    Stateless,
+    /// `vkCmdDispatch` with `groupCountY` above `maxComputeWorkGroupCount[1]`.
+    ///
+    /// The control for the row tile (issue #7). `q_gemv.comp` covers a prefill taller than the
+    /// y-extent Vulkan guarantees with a grid-stride loop, and the host clamps `groupCountY` to
+    /// 65535 rather than to whatever this device reports. That clamp is only worth having if
+    /// exceeding the limit is actually an error the layer reports — and "we never saw a
+    /// complaint" is not evidence of that, for exactly the reason this whole probe exists. This
+    /// plant makes the complaint appear on demand.
+    DispatchOverflow,
 }
 
 /// Create an instance with validation enabled *and a debug messenger attached*, then optionally
@@ -920,7 +953,7 @@ enum ValidationProbe {
 ///
 /// # Safety
 /// Every unsafe block below is a Vulkan entry point; the invariants are stated at each one.
-fn probe_validation(plant: bool) -> ValidationProbe {
+fn probe_validation(plant: Plant) -> ValidationProbe {
     use ash::vk;
 
     // SAFETY: opens the system Vulkan loader. No invariant beyond "the loader path is a valid
@@ -973,7 +1006,7 @@ fn probe_validation(plant: bool) -> ValidationProbe {
     // is a fully populated create-info whose callback has static lifetime.
     let messenger = unsafe { debug_utils.create_debug_utils_messenger(&messenger_ci, None) }.ok();
 
-    if plant {
+    if plant == Plant::Stateless {
         // THE PLANTED VIOLATION.
         //
         // `vkCreateDebugUtilsMessengerEXT` with empty `messageSeverity` and `messageType` masks
@@ -1002,6 +1035,18 @@ fn probe_validation(plant: bool) -> ValidationProbe {
         }
     }
 
+    if plant == Plant::DispatchOverflow {
+        if let Err(why) = plant_dispatch_overflow(&instance) {
+            if let Some(m) = messenger {
+                // SAFETY: `m` was created by this `debug_utils` and is destroyed exactly once.
+                unsafe { debug_utils.destroy_debug_utils_messenger(m, None) };
+            }
+            // SAFETY: `instance` is live and every child object created above is destroyed.
+            unsafe { instance.destroy_instance(None) };
+            return ValidationProbe::NoDevice(why);
+        }
+    }
+
     if let Some(m) = messenger {
         // SAFETY: `m` was created by this `debug_utils` on this instance and is destroyed once.
         unsafe { debug_utils.destroy_debug_utils_messenger(m, None) };
@@ -1011,7 +1056,152 @@ fn probe_validation(plant: bool) -> ValidationProbe {
     ValidationProbe::Armed
 }
 
+/// Record a `vkCmdDispatch` whose `groupCountY` exceeds `maxComputeWorkGroupCount[1]`.
+///
+/// # Why this is the control the row tile needs
+///
+/// `ops::quant::matmul_nbits_gemv` clamps `groupCountY` to 65535 — the floor every Vulkan 1.1
+/// implementation must offer — and `q_gemv.comp` strides over whatever the clamp cut off. The
+/// clamp is a defence against `VUID-vkCmdDispatch-groupCountY-00418`. A run in which no such
+/// error appeared is only evidence that the clamp works if the error *would* have appeared
+/// otherwise, and the only way to know that is to make it appear.
+///
+/// The command buffer is recorded and then **never submitted**: the VUID is checked at record
+/// time by the layer, so nothing is queued, nothing executes, and the device cannot be faulted or
+/// lost by this call. `groupCountY` is taken from the device's own reported limit rather than a
+/// literal, so the violation is a violation on every device rather than on the ones whose limit
+/// happens to be below some chosen number.
+///
+/// # Safety
+/// Every unsafe block is a Vulkan entry point; the invariants are stated at each one.
+fn plant_dispatch_overflow(instance: &ash::Instance) -> Result<(), String> {
+    use ash::vk;
+
+    // SAFETY: `instance` is live; a property query with no side effects.
+    let physicals = unsafe { instance.enumerate_physical_devices() }
+        .map_err(|e| format!("vkEnumeratePhysicalDevices failed: {e:?}"))?;
+
+    for pd in physicals {
+        // SAFETY: `pd` came from this instance; both are property queries.
+        let props = unsafe { instance.get_physical_device_properties(pd) };
+        // SAFETY: as above.
+        let families = unsafe { instance.get_physical_device_queue_family_properties(pd) };
+        let Some(family) = families
+            .iter()
+            .position(|q| q.queue_flags.contains(vk::QueueFlags::COMPUTE) && q.queue_count > 0)
+        else {
+            continue;
+        };
+        let family = family as u32;
+
+        let prio = [1.0f32];
+        let queue_ci = [vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(family)
+            .queue_priorities(&prio)];
+        let dev_ci = vk::DeviceCreateInfo::default().queue_create_infos(&queue_ci);
+        // SAFETY: `pd` belongs to `instance`; `dev_ci` borrows arrays that outlive the call.
+        let device = match unsafe { instance.create_device(pd, &dev_ci, None) } {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("epctl: vkCreateDevice failed on a compute device: {e:?}");
+                continue;
+            }
+        };
+
+        let limit = props.limits.max_compute_work_group_count[1];
+        // Saturating so a device reporting u32::MAX yields no violation rather than wrapping to
+        // a legal value and reporting a clean run — that would be the exact failure mode this
+        // control exists to rule out, in the control itself.
+        let Some(over) = limit.checked_add(1) else {
+            // SAFETY: `device` is live and idle; nothing was created from it.
+            unsafe { device.destroy_device(None) };
+            return Err(format!(
+                "maxComputeWorkGroupCount[1] is u32::MAX on `{}`; there is no value above it to \
+                 dispatch, so this plant cannot construct a violation here",
+                props
+                    .device_name_as_c_str()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ));
+        };
+
+        let pool_ci = vk::CommandPoolCreateInfo::default().queue_family_index(family);
+        // SAFETY: `device` is live; `family` was read from its own queue-family properties.
+        let pool = match unsafe { device.create_command_pool(&pool_ci, None) } {
+            Ok(p) => p,
+            Err(e) => {
+                // SAFETY: `device` is live and idle.
+                unsafe { device.destroy_device(None) };
+                return Err(format!("vkCreateCommandPool failed: {e:?}"));
+            }
+        };
+        let alloc = vk::CommandBufferAllocateInfo::default()
+            .command_pool(pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        // SAFETY: `pool` was created by this `device`.
+        let cbs = match unsafe { device.allocate_command_buffers(&alloc) } {
+            Ok(c) => c,
+            Err(e) => {
+                // SAFETY: `pool` belongs to `device`; destroyed exactly once.
+                unsafe { device.destroy_command_pool(pool, None) };
+                // SAFETY: `device` is live and idle.
+                unsafe { device.destroy_device(None) };
+                return Err(format!("vkAllocateCommandBuffers failed: {e:?}"));
+            }
+        };
+        let cb = cbs[0];
+
+        eprintln!(
+            "epctl: committing the planted dispatch overflow now — groupCountY {over} against \
+             maxComputeWorkGroupCount[1] {limit}"
+        );
+        let begin = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        // SAFETY: `cb` was allocated from `pool` on `device` and is not in the recording state.
+        let _ = unsafe { device.begin_command_buffer(cb, &begin) };
+        // The layer must report the error AND drop the call: an out-of-range `groupCountY` handed
+        // to a real ICD is undefined behaviour, and on this machine it faults during teardown.
+        ABORT_PLANTED_CALL.store(true, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: `cb` is recording. Nothing is submitted, and with `ABORT_PLANTED_CALL` armed the
+        // validation layer skips the down-chain call, so no driver ever sees the bad extent.
+        unsafe { device.cmd_dispatch(cb, 1, over, 1) };
+        ABORT_PLANTED_CALL.store(false, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: `cb` is recording.
+        let _ = unsafe { device.end_command_buffer(cb) };
+
+        // SAFETY: `cb` was allocated from `pool`; freeing before destroying the pool is
+        // redundant but explicit. Neither was ever submitted, so neither is in use.
+        unsafe { device.free_command_buffers(pool, &cbs) };
+        // SAFETY: `pool` belongs to `device` and is destroyed exactly once.
+        unsafe { device.destroy_command_pool(pool, None) };
+        // SAFETY: `device` is live, idle, and every child object has been destroyed.
+        unsafe { device.destroy_device(None) };
+        return Ok(());
+    }
+
+    Err(
+        "no physical device with a compute queue; this plant records a real vkCmdDispatch and \
+         therefore needs one. That is NOT the same fact as an absent validation layer, and is \
+         reported separately so the two can never be confused."
+            .to_string(),
+    )
+}
+
 /// Print every validation message with a greppable marker.
+///
+/// # Why the return value is not always `VK_FALSE`
+///
+/// The spec says an application "should always return `VK_FALSE`"; `VK_TRUE` is *reserved for
+/// layer development*, where it makes the validation layer **skip the down-chain call** instead
+/// of forwarding it. A deliberately planted violation is that case: `--plant-violation` is a
+/// stateless parameter check that the driver can safely be shown, but
+/// `--plant-dispatch-overflow` records a `vkCmdDispatch` with an out-of-range `groupCountY`, and
+/// forwarding *that* to a real ICD is undefined behaviour — on the RTX A1000 it faults the
+/// process during teardown. A control that crashes cannot be asserted on, and a control that
+/// avoids the crash by not committing the violation is not a control. So the plant that needs it
+/// arms `ABORT_PLANTED_CALL`, the layer reports the error and then drops the call, and the
+/// message this function prints is still the layer's own.
 ///
 /// # Safety
 /// Called by the validation layer with a valid callback-data pointer, per the Vulkan spec.
@@ -1034,10 +1224,19 @@ unsafe extern "system" fn validation_callback(
         unsafe { std::ffi::CStr::from_ptr(msg) }.to_string_lossy()
     };
     eprintln!("{VALIDATION_CAUGHT_MARKER}: {text}");
-    ash::vk::FALSE
+    if ABORT_PLANTED_CALL.load(std::sync::atomic::Ordering::Relaxed) {
+        ash::vk::TRUE
+    } else {
+        ash::vk::FALSE
+    }
 }
 
-fn run_probe_validation(plant: bool) -> std::process::ExitCode {
+/// Set only while a planted call that must not reach the driver is in flight. See
+/// `validation_callback`.
+static ABORT_PLANTED_CALL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn run_probe_validation(plant: Plant) -> std::process::ExitCode {
     // A lane that skips the control silently is a lane without the control. Setting this turns
     // "cannot answer" into "failed", so an environment that quietly lost the layer is loud.
     let required = std::env::var_os("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION").is_some_and(|v| {
@@ -1071,6 +1270,17 @@ fn run_probe_validation(plant: bool) -> std::process::ExitCode {
                  \x20 This is exit 3, not exit 1: it is the absence of an answer, not a failing \
                  one. Install the Vulkan SDK, or set VK_LAYER_PATH to a directory containing the \
                  layer's manifest."
+            );
+            unavailable
+        }
+        ValidationProbe::NoDevice(why) => {
+            eprintln!(
+                "epctl: PLANT NEEDS A DEVICE — the validation layer is armed, but the requested \
+                 plant could not be committed: {why}\n\
+                 \x20 Reported apart from an absent layer on purpose. `--plant-violation` is \
+                 device-free precisely so that 'no GPU' cannot masquerade as 'no validation'; \
+                 `--plant-dispatch-overflow` records a real vkCmdDispatch and so cannot be, and \
+                 saying which of the two states this is, is the whole value of the control."
             );
             unavailable
         }
@@ -1131,6 +1341,7 @@ fn main() -> std::process::ExitCode {
     let probe = args.iter().any(|a| a == "--probe-loader");
     let probe_validation_flag = args.iter().any(|a| a == "--probe-validation");
     let plant_violation = args.iter().any(|a| a == "--plant-violation");
+    let plant_dispatch_overflow_flag = args.iter().any(|a| a == "--plant-dispatch-overflow");
     let require_device_memory = args.iter().any(|a| a == "--require-device-memory");
     let allow_unproven = args.iter().any(|a| a == "--allow-unproven");
 
@@ -1178,6 +1389,7 @@ fn main() -> std::process::ExitCode {
                 && a.as_str() != "--probe-loader"
                 && a.as_str() != "--probe-validation"
                 && a.as_str() != "--plant-violation"
+                && a.as_str() != "--plant-dispatch-overflow"
                 && a.as_str() != "--require-device-memory"
                 && a.as_str() != "--allow-unproven"
         })
@@ -1197,7 +1409,24 @@ fn main() -> std::process::ExitCode {
     }
 
     if probe_validation_flag {
-        return run_probe_validation(plant_violation);
+        // Two plants cannot be committed in one run: each is a claim about one VUID, and a run
+        // that caught "a" validation error would be evidence for neither in particular.
+        if plant_violation && plant_dispatch_overflow_flag {
+            eprintln!(
+                "epctl: --plant-violation and --plant-dispatch-overflow are mutually exclusive. \
+                 Each control asserts that ONE named VUID is observable; a run that planted both \
+                 could satisfy either assertion with the other's error."
+            );
+            return std::process::ExitCode::from(2);
+        }
+        let plant = if plant_dispatch_overflow_flag {
+            Plant::DispatchOverflow
+        } else if plant_violation {
+            Plant::Stateless
+        } else {
+            Plant::None
+        };
+        return run_probe_validation(plant);
     }
 
     if probe {

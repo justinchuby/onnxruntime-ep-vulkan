@@ -268,6 +268,34 @@ const GEMV_RED_WORDS: u32 = 2048;
 /// leaving one resident workgroup on a device that only meets it. See `q_gemv.comp`.
 const GEMV_MAX_COLS: u32 = 16;
 
+/// Largest row tile one workgroup may take. Mirrors `QB_MAX_ROWS` in `q_gemv.comp`.
+///
+/// The row tile is what removes the `M`-fold re-read of the packed weight stream: a workgroup that
+/// covers `T` activation rows loads each packed word once and multiply-accumulates it against all
+/// `T` of them, so structural weight amplification falls from `M` to `ceil(M / T)`.
+///
+/// 4 and not 8 because [`GEMV_MAX_TILE`] would then force `cols` to 4 on every Phi-3.5 shape, and
+/// the activation stream — `ceil(N / cols)` re-reads of each row — grows exactly as fast as the
+/// weight stream shrinks. [`gemv_tile`] picks the pair by a byte model over *both* streams, so the
+/// cap only has to be wide enough to contain the optimum.
+const GEMV_MAX_ROWS: u32 = 4;
+
+/// Largest `cols * rows` accumulator tile the shader can hold. Mirrors `QB_MAX_TILE`.
+///
+/// The accumulators are the only per-tile storage that stays live across the whole reduction
+/// extent, so this is the register budget expressed as a number the shader can size arrays by.
+const GEMV_MAX_TILE: u32 = 32;
+
+/// The `maxComputeWorkGroupCount[1]` every Vulkan 1.1 implementation is required to offer.
+///
+/// A dispatch above this is not slow, it is **invalid** —
+/// `VUID-vkCmdDispatch-groupCountY-00418` — and a long prefill reaches it: at `QB_ROWS = 1` a
+/// 70 000-token sequence would ask for 70 000 workgroups in y. The dispatch is clamped here and
+/// the shader's y-grid-stride loop covers the remainder, so the geometry stays a function of the
+/// *guaranteed floor* rather than of whatever the local device happens to report — the same rule
+/// [`GEMV_MIN_WORKGROUPS`] states for the other direction.
+pub const GEMV_MAX_GROUPS_Y: u32 = 65_535;
+
 /// Fewest workgroups a dispatch should keep, so tiling never starves the machine of parallelism.
 /// Deliberately a small absolute number rather than a multiple of anything the device reports:
 /// reading `maxComputeWorkGroupCount` or an SM count here would make the dispatch geometry
@@ -362,6 +390,133 @@ pub fn gemv_cols(n: u64, wg: u32) -> u32 {
     cols
 }
 
+/// Bytes the shader's loads *name* for one node under a `(cols, rows)` tile.
+///
+/// Not a bandwidth estimate and not a cache model: it is the count the SPIR-V walk in
+/// `bench/results/probe_weight_reread.py` measures, written down. Every workgroup names `cols`
+/// whole packed weight columns and `rows` whole activation rows, and there are
+/// `ceil(N / cols) * ceil(M / rows)` of them. Both terms matter and they move in opposite
+/// directions with `cols`, which is precisely why the tile cannot be chosen by maximising either
+/// one alone.
+fn gemv_named_bytes(m: u64, n: u64, k: u64, bits: u32, a_bytes: u64, cols: u32, rows: u32) -> u128 {
+    let row_tiles = u128::from(m.div_ceil(u64::from(rows)));
+    let col_tiles = u128::from(n.div_ceil(u64::from(cols)));
+    let k = u128::from(k);
+    let weight = row_tiles * col_tiles * u128::from(cols) * k * u128::from(bits) / 8;
+    let activation = row_tiles * col_tiles * u128::from(rows) * k * u128::from(a_bytes);
+    weight + activation
+}
+
+/// The largest row tile this process will select.
+///
+/// Defaults to [`GEMV_MAX_ROWS`]. Two jobs, and it is worth being explicit that they are the same
+/// mechanism on purpose:
+///
+/// 1. **The A/B control.** The row tile is a weight-*traffic* change, so its wall-clock effect is
+///    only visible by comparing the same shape tiled and untiled. Rebuilding between arms would
+///    make the two measurements non-interleavable on a contended machine, which is exactly the
+///    failure mode `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED` above exists to avoid. Setting this to `1`
+///    restores the pre-issue-#7 geometry in-place.
+/// 2. **The fallback.** If a device or driver is ever found on which the tiled arm miscompiles or
+///    underperforms, `=1` returns it to the geometry that has 133 ledger entries behind it,
+///    without a new build. Setting it to `1` is always safe: `rows == 1` is the seed of the search
+///    and the shader's `QB_ROWS == 1u` arm is the verbatim pre-change kernel.
+///
+/// Values are clamped to `[1, GEMV_MAX_ROWS]` rather than trusted: an operator who writes `64`
+/// gets the largest tile that is *legal*, not an overrun. Unparseable values are ignored, because
+/// the safe reading of a typo in a performance knob is "the default", not "refuse to run".
+///
+/// Split from the environment read so the clamping is testable without `unsafe`: `src/ops/` is
+/// forbidden raw Vulkan *and* `unsafe` by the layering lint (`tests/layering.rs`), and mutating
+/// process environment in a unit test needs one. The env plumbing is covered by
+/// `rust/tests/row_tile_fallback.rs` instead, which lives outside that layer.
+fn clamp_max_rows(raw: Option<&str>) -> u32 {
+    match raw {
+        Some(v) => match v.trim().parse::<u32>() {
+            Ok(n) => n.clamp(1, GEMV_MAX_ROWS),
+            Err(_) => GEMV_MAX_ROWS,
+        },
+        None => GEMV_MAX_ROWS,
+    }
+}
+
+fn gemv_max_rows() -> u32 {
+    clamp_max_rows(
+        std::env::var("ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// The `(cols, rows)` tile one workgroup takes: the pair that names the fewest bytes.
+///
+/// `rows == 1` is the decode geometry and is *always* what a one-row dispatch gets — the search
+/// below does not run at `m <= 1`, so `M = 1` selects the same `cols` it always did and the same
+/// specialisation-constant arm of the shader. Everything else is bounded by three things that are
+/// properties of the module rather than of a device:
+///
+/// * `cols * rows <= GEMV_MAX_TILE` — the accumulator register budget;
+/// * `rows <= GEMV_MAX_ROWS` — the activation window the tiled arm holds per row;
+/// * `wg * cols <= GEMV_RED_WORDS` — unchanged, because the reduction is sequential over rows and
+///   reuses one shared array. **The row tile costs no shared memory at all**, so no device that
+///   can run the decode kernel can fail to run the tiled one.
+///
+/// It is fail-closed by construction: `(gemv_cols(n, wg), 1)` is the seed, every candidate has to
+/// beat it strictly, and a shape for which no tiled candidate is legal keeps it.
+///
+/// For a fixed `rows` the largest legal `cols` is always at least as good — the weight term does
+/// not depend on `cols` except through tail rounding and the activation term falls as `1 / cols` —
+/// so the search takes the widest legal `cols` per `rows` and compares four candidates, not a grid.
+pub fn gemv_tile(m: u64, n: u64, k: u64, bits: u32, a_bytes: u64, wg: u32) -> (u32, u32) {
+    gemv_tile_with(m, n, k, bits, a_bytes, wg, gemv_max_rows())
+}
+
+/// [`gemv_tile`] with the row-tile ceiling passed in rather than read from the environment.
+///
+/// The whole selection is pure once `max_rows` is a parameter, so every property that matters —
+/// the bounds, the strict-improvement rule, the `m <= 1` short circuit, the effect of pinning the
+/// ceiling to 1 — is testable without touching process state.
+fn gemv_tile_with(
+    m: u64,
+    n: u64,
+    k: u64,
+    bits: u32,
+    a_bytes: u64,
+    wg: u32,
+    max_rows: u32,
+) -> (u32, u32) {
+    let base_cols = gemv_cols(n, wg);
+    let mut best = (base_cols, 1u32);
+    let mut best_bytes = gemv_named_bytes(m, n, k, bits, a_bytes, base_cols, 1);
+    if m <= 1 || max_rows < 2 {
+        return best;
+    }
+    let mut rows = 2u32;
+    while rows <= max_rows {
+        let mut cols = base_cols;
+        loop {
+            let legal = cols * rows <= GEMV_MAX_TILE
+                && wg * cols <= GEMV_RED_WORDS
+                && n % u64::from(cols) == 0
+                && (cols == 1 || n / u64::from(cols) >= GEMV_MIN_WORKGROUPS);
+            if legal {
+                let bytes = gemv_named_bytes(m, n, k, bits, a_bytes, cols, rows);
+                if bytes < best_bytes {
+                    best = (cols, rows);
+                    best_bytes = bytes;
+                }
+                break;
+            }
+            if cols == 1 {
+                break;
+            }
+            cols /= 2;
+        }
+        rows *= 2;
+    }
+    best
+}
+
 /// Translate `MatMulNBits` into one block-dequantising GEMV dispatch.
 fn matmul_nbits_gemv(
     spec: &OpSpec,
@@ -441,11 +596,42 @@ fn matmul_nbits_gemv(
     let y = ctx.bind_output(out, TensorDesc::new(out_dtype, out_shape))?;
 
     let wg = gemv_workgroup(blocks_per_col as u64);
-    let cols = gemv_cols(n as u64, wg);
+    let a_bytes = dtype.byte_size() as u64;
+    let (cols, rows) = gemv_tile(
+        m_total.max(0) as u64,
+        n as u64,
+        k as u64,
+        bits as u32,
+        a_bytes,
+        wg,
+    );
     let mut push = Vec::with_capacity(16);
     for v in [m_total, k, n, blocks_per_col] {
         push.extend_from_slice(&(v as u32).to_le_bytes());
     }
+
+    // FAIL CLOSED, at the last point that can still refuse. `q_gemv.comp` addresses its
+    // accumulators `r * QB_COLS + c` into arrays of `QB_MAX_TILE`, so a pair whose product
+    // overruns that would write out of bounds. `gemv_tile` cannot return one — the bound is a
+    // condition of its own search — but a pipeline is built from these two numbers and nothing
+    // downstream re-derives them. An edit that broke the invariant would otherwise be found by a
+    // GPU fault or, worse, by silently wrong logits. The shader carries the same guard as a
+    // folded specialisation-constant branch; this one names the values in the error.
+    if cols * rows > GEMV_MAX_TILE || rows > GEMV_MAX_ROWS || wg * cols > GEMV_RED_WORDS {
+        return Err(EpError::Internal(format!(
+            "`{}` selected an illegal GEMV tile: cols={cols} rows={rows} wg={wg} \
+             (cols*rows must be <= {GEMV_MAX_TILE}, rows <= {GEMV_MAX_ROWS}, \
+             wg*cols <= {GEMV_RED_WORDS})",
+            node.op_type
+        )));
+    }
+
+    // `groupCountY` is clamped to the floor Vulkan guarantees rather than to whatever this device
+    // reports; the shader's y-grid-stride loop covers everything the clamp cut off. A dispatch
+    // above the device's limit is invalid, not slow — VUID-vkCmdDispatch-groupCountY-00418 — and
+    // `rust/tests/validation_control.rs` carries the positive control that the layer says so.
+    let row_tiles = (m_total.max(0) as u64).div_ceil(u64::from(rows));
+    let groups_y = row_tiles.min(u64::from(GEMV_MAX_GROUPS_Y)) as u32;
 
     ctx.dispatch(KernelRequest {
         shader,
@@ -456,10 +642,11 @@ fn matmul_nbits_gemv(
             u32::from(has_zp),
             cols,
             u32::from(gemv_packed(bits as u32, block_size as u32)),
+            rows,
         ],
         push_constants: push,
         bindings: vec![a, b, scales, zp, y],
-        workgroups: [(n as u32).div_ceil(cols), m_total as u32, 1],
+        workgroups: [(n as u32).div_ceil(cols), groups_y, 1],
     })
 }
 
@@ -927,8 +1114,248 @@ mod tests {
         );
     }
 
-    /// The pack transform is pure and total; assert the shape of what it produces rather than
-    /// leaving "pass-through" as a claim in a doc comment.
+    /// `M = 1` must select the decode geometry unchanged, whatever else the tile picker learns.
+    ///
+    /// This is the load-bearing property of the whole row-tile change: `rows == 1` selects the
+    /// specialisation-constant arm of `q_gemv.comp` that is the previous kernel's text, so decode
+    /// is bit-identical rather than merely close.
+    #[test]
+    fn a_single_row_always_takes_the_decode_tile() {
+        for (n, k) in [
+            (9216u64, 3072u64),
+            (3072, 3072),
+            (32_064, 3072),
+            (3072, 8192),
+            (130, 512),
+            (64, 512),
+        ] {
+            let wg = gemv_workgroup(k / 32);
+            for a_bytes in [2u64, 4] {
+                let (cols, rows) = gemv_tile(1, n, k, 4, a_bytes, wg);
+                assert_eq!(rows, 1, "N={n} K={k}: decode must not be tiled");
+                assert_eq!(
+                    cols,
+                    gemv_cols(n, wg),
+                    "N={n} K={k}: decode must keep the column tile it always had"
+                );
+            }
+        }
+        // Zero rows is a degenerate dispatch, not a tiled one.
+        assert_eq!(gemv_tile(0, 3072, 3072, 4, 2, 32).1, 1);
+    }
+
+    /// The tile the byte model picks for the real prefill shapes, and why it is that one.
+    ///
+    /// Phi-3.5's five `MatMulNBits` shapes all reduce `K = 3072` or `K = 8192` at block 32, so
+    /// `gemv_workgroup` gives 32 or 128 and `gemv_cols` gives 16. Because `ceil(N/cols) * cols` is
+    /// just `N` whenever the column tile divides `N`, the weight term depends only on `rows` and
+    /// the activation term only on `rows / cols` — so `rows = 2, cols = 16` and `rows = 4,
+    /// cols = 8` name *exactly* the same bytes. The picker requires a strict improvement, so the
+    /// tie goes to the first candidate, which is the one that keeps the decode column tile and
+    /// runs half as many sequential shared-memory reductions.
+    ///
+    /// `rows = 4, cols = 16` would be strictly better again, but `cols * rows = 64` exceeds
+    /// `GEMV_MAX_TILE`: the accumulator budget, not the byte model, is what bounds the tile.
+    #[test]
+    fn a_prefill_shape_takes_a_row_tile_and_it_is_the_cheapest_legal_one() {
+        let (n, k) = (3072u64, 3072u64);
+        let wg = gemv_workgroup(k / 32);
+        for m in [2u64, 16, 64, 512, 2048] {
+            let (cols, rows) = gemv_tile(m, n, k, 4, 2, wg);
+            assert_eq!(
+                (cols, rows),
+                (16, 2),
+                "M={m}: expected the cheapest legal row tile"
+            );
+            assert!(cols * rows <= GEMV_MAX_TILE);
+            assert!(
+                wg * cols <= GEMV_RED_WORDS,
+                "the row tile must not enlarge the shared-memory requirement"
+            );
+            // Strictly fewer bytes named than the untiled geometry: that is the change.
+            let tiled = gemv_named_bytes(m, n, k, 4, 2, cols, rows);
+            let untiled = gemv_named_bytes(m, n, k, 4, 2, gemv_cols(n, wg), 1);
+            assert!(
+                tiled < untiled,
+                "M={m}: {tiled} is not fewer than {untiled}"
+            );
+        }
+        // The alternative really is a tie rather than merely close, and the wider tile that would
+        // break the tie is excluded by the accumulator cap rather than by the model.
+        assert_eq!(
+            gemv_named_bytes(64, n, k, 4, 2, 16, 2),
+            gemv_named_bytes(64, n, k, 4, 2, 8, 4)
+        );
+        assert!(gemv_named_bytes(64, n, k, 4, 2, 16, 4) < gemv_named_bytes(64, n, k, 4, 2, 16, 2));
+        // `16 * 4 > GEMV_MAX_TILE` is the whole reason the strictly-better candidate is refused,
+        // and it is a fact about the constant rather than about this shape — so it is asserted
+        // against the constant's value, which a future edit could change.
+        assert_eq!(
+            GEMV_MAX_TILE, 32,
+            "the accumulator cap is what excludes the (16, 4) tile"
+        );
+        // The K = 8192 shape reduces 256 blocks, so `wg` is 128 and `wg * cols` is already at the
+        // shared-array ceiling. The row tile still applies, because it costs no shared memory.
+        let wg8 = gemv_workgroup(8192 / 32);
+        assert_eq!(wg8, 128);
+        let (cols8, rows8) = gemv_tile(512, 3072, 8192, 4, 2, wg8);
+        assert!(rows8 > 1, "the row tile must survive the widest workgroup");
+        assert_eq!(wg8 * cols8, GEMV_RED_WORDS);
+    }
+
+    /// Every tile the picker can emit, over a grid that includes the awkward shapes.
+    #[test]
+    fn every_selected_tile_respects_every_static_bound() {
+        for m in [0u64, 1, 2, 3, 5, 17, 128, 4096] {
+            for n in [1u64, 2, 3, 7, 64, 100, 130, 512, 3072, 32_064] {
+                for bpc in [1u64, 7, 96, 256, 4096] {
+                    let wg = gemv_workgroup(bpc);
+                    let (cols, rows) = gemv_tile(m, n, bpc * 32, 4, 2, wg);
+                    assert!(
+                        (1..=GEMV_MAX_COLS).contains(&cols),
+                        "m={m} n={n} cols={cols}"
+                    );
+                    assert!(
+                        (1..=GEMV_MAX_ROWS).contains(&rows),
+                        "m={m} n={n} rows={rows}"
+                    );
+                    assert!(cols.is_power_of_two() && rows.is_power_of_two());
+                    assert!(
+                        cols * rows <= GEMV_MAX_TILE,
+                        "m={m} n={n}: {cols} x {rows} exceeds the accumulator budget"
+                    );
+                    assert!(
+                        wg * cols <= GEMV_RED_WORDS,
+                        "m={m} n={n}: {wg} x {cols} overruns `red`"
+                    );
+                    assert!(
+                        cols == 1 || n / u64::from(cols) >= GEMV_MIN_WORKGROUPS,
+                        "m={m} n={n}: tiling to {cols} left too few workgroups"
+                    );
+                    assert!(
+                        n % u64::from(cols) == 0 || cols == 1,
+                        "m={m} n={n}: a tail column tile was selected"
+                    );
+                    // Never worse than the geometry it replaces: the seed has to be beaten
+                    // strictly, so a shape with no legal row tile keeps the decode one.
+                    let chosen = gemv_named_bytes(m, n, bpc * 32, 4, 2, cols, rows);
+                    let seed = gemv_named_bytes(m, n, bpc * 32, 4, 2, gemv_cols(n, wg), 1);
+                    assert!(chosen <= seed, "m={m} n={n}: the picker chose a worse tile");
+                }
+            }
+        }
+    }
+
+    /// The byte model is the quantity the SPIR-V walk measures, so it must agree with the
+    /// structural claim the issue is about: weight amplification is `ceil(M / rows)`.
+    #[test]
+    fn the_byte_model_reproduces_the_structural_amplification() {
+        let (n, k, bits) = (256u64, 3072u64, 4u32);
+        let weight_once = u128::from(n) * u128::from(k) * u128::from(bits) / 8;
+        for rows in [1u32, 2, 4] {
+            for m in [1u64, 2, 3, 4, 7, 64] {
+                // Activations priced at zero isolates the weight term.
+                let bytes = gemv_named_bytes(m, n, k, bits, 0, 16, rows);
+                assert_eq!(
+                    bytes,
+                    u128::from(m.div_ceil(u64::from(rows))) * weight_once,
+                    "m={m} rows={rows}"
+                );
+            }
+        }
+    }
+
+    /// The dispatch may never ask for more workgroups in y than Vulkan guarantees, and the value
+    /// it clamps to is the guaranteed floor rather than anything a device reported.
+    #[test]
+    fn the_y_extent_is_clamped_to_the_guaranteed_floor() {
+        assert_eq!(GEMV_MAX_GROUPS_Y, 65_535);
+        let wg = gemv_workgroup(96);
+        for m in [1u64, 65_535, 65_536, 262_140, 1_000_000] {
+            let (_, rows) = gemv_tile(m, 3072, 3072, 4, 2, wg);
+            let row_tiles = m.div_ceil(u64::from(rows));
+            let groups_y = row_tiles.min(u64::from(GEMV_MAX_GROUPS_Y));
+            assert!(groups_y <= u64::from(GEMV_MAX_GROUPS_Y), "m={m}");
+            assert!(groups_y >= 1, "m={m}");
+            // The grid-stride loop has to be able to reach every tile from the clamped grid.
+            assert!(
+                row_tiles <= groups_y * row_tiles.div_ceil(groups_y),
+                "m={m}: the y-grid-stride loop cannot cover {row_tiles} tiles from {groups_y}"
+            );
+        }
+    }
+
+    /// The fallback knob has to actually reach the geometry it promises, and has to be safe when
+    /// an operator writes something silly into it. The environment read itself is exercised by
+    /// `rust/tests/row_tile_fallback.rs`; `src/ops/` may not contain `unsafe`, and mutating the
+    /// process environment requires it.
+    #[test]
+    fn the_row_tile_can_be_pinned_back_to_the_decode_geometry() {
+        let wg = gemv_workgroup(96);
+        let untiled = gemv_tile_with(1, 3072, 3072, 4, 2, wg, GEMV_MAX_ROWS);
+        let tiled = gemv_tile_with(8, 3072, 3072, 4, 2, wg, GEMV_MAX_ROWS);
+        assert!(
+            tiled.1 > 1,
+            "the shape under test must tile by default, got {tiled:?}"
+        );
+
+        assert_eq!(
+            gemv_tile_with(8, 3072, 3072, 4, 2, wg, 1),
+            untiled,
+            "pinning to 1 must reproduce the pre-issue-#7 geometry exactly"
+        );
+
+        // Whatever the ceiling, the selected tile is legal. A knob cannot be used to ask for a
+        // tile the shader would refuse.
+        for ceiling in 1..=GEMV_MAX_ROWS {
+            let (cols, rows) = gemv_tile_with(8, 3072, 3072, 4, 2, wg, ceiling);
+            assert!(
+                rows <= ceiling && cols * rows <= GEMV_MAX_TILE,
+                "{ceiling}: {cols}x{rows}"
+            );
+        }
+    }
+
+    /// The knob's parsing, stated as cases rather than described in a doc comment.
+    #[test]
+    fn the_row_tile_ceiling_clamps_rather_than_trusts() {
+        assert_eq!(
+            clamp_max_rows(None),
+            GEMV_MAX_ROWS,
+            "absent means the default"
+        );
+        assert_eq!(
+            clamp_max_rows(Some("1")),
+            1,
+            "1 is the documented fallback and must reach it"
+        );
+        assert_eq!(clamp_max_rows(Some("2")), 2);
+        assert_eq!(
+            clamp_max_rows(Some("  4 ")),
+            4,
+            "surrounding whitespace is not a typo"
+        );
+        assert_eq!(
+            clamp_max_rows(Some("0")),
+            1,
+            "0 rows is not a tile; clamp up, never to zero"
+        );
+        assert_eq!(
+            clamp_max_rows(Some("64")),
+            GEMV_MAX_ROWS,
+            "above the bound is clamped down"
+        );
+        // A typo in a performance knob must not take the process down, and must not be read as
+        // some accidental number either.
+        for junk in ["", "  ", "yes", "-1", "2.5", "0x4"] {
+            assert_eq!(
+                clamp_max_rows(Some(junk)),
+                GEMV_MAX_ROWS,
+                "junk {junk:?} means default"
+            );
+        }
+    }
+
     #[test]
     fn prepack_is_a_documented_pass_through() {
         use crate::engine::{PackInput, TileConfig};

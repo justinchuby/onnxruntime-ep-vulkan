@@ -107,9 +107,19 @@ GEMV_RED_WORDS = 2048
 GEMV_MAX_COLS = 16
 GEMV_MIN_WORKGROUPS = 64
 GEMV_MIN_BLOCKS_PER_INVOCATION = 2
+GEMV_MAX_ROWS = 4
+GEMV_MAX_TILE = 32
+GEMV_MAX_GROUPS_Y = 65535
 
 #: Binding of `InB`, the packed weight stream, in `q_gemv.comp`.
 INB_BINDING = 1
+
+#: Prefill widths walked at `M > 1`. Small on purpose: the SPIR-V walk executes every lane of
+#: every workgroup, so cost is linear in `M`, and the quantity being measured -- weight-read
+#: amplification -- is `ceil(M / QB_ROWS)`, which is fully determined by two tile-crossings.
+#: `M = 4` crosses a two-row tile twice and `M = 5` leaves a tail row, which is the case a tile
+#: gets wrong if it gets anything wrong.
+PREFILL_M = (2, 4, 5)
 
 
 def fnv1a64(data: bytes) -> int:
@@ -211,6 +221,50 @@ def gemv_packed(bits: int, block_size: int) -> bool:
     return (block_size * bits // 8) % 16 == 0
 
 
+def gemv_named_bytes(m: int, n: int, k: int, bits: int, a_bytes: int,
+                     cols: int, rows: int) -> int:
+    """Bytes the grid names, exactly as the SPIR-V walk counts them.
+
+    A tile names its whole weight column strip once and its whole activation row strip once, so
+    the weight stream is amplified by the number of row tiles and the activation stream by the
+    number of column tiles. The two are independent, which is why a tile has to be chosen by a
+    model over both and not by maximising `rows`.
+    """
+    row_tiles = -(-m // rows)
+    col_tiles = -(-n // cols)
+    weight = row_tiles * col_tiles * cols * k * bits // 8
+    activation = row_tiles * col_tiles * rows * k * a_bytes
+    return weight + activation
+
+
+def gemv_tile(m: int, n: int, k: int, bits: int, a_bytes: int, wg: int) -> tuple[int, int]:
+    """`ops::quant::gemv_tile`, in Python. Returns `(cols, rows)`."""
+    base_cols = gemv_cols(n, wg)
+    best = (base_cols, 1)
+    best_bytes = gemv_named_bytes(m, n, k, bits, a_bytes, base_cols, 1)
+    if m <= 1:
+        return best
+    rows = 2
+    while rows <= GEMV_MAX_ROWS:
+        cols = base_cols
+        while True:
+            legal = (cols * rows <= GEMV_MAX_TILE
+                     and wg * cols <= GEMV_RED_WORDS
+                     and n % cols == 0
+                     and (cols == 1 or n // cols >= GEMV_MIN_WORKGROUPS))
+            if legal:
+                got = gemv_named_bytes(m, n, k, bits, a_bytes, cols, rows)
+                if got < best_bytes:
+                    best = (cols, rows)
+                    best_bytes = got
+                break
+            if cols == 1:
+                break
+            cols //= 2
+        rows *= 2
+    return best
+
+
 # -- the graph ---------------------------------------------------------------------------------
 
 
@@ -271,11 +325,13 @@ def census(model: pathlib.Path) -> dict:
 
 
 def walk_shape(mod: SpirvModule, K: int, N: int, bits: int, block: int, wg: int, cols: int,
-               packed: int, has_zp: int = 0, m_total: int = 1) -> dict:
+               packed: int, has_zp: int = 0, m_total: int = 1, rows: int = 1) -> dict:
     """Execute the whole grid for one node shape and reduce its `InB` trace."""
     bpc = K // block
     bb = block * bits // 8
     b_words = N * bpc * bb // 4
+    row_tiles = -(-m_total // rows)
+    groups_y = min(row_tiles, GEMV_MAX_GROUPS_Y)
     buffers = {
         0: np.zeros(max(1, m_total * K // 2), dtype=np.uint32),
         1: np.zeros(max(1, b_words), dtype=np.uint32),
@@ -284,9 +340,9 @@ def walk_shape(mod: SpirvModule, K: int, N: int, bits: int, block: int, wg: int,
         4: np.zeros(max(1, (m_total * N + 1) // 2), dtype=np.uint32),
     }
     d = Dispatch(
-        groups=(-(-N // cols), m_total, 1),
+        groups=(-(-N // cols), groups_y, 1),
         local_size=(wg, 1, 1),
-        spec={0: wg, 1: bits, 2: block, 3: has_zp, 4: cols, 5: packed},
+        spec={0: wg, 1: bits, 2: block, 3: has_zp, 4: cols, 5: packed, 6: rows},
         push_constants=[m_total, K, N, bpc],
         buffers=buffers,
     )
@@ -299,8 +355,10 @@ def walk_shape(mod: SpirvModule, K: int, N: int, bits: int, block: int, wg: int,
     widths = sorted({w * 4 for _, w in tr.sites.values()})
     return {
         "K": K, "N": N, "bits": bits, "block_size": block, "blocks_per_col": bpc,
-        "blob_bytes": bb, "wg": wg, "cols": cols, "packed": packed, "has_zero_points": has_zp,
-        "workgroups": -(-N // cols) * m_total,
+        "blob_bytes": bb, "wg": wg, "cols": cols, "rows": rows, "packed": packed,
+        "has_zero_points": has_zp, "m_total": m_total,
+        "row_tiles": row_tiles, "groups_y": groups_y,
+        "workgroups": -(-N // cols) * groups_y,
         "load_instructions": tr.load_instructions,
         "load_widths_bytes": widths,
         "loads_by_width": by_width,
@@ -330,13 +388,19 @@ def _tool(name: str) -> str | None:
 #: The edit that makes the packed 4-bit path read every blob twice. Surgical on purpose: it
 #: changes the number of loads and nothing else, so a probe that fails to see it is not seeing
 #: loads.
-REREAD_FROM = """                uint nchunk = bb >> 4u;
-                if (QB_BITS == 4u) {
-                    for (uint ch = 0u; ch < nchunk; ++ch) {"""
-REREAD_TO = """                uint nchunk = (bb >> 4u) * 2u;
-                if (QB_BITS == 4u) {
-                    for (uint chr = 0u; chr < nchunk; ++chr) {
-                        uint ch = chr >> 1u;"""
+#:
+#: The literal is indented to match the `QB_ROWS == 1u` arm of `main()`, which is where the
+#: packed decode loop lives since the row tile was added (issue #7). It is an exact literal
+#: rather than a regex because a control that quietly matches *something* is not a control:
+#: `compile_rereading_variant` returns `None` when the text moves, and `positive_controls`
+#: reports the miss instead of inventing a substitute.
+REREAD_FROM = """                        uint nchunk = bb >> 4u;
+                        if (QB_BITS == 4u) {
+                            for (uint ch = 0u; ch < nchunk; ++ch) {"""
+REREAD_TO = """                        uint nchunk = (bb >> 4u) * 2u;
+                        if (QB_BITS == 4u) {
+                            for (uint chr = 0u; chr < nchunk; ++chr) {
+                                uint ch = chr >> 1u;"""
 
 
 def compile_rereading_variant() -> tuple[bytes, str] | None:
@@ -437,6 +501,27 @@ def positive_controls(mod: SpirvModule) -> dict:
                      and unpacked["load_instructions"] == 4 * packed["load_instructions"]),
     })
 
+    # 4. The defect this probe was extended to see, and its repair, on the same module. Forcing
+    #    `rows = 1` at `M = 4` reproduces the pre-tile grid exactly -- four y-workgroups each
+    #    naming the whole weight strip -- and the number moves to 4.0. Selecting the host's tile
+    #    at the same M moves it back to `ceil(M / rows)`. The first half is the control (a state
+    #    where the answer is not 1); the second half is the measurement.
+    untiled = walk_shape(mod, K=3072, N=256, bits=4, block=32, wg=32, cols=16, packed=1,
+                         m_total=4, rows=1)
+    tiled = walk_shape(mod, K=3072, N=256, bits=4, block=32, wg=32, cols=16, packed=1,
+                       m_total=4, rows=2)
+    controls.append({
+        "control": "row_tile_removes_the_M_fold_weight_reread",
+        "module": "the shipped module, at M=4 with QB_ROWS forced to 1 and then to 2",
+        "predicted": "amplification 4.0 untiled -> 2.0 tiled; ceil(M / QB_ROWS) either way",
+        "untiled_amplification": untiled["amplification"],
+        "tiled_amplification": tiled["amplification"],
+        "untiled_max_loads_naming_one_word": untiled["max_loads_naming_one_word"],
+        "tiled_max_loads_naming_one_word": tiled["max_loads_naming_one_word"],
+        "positive": (untiled["amplification"] == 4.0 and tiled["amplification"] == 2.0),
+        "detail": {"untiled": untiled, "tiled": tiled},
+    })
+
     witnessed = any(c.get("positive") for c in controls[:2])
     return {"witnessed": witnessed, "controls": controls}
 
@@ -485,6 +570,50 @@ def main() -> int:
 
         graph_bytes = sum(n["b_initializer_bytes"] for n in cen["nodes"])
         widths = sorted({w for r in per_shape for w in r["load_widths_bytes"]})
+
+        # -- prefill: the same graph at M > 1, tiled and untiled ---------------------------
+        # The decode walk above is `M = 1`, where the row tile is by construction absent. Issue
+        # #7 is about `M > 1`, so the same shapes are walked again at representative prefill
+        # widths, twice each: once with `QB_ROWS` forced to 1 (the geometry before this change)
+        # and once with the tile `ops::quant::gemv_tile` actually selects. Both are executions of
+        # the same ledger-bound module; the pair is what makes the reduction a measurement rather
+        # than a subtraction of one run from a remembered number.
+        prefill = []
+        for m in PREFILL_M:
+            m_named_untiled = 0
+            m_named_tiled = 0
+            for key, agg in sorted(shapes.items()):
+                K, N, bits, block, wg, cols, packed, has_zp = key
+                tile_cols, tile_rows = gemv_tile(m, N, K, bits, 2, wg)
+                u = walk_shape(mod, K=K, N=N, bits=bits, block=block, wg=wg, cols=cols,
+                               packed=packed, has_zp=has_zp, m_total=m, rows=1)
+                t = walk_shape(mod, K=K, N=N, bits=bits, block=block, wg=wg, cols=tile_cols,
+                               packed=packed, has_zp=has_zp, m_total=m, rows=tile_rows)
+                prefill.append({
+                    "m_total": m, "K": K, "N": N, "bits": bits, "block_size": block,
+                    "nodes_with_this_shape": agg["nodes"],
+                    "selected_cols": tile_cols, "selected_rows": tile_rows,
+                    "untiled_amplification": u["amplification"],
+                    "tiled_amplification": t["amplification"],
+                    "predicted_tiled_amplification": -(-m // tile_rows),
+                    "untiled_load_widths_bytes": u["load_widths_bytes"],
+                    "tiled_load_widths_bytes": t["load_widths_bytes"],
+                    "untiled_named_bytes": u["named_bytes"],
+                    "tiled_named_bytes": t["named_bytes"],
+                    "untiled_groups_y": u["groups_y"], "tiled_groups_y": t["groups_y"],
+                    "coverage_untiled": u["coverage"], "coverage_tiled": t["coverage"],
+                })
+                m_named_untiled += u["named_bytes"] * agg["nodes"]
+                m_named_tiled += t["named_bytes"] * agg["nodes"]
+            prefill.append({
+                "m_total": m, "K": None, "N": "ALL SHAPES",
+                "untiled_amplification": m_named_untiled / graph_bytes,
+                "tiled_amplification": m_named_tiled / graph_bytes,
+                "untiled_named_bytes": m_named_untiled,
+                "tiled_named_bytes": m_named_tiled,
+                "weight_bytes_not_named_because_of_the_tile":
+                    m_named_untiled - m_named_tiled,
+            })
 
         if pos["witnessed"]:
             amplification = total_named / graph_bytes
@@ -535,6 +664,8 @@ def main() -> int:
                 "verdict": verdict,
             },
             "by_shape": per_shape,
+            "by_shape_prefill": prefill,
+            "prefill_m_values": PREFILL_M,
         }
     except InstrumentError as e:
         print(f"ERROR(instrument): {e}", file=sys.stderr)
@@ -567,6 +698,15 @@ def main() -> int:
     print(f"    max loads naming one 4-byte word    {max_word:>15,}")
     print(f"    words named by >1 workgroup         {multi_wg:>15,}")
     print(f"    coverage of the weight tensor       {min_coverage:>15.6f}")
+    print()
+    print("  PREFILL — the same 161 nodes at M > 1, QB_ROWS forced to 1 vs the selected tile")
+    for r in prefill:
+        if r["N"] != "ALL SHAPES":
+            continue
+        m = r["m_total"]
+        print(f"    M={m:<4} amplification  untiled {r['untiled_amplification']:>9.6f}"
+              f"   tiled {r['tiled_amplification']:>9.6f}"
+              f"   weight bytes not named {r['weight_bytes_not_named_because_of_the_tile']:>15,}")
     print(f"\n  -> {verdict}")
     print(f"\n  record: {out}")
     return 0

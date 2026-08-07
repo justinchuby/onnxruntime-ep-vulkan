@@ -220,16 +220,28 @@ distinguishes the two **from inside the process**. `session_disclosure_info_reac
 the last event on our own side of the boundary and cannot report the next one. This is a bound, not
 a bug: see §8.9.23's statement of the general form. Do not over-trust the token.
 
-**"Weight read amplification = 1.000000" is an identity, not a measurement.** The figure comes from
-`bench/results/island_bytes_phi35.json::weight_reread_amplification`, whose four fields are literals in
-`bench/results/probe_island_bytes.py`. Its numerator is the blob count from
-`bench/results/gemv_counts.json::bytes.blobs_per_inference` and its denominator is the weight bytes
-from the same census; since a blob **is defined as** 16 weight bytes, the ratio is `16/16` for every
-model, every shape and every kernel, including a broken one. It is `x/x`. What the SPIR-V walk behind
-it genuinely establishes is narrower and still useful — the packed GEMV issues **one 128-bit load per
-16-byte weight blob** rather than four 32-bit ones (`gemv_counts.json::arms`) — but that is an
-instruction count, not DRAM traffic, and cache re-reads are explicitly excluded from it. **No artifact
-in this tree measures how many times the device reads a weight byte from DRAM.**
+**"Weight read amplification = 1.000000" was an identity — it is now a measurement, and only at
+`M = 1`.** The original figure came from `bench/results/island_bytes_phi35.json::weight_reread_
+amplification`, whose four fields were literals in `bench/results/probe_island_bytes.py`. Its
+numerator was the blob count from `bench/results/gemv_counts.json::bytes.blobs_per_inference` and
+its denominator the weight bytes from the same census; since a blob **is defined as** 16 weight
+bytes, the ratio was `16/16` for every model, every shape and every kernel, including a broken one.
+It was `x/x`.
+
+`bench/results/probe_weight_reread.py` replaced it with a SPIR-V def-use walk of the compiled
+module — located by content digest against `evidence/proof_ledger.jsonl`, denominator summed off
+the graph's initializer lengths, and with demonstrated positive controls, so it reports
+`UNWITNESSED` rather than a number when it cannot see. It agreed: **1.000000** (`PERF.md` §22).
+
+That reading was correct and narrow. It was taken at `M = 1`, and at `M > 1` the same instrument
+measured amplification `M` — the prefill path re-read the whole weight tensor once per row. §8.12
+is the fix and `PERF.md` §25 is the before-and-after. Post-change the reading is `ceil(M/QB_ROWS)`:
+1.000000 at `M=1`, 1.000000 at `M=2`, 2.000000 at `M=4`.
+
+The honest residual bound is unchanged in kind: this counts the bytes the shader's loads **name**,
+at instruction level. Cache re-reads are excluded. **No artifact in this tree measures how many
+times the device reads a weight byte from DRAM** — what is measured is how many times the kernel
+asks for one, which is the quantity the kernel controls.
 
 **The growing-context KV term is a lower bound, not a measurement.** `kv_chain_readback-*.json` runs
 six steps at a *fixed* past extent of 4 and says so in its own `why` list. `island_bytes_phi35.json`'s
@@ -5154,6 +5166,106 @@ claim decisions exactly. It exists so the A/B above is reproducible by anyone, a
 suspected mis-inference can be bisected without a rebuild. The claim log carries a
 `rank_inferred` field per row, so "this row was claimed on a rank this EP worked out" is
 visible rather than inferred.
+
+---
+
+### 8.12 The MatMulNBits row tile — prefill reads the weights once per `QB_ROWS` rows (issue #7)
+
+`q_gemv.comp` mapped one workgroup to one `(activation row, column tile)` pair. That is the right
+shape for decode, where `M = 1` and each weight byte is genuinely needed once. For prefill it means
+**every one of the `M` row-workgroups re-reads the entire packed column tile it was assigned**, so
+the weight-read amplification at `M` rows was exactly `M`. The kernel was a GEMV being asked to do
+a GEMM by repetition.
+
+This was not a suspicion. `bench/results/probe_weight_reread.py` walks the compiled SPIR-V and
+measured it on Phi-3.5's real graph *before* the fix: 1.000000 at `M=1`, **2.000000 at `M=2`,
+4.000000 at `M=4`, 5.000000 at `M=5`**, against a denominator of 1,861,189,632 int4 bytes read off
+the graph's external-data lengths. `docs/PERF.md` §25 is the full reading, before and after.
+
+#### The mechanism
+
+One specialisation constant, `QB_ROWS` (id 6), and a second arm in `main()`. A workgroup owns a
+`QB_ROWS x QB_COLS` output tile: it loads a packed weight blob once and applies it to all `QB_ROWS`
+activation rows before advancing. Weight amplification becomes `ceil(M / QB_ROWS)`. The dispatch
+grid gains a y extent of `ceil(M / QB_ROWS)` row tiles, clamped to `GEMV_MAX_GROUPS_Y = 65,535` —
+the *guaranteed* Vulkan floor for `maxComputeWorkGroupCount[1]`, not a queried limit — with a
+y-grid-stride loop covering any excess.
+
+#### Why this is a portability-neutral change
+
+This section exists in §8, beside the capability rulings, because the interesting property is what
+the row tile **does not** need:
+
+* **No shared memory.** The per-row reduction is *sequential*, reusing the single `red[]` array the
+  decode path already had. Shared-memory usage is byte-for-byte unchanged, so no device that can
+  run the decode kernel can fail to run the tiled one. This is deliberate: making the row tile a
+  shared-memory question would have made it a device-limit question, and §7.2's floor is the whole
+  reason this EP does not have per-vendor kernels.
+* **No new feature, extension, capability or query.** Vulkan 1.1 core, within the §7.2 frozen set.
+* **No new device-dependent decision.** The tile is chosen by `ops::quant::gemv_tile` from the
+  *shape* and three module constants. Two devices running the same graph pick the same tile.
+
+#### The bounds, and why there are two of them
+
+* `QB_ROWS * QB_COLS <= GEMV_MAX_TILE (32)` — the accumulator register budget (`acc` and `bacc`).
+* `QB_ROWS <= GEMV_MAX_ROWS (4)` — the activation window held per row.
+* `wg * QB_COLS <= GEMV_RED_WORDS` — unchanged, and unaffected by the row tile.
+
+Both the host and the shader enforce the first two. The host returns `EpError::Internal` rather
+than dispatching an illegal tile; the shader's **first statement** is a spec-constant guard that
+returns before any `barrier()`, which is legal because both operands are specialisation constants
+(so it folds away in every real pipeline) and the branch is workgroup-uniform.
+
+The duplication is not belt-and-braces for its own sake. `rows=4, cols=16` indexes
+`acc[r*QB_COLS + c]` up to 63 against a 32-element array, and the SPIR-V interpreter caught it as an
+out-of-bounds access before either guard existed. The host cannot *select* that tile — but
+"unreachable" and "fail-closed" are different claims, and only the second one survives someone
+editing the selector. `test_an_illegal_tile_computes_nothing_rather_than_overrunning` is the
+control that keeps the guard honest.
+
+#### Decode is bit-identical by construction
+
+`QB_ROWS == 1u` is a specialisation-constant branch containing the **verbatim pre-change code**, and
+`gemv_tile` returns `rows = 1` for every `m <= 1`. So "decode is unchanged" is a property of the
+source text and of the selector, not an argument about floating-point associativity: at `M = 1` both
+the tiled and untiled configurations bind the same constants and produce the same pipeline from the
+same SPIR-V. The A/B in `PERF.md` §25.4 uses that fact as its noise floor.
+
+#### The kill switch
+
+`ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` clamps the largest selectable row tile, exactly as
+`ONNXRUNTIME_EP_VULKAN_RANK_INFERENCE=0` does for §8.11. Setting it to `1` restores the
+pre-issue-#7 geometry without a rebuild — `rows = 1` is the seed of the tile search, so the
+selector returns the identical `(cols, rows)` it returned before this change. Values are clamped to
+`[1, GEMV_MAX_ROWS]` rather than trusted, and an unparseable value means "the default" rather than
+"refuse to run": the safe reading of a typo in a performance knob is not a dead process.
+
+It is deliberately the same mechanism the A/B measurement uses, for the reason
+`ops::quant::gemv_packed`'s override already established — **an arm you cannot switch in place is an
+arm you cannot measure honestly**, and it is also an arm you cannot bisect in the field. The
+plumbing is locked by `rust/tests/row_tile_fallback.rs`, which lives outside `src/ops/` because
+`tests/layering.rs` forbids `unsafe` there and mutating process environment requires it.
+
+#### What is proven, and the one thing that is not
+
+Three levels, none of them a whole-model claim:
+
+1. **The proof ledger.** The shader edit moved the module digest and `gen_proof_ledger.py --check`
+   failed closed naming exactly the six MatMulNBits entries. All six were re-proven on the RTX
+   A1000; 133/133 entries live and MATCH.
+2. **The model's own weights.** `bench/results/probe_real_matmulnbits_rows.py` lifts real
+   MatMulNBits nodes out of the resolved Phi-3.5 file — real packed int4, real scales, real
+   zero-points, real fp16 — into one-node graphs and runs each on both providers at
+   `M ∈ {1,2,3,4,5,8}`. 72/72 match, with the relative error on non-cancelling elements **flat at
+   ~9.5e-04 from `M=1` to `M=8`**.
+3. **The traffic.** The SPIR-V walk, over the real 161-node graph, at every `M`.
+
+**The limitation, stated rather than implied:** `rust/modelrunner` still reports
+`UNSUPPORTED(reason=reference_run_unsupported)` for Phi-3.5, because its GroupQueryAttention nodes
+reject generated inputs on the **CPU reference arm** (`seqlens_k[0] = 7 is out of range [0, 1)`) —
+the model's inputs are interdependent and the runner's input generation cannot satisfy them. That
+has nothing to do with MatMulNBits or with this change, but it does mean **there is no whole-model
+CPU reference to compare a Vulkan run against**, so nothing here is an end-to-end logits claim.
 
 ---
 

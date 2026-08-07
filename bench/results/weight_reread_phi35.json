@@ -14,6 +14,7 @@
       "cols": 16,
       "coverage": 1.0,
       "distinct_bytes_touched": 4718592,
+      "groups_y": 1,
       "has_zero_points": 0,
       "load_instructions": 294912,
       "load_widths_bytes": [
@@ -23,10 +24,13 @@
         "width_16B": 294912
       },
       "loads_per_blob": 1.0,
+      "m_total": 1,
       "max_loads_naming_one_word": 1,
       "named_bytes": 4718592,
       "nodes_with_this_shape": 32,
       "packed": 1,
+      "row_tiles": 1,
+      "rows": 1,
       "wg": 32,
       "words_named_by_more_than_one_workgroup": 0,
       "workgroups": 192
@@ -45,6 +49,7 @@
       "cols": 16,
       "coverage": 1.0,
       "distinct_bytes_touched": 12582912,
+      "groups_y": 1,
       "has_zero_points": 0,
       "load_instructions": 786432,
       "load_widths_bytes": [
@@ -54,10 +59,13 @@
         "width_16B": 786432
       },
       "loads_per_blob": 1.0,
+      "m_total": 1,
       "max_loads_naming_one_word": 1,
       "named_bytes": 12582912,
       "nodes_with_this_shape": 64,
       "packed": 1,
+      "row_tiles": 1,
+      "rows": 1,
       "wg": 32,
       "words_named_by_more_than_one_workgroup": 0,
       "workgroups": 512
@@ -76,6 +84,7 @@
       "cols": 16,
       "coverage": 1.0,
       "distinct_bytes_touched": 14155776,
+      "groups_y": 1,
       "has_zero_points": 0,
       "load_instructions": 884736,
       "load_widths_bytes": [
@@ -85,10 +94,13 @@
         "width_16B": 884736
       },
       "loads_per_blob": 1.0,
+      "m_total": 1,
       "max_loads_naming_one_word": 1,
       "named_bytes": 14155776,
       "nodes_with_this_shape": 32,
       "packed": 1,
+      "row_tiles": 1,
+      "rows": 1,
       "wg": 32,
       "words_named_by_more_than_one_workgroup": 0,
       "workgroups": 576
@@ -107,6 +119,7 @@
       "cols": 16,
       "coverage": 1.0,
       "distinct_bytes_touched": 49250304,
+      "groups_y": 1,
       "has_zero_points": 0,
       "load_instructions": 3078144,
       "load_widths_bytes": [
@@ -116,10 +129,13 @@
         "width_16B": 3078144
       },
       "loads_per_blob": 1.0,
+      "m_total": 1,
       "max_loads_naming_one_word": 1,
       "named_bytes": 49250304,
       "nodes_with_this_shape": 1,
       "packed": 1,
+      "row_tiles": 1,
+      "rows": 1,
       "wg": 32,
       "words_named_by_more_than_one_workgroup": 0,
       "workgroups": 2004
@@ -138,6 +154,7 @@
       "cols": 16,
       "coverage": 1.0,
       "distinct_bytes_touched": 12582912,
+      "groups_y": 1,
       "has_zero_points": 0,
       "load_instructions": 786432,
       "load_widths_bytes": [
@@ -147,13 +164,423 @@
         "width_16B": 786432
       },
       "loads_per_blob": 1.0,
+      "m_total": 1,
       "max_loads_naming_one_word": 1,
       "named_bytes": 12582912,
       "nodes_with_this_shape": 32,
       "packed": 1,
+      "row_tiles": 1,
+      "rows": 1,
       "wg": 128,
       "words_named_by_more_than_one_workgroup": 0,
       "workgroups": 192
+    }
+  ],
+  "by_shape_prefill": [
+    {
+      "K": 3072,
+      "N": 3072,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 2,
+      "nodes_with_this_shape": 32,
+      "predicted_tiled_amplification": 1,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 1.0,
+      "tiled_groups_y": 1,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 4718592,
+      "untiled_amplification": 2.0,
+      "untiled_groups_y": 2,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 9437184
+    },
+    {
+      "K": 3072,
+      "N": 8192,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 2,
+      "nodes_with_this_shape": 64,
+      "predicted_tiled_amplification": 1,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 1.0,
+      "tiled_groups_y": 1,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 12582912,
+      "untiled_amplification": 2.0,
+      "untiled_groups_y": 2,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 25165824
+    },
+    {
+      "K": 3072,
+      "N": 9216,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 2,
+      "nodes_with_this_shape": 32,
+      "predicted_tiled_amplification": 1,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 1.0,
+      "tiled_groups_y": 1,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 14155776,
+      "untiled_amplification": 2.0,
+      "untiled_groups_y": 2,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 28311552
+    },
+    {
+      "K": 3072,
+      "N": 32064,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 2,
+      "nodes_with_this_shape": 1,
+      "predicted_tiled_amplification": 1,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 1.0,
+      "tiled_groups_y": 1,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 49250304,
+      "untiled_amplification": 2.0,
+      "untiled_groups_y": 2,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 98500608
+    },
+    {
+      "K": 8192,
+      "N": 3072,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 2,
+      "nodes_with_this_shape": 32,
+      "predicted_tiled_amplification": 1,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 1.0,
+      "tiled_groups_y": 1,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 12582912,
+      "untiled_amplification": 2.0,
+      "untiled_groups_y": 2,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 25165824
+    },
+    {
+      "K": null,
+      "N": "ALL SHAPES",
+      "m_total": 2,
+      "tiled_amplification": 1.0,
+      "tiled_named_bytes": 1861189632,
+      "untiled_amplification": 2.0,
+      "untiled_named_bytes": 3722379264,
+      "weight_bytes_not_named_because_of_the_tile": 1861189632
+    },
+    {
+      "K": 3072,
+      "N": 3072,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 4,
+      "nodes_with_this_shape": 32,
+      "predicted_tiled_amplification": 2,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 2.0,
+      "tiled_groups_y": 2,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 9437184,
+      "untiled_amplification": 4.0,
+      "untiled_groups_y": 4,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 18874368
+    },
+    {
+      "K": 3072,
+      "N": 8192,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 4,
+      "nodes_with_this_shape": 64,
+      "predicted_tiled_amplification": 2,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 2.0,
+      "tiled_groups_y": 2,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 25165824,
+      "untiled_amplification": 4.0,
+      "untiled_groups_y": 4,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 50331648
+    },
+    {
+      "K": 3072,
+      "N": 9216,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 4,
+      "nodes_with_this_shape": 32,
+      "predicted_tiled_amplification": 2,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 2.0,
+      "tiled_groups_y": 2,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 28311552,
+      "untiled_amplification": 4.0,
+      "untiled_groups_y": 4,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 56623104
+    },
+    {
+      "K": 3072,
+      "N": 32064,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 4,
+      "nodes_with_this_shape": 1,
+      "predicted_tiled_amplification": 2,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 2.0,
+      "tiled_groups_y": 2,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 98500608,
+      "untiled_amplification": 4.0,
+      "untiled_groups_y": 4,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 197001216
+    },
+    {
+      "K": 8192,
+      "N": 3072,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 4,
+      "nodes_with_this_shape": 32,
+      "predicted_tiled_amplification": 2,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 2.0,
+      "tiled_groups_y": 2,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 25165824,
+      "untiled_amplification": 4.0,
+      "untiled_groups_y": 4,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 50331648
+    },
+    {
+      "K": null,
+      "N": "ALL SHAPES",
+      "m_total": 4,
+      "tiled_amplification": 2.0,
+      "tiled_named_bytes": 3722379264,
+      "untiled_amplification": 4.0,
+      "untiled_named_bytes": 7444758528,
+      "weight_bytes_not_named_because_of_the_tile": 3722379264
+    },
+    {
+      "K": 3072,
+      "N": 3072,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 5,
+      "nodes_with_this_shape": 32,
+      "predicted_tiled_amplification": 3,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 3.0,
+      "tiled_groups_y": 3,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 14155776,
+      "untiled_amplification": 5.0,
+      "untiled_groups_y": 5,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 23592960
+    },
+    {
+      "K": 3072,
+      "N": 8192,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 5,
+      "nodes_with_this_shape": 64,
+      "predicted_tiled_amplification": 3,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 3.0,
+      "tiled_groups_y": 3,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 37748736,
+      "untiled_amplification": 5.0,
+      "untiled_groups_y": 5,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 62914560
+    },
+    {
+      "K": 3072,
+      "N": 9216,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 5,
+      "nodes_with_this_shape": 32,
+      "predicted_tiled_amplification": 3,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 3.0,
+      "tiled_groups_y": 3,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 42467328,
+      "untiled_amplification": 5.0,
+      "untiled_groups_y": 5,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 70778880
+    },
+    {
+      "K": 3072,
+      "N": 32064,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 5,
+      "nodes_with_this_shape": 1,
+      "predicted_tiled_amplification": 3,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 3.0,
+      "tiled_groups_y": 3,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 147750912,
+      "untiled_amplification": 5.0,
+      "untiled_groups_y": 5,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 246251520
+    },
+    {
+      "K": 8192,
+      "N": 3072,
+      "bits": 4,
+      "block_size": 32,
+      "coverage_tiled": 1.0,
+      "coverage_untiled": 1.0,
+      "m_total": 5,
+      "nodes_with_this_shape": 32,
+      "predicted_tiled_amplification": 3,
+      "selected_cols": 16,
+      "selected_rows": 2,
+      "tiled_amplification": 3.0,
+      "tiled_groups_y": 3,
+      "tiled_load_widths_bytes": [
+        4
+      ],
+      "tiled_named_bytes": 37748736,
+      "untiled_amplification": 5.0,
+      "untiled_groups_y": 5,
+      "untiled_load_widths_bytes": [
+        16
+      ],
+      "untiled_named_bytes": 62914560
+    },
+    {
+      "K": null,
+      "N": "ALL SHAPES",
+      "m_total": 5,
+      "tiled_amplification": 3.0,
+      "tiled_named_bytes": 5583568896,
+      "untiled_amplification": 5.0,
+      "untiled_named_bytes": 9305948160,
+      "weight_bytes_not_named_because_of_the_tile": 3722379264
     }
   ],
   "denominator": {
@@ -174,6 +601,8 @@
     "words_named_by_more_than_one_workgroup": 0
   },
   "no_clock": "Every number here is a count of instructions or of bytes.",
+  "onnx_file": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu-2\\v2\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+  "onnx_sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
   "positive_controls": {
     "controls": [
       {
@@ -191,6 +620,7 @@
           "cols": 16,
           "coverage": 1.0,
           "distinct_bytes_touched": 4160,
+          "groups_y": 1,
           "has_zero_points": 0,
           "load_instructions": 288,
           "load_widths_bytes": [
@@ -200,9 +630,12 @@
             "width_16B": 288
           },
           "loads_per_blob": 1.1076923076923078,
+          "m_total": 1,
           "max_loads_naming_one_word": 15,
           "named_bytes": 4608,
           "packed": 1,
+          "row_tiles": 1,
+          "rows": 1,
           "wg": 32,
           "words_named_by_more_than_one_workgroup": 0,
           "workgroups": 9
@@ -227,6 +660,7 @@
           "cols": 16,
           "coverage": 1.0,
           "distinct_bytes_touched": 4096,
+          "groups_y": 1,
           "has_zero_points": 0,
           "load_instructions": 512,
           "load_widths_bytes": [
@@ -236,9 +670,12 @@
             "width_16B": 512
           },
           "loads_per_blob": 2.0,
+          "m_total": 1,
           "max_loads_naming_one_word": 2,
           "named_bytes": 8192,
           "packed": 1,
+          "row_tiles": 1,
+          "rows": 1,
           "wg": 32,
           "words_named_by_more_than_one_workgroup": 0,
           "workgroups": 8
@@ -248,7 +685,7 @@
         "positive": true,
         "predicted": "amplification == 2.0 on a shape whose amplification is 1.0 shipped",
         "rebuild_reproduces_ledger_digest": true,
-        "unmodified_source_rebuild_digest": "024521d53c2ef5bc"
+        "unmodified_source_rebuild_digest": "4262076a47c898ee"
       },
       {
         "control": "unpacked_path_changes_the_width_not_the_bytes",
@@ -263,17 +700,98 @@
         "unpacked_widths_bytes": [
           4
         ]
+      },
+      {
+        "control": "row_tile_removes_the_M_fold_weight_reread",
+        "detail": {
+          "tiled": {
+            "K": 3072,
+            "N": 256,
+            "amplification": 2.0,
+            "bits": 4,
+            "blob_bytes": 16,
+            "blob_bytes_total": 393216,
+            "block_size": 32,
+            "blocks_per_col": 96,
+            "cols": 16,
+            "coverage": 1.0,
+            "distinct_bytes_touched": 393216,
+            "groups_y": 2,
+            "has_zero_points": 0,
+            "load_instructions": 196608,
+            "load_widths_bytes": [
+              4
+            ],
+            "loads_by_width": {
+              "width_4B": 196608
+            },
+            "loads_per_blob": 8.0,
+            "m_total": 4,
+            "max_loads_naming_one_word": 2,
+            "named_bytes": 786432,
+            "packed": 1,
+            "row_tiles": 2,
+            "rows": 2,
+            "wg": 32,
+            "words_named_by_more_than_one_workgroup": 98304,
+            "workgroups": 32
+          },
+          "untiled": {
+            "K": 3072,
+            "N": 256,
+            "amplification": 4.0,
+            "bits": 4,
+            "blob_bytes": 16,
+            "blob_bytes_total": 393216,
+            "block_size": 32,
+            "blocks_per_col": 96,
+            "cols": 16,
+            "coverage": 1.0,
+            "distinct_bytes_touched": 393216,
+            "groups_y": 4,
+            "has_zero_points": 0,
+            "load_instructions": 98304,
+            "load_widths_bytes": [
+              16
+            ],
+            "loads_by_width": {
+              "width_16B": 98304
+            },
+            "loads_per_blob": 4.0,
+            "m_total": 4,
+            "max_loads_naming_one_word": 4,
+            "named_bytes": 1572864,
+            "packed": 1,
+            "row_tiles": 4,
+            "rows": 1,
+            "wg": 32,
+            "words_named_by_more_than_one_workgroup": 98304,
+            "workgroups": 64
+          }
+        },
+        "module": "the shipped module, at M=4 with QB_ROWS forced to 1 and then to 2",
+        "positive": true,
+        "predicted": "amplification 4.0 untiled -> 2.0 tiled; ceil(M / QB_ROWS) either way",
+        "tiled_amplification": 2.0,
+        "tiled_max_loads_naming_one_word": 2,
+        "untiled_amplification": 4.0,
+        "untiled_max_loads_naming_one_word": 4
       }
     ],
     "witnessed": true
   },
+  "prefill_m_values": [
+    2,
+    4,
+    5
+  ],
   "probe": "weight_reread_amplification_phi35_executed",
   "subject": {
     "digest_matches_ledger": true,
     "digest_source": "evidence/proof_ledger.jsonl, entries dispatching this stem",
-    "module_bytes": 20208,
+    "module_bytes": 26776,
     "module_path": "rust\\target\\release\\build\\onnxruntime-ep-vulkan-f44a364c58bb864b\\out\\spv\\q_gemv_matmul_nbits_f16.spv",
-    "shader_digest": "024521d53c2ef5bc",
+    "shader_digest": "4262076a47c898ee",
     "shader_stem": "q_gemv_matmul_nbits_f16",
     "spec_constants": "[local_size_x, bits, block_size, has_zp, cols, packed], resolved per node by the ops::quant mirrors below"
   }

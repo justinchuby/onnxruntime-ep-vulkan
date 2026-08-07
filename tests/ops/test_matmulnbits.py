@@ -358,11 +358,124 @@ def test_matmulnbits_form_matrix_fp32(vulkan_device_available, bits, block_size,
 
 @pytest.mark.parametrize("rows", [1, 2, 7, 32])
 def test_matmulnbits_prefill_rows_fp32(vulkan_device_available, rows):
-    """M > 1 is prefill. The GEMV runs one workgroup per output element, so it is correct for
-    every M and merely unoptimal — this asserts the correctness half of that claim."""
+    """M > 1 is prefill. Since issue #7 the GEMV tiles `QB_ROWS` activation rows per workgroup;
+    this asserts that tiling changed only how much weight traffic it costs, not the answer."""
     model_bytes, feeds = m.make_matmulnbits_model(K=128, N=48, rows=rows)
     m.assert_vulkan_claims(model_bytes, feeds)
     m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP32)
+
+
+# The row tile (issue #7). `ops::quant::gemv_tile` picks `QB_ROWS` in {1, 2, 4}; every M that is
+# not a multiple of it leaves a partial tile whose surplus rows the shader redirects onto row 0
+# and must then decline to store. A tile is wrong at its edges or nowhere, so the parametrisation
+# is the edges: one below, one at, and one above each tile height, plus the M values that make a
+# tail in a *multi*-tile dispatch (5, 9). `rows=1` is in the list because "decode still works"
+# stops being obvious the moment the kernel has two arms.
+_TILE_EDGE_ROWS = [1, 2, 3, 4, 5, 8, 9]
+
+
+@pytest.mark.parametrize("rows", _TILE_EDGE_ROWS)
+@pytest.mark.parametrize("with_zero_points", [True, False])
+def test_matmulnbits_row_tile_boundaries_fp32(vulkan_device_available, rows, with_zero_points):
+    """Every partial-tile M, against the CPU EP, with and without zero points.
+
+    The zero-point axis is crossed with the row axis deliberately: the 2026-07-30 all-zero-logit
+    defect was a kernel proven without zero points executing a graph that had them, and the row
+    tile touches the same inner loop that applies them.
+    """
+    model_bytes, feeds = m.make_matmulnbits_model(
+        K=256, N=64, rows=rows, with_zero_points=with_zero_points
+    )
+    m.assert_vulkan_claims(model_bytes, feeds)
+    m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP32)
+
+
+@pytest.mark.parametrize("rows", [1, 3, 4, 5])
+@pytest.mark.parametrize("n", [33, 47, 65])
+def test_matmulnbits_row_tile_meets_odd_n_fp32(vulkan_device_available, rows, n):
+    """The row tile and the odd-N paired store, together.
+
+    `q_gemv.comp` writes fp16 outputs two-to-a-word, so a tile whose first output column is odd
+    has to do a read-modify-write; with a row tile that parity is recomputed *per row*, because
+    `base = row * N + col0` changes parity with the row whenever `N` is odd. An N that is odd
+    (33, 47, 65) is exactly what makes those two rows disagree, and nothing before this test
+    crossed the two axes.
+    """
+    model_bytes, feeds = m.make_matmulnbits_model(K=128, N=n, rows=rows)
+    m.assert_vulkan_claims(model_bytes, feeds)
+    m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP32)
+
+
+@pytest.mark.parametrize("rows", [2, 5])
+@pytest.mark.parametrize("bits", [4, 8])
+@pytest.mark.parametrize("block_size", [16, 32, 64])
+def test_matmulnbits_row_tile_across_the_form_matrix_fp32(
+    vulkan_device_available, rows, bits, block_size
+):
+    """The tiled arm has its own 4-bit and 8-bit unpack paths; both must survive a partial tile.
+
+    `test_matmulnbits_form_matrix_fp32` walks the same forms at `M = 1`, which since issue #7
+    only exercises the *decode* arm. Without this the 8-bit tiled path and the non-16-byte block
+    sizes would have no coverage at all in the arm that actually changed.
+    """
+    model_bytes, feeds = m.make_matmulnbits_model(
+        K=256, N=64, rows=rows, bits=bits, block_size=block_size
+    )
+    m.assert_vulkan_claims(model_bytes, feeds)
+    m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP32)
+
+
+@pytest.mark.skipif(
+    not _ort_version_ge(1, 28),
+    reason="fp16 MatMulNBits needs an ORT >= 1.28 oracle (see the module docstring).",
+)
+@pytest.mark.parametrize("rows", _TILE_EDGE_ROWS)
+def test_matmulnbits_row_tile_boundaries_fp16(vulkan_device_available, rows):
+    """The same partial-tile M values in the dtype Phi-3.5 actually uses.
+
+    fp16 is not a variation on fp32 here: it is the dtype whose two-outputs-per-word store makes
+    the per-row parity check necessary in the first place, and the one all 161 real nodes carry.
+    """
+    model_bytes, feeds = m.make_matmulnbits_model(
+        K=256, N=64, rows=rows, activation_dtype=ir.DataType.FLOAT16
+    )
+    cpu_out = m.run_cpu(model_bytes, feeds)[0]
+    assert not np.any(np.isnan(cpu_out)) and not np.any(np.isinf(cpu_out)), (
+        "CPU EP oracle produced NaN/Inf for fp16 MatMulNBits — the oracle is not usable."
+    )
+    m.assert_vulkan_claims(model_bytes, feeds)
+    m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP16)
+
+
+@pytest.mark.skipif(
+    not _ort_version_ge(1, 28),
+    reason="fp16 MatMulNBits needs an ORT >= 1.28 oracle (see the module docstring).",
+)
+def test_matmulnbits_a_tiled_prefill_is_not_trivially_equal(vulkan_device_available):
+    """NEGATIVE CONTROL: the row tile must make the rows differ, not agree.
+
+    Every test above compares Vulkan to the CPU EP. All of them would still pass if the tiled
+    kernel wrote row 0's answer into all `QB_ROWS` rows *and* the oracle did the same — and more
+    plausibly, they would pass on a shape where the rows happen to be near-identical, which is
+    what random inputs of the same distribution tend to give. This asserts the shape has the
+    property the other tests need: distinct rows, distinct answers.
+
+    It also asserts the thing a broken row redirect would break most visibly. The shader points
+    out-of-range rows at row 0; if that redirect leaked into an in-range row, the duplicated rows
+    would be adjacent and this check would see it.
+    """
+    rows = 5
+    model_bytes, feeds = m.make_matmulnbits_model(
+        K=256, N=64, rows=rows, activation_dtype=ir.DataType.FLOAT16
+    )
+    cpu_out = np.asarray(m.run_cpu(model_bytes, feeds)[0]).reshape(rows, -1)
+    for i in range(rows - 1):
+        assert not np.array_equal(cpu_out[i], cpu_out[i + 1]), (
+            f"rows {i} and {i + 1} of the oracle are identical, so this shape cannot "
+            "distinguish a correct row tile from one that broadcasts a single row"
+        )
+    m.assert_vulkan_claims(model_bytes, feeds)
+    m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP16)
 
 
 @pytest.mark.skipif(

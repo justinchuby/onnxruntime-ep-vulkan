@@ -129,10 +129,17 @@ def _binary_case(op_type: str, shape: "tuple[int, ...]", *, note: str = "") -> C
     )
 
 
-def _matmulnbits_case(K: int, N: int, *, block_size: int = 32, anchor: bool = False) -> Case:
-    model, feeds = _models.make_matmulnbits_model(K, N, block_size=block_size)
+def _matmulnbits_case(
+    K: int, N: int, *, block_size: int = 32, anchor: bool = False, rows: int = 1
+) -> Case:
+    model, feeds = _models.make_matmulnbits_model(K, N, block_size=block_size, rows=rows)
+    # M=1 is decode and keeps its historical name so its series stays comparable across the
+    # whole results archive; M>1 is prefill and is named separately (issue #7).
+    name = f"matmulnbits_q4_b{block_size}_K{K}_N{N}"
+    if rows != 1:
+        name += f"_M{rows}"
     return Case(
-        name=f"matmulnbits_q4_b{block_size}_K{K}_N{N}",
+        name=name,
         group="gemm",
         model=model,
         feeds=feeds,
@@ -140,15 +147,20 @@ def _matmulnbits_case(K: int, N: int, *, block_size: int = 32, anchor: bool = Fa
             "OQ-12 anchor: the ≥1.5x-over-CPU bar is measured here (DESIGN.md §11.1). "
             "accuracy_level pinned to 1 by the builder."
             if anchor
-            else "accuracy_level pinned to 1 by the builder (Trinity's oracle-pinning rule)."
+            else (
+                "prefill: M rows share one pass over the packed weights (issue #7). "
+                "accuracy_level pinned to 1 by the builder."
+                if rows != 1
+                else "accuracy_level pinned to 1 by the builder (Trinity's oracle-pinning rule)."
+            )
         ),
-        # [1,K] x [K,N] GEMV: one multiply-add per weight element.
-        flops=2 * K * N,
+        # [M,K] x [K,N] GEMM: one multiply-add per weight element per row.
+        flops=2 * K * N * rows,
         # Weights are initializers and are uploaded once, not per inference; only the
         # activation in and the result out cross the boundary each run.
-        boundary_bytes=(K + N) * 4,
+        boundary_bytes=(K + N) * 4 * rows,
         oq12_anchor=anchor,
-        tags=["gemm", "quantized"],
+        tags=["gemm", "quantized"] + (["prefill"] if rows != 1 else ["decode"]),
     )
 
 
@@ -173,6 +185,14 @@ def build_cases(groups: "list[str] | None" = None) -> "list[Case]":
     # projections actually use; the smaller pair is where dispatch overhead still shows.
     cases.append(_matmulnbits_case(1024, 1024))
     cases.append(_matmulnbits_case(4096, 4096, anchor=True))
+
+    # Prefill (issue #7). The row tile is a *weight-traffic* change, so the only way to see it in
+    # wall-clock is to compare the same shape at several M: an untiled GEMV costs M passes over
+    # the packed weights, a tiled one costs ceil(M/QB_ROWS). M=1 above is the control that must
+    # not regress; these are the rows that should get cheaper per row. M=5 is here and not just
+    # 2 and 4 because a partial tile is where a row tile is most likely to be wrong or slow.
+    for m_rows in (2, 4, 5, 8):
+        cases.append(_matmulnbits_case(4096, 4096, rows=m_rows))
 
     if groups:
         cases = [c for c in cases if c.group in groups]
