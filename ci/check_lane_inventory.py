@@ -95,6 +95,7 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     # still reporting a classified step.
     ("Proof-ledger census negative control", "hostfree.ledger_census_negative_control"),
     ("Proof-ledger census", "hostfree.ledger_census"),
+    ("Ledger-loss probe", "hostfree.ledger_loss_probe"),
     ("Open reds", "hostfree.open_reds"),
     # Same ordering hazard again: "GH-invocation auth negative control" does not
     # substring "GH-invocation auth screen" (they diverge at "negative control" vs.
@@ -124,6 +125,10 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Contention gate", "build.contention_gate"),
     ("Op-correctness step asserted something", "device.op_correctness_productivity"),
     ("No-ICD fallback step asserted something", "device.no_icd_step_productivity"),
+    (
+        "Windows-namespace destination-policy regression",
+        "device.ledger_loss_windows_namespace_regression",
+    ),
     ("Tautological-assertion screen", "hostfree.tautological_assertions"),
     ("Tick-conversion screen negative control", "hostfree.tick_screen_negative_control"),
     ("Tick-conversion screen", "hostfree.tick_conversion_screen"),
