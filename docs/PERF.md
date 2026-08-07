@@ -58,6 +58,43 @@ So our span vocabulary is different, and the difference is the whole point:
 | `fence_wait` | Waiting for the submission's fence. | An **upper bound** on GPU execution, inflated by queue contention, other clients' work, and driver scheduling. Not kernel time. |
 | `readback` | Device→host transfer of outputs. | Host time plus a real transfer. Bytes + GiB/s counters. |
 
+Those seven are *phases* (`cat == "ep.phase"`), plus three sub-`record` phases — `desc_alloc`,
+`pipeline_lookup`, `cmd_upload` — that are nested inside `record` and therefore must never be
+added to it. Ten in total; `Phase::ALL` is the list of record, and a Rust test asserts its length.
+
+**Two structural spans (`cat == "ep"`) are not phases and never enter a total:**
+
+| Span | Brackets | Why it exists |
+|---|---|---|
+| `vulkan.compute_call` | The whole ORT `Compute` callback, opened first thing in `compute_impl`. | It is the only span that can tell you whether the phases account for the callback. Without it the reduction can only see its own inner bracket and cannot notice work that happens on either side of it. |
+| `vulkan.subgraph` | The `dispatch_ort` call inside `Compute`. | The bracket every phase lies inside. This is the denominator for "share of time inside `Compute`" throughout this document. |
+
+The distinction is load-bearing, and was learned the expensive way. In the 2026-08-07 CUDA
+competition work the gap between the two brackets measured a **26.976 ms warm-call median** —
+larger than the 13.3 ms of device time the same trace saw — and a `bind_check` *phase* was added
+outside `vulkan.subgraph` to try to explain it. It explained 0.073 ms of it (0.27%), and being
+the first phase outside the subgraph bracket it broke `phase_containment`'s standing contract
+that every phase span lies inside its `vulkan.subgraph` span. That phase has been removed. The
+outer bracket stays, as a *structural* span: it exposes the region without claiming to explain
+it, and the phase tree is untouched.
+
+The region itself turned out not to be the EP at all. Re-measured on 2026-08-07 with the
+counters-file dump moved out of the timed region, the same term is **0.053 ms** — the 27 ms was
+the benchmark harness's own counters dump running inside every timed inference, which is exactly
+what `bench/test_cuda_competition.py::test_counters_dump_is_not_left_inside_the_timed_region`
+now forbids. An instrument that can see a region is worth having even when the answer is "this
+was never ours".
+
+**No emitted name may be a prefix of another.** Reducers match span names, and Python's
+`str.startswith` made `vulkan.compute` silently capture `vulkan.compute_region_...`; the
+`RecordPath` instants were likewise renamed from `vulkan.record_path[...]` to `vulkan.path[...]`
+because `vulkan.record` is a phase. Both the Rust test `no_trace_name_is_a_prefix_of_another`
+and `bench/test_trace_vocabulary.py` enforce it now, in both languages.
+
+The vocabulary is declared once, in the module header of `rust/src/trace.rs`, and
+`bench/trace_vocabulary.py` parses it so that `bench/phases.py` and `bench/cuda_profile.py` can
+be checked against it rather than trusted to have been updated.
+
 Two further span-adjacent facts we record because they are the ones that mislead people:
 
 * **`RecordPath`** — `first_record` / `replay` / `rerecord`. This is our analogue of MLX's cache
@@ -1255,7 +1292,8 @@ Per R9: *confidence scales with agreeing instruments; evidence scales only with 
 | every island executed on every inference | `dispatch_accounting`: `compute_calls == islands × inferences`, **integer equality, no tolerance**. Caught a subgraph never invoked — which raises nothing and leaves `compute_failures` at 0. |
 | every dispatch produced GPU time | `gpu_span_accounting`: `sum(subgraph.nodes) == len(gpu_spans) == dispatches_executed`, integer equality. 5457 on both. |
 | the row names the device that ran | `devices.device_identity_check` — trace's own `timestampPeriod`/`validBits` vs the label. Caught the entire table naming the wrong GPU. |
-| the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span; `unattributed_in_compute_ms` reported, never folded away. |
+| the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span (the **inner** bracket, around `dispatch_ort`, not the outer `vulkan.compute_call`); `unattributed_in_compute_ms` reported, never folded away. |
+| the callback is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` and reports the region *outside* `vulkan.subgraph` but inside the callback as its own term. Measured, and explicitly not attributed. It read 26.976 ms before the harness's counters dump was moved out of the timed region and 0.053 ms after. |
 | GPU time is not over-scaled | `gpu_containment` — per-submission GPU busy ≤ `submit + fence_wait`, **ordinal attribution**, immune to the 314 ms anchor error. |
 | the 52× conversion is applied | `timestamp_conversion_integrality` — `gpu_ns ÷ period` must be a whole integer. **Decisive only where period ≠ 1.0**; reports `VACUOUS`, never "pass", on NVIDIA and lavapipe. `bench/timestamp_audit.py` exits non-zero when no local device can falsify it. |
 | valid bits are masked | `valid_bits_applied` — green on both. |

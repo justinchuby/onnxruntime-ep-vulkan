@@ -1,0 +1,302 @@
+{
+  "schema": "cuda_competition/1",
+  "started_utc": "2026-08-07T14:47:36Z",
+  "device_facts": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 143 Stepping 8, GenuineIntel",
+    "cpu_count": 24,
+    "nvidia": {
+      "producer": "nvidia-smi",
+      "driver_version": "573.44",
+      "cuda_driver_version": "12.8",
+      "device_names": [
+        "NVIDIA RTX A1000"
+      ],
+      "device_uuids": [
+        "GPU-aadf33d4-d118-155f-cc60-c22b5c352463"
+      ],
+      "error": null
+    }
+  },
+  "iters": 8,
+  "warmup": 3,
+  "seed": 20260807,
+  "repeats": 1,
+  "arms": [
+    "cuda",
+    "cpu_cuda_rt"
+  ],
+  "fallback_split_threshold": 0.05,
+  "results": [
+    {
+      "arm": "cuda",
+      "workload": "mobilenetv2_b1",
+      "model_key": "mobilenetv2_12",
+      "verdict": "ADMISSIBLE",
+      "provider_requested": "CUDAExecutionProvider",
+      "providers_held": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "partition": {
+        "CUDAExecutionProvider": 101,
+        "CPUExecutionProvider": 3
+      },
+      "executed_nodes": 104,
+      "cpu_fallback_nodes": 3,
+      "cpu_fallback_fraction": 0.028846153846153848,
+      "fallback_node_names": [
+        "Concat_102",
+        "Gather_100",
+        "Unsqueeze_101"
+      ],
+      "vulkan_claimed_nodes": null,
+      "vulkan_dispatches": null,
+      "warmup_ms": [
+        4.9023000174202025,
+        3.4549999982118607,
+        3.1766000029165298
+      ],
+      "steady_ms": [
+        3.3079999848268926,
+        3.2118000090122223,
+        3.2838000042829663,
+        3.349500009790063,
+        3.160099993692711,
+        3.1267999729607254,
+        3.136900020763278,
+        2.998500014655292
+      ],
+      "session_create_ms": 198.50130000850186,
+      "first_run_ms": 214.84050000435673,
+      "median_ms": 3.1859500013524666,
+      "p05_ms": 3.0434050000621937,
+      "p95_ms": 3.3349750010529533,
+      "rsd_pct": 3.6107560763630273,
+      "tokens_per_s": 313.87812099232264,
+      "ort_version": "1.26.0",
+      "ort_build_cuda": null,
+      "python": "3.12.10",
+      "feed_digest": "dfeab60c90d7654bfdfc57a623a88bb65eaca0e5643c5d104d330958b3b52a1c",
+      "model_bundle_sha256": "460304ea1b9a5a762bdbdcd4ce64020edf6d28217f442219b758295399f9d57f",
+      "device_identity": {},
+      "peak_bytes": null,
+      "equivalence": {},
+      "refusals": [],
+      "instrument_errors": [],
+      "outputs_manifest": [
+        {
+          "name": "output",
+          "dtype": "float32",
+          "shape": [
+            1,
+            1000
+          ],
+          "file": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-69\\bench\\results\\_cuda69\\scratch\\rep0\\outputs_cuda_mobilenetv2_b1\\out0.npy"
+        }
+      ],
+      "partition_detail": {
+        "CUDAExecutionProvider": {
+          "Conv": 624,
+          "Clip": 420,
+          "Add": 120,
+          "Shape": 12,
+          "GlobalAveragePool": 12,
+          "Reshape": 12,
+          "Gemm": 12
+        },
+        "CPUExecutionProvider": {
+          "Gather": 12,
+          "Unsqueeze": 12,
+          "Concat": 12
+        }
+      },
+      "worker_returncode": 0,
+      "outputs_dir": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-69\\bench\\results\\_cuda69\\scratch\\rep0\\outputs_cuda_mobilenetv2_b1",
+      "repeat": 0
+    },
+    {
+      "arm": "cpu_cuda_rt",
+      "workload": "mobilenetv2_b1",
+      "model_key": "mobilenetv2_12",
+      "verdict": "ADMISSIBLE",
+      "provider_requested": "CPUExecutionProvider",
+      "providers_held": [
+        "CPUExecutionProvider"
+      ],
+      "partition": {
+        "CPUExecutionProvider": 61
+      },
+      "executed_nodes": 61,
+      "cpu_fallback_nodes": 0,
+      "cpu_fallback_fraction": 0.0,
+      "fallback_node_names": [
+        "317_nchwc",
+        "320_nchwc",
+        "325_nchwc",
+        "328_nchwc",
+        "333_nchwc",
+        "336_nchwc",
+        "342_nchwc",
+        "345_nchwc",
+        "350_nchwc",
+        "353_nchwc",
+        "359_nchwc",
+        "362_nchwc",
+        "368_nchwc",
+        "371_nchwc",
+        "376_nchwc",
+        "379_nchwc",
+        "385_nchwc",
+        "388_nchwc",
+        "394_nchwc",
+        "397_nchwc",
+        "403_nchwc",
+        "406_nchwc",
+        "411_nchwc",
+        "414_nchwc",
+        "420_nchwc",
+        "423_nchwc",
+        "429_nchwc",
+        "432_nchwc",
+        "437_nchwc",
+        "440_nchwc",
+        "446_nchwc",
+        "449_nchwc",
+        "455_nchwc",
+        "458_nchwc",
+        "463_nchwc",
+        "464_nchwc",
+        "480_nchwc",
+        "489_nchwc",
+        "498_nchwc",
+        "507_nchwc",
+        "516_nchwc",
+        "525_nchwc",
+        "534_nchwc",
+        "543_nchwc",
+        "552_nchwc",
+        "561_nchwc",
+        "570_nchwc",
+        "579_nchwc",
+        "588_nchwc",
+        "597_nchwc",
+        "606_nchwc",
+        "615_nchwc",
+        "624_nchwc",
+        "Concat_102",
+        "Gather_100",
+        "Gemm_104",
+        "ReorderOutput",
+        "ReorderOutput_token_106",
+        "Reshape_103",
+        "Shape_98",
+        "Unsqueeze_101"
+      ],
+      "vulkan_claimed_nodes": null,
+      "vulkan_dispatches": null,
+      "warmup_ms": [
+        4.392299975734204,
+        3.3540000149514526,
+        2.8546999965328723
+      ],
+      "steady_ms": [
+        2.6421000075060874,
+        2.60470001376234,
+        2.6507000147830695,
+        2.6897999923676252,
+        2.6222000014968216,
+        2.597000013338402,
+        2.667900000233203,
+        3.125999995972961
+      ],
+      "session_create_ms": 53.45680000027642,
+      "first_run_ms": 6.1886000039521605,
+      "median_ms": 2.6464000111445785,
+      "p05_ms": 2.5996950134867802,
+      "p95_ms": 2.973329994711093,
+      "rsd_pct": 6.609088989816803,
+      "tokens_per_s": 377.8718242853604,
+      "ort_version": "1.26.0",
+      "ort_build_cuda": null,
+      "python": "3.12.10",
+      "feed_digest": "dfeab60c90d7654bfdfc57a623a88bb65eaca0e5643c5d104d330958b3b52a1c",
+      "model_bundle_sha256": "460304ea1b9a5a762bdbdcd4ce64020edf6d28217f442219b758295399f9d57f",
+      "device_identity": {},
+      "peak_bytes": null,
+      "equivalence": {},
+      "refusals": [],
+      "instrument_errors": [],
+      "outputs_manifest": [
+        {
+          "name": "output",
+          "dtype": "float32",
+          "shape": [
+            1,
+            1000
+          ],
+          "file": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-69\\bench\\results\\_cuda69\\scratch\\rep0\\outputs_cpu_cuda_rt_mobilenetv2_b1\\out0.npy"
+        }
+      ],
+      "partition_detail": {
+        "CPUExecutionProvider": {
+          "Conv": 624,
+          "GlobalAveragePool": 12,
+          "ReorderOutput": 24,
+          "Shape": 12,
+          "Gather": 12,
+          "Unsqueeze": 12,
+          "Concat": 12,
+          "Reshape": 12,
+          "Gemm": 12
+        }
+      },
+      "worker_returncode": 0,
+      "outputs_dir": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-69\\bench\\results\\_cuda69\\scratch\\rep0\\outputs_cpu_cuda_rt_mobilenetv2_b1",
+      "repeat": 0
+    }
+  ],
+  "equivalence": {
+    "mobilenetv2_b1": {
+      "reference_arm": "cpu_host",
+      "arms": {},
+      "detail": "reference arm cpu_host produced no outputs; equivalence is UNMEASURED, not passing"
+    }
+  },
+  "comparisons": [
+    {
+      "workload": "mobilenetv2_b1",
+      "family": "vision",
+      "seq_len": 1,
+      "past_len": 0,
+      "n_vulkan": 0,
+      "n_cuda": 8,
+      "verdict": "UNMEASURED",
+      "detail": "no admissible samples for vulkan; a missing arm is not a losing arm and no ratio is quotable"
+    }
+  ],
+  "models": {
+    "mobilenetv2_12": {
+      "key": "mobilenetv2_12",
+      "status": "MODEL_OK",
+      "path": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\bench-models\\mobilenetv2_12\\mobilenetv2-12.onnx",
+      "files": [
+        {
+          "name": "mobilenetv2-12.onnx",
+          "path": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\bench-models\\mobilenetv2_12\\mobilenetv2-12.onnx",
+          "bytes": 13964571,
+          "sha256": "c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5",
+          "url": "https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-12.onnx"
+        }
+      ],
+      "bundle_sha256": "460304ea1b9a5a762bdbdcd4ce64020edf6d28217f442219b758295399f9d57f",
+      "total_bytes": 13964571,
+      "license_id": "Apache-2.0",
+      "license_url": "https://github.com/onnx/models/blob/main/LICENSE",
+      "description": "MobileNetV2 opset 12, float32, ONNX Model Zoo validated vision set",
+      "producer_note": "ai.onnx opset 12, Conv/BatchNormalization/Clip/GlobalAveragePool",
+      "source": "url",
+      "detail": "cached under C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\bench-models\\mobilenetv2_12"
+    }
+  }
+}
