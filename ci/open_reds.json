@@ -166,7 +166,7 @@
       "owner": "tank",
       "opened": "2026-08-07",
       "review_by": "2026-11-01",
-      "reason": "The control that keeps the gate falsifiable: 9 arms, 2 STRUCTURAL / 4 PLANTED / 3 REPLAYED, ratio printed. Its contrast arm is the finding that made the wiring worth doing — simulate_squash_rewitness.py built its squash with `git checkout <pr> -- .`, an OVERLAY, which silently drops the base's edit to a file both sides changed and is therefore GREEN on the exact defect the simulation exists for. Wiring it unrepaired would have produced a green step on issue #60. The arm keeps that printed rather than remembered.",
+      "reason": "The control that keeps the gate falsifiable: 10 arms, 2 STRUCTURAL / 4 PLANTED / 4 REPLAYED, ratio printed. Its contrast arm is the finding that made the wiring worth doing — simulate_squash_rewitness.py built its squash with `git checkout <pr> -- .`, an OVERLAY, which silently drops the base's edit to a file both sides changed and is therefore GREEN on the exact defect the simulation exists for. Wiring it unrepaired would have produced a green step on issue #60. The arm keeps that printed rather than remembered.",
       "closes_when": "n/a — this is expected green and must stay green.",
       "timeout": 1200
     },

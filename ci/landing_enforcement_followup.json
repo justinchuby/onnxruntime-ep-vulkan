@@ -1,0 +1,98 @@
+{
+ "_why": "Issue #60 asks for a screen that stops a landing-dependent verdict from arriving on `main` after the merge button. `ci/check_landing_simulation.py` is that screen and it runs on every pull request — but it is ADVISORY. This file is the durable record of what advisory means here, what would make it enforcement, why that is not switched on today, and how anybody verifies it later without having to remember this conversation. It exists because the previous revision of this change stated a residual SMALLER than the one the repository has, in three places, and the standard the section it documents sets is that a ruling which does not name its residual is the thing.",
+
+ "issue": 60,
+ "issue_state": "open",
+ "issue_stays_open_because": "The screen narrows the merge window; it does not close it. #60 closes when the check is REQUIRED and STRICT, not when it exists. The pull request that added it therefore says `Refs #60`, not `Closes #60`.",
+
+ "enforced_today": false,
+ "what_advisory_means_exactly": [
+  "The step runs on `pull_request` and reports a colour. Nothing consumes that colour as a merge precondition.",
+  "There are no required status checks on this repository at all, so there is no check for GitHub to invalidate when the base moves, and `strict`/up-to-date has nothing to apply to.",
+  "The base can therefore move AFTER the landing check goes green and BEFORE the merge button is pressed, and the merge is still permitted. That interval is the exact residual, unchanged by this screen existing.",
+  "The failure mode remains fail-closed rather than fail-open: an un-screened collision produces a RED on `main` in the `push` job. It is a red in the wrong place, never a green over an undeclared move."
+ ],
+
+ "observed": {
+  "date": "2026-08-07",
+  "how": "GitHub REST API, read directly. A claim about repository settings is verified against the API, never against the belief about it.",
+  "branch_protection": "404 not protected",
+  "branch_protection_endpoint": "repos/justinchuby/onnxruntime-ep-vulkan/branches/main/protection",
+  "rulesets": [
+   {
+    "id": 20479180,
+    "name": "main",
+    "target": "branch",
+    "enforcement": "active",
+    "conditions": "~DEFAULT_BRANCH",
+    "rules": ["deletion", "non_fast_forward"]
+   }
+  ],
+  "required_status_checks": [],
+  "strict_required_status_checks_policy": null,
+  "merge_queue": null
+ },
+
+ "ruleset_id": 20479180,
+ "blocked_by": "main_is_green",
+ "blocked_by_owner": "morpheus",
+ "blocked_by_reason": "`main` is red — run 31169478658 at 3e38ae3 fails 3 of 4 jobs (Lane-check self-test, Build + op tests (Linux, lavapipe), Build + op tests (Windows, lavapipe via mesa-dist-win)). Adding `required_status_checks` with `strict_required_status_checks_policy: true` TODAY would make every pull request unmergeable, including the ones that close those reds. That is stopping the workflow, not hardening it. The enforcement is sequenced behind the condition that makes it satisfiable, and the sequence has an owner.",
+
+ "owner": "morpheus",
+ "revision_owner": "link",
+ "review_by": "2026-11-01",
+
+ "checklist": [
+  {
+   "id": "1-main-green",
+   "step": "`main` is genuinely green: all four jobs of the CI workflow succeed on a `push: branches: [main]` run, not a re-run with jobs skipped.",
+   "verify": "`gh api repos/justinchuby/onnxruntime-ep-vulkan/actions/runs?branch=main&per_page=1` then list that run's jobs; every conclusion is `success`. Compare the job NAMES against the current workflow so a job that stopped existing is not read as a job that passed.",
+   "blocked_by": "issue #24",
+   "done": false
+  },
+  {
+   "id": "2-open-red-closed",
+   "step": "The `main_is_green` entry in `ci/open_reds.json` is closed by its owner, on the evidence from step 1 rather than on a green screenshot.",
+   "verify": "`python ci/check_open_reds.py` reports `main_is_green` absent from the open set; the closing commit cites the run id.",
+   "blocked_by": "1-main-green",
+   "done": false
+  },
+  {
+   "id": "3-required-checks",
+   "step": "Ruleset 20479180 gains a `required_status_checks` rule naming `Lane-check self-test (two polarities, no GPU)` — the job the landing simulation runs in — with `strict_required_status_checks_policy: true` (\"require branches to be up to date before merging\").",
+   "verify": "`gh api repos/justinchuby/onnxruntime-ep-vulkan/rulesets/20479180` shows the rule, the context name matches the workflow job name character for character, and `strict_required_status_checks_policy` is `true`.",
+   "blocked_by": "2-open-red-closed",
+   "done": false
+  },
+  {
+   "id": "4-base-movement-invalidates",
+   "step": "Base movement demonstrably invalidates a green landing check and forces it to re-run, rather than leaving a stale green in place.",
+   "verify": "On a scratch pull request: let the lane go green, land an unrelated commit on the base, and confirm GitHub marks the pull request out of date and BLOCKS the merge until the landing gate has re-run against the new base. Record the pull request number and both run ids here. A green that was not re-computed against the base being merged into is the residual wearing a tick.",
+   "blocked_by": "3-required-checks",
+   "done": false
+  },
+  {
+   "id": "5-close-60",
+   "step": "Close issue #60, citing steps 3 and 4, and delete the `what_advisory_means_exactly` claim from `docs/DESIGN.md` §8.9.19 Part 5b in the same change.",
+   "verify": "The issue's closing comment links the ruleset diff and the step-4 evidence. `ci/test_lane_checks.py::test_no_artifact_claims_the_landing_gate_is_enforced` is updated in the same commit — it asserts the CURRENT state, so it must move when the state does.",
+   "blocked_by": "4-base-movement-invalidates",
+   "done": false
+  }
+ ],
+
+ "investigated_and_rejected_for_now": [
+  {
+   "option": "A targeted lightweight required check that does not deadlock the failing jobs",
+   "finding": "GitHub rulesets can require an arbitrary status-check CONTEXT, and a context that no workflow currently produces simply never arrives — so a pull request requiring it is unmergeable, which is the deadlock again in a different shape. Requiring only the landing-simulation step is not expressible either: required contexts are per-JOB (the check-run name), not per-step, and the landing simulation runs inside `Lane-check self-test (two polarities, no GPU)`, which is one of the three currently-failing jobs. Splitting it into its own job to make it separately requirable is a real option and is genuinely cheap (19 s on the hosted lane) — but it changes the lane's job topology, and doing that as a side effect of a review round, on the default branch of a repository with 28 active worktrees, is the kind of change that should be its own reviewed artifact rather than a silent one.",
+   "decided": "Not now. Recorded so the next person does not have to rediscover that the per-step/per-job distinction is what blocks the cheap version.",
+   "would_need": "A separate pull request that (a) lifts the landing gate and its negative control into their own job, (b) proves that job green on `main`, and only then (c) requires that one context with `strict: true`. That sequence hardens without deadlocking, and it can precede step 1."
+  },
+  {
+   "option": "`strict_required_status_checks_policy: true` with an empty required-context set",
+   "finding": "Undocumented behaviour. Not discovered by experimenting on the live default branch of this repository.",
+   "decided": "Rejected."
+  }
+ ],
+
+ "do_not": "Do not change repository protection settings as an unreviewed side effect of a code change. Every entry under `observed` is checkable; check it, record the date, and sequence the change behind a condition that makes it satisfiable."
+}

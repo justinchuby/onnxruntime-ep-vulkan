@@ -428,15 +428,30 @@ jobs:
         # above. A depth-limited fetch marks its own graft boundary even inside this job's
         # `fetch-depth: 0` checkout, and both the landing construction and the census
         # denominator are truncated at it.
+        #
+        # THE HEAD IS RESOLVED ONCE AND FORWARDED. On a `pull_request` event this checkout is
+        # `refs/pull/N/merge`, whose FIRST parent is the base, so `git rev-parse HEAD` makes
+        # the merge base equal the base and every merge-window measurement vacuous. The gate
+        # resolves the real head (`HEAD^2` on that shape) and passes it to the engine as
+        # `--head`; both then measure the same branch.
+        # NO `${{ }}` IN THE `run:` BLOCK. `github.base_ref` is a branch name chosen by
+        # whoever opened the pull request, and `${{ }}` is a TEXT substitution performed
+        # before the shell ever sees the script — so a ref name carrying shell metacharacters
+        # would be pasted into the command line as code, not as data. Git ref names permit
+        # `;`, `$`, `` ` `` and `&`. Passed through `env:` instead and expanded by the shell
+        # from the environment, quoted, where it can only ever be one argument. The same rule
+        # is why `$GITHUB_STEP_SUMMARY` is read from the environment and not interpolated.
+        env:
+          LANDING_BASE_REF: ${{ github.base_ref || 'main' }}
         run: |
-          git fetch --no-tags origin ${{ github.base_ref || 'main' }}
+          git fetch --no-tags origin "$LANDING_BASE_REF"
           python ci/check_landing_simulation.py \
             --base FETCH_HEAD \
             --json bench/results/landing-simulation.json \
             --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Landing-simulation negative control (both polarities, the real q_gemv collision)
-        # 9 arms, 2 STRUCTURAL / 4 PLANTED / 3 REPLAYED, ratio printed. The step above is
+        # 10 arms, 2 STRUCTURAL / 4 PLANTED / 4 REPLAYED, ratio printed. The step above is
         # gated, so on most PRs it decides NOT-REQUIRED and runs nothing — which is correct
         # and is also indistinguishable, from the outside, from a gate that has stopped
         # firing. This control is what tells them apart, and it runs unconditionally.

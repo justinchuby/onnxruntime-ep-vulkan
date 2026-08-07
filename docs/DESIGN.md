@@ -3673,13 +3673,61 @@ one artifact over — the register worked, the reader did not exist. Two things 
   `ci/negative_control_landing_simulation.py::overlay_squash_is_blind` keeps that fact printed rather
   than remembered.
 
-**What is still open after the repair, stated rather than left to be found.** The step reads the base
-**as it is at CI time**. A commit that lands on `main` between the last green run and the merge button
-reopens the window; the residual is *narrowed to that interval*, not closed. Closing it needs branch
-protection with "require branches to be up to date before merging", which this repository does not
-have — so this remains a named residual with a named remedy, and the reason it is acceptable without
-that remedy is unchanged: the failure mode is a red in an inconvenient place, never a green over an
-undeclared move.
+**What is still open after the repair, stated rather than left to be found — and stated against the
+API, not against the belief about it.** The step is **advisory**. Read on 2026-08-07:
+`branches/main/protection` is **404 not protected**, and ruleset `20479180` (`main`, active) carries
+exactly `[{"type":"deletion"},{"type":"non_fast_forward"}]`. There are **no required status checks on
+this repository at all**. Three consequences, none of them optional:
+
+* this step's colour is **not a merge precondition** — nothing consumes it, so nothing is blocked by it;
+* there is no required check for GitHub to **invalidate** when the base moves, and "require branches to
+  be up to date before merging" is a `strict` policy *on* required checks, so it has nothing to apply
+  to. Naming only the missing up-to-date rule names a residual **smaller than the one this repository
+  has**;
+* the exact residual is therefore: **the base can move after this step goes green and before the merge
+  button is pressed, and the merge is still permitted.** The screen narrows the window to the interval
+  between the last run and the merge; it does not close it, and nothing today makes it close it.
+
+What is unchanged is why that is survivable: the failure mode is **fail-closed**. An unscreened
+collision produces a red on `main` in the `push` job — a red in an inconvenient place, never a green
+over an undeclared move.
+
+**Why enforcement is not switched on in this change, and what would switch it on.** `main` is red —
+run `31169478658` at `3e38ae3`, three of four jobs (`Lane-check self-test`, `Build + op tests (Linux,
+lavapipe)`, `Build + op tests (Windows, lavapipe via mesa-dist-win)`). A `required_status_checks` rule
+with `strict_required_status_checks_policy: true` added today would make **every** pull request
+unmergeable, including the ones that close those three reds. That is stopping the workflow, not
+hardening it. So the enforcement is **sequenced behind the condition that makes it satisfiable**, and
+the sequence is written down with an owner and a verification for each step in
+`ci/landing_enforcement_followup.json`: `main` genuinely green (blocked on issue #24) → the
+`main_is_green` open red closed on that evidence → ruleset `20479180` gains `required_status_checks`
+naming `Lane-check self-test (two polarities, no GPU)` with `strict_required_status_checks_policy:
+true` → **base movement demonstrably invalidates a green landing check and forces a re-run** → #60
+closes. `ci/test_lane_checks.py::test_the_landing_simulation_declares_its_enforcement_follow_up` keeps
+that file well-formed and keeps it pointed at an open red that still exists, so "the follow-up is
+sequenced" cannot decay into "the follow-up was forgotten"; and
+`test_no_artifact_claims_the_landing_gate_is_enforced` fails if this paragraph or the lane inventory
+starts claiming an enforcement the repository does not have. **Issue #60 stays open until step 4 is
+evidenced**; the pull request that added this screen says `Refs #60`, not `Closes #60`.
+
+One cheaper variant was investigated rather than assumed: requiring *only* the landing gate. Required
+contexts are per **job** (the check-run name), not per step, and the gate runs inside `Lane-check
+self-test`, which is one of the three currently red jobs — so the cheap version needs the gate lifted
+into its own job first. That is a real and inexpensive option (19 s on the hosted lane) and it is
+recorded in the follow-up file as its own reviewed artifact, because changing the lane's job topology
+as a side effect of a review round is exactly the kind of silent change this section exists to refuse.
+
+**The gate and the engine agree about which commit is the branch head.** `check_landing_simulation.py`
+resolves the real head — `HEAD^2` when the checkout is a `pull_request` merge ref, whose *first* parent
+is the base — and **passes it to `simulate_squash_rewitness.py` as `--head`**. It did not, in the first
+version of this change, and the consequence was the same defect one artifact over: the engine took
+`git rev-parse HEAD`, `merge-base(base, HEAD)` collapsed to the base, the merge-window non-vacuity
+guard in `_land` evaluated **zero paths on the one event it exists for**, and the tool printed *"this
+run cannot exhibit the merge-window collision"* directly above the merge-window collision. The verdict
+was still correctly red — this was never a false green — but a guard that cannot fire is not a guard.
+The resolved head is now used for the merge base, the changed-path relevance sets, the squash tree, the
+non-vacuity guard and every printed diagnostic on both sides. A head that does not resolve is
+`ERROR(instrument=head_unavailable)`, exit 2, and never a fallback to the checkout.
 
 **How to add a record** is documented in the register itself, under `how_to_add_a_record`, next to the
 records it describes rather than in a document an author may never open.
@@ -3692,7 +3740,7 @@ subject, and a replay of a cause that already landed. Its contrast arm is the de
 true cause written as `rewitness/2` is green under a merge and red under a squash and a rebase.
 `ci/negative_control_landing_simulation.py` holds the residual's two polarities, unconditionally,
 because the step above is gated and a gate that has stopped firing looks identical from the outside to
-one that correctly found nothing: 9 arms, 2 STRUCTURAL / 4 PLANTED / 3 REPLAYED, the ratio printed. The
+one that correctly found nothing: 10 arms, 2 STRUCTURAL / 4 PLANTED / 4 REPLAYED, the ratio printed. The
 REPLAYED arms rebuild issue #60 from this repository's own history (`bb09871` + the planted `q_gemv`
 line, PR = `ca61252`'s tree, since PR #53's branch was deleted on landing) and require the squash to be
 red on it, the *same* PR to be green against a base that did not move the cause path, and the overlay

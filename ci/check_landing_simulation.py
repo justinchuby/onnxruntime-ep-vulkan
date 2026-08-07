@@ -54,17 +54,35 @@ WHAT IS NEVER A SKIP
 ====================
 * the base ref does not resolve, or has not been fetched -> `ERROR(instrument=base_unavailable)`,
   exit 2. A landing simulation with no landing target has not run;
+* the branch head does not resolve -> `ERROR(instrument=head_unavailable)`, exit 2. It never
+  falls back to the checkout: on a `pull_request` event the checkout is the merge ref;
 * the checkout is shallow or partial -> `ERROR(instrument=shallow_checkout)`, exit 2. Both the
   landing construction and the census denominator are truncated at the graft boundary, so
   three greens would be three greens about a different repository. NOTE the `--depth` trap
   from issue #28: a depth-limited fetch marks its own graft point even in a `fetch-depth: 0`
   checkout, so fetch the base with no `--depth` at all;
+* a cause path cannot be read the way git stores it (a symlink where the index says regular
+  file, a reparse point in the way) -> `ERROR(instrument=unreadable_worktree_blob)`, exit 2,
+  the same answer `ci/check_ledger_census.py` gives to the same `WorktreeBlobError`;
 * the register cannot be parsed -> `ERROR(instrument=register_unusable)`, exit 2, the same
   way `ci/check_ledger_census.py` treats it.
+
+THE HEAD THIS GATE RESOLVES IS THE HEAD THE ENGINE IS GIVEN
+===========================================================
+`resolve_head` exists because on a `pull_request` event the checkout is `refs/pull/N/merge`,
+whose first parent IS the base — so `merge-base(HEAD, base)` is the base and rule R2 would be
+identically empty. That fix was applied here and NOT passed on: the engine took
+`git rev-parse HEAD` and rebuilt the same vacuity one process down, evaluating the
+merge-window `lost` guard over an empty path set and printing "this run cannot exhibit the
+merge-window collision" directly above the merge-window collision. The resolved head is now
+forwarded as `--head`, and it is the same commit used for the merge base, the changed-path
+relevance sets, the squash tree, the non-vacuity guard and every printed diagnostic on both
+sides.
 
 Usage:
     python ci/check_landing_simulation.py                       # decide, then run if required
     python ci/check_landing_simulation.py --base FETCH_HEAD
+    python ci/check_landing_simulation.py --head HEAD^2         # override the resolution
     python ci/check_landing_simulation.py --explain-only        # decide and print, never run
     python ci/check_landing_simulation.py --force               # run regardless of the decision
     python ci/check_landing_simulation.py --json out.json
@@ -143,7 +161,7 @@ def resolve_base(explicit: str | None, repo: Path = REPO) -> tuple[str, str]:
     )
 
 
-def resolve_head(base_sha: str, repo: Path = REPO) -> tuple[str, str]:
+def resolve_head(base_sha: str, repo: Path = REPO, explicit: str | None = None) -> tuple[str, str]:
     """-> (the PR head sha, how it was found).
 
     ON A `pull_request` EVENT THE CHECKOUT IS NOT THE BRANCH. GitHub checks out
@@ -153,8 +171,34 @@ def resolve_head(base_sha: str, repo: Path = REPO) -> tuple[str, str]:
     always compute an empty set and this gate would be vacuous on exactly the event it
     matters for. So when HEAD is a two-parent commit whose FIRST parent is the base (or an
     ancestor of it), the second parent is the real branch head and that is what is measured.
+
+    WHATEVER THIS RETURNS IS ALSO WHAT THE ENGINE IS GIVEN. `main()` passes it to
+    `ci/simulate_squash_rewitness.py --head`, because a gate and the engine it invokes must
+    agree about which commit is the branch head; when they disagree the engine rebuilds the
+    vacuity this function exists to remove.
+
+    `explicit` overrides the resolution entirely — for a caller that already knows (a test,
+    or a workflow on an event shape not modelled here). It is validated, never trusted: a
+    head that does not resolve is an instrument error, not a fallback to the checkout.
     """
+    if explicit:
+        sha = _rev(explicit, repo)
+        if not sha:
+            raise GateInstrumentError(
+                "head_unavailable",
+                f"--head {explicit!r} does not resolve to a commit in {repo}. The branch head "
+                "is the subject of this screen; falling back to the checkout when the caller "
+                "named something else would simulate a different branch than the one asked "
+                "about, and on a merge ref that fallback is a guaranteed vacuous green.",
+            )
+        return sha, f"--head {explicit} = {sha[:12]}, as given by the caller"
     head = _rev("HEAD", repo)
+    if not head:
+        raise GateInstrumentError(
+            "head_unavailable",
+            f"HEAD does not resolve to a commit in {repo} — an unborn branch, a detached "
+            "HEAD pointing at nothing, or a corrupt checkout. There is no branch to land.",
+        )
     parents = _git(["rev-list", "--parents", "-n", "1", "HEAD"], repo).stdout.split()
     if len(parents) == 3:  # sha p1 p2
         p1, p2 = parents[1], parents[2]
@@ -184,12 +228,43 @@ def _dirty(repo: Path = REPO) -> set[str]:
     The register is edited in the same change as the ledger, so a gate that could only read
     committed state would answer one commit too late — the same reason
     `simulate_squash_rewitness._prepare` commits the working tree into its clone.
+
+    PARSED AS THE RECORD FORMAT, NOT AS LINES. `--porcelain -z` emits one NUL-terminated
+    record per entry, `XY<space><path>`, and for a rename or a copy it emits a SECOND,
+    bare-path record immediately after holding the original path (verified: `R  c d.txt\\0a
+    b.txt\\0`). Slicing `[3:]` off every field therefore ate the first three characters of
+    every rename source and produced a path that does not exist — silently, and only on the
+    changes most likely to move a declared cause path out from under a record. `-z` is also
+    the only quoting-proof form: `--porcelain` alone C-quotes any path with a space, a quote
+    or a non-ASCII byte, so `docs/my file.md` came back as `"docs/my file.md"` with the
+    quotes IN the string. Both the destination and the source are returned: a rename moves
+    the corroboration's input away from the path the record names, which is exactly the kind
+    of move the gate must not miss.
     """
     r = _git(["status", "--porcelain", "-z", "--untracked-files=all"], repo)
+    if r.returncode != 0:
+        raise GateInstrumentError(
+            "status_unavailable",
+            f"`git status --porcelain -z` failed in {repo}: {r.stderr.strip()}. The gate "
+            "reads uncommitted state on purpose — an uncommitted edit to a declared cause "
+            "path must not evade it — so it declines rather than answer from HEAD alone.",
+        )
+    fields = (r.stdout or "").split("\0")
     out: set[str] = set()
-    for row in (r.stdout or "").split("\0"):
-        if len(row) > 3:
-            out.add(row[3:])
+    i = 0
+    while i < len(fields):
+        rec = fields[i]
+        i += 1
+        if len(rec) < 4:
+            continue
+        xy, path = rec[:2], rec[3:]
+        out.add(path)
+        # A rename/copy in either the index or the worktree column carries its source in the
+        # next record. Consume it, and count it: the source path stopped carrying its old
+        # content, which is a move a corroboration can read.
+        if ("R" in xy or "C" in xy) and i < len(fields) and fields[i]:
+            out.add(fields[i])
+            i += 1
     return out
 
 
@@ -231,9 +306,9 @@ def corroboration_inputs(repo: Path, rev: str | None) -> tuple[set[str], list[st
     return paths, notes
 
 
-def decide(base_ref: str, base_sha: str, repo: Path = REPO) -> dict:
+def decide(base_ref: str, base_sha: str, repo: Path = REPO, head: str | None = None) -> dict:
     """The whole decision, as data, so the negative control can assert on it."""
-    head_sha, how = resolve_head(base_sha, repo)
+    head_sha, how = resolve_head(base_sha, repo, head)
     mb = _git(["merge-base", base_sha, head_sha], repo).stdout.strip()
     if not mb:
         raise GateInstrumentError(
@@ -241,6 +316,15 @@ def decide(base_ref: str, base_sha: str, repo: Path = REPO) -> dict:
             f"{head_sha[:12]} and {base_sha[:12]} have no merge base, so there is no landing "
             "to simulate and no way to tell what either side changed.",
         )
+    # THE HEAD IS ALREADY ON THE BASE. `push: branches: [main]`, a re-run after the merge, or
+    # a branch whose commits all landed already: there is no landing left to build, `git
+    # merge --squash` would produce an empty commit and the engine would report SIM INVALID —
+    # a red about the topology rather than about the declaration. Said out loud instead,
+    # because "NOT-REQUIRED because nothing moved" would be true for the wrong reason and
+    # would read identically to the gate having stopped working.
+    head_on_base = _git(
+        ["merge-base", "--is-ancestor", head_sha, base_sha], repo
+    ).returncode == 0
     on_base = _changed(mb, base_sha, repo)
     on_branch = _changed(mb, head_sha, repo) | _dirty(repo)
     inputs, notes = corroboration_inputs(repo, None)
@@ -266,11 +350,31 @@ def decide(base_ref: str, base_sha: str, repo: Path = REPO) -> dict:
             f"R3 this branch changes {len(touched)} path(s) a live rewitness/3 corroboration "
             f"reads: {touched[:5]}"
         )
+    if head_on_base and reasons:
+        would_have = "; ".join(r.split(" ", 1)[0] for r in reasons)
+        reasons = []
+        no_landing = (
+            "R0 the head is already an ancestor of the base, so there is NO landing to "
+            "simulate: `git merge --squash` would build an empty commit and the engine would "
+            f"report SIM INVALID about the topology, not about the declaration. Rule(s) that "
+            f"would otherwise have fired: {would_have}. This is the `push: branches: [main]` "
+            "shape and a re-run after the merge; it is printed rather than left to read as a "
+            "quiet NOT-REQUIRED."
+        )
+    elif head_on_base:
+        no_landing = (
+            "R0 the head is already an ancestor of the base: there is no landing to simulate, "
+            "and no rule fired either."
+        )
+    else:
+        no_landing = ""
     return {
         "base_ref": base_ref,
         "base": base_sha,
         "head": head_sha,
         "head_note": how,
+        "head_is_ancestor_of_base": head_on_base,
+        "no_landing": no_landing,
         "merge_base": mb,
         "base_moved_paths": len(on_base),
         "branch_moved_paths": len(on_branch),
@@ -300,6 +404,9 @@ def _print_decision(d: dict) -> None:
             print(f"    - {r}")
     else:
         print("  VERDICT: NOT-REQUIRED")
+        if d.get("no_landing"):
+            print(f"    - {d['no_landing']}")
+            return
         print(
             "    Not a skip and not a budget decision: no path this screen's landing-sensitive\n"
             "    part reads differs between the merge base, the base tip and this branch, so\n"
@@ -315,6 +422,11 @@ def _print_decision(d: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="")
+    ap.add_argument(
+        "--head", default="",
+        help="override the branch-head resolution. Validated, never trusted: a --head that "
+             "does not resolve is ERROR(instrument=head_unavailable), exit 2.",
+    )
     ap.add_argument("--repo", default=str(REPO))
     ap.add_argument("--explain-only", action="store_true")
     ap.add_argument("--force", action="store_true")
@@ -341,10 +453,28 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         base_ref, base_sha = resolve_base(args.base or None, repo)
-        decision = decide(base_ref, base_sha, repo)
+        decision = decide(base_ref, base_sha, repo, args.head or None)
     except GateInstrumentError as exc:
         print(f"LANDING-SIMULATION: ERROR(instrument={exc.token})")
         print(f"  {exc.detail}")
+        return 2
+    except census.WorktreeBlobError as exc:
+        # S1. `corroboration_inputs` reads the working tree through the census's `_blob_at`,
+        # which REFUSES rather than guess when the index and the filesystem describe a path
+        # differently — a symlink where the index says regular file, a reparse point in the
+        # way. `ci/check_ledger_census.py` has mapped that to exit 2 since it was introduced;
+        # here it escaped `main()` as an uncaught traceback, which a shell reports as exit 1,
+        # which this lane reads as a CONDITION — a red about the declaration, on a day the
+        # instrument could not read the checkout. Same class, same answer, same exit code.
+        print("LANDING-SIMULATION: ERROR(instrument=unreadable_worktree_blob)")
+        print(f"  {exc}")
+        print(
+            "  The gate derives its path set by reading the register and the working tree "
+            "the way git stores them — a symlink's blob is its TARGET STRING and is never "
+            "followed. It declines rather than guess, and declining is exit 2: convicting "
+            "would blame an author for the checkout's filesystem and acquitting would "
+            "launder whatever is behind it."
+        )
         return 2
     except ValueError as exc:  # an unknown schema in the register
         print("LANDING-SIMULATION: ERROR(instrument=register_unusable)")
@@ -372,9 +502,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     print("\n-- running ci/simulate_squash_rewitness.py --base "
-          f"{decision['base']} --")
+          f"{decision['base']} --head {decision['head']} --")
     r = subprocess.run(
-        [PY, str(HERE / "simulate_squash_rewitness.py"), "--base", decision["base"],
+        [PY, str(HERE / "simulate_squash_rewitness.py"),
+         "--base", decision["base"], "--head", decision["head"],
          *args.sim_arg],
         cwd=str(repo),
         env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1"),

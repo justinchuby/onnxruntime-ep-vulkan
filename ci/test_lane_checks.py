@@ -6237,34 +6237,113 @@ def test_the_simulated_squash_has_one_parent_and_unancestors_the_branch(tmp_path
 
 
 def test_a_landing_that_drops_a_path_the_base_moved_is_refused_not_screened(tmp_path):
-    """Non-vacuity, stated as a refusal. If the landing does not carry an edit the base made
-    and the branch never touched, the thing being screened is not the landing."""
+    """Non-vacuity, stated as a refusal, and ASSERTED ON THE REFUSAL.
+
+    The first version of this test built an overlay landing and checked only that the overlay
+    dropped `other.txt` — a property of `git checkout -- .`, not of this module. It never
+    called the guard, so the branch it is named after could have been deleted outright and it
+    would still have passed. It now runs the guard on both landing shapes: the overlay must be
+    REFUSED and must name the dropped path, and the real squash must be accepted.
+    """
     sim = _simulator()
     repo, base, pr = _two_sided_repo(tmp_path)
-    real = sim._land
 
-    def overlay(clone, b, p, mode):
-        _sim_git(["checkout", "-q", "-B", "sim-overlay", b], clone)
-        _sim_git(["checkout", p, "--", "."], clone)
-        _sim_git(["add", "-A"], clone)
-        _sim_git(["commit", "-q", "-m", "overlay"], clone)
-        return _sim_git(["rev-parse", "HEAD"], clone).stdout.strip(), ""
+    _sim_git(["checkout", "-q", "-B", "overlay_landing", base], repo)
+    _sim_git(["checkout", "-q", pr, "--", "."], repo)
+    _sim_git(["add", "-A"], repo)
+    _sim_git(["commit", "-q", "-m", "overlay"], repo)
+    overlay = _sim_git(["rev-parse", "HEAD"], repo).stdout.strip()
+    _sim_git(["checkout", "-q", "main"], repo)
 
-    assert real is not overlay
-    landing, _ = overlay(repo, base, pr, "squash")
-    dropped = sim._changed_paths(repo, landing, base)
-    assert "other.txt" in dropped, (
+    assert sim.lost_base_edits(repo, base, pr, overlay) == ["other.txt"], (
         "the overlay was expected to drop the base-only edit; if it no longer does, the "
-        "non-vacuity guard has nothing to guard"
+        "non-vacuity guard has nothing to guard and this test is measuring nothing"
+    )
+    refusal = sim._refuse_if_vacuous(repo, base, pr, overlay, "squash")
+    assert refusal and "other.txt" in refusal and "dropped 1 path" in refusal, refusal
+
+    honest, why = sim._land(repo, base, pr, "squash")
+    assert honest and not why, why
+    assert sim.lost_base_edits(repo, base, pr, honest) == []
+    assert sim._refuse_if_vacuous(repo, base, pr, honest, "squash") == ""
+
+
+def test_the_refusal_is_wired_into_land_and_produces_no_landing(tmp_path, monkeypatch):
+    """The guard existing is not the guard running. `_land` must return ("", why) — no
+    landing, no census, no colour — when the guard refuses, because screening a tree nobody
+    will ever have is worse than not screening."""
+    sim = _simulator()
+    repo, base, pr = _two_sided_repo(tmp_path)
+    monkeypatch.setattr(sim, "_refuse_if_vacuous", lambda *a, **k: "planted refusal")
+    landed, why = sim._land(repo, base, pr, "squash")
+    assert landed == "" and why == "planted refusal"
+
+
+def test_the_lost_set_is_vacuous_on_a_merge_ref_and_real_on_the_branch_head(tmp_path):
+    """ISSUE #60's SECOND BLOCKER, as a measurement.
+
+    `refs/pull/N/merge` has the base as its FIRST parent, so `merge-base(base, mergeref)` is
+    the base itself, `moved_on_base` is empty and the merge-window guard evaluates ZERO paths
+    on the one event it exists for. The engine used to take `git rev-parse HEAD`, which on a
+    `pull_request` event is that merge ref. Same repository, same landing, same guard — the
+    only difference is which commit is called the head.
+    """
+    sim = _simulator()
+    repo, base, pr = _two_sided_repo(tmp_path)
+
+    _sim_git(["checkout", "-q", "-B", "gh_merge_ref", base], repo)
+    m = _sim_git(["merge", "-q", "--no-ff", "-m", "Merge pull request", pr], repo)
+    assert m.returncode == 0, m.stdout + m.stderr
+    merge_ref = _sim_git(["rev-parse", "HEAD"], repo).stdout.strip()
+
+    _sim_git(["checkout", "-q", "-B", "overlay_landing", base], repo)
+    _sim_git(["checkout", "-q", pr, "--", "."], repo)
+    _sim_git(["add", "-A"], repo)
+    _sim_git(["commit", "-q", "-m", "overlay"], repo)
+    overlay = _sim_git(["rev-parse", "HEAD"], repo).stdout.strip()
+    _sim_git(["checkout", "-q", "main"], repo)
+
+    assert sim.lost_base_edits(repo, base, merge_ref, overlay) == [], (
+        "the merge ref is expected to make the guard vacuous — if it no longer does, this "
+        "test has stopped demonstrating the defect it pins"
+    )
+    assert sim.lost_base_edits(repo, base, pr, overlay) == ["other.txt"], (
+        "with the REAL branch head the same landing is refused. That is the whole of the "
+        "--head plumbing: the gate resolves this commit and the engine must use it"
     )
 
 
-def test_the_gate_is_required_when_the_base_moves_a_cause_path_and_not_otherwise():
-    """The two polarities of the gate, on this repository's real register.
+def test_the_simulator_does_not_mutate_a_repository_it_was_handed(tmp_path):
+    """`_land` checks branches out and used to delete `pr` and `replay` unconditionally.
 
-    Same branch, same register, same rules; only the base differs. `--explain-only` is the
-    decision without the two-minute simulation, which is what makes this cheap enough to
-    live in the unit suite.
+    Deleting them is right in a fan-out clone — while those refs exist the census's revision
+    walk can still reach the un-ancestored branch commits — and it is a destructive edit to
+    whatever repository the function is given. It is now opt-in, and refused outright on a
+    dirty tree.
+    """
+    sim = _simulator()
+    repo, base, pr = _two_sided_repo(tmp_path)
+    landed, why = sim._land(repo, base, pr, "squash")
+    assert landed and not why, why
+    assert _sim_git(["rev-parse", "--verify", "-q", "pr"], repo).returncode == 0, (
+        "the default cleanup deleted a ref in the caller's repository"
+    )
+
+    (repo / "cause.txt").write_text("uncommitted work\n", encoding="utf-8")
+    landed2, why2 = sim._land(repo, base, pr, "squash")
+    assert landed2 == "" and "uncommitted changes" in why2, why2
+    assert (repo / "cause.txt").read_text(encoding="utf-8") == "uncommitted work\n", (
+        "the refusal must come BEFORE the checkout, or it is a refusal after the damage"
+    )
+
+
+def test_the_gates_corroboration_inputs_are_derived_shader_sources_not_evidence():
+    """What the gate's path set IS, on this repository's real register.
+
+    Named for what it asserts: this reads `corroboration_inputs`, not `decide`, so it says
+    nothing about REQUIRED/NOT-REQUIRED. The two polarities of the decision are asserted by
+    `test_the_gate_decides_required_only_when_a_rule_actually_fires` below and by
+    `ci/negative_control_landing_simulation.py`'s gate arms.
     """
     gate = _landsim()
     inputs, _notes = gate.corroboration_inputs(REPO_ROOT, "HEAD")
@@ -6363,3 +6442,401 @@ def test_the_landing_simulation_step_fetches_without_a_depth():
         "the landing-simulation step fetches with a depth, which shallow-poisons the whole "
         "checkout for every screen after it"
     )
+
+
+# ---------------------------------------------------------------------------
+# The head the gate resolves must be the head the engine measures — issue #60, blocker B2.
+#
+# `check_landing_simulation.resolve_head` reads `HEAD^2` on a `pull_request` merge ref, so
+# its own rule R2 is not vacuous. Until this revision it did not PASS that commit to
+# `ci/simulate_squash_rewitness.py`, which took `git rev-parse HEAD` — the merge ref — and so
+# rebuilt the identical vacuity one process down: `merge-base(base, HEAD)` collapses to the
+# base, the merge-window `lost` guard evaluates zero paths, and the engine prints "this run
+# cannot exhibit the merge-window collision" directly above the merge-window collision.
+# ---------------------------------------------------------------------------
+
+
+def _landing_step_block() -> str:
+    """The `run:`/`env:` text of the landing-simulation step, isolated from its neighbours."""
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    start = workflow.index(
+        "- name: Landing simulation (would this branch survive the squash that lands it?)"
+    )
+    end = workflow.index("- name: Landing-simulation negative control", start)
+    return workflow[start:end]
+
+
+def test_the_gate_forwards_the_head_it_resolved_to_the_engine():
+    """The plumbing itself, asserted on the call rather than on prose.
+
+    Both the flag and the VALUE matter: `--head HEAD` would satisfy a substring check and
+    would reintroduce the defect exactly, because the engine resolves `HEAD` against the
+    checkout — which on the event this exists for is the merge ref.
+    """
+    tree = ast.parse((CI_DIR / "check_landing_simulation.py").read_text(encoding="utf-8"))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and any(
+            isinstance(a, ast.Constant) and isinstance(a.value, str)
+            and "simulate_squash_rewitness.py" in a.value
+            for a in ast.walk(n)
+        )
+        and isinstance(n.func, ast.Attribute) and n.func.attr == "run"
+    ]
+    assert len(calls) == 1, f"expected exactly one engine invocation, found {len(calls)}"
+    argv = ast.unparse(calls[0].args[0])
+    assert "'--head'" in argv, f"the engine is invoked without --head: {argv}"
+    assert "decision['head']" in argv.replace('"', "'"), (
+        f"--head is passed a value that is not the head the gate resolved: {argv}"
+    )
+    assert "'--base'" in argv and "decision['base']" in argv.replace('"', "'"), argv
+
+
+def test_the_engine_accepts_a_head_and_refuses_one_it_cannot_resolve():
+    """`--head` is validated, never a fallback to the checkout. Exit 2, with the token."""
+    sim_path = CI_DIR / "simulate_squash_rewitness.py"
+    r = subprocess.run(
+        [sys.executable, str(sim_path), "--head", "0" * 40, "--base", "HEAD"],
+        cwd=str(REPO_ROOT), capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+        env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1"),
+    )
+    assert r.returncode == 2, f"exit={r.returncode}\n{r.stdout}\n{r.stderr}"
+    assert "ERROR(instrument=head_unavailable)" in r.stdout, r.stdout
+    assert "--head" in subprocess.run(
+        [sys.executable, str(sim_path), "--help"], capture_output=True, text=True,
+    ).stdout
+
+
+def test_an_unresolvable_head_is_an_instrument_error_in_the_gate_too():
+    gate = _landsim()
+    base = gate._rev("HEAD", REPO_ROOT)
+    with pytest.raises(gate.GateInstrumentError) as exc:
+        gate.resolve_head(base, REPO_ROOT, "refs/heads/no-such-head-a8f3")
+    assert exc.value.token == "head_unavailable"
+
+
+def test_the_gate_reads_a_direct_push_checkout_as_its_own_head(tmp_path):
+    """The other topology: `push:` events check out the branch itself, and there is no second
+    parent to prefer. A gate that reached for `HEAD^2` unconditionally would be wrong here."""
+    gate = _landsim()
+    repo, base, pr = _two_sided_repo(tmp_path)
+    _sim_git(["checkout", "-q", pr], repo)
+    head, note = gate.resolve_head(base, repo)
+    assert head == pr, note
+    assert "branch head" in note
+
+
+def test_a_merge_commit_that_is_not_a_pull_request_merge_ref_is_its_own_head(tmp_path):
+    """The false positive the merge-ref rule must not have.
+
+    Merging the base INTO the branch — which this very PR did, rather than rebasing — also
+    produces a two-parent HEAD. But its FIRST parent is the branch, not the base, so it is
+    the branch head and `HEAD^2` would name the base. The rule keys on the first parent for
+    exactly this reason; without that condition, updating a branch from main would make the
+    gate measure main against main.
+    """
+    gate = _landsim()
+    repo, base, pr = _two_sided_repo(tmp_path)
+    _sim_git(["checkout", "-q", "-B", "branch_with_main_merged", pr], repo)
+    m = _sim_git(["merge", "-q", "--no-ff", "-m", "Merge origin/main into the branch", base], repo)
+    assert m.returncode == 0, m.stdout + m.stderr
+    merged = _sim_git(["rev-parse", "HEAD"], repo).stdout.strip()
+    head, note = gate.resolve_head(base, repo)
+    assert head == merged, f"{head} != {merged} ({note})"
+    assert head != base
+
+
+def _decide_with_inputs(gate, monkeypatch, paths, repo, base, head=None):
+    """`decide` with the corroboration path set pinned, so the RULES are what is measured.
+
+    The real path set comes from the register and a shader `#include` closure; a fixture
+    repository has neither, and building one would make this a test of the census. The rule
+    logic — which paths moved on which side, and which rule that fires — is the subject.
+    """
+    monkeypatch.setattr(gate, "corroboration_inputs", lambda _r, _rev: (set(paths), ["pinned"]))
+    return gate.decide("fixture", base, repo, head)
+
+
+def test_the_gate_decides_required_only_when_a_rule_actually_fires(tmp_path, monkeypatch):
+    """Both polarities of `decide`, isolated to rule R2: the same branch, the same rules, and
+    only the base differs. This is the assertion the old test's name promised."""
+    gate = _landsim()
+    repo, base, pr = _two_sided_repo(tmp_path)
+
+    hot = _decide_with_inputs(gate, monkeypatch, {"cause.txt"}, repo, base, pr)
+    assert hot["required"] is True
+    assert any(r.startswith("R2") for r in hot["reasons"]), hot["reasons"]
+    assert hot["head"] == pr and hot["base"] == base
+    assert hot["base_moved_paths"] == 2
+
+    cold = _decide_with_inputs(gate, monkeypatch, {"nothing/here.txt"}, repo, base, pr)
+    assert cold["required"] is False and cold["reasons"] == []
+    assert cold["base_moved_paths"] == 2, (
+        "the base still moved; NOT-REQUIRED here is an argument about relevance, not a claim "
+        "that nothing landed"
+    )
+
+
+def test_the_gate_measures_the_branch_head_not_the_merge_ref_checkout(tmp_path, monkeypatch):
+    """R2 on a `pull_request` checkout. With the merge ref taken at face value the base has
+    moved zero paths and R2 can never fire; with `HEAD^2` it fires on the planted collision.
+    Same repository, same register, same rules — only which commit is called the head."""
+    gate = _landsim()
+    repo, base, pr = _two_sided_repo(tmp_path)
+    _sim_git(["checkout", "-q", "-B", "gh_merge_ref", base], repo)
+    m = _sim_git(["merge", "-q", "--no-ff", "-m", "Merge pull request", pr], repo)
+    assert m.returncode == 0, m.stdout + m.stderr
+    merge_ref = _sim_git(["rev-parse", "HEAD"], repo).stdout.strip()
+
+    resolved = _decide_with_inputs(gate, monkeypatch, {"cause.txt"}, repo, base)
+    assert resolved["head"] == pr, resolved["head_note"]
+    assert resolved["base_moved_paths"] == 2 and resolved["required"] is True
+    assert any(r.startswith("R2") for r in resolved["reasons"]), resolved["reasons"]
+
+    naive = _decide_with_inputs(gate, monkeypatch, {"cause.txt"}, repo, base, merge_ref)
+    assert naive["base_moved_paths"] == 0, (
+        "the merge ref is expected to make the base-moved set empty — if it no longer does, "
+        "this test has stopped demonstrating why HEAD^2 is resolved at all"
+    )
+    assert not any(r.startswith("R2") for r in naive["reasons"]), naive["reasons"]
+
+
+def test_a_head_already_on_the_base_says_there_is_no_landing(tmp_path, monkeypatch):
+    """`push: branches: [main]`, and any re-run after the merge. `git merge --squash` would
+    build an empty commit and the engine would report SIM INVALID about the topology rather
+    than about the declaration, so the gate says so instead of falling through to a quiet
+    NOT-REQUIRED that reads exactly like a gate that has stopped working."""
+    gate = _landsim()
+    repo, base, pr = _two_sided_repo(tmp_path)
+    _sim_git(["checkout", "-q", "-B", "landed", base], repo)
+    m = _sim_git(["merge", "-q", "--no-ff", "-m", "landed", pr], repo)
+    assert m.returncode == 0, m.stdout + m.stderr
+    landed = _sim_git(["rev-parse", "HEAD"], repo).stdout.strip()
+
+    d = _decide_with_inputs(gate, monkeypatch, {"cause.txt"}, repo, landed, pr)
+    assert d["head_is_ancestor_of_base"] is True
+    assert d["required"] is False
+    assert d["no_landing"].startswith("R0") and "R2" in d["no_landing"], d["no_landing"]
+
+    d_same = _decide_with_inputs(gate, monkeypatch, {"cause.txt"}, repo, pr, pr)
+    assert d_same["head_is_ancestor_of_base"] is True and d_same["required"] is False
+
+
+def test_a_stale_base_narrows_the_screen_and_the_decision_says_which_base(tmp_path, monkeypatch):
+    """The residual the workflow's fresh `git fetch` exists for, made visible.
+
+    Screened against a base that is BEHIND the tip, `merge-base(base, head)` is the base
+    itself, nothing has "moved on the base", and R2 cannot fire even though the collision is
+    sitting on the real tip. The decision therefore records the base sha it used: a verdict
+    about a base nobody will merge into is not a weaker verdict, it is one about a different
+    question, and the operator has to be able to see which.
+    """
+    gate = _landsim()
+    repo, base, pr = _two_sided_repo(tmp_path)
+    stale = _sim_git(["merge-base", base, pr], repo).stdout.strip()
+
+    fresh = _decide_with_inputs(gate, monkeypatch, {"cause.txt"}, repo, base, pr)
+    assert fresh["required"] is True and fresh["base"] == base
+
+    behind = _decide_with_inputs(gate, monkeypatch, {"cause.txt"}, repo, stale, pr)
+    assert behind["base"] == stale and behind["merge_base"] == stale
+    assert behind["base_moved_paths"] == 0
+    assert not any(r.startswith("R2") for r in behind["reasons"]), behind["reasons"]
+    assert any(r.startswith("R3") for r in behind["reasons"]), (
+        "R3 must still fire — the branch itself touches the path, and only the base-side "
+        "half of the question went blind"
+    )
+
+
+def test_dirty_reads_renames_copies_spaces_and_non_ascii_paths(tmp_path):
+    """`--porcelain -z` emits a SECOND, bare-path record after a rename or copy, holding the
+    original path. Slicing `[3:]` off every field ate three characters of it and produced a
+    path that exists nowhere — silently, and on exactly the changes most likely to move a
+    declared cause path out from under a record. Without `-z` the paths would be C-quoted
+    instead, which is the same defect wearing quotes.
+    """
+    gate = _landsim()
+    repo = tmp_path / "renames"
+    repo.mkdir()
+    _sim_git(["init", "-q", "-b", "main"], repo)
+    (repo / "a file.txt").write_text("x\n", encoding="utf-8")
+    (repo / "\u00e9\u4e2d.txt").write_text("y\n", encoding="utf-8")
+    (repo / "plain.txt").write_text("z\n", encoding="utf-8")
+    _sim_git(["add", "-A"], repo)
+    _sim_git(["commit", "-q", "-m", "init"], repo)
+
+    _sim_git(["mv", "a file.txt", "renamed to.txt"], repo)
+    _sim_git(["mv", "\u00e9\u4e2d.txt", "\u00e9\u4e2d moved.txt"], repo)
+    (repo / "untracked space.txt").write_text("w\n", encoding="utf-8")
+    (repo / "plain.txt").write_text("modified\n", encoding="utf-8")
+
+    dirty = gate._dirty(repo)
+    for want in (
+        "a file.txt", "renamed to.txt",
+        "\u00e9\u4e2d.txt", "\u00e9\u4e2d moved.txt",
+        "untracked space.txt", "plain.txt",
+    ):
+        assert want in dirty, f"{want!r} missing from {sorted(dirty)}"
+    assert not any(p.startswith('"') for p in dirty), sorted(dirty)
+    assert not any(p in ("ile.txt", "iled to.txt") for p in dirty), (
+        f"a record was sliced as if it carried a status prefix: {sorted(dirty)}"
+    )
+
+
+def test_the_landing_step_passes_the_base_ref_through_env_not_interpolation():
+    """`${{ }}` is a TEXT substitution performed before the shell sees the script, so a value
+    an outside contributor controls — `github.base_ref` is the branch name on the pull
+    request — would be pasted in as code. Git ref names permit `;`, `$`, backticks and `&`.
+    Through `env:` it is expanded by the shell from the environment, quoted, as one argument.
+    """
+    block = _landing_step_block()
+    run = block[block.index("run: |"):]
+    assert "${{" not in run, (
+        f"the landing-simulation `run:` block still interpolates a GitHub expression: {run}"
+    )
+    assert "LANDING_BASE_REF: ${{ github.base_ref || 'main' }}" in block, block
+    assert 'git fetch --no-tags origin "$LANDING_BASE_REF"' in run, run
+    assert '--summary "$GITHUB_STEP_SUMMARY"' in run, run
+
+
+def test_the_whole_landing_step_run_block_quotes_every_expansion():
+    """Every `$VAR` in that block must be double-quoted. An unquoted one word-splits, which
+    turns a ref name with a space into two arguments and a `git fetch` into a fetch of
+    something else."""
+    run = _landing_step_block()
+    run = run[run.index("run: |"):]
+    bare = re.findall(r'(?<!")\$(?:\{\w+\}|\w+)', run)
+    assert not bare, f"unquoted shell expansions in the landing-simulation step: {bare}"
+
+
+def test_the_gate_fires_on_the_real_q_gemv_collision_and_names_it(tmp_path):
+    """The REAL cause path, the real register, the real `#include` closure — end to end.
+
+    Everything above this pins a mechanism on a two-file fixture. This one plants the issue
+    #60 collision on a clone of this repository — one line appended to
+    `rust/shaders/glsl/templates/q_gemv.comp`, the declared cause path of the only live
+    `rewitness/3` record — and requires the gate to say REQUIRED, name R2, and name the file.
+    `--explain-only` is the decision without the two-minute simulation; the full landing
+    matrix on this scenario is `ci/negative_control_landing_simulation.py`'s REPLAYED arms.
+    """
+    gate = _landsim()
+    inputs, _notes = gate.corroboration_inputs(REPO_ROOT, "HEAD")
+    cause = "rust/shaders/glsl/templates/q_gemv.comp"
+    if cause not in inputs:
+        pytest.skip("no live rewitness/3 record naming the q_gemv cause path")
+
+    clone = tmp_path / "collision"
+    r = _sim_git(["clone", "-q", "--local", "--no-hardlinks", str(REPO_ROOT), str(clone)],
+                 tmp_path)
+    assert r.returncode == 0, r.stderr
+    head = _sim_git(["rev-parse", "HEAD"], REPO_ROOT).stdout.strip()
+    _sim_git(["fetch", "-q", "origin", head], clone)
+    _sim_git(["checkout", "-q", "-B", "collided_base", head], clone)
+    with open(clone / cause, "a", encoding="utf-8", newline="\n") as fh:
+        fh.write("// a concurrent main-side edit, planted by the landing-simulation tests\n")
+    _sim_git(["add", "-A"], clone)
+    _sim_git(["commit", "-q", "-m", "main-side edit to the declared cause path"], clone)
+    base = _sim_git(["rev-parse", "HEAD"], clone).stdout.strip()
+    _sim_git(["checkout", "-q", "-B", "the_pr", head], clone)
+    readme = clone / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\n<!-- an edit in no shader closure -->\n",
+        encoding="utf-8",
+    )
+    _sim_git(["add", "-A"], clone)
+    _sim_git(["commit", "-q", "-m", "an unrelated edit"], clone)
+
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    hot = subprocess.run(
+        [sys.executable, str(clone / "ci" / "check_landing_simulation.py"),
+         "--explain-only", "--base", base],
+        cwd=str(clone), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", env=env,
+    )
+    assert hot.returncode == 0, hot.stdout + hot.stderr
+    assert "VERDICT: REQUIRED" in hot.stdout, hot.stdout
+    assert "R2 " in hot.stdout and cause in hot.stdout, hot.stdout
+
+    cold = subprocess.run(
+        [sys.executable, str(clone / "ci" / "check_landing_simulation.py"),
+         "--explain-only", "--base", head],
+        cwd=str(clone), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", env=env,
+    )
+    assert cold.returncode == 0, cold.stdout + cold.stderr
+    assert "VERDICT: NOT-REQUIRED" in cold.stdout, (
+        "the SAME branch against a base that did not move the cause path must acquit, or the "
+        "arm above is a constant\n" + cold.stdout
+    )
+
+
+def test_an_unreadable_worktree_blob_is_an_instrument_error_not_a_condition(monkeypatch):
+    """`WorktreeBlobError` is raised by the census's `_blob_at` when the index and the
+    filesystem describe a cause path differently. `ci/check_ledger_census.py` maps it to exit
+    2; here it escaped `main()` as a traceback, which a shell reports as exit 1, which this
+    lane reads as a CONDITION — a red about the declaration on a day the instrument could not
+    read the checkout."""
+    gate = _landsim()
+
+    def boom(_repo, _rev):
+        raise gate.census.WorktreeBlobError(
+            "planted: the index says regular file and the filesystem says symlink"
+        )
+
+    monkeypatch.setattr(gate, "corroboration_inputs", boom)
+    rc = gate.main(["--explain-only", "--base", "HEAD"])
+    assert rc == 2, rc
+
+
+def test_the_landing_simulation_declares_its_enforcement_follow_up():
+    """B1. The step is ADVISORY: this repository has no required status checks at all, so
+    nothing invalidates a green landing check when the base moves under it. The follow-up
+    that would change that is sequenced behind `main_is_green` and recorded where it can be
+    checked rather than remembered."""
+    followup = json.loads(
+        (CI_DIR / "landing_enforcement_followup.json").read_text(encoding="utf-8")
+    )
+    assert followup["enforced_today"] is False
+    assert followup["blocked_by"] == "main_is_green"
+    assert followup["ruleset_id"] == 20479180
+    assert followup["observed"]["branch_protection"] == "404 not protected"
+    assert followup["observed"]["required_status_checks"] == []
+
+    reds = json.loads((CI_DIR / "open_reds.json").read_text(encoding="utf-8"))
+    declared = {c["id"] for c in reds["checks"]}
+    assert followup["blocked_by"] in declared, (
+        "the follow-up is sequenced behind an open red that is not declared, so nothing "
+        "will ever tell anybody it became satisfiable"
+    )
+    steps = followup["checklist"]
+    assert len(steps) >= 4 and all(s["done"] is False for s in steps), steps
+    assert any("up to date" in s["step"].lower() for s in steps), steps
+    assert any("base" in s["verify"].lower() and "re-run" in s["verify"].lower()
+               for s in steps), steps
+
+
+def test_no_artifact_claims_the_landing_gate_is_enforced():
+    """The rejection this revision answers: three artifacts said closing #60 needed
+    "require branches to be up to date before merging", which the repository lacks — while
+    the repository in fact has no required status checks AT ALL, so the base is unconstrained
+    at merge time and GitHub has nothing to invalidate. A document whose stated purpose is
+    naming residuals must not name a smaller one."""
+    import importlib
+
+    sys.path.insert(0, str(CI_DIR))
+    inv = importlib.import_module("lane_inventory")
+
+    checks = {c.id: c for c in inv.CHECKS}
+    misses = " ".join(checks["hostfree.landing_simulation"].misses).lower()
+    assert "advisory" in misses, misses
+    assert "no required status checks" in misses, misses
+
+    design = (REPO_ROOT / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+    part5b = design[design.index("A CONCURRENT EDIT TO A DECLARED CAUSE PATH"):]
+    part5b = part5b[:part5b.index("§8.9.20") if "§8.9.20" in part5b else 12000]
+    assert "no required status checks" in part5b.lower(), (
+        "DESIGN.md still describes the missing enforcement as only the up-to-date rule"
+    )
+    assert "advisory" in part5b.lower(), part5b[-2000:]

@@ -1043,11 +1043,24 @@ CHECKS: tuple[Check, ...] = (
             "part of the census is then byte-identical across the merge base, the base tip "
             "and the branch — but it is a decision, and a bug in it is a step that silently "
             "stops running. That is why the negative control below is unconditional.",
-            "It reads the base as it is AT CI TIME. A commit that lands on the base between "
-            "this step and the merge button reopens exactly the window it screens; the "
-            "residual is narrowed to the interval between the last green run and the merge, "
-            "not closed. Branch protection with 'require branches to be up to date' is what "
-            "would close it, and this repository does not have it.",
+            "IT IS ADVISORY. Checked against the API on 2026-08-07, not assumed: "
+            "`branches/main/protection` is 404 NOT PROTECTED and ruleset 20479180 (`main`, "
+            "active) carries only `deletion` and `non_fast_forward`. There are NO REQUIRED "
+            "STATUS CHECKS on this repository at all — so this step's colour is not a merge "
+            "precondition, nothing invalidates it when the base moves, and 'require branches "
+            "to be up to date before merging' has no required check to apply to. The exact "
+            "residual is therefore: the base can move AFTER this step goes green and BEFORE "
+            "the merge button is pressed, and the merge is still permitted. Naming only the "
+            "up-to-date rule as the missing piece names a residual smaller than the one this "
+            "repository has.",
+            "The enforcement that would close issue #60 is SEQUENCED, not skipped, and the "
+            "sequence is `ci/landing_enforcement_followup.json`: `main` green (blocked on "
+            "issue #24) -> the `main_is_green` open red closed -> ruleset 20479180 gains "
+            "`required_status_checks` with `strict_required_status_checks_policy: true` -> "
+            "base movement demonstrably invalidates a green landing check. Requiring checks "
+            "today would deadlock every pull request, including the ones that close the three "
+            "jobs currently red on `main`, which is stopping the workflow rather than "
+            "hardening it.",
             "It only simulates. A landing GitHub refuses to build (a real merge conflict) is "
             "reported as SIM INVALID and is a failure of this step, not a verdict about the "
             "declaration.",
@@ -1060,7 +1073,7 @@ CHECKS: tuple[Check, ...] = (
         step="Landing-simulation negative control (both polarities, the real q_gemv collision)",
         watches=(
             "Whether the gated step above still fires when it should and still acquits when "
-            "it should: 9 arms, 2 STRUCTURAL / 4 PLANTED / 3 REPLAYED, the ratio printed. "
+            "it should: 10 arms, 2 STRUCTURAL / 4 PLANTED / 4 REPLAYED, the ratio printed. "
             "The step is skipped on most PRs by design, and a gate that has stopped firing "
             "looks identical from the outside to one that correctly found nothing."
         ),
@@ -1073,7 +1086,7 @@ CHECKS: tuple[Check, ...] = (
             "edit to a file the branch also touched. Wiring that into the lane would have "
             "produced a green step on the exact defect the step exists for."
         ),
-        arm_healthy="9/9 arms passed (2 STRUCTURAL, 4 PLANTED, 3 REPLAYED)",
+        arm_healthy="10/10 arms passed (2 STRUCTURAL, 4 PLANTED, 4 REPLAYED)",
         arm_broken=(
             "with the overlay squash restored: the REPLAYED red arm reports exit=0 and "
             "`the real squash is RED on the concurrent q_gemv cause-path edit` fails"

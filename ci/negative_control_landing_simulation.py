@@ -27,7 +27,10 @@ ARM KINDS, ratio printed, for the same reason `negative_control_ledger_census.py
 THE REPLAYED ARMS ARE THE ONES THAT MATTER, and they replay issue #60 exactly: the declaring
 change is PR #53's real content, the collision is a one-line edit to
 `rust/shaders/glsl/templates/q_gemv.comp` — the real declared cause path of the repository's
-only `rewitness/3` record — landed on the base inside the merge window.
+only `rewitness/3` record — landed on the base inside the merge window. One of them runs from
+a synthetic `refs/pull/N/merge` checkout rather than from the branch, because that is what
+GitHub actually hands CI and because taking that checkout as the branch head is what made the
+merge-window guard vacuous in the first place.
 
 The historical branch `squad/7-tile-matmulnbits-prefill` (head `8f12b32`) was deleted when it
 landed, so it is unreachable in a CI checkout. The PR is therefore reconstructed from
@@ -45,6 +48,7 @@ root, so swapping it cannot move a single content id the census reads.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -334,6 +338,59 @@ def arm_squash_is_green_without_the_collision(tmp: Path) -> None:
         print("      " + "\n      ".join(r.stdout.strip().splitlines()[-14:]))
 
 
+def arm_a_pull_request_merge_ref_still_measures_the_merge_window(tmp: Path) -> None:
+    """THE ARM FOR ISSUE #60's SECOND BLOCKER, end to end, on the real collision.
+
+    Every other arm here runs from a checkout that IS the branch. GitHub does not hand CI
+    that: on a `pull_request` event the checkout is `refs/pull/N/merge`, a synthetic
+    two-parent commit whose FIRST parent is the base. `git rev-parse HEAD` on it therefore
+    makes `merge-base(base, HEAD)` the base itself — the base has "moved" zero paths, the
+    merge-window `lost` guard in `_land` evaluates an empty set, and the engine prints "this
+    run cannot exhibit the merge-window collision" directly above the merge-window collision.
+
+    So this arm reproduces that checkout exactly, runs the LANE'S ENTRY POINT (the gate, which
+    resolves `HEAD^2` and forwards it as `--head`), and requires three things at once: the
+    gate fires with R2 naming the real cause path, the engine reports a NON-ZERO base-moved
+    count, and the sentence that would have been a lie is absent. A gate and the engine it
+    invokes must agree about which commit is the branch head.
+    """
+    clone, base = _build_replay(tmp, "merge_ref", collide=True)
+    pr = git(["rev-parse", "sim_pr"], clone).stdout.strip()
+    git(["checkout", "-q", "-B", "pull_60_merge", base], clone)
+    m = git(["merge", "-q", "--no-ff", "-m", "Merge pull request #60", pr], clone)
+    if m.returncode:
+        record("REPLAYED", "a pull_request merge ref still measures the merge window", False,
+               f"could not build the synthetic merge ref: {(m.stdout + m.stderr)[:200]}")
+        return
+    merge_ref = git(["rev-parse", "HEAD"], clone).stdout.strip()
+
+    r = py(
+        "ci/check_landing_simulation.py",
+        ["--base", base, "--sim-arg=--landing", "--sim-arg=squash",
+         "--sim-arg=--no-controls", "--sim-arg=--no-replay"],
+        clone,
+    )
+    out = r.stdout + r.stderr
+    fired = "VERDICT: REQUIRED" in out and "R2 " in out and CAUSE_PATH in out
+    resolved = f"--head {pr}" in out or pr[:12] in out
+    moved = re.search(r"the base has moved (\d+) path\(s\) since the merge base", out)
+    nonzero = bool(moved) and int(moved.group(1)) > 0
+    honest = "cannot exhibit the merge-window collision" not in out
+    red = r.returncode == 1 and "uncorroborated_rewitness_cause" in out
+    ok = fired and resolved and nonzero and honest and red
+    record(
+        "REPLAYED", "a pull_request merge ref still measures the merge window", ok,
+        f"checkout {merge_ref[:12]} is the merge ref, branch head {pr[:12]}; gate "
+        f"{'fired on R2' if fired else 'DID NOT FIRE'}; head {'forwarded' if resolved else 'NOT FORWARDED'}; "
+        f"base moved {moved.group(1) if moved else '(not printed)'} path(s) "
+        f"{'(non-vacuous)' if nonzero else 'WHICH IS VACUOUS'}; "
+        f"{'no' if honest else 'STILL PRINTS THE'} 'cannot exhibit' claim; "
+        f"exit={r.returncode} (want 1) {'red on the collision' if red else 'NOT RED'}",
+    )
+    if not ok:
+        print("      " + "\n      ".join(out.strip().splitlines()[-18:]))
+
+
 def arm_overlay_squash_is_blind(tmp: Path) -> None:
     """The contrast arm: build the squash the way this script used to, demand GREEN.
 
@@ -385,6 +442,7 @@ def main() -> int:
         print("\n-- the simulator, both polarities, on the real issue #60 collision")
         arm_squash_is_red_on_the_collision(tmp)
         arm_squash_is_green_without_the_collision(tmp)
+        arm_a_pull_request_merge_ref_still_measures_the_merge_window(tmp)
         arm_overlay_squash_is_blind(tmp)
     finally:
         shutil.rmtree(tmp, onerror=_force_writable)
