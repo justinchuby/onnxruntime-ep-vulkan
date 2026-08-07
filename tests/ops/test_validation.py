@@ -633,11 +633,16 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
     #
     # Verified on an unelevated GPU box on 2026-08-04: arm 1 alone takes here, so this
     # test PASSES on this machine and the CI red it was raised for does not reproduce on
-    # a real device. Verified on the GitHub-hosted Windows runner, 2026-08-06 (this
-    # file's own CI run): arms 1 and 2 both leave the gate ARMED — loader version 1.3.301
-    # (modern, rules out an old-loader theory) — `registry_disable` is what actually
-    # takes there.
+    # a real device. On the GitHub-hosted Windows runner arms 1 and 2 both leave the gate
+    # ARMED and `registry_disable` is what takes — but that is READ from this test's own
+    # artifact (`bench/results/criterion3d_layer_witness-dev*.json`, whose `attempts`
+    # carry each arm's `env_applied`) and from the `[CRITERION 3d]` lines in the job log,
+    # per run. It is not predicted from here, and it is only a comparison at all because
+    # each env arm above is proven to have applied its overrides before its probe ran:
+    # PR #45's criterion-4 twin lost exactly that property and its "registry_disable beat
+    # the env arms" reading was a walkover (Morpheus's rejection of head e2b7e00).
     attempts: list[tuple[str, str, str]] = []
+    env_applied_by_arm: dict[str, list[str]] = {}
     stripped_state = stripped_reason = ""
     mechanism = "none"
     env_arms: "list[tuple[str, dict[str, str]]]" = [
@@ -661,10 +666,25 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
         no_layer_env = _cargo_env()
         no_layer_env.update(overrides)
         no_layer_env.pop("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION", None)
+        # The arm has to be ARMED before its child runs. Criterion 4's twin defect
+        # (Morpheus's Blocker 1 on PR #45, head e2b7e00) was an arm whose environment
+        # never reached the child: it then reported "ineffective" and lost a comparison
+        # it had never entered, and `registry_disable`'s win over it was a walkover.
+        undelivered = sorted(k for k, v in overrides.items() if no_layer_env.get(k) != v)
+        if undelivered:
+            raise _verdict.InstrumentError(
+                "[criterion 3d instrument failure] ERROR(instrument): arm "
+                f"{mechanism_name!r} set {sorted(overrides)} but the environment handed to "
+                f"the probe is missing {undelivered}. The arm never reached its subject, "
+                "so its verdict is not a reading and no other arm can be said to have "
+                "beaten it."
+            )
+        env_applied_by_arm[mechanism_name] = sorted(overrides)
         stripped_state, stripped_reason = _probe_validation_frame(no_layer_env)
         attempts.append((mechanism_name, stripped_state, stripped_reason))
         print(
-            f"[CRITERION 3d] frame with {mechanism_name} applied: {stripped_state} — "
+            f"[CRITERION 3d] frame with {mechanism_name} applied "
+            f"(env={','.join(sorted(overrides))}): {stripped_state} — "
             f"{stripped_reason}",
             file=sys.stderr,
         )
@@ -675,13 +695,15 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
     if stripped_state == _verdict.VALIDATION_ARMED:
         mechanism_name = "registry_disable"
         try:
-            with _registry_suppression.suppress_validation_layer_registry():
+            with _registry_suppression.suppress_validation_layer_registry() as disabled:
+                env_applied_by_arm[mechanism_name] = []
                 no_layer_env = _cargo_env()
                 no_layer_env.pop("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION", None)
                 stripped_state, stripped_reason = _probe_validation_frame(no_layer_env)
             attempts.append((mechanism_name, stripped_state, stripped_reason))
             print(
-                f"[CRITERION 3d] frame with {mechanism_name} applied: {stripped_state} — "
+                f"[CRITERION 3d] frame with {mechanism_name} applied "
+                f"(registry values disabled: {disabled}): {stripped_state} — "
                 f"{stripped_reason}",
                 file=sys.stderr,
             )
@@ -715,10 +737,52 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
             "stripped_state": stripped_state,
             "stripped_reason": stripped_reason,
             "mechanism": mechanism,
-            "attempts": [{"mechanism": n, "state": s, "detail": d} for n, s, d in attempts],
+            "attempts": [
+                {
+                    "mechanism": n,
+                    "state": s,
+                    "detail": d,
+                    # What that arm actually applied. An env arm with an empty list did
+                    # not act, and a mechanism that "beat" it beat nobody — the walkover
+                    # Morpheus rejected PR #45 for (Blocker 2, head e2b7e00). A registry
+                    # arm's empty list is legitimate: it acts on HKLM, not the environment.
+                    "env_applied": env_applied_by_arm.get(n),
+                }
+                for n, s, d in attempts
+            ],
             "high_integrity_process": high_integrity_process,
         }
     )
+    # The same stamps into the LOG, not only the artifact: `bench/results/` outside
+    # `ci-lane/` is not uploaded by every lane (Morpheus's non-blocking finding 3 on
+    # PR #45), and evidence that only exists in an un-uploaded file is not retrievable.
+    print(
+        f"[CRITERION 3d] mechanism={mechanism!r} "
+        f"high_integrity_process={high_integrity_process} arms="
+        + "; ".join(
+            f"{n}={s} [env={','.join(env_applied_by_arm.get(n) or []) or '<none: acts on HKLM>'}]"
+            for n, s, _ in attempts
+        ),
+        file=sys.stderr,
+    )
+
+    # `registry_disable` only BEATS the env arms if the env arms actually ran. Every env
+    # arm above raises ERROR(instrument) if its overrides did not reach the probe, so a
+    # non-empty `env_applied` here is a delivered arm, not a claimed one.
+    if mechanism == "registry_disable":
+        walkovers = [
+            n
+            for n, _s, _d in attempts
+            if n != "registry_disable" and env_applied_by_arm.get(n) == []
+        ]
+        if walkovers:
+            raise _verdict.InstrumentError(
+                "[criterion 3d instrument failure] ERROR(instrument): `registry_disable` "
+                f"took the layer away, but the competing arm(s) {walkovers} applied no "
+                "environment at all — they were never armed, so this is a walkover and "
+                "not a comparison between suppression mechanisms.\n"
+                f"artifact: {artifact_path}"
+            )
 
     if stripped_state == _verdict.VALIDATION_ARMED:
         # Some loaders find the layer through registry entries VK_LAYER_PATH does not

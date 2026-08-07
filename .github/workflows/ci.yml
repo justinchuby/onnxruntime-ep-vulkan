@@ -1298,7 +1298,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lane-evidence-linux
-          path: bench/results/ci-lane/
+          # The criterion witnesses write to bench/results/ (not ci-lane/), so without
+          # these globs their `suppression_mechanism` / `high_integrity_process` stamps
+          # are produced and then thrown away with the runner — Morpheus's non-blocking
+          # finding 3 on PR #45.
+          path: |
+            bench/results/ci-lane/
+            bench/results/criterion4_icd_witness-dev*.json
+            bench/results/criterion5_shaderless_witness-dev*.json
+            bench/results/criterion3d_layer_witness-dev*.json
           if-no-files-found: warn
 
   # ----------------------------------------------------------------
@@ -1962,5 +1970,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lane-evidence-windows
-          path: bench/results/ci-lane/
+          # Same reason as the Linux lane: the criterion-4 / criterion-3d witnesses stamp
+          # `suppression_mechanism` and `high_integrity_process` into bench/results/, and
+          # this is the only step that makes them retrievable after the job ends.
+          path: |
+            bench/results/ci-lane/
+            bench/results/criterion4_icd_witness-dev*.json
+            bench/results/criterion5_shaderless_witness-dev*.json
+            bench/results/criterion3d_layer_witness-dev*.json
           if-no-files-found: warn
