@@ -97,10 +97,28 @@ def test_missing_key_is_mechanism_unavailable_not_a_crash():
 @pytest.mark.skipif(sys.platform != "win32", reason="exercises the real Windows registry API")
 def test_write_protected_key_is_mechanism_unavailable_not_a_crash():
     """A real HKLM key that exists but this process cannot write — the actual shape of
-    "no admin rights" on a non-elevated dev box, as opposed to the simulated-platform
-    tests above."""
+    "no admin rights", exercised without assuming this process's own elevation level.
+
+    CORRECTED 2026-08-06 (real CI, run 31129192350): this test originally targeted
+    ``SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion`` and asserted unconditional
+    ``PermissionError``. That key is only Administrator/elevation-gated — writable by
+    ANY High-integrity (elevated) token, admin or not — and the GitHub-hosted Windows
+    runner's job process genuinely IS High integrity (proven by
+    `test_is_high_integrity_runs_the_real_win32_call_path_without_raising`, same run),
+    so the write there silently succeeded and the test failed with "DID NOT RAISE".
+    That is not a bug in `suppress_registry_entries` — the runner's process really can
+    write there — it was a false assumption in the test that "no admin rights" was the
+    only real-world shape of "this key is unwritable".
+
+    ``SECURITY``/``SAM`` are different in kind: those hives are ACL'd to the SYSTEM
+    account specifically, not merely to elevated/Administrator tokens (verified locally
+    at Medium integrity via `.venv`, both raise ``PermissionError`` immediately), so
+    they stay genuinely unwritable to this process on both a non-elevated dev box and an
+    elevated-but-not-SYSTEM GitHub-hosted CI runner alike — a real, environment-
+    independent proof of "no write access", rather than one that happens to track this
+    dev box's own token."""
     with pytest.raises(rs.RegistryMechanismUnavailable, match="no write access"):
-        with rs.suppress_registry_entries(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"):
+        with rs.suppress_registry_entries(r"SECURITY"):
             pass
 
 
@@ -384,13 +402,20 @@ def test_is_high_integrity_is_false_on_a_simulated_non_windows_platform(monkeypa
 
 @pytest.mark.skipif(sys.platform != "win32", reason="exercises the real Win32 token API")
 def test_is_high_integrity_runs_the_real_win32_call_path_without_raising():
-    """A smoke test against the real Win32 API on this dev box: it must return a plain
-    `bool` without raising. This dev box is known (module docstring, prior turns'
-    established constraints) to run at Medium integrity — a non-elevated, UAC-split
-    admin token — so the real answer here must be `False`; if this ever starts
-    returning `True` on an unelevated shell, that is itself evidence something about this
-    box's security context changed and worth investigating, not evidence of a bug in the
-    function."""
+    """A smoke test against the real Win32 API: it must return a plain `bool` without
+    raising, on whatever process token this happens to run under.
+
+    CORRECTED 2026-08-06 (real CI, run 31129192350): this test originally hardcoded
+    `assert result is False` on the assumption that this dev box's Medium-integrity
+    answer generalizes to every environment. It does not: the GitHub-hosted Windows
+    runner's job process is genuinely High integrity, so `is_high_integrity()` there
+    correctly (and expectedly) returns `True` — that is exactly the real-world signal
+    Morpheus's Blocker 2 (registry_disable required under High integrity) depends on,
+    not a bug. Asserting `is False` unconditionally would have failed forever on CI for
+    the right reason and the wrong test. The only thing this smoke test may assert
+    portably is the type and non-raising contract; the boolean value legitimately
+    differs by environment and is exercised by the criterion 4/3d witnesses themselves
+    (which stamp `high_integrity_process` into their artifacts) rather than re-asserted
+    here."""
     result = rs.is_high_integrity()
     assert isinstance(result, bool)
-    assert result is False
