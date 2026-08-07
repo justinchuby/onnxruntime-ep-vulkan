@@ -1338,7 +1338,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lane-evidence-linux
-          path: bench/results/ci-lane/
+          # The criterion witnesses write to bench/results/ (not ci-lane/), so without
+          # these globs their `suppression_mechanism` / `high_integrity_process` stamps
+          # are produced and then thrown away with the runner — Morpheus's non-blocking
+          # finding 3 on PR #45.
+          path: |
+            bench/results/ci-lane/
+            bench/results/criterion4_icd_witness-dev*.json
+            bench/results/criterion5_shaderless_witness-dev*.json
+            bench/results/criterion3d_layer_witness-dev*.json
           if-no-files-found: warn
 
   # ----------------------------------------------------------------
@@ -1928,52 +1936,67 @@ jobs:
           ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll
         run: |
           $env:PATH = "$env:ORT_HOME\lib;$env:PATH"
-          $env:VK_ICD_FILENAMES = "C:\nonexistent\lvp_icd.json"
-          $env:VK_DRIVER_FILES  = "C:\nonexistent\lvp_icd.json"
           $env:ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE = ""
           New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
           # ---------------------------------------------------------------
-          # FIRST: did the suppression take? On Windows this is a real
-          # question, not a formality. PLATFORMS.md §7.4.1: the LunarG
-          # loader SILENTLY IGNORES VK_DRIVER_FILES/VK_ICD_FILENAMES in
-          # elevated processes, and GitHub's Windows runners are elevated —
-          # which is exactly why this lane registers lavapipe in the
-          # registry instead. If the ICD is still there, the gate will
-          # execute and pass, and reporting that as "the gate cannot fail"
-          # would blame the gate for a control that never fired. That is a
-          # real detection's costume on an instrument outage, and it routes
-          # the finding to the wrong owner (R13).
+          # HOW THIS STEP ARMS ITSELF, AND WHY IT CHANGED (issue #1 / PR #45).
           #
-          # This used to be an inline `-match 'passed the §7.2 capability
-          # gate'`, and that test was ALWAYS TRUE: the report line reads
-          # "{n} device(s) passed the §7.2 capability gate." and n is 0 when
-          # the suppression DID take. So the short-circuit fired on every
-          # run and this control has never once been exercised. A detector
-          # that fires on every input is a constant, not a detector. The
-          # count is the discriminator, so ci/check_icd_suppression.py
-          # parses the count, has two-polarity tests, and writes a record
-          # whose content varies with its input (R10) instead of an
-          # annotation that leaves no artifact.
+          # It used to set VK_ICD_FILENAMES / VK_DRIVER_FILES to a nonexistent
+          # manifest and then ask ci/check_icd_suppression.py whether that had
+          # taken. On this runner the answer is ALWAYS no. PLATFORMS.md §7.4.1:
+          # the LunarG loader reads those variables through loader_secure_getenv,
+          # which returns NULL in a High-integrity process, and GitHub's Windows
+          # runners are elevated. So the step printed
+          # ERROR(instrument=icd_suppression_ineffective), exited 0, and moved on
+          # — every run, without exception. It executed, it was green, and it
+          # asserted NOTHING. A control that never reaches its subject is not a
+          # control, and a green that cannot go red is not a signal (R13).
+          #
+          # ci/with_icd_suppressed.py tries every declared mechanism in turn and
+          # runs the gate only INSIDE an arm whose own loader probe reported the
+          # ICD gone. The third arm — disabling the ICD's registered value under
+          # HKLM\SOFTWARE\Khronos\Vulkan\Drivers — is not gated by process
+          # integrity at all, which is the whole finding of issue #1, measured on
+          # this very runner (run 31141401735, job 92751885740: both env arms
+          # delivered and ineffective, registry_disable suppressed). The two env
+          # arms are still attempted first, so the mechanism that wins beats
+          # competitors that actually ran rather than winning by walkover.
+          #
+          # If NO mechanism removes the ICD this step is now RED, not a warning:
+          # the falsifier this lane relies on cannot be reported as unavailable
+          # while a mechanism that has been observed working on this runner is
+          # declared. `bench/results/ci-lane/icd-suppression.json` names every arm
+          # attempted, the environment each one actually delivered, and which one
+          # took.
           # ---------------------------------------------------------------
-          rust\target\release\epctl.exe --probe-loader *> bench\results\ci-lane\icd-probe-report.txt
-          $probeExit = $LASTEXITCODE
-          Get-Content bench\results\ci-lane\icd-probe-report.txt
-          python ci\check_icd_suppression.py bench\results\ci-lane\icd-probe-report.txt `
+          $out = python ci\with_icd_suppressed.py `
+            --probe rust\target\release\epctl.exe `
+            --probe-report bench\results\ci-lane\icd-probe-report.txt `
             --record-out bench\results\ci-lane\icd-suppression.json `
-            --exit-code $probeExit
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "::warning title=ICD-removal negative control did not fire::ERROR(instrument) — see bench/results/ci-lane/icd-suppression.json. This step asserts NOTHING about the gate: it did not reach its observation. The gate's falsifier on this lane is the loader-independent decline-probe control in the next step, which is mandatory and cannot be skipped."
-            exit 0
-          }
-          $out = python ci\gate_chain_fp32.py `
+            -- python ci\gate_chain_fp32.py `
             --verdict-out bench\results\ci-lane\negative-control.json `
             --workdir bench\results\ci-lane 2>&1 | Out-String
-          $code = $LASTEXITCODE
+          $armed = $LASTEXITCODE
           Write-Host $out
+          if ($armed -eq 4) {
+            Write-Error "NEGATIVE CONTROL FAILED (instrument): every declared suppression mechanism was attempted and the Vulkan ICD is still present, so the gate was never run without it. See bench/results/ci-lane/icd-suppression.json for what each arm delivered. This used to be a ::warning and an exit 0; it is red now because registry_disable has been observed removing the ICD on this runner, so 'no mechanism worked' is a regression, not a platform limit."
+            exit 1
+          }
+          if ($armed -ne 0) {
+            Write-Error "NEGATIVE CONTROL FAILED (instrument): ci/with_icd_suppressed.py exited $armed, which is neither PASS nor its declared ERROR(instrument). The control's own harness is broken and it asserts nothing about the gate."
+            exit 1
+          }
+          $stamp = [regex]::Match($out, '\[ICD-SUPPRESSED\] mechanism=(?<mech>\S+) child_exit=(?<code>-?\d+)')
+          if (-not $stamp.Success) {
+            Write-Error "NEGATIVE CONTROL FAILED (instrument): the wrapper reported PASS without stamping which mechanism took and what the gate exited. An unnamed mechanism is not evidence."
+            exit 1
+          }
+          $mech = $stamp.Groups['mech'].Value
+          $code = [int]$stamp.Groups['code'].Value
           # Quote the text, never the count (R13 second clause): the assertion is on
           # the token the gate printed, not on how many things went wrong.
           if ($code -eq 0) {
-            Write-Error "NEGATIVE CONTROL FAILED: the gate passed with no Vulkan ICD present. It cannot distinguish a run that executed from one that did not, so every green in this lane is uninterpretable."
+            Write-Error "NEGATIVE CONTROL FAILED: the gate passed with no Vulkan ICD present (removed by $mech). It cannot distinguish a run that executed from one that did not, so every green in this lane is uninterpretable."
             exit 1
           }
           if ($out -notmatch 'FAIL\(condition=UNATTRIBUTED\)') {
@@ -1984,7 +2007,7 @@ jobs:
             Write-Error "NEGATIVE CONTROL FAILED: UNATTRIBUTED was reported as DIVERGENT. These have different owners and different fixes and must never be folded together."
             exit 1
           }
-          Write-Host "NEGATIVE CONTROL PASSED: with no ICD the gate reported FAIL(condition=UNATTRIBUTED) and exited $code. The gate can fail, so its passes are readable."
+          Write-Host "NEGATIVE CONTROL PASSED: with the ICD removed by $mech the gate reported FAIL(condition=UNATTRIBUTED) and exited $code. The gate can fail, so its passes are readable."
           # This step's own verdict is PASS at this point, not $code (issue #49): $code is
           # the gate script's INTENTIONALLY non-zero exit, and `Write-Host` never touches
           # $LASTEXITCODE. Without an explicit exit here, GitHub's generated `pwsh -command`
@@ -2067,5 +2090,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lane-evidence-windows
-          path: bench/results/ci-lane/
+          # Same reason as the Linux lane: the criterion-4 / criterion-3d witnesses stamp
+          # `suppression_mechanism` and `high_integrity_process` into bench/results/, and
+          # this is the only step that makes them retrievable after the job ends.
+          path: |
+            bench/results/ci-lane/
+            bench/results/criterion4_icd_witness-dev*.json
+            bench/results/criterion5_shaderless_witness-dev*.json
+            bench/results/criterion3d_layer_witness-dev*.json
           if-no-files-found: warn

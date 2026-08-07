@@ -5760,3 +5760,228 @@ def test_ledger_loss_probe_is_declared_in_the_register_the_lane_and_the_inventor
 
     inventory = (CI_DIR / "lane_inventory.py").read_text(encoding="utf-8")
     assert 'id="hostfree.ledger_loss_probe"' in inventory
+
+
+# ===========================================================================
+# ci/with_icd_suppressed.py -- issue #1 / PR #45 applied to the lane itself. The Windows
+# ICD-removal negative control armed itself with VK_ICD_FILENAMES/VK_DRIVER_FILES, which
+# a High-integrity process drops (PLATFORMS.md 7.4.1), so on every hosted run it printed
+# ERROR(instrument=icd_suppression_ineffective) and exited 0: a step that executed, was
+# green, and asserted NOTHING. This wrapper tries every declared mechanism -- including
+# the registry one, which is not gated by process integrity -- and runs the child only
+# INSIDE an arm whose own loader probe reported the ICD gone.
+#
+# Two polarities on the property that matters: an arm that took must carry its
+# environment all the way to the probe (the dead-arm defect Morpheus rejected PR #45
+# for), and a run where no arm took must NOT run the child and must NOT report a pass.
+# ===========================================================================
+
+WITH_ICD_SUPPRESSED = CI_DIR / "with_icd_suppressed.py"
+
+# A stand-in for `epctl --probe-loader`. It answers from its own os.environ, so the only
+# way it can report the ICD gone is if the arm's environment genuinely reached it.
+_FAKE_PROBE = """\
+import os, sys
+sys.stdout.reconfigure(encoding="utf-8")
+gone = os.environ.get("VK_DRIVER_FILES", "").endswith("no_such_icd.json")
+if os.environ.get("FAKE_PROBE_ALWAYS_PRESENT"):
+    gone = False
+n = 0 if gone else 2
+print("[vulkan-ep] INFO:   %d device(s) passed the \\u00a77.2 capability gate." % n)
+sys.exit(1 if n == 0 else 0)
+"""
+
+# A stand-in for `ci/gate_chain_fp32.py` on a suppressed host: it must be able to prove
+# it ran, and it exits non-zero on purpose, exactly like the real gate does.
+_FAKE_CHILD = """\
+import os, sys
+open(os.environ["FAKE_CHILD_MARKER"], "w").write(os.environ.get("VK_DRIVER_FILES", ""))
+print("gate: FAIL(condition=UNATTRIBUTED)")
+sys.exit(9)
+"""
+
+
+def _icd_wrapper(tmp_path, *extra, arms="driver_search_path,loader_driver_filter", child=True):
+    probe = tmp_path / "fake_probe.py"
+    probe.write_text(_FAKE_PROBE, encoding="utf-8")
+    marker = tmp_path / "child_ran.txt"
+    argv = [
+        sys.executable,
+        str(WITH_ICD_SUPPRESSED),
+        "--probe",
+        sys.executable,
+        str(probe),
+        "--probe-report",
+        str(tmp_path / "probe.txt"),
+        "--record-out",
+        str(tmp_path / "record.json"),
+        *extra,
+    ]
+    if arms:
+        argv += ["--arms", arms]
+    if child:
+        kid = tmp_path / "fake_child.py"
+        kid.write_text(_FAKE_CHILD, encoding="utf-8")
+        argv += ["--", sys.executable, str(kid)]
+    else:
+        argv += ["--", sys.executable, "-c", "pass"]
+    env = dict(os.environ, FAKE_CHILD_MARKER=str(marker))
+    proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(REPO_ROOT), env=env)
+    record = {}
+    if (tmp_path / "record.json").exists():
+        record = json.loads((tmp_path / "record.json").read_text(encoding="utf-8"))
+    return proc, record, marker
+
+
+def test_with_icd_suppressed_runs_the_child_inside_the_arm_that_took(tmp_path):
+    """The pair, green polarity: an arm removes the ICD, the child runs under it, and the
+    stamp names WHICH mechanism -- never 'something worked'."""
+    proc, record, marker = _icd_wrapper(tmp_path)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == EXIT_PASS, out
+    assert record["suppression_mechanism"] == "driver_search_path", record
+    assert "[ICD-SUPPRESSED] mechanism=driver_search_path child_exit=9" in out, out
+    assert marker.exists(), "the child never ran, but the wrapper reported PASS"
+    assert record["child_exit_code"] == 9, record
+
+
+def test_with_icd_suppressed_delivers_the_arms_environment_to_the_child(tmp_path):
+    """The defect Morpheus rejected PR #45 for, screened here: entering an arm without
+    binding its environment spawns an unmodified child. The marker file records what the
+    CHILD actually read out of its own environment, so a dropped arm cannot pass."""
+    proc, record, marker = _icd_wrapper(tmp_path)
+    assert proc.returncode == EXIT_PASS, proc.stdout + proc.stderr
+    assert marker.read_text(encoding="utf-8").endswith("no_such_icd.json"), (
+        "the child ran without the arm's environment: the wrapper suppressed nothing"
+    )
+    took = [a for a in record["suppression_attempts"] if a["mechanism"] == "driver_search_path"][0]
+    assert took["env_applied"].get("VK_DRIVER_FILES", "").endswith("no_such_icd.json"), took
+
+
+def test_with_icd_suppressed_red_polarity_no_arm_took_is_not_a_pass(tmp_path):
+    """The red polarity, and the whole reason this exists: when nothing removes the ICD
+    the child must NOT run and the wrapper must NOT exit 0. The old step exited 0 here."""
+    proc, record, marker = _icd_wrapper(tmp_path, "--nonexistent-icd", "x", child=True)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=no_mechanism_suppressed_the_icd)" in out, out
+    assert not marker.exists(), "the child ran even though the ICD was still present"
+    assert record["suppression_mechanism"] is None, record
+    assert record["child_exit_code"] is None, record
+
+
+def test_with_icd_suppressed_attempts_every_declared_arm_before_giving_up(tmp_path):
+    """A mechanism can only be said to have failed if it was tried. When none takes, the
+    attempted list must equal the declared list -- including the registry arm, whatever
+    this host lets it do."""
+    proc, record, _ = _icd_wrapper(
+        tmp_path,
+        "--nonexistent-icd",
+        "x",
+        arms="driver_search_path,loader_driver_filter,registry_disable",
+    )
+    assert proc.returncode == EXIT_ERROR_INSTRUMENT, proc.stdout + proc.stderr
+    attempted = [a["mechanism"] for a in record["suppression_attempts"]]
+    assert attempted == record["arms_declared"], record
+    registry = [a for a in record["suppression_attempts"] if a["mechanism"] == "registry_disable"]
+    assert registry and registry[0]["state"] in {
+        "mechanism_unavailable",
+        "icd_suppression_ineffective",
+        "probe_report_unreadable",
+        "suppressed",
+    }, registry
+
+
+def test_with_icd_suppressed_disagreeing_witnesses_are_unreadable_not_suppressed(tmp_path):
+    """`0 devices passed` printed by a probe that exited 0 is two readers disagreeing.
+    That is an instrument state; taking the convenient one is how a lane learns to lie."""
+    probe = tmp_path / "liar.py"
+    probe.write_text(
+        "import sys\n"
+        'sys.stdout.reconfigure(encoding="utf-8")\n'
+        'print("[vulkan-ep] INFO:   0 device(s) passed the \\u00a77.2 capability gate.")\n'
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    marker = tmp_path / "child_ran.txt"
+    kid = tmp_path / "kid.py"
+    kid.write_text(_FAKE_CHILD, encoding="utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(WITH_ICD_SUPPRESSED),
+            "--probe",
+            sys.executable,
+            str(probe),
+            "--probe-report",
+            str(tmp_path / "probe.txt"),
+            "--record-out",
+            str(tmp_path / "record.json"),
+            "--arms",
+            "driver_search_path",
+            "--",
+            sys.executable,
+            str(kid),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=dict(os.environ, FAKE_CHILD_MARKER=str(marker)),
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == EXIT_ERROR_INSTRUMENT, out
+    assert not marker.exists(), "the child ran on a report two readers could not agree on"
+    record = json.loads((tmp_path / "record.json").read_text(encoding="utf-8"))
+    assert record["suppression_attempts"][0]["state"] == "probe_report_unreadable", record
+
+
+def test_with_icd_suppressed_a_probe_that_cannot_launch_is_not_a_suppression(tmp_path):
+    """'The binary is missing' and 'the ICD is gone' produce the same silence. Only one
+    of them means the control reached its subject."""
+    proc, record, marker = _icd_wrapper(
+        tmp_path, arms="driver_search_path"
+    )
+    assert proc.returncode == EXIT_PASS  # sanity: the pair's other polarity
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(WITH_ICD_SUPPRESSED),
+            "--probe",
+            str(tmp_path / "no_such_epctl.exe"),
+            "--probe-report",
+            str(tmp_path / "probe2.txt"),
+            "--record-out",
+            str(tmp_path / "record2.json"),
+            "--arms",
+            "driver_search_path",
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert proc.returncode == EXIT_ERROR_INSTRUMENT, proc.stdout + proc.stderr
+    record2 = json.loads((tmp_path / "record2.json").read_text(encoding="utf-8"))
+    assert record2["suppression_attempts"][0]["state"] == "probe_report_unreadable", record2
+
+
+def test_with_icd_suppressed_no_child_is_a_usage_error_not_a_silent_pass(tmp_path):
+    """A wrapper with nothing to wrap must not report that something ran."""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(WITH_ICD_SUPPRESSED),
+            "--probe",
+            sys.executable,
+            "--probe-report",
+            str(tmp_path / "probe.txt"),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "usage" in (proc.stdout + proc.stderr)
