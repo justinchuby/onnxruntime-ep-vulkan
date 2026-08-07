@@ -1747,6 +1747,14 @@ jobs:
       # code is the gate; a bare pytest failure here fails the job with no further indirection.
       # -------------------------------------------------------
       - name: Windows-namespace destination-policy regression (probe_ledger_loss)
+        # if: always() — this suite is unrelated to tests/ops (it exercises
+        # rust/tools/probe_ledger_loss.py's destination policy against this
+        # job's own NTFS volume), so it must not be skipped just because an
+        # earlier, unrelated tests/ops step above went red. Without this the
+        # step silently reports "skipped" on any red pytest run and the
+        # Windows-only regression this hardening exists for is never actually
+        # exercised on the runs that most need it.
+        if: always()
         run: |
           python -m pytest ci\test_lane_checks.py -q --tb=short `
             -k "ledger_loss_probe" -p no:randomly --strict-markers 2>&1 |
