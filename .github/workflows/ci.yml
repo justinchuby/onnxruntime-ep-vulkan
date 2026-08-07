@@ -263,6 +263,32 @@ jobs:
         # this repository's own history at 607056a, not a plant.
         run: python ci/negative_control_build_precondition.py
 
+      - name: PowerShell exit-status screen (a verdict step must consume its own code)
+        # Issue #49: both Windows "Gate negative control" steps captured
+        # `ci/gate_chain_fp32.py`'s intentionally non-zero exit into `$code`, printed the
+        # verdict with `Write-Host` (which never touches $LASTEXITCODE), and fell
+        # through with no `exit`. GitHub's generated pwsh wrapper then appended
+        # `if ((Test-Path variable:\LASTEXITCODE)) { exit $LASTEXITCODE }`, so the step's
+        # real exit code stayed pinned to the gate's deliberately non-zero $code even
+        # when the step's own log said PASSED. This is a static screen over the workflow
+        # text for the general shape -- a step that captures $LASTEXITCODE into a
+        # variable and does not end its script by explicitly consuming it -- so it fires
+        # on the pull request that introduces the next instance rather than on the
+        # incident that reveals it.
+        run: |
+          python ci/check_powershell_exit_status.py \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            .github/workflows/ci.yml .github/workflows/conformance.yml
+
+      - name: PowerShell exit-status negative control (demand red on the real shape)
+        # Includes a REPLAYED arm: the real stale-exit-code text read out of this
+        # repository's own history at the commit issue #49 was filed against, not a
+        # plant, and it asserts BOTH known offending steps are named -- the one issue
+        # #49 was filed against and its sibling, which carries the identical shape and
+        # had simply never been exercised because Windows' ICD suppression had never
+        # taken until PR #45.
+        run: python ci/negative_control_powershell_exit_status.py
+
       - name: Flake-witness negative control (demand red on an intermittent)
         # A flake witness on a repo with no reproducing flake is silent, and silence from
         # a check is indistinguishable from silence from no check. This control makes it
@@ -1959,6 +1985,13 @@ jobs:
             exit 1
           }
           Write-Host "NEGATIVE CONTROL PASSED: with no ICD the gate reported FAIL(condition=UNATTRIBUTED) and exited $code. The gate can fail, so its passes are readable."
+          # This step's own verdict is PASS at this point, not $code (issue #49): $code is
+          # the gate script's INTENTIONALLY non-zero exit, and `Write-Host` never touches
+          # $LASTEXITCODE. Without an explicit exit here, GitHub's generated `pwsh -command`
+          # wrapper appends `if ((Test-Path variable:\LASTEXITCODE)) { exit $LASTEXITCODE }`,
+          # which would still read $code — the STALE exit status of the command this step
+          # exists to declare successfully non-zero — and report this passing step as failed.
+          exit 0
 
       # -------------------------------------------------------
       # THE FALSIFIER THIS LANE ACTUALLY RELIES ON.
@@ -1996,6 +2029,11 @@ jobs:
             exit 1
           }
           Write-Host "NEGATIVE CONTROL PASSED (loader untouched): with a healthy EP that claimed nothing, the gate reported FAIL(condition=UNATTRIBUTED) and exited $code."
+          # See the sibling ICD-removal control above (issue #49): this step's verdict is
+          # PASS here, not $code, which is the gate's deliberately non-zero exit. Without
+          # this explicit exit, GitHub's implicit `exit $LASTEXITCODE` wrapper reads that
+          # stale value and reports a step whose own log says PASSED as failed.
+          exit 0
 
       # -------------------------------------------------------
       # OBLIGATION 8 — see the Linux lane for the full rationale.

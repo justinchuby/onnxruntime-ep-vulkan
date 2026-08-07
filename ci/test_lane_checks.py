@@ -3620,6 +3620,164 @@ def test_negative_control_build_precondition_passes_under_both_encoding_polariti
         )
 
 
+# ===========================================================================
+# ci/check_powershell_exit_status.py -- issue #49. A Windows `run:` step captures
+# $LASTEXITCODE into a variable to brand its own verdict, and its success path ends
+# without an explicit `exit`, so GitHub's implicit pwsh wrapper reads whatever native
+# command ran LAST -- the gate's deliberately non-zero exit, never the step's own
+# printed PASS. Two polarities plus the negative control's own two-polarity coverage.
+# ===========================================================================
+
+POWERSHELL_EXIT_STATUS = CI_DIR / "check_powershell_exit_status.py"
+
+
+def _pwsh_exit(*args: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        [sys.executable, str(POWERSHELL_EXIT_STATUS), *args],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_powershell_exit_status_is_green_on_this_tree(tmp_path):
+    """The pair: this repository's own workflows are clean after the issue #49 fix."""
+    rc, out = _pwsh_exit(
+        str(REPO_ROOT / ".github" / "workflows" / "ci.yml"),
+        str(REPO_ROOT / ".github" / "workflows" / "conformance.yml"),
+    )
+    assert rc == 0, out
+    assert "POWERSHELL-EXIT-STATUS: PASS" in out
+
+
+def test_powershell_exit_status_reds_on_the_real_issue_49_shape(tmp_path):
+    """A `$code = $LASTEXITCODE` capture whose success path falls through to a bare
+    `Write-Host` -- the exact shape both Windows 'Gate negative control' steps carried
+    until issue #49 -- must be caught, and it must name the R13 condition token.
+    """
+    bad = tmp_path / "stale.yml"
+    bad.write_text(
+        "jobs:\n"
+        "  build-test-windows:\n"
+        "    steps:\n"
+        "      - name: Gate negative control -- a declined artifact must produce UNATTRIBUTED\n"
+        "        run: |\n"
+        "          $out = python ci\\gate_chain_fp32.py --artifact decline_probe 2>&1 | Out-String\n"
+        "          $code = $LASTEXITCODE\n"
+        "          Write-Host $out\n"
+        "          if ($code -eq 0) {\n"
+        "            Write-Error \"NEGATIVE CONTROL FAILED\"\n"
+        "            exit 1\n"
+        "          }\n"
+        "          Write-Host \"NEGATIVE CONTROL PASSED (loader untouched): exited $code.\"\n",
+        encoding="utf-8",
+    )
+    rc, out = _pwsh_exit(str(bad))
+    assert rc == 1, "a step whose own printed verdict is PASS must not silently exit red-only"
+    assert "FAIL(condition=stale_exit_code_after_native_capture)" in out
+    assert "Gate negative control" in out
+
+
+def test_powershell_exit_status_clears_on_an_explicit_exit_0(tmp_path):
+    """The actual fix applied for issue #49: an explicit `exit 0` on the success path."""
+    fixed = tmp_path / "fixed.yml"
+    fixed.write_text(
+        "jobs:\n"
+        "  build-test-windows:\n"
+        "    steps:\n"
+        "      - name: Gate negative control -- a declined artifact must produce UNATTRIBUTED\n"
+        "        run: |\n"
+        "          $out = python ci\\gate_chain_fp32.py --artifact decline_probe 2>&1 | Out-String\n"
+        "          $code = $LASTEXITCODE\n"
+        "          Write-Host $out\n"
+        "          if ($code -eq 0) {\n"
+        "            Write-Error \"NEGATIVE CONTROL FAILED\"\n"
+        "            exit 1\n"
+        "          }\n"
+        "          Write-Host \"NEGATIVE CONTROL PASSED (loader untouched): exited $code.\"\n"
+        "          exit 0\n",
+        encoding="utf-8",
+    )
+    rc, out = _pwsh_exit(str(fixed))
+    assert rc == 0, out
+    assert "POWERSHELL-EXIT-STATUS: PASS" in out
+
+
+def test_powershell_exit_status_does_not_flag_a_step_that_never_captures_the_code(tmp_path):
+    """A step whose implicit exit already carries the last real command's own status
+    (nothing has second-guessed it) is out of scope: flagging it would be noise.
+    """
+    clean = tmp_path / "no-capture.yml"
+    clean.write_text(
+        "jobs:\n"
+        "  build-test-windows:\n"
+        "    steps:\n"
+        "      - name: Compile all targets\n"
+        "        run: |\n"
+        "          cargo check --release --manifest-path rust\\Cargo.toml --all-targets\n"
+        "          exit $LASTEXITCODE\n",
+        encoding="utf-8",
+    )
+    rc, out = _pwsh_exit(str(clean))
+    assert rc == 0, out
+
+
+def test_powershell_exit_status_prints_its_condition_token_on_a_planted_arm(tmp_path):
+    """R13 discipline for this new screen, checked directly rather than only through the
+    negative control -- a red step with no condition token is a red with no subject.
+    """
+    bad = tmp_path / "dead.yml"
+    bad.write_text(
+        "jobs:\n"
+        "  x:\n"
+        "    steps:\n"
+        "      - name: Some verdict step\n"
+        "        run: |\n"
+        "          python some_gate.py\n"
+        "          $rc = $LASTEXITCODE\n"
+        "          Write-Host \"done, rc=$rc\"\n",
+        encoding="utf-8",
+    )
+    rc, out = _pwsh_exit(str(bad))
+    assert rc == 1
+    assert re.search(r"FAIL\(condition=\w+\)", out), (
+        "a non-zero exit with no R13 condition token is a red with no subject"
+    )
+
+
+def test_powershell_exit_status_workflow_not_found_is_an_instrument_error(tmp_path):
+    rc, out = _pwsh_exit(str(tmp_path / "does-not-exist.yml"))
+    assert rc == 4
+    assert "ERROR(instrument=workflow_not_found)" in out
+
+
+def test_powershell_exit_status_no_args_is_usage_not_a_pass():
+    rc, out = _pwsh_exit()
+    assert rc == 2
+
+
+NEGATIVE_CONTROL_POWERSHELL_EXIT_STATUS = CI_DIR / "negative_control_powershell_exit_status.py"
+
+
+def test_negative_control_powershell_exit_status_all_arms_fire():
+    """The production negative control itself -- every LIVE/REPLAYED/PLANTED arm must
+    fire as declared, the same discipline `negative_control_build_precondition.py` is
+    held to.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(NEGATIVE_CONTROL_POWERSHELL_EXIT_STATUS)],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(REPO_ROOT),
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "NEGATIVE-CONTROL: PASS" in out
+    assert "REPLAYED" in out and "PLANTED" in out and "LIVE" in out
+
+
 # ---------------------------------------------------------------------------
 # ci/negative_control_open_reds.py's _live_failure_note() -- the helper that anchors a
 # failing LIVE arm's diagnostic on check_open_reds.py's own state-table header instead

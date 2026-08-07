@@ -119,6 +119,22 @@ TABLE: dict[str, dict[str, str]] = {
         "subject": "the wiring census output",
         "oracle": "criterion 12's three further requirements, declared outside the census",
     },
+    "ci/check_powershell_exit_status.py": {
+        "verdict": "EXTERNAL",
+        "subject": "Windows `pwsh` step bodies in the workflow files that capture $LASTEXITCODE",
+        "oracle": (
+            "the structural rule that a step which captures $LASTEXITCODE into a variable "
+            "must end by consuming it (an explicit exit/throw), derived from GitHub Actions' "
+            "own documented implicit wrapper tail rather than from the step's own text"
+        ),
+        "note": (
+            "sibling of check_tautological_assertions.py below: the oracle is an "
+            "independently-stated rule about how the generated pwsh wrapper behaves, not the "
+            "step's own printed verdict agreeing with itself. Exists because issue #49 found "
+            "two Windows steps that printed PASSED while exiting on an earlier command's "
+            "stale code."
+        ),
+    },
     "ci/check_readme_usage.py": {
         "verdict": "ARTIFACT",
         "subject": "the import statements in README.md's fenced python blocks",
