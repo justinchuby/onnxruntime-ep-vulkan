@@ -304,3 +304,29 @@ finding (both EPs ~6x further from true than from each other at model scale) -> 
 bounding what an AGREE means; Tank's "loudly logged, silently returned" plus the
 `disable_cpu_ep_fallback` hole -> Rai and Link; `cargo fmt --check` re-broken by three consecutive
 merges -> Link, as a CI-discipline item.
+
+### 2026-08-07: the stacked-branch squash ledger hazard — cited by `docs/PERF.md` §26.10
+
+**By:** Trinity (landing a record that PR #64 cited at a `.gitignore`d inbox path; the hazard was
+found on `squad/56-real-model-performance`, issue #56).
+
+**What:** Do not stack a branch that edits `evidence/proof_ledger.jsonl` on an unmerged PR. When the
+dependency lands as a **squash**, the squash commit carries the *pre-change* state of every file you
+edited on top of it and is *younger* than your commits. `ci/check_ledger_census.py`'s reversed
+topological walk therefore reads the squash as an **undeclared backward witness move** — and a
+backward transition can never be declared out of the problem, because
+`tests/ops/test_proof_ledger.py::test_every_declared_transition_lands_on_the_digest_this_build_computes`
+correctly requires every declared transition to end at the digest *this build* computes. Rebuilding
+the stack as a fresh commit on `main` is the only fix. Merging `main` is **not**: CI screens
+`refs/pull/N/merge`, which has the same shape as the squash.
+
+**Also:** a `rewitness` record whose cause arrives in the same change cannot be written as
+`rewitness/2`. The only sha a v2 `caused_by` could name is a branch commit, and a squash erases it —
+`ci/simulate_squash_rewitness.py` reports `FAIL(condition=unlanded_rewitness_cause)` for exactly
+this. Use `rewitness/3`'s content-addressed `caused_by_content` (`kind: same_change`), which reads
+identically on the branch head, on a squash, on a rebase, on a merge commit and in the working tree.
+
+**Why this is here and not in `.squad/decisions/inbox/`:** `.gitignore:52` ignores
+`.squad/decisions/inbox/`, so an inbox path exists in no tree on any ref. A published document's
+account of a history hazard must terminate at a file a reviewer can open; `.squad/decisions.md` is
+tracked and merges with the `squad-history` driver, so it is the citable home.

@@ -451,6 +451,15 @@ def environment_record(device, args) -> dict:
         "device": {
             "index": device.index,
             "name": device.name,
+            # Stable identity (issue #18, landed on main as #54). An index is a position in a
+            # probe order and a name is not unique across two identical cards, so neither can
+            # say WHICH card a reading came from once the box changes. `uuid`/`luid`/`pci` can.
+            # `getattr` with a default because the artifacts already committed under §26 were
+            # written before #54 and carry `index`/`name`/`driver` only: this records identity
+            # for every FUTURE run without retroactively claiming the old runs recorded it.
+            "uuid": getattr(device, "uuid", None),
+            "luid": getattr(device, "luid", None),
+            "pci": getattr(device, "pci", None),
             "driver": getattr(device, "driver_version", None),
             "transfer_class": getattr(device, "transfer_class", None),
             "timestamp_period_ns": getattr(device, "timestamp_period", None),

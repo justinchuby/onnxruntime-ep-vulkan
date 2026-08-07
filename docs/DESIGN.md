@@ -5725,16 +5725,27 @@ of every 32 lanes were masked off for the entire kernel, on every device this EP
 
 #### The measurement that made it the target
 
-`bench/results/real_model_diagnostics.json` reads the EP's own GPU timestamp queries per kernel on
-the real Foundry Phi-3.5 int4 graph. ORT's profiler cannot answer this question — it attributes
-every Vulkan node to the single fused node it hands the EP — so the attribution comes from
-`ONNXRUNTIME_EP_VULKAN_TRACE` + `..._TRACE_GPU`:
+The per-kernel attribution comes from the EP's own GPU timestamp queries
+(`ONNXRUNTIME_EP_VULKAN_TRACE` + `..._TRACE_GPU`) on the real Foundry Phi-3.5 int4 graph — ORT's
+profiler cannot answer this question, because it attributes every Vulkan node to the single fused
+node it hands the EP. **One committed artifact holds that aggregate and this table is read off it:**
+`bench/results/real_model_gqa_local_size.json` → `timing[].points[local_size == 1].by_kernel_us`,
+keys `vulkan.gpu.gqa_f16` and `vulkan.gpu.q_gemv_matmul_nbits_f16`, against that point's `total_us`.
+`local_size = 1` is the pre-change geometry, so those points are the before state.
 
 | case | GPU total | `gqa_f16` | `q_gemv_matmul_nbits_f16` |
 |---|---|---|---|
-| prefill `M=1` | 20.04 ms | 1.48 (7.4%) | 17.47 (87.2%) |
-| prefill `M=128` | 2911.21 ms | **1884.19 (64.7%)** | 1020.11 (35.0%) |
-| decode past=1024 | 286.24 ms | **267.68 (93.5%)** | 17.47 (6.1%) |
+| prefill `M=1` | 20.03 ms | 1.48 (7.4%) | 17.46 (87.2%) |
+| prefill `M=128` | 2927.34 ms | **1891.19 (64.6%)** | 1029.21 (35.2%) |
+| decode past=1024 | 287.18 ms | **268.57 (93.5%)** | 17.52 (6.1%) |
+
+`docs/PERF.md` §26.4 prints the same six rows from the same field, and the two tables now agree
+digit for digit. They did not before: an earlier draft of this section cited
+`bench/results/real_model_diagnostics.json` — which carries ORT's node table, counters, fallback
+and dispatch records and **no** per-kernel GPU field at all — and quoted a `M=128` row of
+2911.21 / 1884.19 (64.7%) / 1020.11 and a decode row of 286.24 / 267.68 / 17.47 that appear in no
+artifact in this repository. Both rows are withdrawn and replaced by the surviving artifact's, which
+is why the headline reads 64.6% here and not 64.7%.
 
 GQA, not the quantised GEMM this EP has spent its optimisation effort on, is the largest single
 consumer of device time in Phi-3.5 at every width above `M = 1`. PR #53's own named next levers
@@ -5791,9 +5802,14 @@ predates this change and still passes untouched) and in
 
 For every *other* size, "bit-identical" is a claim about the source text, so it is verified as one
 rather than argued: `bench/results/probe_gqa_local_size.py` compares whole-model outputs
-byte-for-byte against `local = 1` at seven sizes across six cases — **42 comparisons, 42
-BITWISE-IDENTICAL** (`bench/results/real_model_gqa_local_size.json`). No tolerance is involved and
-none would be appropriate.
+byte-for-byte against the `local = 1` reference in the same case. Six cases at seven sizes are
+**42 measured points**, and each case contributes **6 non-reference comparisons** — the reference
+is not compared with itself — so the verification is **36 cross-arm comparisons, 36
+`BITWISE-IDENTICAL`**, 65 output tensors each
+(`bench/results/real_model_gqa_local_size.json` → `equivalence[].comparisons[].verdict`). No
+tolerance is involved and none would be appropriate. That count is not the same as the harness's
+whole-model equivalence gate, which is 18 cases and 54 arm verdicts under budgets — see
+`docs/PERF.md` §26.2 and §26.5.
 
 #### The tail
 

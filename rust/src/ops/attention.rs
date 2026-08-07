@@ -792,7 +792,7 @@ pub const ENV_GQA_LOCAL_SIZE: &str = "ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE";
 ///   4096 (M=128)  1891.19 1002.68 549.56 315.98 229.62 201.71 194.27    64  <- best
 /// ```
 ///
-/// The rule is best or tied-best at four of the six points. The one place it leaves something is
+/// The rule is best or tied-best at five of the six points. The one place it leaves something is
 /// `M = 8`, where it picks 8 (5.92 ms) over the sweep's best 32 (5.10 ms) — 16%, on the smallest
 /// absolute number in the table, and the price of a rule that keeps **32 workgroups** of spread.
 /// Buying that 0.8 ms means lowering `GQA_MIN_GROUPS` to 8, which changes the 32-invocation rows
@@ -800,8 +800,10 @@ pub const ENV_GQA_LOCAL_SIZE: &str = "ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE";
 /// Decode is where a generation loop spends nearly all of its time, so the trade is declined and
 /// decode keeps *exactly* its pre-#56 geometry: local 1, 32 workgroups, an exact grid.
 ///
-/// Every point above was also checked byte-for-byte against `local = 1` (42 comparisons, 42
-/// BITWISE-IDENTICAL) — the packing changes scheduling, not arithmetic, and that is a claim about
+/// Every NON-REFERENCE point above was also checked byte-for-byte against its case's `local = 1`
+/// reference: 6 cases x 6 non-reference sizes = **36 comparisons, 36 BITWISE-IDENTICAL** (the
+/// reference is not compared with itself; 7 sizes x 6 cases = 42 is the count of measured points,
+/// not of comparisons). The packing changes scheduling, not arithmetic, and that is a claim about
 /// the source text, so it is verified as one.
 pub fn gqa_local_size(total: u32) -> u32 {
     gqa_local_size_with(total, gqa_local_size_override())

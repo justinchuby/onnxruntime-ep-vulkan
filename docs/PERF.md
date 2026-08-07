@@ -4456,6 +4456,14 @@ and the artifact records that absence explicitly in `second_device` rather than 
 inference. This is **not** the RTX 4060 that most of this repository's canonical proof-ledger
 evidence was taken on, and no number here should be compared with one from that machine.
 
+**Device identity, and what these artifacts actually record.** Every §26 artifact was measured
+before `main` grew stable device identity (#54, `bench/devices.py` `uuid`/`luid`/`pci`), so their
+`environment.device` records `index`, `name` and `driver` and **nothing stronger**: on a box with
+two identical cards those three would not say which card ran. That is a real limit of *these*
+readings and is stated rather than papered over. `bench/results/probe_real_model_latency.py` now
+records `uuid`/`luid`/`pci` alongside them, so the limit ends with the next run of the instrument;
+no measurement in §26 changed, and none was re-taken, to add the field.
+
 **Environment.** ORT 1.28.0, Python 3.12.10, Windows 11 10.0.26200, EP `2c080583a1e295bf…`.
 Stock power plan, no affinity mask, no clock lock — so §20 applies and wall clock is
 `STEADY_UNCERTIFIED` by default. Arms are interleaved *because* the box cannot be assumed quiet.
@@ -4492,7 +4500,10 @@ fp16 numerics and made falsifiable:
 * **KV activations** — a three-band structure: clean below `16·ε_fp16·max|ref| + 0.05·|ref|`,
   marginal up to 8× that for at most 1e-4 of elements, gross anywhere ⇒ `DIVERGENT`.
 
-**Result: 18/18 cases, 3/3 arms each, `MATCH`.** Both before and after the change in §26.4.
+**Result: 18/18 cases `PASS`, 54/54 arm verdicts `MATCH`** (3 arms × 18 cases,
+`models[].equivalence` in `real_model_latency_before_gqa.json` and `real_model_latency.json`) —
+both before and after the change in §26.4. These are budgeted verdicts, not bitwise ones; the only
+bitwise comparison in this section is §26.5's 36-comparison local-size sweep.
 
 ### 26.3 The baseline, and the honest headline
 
@@ -4519,10 +4530,15 @@ the whole model at `M ≥ 64`. Token throughput *falls* as `M` grows past 16 —
 batching is for.
 
 The noise floor is the `M = 1` null control, where the tiled and untiled arms bind identical SPIR-V
-under identical specialisation and must be the same pipeline: ratios `0.93 – 1.00`. Row-tile ratios
-near `1.0` in the decode rows are therefore **inside the floor and are not readings**; §20's
-`STEADY_UNCERTIFIED` applies to them. MobileNetV2's floor has a 3.1× contaminated outlier in one
-repeat, which is exactly why it is reported rather than averaged away.
+under identical specialisation and must be the same pipeline. Quoted as the **min–max over the
+three per-repeat ratios**, the same convention §26.6 uses, from
+`real_model_latency_before_gqa.json` → `models[0].noise_floor.ratios` = `[0.994657, 0.926348,
+1.264193]`: **0.926 – 1.264**, median 0.994. Row-tile ratios anywhere inside that interval — which
+is every decode row — are therefore **not readings**; §20's `STEADY_UNCERTIFIED` applies to them.
+MobileNetV2's floor in this same run is worse still, `[0.988282, 5.605136, 0.939699]`: a **5.6×**
+contaminated repeat, which is exactly why the ratios are reported rather than averaged away. (The
+3.1× outlier is `real_model_latency.json`'s MobileNetV2 floor — the *after* run of §26.6, not this
+one; an earlier draft of this paragraph quoted it here.)
 
 ### 26.4 Where the time actually goes
 
@@ -4530,9 +4546,17 @@ ORT's own profiler cannot answer this: it attributes every Vulkan node to the **
 it hands the EP, so its op table shows one row. The attribution below is from the EP's own GPU
 timestamp queries (`ONNXRUNTIME_EP_VULKAN_TRACE` + `..._TRACE_GPU`), aggregated by kernel name.
 
+**Exactly one committed artifact carries that aggregate**, and every row below is read off it:
+`bench/results/real_model_gqa_local_size.json` → `timing[].points[local_size == 1].by_kernel_us`,
+keys `vulkan.gpu.gqa_f16` and `vulkan.gpu.q_gemv_matmul_nbits_f16` against that point's `total_us`
+(which is the sum of its own `by_kernel_us`, checked). `local_size = 1` is the pre-change geometry,
+so those points *are* the before state. `real_model_diagnostics.json` is **not** the source and
+contains no per-kernel GPU field — it carries ORT's node table, counters, fallback and dispatch
+records only.
+
 | case | GPU total | `gqa_f16` | `q_gemv_matmul_nbits_f16` |
 |---|---|---|---|
-| prefill M=1 | 20.04 ms | 1.48 (7.4%) | 17.47 (87.2%) |
+| prefill M=1 | 20.03 ms | 1.48 (7.4%) | 17.46 (87.2%) |
 | prefill M=8 | 96.04 | 20.96 (21.8%) | 73.62 (76.7%) |
 | prefill M=32 | 433.29 | 154.59 (35.7%) | 276.46 (63.8%) |
 | prefill M=128 | 2927.34 | **1891.19 (64.6%)** | 1029.21 (35.2%) |
@@ -4543,12 +4567,17 @@ Two facts fall out, and both were surprises:
 
 * **`q_gemv` decode time is flat at ~17.5 ms at every cache length.** All of decode's growth is
   GQA. The quantised GEMM is not the decode problem; it is not even a large part of it.
-* **Weight streaming is a minority cost at width.** Differencing the tiled and untiled arms across
-  all seven `M` points — the two arms differ *only* in how many passes they make over the same 2.291
-  GB of packed weights — gives a marginal streaming bandwidth of **217–245 GB/s** (median ~238),
-  remarkably consistent across seven independent points and above the ~192 GB/s spec sheet, which
-  is what L2 reuse looks like. One full weight pass is 9.6–10.4 ms. At `M = 128` that is ~10% of
-  tiled time.
+* **Weight streaming is a minority cost at width.** The tiled and untiled arms differ *only* in how
+  many passes they make over the same 2.291 GB of packed weights — `M` passes untiled against
+  `ceil(M/4)` tiled — so differencing them gives a marginal streaming bandwidth. Eight prefill `M`
+  points yield **seven** differential points: `M = 1` yields none, because both arms make exactly
+  one pass there and Δpasses is zero. Over those seven (`M = 2 … 128`, from
+  `real_model_latency_before_gqa.json`) the readings are **199.7, 244.5, 242.8, 238.8, 226.8,
+  222.5, 217.4 GB/s** — range **200–245**, median **227**, and above the ~192 GB/s spec sheet at
+  every point, which is what L2 reuse looks like. `M = 2` is the low end and the noisiest point
+  (one differenced pass, no averaging); the six points from `M = 4` up sit in 217–245. One full
+  weight pass costs 9.4–11.5 ms (median 10.1). At `M = 128` the tiled arm makes 32 passes, so
+  streaming is ~323 ms of the 3004.55 ms tiled time — **~11%**.
 
 So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — would be
 optimising a tenth of the wide-prefill cost. The data said to go elsewhere, so this branch did.
@@ -4591,9 +4620,19 @@ costs 135.56 → 141.11 ms and 268.57 → 278.69 ms on the two decode rows. **De
 generation loop lives, so the trade is declined and the 16% is left on the table deliberately.**
 
 **Equivalence.** The packing changes scheduling, not arithmetic — a claim about the source text, so
-it is verified as one. Whole-model outputs were compared byte-for-byte against `local = 1` at every
-size and case: **42 comparisons, 42 BITWISE-IDENTICAL.** No tolerance is involved and none would be
+it is verified as one. `probe_gqa_local_size.py` compares each **non-reference** size's whole-model
+outputs byte-for-byte against the `local = 1` reference in the same case; it does not compare the
+reference with itself, and a self-comparison would be the one comparison that cannot fail. So the
+arithmetic of the sweep is: **6 cases × 7 sizes = 42 measured points**, of which **6 cases × 6
+non-reference sizes = 36 cross-arm comparisons**, and
+`real_model_gqa_local_size.json` → `equivalence[].comparisons[].verdict` records **36 of 36
+`BITWISE-IDENTICAL`**, 65 output tensors per comparison. No tolerance is involved and none would be
 appropriate.
+
+Do not confuse that 36 with §26.2's equivalence gate, which is a different artifact and a different
+schema: `real_model_latency*.json` → `models[].equivalence` records **18 cases**, each with a
+`PASS`/`FAIL` gate, and **54 arm verdicts** (3 arms × 18 cases), those under the recorded budgets
+rather than bitwise.
 
 ### 26.6 The result
 
@@ -4713,7 +4752,8 @@ protocol, artifact `bench/results/real_model_latency_postmerge.json`:
 | prefill M=128 | 1407.40 | 1403.98 | 2351.75 | 1488.31 |
 | decode past=1024 | 608.21 | 627.50 | 630.46 | 190.28 |
 
-All three cases are `PASS` on the equivalence gate with `MATCH` on all three arms. The two prefill
+All three cases are `PASS` on the equivalence gate, with `MATCH` on all 9 arm verdicts (3 arms ×
+3 cases), under §26.2's budgets rather than bitwise. The two prefill
 points move by 0.2% and 0.8%; the decode point moves 3.2%, which is inside the host-round-trip
 variance §26.7 already describes and is not a reading about the kernel — decode's dispatch geometry
 is unchanged by this change and by the merge alike. The merge did not move the result.
@@ -4724,12 +4764,19 @@ is unchanged by this change and by the merge alike. The merge did not move the r
 `ca61252`, not as `8f12b32`, so the branch this section belongs to was rebuilt as a single commit
 on top of `main` and then merged `main` twice more (`5113a0a`, then `3e38ae3`). None of those
 commits touch `rust/`: `git diff --stat ed73a4a HEAD -- rust` is empty, and the whole delta is five
-`ci/` and `tests/` files from #61. So the compiled EP is bit-for-bit the §26.9 EP and the honest
-expectation was *no change at all*.
+`ci/` and `tests/` files from #61.
 
-That expectation is still a claim about a binary that was rebuilt, on a device shared with a
-desktop, so it was measured rather than asserted. `cargo build --release` from the proposed head,
-then the same three points, same protocol, artifact
+**The exact property that holds is source identity, not binary identity, and the artifacts say so.**
+Each of the three runs records the sha256 of the `.dll` it loaded, and all three differ:
+`2c080583…` (§26.6), `752cebcf…` (§26.9), `7f050805…` (here). That is expected rather than
+alarming — `.squad/decisions.md` records that this repository's Windows `.dll` is not byte-
+reproducible across forced rebuilds, which is why `ci/check_artifact_frame.py`'s `subject_moved`
+arm is off by default on Windows — but it means "the same EP" can only be claimed of the **source**:
+identical `rust/` tree, three separate compilations. So the honest expectation was not "no change
+because it is the same binary" but "no change *if* a recompilation of identical source is
+behaviourally equivalent" — which is the thing worth measuring.
+
+`cargo build --release` from the proposed head, then the same three points, same protocol, artifact
 `bench/results/real_model_latency_on_main.json`:
 
 | case | §26.6 (ms) | §26.9 (ms) | on the proposed head (ms) | untiled (ms) | CPU EP (ms) |
@@ -4738,13 +4785,21 @@ then the same three points, same protocol, artifact
 | prefill M=128 | 1407.40 | 1403.98 | 1410.09 | 2363.04 | 1531.89 |
 | decode past=1024 | 608.21 | 627.50 | 652.18 | 654.13 | 185.21 |
 
-`PASS` on all three cases, `MATCH` on all nine arms. The M=128 point — the one this change is
-about — moves 0.2% across three separate builds on two different bases, and the 1.68× advantage
-over the untiled arm is reproduced. The two rows that move more are the two rows §26.7 already
-declines to read: the M=1 null control moves 9% *and inverts sign* between the two Vulkan arms
-that compile the identical SPIR-V, which is the noise floor doing exactly what a null control is
-for; decode moves 4% for the same host-round-trip reason as §26.9. Neither is a kernel reading,
-and neither is claimed as one.
+What reproduces across the three builds, stated as narrowly as the artifacts support:
+
+* **Timing, at the one point this change is about.** `M = 128` reads 1407.40 / 1403.98 / 1410.09 ms
+  — each within 0.25% of §26.6 and a total spread of 0.44% (6.11 ms) — and the advantage over the
+  untiled arm reproduces at 1.681× / 1.675× / 1.676×.
+* **Outputs, under the recorded budgets.** 3/3 cases `PASS` and 9/9 arm verdicts `MATCH` in each
+  run's `models[].equivalence`. Those are the §26.2 logit and activation budgets, **not** a bitwise
+  claim: nothing in these three artifacts compares output bytes. The only bitwise evidence on this
+  branch is §26.5's 36 local-size comparisons, and it is a comparison between arms of one build,
+  not between builds.
+
+The two rows that move more are the two rows §26.7 already declines to read: the M=1 null control
+moves 9% *and inverts sign* between the two Vulkan arms that compile the identical SPIR-V, which is
+the noise floor doing exactly what a null control is for; decode moves 4% for the same
+host-round-trip reason as §26.9. Neither is a kernel reading, and neither is claimed as one.
 
 Reproduce:
 
@@ -4755,12 +4810,18 @@ python bench/results/probe_real_model_latency.py --device 0 \
 ```
 
 The history reconciliation itself is a hazard rather than a result, and is written down where it
-can be found by the next person who stacks on an unmerged PR:
-`.squad/decisions/inbox/niobe-stacked-branch-squash-ledger-hazard.md`. The short version is that a
-squash-merged dependency carries the *pre-change* state of every file you edited on top of it, and
-is *younger* than your commits, so `ci/check_ledger_census.py`'s reversed topological walk reads it
-as an undeclared backward witness move — and a backward transition can never be declared, because
+can be found — and *opened* — by the next person who stacks on an unmerged PR: `.squad/decisions.md`,
+entry **"2026-08-07: the stacked-branch squash ledger hazard"**. That file is tracked, so the
+citation resolves on any checkout of this branch. (An earlier draft of this paragraph cited
+`.squad/decisions/inbox/niobe-stacked-branch-squash-ledger-hazard.md`; `.squad/decisions/inbox/` is
+`.gitignore`d — `.gitignore:52` — so that path exists in no tree on any ref and could not be read
+by a reviewer. The analysis below is the record, and it now lives at a committed path.)
+
+The short version is that a squash-merged dependency carries the *pre-change* state of every file
+you edited on top of it, and is *younger* than your commits, so `ci/check_ledger_census.py`'s
+reversed topological walk reads it as an undeclared backward witness move — and a backward
+transition can never be declared, because
 `tests/ops/test_proof_ledger.py::test_every_declared_transition_lands_on_the_digest_this_build_computes`
 correctly requires every declared transition to end at what the build computes. Rebuilding the
-stack on `main` is the only fix; merging `main` is not, because CI screens
-`refs/pull/N/merge`, which has the same shape.
+stack on `main` is the only fix; merging `main` is not, because CI screens `refs/pull/N/merge`,
+which has the same shape.
