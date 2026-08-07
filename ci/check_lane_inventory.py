@@ -110,6 +110,11 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Integration targets asserted something", "build.integration_targets_productivity"),
     ("Build-precondition negative control", "hostfree.build_precondition_negative_control"),
     ("Build-precondition screen", "hostfree.build_precondition"),
+    (
+        "PowerShell exit-status negative control",
+        "hostfree.powershell_exit_status_negative_control",
+    ),
+    ("PowerShell exit-status screen", "hostfree.powershell_exit_status"),
     ("Two-polarity tests", "hostfree.lane_check_tests"),
     ("Two-polarity suite asserted something", "hostfree.lane_check_productivity"),
     ("Suite-productivity negative control", "hostfree.suite_productivity_negative_control"),
