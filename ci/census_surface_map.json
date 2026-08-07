@@ -387,6 +387,13 @@
     },
     {
       "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_RANK_INFERENCE",
+      "disposition": "uncensused",
+      "reason": "Kill switch for the DESIGN.md \u00a78.11 graph-level rank inference pass; set to 0 and every claim predicate sees exactly the ranks ORT reported, unset and the conservative Shape/Cast/Concat overlay runs first. Sole reader is rank_inference_enabled() at rust/src/logging.rs:432, consumed once per GetCapability by infer_graph_shapes() in rust/src/ep.rs. It landed UNMAPPED in PR #46 (issue #8) and this entry is the correction, not a coverage claim: the screen was right, the switch was the thing that was wrong, and PR #46's CI never completed (GitHub Actions outage) so nothing caught it before merge. NOT censused, and deliberately not recorded as such. The census graph is a six-node Add/Mul elementwise chain that the EP claims in full and whose every edge ORT already ranks, so the pass has nothing to prove in that frame; an armed/unarmed pair would read 'no difference', which is a 0 for an event that cannot occur (R12) and would read as evidence the switch is inert. That is the same reachability defect ONNXRUNTIME_EP_VULKAN_GEMV_PACKED and the CLAIM_DEBUG census segment already carry. The switch IS discriminated today, but by instruments outside this screen's frame that must not be laundered into it: tests/ops/test_rank_inference_chain.py pairs it 0/unset across ten graph-level cases (unknown rank, symbolic dims, non-integral Cast, incompatible ranks, out-of-range axis, mixed known/unknown lengths, Shape start/end, fanout, cycles), and rust/tools/probe_model_op_census.py A/Bs it on checksum-pinned bertsquad-12 where dispatches_executed moves 4 -> 367 and claimed nodes 481 -> 489 (bench/results/rank8/). Neither is one of test_wiring_census.py's mechanisms. Owed by Mouse, and only two things close it: (a) give the census lane one deliberately unranked chain -- Shape -> Cast(FLOAT) -> Slice -> Squeeze -> Cast(INT32) -> Unsqueeze -> Concat -> Cast(INT64) -> Reshape, the BERT shape, with a MatMul anchor so the net-benefit gate does not decline the island for unrelated reasons -- and read claimed_nodes or dispatches_executed across the pair; or (b) publish the pass's own arithmetic as a C ABI counter (ranks_proved / extents_proved exist in rust/src/shape_infer.rs Stats but reach only a log line, never an artifact), after which the pair becomes a two-arm discriminator like DEVICE_MEMORY's without touching the census graph at all.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "env_switch",
       "id": "ONNXRUNTIME_EP_VULKAN_VERBOSE",
       "disposition": "uncensused",
       "reason": "Raises logging to Info. Unobserved by the census.",
