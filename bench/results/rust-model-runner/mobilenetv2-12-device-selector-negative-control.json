@@ -1,0 +1,136 @@
+{
+  "schema": "ort-model-runner/1",
+  "tool": "rust/modelrunner (ort-model-runner)",
+  "pass": false,
+  "outcome": "FAIL",
+  "model": "mobilenetv2-12",
+  "onnx_file": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\models\\mobilenetv2-12.onnx",
+  "onnx_sha256": "c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5",
+  "onnx_bytes": 13964571,
+  "model_provenance": "pinned",
+  "onnxruntime": {
+    "library": {
+      "path": "\\\\?\\C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan\\.venv\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime.dll",
+      "sha256": "3d6bd02dc137b9a1dfdac045a52b147ffb920bb06ab812b08fc8e14279859855",
+      "bytes": 17766752
+    },
+    "api_version": 28,
+    "version": "1.28.0",
+    "discovered_via": "--ort-lib"
+  },
+  "execution_provider": {
+    "registration_name": "VulkanExecutionProvider",
+    "library": {
+      "path": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "sha256": "a7e6a3af23f450c8310e62fb77a4f70811d441885fc6d89fce2151c359f51980",
+      "bytes": 2543616
+    },
+    "devices": [
+      {
+        "index": 0,
+        "ep_name": "CPUExecutionProvider",
+        "ep_vendor": "Microsoft",
+        "hardware_type": "CPU",
+        "vendor_id": 32902,
+        "device_id": 7,
+        "uuid": null,
+        "luid": null,
+        "pci": null
+      }
+    ],
+    "selected_device": {
+      "identity": null,
+      "name": null,
+      "advertised_index": null,
+      "requested_selector": "uuid:deadbeefdeadbeefdeadbeefdeadbeef",
+      "selector_source": "--device-selector (ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR, set before EP registration)",
+      "alloc_device_frame": null
+    },
+    "device_selector": "uuid:deadbeefdeadbeefdeadbeefdeadbeef"
+  },
+  "inputs": [
+    {
+      "name": "input",
+      "dtype": "float32",
+      "shape": [
+        1,
+        3,
+        224,
+        224
+      ],
+      "elements": 150528,
+      "source": "generated"
+    }
+  ],
+  "free_dim_pins": [
+    {
+      "input": "input",
+      "axis": 0,
+      "symbol": "batch_size",
+      "value": 1,
+      "source": "default"
+    }
+  ],
+  "seed": "0x5EED000000000001",
+  "tolerance": null,
+  "attribution": {
+    "primary_witness": "onnxruntime profile (cat=Node)",
+    "corroborating_witness": "onnxruntime-ep-vulkan counters (dispatches_executed)",
+    "provider_node_counts": {},
+    "profile_note": "",
+    "counters": {
+      "present": false,
+      "dispatches_executed": null,
+      "claimed_nodes": null,
+      "islands_offered": null,
+      "compute_calls": null,
+      "running_device_names": null,
+      "running_device_uuids": null,
+      "alloc_device_frame": null,
+      "alloc_device_frames_declared": null,
+      "note": "no counters snapshot at C:\\Users\\JUSTIN~1\\AppData\\Local\\Temp\\ort-model-runner-scratch\\counters-mobilenetv2-12.json -- the EP writes one at teardown only when ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE is set and the EP was actually loaded"
+    },
+    "split_frame": true
+  },
+  "outputs": [],
+  "timings_ms": {
+    "cpu_session_load": 58.276599999999995,
+    "cpu_run": 11.384699999999999,
+    "vulkan_session_load": null,
+    "vulkan_run": null,
+    "total": 435.17670000000004
+  },
+  "guards": [
+    {
+      "name": "model_identity_pinned",
+      "held": true,
+      "detail": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\models\\mobilenetv2-12.onnx sha256 c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5 (13964571 bytes), provenance=pinned"
+    },
+    {
+      "name": "vulkan_ep_device_present",
+      "held": false,
+      "detail": "no OrtEpDevice named VulkanExecutionProvider after registering C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-18\\rust\\target\\release\\onnxruntime_vulkan_ep.dll. ORT saw 1 device(s): CPUExecutionProvider"
+    },
+    {
+      "name": "vulkan_executed_nodes",
+      "held": false,
+      "detail": "ORT's profile attributed no node executions to any provider.  Without the primary witness this run cannot claim the EP executed anything."
+    },
+    {
+      "name": "vulkan_dispatched_work",
+      "held": false,
+      "detail": "no dispatches_executed reading. no counters snapshot at C:\\Users\\JUSTIN~1\\AppData\\Local\\Temp\\ort-model-runner-scratch\\counters-mobilenetv2-12.json -- the EP writes one at teardown only when ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE is set and the EP was actually loaded This is an absent instrument, not a zero."
+    },
+    {
+      "name": "device_identity_agreement",
+      "held": false,
+      "detail": "no counters snapshot, so the EP reported no session device identity. no counters snapshot at C:\\Users\\JUSTIN~1\\AppData\\Local\\Temp\\ort-model-runner-scratch\\counters-mobilenetv2-12.json -- the EP writes one at teardown only when ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE is set and the EP was actually loaded This is an absent instrument, not agreement."
+    },
+    {
+      "name": "outputs_agree",
+      "held": false,
+      "detail": "the Vulkan arm did not produce outputs, so there was nothing to compare"
+    }
+  ]
+}
+

@@ -2311,7 +2311,20 @@ pub struct LedgerEntry {
     /// The proof key this entry proves.
     pub key: ProofKey,
     /// The device the differential ran on, e.g. `NVIDIA GeForce RTX 4060 Laptop GPU`.
+    ///
+    /// **A name, and therefore not an identity.** Every card of a model shares it. Kept because
+    /// it is what a human reads and what 97 baked entries carry; compared only through
+    /// [`LedgerEntry::device_uuid`] — see [`device_state`].
     pub device: String,
+    /// The **stable identity** of the device the differential ran on: 32 lowercase hex characters
+    /// from `VkPhysicalDeviceIDProperties::deviceUUID`, or empty on an entry generated before
+    /// issue #18 added the field.
+    ///
+    /// Empty is a third state and not a match: an entry that names no identity cannot be
+    /// attributed to the hardware this run opened, however well the names agree, so it lands in
+    /// [`ProofState::DeviceUnattributed`] rather than [`ProofState::Proven`]. That is what keeps
+    /// the 97 legacy entries readable without letting them claim something they never witnessed.
+    pub device_uuid: String,
     /// The ONNX Runtime build the differential ran against.
     pub ort_build: String,
     /// The tolerance policy applied to the comparison.
@@ -3182,6 +3195,7 @@ pub(crate) fn parse_ledger(source: &str) -> Ledger {
         entries.push(LedgerEntry {
             key,
             device: json_field(line, "device").unwrap_or_default(),
+            device_uuid: json_field(line, "device_uuid").unwrap_or_default(),
             ort_build: json_field(line, "ort_build").unwrap_or_default(),
             tolerance: json_field(line, "tolerance").unwrap_or_default(),
             artifact: json_field(line, "artifact").unwrap_or_default(),
@@ -3345,6 +3359,27 @@ pub fn running_device_names() -> Vec<String> {
         .collect()
 }
 
+/// The **stable identities** of the physical devices this run has actually opened (issue #18).
+///
+/// The identity half of [`running_device_names`], and the only one a proof may be compared
+/// against. Each element is a [`crate::engine::DeviceKey::canonical`] string — `uuid:<32 hex>`
+/// for a device whose driver reported a UUID, `unidentified:<name>#<index>` for one that did not.
+///
+/// The `unidentified:` form is deliberately **not** comparable to anything a ledger carries: it is
+/// process-local, so a proof generated in another process could never legitimately equal it. It
+/// exists so two same-named UUID-less devices in *this* process still count as two, not so that a
+/// name can be laundered into an identity by another route.
+pub fn running_device_uuids() -> Vec<String> {
+    let ids = crate::allocator::tally::session_device_identities();
+    if ids == "none" || ids == "unknown" {
+        return Vec::new();
+    }
+    ids.split("; ")
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(_, key)| key.to_string())
+        .collect()
+}
+
 /// Whether `label` is a selector ordinal (`device0`, `device7`) rather than a device name.
 ///
 /// `gen_proof_ledger.py` writes `device{N}` from the selector unless `--device-name` is given, so
@@ -3471,43 +3506,114 @@ impl ProofState {
     }
 }
 
-/// Classify one entry's `device` against the device this run opened.
+/// Classify one entry's device against the device this run opened — **by identity, not by name**
+/// (issue #18).
 ///
 /// Kept as its own function because the device question is answerable on its own — the disclosure
 /// layer asks it directly — but it is **no longer the whole predicate**: [`entry_state`] composes
 /// it with the subject verdict, since §8.9.19 makes the toolchain a frame component beside the
 /// device rather than a separate mechanism.
-pub fn device_state(entry_device: &str) -> ProofState {
-    if entry_device.is_empty() {
+///
+/// # Why the name is not enough
+///
+/// `entry_device` is a *model* name. Two RTX A1000s in one chassis, or an A1000 here and an A1000
+/// on a CI box, produce byte-identical strings. Reading `Proven` off that equality is a claim
+/// about a product SKU wearing the costume of a claim about hardware — and it is fail-**open**,
+/// because the two cards can differ in driver, in binned clocks, and in the exact silicon defects
+/// a numerical differential exists to catch.
+///
+/// So the lattice is:
+///
+/// | entry uuid | running identity | verdict |
+/// |---|---|---|
+/// | present | equal | [`ProofState::Proven`] |
+/// | present | differs | [`ProofState::ProvenElsewhere`] with [`FrameDelta::Device`] — **even when the names match** |
+/// | present | run opened nothing | [`ProofState::DeviceUnattributed`] |
+/// | absent | anything | [`ProofState::DeviceUnattributed`] — *a name is not an identity* |
+///
+/// The last row is the fail-closed one and the reason the 97 pre-#18 entries do not silently
+/// upgrade themselves: they are claimable (declining them would take the EP to zero claims on
+/// evidence nobody has questioned) but they are **counted and disclosed** as unattributable, which
+/// is the population a reader must be able to see.
+pub fn device_state(entry_device: &str, entry_uuid: &str) -> ProofState {
+    if entry_device.is_empty() && entry_uuid.is_empty() {
         return ProofState::DeviceUnattributed {
             entry_label: String::new(),
             reason: "the entry records no device at all",
         };
     }
-    if is_selector_ordinal(entry_device) {
+    if entry_uuid.is_empty() {
+        // The name may be a real one or a selector ordinal; either way it is not an identity, and
+        // the two cases deserve different sentences because they call for different repairs.
+        if is_selector_ordinal(entry_device) {
+            return ProofState::DeviceUnattributed {
+                entry_label: entry_device.to_string(),
+                reason: "the entry records a selector ordinal, which names no hardware — a \
+                         selector is a request, not an identity",
+            };
+        }
         return ProofState::DeviceUnattributed {
             entry_label: entry_device.to_string(),
-            reason: "the entry records a selector ordinal, which names no hardware — a selector is \
-                     a request, not an identity",
+            reason: "the entry records a device NAME but no device_uuid — a name is shared by \
+                     every card of a model, so it cannot attribute this proof to the hardware \
+                     this run opened. Regenerate the entry to record an identity.",
         };
     }
-    let running = running_device_names();
+    let running = running_device_uuids();
     if running.is_empty() {
         return ProofState::DeviceUnattributed {
-            entry_label: entry_device.to_string(),
-            reason: "this run has not opened a device yet, so there is no name to compare against",
+            entry_label: device_label(entry_device, entry_uuid),
+            reason: "this run has not opened a device yet, so there is no identity to compare \
+                     against",
         };
     }
-    if running.iter().any(|n| n == entry_device) {
+    let entry_key = format!("uuid:{entry_uuid}");
+    if running.iter().any(|k| k == &entry_key) {
         ProofState::Proven
     } else {
+        let running_names = running_device_names();
+        let same_name = !entry_device.is_empty() && running_names.iter().any(|n| n == entry_device);
+        let note = if same_name {
+            " — the device NAMES are identical, so this is a second physical card of the same \
+             model and not the one the proof was obtained on"
+        } else {
+            ""
+        };
         ProofState::ProvenElsewhere {
             deltas: vec![FrameDelta::Device],
             detail: format!(
-                "device: entry proved on `{entry_device}`, this run opened `{}`",
-                running.join("; ")
+                "device: entry proved on `{}`, this run opened `{}`{note}",
+                device_label(entry_device, entry_uuid),
+                running
+                    .iter()
+                    .zip(
+                        running_names
+                            .iter()
+                            .map(String::as_str)
+                            .chain(std::iter::repeat(""))
+                    )
+                    .map(|(k, n)| if n.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{n} ({k})")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
             ),
         }
+    }
+}
+
+/// `"NVIDIA RTX A1000 Laptop GPU (uuid:aabb…)"` — how a device is named in a finding.
+///
+/// Both halves, always, because each answers a question the other cannot: the name is what a
+/// human recognises and the uuid is what the comparison actually used.
+fn device_label(name: &str, uuid: &str) -> String {
+    match (name.is_empty(), uuid.is_empty()) {
+        (false, false) => format!("{name} (uuid:{uuid})"),
+        (false, true) => name.to_string(),
+        (true, false) => format!("uuid:{uuid}"),
+        (true, true) => "<unrecorded>".to_string(),
     }
 }
 
@@ -3572,7 +3678,7 @@ pub fn entry_state(entry: &LedgerEntry) -> ProofState {
         ));
     }
 
-    let device = device_state(&entry.device);
+    let device = device_state(&entry.device, &entry.device_uuid);
     match &device {
         ProofState::ProvenElsewhere {
             detail: device_detail,
@@ -5536,9 +5642,13 @@ mod tests {
         let absent = ProofKey::validate(ABSENT).expect("valid key");
 
         let digest_now = shader_digest_for(&["ew_binary_add_f32"]).expect("a non-empty stem list");
-        let ledger_proved_on = |device: &str| {
+        // Issue #18: an entry now carries BOTH a device name and a stable identity. The identity
+        // is what `device_state` compares; the name is what a human reads. `uuid` is `""` for the
+        // legacy shape, which is exactly how the 133 baked entries look.
+        let ledger_proved_on_with_uuid = |device: &str, uuid: &str| {
             let entry = format!(
                 "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"{device}\",\
+                 \"device_uuid\":\"{uuid}\",\
                  \"ort_build\":\"1\",\"tolerance\":\"t\",\"artifact\":\"a\",\
                  \"generated_at\":\"now\",\"claimed_nodes\":1,\"dispatches_executed\":1,\
                  \"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{digest_now}\"}}"
@@ -5550,10 +5660,25 @@ mod tests {
             );
             parse_ledger(&format!("{header}\n{entry}\n"))
         };
+        const NV_UUID: &str = "11111111111111111111111111111111";
+        const IRIS_UUID: &str = "22222222222222222222222222222222";
+        let ledger_proved_on = |device: &str| {
+            let uuid = match device {
+                NV => NV_UUID,
+                IRIS => IRIS_UUID,
+                _ => "",
+            };
+            ledger_proved_on_with_uuid(device, uuid)
+        };
 
         crate::allocator::tally::clear_session_devices();
-        crate::allocator::tally::note_session_device(0, NV);
+        crate::allocator::tally::note_session_device(
+            0,
+            &crate::engine::DeviceKey::Uuid(NV_UUID.to_string()),
+            NV,
+        );
         assert_eq!(running_device_names(), vec![NV.to_string()]);
+        assert_eq!(running_device_uuids(), vec![format!("uuid:{NV_UUID}")]);
 
         let here = ledger_proved_on(NV);
         assert!(here.faults.is_empty(), "faults: {:?}", here.faults);
@@ -5569,7 +5694,10 @@ mod tests {
             there.state_for(&key),
             ProofState::ProvenElsewhere {
                 deltas: vec![FrameDelta::Device],
-                detail: format!("device: entry proved on `{IRIS}`, this run opened `{NV}`"),
+                detail: format!(
+                    "device: entry proved on `{IRIS} (uuid:{IRIS_UUID})`, this run opened \
+                     `{NV} (uuid:{NV_UUID})`"
+                ),
             },
             "an entry proven on other hardware must say so — this is the fail-open Link found: \
              before this predicate existed, both readings answered the same"
@@ -5595,7 +5723,11 @@ mod tests {
 
         // The run moves, the file does not: both directions on one pair of ledgers.
         crate::allocator::tally::clear_session_devices();
-        crate::allocator::tally::note_session_device(0, IRIS);
+        crate::allocator::tally::note_session_device(
+            0,
+            &crate::engine::DeviceKey::Uuid(IRIS_UUID.to_string()),
+            IRIS,
+        );
         assert_eq!(
             there.state_for(&key),
             ProofState::Proven,
@@ -5637,6 +5769,202 @@ mod tests {
             "with no device opened there is nothing to compare against, and saying so is not the \
              same as saying the devices differ"
         );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    // Issue #18 — `device_state` compares IDENTITIES. Contract item C5, as four tests.
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    /// **THE REJECTED-HEAD REGRESSION at the registry layer.**
+    ///
+    /// Two RTX A1000s. The proof was obtained on one of them; this run opened the other. The
+    /// device NAMES are byte-identical, so a name comparison answers `Proven` and the run claims
+    /// an op-correctness result on hardware that never produced it. Identity comparison answers
+    /// `ProvenElsewhere{Device}` — and says out loud that the names matched, because otherwise
+    /// the finding reads like a typo.
+    #[test]
+    fn identical_names_with_different_uuids_are_proven_elsewhere_not_proven() {
+        let _guard = crate::allocator::ledger::test_lock();
+        const NAME: &str = "NVIDIA RTX A1000 Laptop GPU";
+        let card_a = "a".repeat(32);
+        let card_b = "b".repeat(32);
+
+        crate::allocator::tally::clear_session_devices();
+        crate::allocator::tally::note_session_device(
+            0,
+            &crate::engine::DeviceKey::Uuid(card_b.clone()),
+            NAME,
+        );
+
+        let state = device_state(NAME, &card_a);
+        match &state {
+            ProofState::ProvenElsewhere { deltas, detail } => {
+                assert_eq!(deltas, &[FrameDelta::Device]);
+                assert!(
+                    detail.contains("the device NAMES are identical"),
+                    "the finding must explain why two identical names are two devices, or it \
+                     reads as an instrument bug; got: {detail}"
+                );
+                assert!(
+                    detail.contains(&card_a) && detail.contains(&card_b),
+                    "{detail}"
+                );
+            }
+            other => panic!(
+                "two physically distinct cards of the same model must not be PROVEN on each \
+                 other's evidence; got {other:?}"
+            ),
+        }
+        // And the same identity on both sides is still Proven — the fix must not make every
+        // comparison fail.
+        assert_eq!(device_state(NAME, &card_b), ProofState::Proven);
+        crate::allocator::tally::clear_session_devices();
+    }
+
+    /// An entry with a name and **no** identity is `DeviceUnattributed`, never `Proven` — even
+    /// when the name matches the running device exactly. *A name is not an identity.*
+    ///
+    /// This is the state all 133 pre-#18 baked entries are in, which is why it stays *claimable*:
+    /// declining them would take the EP to zero claims over a bookkeeping question. It is counted
+    /// and disclosed instead.
+    #[test]
+    fn an_entry_with_no_uuid_is_unattributed_even_when_the_name_matches() {
+        let _guard = crate::allocator::ledger::test_lock();
+        const NAME: &str = "NVIDIA RTX A1000 Laptop GPU";
+        crate::allocator::tally::clear_session_devices();
+        crate::allocator::tally::note_session_device(
+            0,
+            &crate::engine::DeviceKey::Uuid("c".repeat(32)),
+            NAME,
+        );
+
+        let state = device_state(NAME, "");
+        match &state {
+            ProofState::DeviceUnattributed {
+                entry_label,
+                reason,
+            } => {
+                assert_eq!(entry_label, NAME);
+                assert!(
+                    reason.contains("a name is shared by every card of a model"),
+                    "the reason must say WHY a matching name is not a match; got: {reason}"
+                );
+            }
+            other => panic!("a legacy entry must not be PROVEN by name equality; got {other:?}"),
+        }
+        assert!(
+            state.claimable(),
+            "the legacy population stays claimable and disclosed, not declined"
+        );
+        crate::allocator::tally::clear_session_devices();
+    }
+
+    /// A run that has opened no device cannot compare anything, and that is a third state.
+    /// It is not "the identities differ" and it is certainly not "they agree".
+    #[test]
+    fn no_running_device_means_no_comparison_is_possible() {
+        let _guard = crate::allocator::ledger::test_lock();
+        crate::allocator::tally::clear_session_devices();
+        let state = device_state("Some GPU", &"d".repeat(32));
+        match &state {
+            ProofState::DeviceUnattributed { reason, .. } => {
+                assert!(reason.contains("has not opened a device"), "{reason}");
+            }
+            other => panic!("expected DeviceUnattributed, got {other:?}"),
+        }
+    }
+
+    /// The fail-closed fallback must never launder itself into a proof. A run on a device that
+    /// reported no UUID has an `unidentified:` key, which no ledger entry can ever equal — so the
+    /// verdict is `ProvenElsewhere`, and specifically not `Proven`.
+    #[test]
+    fn a_run_on_an_unidentified_device_can_never_be_proven() {
+        let _guard = crate::allocator::ledger::test_lock();
+        const NAME: &str = "Mali-G78";
+        crate::allocator::tally::clear_session_devices();
+        crate::allocator::tally::note_session_device(
+            0,
+            &crate::engine::DeviceKey::Unidentified {
+                name: NAME.to_string(),
+                physical_index: 0,
+            },
+            NAME,
+        );
+        assert_eq!(
+            running_device_uuids(),
+            vec![format!("unidentified:{NAME}#0")],
+            "the fallback key must reach the comparison intact, prefix and all"
+        );
+        let state = device_state(NAME, &"e".repeat(32));
+        assert!(
+            matches!(state, ProofState::ProvenElsewhere { .. }),
+            "a process-local key must never equal a ledger identity; got {state:?}"
+        );
+        assert_ne!(state, ProofState::Proven);
+        crate::allocator::tally::clear_session_devices();
+    }
+
+    /// A ledger entry generated before issue #18 has no `device_uuid` key at all, and must parse
+    /// to `""` rather than faulting — legacy entries stay readable and stay unattributed.
+    #[test]
+    fn a_legacy_entry_without_a_device_uuid_field_parses_to_empty() {
+        let digest_now = shader_digest_for(&["ew_binary_add_f32"]).expect("a non-empty stem list");
+        const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        let entry = format!(
+            "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"Some GPU\",\
+             \"ort_build\":\"1\",\"tolerance\":\"t\",\"artifact\":\"a\",\
+             \"generated_at\":\"now\",\"claimed_nodes\":1,\"dispatches_executed\":1,\
+             \"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{digest_now}\"}}"
+        );
+        let digest = format!("{:016x}", fnv1a64(format!("{entry}\n").as_bytes()));
+        let header = format!(
+            "{{\"__ledger__\":1,\"content_fnv1a64\":\"{digest}\",\"entry_count\":1,\
+             \"generator\":\"test\"}}"
+        );
+        let l = parse_ledger(&format!("{header}\n{entry}\n"));
+        assert!(l.faults.is_empty(), "faults: {:?}", l.faults);
+        assert_eq!(l.entries.len(), 1);
+        assert_eq!(
+            l.entries[0].device_uuid, "",
+            "an absent field is an empty identity, not a parse failure"
+        );
+    }
+
+    /// Every one of the 133 entries actually baked into this binary is checked for shape: a
+    /// present `device_uuid` must be 32 lowercase hex characters and must not be all zeros.
+    ///
+    /// An all-zero `VkPhysicalDeviceIDProperties::deviceUUID` is what an unpopulated struct looks
+    /// like, and it compares equal on every device that has one — admitting it would rebuild the
+    /// exact collision this change removes, in the one place that is hardest to notice.
+    #[test]
+    fn every_baked_entrys_device_uuid_is_absent_or_well_formed() {
+        for e in &ledger().entries {
+            if e.device_uuid.is_empty() {
+                continue;
+            }
+            assert_eq!(
+                e.device_uuid.len(),
+                32,
+                "entry {} has device_uuid={:?}",
+                e.key.0,
+                e.device_uuid
+            );
+            assert!(
+                e.device_uuid
+                    .bytes()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                "entry {} has a non-hex device_uuid {:?}",
+                e.key.0,
+                e.device_uuid
+            );
+            assert_ne!(
+                e.device_uuid,
+                "0".repeat(32),
+                "entry {} records an all-zero UUID, which every device with an unpopulated \
+                 VkPhysicalDeviceIDProperties would also record",
+                e.key.0
+            );
+        }
     }
 
     /// A selector ordinal is recognised as an ordinal, and a device name is not.

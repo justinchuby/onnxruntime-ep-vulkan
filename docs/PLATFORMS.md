@@ -347,15 +347,46 @@ selector built on a field this platform never reports into `UnsupportedIdentity`
 
 | Field | Source | Windows | Linux (proprietary + Mesa RADV/ANV) | Android (Adreno/Mali/Xclipse) | MoltenVK |
 |---|---|---|---|---|---|
-| `uuid:` | `VkPhysicalDeviceIDProperties::deviceUUID` (core Vulkan 1.1) | always | always | always | always — MoltenVK reports a UUID derived from the Metal device registry ID |
-| `luid:` | `VkPhysicalDeviceIDProperties::deviceLUID` (+ `deviceLUIDValid`) | populated by every desktop driver observed on this project (§1.1) | rarely valid — LUIDs are a Windows/DXGI-interop concept; Mesa RADV/ANV and proprietary Linux drivers were not observed to set `deviceLUIDValid` | not observed valid | not observed valid |
-| `pci:` | `VkPhysicalDevicePCIBusInfoPropertiesEXT` (`VK_EXT_pci_bus_info`) | supported by the NVIDIA/AMD/Intel desktop drivers this project measured (§1.1) | supported by Mesa RADV/ANV and proprietary Linux drivers on discrete/integrated GPUs with a real PCI bus | absent — mobile SoC GPUs have no PCI bus to report, and the extension is correspondingly unavailable on the Adreno/Mali/Xclipse drivers surveyed in §1.3 | absent — Metal devices have no PCI bus in the sense this extension describes, and MoltenVK does not advertise `VK_EXT_pci_bus_info` |
+| `uuid:` | `VkPhysicalDeviceIDProperties::deviceUUID` (core Vulkan 1.1) | **observed** on the §1.1 desktop drivers | expected always (spec-mandated since 1.1); *not measured by this project* | expected always (spec-mandated since 1.1); *not measured by this project* | expected always; MoltenVK derives a UUID from the Metal device registry ID; *not measured by this project* |
+| `luid:` | `VkPhysicalDeviceIDProperties::deviceLUID` (+ `deviceLUIDValid`) | **observed** populated by every desktop driver on this project (§1.1) | expected rarely valid — LUIDs are a Windows/DXGI-interop concept; *not measured* | expected invalid; *not measured* | expected invalid; *not measured* |
+| `pci:` | `VkPhysicalDevicePCIBusInfoPropertiesEXT` (`VK_EXT_pci_bus_info`) | **observed** on the NVIDIA driver measured in §1.1 | expected present on discrete/integrated GPUs with a real PCI bus; *not measured* | expected absent — mobile SoC GPUs have no PCI bus and the extension is correspondingly unavailable on the drivers surveyed in §1.3; *not measured* | expected absent — Metal devices have no PCI bus in the sense this extension describes; *not measured* |
+
+Only the Windows column is **observed**; the hardware available to this project is a single
+Windows desktop with one discrete GPU (§1.1). Every other cell is what the Vulkan specification
+and vendor documentation lead us to *expect*, and is labelled as such rather than reported as a
+measurement. The code does not depend on any of these expectations being right: an absent field
+is `None`, a selector built on an absent field is `UnsupportedIdentity`, and — see below — an
+absent UUID degrades attribution rather than corrupting it.
 
 Practical guidance: `uuid:` is the only scheme with no platform caveat and is the one this project
 recommends for reproducible multi-GPU configuration (CI matrices, benchmark pinning, and the
 proof-frame binding in `factory.rs`'s `vulkan.device_uuid` EP metadata). `luid:` and `pci:` are
 conveniences for Windows- and desktop-Linux-specific tooling respectively and should not be relied
 on for a selector that must also work on Android or macOS/iOS.
+
+#### 6.4.1 What happens on a platform that reports no UUID
+
+The proof frame (`DESIGN.md` §2.4.1.1) keys on `DeviceKey`, and its fallback contract is the part
+that has to be portable, because it is what runs if the expectations in the table above turn out
+to be wrong on some driver:
+
+| | UUID reported | No UUID reported |
+|---|---|---|
+| Frame key | `uuid:<32 hex>` | `unidentified:<physical_index>:<deviceName>` |
+| Two same-named cards separate into two frames? | yes | **yes** — the enumeration index disambiguates them within the process |
+| A ledger entry can be attributed to this device? | yes (`PROVEN`) | **no** — always `DEVICE-UNATTRIBUTED`, because an enumeration index means nothing outside the process that observed it |
+| `vulkan.device_uuid` EP metadata | present | **omitted**, never `""` and never all-zero |
+
+So on a hypothetical driver that leaves `deviceUUID` unpopulated, *detection* of a mixed frame
+still works and *attribution* of a proof is refused. Neither degrades into a silently wrong
+answer. An all-zero `deviceUUID` is treated as "not reported" for exactly this reason: an
+unpopulated `VkPhysicalDeviceIDProperties` is all zeros on every device that has one, so reading
+it as an identity would make every anonymous device compare equal to every other one.
+
+`nvidia-smi`, `vulkaninfo`, and any other external tool are **not** required at runtime by any of
+this. The identity comes from `vkGetPhysicalDeviceProperties2` with a
+`VkPhysicalDeviceIDProperties` in the `pNext` chain — core Vulkan 1.1, the same call this EP
+already makes for its §7.2 capability gate.
 
 #### Adreno (Qualcomm)
 

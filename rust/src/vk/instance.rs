@@ -38,7 +38,7 @@ use ash::vk;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::caps::{self, Capabilities};
-use crate::engine::{DeviceInfo, DeviceKind};
+use crate::engine::{DeviceIdentity, DeviceInfo, DeviceKind};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Validation messenger callback
@@ -229,7 +229,7 @@ pub(crate) fn selector_is_pinned() -> bool {
 /// - `pci:<domain>:<bus>:<device>.<function>` (e.g. `pci:0000:01:00.0`) — exact PCI location
 ///   match, only when `VK_EXT_pci_bus_info` is supported. `UnsupportedIdentity` on MoltenVK and
 ///   other platforms without a PCI bus to report.
-pub(crate) const ENV_DEVICE_SELECTOR_STRICT: &str = "ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR";
+pub const ENV_DEVICE_SELECTOR_STRICT: &str = "ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR";
 
 /// One parsed, typed form of [`ENV_DEVICE_SELECTOR_STRICT`] (or the equivalent `ep.device_selector`
 /// session option).
@@ -409,8 +409,10 @@ pub(crate) fn resolve_device_selector(
 ) -> Result<usize, DeviceSelectionError> {
     let describe = |i: usize| {
         format!(
-            "{} (index {}, uuid:{})",
-            devices[i].name, i, devices[i].uuid
+            "{} (index {}, {})",
+            devices[i].name,
+            i,
+            devices[i].key().canonical()
         )
     };
     let available = || {
@@ -462,16 +464,31 @@ pub(crate) fn resolve_device_selector(
                 .map(|(i, _)| i)
                 .collect(),
         ),
-        DeviceSelector::Uuid(u) => pick(
-            devices
-                .iter()
-                .enumerate()
-                .filter(|(_, dev)| &dev.uuid == u)
-                .map(|(i, _)| i)
-                .collect(),
-        ),
+        DeviceSelector::Uuid(u) => {
+            // A driver that reports no UUID cannot be selected by one, and saying so is different
+            // from saying "no device has that UUID" — the same distinction `luid:`/`pci:` already
+            // make. `UnsupportedIdentity` is the fail-closed answer: it can never be resolved on
+            // this platform, so no amount of retrying or re-plugging will make it match.
+            if !devices.is_empty() && devices.iter().all(|d| d.identity.uuid.is_none()) {
+                return Err(DeviceSelectionError::UnsupportedIdentity {
+                    selector: selector.to_string(),
+                    reason: "no enumerated device reports a Vulkan device UUID \
+                             (VkPhysicalDeviceIDProperties::deviceUUID was all zeros on all of \
+                             them, which is an unpopulated struct rather than an identity)"
+                        .to_string(),
+                });
+            }
+            pick(
+                devices
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, dev)| dev.identity.uuid.as_deref() == Some(u.as_str()))
+                    .map(|(i, _)| i)
+                    .collect(),
+            )
+        }
         DeviceSelector::Luid(l) => {
-            if devices.iter().all(|d| d.luid.is_none()) {
+            if !devices.is_empty() && devices.iter().all(|d| d.identity.luid.is_none()) {
                 return Err(DeviceSelectionError::UnsupportedIdentity {
                     selector: selector.to_string(),
                     reason: "no enumerated device reports a Vulkan LUID (deviceLUIDValid was \
@@ -484,13 +501,13 @@ pub(crate) fn resolve_device_selector(
                 devices
                     .iter()
                     .enumerate()
-                    .filter(|(_, d)| d.luid.as_deref() == Some(l.as_str()))
+                    .filter(|(_, d)| d.identity.luid.as_deref() == Some(l.as_str()))
                     .map(|(i, _)| i)
                     .collect(),
             )
         }
         DeviceSelector::Pci(p) => {
-            if devices.iter().all(|d| d.pci.is_none()) {
+            if !devices.is_empty() && devices.iter().all(|d| d.identity.pci.is_none()) {
                 return Err(DeviceSelectionError::UnsupportedIdentity {
                     selector: selector.to_string(),
                     reason: "no enumerated device reports VK_EXT_pci_bus_info (unsupported on \
@@ -502,7 +519,7 @@ pub(crate) fn resolve_device_selector(
                 devices
                     .iter()
                     .enumerate()
-                    .filter(|(_, d)| d.pci.as_deref() == Some(p.as_str()))
+                    .filter(|(_, d)| d.identity.pci.as_deref() == Some(p.as_str()))
                     .map(|(i, _)| i)
                     .collect(),
             )
@@ -921,7 +938,7 @@ impl Instance {
 
             // SAFETY: handle is live; pdev came from `enumerate_physical_devices` against it,
             // this loop's own contract.
-            let (uuid, luid, pci) = unsafe { query_device_identity(&self.handle, pdev) };
+            let identity = unsafe { query_device_identity(&self.handle, pdev) };
 
             let info = DeviceInfo {
                 index: idx,
@@ -936,9 +953,7 @@ impl Instance {
                 ),
                 driver_version: format_driver_version(props.vendor_id, props.driver_version),
                 kind,
-                uuid,
-                luid,
-                pci,
+                identity,
             };
 
             // ── Probe optional capabilities ───────────────────────────────────
@@ -968,12 +983,14 @@ impl Instance {
 /// Query the stable per-physical-device identity fields (issue #18 device-selection contract):
 /// UUID, LUID and PCI bus location.
 ///
-/// Returns `(uuid_hex, luid_hex, pci_location)`:
-/// - `uuid_hex` is always populated — `VkPhysicalDeviceIDProperties` is Vulkan 1.1 core and the
-///   §7.2 gate already requires >= 1.1, so every device this function is called on has one.
-/// - `luid_hex` is `Some` only when the driver sets `deviceLUIDValid = VK_TRUE` (primarily
+/// - `uuid` is `Some` for every driver that populates `VkPhysicalDeviceIDProperties` (Vulkan 1.1
+///   core, and the §7.2 gate already requires >= 1.1) and `None` when the returned `deviceUUID`
+///   is **all zeros**. All-zero is not an identity: it is what an untouched struct contains, it
+///   compares equal across every device that has it, and admitting it as a value would rebuild
+///   the collision this whole mechanism exists to remove. Callers print `(unavailable)`.
+/// - `luid` is `Some` only when the driver sets `deviceLUIDValid = VK_TRUE` (primarily
 ///   Windows/D3D-interop; most Linux, Android and MoltenVK drivers leave it `VK_FALSE`).
-/// - `pci_location` is `Some` only when the device advertises `VK_EXT_pci_bus_info`. Absent on
+/// - `pci` is `Some` only when the device advertises `VK_EXT_pci_bus_info`. Absent on
 ///   MoltenVK and many mobile/virtualized ICDs — there may be no PCI bus to report at all.
 ///
 /// Never panics and never fabricates a value: a driver that does not report an optional field
@@ -984,10 +1001,10 @@ impl Instance {
 /// # Safety
 /// `handle` must be a live `ash::Instance`; `pdev` must be a physical device handle obtained
 /// from that same instance.
-unsafe fn query_device_identity(
+pub(crate) unsafe fn query_device_identity(
     handle: &ash::Instance,
     pdev: vk::PhysicalDevice,
-) -> (String, Option<String>, Option<String>) {
+) -> DeviceIdentity {
     // SAFETY: handle is live; pdev came from it per this function's contract.
     let extensions =
         unsafe { handle.enumerate_device_extension_properties(pdev) }.unwrap_or_default();
@@ -1015,11 +1032,13 @@ unsafe fn query_device_identity(
     unsafe { handle.get_physical_device_properties2(pdev, &mut props2) };
     let _ = props2; // props2 mutably borrows id_props/pci_props; keep its last use here (NLL).
 
-    let uuid: String = id_props
-        .device_uuid
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let uuid = (!id_props.device_uuid.iter().all(|b| *b == 0)).then(|| {
+        id_props
+            .device_uuid
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    });
     let luid = (id_props.device_luid_valid != 0).then(|| {
         id_props
             .device_luid
@@ -1034,7 +1053,7 @@ unsafe fn query_device_identity(
         )
     });
 
-    (uuid, luid, pci)
+    DeviceIdentity { uuid, luid, pci }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1464,14 +1483,18 @@ pub(crate) fn probe_loader_report() -> String {
         // pass/fail — identity is queryable off `VkPhysicalDeviceIDProperties`
         // (Vulkan 1.1 core) and `VK_EXT_pci_bus_info`, neither of which the §7.2 gate depends on.
         // Never fabricated: `(unavailable)` means the driver did not report that field, not that
-        // epctl failed to read it.
+        // epctl failed to read it. This loop deliberately runs on **gate-failing** devices too —
+        // possibly Vulkan 1.0 parts, where `VkPhysicalDeviceIDProperties` may not be populated at
+        // all — so an all-zero `deviceUUID` prints `(unavailable)` rather than 32 zeros, which
+        // would otherwise read as an identity every unpopulated device shares.
         // SAFETY: inst.handle is live; pdev came from `enumerate_physical_devices` against it,
         // earlier in this same loop iteration.
-        let (id_uuid, id_luid, id_pci) = unsafe { query_device_identity(&inst.handle, pdev) };
+        let id = unsafe { query_device_identity(&inst.handle, pdev) };
         out.push(format!(
-            "  identity: uuid={id_uuid} luid={} pci={}",
-            id_luid.as_deref().unwrap_or("(unavailable)"),
-            id_pci.as_deref().unwrap_or("(unavailable)"),
+            "  identity: uuid={} luid={} pci={}",
+            id.uuid.as_deref().unwrap_or("(unavailable)"),
+            id.luid.as_deref().unwrap_or("(unavailable)"),
+            id.pci.as_deref().unwrap_or("(unavailable)"),
         ));
 
         // §7.9: show raw capability values so derived booleans can be audited.
@@ -1670,9 +1693,10 @@ pub(crate) fn probe_loader_report() -> String {
                 match parse_device_selector(&strict_val) {
                     Ok(sel) => match resolve_device_selector(&infos, &sel) {
                         Ok(idx) => out.push(format!(
-                            "Strict selector would select: '{}' (Vulkan enum index {}, \
-                             uuid:{})",
-                            infos[idx].name, infos[idx].index, infos[idx].uuid
+                            "Strict selector would select: '{}' (Vulkan enum index {}, {})",
+                            infos[idx].name,
+                            infos[idx].index,
+                            infos[idx].key().canonical()
                         )),
                         Err(e) => out.push(format!(
                             "Strict selector would REFUSE to select any device: {e} (§6.5: no \
@@ -2137,9 +2161,11 @@ mod tests {
                 api_version: "1.3.290".to_string(),
                 driver_version: "560.94".to_string(),
                 kind: DeviceKind::Discrete,
-                uuid: "11111111111111111111111111111111".to_string(),
-                luid: Some("aaaaaaaaaaaaaaaa".to_string()),
-                pci: Some("0000:01:00.0".to_string()),
+                identity: DeviceIdentity {
+                    uuid: Some("11111111111111111111111111111111".to_string()),
+                    luid: Some("aaaaaaaaaaaaaaaa".to_string()),
+                    pci: Some("0000:01:00.0".to_string()),
+                },
             },
             DeviceInfo {
                 index: 0,
@@ -2149,9 +2175,11 @@ mod tests {
                 api_version: "1.3.277".to_string(),
                 driver_version: "31.0.101.5333".to_string(),
                 kind: DeviceKind::Integrated,
-                uuid: "22222222222222222222222222222222".to_string(),
-                luid: None,
-                pci: None,
+                identity: DeviceIdentity {
+                    uuid: Some("22222222222222222222222222222222".to_string()),
+                    luid: None,
+                    pci: None,
+                },
             },
         ]
     }
@@ -2168,9 +2196,11 @@ mod tests {
                 api_version: "1.3.290".to_string(),
                 driver_version: "560.94".to_string(),
                 kind: DeviceKind::Discrete,
-                uuid: "33333333333333333333333333333333".to_string(),
-                luid: None,
-                pci: Some("0000:01:00.0".to_string()),
+                identity: DeviceIdentity {
+                    uuid: Some("33333333333333333333333333333333".to_string()),
+                    luid: None,
+                    pci: Some("0000:01:00.0".to_string()),
+                },
             },
             DeviceInfo {
                 index: 1,
@@ -2180,9 +2210,11 @@ mod tests {
                 api_version: "1.3.290".to_string(),
                 driver_version: "560.94".to_string(),
                 kind: DeviceKind::Discrete,
-                uuid: "44444444444444444444444444444444".to_string(),
-                luid: None,
-                pci: Some("0000:02:00.0".to_string()),
+                identity: DeviceIdentity {
+                    uuid: Some("44444444444444444444444444444444".to_string()),
+                    luid: None,
+                    pci: Some("0000:02:00.0".to_string()),
+                },
             },
         ]
     }
@@ -2341,6 +2373,162 @@ mod tests {
         }
     }
 
+    /// "This platform cannot express that identity" and "there are no devices at all" are
+    /// different diagnoses with different remedies, and `Iterator::all` answers `true` for both
+    /// unless the empty case is excluded. A user on a machine where the loader found nothing must
+    /// be told to fix their loader, not told that their driver does not support UUIDs.
+    #[test]
+    fn an_identity_is_unsupported_only_when_devices_exist_and_none_report_it() {
+        let anonymous = vec![DeviceInfo {
+            index: 0,
+            name: "Some Vulkan Device".to_string(),
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            api_version: "1.3.0".to_string(),
+            driver_version: "1.0".to_string(),
+            kind: DeviceKind::Discrete,
+            identity: DeviceIdentity {
+                uuid: None,
+                luid: None,
+                pci: None,
+            },
+        }];
+        for sel in [
+            DeviceSelector::Uuid("11111111111111111111111111111111".to_string()),
+            DeviceSelector::Luid("aaaaaaaaaaaaaaaa".to_string()),
+            DeviceSelector::Pci("0000:01:00.0".to_string()),
+        ] {
+            assert!(
+                matches!(
+                    resolve_device_selector(&anonymous, &sel),
+                    Err(DeviceSelectionError::UnsupportedIdentity { .. })
+                ),
+                "a device exists but reports no such identity: {sel:?}"
+            );
+            assert!(
+                matches!(
+                    resolve_device_selector(&[], &sel),
+                    Err(DeviceSelectionError::NotFound { .. })
+                ),
+                "no devices at all is NotFound, not UnsupportedIdentity: {sel:?}"
+            );
+        }
+    }
+
+    // -- select_device_strict: precedence between the two selector surfaces -------------------
+
+    /// C3 / blocker 4: **one** authoritative selection path.
+    ///
+    /// `select_device_strict` is that path. It is called from exactly two places — the advertise
+    /// path in `engine.rs` (which has no session and passes `None`) and the per-session bind path
+    /// in `device.rs` (which passes `ep.device_selector`) — and both resolve through this one
+    /// function against the same device list. The precedence rule is pinned here rather than left
+    /// to the two call sites to agree on, because a disagreement between them is invisible: each
+    /// one individually picks *a* device, and only a reader comparing both discovers they picked
+    /// different ones.
+    #[test]
+    fn the_session_option_outranks_the_environment_and_neither_needs_the_other() {
+        let devices = two_device_desk();
+        let _g = crate::allocator::ledger::test_lock();
+
+        // SAFETY: the shared lock above serialises every test in this binary that touches the
+        // process environment; the variable is removed again below.
+        unsafe { std::env::set_var(ENV_DEVICE_SELECTOR_STRICT, "index:0") };
+
+        assert_eq!(
+            select_device_strict(&devices, None),
+            Ok(Some(0)),
+            "with no session option, the environment selects"
+        );
+        assert_eq!(
+            select_device_strict(&devices, Some("index:1")),
+            Ok(Some(1)),
+            "the session option is the more specific request and must win; if the environment won \
+             instead, a host that sets `ep.device_selector` would silently run on another GPU \
+             while its own logs said otherwise"
+        );
+        assert_eq!(
+            select_device_strict(&devices, Some("")),
+            Ok(Some(0)),
+            "an empty option is absence, not a request, so the environment is still in charge"
+        );
+
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
+
+        assert_eq!(
+            select_device_strict(&devices, None),
+            Ok(None),
+            "with neither set the strict path abstains, leaving the legacy `ep.device_index` / \
+             ONNXRUNTIME_EP_VULKAN_DEVICE path exactly as it was before issue #18"
+        );
+        assert_eq!(
+            select_device_strict(&devices, Some("index:1")),
+            Ok(Some(1)),
+            "and the option alone is sufficient — it does not require the env var to be set too"
+        );
+    }
+
+    /// A selector that names no device is a refusal, at both surfaces, with the same error.
+    /// Falling back is how a run on the wrong GPU gets labelled as a run on the right one.
+    #[test]
+    fn an_unresolvable_selector_refuses_rather_than_choosing_a_neighbour() {
+        let devices = two_device_desk();
+        let _g = crate::allocator::ledger::test_lock();
+        // SAFETY: serialised by the lock above; this test must see no ambient selector.
+        unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
+
+        let err = select_device_strict(&devices, Some("uuid:99999999999999999999999999999999"))
+            .expect_err("a uuid that matches nothing must not resolve");
+        assert!(
+            matches!(err, DeviceSelectionError::NotFound { .. }),
+            "the caller decides what to do about it, but it must be told the selector FAILED \
+             rather than handed a fallback device; got {err:?}"
+        );
+        assert!(
+            matches!(
+                select_device_strict(&devices, Some("not-a-scheme")),
+                Err(DeviceSelectionError::Malformed { .. })
+            ),
+            "a typo is a refusal too"
+        );
+        assert!(
+            matches!(
+                select_device_strict(&devices, Some("id:10de:27a0")),
+                Ok(Some(0))
+            ),
+            "and a resolvable option still resolves, so the refusals above are not vacuous"
+        );
+    }
+
+    /// The grammar is shared. `ep.device_selector` is a transport that hands its string to this
+    /// same parser, so every scheme the environment variable accepts the session option accepts
+    /// too, byte for byte. Two grammars would mean two answers to "which device did you mean".
+    #[test]
+    fn both_selector_surfaces_share_one_grammar() {
+        for raw in [
+            "uuid:11111111-1111-1111-1111-111111111111",
+            "id:10de:27a0",
+            "pci:0000:01:00.0",
+            "name:NVIDIA RTX A1000 Laptop GPU",
+            "index:1",
+            "luid:aaaaaaaaaaaaaaaa",
+        ] {
+            let parsed = parse_device_selector(raw)
+                .unwrap_or_else(|e| panic!("the shared grammar must accept `{raw}`: {e}"));
+            let devices = two_device_desk();
+            let _g = crate::allocator::ledger::test_lock();
+            // SAFETY: serialised by the lock; the option path must not consult the environment.
+            unsafe { std::env::remove_var(ENV_DEVICE_SELECTOR_STRICT) };
+            assert_eq!(
+                select_device_strict(&devices, Some(raw)),
+                resolve_device_selector(&devices, &parsed).map(Some),
+                "the option surface must resolve `{raw}` to exactly what the parsed selector \
+                 resolves to — no second grammar, no second resolver"
+            );
+        }
+    }
+
     // -- resolve_device_selector: ambiguous --------------------------------------------------
 
     #[test]
@@ -2369,7 +2557,7 @@ mod tests {
     fn resolve_pci_is_unsupported_identity_when_no_device_reports_it() {
         let mut devices = two_device_desk();
         for d in &mut devices {
-            d.pci = None;
+            d.identity.pci = None;
         }
         let sel = DeviceSelector::Pci("0000:01:00.0".to_string());
         let err = resolve_device_selector(&devices, &sel).unwrap_err();
@@ -2383,7 +2571,7 @@ mod tests {
     fn resolve_luid_is_unsupported_identity_when_no_device_reports_it() {
         let mut devices = two_device_desk();
         for d in &mut devices {
-            d.luid = None;
+            d.identity.luid = None;
         }
         let sel = DeviceSelector::Luid("aaaaaaaaaaaaaaaa".to_string());
         let err = resolve_device_selector(&devices, &sel).unwrap_err();
@@ -2407,7 +2595,7 @@ mod tests {
 
         let mut no_pci_devices = devices;
         for d in &mut no_pci_devices {
-            d.pci = None;
+            d.identity.pci = None;
         }
         assert!(matches!(
             resolve_device_selector(&no_pci_devices, &absent_value),

@@ -5,12 +5,12 @@
   "closes_row_why": "Trinity owns row 12's tally. Supplying the artifact and closing the row must not be the same act (Morpheus, criterion 11 ruling).",
   "independent_whole": {
     "source": "production Rust the census does not write: counters.rs fields, trace.rs Phase variants, ONNXRUNTIME_EP_VULKAN_* switches under rust/src",
-    "size": 64,
+    "size": 65,
     "counter_fields": 21,
     "trace_phases": 10,
-    "env_switches": 33,
-    "production_lines_scanned": 40178,
-    "cfg_test_lines_held_out": 17296,
+    "env_switches": 34,
+    "production_lines_scanned": 41296,
+    "cfg_test_lines_held_out": 17669,
     "env_switches_named_only_in_prose": [
       "ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC",
       "ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS"
@@ -382,7 +382,7 @@
       "kind": "env_switch",
       "id": "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY",
       "file": "rust/src/factory.rs",
-      "line": 460,
+      "line": 479,
       "reason": "Switches allocations to device-local memory \u2014 changes what the EP does on every upload, and no census mechanism observes whether it was in force.",
       "owner": "Tank"
     },
@@ -396,9 +396,17 @@
     },
     {
       "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR",
+      "file": "rust/src/vk/instance.rs",
+      "line": 232,
+      "reason": "The stable-identity device selector added by issue #18 (rust/src/vk/instance.rs:232, read by engine::devices_to_advertise and vk::device::acquire_ep_device). It names one physical device by uuid:/luid:/pci:/id:/name:/index: and it FAILS CLOSED \u2014 unparsable, unresolvable, or divergent from ORT's binding all mean no VkDevice is opened at all. That makes it a mechanism and not a lane parameter, which is why it is not out_of_frame like its ordinal predecessor ONNXRUNTIME_EP_VULKAN_DEVICE: that one selects which device the census runs against, this one can silently take the EP to zero devices, and a census arm that never sets it cannot tell a refusal from an absent GPU. Independent observers for it DO exist and none of them is the wiring census: rust/modelrunner records execution_provider.selected_device with a device_identity_agreement guard that goes red on selected-vs-advertised divergence; the EP's counters carry running_device_uuids and alloc_device_frame*; epctl --probe-loader prints the resolved identity and (unavailable) where a driver reports no UUID. The gap is specific: bench/wiring_census.py's clean/inject/flags arms never set this variable, flag_frame's nine switches do not include it, and no census mechanism reads running_device_uuids, so nothing in the census artifact records whether a selector was in force or which physical device the censused run actually opened. Owed by Tank: a tenth census arm that pins ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR to the uuid: of the enumerated device and asserts the resulting running_device_uuids matches, plus a negative arm pinning a uuid: that exists on no device and asserting the run declines rather than falling back to device 0.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "env_switch",
       "id": "ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES",
       "file": "rust/src/vk/session.rs",
-      "line": 2526,
+      "line": 2529,
       "reason": "Dumps output bytes. Unobserved by the census.",
       "owner": "Switch"
     },
@@ -422,7 +430,7 @@
       "kind": "env_switch",
       "id": "ONNXRUNTIME_EP_VULKAN_KV_ARENA",
       "file": "rust/src/factory.rs",
-      "line": 517,
+      "line": 536,
       "reason": "Declares the caller-bound-arena KV convention (present IS past, true length carried by seqlens_k alone); the sole reader is kv_arena_enabled() at rust/src/factory.rs:517-527, ships OFF. Not one of flag_frame's nine switches, and the census's six-node elementwise graph carries no KV cache at all, so it is not reachable from that frame regardless \u2014 the same shape as ONNXRUNTIME_EP_VULKAN_GEMV_PACKED's unreachability. It is nonetheless one of the most heavily evidenced switches in the repository outside the census: bench/results/probe_kv_arena_phi35.py, probe_kv_chain_phi35.py, probe_kv_lever_ledger.py and rust/tools/device_loss_gate.py all arm it directly against real Phi-3.5 KV chains (bench/results/kv_arena_chain-*.json, kv_arena_budget.json). Owed by Mouse (KV-cache op contract) with Switch (the bind-time alias check): a census lane that includes a KV-cache-shaped subgraph, or a discrimination arm in the existing archival probes.",
       "owner": "Mouse"
     },
@@ -430,7 +438,7 @@
       "kind": "env_switch",
       "id": "ONNXRUNTIME_EP_VULKAN_KV_PREFIX_ALIAS",
       "file": "rust/src/factory.rs",
-      "line": 554,
+      "line": 573,
       "reason": "The growing-cache prefix alias (stage past into present's prefix, never allocate a separate past buffer); the sole reader is kv_prefix_alias_enabled() at rust/src/factory.rs:554-561, ships ON \u2014 polarity reversed from every other flag in the file because disabling it is the escape hatch. Not one of flag_frame's nine switches, and unreachable from the census's KV-free graph for the same reason ONNXRUNTIME_EP_VULKAN_KV_ARENA is. bench/results/probe_ctx4096_shipping_lane.py is a real falsifier across shipping/noalias arms and context lengths (MEASURED 2026-08-04: the default shipping lane executes 355 dispatches at past_len 2048 and zero at 3072 with the alias off \u2014 bench/results/ctx4096_BEFORE.json), but it is an archival probe, not the wiring census. Owed by Mouse (KV-cache op contract) with Switch (the staging copy): a KV-cache-shaped census lane, or a discrimination arm in the existing archival probe.",
       "owner": "Mouse"
     },

@@ -923,17 +923,19 @@ impl VulkanSession {
             compute_queue_family: device.compute_queue_family(),
             is_uma: capable.caps.is_uma,
             name: capable.info.name.clone(),
+            identity: capable.info.key(),
         };
         crate::vk::host_device_memory::offer_shared_device(
             capable.info.index,
             std::sync::Arc::new(ctx),
         );
         log::info!(
-            "§6.5: offered the EP VkDevice for '{}' under device index {} (physical enumerate \
-             index). The device-memory provider adopts it only if ORT asks for an allocator on \
-             that same index; a different index means ORT selected a different EP device than \
-             this session opened, and the run correctly reports SPLIT-DEVICE.",
+            "§6.5: offered the EP VkDevice for '{}' ({}) under device index {} (physical \
+             enumerate index). The device-memory provider adopts it only if ORT asks for an \
+             allocator on that same index; a different index means ORT selected a different EP \
+             device than this session opened, and the run correctly reports SPLIT-DEVICE.",
             capable.info.name,
+            capable.info.key(),
             capable.info.index,
         );
 

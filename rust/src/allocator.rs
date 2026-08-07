@@ -1053,6 +1053,8 @@ pub mod tally {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use crate::engine::DeviceKey;
+
     static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
     static FREES: AtomicU64 = AtomicU64::new(0);
     static BYTES: AtomicU64 = AtomicU64::new(0);
@@ -1301,7 +1303,7 @@ pub mod tally {
     /// they were measured in another world.
     static DEVICE_FRAME: Mutex<Option<(String, String)>> = Mutex::new(None);
 
-    /// **Every distinct `(frame, device)` any provider has declared in this process.**
+    /// **Every distinct `(frame, device identity)` any provider has declared in this process.**
     ///
     /// `DEVICE_FRAME` alone is last-writer-wins, and the tallies it labels are process-global
     /// while `vk::host_device_memory::PROVIDERS` is a *map keyed by factory device index* — so a
@@ -1312,12 +1314,26 @@ pub mod tally {
     /// This set is what makes that detectable rather than silent: more than one entry and the
     /// frame is `MIXED`, whose numbers belong to no single frame and therefore cannot be
     /// measurements (R12).
+    ///
+    /// **Keyed on [`DeviceKey`], not on `deviceName` (issue #18).** It was keyed on the name, and
+    /// a name is not an identity: two installed cards of the same model report the same string,
+    /// so both declaring `SHARED` inserted **one** element, `frames_declared()` returned 1,
+    /// `MIXED` never fired, and a process standing on two physical devices reported a single
+    /// frame over a population drawn from both. That is the same true-label-on-the-wrong-
+    /// population defect this set exists to detect, one level down inside the detector.
+    ///
+    /// The stored key is [`DeviceKey::canonical`]; the name travels beside it in
+    /// `DECLARED_FRAME_NAMES` for the sentence a human reads.
     static DECLARED_FRAMES: Mutex<BTreeSet<(String, String)>> = Mutex::new(BTreeSet::new());
+
+    /// Display names for the keys in [`DECLARED_FRAMES`], so the sentence can say
+    /// `SHARED on 'NVIDIA RTX A1000 Laptop GPU' (uuid:…)` rather than printing a bare key.
+    static DECLARED_FRAME_NAMES: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
     /// The factory device index ORT asked *this allocator* for, or `usize::MAX` if never set.
     static ALLOC_DEVICE_INDEX: AtomicU64 = AtomicU64::new(u64::MAX);
 
-    /// Every device index an EP **session** offered a `VkDevice` for, and that device's name.
+    /// Every device index an EP **session** offered a `VkDevice` for, and that device's identity.
     ///
     /// §6.5's third index-space defect (after the inverted device labels and `dispatches_executed`
     /// vs `compute_calls`) is that the env-var selector indexes the best-first sorted enumeration
@@ -1325,13 +1341,16 @@ pub mod tally {
     /// on one device and the allocator stands up another — and `alloc_device_frame = SPLIT-DEVICE`
     /// is the *detection*, not the description. This map is the description: it names which device
     /// the session side is on so a selector-1 number can never be read as a selector-0 number.
-    static SESSION_DEVICES: Mutex<BTreeMap<usize, String>> = Mutex::new(BTreeMap::new());
+    ///
+    /// The value is `(canonical identity key, device name)` (issue #18). The name is for the
+    /// reader; the key is what `registry::device_state` compares a proof entry against.
+    static SESSION_DEVICES: Mutex<BTreeMap<usize, (String, String)>> = Mutex::new(BTreeMap::new());
 
     /// Record that an EP session offered its `VkDevice` for `index`. Diagnostics only — this never
     /// influences which device anything uses, it only makes the two sides nameable in one artifact.
-    pub fn note_session_device(index: usize, name: &str) {
+    pub fn note_session_device(index: usize, identity: &DeviceKey, name: &str) {
         if let Ok(mut m) = SESSION_DEVICES.lock() {
-            m.insert(index, name.to_string());
+            m.insert(index, (identity.canonical(), name.to_string()));
         }
     }
 
@@ -1352,6 +1371,9 @@ pub mod tally {
     }
 
     /// `"0=NVIDIA GeForce RTX 4060 Laptop GPU; 1=Intel(R) Iris(R) Xe Graphics"`, or `"none"`.
+    ///
+    /// Names only — the human-readable half. [`session_device_identities`] is the half a
+    /// comparison may use.
     pub fn session_devices() -> String {
         let Ok(m) = SESSION_DEVICES.lock() else {
             return "unknown".to_string();
@@ -1360,7 +1382,26 @@ pub mod tally {
             return "none".to_string();
         }
         m.iter()
-            .map(|(i, n)| format!("{i}={n}"))
+            .map(|(i, (_, n))| format!("{i}={n}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    /// `"0=uuid:aabb…; 1=unidentified:Some GPU#1"`, or `"none"` — the identity half of
+    /// [`session_devices`] (issue #18).
+    ///
+    /// **This is what a proof may be compared against**, and the names above are not: a name is
+    /// shared by every card of a model, so `Proven` derived from a name equality is a claim about
+    /// a model rather than about the hardware the evidence came from.
+    pub fn session_device_identities() -> String {
+        let Ok(m) = SESSION_DEVICES.lock() else {
+            return "unknown".to_string();
+        };
+        if m.is_empty() {
+            return "none".to_string();
+        }
+        m.iter()
+            .map(|(i, (k, _))| format!("{i}={k}"))
             .collect::<Vec<_>>()
             .join("; ")
     }
@@ -1418,12 +1459,20 @@ pub mod tally {
     ///
     /// `frame` is `"SHARED"` (§6.5 satisfied — the session's device) or `"SPLIT-DEVICE"` (a second
     /// device, so those numbers describe a world the kernels did not run in).
-    pub fn set_device_frame(frame: &str, device: &str) {
+    ///
+    /// `identity` is the device's canonical key and is what the declaration is **keyed** by
+    /// (issue #18); `name` is carried alongside for the sentence a human reads. Passing the name
+    /// as the key is what let two same-model cards report one frame.
+    pub fn set_device_frame(frame: &str, identity: &DeviceKey, name: &str) {
+        let key = identity.canonical();
         if let Ok(mut d) = DECLARED_FRAMES.lock() {
-            d.insert((frame.to_string(), device.to_string()));
+            d.insert((frame.to_string(), key.clone()));
+        }
+        if let Ok(mut n) = DECLARED_FRAME_NAMES.lock() {
+            n.insert(key, name.to_string());
         }
         if let Ok(mut f) = DEVICE_FRAME.lock() {
-            *f = Some((frame.to_string(), device.to_string()));
+            *f = Some((frame.to_string(), name.to_string()));
         }
     }
 
@@ -1435,20 +1484,25 @@ pub mod tally {
     /// and every frame test would report `MIXED`. Test-only on purpose: production must keep the
     /// accumulating behaviour, because that is what makes a second provider detectable at all.
     #[doc(hidden)]
-    pub fn set_only_frame_for_test(frame: &str, device: &str) {
+    pub fn set_only_frame_for_test(frame: &str, identity: &DeviceKey, name: &str) {
         if let Ok(mut d) = DECLARED_FRAMES.lock() {
             d.clear();
         }
-        set_device_frame(frame, device);
+        if let Ok(mut n) = DECLARED_FRAME_NAMES.lock() {
+            n.clear();
+        }
+        set_device_frame(frame, identity, name);
     }
 
-    /// How many distinct `(frame, device)` pairs have been declared in this process.    ///
+    /// How many distinct `(frame, device identity)` pairs have been declared in this process.
+    ///
     /// `MIXED` without this is an assertion; with it, it is a count a reader can check.
     pub fn frames_declared() -> usize {
         DECLARED_FRAMES.lock().map(|d| d.len()).unwrap_or(0)
     }
 
-    /// `"SHARED on 'Device A'; SPLIT-DEVICE on 'Device B'"` — every frame this run stands on.
+    /// `"SHARED on 'Device A' (uuid:aa…); SPLIT-DEVICE on 'Device B' (uuid:bb…)"` — every frame
+    /// this run stands on, each named by identity as well as by model name (issue #18).
     pub fn declared_frames_sentence() -> String {
         let Ok(d) = DECLARED_FRAMES.lock() else {
             return "unknown".to_string();
@@ -1456,8 +1510,15 @@ pub mod tally {
         if d.is_empty() {
             return "none".to_string();
         }
+        let names = DECLARED_FRAME_NAMES.lock().ok();
         d.iter()
-            .map(|(f, dev)| format!("{f} on '{dev}'"))
+            .map(|(f, key)| {
+                let name = names
+                    .as_ref()
+                    .and_then(|n| n.get(key).cloned())
+                    .unwrap_or_else(|| "<unnamed>".to_string());
+                format!("{f} on '{name}' ({key})")
+            })
             .collect::<Vec<_>>()
             .join("; ")
     }
@@ -2021,6 +2082,9 @@ pub mod tally {
         }
         if let Ok(mut d) = DECLARED_FRAMES.lock() {
             d.clear();
+        }
+        if let Ok(mut n) = DECLARED_FRAME_NAMES.lock() {
+            n.clear();
         }
     }
 
@@ -2935,7 +2999,11 @@ mod tests {
         let _g = ledger::test_lock();
         tally::reset_for_test();
         // §6.5 satisfied — otherwise the count is contradicted by its own frame (R12).
-        tally::set_only_frame_for_test(tally::FRAME_SHARED, "Test Device");
+        tally::set_only_frame_for_test(
+            tally::FRAME_SHARED,
+            &crate::engine::DeviceKey::synthetic_for_test("Test Device"),
+            "Test Device",
+        );
         // 10 allocations, 10 device-backed, 2 staged -> ceiling 8. Claim 6, with real binds.
         tally::seed_for_test(10, 10, 2, 8192);
         tally::seed_authoritative_for_test(6, 33);
@@ -2955,7 +3023,11 @@ mod tests {
     fn a_nonzero_authoritative_count_in_a_split_frame_is_not_credible() {
         let _g = ledger::test_lock();
         tally::reset_for_test();
-        tally::set_only_frame_for_test(tally::FRAME_SPLIT, "Some Other Device");
+        tally::set_only_frame_for_test(
+            tally::FRAME_SPLIT,
+            &crate::engine::DeviceKey::synthetic_for_test("Some Other Device"),
+            "Some Other Device",
+        );
         tally::seed_for_test(10, 10, 2, 8192);
         tally::seed_authoritative_for_test(6, 33);
         let v = tally::staging_verdict();
@@ -2977,7 +3049,11 @@ mod tests {
     fn a_zero_authoritative_count_says_it_is_unwired_rather_than_measured() {
         let _g = ledger::test_lock();
         tally::reset_for_test();
-        tally::set_only_frame_for_test(tally::FRAME_SHARED, "Test Device");
+        tally::set_only_frame_for_test(
+            tally::FRAME_SHARED,
+            &crate::engine::DeviceKey::synthetic_for_test("Test Device"),
+            "Test Device",
+        );
         tally::seed_for_test(10, 10, 2, 8192);
         let v = tally::staging_verdict();
         assert!(v.contains("is UNWIRED, NOT 0"), "got: {v}");
@@ -2998,7 +3074,11 @@ mod tests {
     fn the_same_zero_becomes_a_measurement_once_the_residency_screen_has_run() {
         let _g = ledger::test_lock();
         tally::reset_for_test();
-        tally::set_only_frame_for_test(tally::FRAME_SHARED, "Test Device");
+        tally::set_only_frame_for_test(
+            tally::FRAME_SHARED,
+            &crate::engine::DeviceKey::synthetic_for_test("Test Device"),
+            "Test Device",
+        );
         tally::seed_for_test(10, 10, 2, 8192);
         let unwired = tally::staging_verdict();
         assert!(unwired.contains("is UNWIRED, NOT 0"), "got: {unwired}");
@@ -3032,9 +3112,17 @@ mod tests {
         let _g = ledger::test_lock();
         tally::reset_for_test();
         tally::seed_for_test(10, 10, 2, 8192);
-        tally::set_only_frame_for_test(tally::FRAME_SPLIT, "Intel(R) Iris(R) Xe Graphics");
+        tally::set_only_frame_for_test(
+            tally::FRAME_SPLIT,
+            &crate::engine::DeviceKey::synthetic_for_test("Intel(R) Iris(R) Xe Graphics"),
+            "Intel(R) Iris(R) Xe Graphics",
+        );
         tally::set_allocator_device_index(0);
-        tally::note_session_device(1, "NVIDIA GeForce RTX 4060 Laptop GPU");
+        tally::note_session_device(
+            1,
+            &crate::engine::DeviceKey::synthetic_for_test("NVIDIA GeForce RTX 4060 Laptop GPU"),
+            "NVIDIA GeForce RTX 4060 Laptop GPU",
+        );
         let v = tally::staging_verdict();
         assert!(
             v.contains("ALLOCATOR side: 'Intel(R) Iris(R) Xe Graphics'"),
@@ -3050,7 +3138,11 @@ mod tests {
              spaces disagreeing IS the defect; got: {v}"
         );
 
-        tally::set_only_frame_for_test(tally::FRAME_SHARED, "NVIDIA GeForce RTX 4060 Laptop GPU");
+        tally::set_only_frame_for_test(
+            tally::FRAME_SHARED,
+            &crate::engine::DeviceKey::synthetic_for_test("NVIDIA GeForce RTX 4060 Laptop GPU"),
+            "NVIDIA GeForce RTX 4060 Laptop GPU",
+        );
         let v = tally::staging_verdict();
         assert!(
             v.contains("BOTH sides are on the same VkDevice: 'NVIDIA GeForce RTX 4060 Laptop GPU'"),
@@ -3078,7 +3170,11 @@ mod tests {
         );
 
         // Frame SPLIT-DEVICE — the §6.5 defect.
-        tally::set_only_frame_for_test(tally::FRAME_SPLIT, "Some Other Device");
+        tally::set_only_frame_for_test(
+            tally::FRAME_SPLIT,
+            &crate::engine::DeviceKey::synthetic_for_test("Some Other Device"),
+            "Some Other Device",
+        );
         let v = tally::staging_verdict();
         assert!(v.contains("UNOBSERVABLE, NOT 0"), "got: {v}");
         assert!(
@@ -3090,6 +3186,153 @@ mod tests {
             "and it must name the fix, which is the seam and not a call to the counter; got: {v}"
         );
         assert!(!v.contains("UNWIRED zero"), "got: {v}");
+        tally::reset_for_test();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    // Issue #18 — the frame ledger is keyed by IDENTITY, not by device name.
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    /// **THE REJECTED-HEAD REGRESSION, as a test.**
+    ///
+    /// Two physically distinct cards of the same model — the case a workstation with two A1000s
+    /// or a CI box with two identical MI-series parts produces — declaring `SHARED` each. Keyed
+    /// on `(frame, device_name)` this is *one* pair and the run reports a single clean frame; the
+    /// second `VkDevice` §6.5 forbids is invisible, and the allocator numbers get attributed to
+    /// whichever card the reader assumes.
+    ///
+    /// Keyed on `(frame, identity)` it is two pairs, `frames_declared() == 2`, and the verdict is
+    /// `MIXED` — which is the honest answer, because no single frame contains both.
+    #[test]
+    fn two_identically_named_devices_declare_two_frames_and_report_mixed() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        const NAME: &str = "NVIDIA RTX A1000 Laptop GPU";
+        let card_a = crate::engine::DeviceKey::Uuid("a".repeat(32));
+        let card_b = crate::engine::DeviceKey::Uuid("b".repeat(32));
+        assert_ne!(card_a, card_b);
+
+        tally::set_only_frame_for_test(tally::FRAME_SHARED, &card_a, NAME);
+        assert_eq!(tally::frames_declared(), 1, "one card, one frame");
+
+        tally::set_device_frame(tally::FRAME_SHARED, &card_b, NAME);
+        assert_eq!(
+            tally::frames_declared(),
+            2,
+            "two physical cards with the same MODEL NAME must count as two frames — collapsing \
+             them is the defect this test exists for. Declared: {}",
+            tally::declared_frames_sentence()
+        );
+        assert_eq!(
+            tally::device_frame().0,
+            tally::FRAME_MIXED,
+            "a run standing on two devices has no single frame"
+        );
+        tally::reset_for_test();
+    }
+
+    /// The same declaration twice is still one frame: identity keying must not turn a repeated
+    /// call into a phantom second device, or every long-running session would report `MIXED`.
+    #[test]
+    fn redeclaring_the_same_identity_is_still_one_frame() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        let card = crate::engine::DeviceKey::Uuid("c".repeat(32));
+        tally::set_only_frame_for_test(tally::FRAME_SHARED, &card, "A Device");
+        tally::set_device_frame(tally::FRAME_SHARED, &card, "A Device");
+        tally::set_device_frame(tally::FRAME_SHARED, &card, "A Device");
+        assert_eq!(tally::frames_declared(), 1);
+        assert_eq!(tally::device_frame().0, tally::FRAME_SHARED);
+        tally::reset_for_test();
+    }
+
+    /// The fail-closed fallback must not collapse either. Two same-named devices that report no
+    /// UUID at all — the MoltenVK / some-Android-ICD case — still count as two, because
+    /// `DeviceKey::Unidentified` carries the physical enumeration index.
+    #[test]
+    fn two_unidentified_same_named_devices_still_declare_two_frames() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        let a = crate::engine::DeviceKey::Unidentified {
+            name: "Mali-G78".to_string(),
+            physical_index: 0,
+        };
+        let b = crate::engine::DeviceKey::Unidentified {
+            name: "Mali-G78".to_string(),
+            physical_index: 1,
+        };
+        tally::set_only_frame_for_test(tally::FRAME_SHARED, &a, "Mali-G78");
+        tally::set_device_frame(tally::FRAME_SHARED, &b, "Mali-G78");
+        assert_eq!(
+            tally::frames_declared(),
+            2,
+            "a device with no UUID must still be distinguishable from another with no UUID; \
+             declared: {}",
+            tally::declared_frames_sentence()
+        );
+        tally::reset_for_test();
+    }
+
+    /// The sentence a human reads must carry the identity, not only the name — otherwise a
+    /// `MIXED` verdict on two same-named cards prints two identical clauses and looks like a bug
+    /// in the counter rather than a finding about the hardware.
+    #[test]
+    fn the_declared_frames_sentence_names_both_the_model_and_the_identity() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        const NAME: &str = "NVIDIA RTX A1000 Laptop GPU";
+        tally::set_only_frame_for_test(
+            tally::FRAME_SHARED,
+            &crate::engine::DeviceKey::Uuid("d".repeat(32)),
+            NAME,
+        );
+        tally::set_device_frame(
+            tally::FRAME_SHARED,
+            &crate::engine::DeviceKey::Uuid("e".repeat(32)),
+            NAME,
+        );
+        let s = tally::declared_frames_sentence();
+        assert!(
+            s.contains(&format!("SHARED on '{NAME}' (uuid:{})", "d".repeat(32))),
+            "got: {s}"
+        );
+        assert!(
+            s.contains(&format!("SHARED on '{NAME}' (uuid:{})", "e".repeat(32))),
+            "got: {s}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// The session-device map carries both halves, and they are separately readable: names for
+    /// the reader, identities for the comparison. `registry::running_device_names` parses the
+    /// first and `registry::running_device_uuids` the second, so the shapes are load-bearing.
+    #[test]
+    fn session_devices_and_identities_are_parallel_and_separately_readable() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        tally::note_session_device(
+            0,
+            &crate::engine::DeviceKey::Uuid("f".repeat(32)),
+            "Card One",
+        );
+        assert_eq!(tally::session_devices(), "0=Card One");
+        assert_eq!(
+            tally::session_device_identities(),
+            format!("0=uuid:{}", "f".repeat(32))
+        );
+        assert_eq!(
+            crate::registry::running_device_uuids(),
+            vec![format!("uuid:{}", "f".repeat(32))],
+            "and the production reader over that string yields the identity, once — there is one \
+             parser for this shape, not two"
+        );
+
+        // No session has opened a device: "none" is a third state, and it must not be
+        // indistinguishable from an identity.
+        tally::reset_for_test();
+        assert_eq!(tally::session_devices(), "none");
+        assert_eq!(tally::session_device_identities(), "none");
+        assert!(crate::registry::running_device_uuids().is_empty());
         tally::reset_for_test();
     }
 

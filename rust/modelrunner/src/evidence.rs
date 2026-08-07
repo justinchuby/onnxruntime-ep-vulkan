@@ -137,6 +137,20 @@ pub fn write_json(path: &Path, doc: &Json) -> Result<()> {
 /// guard that requires `dispatches_executed > 0` then fails with that as its reason. Conflating
 /// "the instrument did not report" with "the instrument reported zero" is exactly the confusion
 /// this repository's counters module was written to prevent.
+/// Drop a leading `N=` positional prefix, if present, and return the remainder when non-empty.
+///
+/// `"0=uuid:aabb"` → `"uuid:aabb"`; `"uuid:aabb"` → `"uuid:aabb"`; `"0="` → `None`. Only a purely
+/// numeric prefix is stripped, so a device named `foo=bar` is not silently truncated.
+fn strip_index(pair: &str) -> Option<String> {
+    let t = pair.trim();
+    let body = match t.split_once('=') {
+        Some((head, rest)) if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) => rest,
+        _ => t,
+    };
+    let body = body.trim();
+    (!body.is_empty()).then(|| body.to_string())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Counters {
     pub present: bool,
@@ -144,6 +158,21 @@ pub struct Counters {
     pub claimed_nodes: Option<i64>,
     pub islands_offered: Option<i64>,
     pub compute_calls: Option<i64>,
+    /// `"0=NVIDIA RTX A1000 Laptop GPU"` — the device names the EP session actually opened.
+    ///
+    /// `None` when the counters file predates issue #18 or the EP never opened a device. That is
+    /// a third state, and the identity-agreement guard treats it as *unknown*, not as *agreed*.
+    pub running_device_names: Option<String>,
+    /// `"0=uuid:aabb…"` — the stable identities of those same devices (issue #18).
+    ///
+    /// This, and not [`Counters::running_device_names`], is what the agreement guard compares the
+    /// selected device against: a name is shared by every card of a model, so agreement on a name
+    /// is not agreement on hardware.
+    pub running_device_uuids: Option<String>,
+    /// `SHARED` / `SPLIT-DEVICE` / `MIXED` / `OFF` — which device the allocator numbers describe.
+    pub alloc_device_frame: Option<String>,
+    /// How many distinct `(frame, device identity)` pairs this process declared. `> 1` is `MIXED`.
+    pub alloc_device_frames_declared: Option<i64>,
     pub note: String,
 }
 
@@ -171,19 +200,60 @@ impl Counters {
             }
         };
         let get = |key: &str| doc.get(key).and_then(|v| v.as_i64());
+        // An empty string is not a reading. The EP writes `""` when it has nothing to report, and
+        // `Some("")` would let an emptiness be compared as if it were an identity.
+        let get_str = |key: &str| {
+            doc.get(key)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty() && *s != "none" && *s != "unknown")
+                .map(str::to_string)
+        };
         Self {
             present: true,
             dispatches_executed: get("dispatches_executed"),
             claimed_nodes: get("claimed_nodes"),
             islands_offered: get("islands_offered"),
             compute_calls: get("compute_calls"),
+            running_device_names: get_str("running_device_names"),
+            running_device_uuids: get_str("running_device_uuids"),
+            alloc_device_frame: get_str("alloc_device_frame"),
+            alloc_device_frames_declared: get("alloc_device_frames_declared"),
             note: String::new(),
         }
+    }
+
+    /// The canonical identity keys the EP session opened, in index order.
+    ///
+    /// Accepts both shapes the EP emits: a bare `"uuid:aa…; unidentified:1:Card"` list, and the
+    /// `"0=uuid:aa…; 1=…"` indexed form used by `alloc_device_frame_session_devices`. An `N=`
+    /// prefix is positional decoration, not part of the identity, so it is stripped rather than
+    /// required — requiring it silently produced an *empty* key list against a real EP, which the
+    /// agreement guard then correctly but uselessly reported as "no identity".
+    ///
+    /// Empty means *no comparison is possible* — never *the identities agree*.
+    pub fn session_device_keys(&self) -> Vec<String> {
+        let Some(raw) = self.running_device_uuids.as_deref() else {
+            return Vec::new();
+        };
+        raw.split("; ").filter_map(strip_index).collect()
+    }
+
+    /// The display names of those same devices, in the same order and with the same two shapes
+    /// tolerated. Names are for humans; nothing is ever keyed on them.
+    pub fn session_device_names(&self) -> Vec<String> {
+        let Some(raw) = self.running_device_names.as_deref() else {
+            return Vec::new();
+        };
+        raw.split("; ").filter_map(strip_index).collect()
     }
 
     pub fn to_json(&self) -> Json {
         let opt = |v: Option<i64>| match v {
             Some(n) => Json::int(n),
+            None => Json::Null,
+        };
+        let opt_s = |v: &Option<String>| match v {
+            Some(s) => Json::s(s.as_str()),
             None => Json::Null,
         };
         Json::obj(vec![
@@ -192,6 +262,13 @@ impl Counters {
             ("claimed_nodes", opt(self.claimed_nodes)),
             ("islands_offered", opt(self.islands_offered)),
             ("compute_calls", opt(self.compute_calls)),
+            ("running_device_names", opt_s(&self.running_device_names)),
+            ("running_device_uuids", opt_s(&self.running_device_uuids)),
+            ("alloc_device_frame", opt_s(&self.alloc_device_frame)),
+            (
+                "alloc_device_frames_declared",
+                opt(self.alloc_device_frames_declared),
+            ),
             ("note", Json::s(self.note.as_str())),
         ])
     }
@@ -206,6 +283,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The shape the real EP emits, pinned. `counters.rs` writes
+    /// `"running_device_uuids": "uuid:aa…"` for a one-device run — a bare list, no `N=` prefix —
+    /// while `alloc_device_frame_session_devices` uses the indexed `"0=…"` form. A parser that
+    /// required the prefix returned an EMPTY key list against a real RTX A1000 run, and the
+    /// agreement guard then reported "the EP reported no running device identity" for a run in
+    /// which the EP had reported one perfectly well. Both shapes must read.
+    #[test]
+    fn both_emitted_device_list_shapes_parse_to_the_same_identities() {
+        const U: &str = "aadf33d4d118155fcc60c22b5c352463";
+        let bare = Counters {
+            present: true,
+            running_device_uuids: Some(format!("uuid:{U}")),
+            running_device_names: Some("NVIDIA RTX A1000".to_string()),
+            ..Default::default()
+        };
+        let indexed = Counters {
+            present: true,
+            running_device_uuids: Some(format!("0=uuid:{U}")),
+            running_device_names: Some("0=NVIDIA RTX A1000".to_string()),
+            ..Default::default()
+        };
+        for c in [&bare, &indexed] {
+            assert_eq!(c.session_device_keys(), vec![format!("uuid:{U}")]);
+            assert_eq!(c.session_device_names(), vec!["NVIDIA RTX A1000"]);
+        }
+
+        let two = Counters {
+            present: true,
+            running_device_uuids: Some(format!("0=uuid:{U}; 1=unidentified:1:Some Card")),
+            running_device_names: Some("0=NVIDIA RTX A1000; 1=Some Card".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            two.session_device_keys(),
+            vec![format!("uuid:{U}"), "unidentified:1:Some Card".to_string()],
+            "a multi-device list separates on `; ` and keeps the whole identity, including the \
+             colons inside `unidentified:<index>:<name>`"
+        );
+    }
+
+    /// Only a *numeric* prefix is positional. A device whose name contains `=` must survive.
+    #[test]
+    fn an_equals_sign_inside_a_device_name_is_not_a_positional_prefix() {
+        let c = Counters {
+            present: true,
+            running_device_names: Some("llvmpipe (LLVM 17, 256 bits) rev=3".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            c.session_device_names(),
+            vec!["llvmpipe (LLVM 17, 256 bits) rev=3"],
+            "truncating at the first `=` would rename the device"
+        );
+    }
+
+    /// Absence is absence. An empty list is "no comparison is possible", never "they agree".
+    #[test]
+    fn an_absent_or_empty_identity_list_yields_no_keys() {
+        for raw in [None, Some(""), Some("0="), Some("   ")] {
+            let c = Counters {
+                present: true,
+                running_device_uuids: raw.map(str::to_string),
+                ..Default::default()
+            };
+            assert!(
+                c.session_device_keys().is_empty(),
+                "{raw:?} is not an identity"
+            );
+        }
     }
 
     #[test]

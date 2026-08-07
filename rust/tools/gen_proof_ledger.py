@@ -801,6 +801,16 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
         # `device0` names nothing a second run can be compared against. This is the name the EP
         # reports for the device it actually opened.
         "running_device_names": c.get("running_device_names", ""),
+        # STABLE IDENTITY, READ OFF THE RUN (issue #18, 2026-08-06, Tank).
+        #
+        # `running_device_names` above fixed "an ordinal is not an identity". It did not fix "a
+        # NAME is not an identity": every card of a model reports the same string, so two RTX
+        # A1000s — one here, one on a CI box — produce byte-identical entries and a proof obtained
+        # on either reads as proven on both. This is the canonical `uuid:<32 hex>` key the EP
+        # reports for the device it actually opened, and it is what `registry::device_state`
+        # compares. Empty when the EP predates the field or the driver reported no UUID; empty is
+        # DEVICE-UNATTRIBUTED, never PROVEN.
+        "running_device_uuids": c.get("running_device_uuids", ""),
     }
 
 
@@ -847,6 +857,30 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
     device_selector = device
     if running and running not in ("none", "unknown"):
         device = running
+    # ISSUE #18: THE NAME IS NOT THE IDENTITY EITHER.
+    #
+    # `device` above is now a device NAME rather than an ordinal, which is a strict improvement
+    # and still not an identity: `NVIDIA RTX A1000 Laptop GPU` names a product, and two of them in
+    # one chassis are indistinguishable by it. `device_uuid` carries the 32-hex
+    # `VkPhysicalDeviceIDProperties::deviceUUID` of the device the run actually opened.
+    #
+    # Written as `""` and never as a placeholder when the run reported none: an empty identity is
+    # a state `registry::device_state` reads as DEVICE-UNATTRIBUTED, and a fabricated one would be
+    # read as PROVEN. Entries generated before this field simply lack it, and the parser defaults
+    # them to `""` — legacy entries stay readable and stay unattributed, which is correct.
+    device_uuid = ""
+    running_uuids = (proof_run.get("running_device_uuids") or "").strip()
+    if running_uuids and running_uuids not in ("none", "unknown"):
+        opened = [p.split("=", 1)[1].strip() for p in running_uuids.split("; ") if "=" in p]
+        uniq = sorted({k for k in opened if k.startswith("uuid:")})
+        if len(uniq) == 1:
+            device_uuid = uniq[0][len("uuid:"):]
+        elif len(uniq) > 1:
+            raise SystemExit(
+                f"REFUSING to write an entry for {key}: the run opened {len(uniq)} distinct "
+                f"physical devices ({', '.join(uniq)}). A proof entry names one device; a run "
+                f"that touched two cannot be attributed to either."
+            )
     if claimed <= 0 or dispatches <= 0:
         raise SystemExit(
             f"REFUSING to write an entry for {key}: attribution is "
@@ -932,6 +966,7 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
             "key": key,
             "verdict": "MATCH",
             "device": device,
+            "device_uuid": device_uuid,
             "device_selector": device_selector,
             "ort_build": ort_build,
             "tolerance": tolerance,
@@ -1118,6 +1153,30 @@ def check_ledger(
                 failures.append(
                     f"entry {key} has {field}={value}; a run that claimed or dispatched nothing "
                     f"is UNATTRIBUTED and proves nothing"
+                )
+        # ISSUE #18: device_uuid is OPTIONAL but SHAPED.
+        #
+        # A legacy entry has no `device_uuid` at all and stays valid — `registry::device_state`
+        # reads its absence as DEVICE-UNATTRIBUTED, which is exactly what such an entry deserves,
+        # so failing it here would only force a mass regeneration that changes no verdict.
+        #
+        # What is not tolerated is a present-but-malformed one, because that is the shape a
+        # fabricated identity has. 32 lowercase hex characters or nothing.
+        uuid_field = e.get("device_uuid")
+        if uuid_field is not None and uuid_field != "":
+            if not isinstance(uuid_field, str) or len(uuid_field) != 32 or any(
+                c not in "0123456789abcdef" for c in uuid_field
+            ):
+                failures.append(
+                    f"entry {key} has device_uuid={uuid_field!r}, which is not 32 lowercase hex "
+                    f"characters. A malformed identity is worse than an absent one: absent reads "
+                    f"as DEVICE-UNATTRIBUTED, malformed reads as a device that does not exist"
+                )
+            elif uuid_field == "0" * 32:
+                failures.append(
+                    f"entry {key} has an all-zero device_uuid. An unpopulated "
+                    f"VkPhysicalDeviceIDProperties compares equal on every device that has one, "
+                    f"so recording it would make every card of every model the same device"
                 )
         # §8.9.11: subject provenance. Shape is checked here; *agreement* with the shaders in the
         # build is checked in `registry.rs::parse_ledger`, which is the only place the compiled

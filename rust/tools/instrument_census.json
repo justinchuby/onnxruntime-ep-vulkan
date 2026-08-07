@@ -61,6 +61,13 @@
   "hand": {
     "harness_notes": [
       {
+        "instrument": "bench/devices.py::identify_by_uuid",
+        "state": "UNSCREENABLE by this screen's polarity model - baselined, with the reason",
+        "artifact": "bench/test_phases.py: test_identify_by_uuid_is_exact_even_for_two_identical_gpus (accept: two devices with the identical deviceName, one matching UUID, returns exactly that one) and test_identify_by_uuid_refuses_when_absent_or_unmatched (reject: uuid None, and uuid present-but-unmatched, both return (None, why) with the why naming which of the two it was). Both are always-on, no GPU, and both polarities are exercised.",
+        "why_out_of_frame": "The screen decides reject polarity from the test AST: it must see the call inside `pytest.raises(...)`. identify_by_uuid is a TOTAL function - it returns `(DeviceFacts | None, why)` and never raises - so its refusal arrives as a return value, and no amount of correct two-polarity testing can make this screen see it. Its sibling identify_by_timestamp is the same shape and has been baselined here for the same reason since it landed. Recording it rather than absorbing it silently: the entry is what distinguishes 'we know why this cannot be screened' from 'nobody looked'.",
+        "owner": "tank"
+      },
+      {
         "instrument": "tests/ops/_watchdog.py::StallGuard.raise_if_stalled and WorkClock.assert_alive",
         "state": "OUT-OF-FRAME for this screen, by construction - falsified elsewhere",
         "artifact": "tests/ops/test_stall_guard.py: 13 always-on tests, no GPU, driven by a fake work clock so they are deterministic. Both polarities of every property: slow-but-progressing never trips / silence trips; at-budget passes / one-over fails; the SAME wall silence trips on a fast clock and does not trip on a slow one (the load-invariance crux); a hang on a loaded machine still trips; a dead clock is ERROR(instrument) and not a pass; MECHANISM and TOOLCHAIN stalls print different verdicts. Four-cell end-to-end demonstration against the real census in tests/ops/probe_stall_guard.py, artifact bench/results/stall_guard_arms-dev{N}.json with arms_must_differ.",
@@ -285,6 +292,7 @@
     "bench/devices.py::ep_selection_order",
     "bench/devices.py::find_vulkaninfo",
     "bench/devices.py::identify_by_timestamp",
+  "bench/devices.py::identify_by_uuid",
     "bench/devices.py::probe",
     "bench/phases.py::analyse",
     "bench/phases.py::anchor_quality",

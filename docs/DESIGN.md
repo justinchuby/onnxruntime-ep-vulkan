@@ -745,7 +745,28 @@ never notices.
 
 **Precedence** (highest wins): `ep.device_selector` > `ONNXRUNTIME_EP_VULKAN_DEVICE_SELECTOR` >
 `ep.device_index` > `ONNXRUNTIME_EP_VULKAN_DEVICE` (legacy, lenient, unchanged) > ORT's own
-device binding > the highest-scoring device (§2.3 default).
+device binding > the highest-scoring device (§2.3 default). Both selector surfaces resolve through
+the *same* function, `select_device_strict`, against the same device list; the session option is
+simply the `session_override` argument. There is no second grammar and no second resolver.
+
+**One authoritative selection path, and what the session option may and may not do.** The two
+surfaces are not symmetric, and pretending they are would be the "X advertises, Y binds" split
+this EP has already been bitten by:
+
+- `engine::devices_to_advertise` runs inside `GetSupportedDevices`, **before any session exists**.
+  No session option can be visible there, by construction. It therefore consults only the
+  environment variable, which must be set before `RegisterExecutionProviderLibrary`.
+- `vk::device::acquire_ep_device` runs per session and consults `ep.device_selector` first, then
+  the environment.
+
+Consequently `ep.device_selector` is **subtractive only**: it can cause a session to open *fewer*
+devices (down to none) than were advertised, but it can never cause a session to open a device
+that was not advertised, because it cannot reach the advertise path. A session option naming a
+device the factory did not advertise resolves to `NotFound` and the session opens nothing — a
+loud, visible refusal, not a silent bind to a different GPU. To *change which devices exist*, set
+the environment variable before EP registration; that is the single authoritative selection path,
+and `rust/modelrunner` sets it exactly there (`run.rs`, before `register_ep_library`) for the same
+reason.
 
 **Portability.** `uuid:` is core Vulkan 1.1 and is populated on every platform this EP targets,
 including Android and MoltenVK, so it is the one scheme with no capability caveat — the
@@ -754,14 +775,85 @@ recommended selector for any multi-GPU or reproducible-benchmark configuration. 
 and are `None` rather than fabricated when the platform does not report them; a selector built on
 either is `UnsupportedIdentity` rather than a false negative in that case.
 
-**Proof-frame binding.** The same UUID/LUID/PCI identity is published to ORT as `OrtEpDevice`
-metadata (`vulkan.device_uuid`, `vulkan.device_luid`, `vulkan.device_pci` — `factory.rs`) and
-surfaced by `rust/modelrunner` in both its device-discovery listing and its evidence JSON, so a
-proof artifact can be checked against the physical device it actually ran on rather than trusted
-by selector ordinal. This is additive to, not a replacement for, the existing §10.0.1 R12
-frame-provenance discipline (`alloc_device_frame` / `alloc_device_frame_device` in
-`counters.rs`), which already classifies `SHARED` vs. `SPLIT-DEVICE` vs. `MIXED` runs by actual
-device name rather than by path correctness.
+`UnsupportedIdentity` is reported only when devices *were* enumerated and none of them reports
+that identity kind. With **zero** enumerated devices the answer is `NotFound` — "your loader
+found nothing" and "your driver does not report UUIDs" are different diagnoses with different
+remedies, and `Iterator::all` answers `true` for both unless the empty case is excluded.
+
+##### 2.4.1.1 Stable identity and the proof frame
+
+Selecting the right device correctly is *not* the same property as knowing which device a number
+came from, and the two must not be conflated. §10.0.1 R12's frame discipline
+(`alloc_device_frame` = `SHARED` / `SPLIT-DEVICE` / `MIXED` / `OFF`) answers the second question,
+and it is only as sound as the key it groups declarations by.
+
+**The key is a stable identity, never a display name.** `VkPhysicalDeviceProperties::deviceName`
+is a *model* name: every card of a model reports the same string. Keying the declared-frame set
+on `(frame, deviceName)` therefore collapses two physically distinct GPUs of the same model into
+one entry, and a process that declared `SHARED` on each of two cards reports a single `SHARED`
+frame — a correct-looking counter about a population that stood on two pieces of hardware. The
+declared-frame set is keyed on `DeviceKey` (`rust/src/engine.rs`) instead:
+
+| `DeviceKey` | Canonical form | Source | Proves? | Collapses? |
+|---|---|---|---|---|
+| `Uuid(u)` | `uuid:<32 hex>` | `VkPhysicalDeviceIDProperties::deviceUUID`, when populated | yes | no — unique per physical device, stable across reboots and driver updates |
+| `Unidentified { name, physical_index }` | `unidentified:<physical_index>:<name>` | fallback when no UUID was reported | **never** | no — the enumeration index disambiguates two same-named cards *within this process* |
+
+**The fallback contract is explicit and fail-closed.** `Unidentified` exists so that a driver
+which does not populate `deviceUUID` still cannot silently merge two devices; it is *not* a
+weaker identity, it is the absence of one, and it carries two guarantees:
+
+1. It **never collapses**: two UUID-less cards of the same model occupy distinct enumeration
+   indices, so a cross-device `SHARED` declaration still produces `MIXED`. Detection survives the
+   loss of UUIDs.
+2. It **never proves**: the enumeration index is meaningful only inside the process that observed
+   it, so it cannot be compared against a ledger entry recorded by any other process. A form whose
+   proof entry carries no `device_uuid`, or whose running device is `Unidentified`, resolves to
+   `DEVICE-UNATTRIBUTED` — never `PROVEN`. Attribution does not survive the loss of UUIDs, and
+   the artifact says so rather than guessing.
+
+The canonical string is prefixed `unidentified:` precisely so it can never be misread as, or
+compared equal to, a UUID.
+
+**An absent UUID is an absent key, never an empty or zeroed one.** `query_device_identity` maps
+an all-zero `deviceUUID` to `None`, because an *unpopulated* `VkPhysicalDeviceIDProperties` is
+all zeros on every device that has one — reading that as an identity makes every anonymous device
+compare equal to every other. For the same reason `factory.rs` **omits** `vulkan.device_uuid`
+(and `_luid` / `_pci`) from the `OrtEpDevice` metadata rather than advertising an empty string,
+so a consumer can distinguish "this device has no stable identity" from "this device's identity
+is a string of zeros".
+
+**Propagation.** One identity is read once, at enumeration, and carried unchanged through every
+layer that later has to agree about it:
+
+`query_device_identity` → `DeviceInfo::identity` → `DeviceInfo::key()` →
+`SharedVkDevice::device_uuid()` / `SessionSharedCtx::identity` → `allocator::tally`
+(`DECLARED_FRAMES` keys, `SESSION_DEVICES`) → `counters.rs` (`running_device_uuids` beside
+`running_device_names`) → `rust/modelrunner` (`selected_device.identity`) and
+`gen_proof_ledger.py` (`device_uuid` on each ledger entry) → `registry::device_state`.
+
+**`registry::device_state` compares identities, not names.** Given a ledger entry's recorded
+identity and the identity of the device this process is actually running on:
+
+| Entry `device_uuid` | Running identity | State |
+|---|---|---|
+| present | present and equal | `PROVEN` |
+| present | present and different | `PROVEN-ELSEWHERE` — and when the two device *names* are identical, the message says so explicitly, because that is the case a name comparison would have called a match |
+| absent | any | `DEVICE-UNATTRIBUTED` — "a name is shared by every card of a model"; regenerate the entry to record an identity |
+| any | absent (no device open, or `Unidentified`) | `DEVICE-UNATTRIBUTED` |
+
+A name match alone never yields `PROVEN`. Older ledger entries that predate `device_uuid` parse
+unchanged and land in `DEVICE-UNATTRIBUTED`, which is the honest reading of them.
+
+**Evidence records the device that was opened, not the devices that were offered.**
+`rust/modelrunner`'s `execution_provider.devices` is what `GetEpDevices` *listed*;
+`execution_provider.selected_device` is what the session *opened*, read back from the EP's own
+counters. The `device_identity_agreement` guard cross-checks the two and **fails closed** on
+every state in which agreement cannot be established — including the states where nothing is
+provably wrong (no counters, no identity reported, more than one identity, `MIXED`/`SPLIT-DEVICE`
+frame, an identity matching no advertised `vulkan.device_uuid`, or a `uuid:` selector that names
+a different device than the one opened). The cost of a false red is a rerun; the cost of a false
+green is a number in `bench/results/` attributed to hardware it never touched.
 
 
 

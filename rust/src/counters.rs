@@ -2622,6 +2622,7 @@ impl VulkanEpCounters {
              \"ledger_subject_changed_entries\": {},\n  \
              \"ledger_toolchain_delta_entries\": {},\n  \
              \"running_device_names\": \"{}\",\n  \
+             \"running_device_uuids\": \"{}\",\n  \
              \"reproof_forms_admitted\": {},\n  \
              \"shaders_dispatched\": {},\n  \
              \"shaders_dispatched_digest\": \"{}\",\n  \
@@ -2709,6 +2710,7 @@ impl VulkanEpCounters {
             crate::registry::ledger().subject_changed_entries().count(),
             crate::registry::ledger().toolchain_delta_entries().count(),
             json_escape(&crate::registry::running_device_names().join("; ")),
+            json_escape(&crate::registry::running_device_uuids().join("; ")),
             reproof_forms_admitted_json(),
             shaders_list,
             shaders_digest,
@@ -3731,6 +3733,7 @@ mod tests {
         // Frame 2: a second VkDevice — the §6.5 defect. Still pinned.
         crate::allocator::tally::set_only_frame_for_test(
             crate::allocator::tally::FRAME_SPLIT,
+            &crate::engine::DeviceKey::synthetic_for_test("Some Other Device"),
             "Some Other Device",
         );
         dump_observations_if_requested();
@@ -3750,7 +3753,11 @@ mod tests {
         // which is the third time two index spaces have produced a correct counter about the
         // wrong situation on this project.
         crate::allocator::tally::set_allocator_device_index(0);
-        crate::allocator::tally::note_session_device(1, "The Session's Device");
+        crate::allocator::tally::note_session_device(
+            1,
+            &crate::engine::DeviceKey::synthetic_for_test("The Session's Device"),
+            "The Session's Device",
+        );
         dump_observations_if_requested();
         let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
         assert!(
@@ -3772,6 +3779,7 @@ mod tests {
         // system: `"UNWIRED"` is a JSON string, so arithmetic on it fails loudly.
         crate::allocator::tally::set_only_frame_for_test(
             crate::allocator::tally::FRAME_SHARED,
+            &crate::engine::DeviceKey::synthetic_for_test("The Session's Device"),
             "The Session's Device",
         );
         dump_observations_if_requested();
@@ -3842,11 +3850,19 @@ mod tests {
         // Two providers, two devices, one process, no ordering between them.
         std::thread::scope(|s| {
             s.spawn(|| {
-                tally::set_device_frame(tally::FRAME_SHARED, "Device A");
+                tally::set_device_frame(
+                    tally::FRAME_SHARED,
+                    &crate::engine::DeviceKey::synthetic_for_test("Device A"),
+                    "Device A",
+                );
                 tally::on_residency_evaluated(false);
             });
             s.spawn(|| {
-                tally::set_device_frame(tally::FRAME_SPLIT, "Device B");
+                tally::set_device_frame(
+                    tally::FRAME_SPLIT,
+                    &crate::engine::DeviceKey::synthetic_for_test("Device B"),
+                    "Device B",
+                );
                 tally::on_residency_evaluated(false);
             });
         });
@@ -3883,6 +3899,73 @@ mod tests {
             doc.contains("Device A") && doc.contains("Device B"),
             "a mixed frame must NAME the frames it mixed — `MIXED` alone is the same detection \
              -without-description that made `SPLIT-DEVICE` unreadable. Got:\n{doc}"
+        );
+
+        tally::reset_for_test();
+    }
+
+    /// The rejected artifact keyed the declared-frame set on `(frame, device_name)`. Two cards of
+    /// the same model report the same `deviceName`, so a SHARED declaration on each of them
+    /// collapsed into one entry and the artifact said `SHARED` — one frame — for a population that
+    /// stood on two devices. That is the exact reading error `MIXED` exists to prevent, and the
+    /// name key made it unreachable in the one configuration where it matters most.
+    ///
+    /// This is the falsifier for "the frame key is a device identity". It uses one display name
+    /// and two identities; on the rejected bytes it reports `SHARED` / `alloc_device_frames_declared: 1`.
+    #[test]
+    fn two_cards_of_the_same_model_are_two_frames_not_one() {
+        use crate::allocator::tally;
+        let _g = crate::allocator::ledger::test_lock();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("counters_identical_name_mixed_test.json");
+        std::fs::remove_file(&path).ok();
+        tally::reset_for_test();
+
+        // The two-card configuration: identical `deviceName`, distinct `deviceUUID`.
+        const NAME: &str = "NVIDIA RTX A1000 Laptop GPU";
+        let first = crate::engine::DeviceKey::synthetic_for_test("card-0");
+        let second = crate::engine::DeviceKey::synthetic_for_test("card-1");
+        assert_ne!(
+            first.canonical(),
+            second.canonical(),
+            "the fixture is only meaningful if the two identities differ"
+        );
+
+        tally::set_device_frame(tally::FRAME_SHARED, &first, NAME);
+        tally::note_session_device(0, &first, NAME);
+        tally::set_device_frame(tally::FRAME_SHARED, &second, NAME);
+        tally::note_session_device(1, &second, NAME);
+        tally::on_residency_evaluated(false);
+
+        // SAFETY: single-threaded here; removed on the way out.
+        unsafe { std::env::set_var(ENV_COUNTERS_FILE, &path) };
+        dump_observations_if_requested();
+        let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
+        std::fs::write(dir.join("identical_name_mixed_dump.json"), &doc).ok();
+        // SAFETY: see above.
+        unsafe { std::env::remove_var(ENV_COUNTERS_FILE) };
+        std::fs::remove_file(&path).ok();
+
+        assert!(
+            doc.contains("\"alloc_device_frame\": \"MIXED\""),
+            "two physical devices each declared SHARED, so the process stands on two frames. \
+             Keying on the display name collapses them and reports SHARED, which is a correct \
+             counter about the wrong population. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"alloc_device_frames_declared\": 2"),
+            "the count is what makes MIXED a measurement rather than an assertion, and it is the \
+             number the name key got wrong; got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"running_device_uuids\""),
+            "the artifact must carry the stable identities beside the names, or a reader cannot \
+             tell these two rows apart at all; got:\n{doc}"
+        );
+        assert!(
+            doc.contains(first.canonical().as_str()) && doc.contains(second.canonical().as_str()),
+            "both identities must appear; naming neither leaves MIXED undiagnosable. Got:\n{doc}"
         );
 
         tally::reset_for_test();
