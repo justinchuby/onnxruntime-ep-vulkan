@@ -1101,28 +1101,45 @@ def _observe_flag_frame(
     # ── GEMV_PACKED — a different KERNEL, and not reachable from this graph ──────────
     #
     # The strongest of the twelve and the one that stays UNOBSERVABLE, which is the point.
-    # `ops/quant.rs::gemv_packed()` selects the packed batch-1 GEMV kernel.  The census
-    # graph is a six-node elementwise chain: it contains no MatMulNBits, so no GEMV kernel
-    # is reachable, so the switch cannot move anything here.  Reporting `CONSTANT` would
-    # be reporting a 0 for an event that cannot occur in the frame (R12) and would read as
-    # evidence that the switch is inert.
-    #
-    # What this line DOES buy: every other observation in this census now states which
-    # side of the switch it was taken on, so no kernel reading in this artifact is silent
-    # about which kernel it observed.
-    segments.append(
-        _flag_segment(
-            _ENV_GEMV_PACKED,
-            _FLAG_UNOBSERVABLE,
-            "armed in arm A and no discriminator exists in this frame: the census graph "
-            "is a six-node elementwise chain with no MatMulNBits, so the packed GEMV "
-            "kernel is not reachable and a 'no difference' reading would be a 0 for an "
-            "event that cannot occur (R12). The kernel-identity observation needs either "
-            "a GEMV case in the census lane or a counter naming the selected kernel — "
-            "requested from Mouse/Switch as `gemv_packed_dispatches`",
-            env=a_env,
+    # `ops/quant.rs::gemv_packed()` selects the packed batch-1 GEMV kernel, entering the
+    # program as specialization constant 5 of `q_gemv.comp`. Corrected 2026-08-07 (issue
+    # #58): the recording half of this gap is NOT open — `counters::record_pipeline_variant`
+    # already records the whole resolved specialisation vector for every pipeline this
+    # process builds, and `gemv_packed_spec_constant()` reads index 5 of any recorded
+    # `q_gemv`-stemmed entry, reporting `UNOBSERVABLE` (never a silent `0`) when no such
+    # pipeline was built. The census graph is a six-node Add/Mul elementwise chain with no
+    # MatMulNBits, so no GEMV kernel is reachable here — that is the one surviving blocker,
+    # and it is READ FROM THE ARTIFACT below, not asserted in prose: a future census lane
+    # that reaches a q_gemv pipeline (or a MatMulNBits-anchored subgraph) would move this
+    # value away from `UNOBSERVABLE`, and this segment would report it rather than paper
+    # over it, because `_FLAG_MOVED` fires whenever the two arms disagree, and neither arm
+    # is hardcoded to `UNOBSERVABLE`.
+    _gemv_a = a_doc.get("gemv_packed_spec_constant", "MISSING-FIELD")
+    _gemv_b = b_doc.get("gemv_packed_spec_constant", "MISSING-FIELD")
+    if _gemv_a == "UNOBSERVABLE" and _gemv_b == "UNOBSERVABLE":
+        _gemv_state = _FLAG_UNOBSERVABLE
+        _gemv_detail = (
+            "armed in arm A; gemv_packed_spec_constant() reads 'UNOBSERVABLE' in both "
+            "arms (verified against a_doc/b_doc, not claimed): the census graph builds "
+            "no MatMulNBits/q_gemv pipeline, so counters::record_pipeline_variant has "
+            "nothing to record here and no 'no difference' reading is being mistaken for "
+            "a 0 (R12). Recording is not this gap; reachability is — a GEMV-reaching "
+            "census lane, or a probe adopting rust/tools/probe_gemv_kernel_identity.py's "
+            "evidence, would close it."
         )
-    )
+    else:
+        # Either arm built a q_gemv pipeline. That is the reachability blocker closing —
+        # a real finding, not a regression in this test. Report it plainly rather than
+        # forcing it back into the UNOBSERVABLE shape this segment has held until now.
+        _gemv_state = _FLAG_MOVED if _gemv_a != _gemv_b else _FLAG_CONSTANT
+        _gemv_detail = (
+            f"UNEXPECTED: gemv_packed_spec_constant()={_gemv_a!r} (arm A) vs "
+            f"{_gemv_b!r} (arm B) — a q_gemv pipeline WAS built in this frame. The "
+            "reachability premise ci/census_surface_map.json's GEMV_PACKED entry and "
+            "this segment's comment rely on has changed; re-derive both, do not "
+            "re-assert the old UNOBSERVABLE reading."
+        )
+    segments.append(_flag_segment(_ENV_GEMV_PACKED, _gemv_state, _gemv_detail, env=a_env))
 
     # ── DEVICE_MEMORY — a different ALLOCATION PATH, and this one IS reachable ───────
     #
