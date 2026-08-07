@@ -7441,16 +7441,80 @@ def test_the_landing_simulation_declares_its_enforcement_follow_up():
     assert len(deliberate) <= 1, (
         f"more than one step is deliberately skipped: {[s['id'] for s in deliberate]}"
     )
-    if deliberate:
-        assert followup["not_done_on_purpose"]["what"].startswith(f"step `{deliberate[0]['id']}`"), (
-            "the deliberately-skipped step and its explanation have drifted apart"
-        )
+    # Both directions, because one direction leaves the pairing free to rot from either end:
+    # a flagged step whose explanation vanished, or an explanation still describing a step
+    # that has quietly been reclassified or ticked.
+    explained = followup["not_done_on_purpose"]["what"]
+    named = re.match(r"step `([^`]+)`", explained)
+    assert named, f"the deliberate-skip explanation does not name a step: {explained!r}"
+    by_id = {s["id"]: s for s in steps}
+    assert named.group(1) in by_id, (
+        f"the deliberate-skip explanation names {named.group(1)!r}, which is not a step in "
+        f"this checklist: {sorted(by_id)}"
+    )
+    target = by_id[named.group(1)]
+    assert target["done"] is False and target.get("not_done_on_purpose") is True, (
+        f"step {target['id']} is still carrying the file's deliberate-skip explanation while "
+        f"reading done={target['done']} / on_purpose={target.get('not_done_on_purpose')}. "
+        f"Either it got done and the explanation was left behind, or it stopped being "
+        f"deliberate and nothing said so."
+    )
+    assert deliberate and deliberate[0]["id"] == target["id"], (
+        "the checklist and the explanation disagree about which step is the deliberate one"
+    )
 
     reds = json.loads((CI_DIR / "open_reds.json").read_text(encoding="utf-8"))
     declared = {c["id"] for c in reds["checks"]}
     assert "main_is_green" in declared, (
         "`main_is_green` is the entry step 2 is waiting on; if it has been deleted rather "
         "than closed, nothing will ever say the wait ended"
+    )
+
+
+def test_every_required_context_is_a_job_this_workflow_still_produces():
+    """THE DEADLOCK THE PREVIOUS TEST'S SUBJECT NOW MAKES POSSIBLE, held shut.
+
+    A required status check is a STRING in repository settings. The job that produces it is a
+    string in `.github/workflows/ci.yml`. Nothing in GitHub relates the two: rename the job
+    and the context it used to produce simply never arrives again, so every pull request waits
+    forever and NONE of them can merge — including the one that would rename it back. The
+    repair for that state is a settings change made by somebody who still has the access and
+    has worked out what happened, which is a bad thing to need on a Friday.
+
+    This is not hypothetical. PR #67 edited `ci.yml` in the same hour the required-check rule
+    went live, and happened not to touch a `name:`. Happening not to is not a control.
+
+    So the two strings are held against each other here, in the lane, on the branch, BEFORE
+    the rename can be merged into the policy. The direction matters: every required context
+    must still be produced. The converse is deliberately not asserted — a job that is not
+    required is a choice, and this repository has made it before.
+
+    The `misses` note in `ci/lane_inventory.py` and `ci/landing_enforcement_followup.json`
+    carry the same fact in prose. This test is what makes it true rather than remembered.
+    """
+    followup = json.loads(
+        (CI_DIR / "landing_enforcement_followup.json").read_text(encoding="utf-8")
+    )
+    required = followup["required_contexts"]
+    assert required, "the follow-up records no required contexts, so this test is vacuous"
+
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    # Job-level `name:` is indented exactly one level below the job key, which is two levels
+    # below `jobs:`. Step names sit deeper, so the anchor keeps this to job names only.
+    produced = set(re.findall(r"^    name: (.+?)\s*$", workflow, re.MULTILINE))
+    assert produced, "no job names parsed out of ci.yml; the parse broke, not the workflow"
+
+    missing = [c for c in required if c not in produced]
+    assert not missing, (
+        f"required status check(s) {missing!r} name no job in ci.yml, which now produces "
+        f"{sorted(produced)!r}. GitHub will wait for a context that never arrives and EVERY "
+        f"pull request becomes unmergeable, this one included. Rename the job back, or change "
+        f"the ruleset FIRST and this file with it."
+    )
+
+    assert followup["the_deadlock_this_now_risks"], (
+        "the deadlock note has been deleted from the follow-up; the next person to rename a "
+        "job will meet this test's failure with no idea why the rule exists"
     )
 
 

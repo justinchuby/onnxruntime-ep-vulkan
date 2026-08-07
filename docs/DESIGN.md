@@ -3934,8 +3934,32 @@ reds. That is stopping the workflow, not hardening it. The order actually walked
 regression repaired in PR #66 → `main` genuinely green at `fbbb898`, run `31181293838`, **all four
 jobs, zero skipped steps in each** → the ruleset extended by `PUT`, re-sending `deletion` and
 `non_fast_forward` verbatim so that adding a rule could not silently drop the two that were already
-there → **base movement demonstrably invalidating a green landing check**, measured on a disposable
-pull request rather than asserted.
+there → **base movement observed to invalidate a green landing check**.
+
+That last step was going to be staged, on a disposable pull request carrying one empty commit, and it
+did not need to be. PR #67 — an unrelated change, another author, its own schedule — merged and moved
+`main` to `8e6417e` while the experiment was still being set up. Two pull requests that had gone green
+on all four required contexts minutes earlier, the disposable one and the one carrying this paragraph,
+both immediately read `mergeable_state: behind`. The label was then tested rather than believed:
+`PUT /repos/.../pulls/70/merge` returned **HTTP 405, `4 of 4 required status checks are expected`**. A
+pull request whose four contexts had all concluded `success` was refused — because they concluded it
+against a base nobody was merging into any more. That is the residual this section spent its length
+naming, arriving as a refusal instead of as a merge, on a base movement nobody arranged.
+
+Direct pushes are refused by the same rule, which was also tested rather than assumed: `git push
+origin HEAD:main` with an empty commit was declined with `GH013 … 4 of 4 required status checks are
+expected`, and `main` was unmoved. A policy that only constrained the merge button would have left the
+push open beside it.
+
+**What the rule now makes possible, said plainly, because it is the price and not an objection.** A
+required context is a **string** in repository settings; the job that produces it is a string in
+`.github/workflows/ci.yml`, and nothing in GitHub relates the two. Rename the job and the context
+never arrives again: every pull request waits forever, **including the one that would rename it
+back**, and the way out is a settings change by somebody who still has the access and has worked out
+what happened. PR #67 edited `ci.yml` in the same hour this rule went live and happened not to touch a
+`name:`. Happening not to is not a control, so
+`ci/test_lane_checks.py::test_every_required_context_is_a_job_this_workflow_still_produces` holds the
+two strings against each other in the lane, on the branch, before a rename can reach the policy.
 
 **One step of the written sequence is deliberately NOT done, and it is not a loose end.** The
 `main_is_green` entry in `ci/open_reds.json` stays open at `expect=red`. It censuses the **last ten

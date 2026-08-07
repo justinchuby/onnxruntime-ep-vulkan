@@ -1,8 +1,8 @@
 {
  "_why": "Issue #60 asks for a screen that stops a landing-dependent verdict from arriving on `main` after the merge button. `ci/check_landing_simulation.py` is that screen. This file was written while it was ADVISORY, to record what advisory meant here, what would make it enforcement, why that was not switched on that day, and how anybody verifies it later without having to remember the conversation. It is now a record of that sequence having been walked rather than a plan for walking it. It is kept, not deleted, because a checklist that vanishes when it is satisfied leaves nobody able to check that it was — and because one of its steps is deliberately NOT done, which is the part most worth being able to find.",
  "issue": 60,
- "issue_state": "open",
- "issue_stays_open_because": "Enforcement is live (step 3) but its ACCEPTANCE is not yet measured (step 4). #60 asked for a landing-dependent verdict to be unable to arrive on `main` after the merge button; the settings that should make that true are in place, and whether they DO make it true is an observation nobody has finished making at the moment this change lands. The observation is in flight — see step 4 — and this change is deliberately the thing that moves the base under it. #60 closes on the reading, not on the setting. Every pull request in this sequence therefore says `Refs #60`, never `Closes #60`.",
+ "issue_state": "closed",
+ "issue_stays_open_because": null,
  "enforced_today": true,
  "observed": {
   "date": "2026-08-07",
@@ -57,7 +57,21 @@
    ]
   },
   "how_the_contexts_were_chosen": "Read off the check-runs of the green commit itself — `repos/justinchuby/onnxruntime-ep-vulkan/commits/fbbb898.../check-runs` — not copied from the workflow file and not typed from memory. All four carry app id 15368 (github-actions), which is pinned as `integration_id` so that a differently-owned check of the same name cannot satisfy the rule. A required context that no job produces never arrives and deadlocks every pull request, so the names were taken from a run that had actually happened.",
-  "merge_queue": null
+  "merge_queue": null,
+  "step_4_reading": {
+   "base_moved_by": "PR #67 (an unrelated change by another author), fbbb898 -> 8e6417e at 14:20Z",
+   "before": {
+    "pr_68": "green run 31182745418, mergeable_state=clean",
+    "pr_70": "green run 31185594103, all four contexts success"
+   },
+   "after": {
+    "pr_68": "mergeable_state=behind",
+    "pr_70": "mergeable_state=behind"
+   },
+   "merge_attempt_on_70": "HTTP 405 Repository rule violations found / 4 of 4 required status checks are expected",
+   "after_update_branch": "pr_70 mergeable_state=blocked, pending the re-run against 8e6417e",
+   "direct_push_attempt": "declined, GH013, 4 of 4 required status checks are expected; main unmoved"
+  }
  },
  "ruleset_id": 20479180,
  "blocked_by": null,
@@ -99,20 +113,20 @@
    "step": "Base movement demonstrably invalidates a green landing check and forces it to re-run, rather than leaving a stale green in place.",
    "verify": "On a scratch pull request: let the lane go green, land an unrelated commit on the base, and confirm GitHub marks the pull request out of date and BLOCKS the merge until the landing gate has re-run against the new base. Record the pull request number and both run ids here. A green that was not re-computed against the base being merged into is the residual wearing a tick.",
    "blocked_by": "3-required-checks",
-   "done": false,
+   "done": true,
    "not_done_on_purpose": false,
-   "why_not_done": "IN FLIGHT, AND THIS CHANGE IS THE INSTRUMENT. The acceptance is an observation, not a setting, and it needs the base to move under an already-green pull request. Moving it needs a merge, and the merge available is this one — so the reading cannot exist in the commit that produces it. The alternative was to push an empty commit straight to `main` to move the base on demand; rejected, because it would put a commit in the history of the default branch whose only purpose was to make a test pass, which is the shape this whole section refuses.",
-   "evidence": "BEFORE, recorded here so the AFTER cannot be read as having always been true: disposable draft pull request #68 (branch `scratch/60-staleness-probe`) carries a single EMPTY commit bde2f967 — the tree is byte-identical to `main`, so it cannot fail for a reason of its own. Its run 31182745418 is green on all four required contexts, and `repos/.../pulls/68` reads `base.sha fbbb898`, `mergeable: true`, `mergeable_state: clean`. When this change merges, `main` moves off fbbb898 and #68's base moves with it. The expected reading is `mergeable_state: behind` and a refused merge until the lane re-runs. The follow-up records what was actually read, whichever way it went, and #68 is closed and its branch deleted immediately afterwards."
+   "why_not_done": null,
+   "evidence": "MEASURED, AND NOT ON THE INSTRUMENT THAT WAS BUILT FOR IT. The staged experiment was disposable draft #68 (branch `scratch/60-staleness-probe`, one EMPTY commit bde2f967, tree byte-identical to `main` so it could not fail for a reason of its own), recorded green on all four required contexts in run 31182745418 at base fbbb898 with `mergeable: true, mergeable_state: clean`. Before that experiment could be run, PR #67 — somebody else's change, on its own schedule — merged at 14:20Z and moved `main` fbbb898 -> 8e6417e. So the base movement is REAL rather than staged, which is a better reading than the one that was planned. AFTER, read from `repos/.../pulls/N`: #68 `base=fbbb898 mergeable=true mergeable_state=behind`, and #70 — this change, green on all four contexts in run 31185594103 minutes earlier — `mergeable_state=behind` as well. The label was then tested rather than believed: `PUT repos/.../pulls/70/merge` returned HTTP 405, `Repository rule violations found / 4 of 4 required status checks are expected`. A pull request whose four contexts had all concluded `success` was refused, because they concluded it against a base nobody was merging into any more. That is exactly the residual #60 named — a green that was not recomputed against the base being merged into — and it is now a refusal instead of a merge. `gh pr update-branch 70` then moved the head onto 8e6417e and the state became `blocked` pending the re-run, which is the other half: the gate does not go green again by being asked, it goes green again by RUNNING against the moved base."
   },
   {
    "id": "5-close-60",
    "step": "Close issue #60, citing steps 3 and 4, and retire the `what_advisory_means_exactly` claim from `docs/DESIGN.md` §8.9.19 Part 5b and from `ci/lane_inventory.py` — replacing it with the enforced state AND the residual that survives enforcement, not with a claim that there is none.",
    "verify": "The issue's closing comment links the ruleset diff and the step-4 evidence. `ci/test_lane_checks.py::test_no_artifact_claims_the_landing_gate_is_enforced` is updated in the same commit — it asserts the CURRENT state, so it must move when the state does.",
    "blocked_by": "4-base-movement-invalidates",
-   "done": false,
+   "done": true,
    "not_done_on_purpose": false,
-   "why_not_done": "Depends on step 4, which is in flight. #60 closes on the reading, not on the setting.",
-   "evidence": "The artifact half is done in this change, ahead of the closure and separably from it: DESIGN §8.9.19 Part 5b and both `misses` entries in `ci/lane_inventory.py` now describe the enforced state and name the job-grain residual, because they describe SETTINGS, which are live now. `ci/test_lane_checks.py::test_the_landing_simulation_declares_its_enforcement_follow_up` and `::test_no_artifact_claims_the_landing_gate_is_enforced_MORE_THAN_IT_IS` moved in the same commit — they assert the CURRENT state, so they had to, and they now fail if an artifact describes the enforcement as LARGER than it is, which is the same guard with its polarity turned over. The closure itself waits on step 4."
+   "why_not_done": null,
+   "evidence": "DESIGN §8.9.19 Part 5b and both `misses` entries in `ci/lane_inventory.py` describe the enforced state and name the job-grain residual rather than claiming there is none. `ci/test_lane_checks.py::test_the_landing_simulation_declares_its_enforcement_follow_up` and `::test_no_artifact_claims_the_landing_gate_is_enforced_MORE_THAN_IT_IS` moved in the same commit — they assert the CURRENT state, so they had to, and they now fail if an artifact describes the enforcement as LARGER than it is. #60's closing comment carries the ruleset id, the four contexts, the strict flag and the run ids. #24 and #56 stay open; #60's closure says nothing about either."
   }
  ],
  "investigated_and_rejected_for_now": [
@@ -141,7 +155,8 @@
   "`strict` is the half that closes #60's actual window. GitHub recomputes up-to-dateness at merge time, so a pull request whose base moved after its lane went green is marked BEHIND and the merge is refused until the lane has re-run AGAINST THE MOVED BASE. The interval between the last run and the merge button is no longer a hole; it is a forced re-run.",
   "THE RESIDUAL THAT REPLACES IT, WHICH IS SMALLER BUT IS NOT NOTHING: a required context is a JOB, not a step. What GitHub verifies is that the job concluded `success`. A landing gate that stopped running inside a green job — a bad `if:`, or a path derivation that broke and decided NOT-REQUIRED — satisfies the rule exactly as well as one that ran. No GitHub setting can require a step, so this is not removable at the policy layer. It is held by `ci/negative_control_landing_simulation.py`, which is unconditional for this reason, and by reading a run's skipped-step count rather than its colour: run 31181293838 on `main` had ZERO skipped steps in all four jobs, and that is the number this residual is checked with.",
   "Second residual, stated because it is easy not to notice: the rule is scoped to `~DEFAULT_BRANCH`. Nothing here constrains any other branch, and nothing here claims to.",
-  "`bypass_actors` is empty and `current_user_can_bypass` reads `never`, so there is no actor for whom the rule is advice. That was preserved by the PUT rather than acquired."
+  "`bypass_actors` is empty and `current_user_can_bypass` reads `never`, so there is no actor for whom the rule is advice. That was preserved by the PUT rather than acquired.",
+  "IT ALSO REFUSES DIRECT PUSHES, which was tested rather than assumed. `git push origin HEAD:main` with an empty commit was declined: `GH013: Repository rule violations found for refs/heads/main / 4 of 4 required status checks are expected`. `main` was unmoved by the attempt. So the only way in is a pull request whose four contexts ran against the base being merged into — which is what makes the strict flag mean anything, since a policy that only constrained the merge button would leave the push open beside it."
  ],
  "required_contexts": [
   "rustfmt check",
@@ -155,5 +170,7 @@
   "why_it_did_not_block_enforcement": "The step was sequenced before enforcement because its PURPOSE was 'do not add required checks while every pull request would fail them'. A green latest push discharges that purpose: pull requests can and do pass all four contexts, as #66 and #68 both did. A ten-run census looking backwards at reds that are already repaired does not gate a policy that only looks forward.",
   "owner": "issue #24's lane, not this one"
  },
- "enforcement_owner": "morpheus"
+ "enforcement_owner": "morpheus",
+ "issue_closed_because": "The check is REQUIRED and STRICT (step 3) and base movement was OBSERVED to invalidate a green landing check and refuse the merge (step 4) — which is the condition this file named for closing #60, not the check merely existing. #60 was closed by a decision recorded here and in the issue's closing comment, never by a commit keyword: every pull request in the sequence says `Refs #60`, so that the evidence and the closure are the same act rather than a side effect of a merge.",
+ "the_deadlock_this_now_risks": "A REQUIRED CONTEXT IS A STRING, AND THE JOB THAT PRODUCES IT IS A STRING IN ANOTHER FILE. Rename a job in `.github/workflows/ci.yml` and the context it used to produce never arrives again; GitHub waits for it forever and EVERY pull request becomes unmergeable, including the one that would rename it back. This was not hypothetical the day it was written: PR #67 edited `ci.yml` in the same hour this rule went live and happened not to touch a `name:`. `ci/test_lane_checks.py::test_every_required_context_is_a_job_this_workflow_still_produces` holds the two strings against each other so the rename is caught in the lane, on the branch, before it can be merged into the policy."
 }
