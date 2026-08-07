@@ -4,33 +4,37 @@
   "traced_verdict": "ADMISSIBLE",
   "refusals": [],
   "instrument_errors": [],
-  "trace_events": 15057,
+  "trace_events": 15071,
   "phases": {
     "siblings_us": {
+      "bind_check": {
+        "us": 1851,
+        "count": 14
+      },
       "fence_wait": {
-        "us": 478693,
+        "us": 757592,
         "count": 14
       },
       "record": {
-        "us": 1418540,
+        "us": 1735023,
         "count": 14
       },
       "submit": {
-        "us": 2196,
+        "us": 3622,
         "count": 14
       }
     },
     "nested_us": {
       "cmd_upload": {
-        "us": 1293885,
+        "us": 1566880,
         "count": 14
       },
       "desc_alloc": {
-        "us": 15072,
+        "us": 22449,
         "count": 4970
       },
       "pipeline_lookup": {
-        "us": 20649,
+        "us": 24668,
         "count": 4970
       }
     },
@@ -39,45 +43,47 @@
       "pipeline_lookup": "record",
       "desc_alloc": "record"
     },
-    "sibling_total_us": 1899429,
-    "record_us": 1418540,
-    "record_claimed_children_us": 1329606,
-    "record_residual_us": 88934,
+    "sibling_total_us": 2498088,
+    "tier1_total_us": 1851,
+    "tier2_total_us": 2496237,
+    "record_us": 1735023,
+    "record_claimed_children_us": 1613997,
+    "record_residual_us": 121026,
     "record_residual_underflow": false,
     "phase_tree_disagreements": []
   },
   "gpu": {
     "per_label_ns": {
       "q_gemv_matmul_nbits_f16": {
-        "ns": 248593120,
+        "ns": 246442912,
         "count": 2254
       },
       "gqa_f16": {
-        "ns": 20871360,
+        "ns": 20654528,
         "count": 448
       },
       "skip_simplified_layer_norm_f16": {
-        "ns": 11628608,
+        "ns": 11494400,
         "count": 896
       },
       "ew_binary_mul_f16": {
-        "ns": 2608640,
+        "ns": 2660192,
         "count": 896
       },
       "ew_unary_sigmoid_f16": {
-        "ns": 1340736,
+        "ns": 1373376,
         "count": 448
       },
       "simplified_layer_norm_f16": {
-        "ns": 133792,
+        "ns": 133120,
         "count": 14
       },
       "gather_f16": {
-        "ns": 82176,
+        "ns": 84416,
         "count": 14
       }
     },
-    "total_ns": 285258432,
+    "total_ns": 282842944,
     "span_count": 4970
   },
   "transfer_bytes": {
@@ -106,70 +112,77 @@
     {
       "index": 0,
       "anchor": "vulkan.compute_call",
-      "call_us": 2055462,
-      "subgraph_us": 2034549,
-      "outside_subgraph_us": 20913,
-      "unattributed_in_subgraph_us": 477941,
-      "sibling_total_us": 1556608,
-      "record_us": 1360004,
-      "record_residual_us": 43309,
+      "call_us": 2827785,
+      "subgraph_us": 2798604,
+      "bind_check_us": 322,
+      "unattributed_in_call_us": 28859,
+      "unattributed_in_subgraph_us": 716672,
+      "tier1_total_us": 322,
+      "tier2_total_us": 2081932,
+      "sibling_total_us": 2082254,
+      "record_us": 1630168,
+      "record_residual_us": 44344,
       "siblings_us": {
+        "bind_check": {
+          "us": 322,
+          "count": 1
+        },
         "fence_wait": {
-          "us": 196248,
+          "us": 451415,
           "count": 1
         },
         "record": {
-          "us": 1360004,
+          "us": 1630168,
           "count": 1
         },
         "submit": {
-          "us": 356,
+          "us": 349,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 1291584,
+          "us": 1562359,
           "count": 1
         },
         "desc_alloc": {
-          "us": 4994,
+          "us": 4756,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 20117,
+          "us": 18709,
           "count": 355
         }
       },
-      "gpu_ns": 22722016,
+      "gpu_ns": 20206752,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 19557312,
+          "ns": 17590016,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1862976,
+          "ns": 1488192,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 957184,
+          "ns": 833184,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 218976,
+          "ns": 185152,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 108160,
+          "ns": 95872,
           "count": 32
         },
         "simplified_layer_norm_f16": {
-          "ns": 12288,
+          "ns": 10240,
           "count": 1
         },
         "gather_f16": {
-          "ns": 5120,
+          "ns": 4096,
           "count": 1
         }
       }
@@ -177,66 +190,73 @@
     {
       "index": 1,
       "anchor": "vulkan.compute_call",
-      "call_us": 67618,
-      "subgraph_us": 47554,
-      "outside_subgraph_us": 20064,
-      "unattributed_in_subgraph_us": 6905,
-      "sibling_total_us": 40649,
-      "record_us": 5584,
-      "record_residual_us": 4038,
+      "call_us": 112956,
+      "subgraph_us": 76510,
+      "bind_check_us": 54,
+      "unattributed_in_call_us": 36392,
+      "unattributed_in_subgraph_us": 8806,
+      "tier1_total_us": 54,
+      "tier2_total_us": 67704,
+      "sibling_total_us": 67758,
+      "record_us": 12431,
+      "record_residual_us": 7921,
       "siblings_us": {
+        "bind_check": {
+          "us": 54,
+          "count": 1
+        },
         "fence_wait": {
-          "us": 34906,
+          "us": 54999,
           "count": 1
         },
         "record": {
-          "us": 5584,
+          "us": 12431,
           "count": 1
         },
         "submit": {
-          "us": 159,
+          "us": 274,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 471,
+          "us": 1460,
           "count": 1
         },
         "desc_alloc": {
-          "us": 1025,
+          "us": 2223,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 50,
+          "us": 827,
           "count": 355
         }
       },
-      "gpu_ns": 20619872,
+      "gpu_ns": 20183648,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 18057920,
+          "ns": 17596384,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1445984,
+          "ns": 1463680,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 818624,
+          "ns": 823296,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 188384,
+          "ns": 193248,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 93472,
+          "ns": 91776,
           "count": 32
         },
         "simplified_layer_norm_f16": {
-          "ns": 9440,
+          "ns": 9216,
           "count": 1
         },
         "gather_f16": {
@@ -248,70 +268,77 @@
     {
       "index": 2,
       "anchor": "vulkan.compute_call",
-      "call_us": 45044,
-      "subgraph_us": 28610,
-      "outside_subgraph_us": 16434,
-      "unattributed_in_subgraph_us": 4867,
-      "sibling_total_us": 23743,
-      "record_us": 3067,
-      "record_residual_us": 2408,
+      "call_us": 76720,
+      "subgraph_us": 35301,
+      "bind_check_us": 28,
+      "unattributed_in_call_us": 41391,
+      "unattributed_in_subgraph_us": 9654,
+      "tier1_total_us": 28,
+      "tier2_total_us": 25647,
+      "sibling_total_us": 25675,
+      "record_us": 4468,
+      "record_residual_us": 3402,
       "siblings_us": {
+        "bind_check": {
+          "us": 28,
+          "count": 1
+        },
         "fence_wait": {
-          "us": 20545,
+          "us": 20900,
           "count": 1
         },
         "record": {
-          "us": 3067,
+          "us": 4468,
           "count": 1
         },
         "submit": {
-          "us": 131,
+          "us": 279,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 150,
+          "us": 207,
           "count": 1
         },
         "desc_alloc": {
-          "us": 497,
+          "us": 731,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 12,
+          "us": 128,
           "count": 355
         }
       },
-      "gpu_ns": 20155744,
+      "gpu_ns": 20153792,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 17591136,
+          "ns": 17565088,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1440992,
+          "ns": 1463584,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 826848,
+          "ns": 821728,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 186400,
+          "ns": 190816,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 94624,
+          "ns": 95488,
           "count": 32
         },
         "simplified_layer_norm_f16": {
-          "ns": 9216,
+          "ns": 10240,
           "count": 1
         },
         "gather_f16": {
-          "ns": 6528,
+          "ns": 6848,
           "count": 1
         }
       }
@@ -319,208 +346,73 @@
     {
       "index": 3,
       "anchor": "vulkan.compute_call",
-      "call_us": 47986,
-      "subgraph_us": 30292,
-      "outside_subgraph_us": 17694,
-      "unattributed_in_subgraph_us": 5192,
-      "sibling_total_us": 25100,
-      "record_us": 4403,
-      "record_residual_us": 3422,
+      "call_us": 73170,
+      "subgraph_us": 42536,
+      "bind_check_us": 134,
+      "unattributed_in_call_us": 30500,
+      "unattributed_in_subgraph_us": 10947,
+      "tier1_total_us": 134,
+      "tier2_total_us": 31589,
+      "sibling_total_us": 31723,
+      "record_us": 10315,
+      "record_residual_us": 7543,
       "siblings_us": {
+        "bind_check": {
+          "us": 134,
+          "count": 1
+        },
         "fence_wait": {
-          "us": 20553,
+          "us": 20940,
           "count": 1
         },
         "record": {
-          "us": 4403,
+          "us": 10315,
           "count": 1
         },
         "submit": {
-          "us": 144,
+          "us": 334,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 154,
+          "us": 315,
           "count": 1
         },
         "desc_alloc": {
-          "us": 800,
+          "us": 1816,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 27,
+          "us": 641,
           "count": 355
         }
       },
-      "gpu_ns": 20175136,
+      "gpu_ns": 20139200,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 17551712,
+          "ns": 17567488,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1517920,
+          "ns": 1445248,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 816128,
+          "ns": 818144,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 187232,
+          "ns": 187392,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 87392,
+          "ns": 105472,
           "count": 32
         },
         "simplified_layer_norm_f16": {
           "ns": 9216,
-          "count": 1
-        },
-        "gather_f16": {
-          "ns": 5536,
-          "count": 1
-        }
-      }
-    },
-    {
-      "index": 4,
-      "anchor": "vulkan.compute_call",
-      "call_us": 48901,
-      "subgraph_us": 29943,
-      "outside_subgraph_us": 18958,
-      "unattributed_in_subgraph_us": 4716,
-      "sibling_total_us": 25227,
-      "record_us": 4599,
-      "record_residual_us": 3610,
-      "siblings_us": {
-        "fence_wait": {
-          "us": 20487,
-          "count": 1
-        },
-        "record": {
-          "us": 4599,
-          "count": 1
-        },
-        "submit": {
-          "us": 141,
-          "count": 1
-        }
-      },
-      "nested_us": {
-        "cmd_upload": {
-          "us": 165,
-          "count": 1
-        },
-        "desc_alloc": {
-          "us": 783,
-          "count": 355
-        },
-        "pipeline_lookup": {
-          "us": 41,
-          "count": 355
-        }
-      },
-      "gpu_ns": 20104256,
-      "gpu_spans": 355,
-      "gpu_per_label_ns": {
-        "q_gemv_matmul_nbits_f16": {
-          "ns": 17532256,
-          "count": 161
-        },
-        "gqa_f16": {
-          "ns": 1456672,
-          "count": 32
-        },
-        "skip_simplified_layer_norm_f16": {
-          "ns": 820512,
-          "count": 64
-        },
-        "ew_binary_mul_f16": {
-          "ns": 189152,
-          "count": 64
-        },
-        "ew_unary_sigmoid_f16": {
-          "ns": 90432,
-          "count": 32
-        },
-        "simplified_layer_norm_f16": {
-          "ns": 9216,
-          "count": 1
-        },
-        "gather_f16": {
-          "ns": 6016,
-          "count": 1
-        }
-      }
-    },
-    {
-      "index": 5,
-      "anchor": "vulkan.compute_call",
-      "call_us": 54400,
-      "subgraph_us": 29131,
-      "outside_subgraph_us": 25269,
-      "unattributed_in_subgraph_us": 3815,
-      "sibling_total_us": 25316,
-      "record_us": 4735,
-      "record_residual_us": 3610,
-      "siblings_us": {
-        "fence_wait": {
-          "us": 20460,
-          "count": 1
-        },
-        "record": {
-          "us": 4735,
-          "count": 1
-        },
-        "submit": {
-          "us": 121,
-          "count": 1
-        }
-      },
-      "nested_us": {
-        "cmd_upload": {
-          "us": 135,
-          "count": 1
-        },
-        "desc_alloc": {
-          "us": 840,
-          "count": 355
-        },
-        "pipeline_lookup": {
-          "us": 150,
-          "count": 355
-        }
-      },
-      "gpu_ns": 20073760,
-      "gpu_spans": 355,
-      "gpu_per_label_ns": {
-        "q_gemv_matmul_nbits_f16": {
-          "ns": 17527392,
-          "count": 161
-        },
-        "gqa_f16": {
-          "ns": 1433728,
-          "count": 32
-        },
-        "skip_simplified_layer_norm_f16": {
-          "ns": 813984,
-          "count": 64
-        },
-        "ew_binary_mul_f16": {
-          "ns": 182528,
-          "count": 64
-        },
-        "ew_unary_sigmoid_f16": {
-          "ns": 100416,
-          "count": 32
-        },
-        "simplified_layer_norm_f16": {
-          "ns": 9472,
           "count": 1
         },
         "gather_f16": {
@@ -530,64 +422,149 @@
       }
     },
     {
-      "index": 6,
+      "index": 4,
       "anchor": "vulkan.compute_call",
-      "call_us": 56108,
-      "subgraph_us": 29112,
-      "outside_subgraph_us": 26996,
-      "unattributed_in_subgraph_us": 4036,
-      "sibling_total_us": 25076,
-      "record_us": 4425,
-      "record_residual_us": 3462,
+      "call_us": 84491,
+      "subgraph_us": 56795,
+      "bind_check_us": 128,
+      "unattributed_in_call_us": 27568,
+      "unattributed_in_subgraph_us": 11422,
+      "tier1_total_us": 128,
+      "tier2_total_us": 45373,
+      "sibling_total_us": 45501,
+      "record_us": 23558,
+      "record_residual_us": 16886,
       "siblings_us": {
+        "bind_check": {
+          "us": 128,
+          "count": 1
+        },
         "fence_wait": {
-          "us": 20513,
+          "us": 21183,
           "count": 1
         },
         "record": {
-          "us": 4425,
+          "us": 23558,
           "count": 1
         },
         "submit": {
-          "us": 138,
+          "us": 632,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 152,
+          "us": 344,
           "count": 1
         },
         "desc_alloc": {
-          "us": 801,
+          "us": 4315,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 10,
+          "us": 2013,
           "count": 355
         }
       },
-      "gpu_ns": 20123936,
+      "gpu_ns": 20610816,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 17551232,
+          "ns": 17957152,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1456800,
+          "ns": 1521824,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 830624,
+          "ns": 822272,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 178720,
+          "ns": 192928,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 91136,
+          "ns": 101664,
+          "count": 32
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 9216,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5760,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 5,
+      "anchor": "vulkan.compute_call",
+      "call_us": 76660,
+      "subgraph_us": 34973,
+      "bind_check_us": 129,
+      "unattributed_in_call_us": 41558,
+      "unattributed_in_subgraph_us": 9627,
+      "tier1_total_us": 129,
+      "tier2_total_us": 25346,
+      "sibling_total_us": 25475,
+      "record_us": 4207,
+      "record_residual_us": 3343,
+      "siblings_us": {
+        "bind_check": {
+          "us": 129,
+          "count": 1
+        },
+        "fence_wait": {
+          "us": 20859,
+          "count": 1
+        },
+        "record": {
+          "us": 4207,
+          "count": 1
+        },
+        "submit": {
+          "us": 280,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 221,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 572,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 71,
+          "count": 355
+        }
+      },
+      "gpu_ns": 20135968,
+      "gpu_spans": 355,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 17543360,
+          "count": 161
+        },
+        "gqa_f16": {
+          "ns": 1478144,
+          "count": 32
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 818144,
+          "count": 64
+        },
+        "ew_binary_mul_f16": {
+          "ns": 188736,
+          "count": 64
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 92160,
           "count": 32
         },
         "simplified_layer_norm_f16": {
@@ -601,64 +578,71 @@
       }
     },
     {
-      "index": 7,
+      "index": 6,
       "anchor": "vulkan.compute_call",
-      "call_us": 57072,
-      "subgraph_us": 30678,
-      "outside_subgraph_us": 26394,
-      "unattributed_in_subgraph_us": 5224,
-      "sibling_total_us": 25454,
-      "record_us": 4609,
-      "record_residual_us": 3735,
+      "call_us": 79838,
+      "subgraph_us": 38948,
+      "bind_check_us": 128,
+      "unattributed_in_call_us": 40762,
+      "unattributed_in_subgraph_us": 10817,
+      "tier1_total_us": 128,
+      "tier2_total_us": 28131,
+      "sibling_total_us": 28259,
+      "record_us": 6947,
+      "record_residual_us": 5091,
       "siblings_us": {
+        "bind_check": {
+          "us": 128,
+          "count": 1
+        },
         "fence_wait": {
-          "us": 20683,
+          "us": 20889,
           "count": 1
         },
         "record": {
-          "us": 4609,
+          "us": 6947,
           "count": 1
         },
         "submit": {
-          "us": 162,
+          "us": 295,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 159,
+          "us": 284,
           "count": 1
         },
         "desc_alloc": {
-          "us": 654,
+          "us": 1194,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 61,
+          "us": 378,
           "count": 355
         }
       },
-      "gpu_ns": 20144544,
+      "gpu_ns": 20181280,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 17587712,
+          "ns": 17585440,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1444256,
+          "ns": 1468896,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 813216,
+          "ns": 816928,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 178656,
+          "ns": 192832,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 106240,
+          "ns": 101792,
           "count": 32
         },
         "simplified_layer_norm_f16": {
@@ -666,7 +650,85 @@
           "count": 1
         },
         "gather_f16": {
-          "ns": 5248,
+          "ns": 6176,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 7,
+      "anchor": "vulkan.compute_call",
+      "call_us": 85008,
+      "subgraph_us": 40690,
+      "bind_check_us": 133,
+      "unattributed_in_call_us": 44185,
+      "unattributed_in_subgraph_us": 13200,
+      "tier1_total_us": 133,
+      "tier2_total_us": 27490,
+      "sibling_total_us": 27623,
+      "record_us": 6416,
+      "record_residual_us": 4964,
+      "siblings_us": {
+        "bind_check": {
+          "us": 133,
+          "count": 1
+        },
+        "fence_wait": {
+          "us": 20907,
+          "count": 1
+        },
+        "record": {
+          "us": 6416,
+          "count": 1
+        },
+        "submit": {
+          "us": 167,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 238,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 853,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 361,
+          "count": 355
+        }
+      },
+      "gpu_ns": 20187584,
+      "gpu_spans": 355,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 17587840,
+          "count": 161
+        },
+        "gqa_f16": {
+          "ns": 1480064,
+          "count": 32
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 822560,
+          "count": 64
+        },
+        "ew_binary_mul_f16": {
+          "ns": 186464,
+          "count": 64
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 95552,
+          "count": 32
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 9216,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5888,
           "count": 1
         }
       }
@@ -674,62 +736,69 @@
     {
       "index": 8,
       "anchor": "vulkan.compute_call",
-      "call_us": 56501,
-      "subgraph_us": 30631,
-      "outside_subgraph_us": 25870,
-      "unattributed_in_subgraph_us": 5241,
-      "sibling_total_us": 25390,
-      "record_us": 4546,
-      "record_residual_us": 3593,
+      "call_us": 66121,
+      "subgraph_us": 32448,
+      "bind_check_us": 129,
+      "unattributed_in_call_us": 33544,
+      "unattributed_in_subgraph_us": 6461,
+      "tier1_total_us": 129,
+      "tier2_total_us": 25987,
+      "sibling_total_us": 26116,
+      "record_us": 4901,
+      "record_residual_us": 3700,
       "siblings_us": {
+        "bind_check": {
+          "us": 129,
+          "count": 1
+        },
         "fence_wait": {
-          "us": 20695,
+          "us": 20933,
           "count": 1
         },
         "record": {
-          "us": 4546,
+          "us": 4901,
           "count": 1
         },
         "submit": {
-          "us": 149,
+          "us": 153,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 153,
+          "us": 230,
           "count": 1
         },
         "desc_alloc": {
-          "us": 775,
+          "us": 856,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 25,
+          "us": 115,
           "count": 355
         }
       },
-      "gpu_ns": 20136032,
+      "gpu_ns": 20213440,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 17545536,
+          "ns": 17580224,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1469472,
+          "ns": 1509792,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 828032,
+          "ns": 822208,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 185632,
+          "ns": 188160,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 92512,
+          "ns": 97280,
           "count": 32
         },
         "simplified_layer_norm_f16": {
@@ -737,7 +806,7 @@
           "count": 1
         },
         "gather_f16": {
-          "ns": 5632,
+          "ns": 6560,
           "count": 1
         }
       }
@@ -745,275 +814,69 @@
     {
       "index": 9,
       "anchor": "vulkan.compute_call",
-      "call_us": 61864,
-      "subgraph_us": 34394,
-      "outside_subgraph_us": 27470,
-      "unattributed_in_subgraph_us": 8988,
-      "sibling_total_us": 25406,
-      "record_us": 4608,
-      "record_residual_us": 3599,
+      "call_us": 69142,
+      "subgraph_us": 35704,
+      "bind_check_us": 99,
+      "unattributed_in_call_us": 33339,
+      "unattributed_in_subgraph_us": 7321,
+      "tier1_total_us": 99,
+      "tier2_total_us": 28383,
+      "sibling_total_us": 28482,
+      "record_us": 7190,
+      "record_residual_us": 5366,
       "siblings_us": {
+        "bind_check": {
+          "us": 99,
+          "count": 1
+        },
         "fence_wait": {
-          "us": 20662,
+          "us": 20992,
           "count": 1
         },
         "record": {
-          "us": 4608,
+          "us": 7190,
           "count": 1
         },
         "submit": {
-          "us": 136,
+          "us": 201,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 153,
+          "us": 219,
           "count": 1
         },
         "desc_alloc": {
-          "us": 819,
+          "us": 1227,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 37,
+          "us": 378,
           "count": 355
         }
       },
-      "gpu_ns": 20098144,
+      "gpu_ns": 20179296,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 17532640,
+          "ns": 17574240,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1460736,
+          "ns": 1470976,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 816128,
+          "ns": 812032,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 178496,
+          "ns": 194560,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 94400,
-          "count": 32
-        },
-        "simplified_layer_norm_f16": {
-          "ns": 9216,
-          "count": 1
-        },
-        "gather_f16": {
-          "ns": 6528,
-          "count": 1
-        }
-      }
-    },
-    {
-      "index": 10,
-      "anchor": "vulkan.compute_call",
-      "call_us": 54698,
-      "subgraph_us": 30509,
-      "outside_subgraph_us": 24189,
-      "unattributed_in_subgraph_us": 5245,
-      "sibling_total_us": 25264,
-      "record_us": 4450,
-      "record_residual_us": 3474,
-      "siblings_us": {
-        "fence_wait": {
-          "us": 20665,
-          "count": 1
-        },
-        "record": {
-          "us": 4450,
-          "count": 1
-        },
-        "submit": {
-          "us": 149,
-          "count": 1
-        }
-      },
-      "nested_us": {
-        "cmd_upload": {
-          "us": 152,
-          "count": 1
-        },
-        "desc_alloc": {
-          "us": 805,
-          "count": 355
-        },
-        "pipeline_lookup": {
-          "us": 19,
-          "count": 355
-        }
-      },
-      "gpu_ns": 20170016,
-      "gpu_spans": 355,
-      "gpu_per_label_ns": {
-        "q_gemv_matmul_nbits_f16": {
-          "ns": 17566304,
-          "count": 161
-        },
-        "gqa_f16": {
-          "ns": 1487872,
-          "count": 32
-        },
-        "skip_simplified_layer_norm_f16": {
-          "ns": 822976,
-          "count": 64
-        },
-        "ew_binary_mul_f16": {
-          "ns": 181184,
-          "count": 64
-        },
-        "ew_unary_sigmoid_f16": {
-          "ns": 96480,
-          "count": 32
-        },
-        "simplified_layer_norm_f16": {
-          "ns": 9216,
-          "count": 1
-        },
-        "gather_f16": {
-          "ns": 5984,
-          "count": 1
-        }
-      }
-    },
-    {
-      "index": 11,
-      "anchor": "vulkan.compute_call",
-      "call_us": 62326,
-      "subgraph_us": 29960,
-      "outside_subgraph_us": 32366,
-      "unattributed_in_subgraph_us": 4660,
-      "sibling_total_us": 25300,
-      "record_us": 4603,
-      "record_residual_us": 3621,
-      "siblings_us": {
-        "fence_wait": {
-          "us": 20553,
-          "count": 1
-        },
-        "record": {
-          "us": 4603,
-          "count": 1
-        },
-        "submit": {
-          "us": 144,
-          "count": 1
-        }
-      },
-      "nested_us": {
-        "cmd_upload": {
-          "us": 157,
-          "count": 1
-        },
-        "desc_alloc": {
-          "us": 786,
-          "count": 355
-        },
-        "pipeline_lookup": {
-          "us": 39,
-          "count": 355
-        }
-      },
-      "gpu_ns": 20112160,
-      "gpu_spans": 355,
-      "gpu_per_label_ns": {
-        "q_gemv_matmul_nbits_f16": {
-          "ns": 17508416,
-          "count": 161
-        },
-        "gqa_f16": {
-          "ns": 1484224,
-          "count": 32
-        },
-        "skip_simplified_layer_norm_f16": {
-          "ns": 825856,
-          "count": 64
-        },
-        "ew_binary_mul_f16": {
-          "ns": 182944,
-          "count": 64
-        },
-        "ew_unary_sigmoid_f16": {
-          "ns": 95712,
-          "count": 32
-        },
-        "simplified_layer_norm_f16": {
-          "ns": 9408,
-          "count": 1
-        },
-        "gather_f16": {
-          "ns": 5600,
-          "count": 1
-        }
-      }
-    },
-    {
-      "index": 12,
-      "anchor": "vulkan.compute_call",
-      "call_us": 55707,
-      "subgraph_us": 30912,
-      "outside_subgraph_us": 24795,
-      "unattributed_in_subgraph_us": 5361,
-      "sibling_total_us": 25551,
-      "record_us": 4513,
-      "record_residual_us": 3593,
-      "siblings_us": {
-        "fence_wait": {
-          "us": 20895,
-          "count": 1
-        },
-        "record": {
-          "us": 4513,
-          "count": 1
-        },
-        "submit": {
-          "us": 143,
-          "count": 1
-        }
-      },
-      "nested_us": {
-        "cmd_upload": {
-          "us": 150,
-          "count": 1
-        },
-        "desc_alloc": {
-          "us": 727,
-          "count": 355
-        },
-        "pipeline_lookup": {
-          "us": 43,
-          "count": 355
-        }
-      },
-      "gpu_ns": 20517152,
-      "gpu_spans": 355,
-      "gpu_per_label_ns": {
-        "q_gemv_matmul_nbits_f16": {
-          "ns": 17953728,
-          "count": 161
-        },
-        "gqa_f16": {
-          "ns": 1438272,
-          "count": 32
-        },
-        "skip_simplified_layer_norm_f16": {
-          "ns": 822784,
-          "count": 64
-        },
-        "ew_binary_mul_f16": {
-          "ns": 193056,
-          "count": 64
-        },
-        "ew_unary_sigmoid_f16": {
-          "ns": 94528,
+          "ns": 112704,
           "count": 32
         },
         "simplified_layer_norm_f16": {
@@ -1027,64 +890,71 @@
       }
     },
     {
-      "index": 13,
+      "index": 10,
       "anchor": "vulkan.compute_call",
-      "call_us": 61781,
-      "subgraph_us": 32839,
-      "outside_subgraph_us": 28942,
-      "unattributed_in_subgraph_us": 7494,
-      "sibling_total_us": 25345,
-      "record_us": 4394,
-      "record_residual_us": 3460,
+      "call_us": 66822,
+      "subgraph_us": 41564,
+      "bind_check_us": 173,
+      "unattributed_in_call_us": 25085,
+      "unattributed_in_subgraph_us": 10520,
+      "tier1_total_us": 173,
+      "tier2_total_us": 31044,
+      "sibling_total_us": 31217,
+      "record_us": 9999,
+      "record_residual_us": 7505,
       "siblings_us": {
+        "bind_check": {
+          "us": 173,
+          "count": 1
+        },
         "fence_wait": {
-          "us": 20828,
+          "us": 20878,
           "count": 1
         },
         "record": {
-          "us": 4394,
+          "us": 9999,
           "count": 1
         },
         "submit": {
-          "us": 123,
+          "us": 167,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 150,
+          "us": 275,
           "count": 1
         },
         "desc_alloc": {
-          "us": 766,
+          "us": 1640,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 18,
+          "us": 579,
           "count": 355
         }
       },
-      "gpu_ns": 20105664,
+      "gpu_ns": 20172256,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 17529824,
+          "ns": 17576992,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1471456,
+          "ns": 1479744,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 815712,
+          "ns": 819584,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 177280,
+          "ns": 185888,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 95232,
+          "ns": 93184,
           "count": 32
         },
         "simplified_layer_norm_f16": {
@@ -1092,7 +962,241 @@
           "count": 1
         },
         "gather_f16": {
-          "ns": 5920,
+          "ns": 6624,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 11,
+      "anchor": "vulkan.compute_call",
+      "call_us": 73715,
+      "subgraph_us": 32782,
+      "bind_check_us": 128,
+      "unattributed_in_call_us": 40805,
+      "unattributed_in_subgraph_us": 8222,
+      "tier1_total_us": 128,
+      "tier2_total_us": 24560,
+      "sibling_total_us": 24688,
+      "record_us": 3562,
+      "record_residual_us": 2832,
+      "siblings_us": {
+        "bind_check": {
+          "us": 128,
+          "count": 1
+        },
+        "fence_wait": {
+          "us": 20857,
+          "count": 1
+        },
+        "record": {
+          "us": 3562,
+          "count": 1
+        },
+        "submit": {
+          "us": 141,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 215,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 507,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 8,
+          "count": 355
+        }
+      },
+      "gpu_ns": 20121184,
+      "gpu_spans": 355,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 17542944,
+          "count": 161
+        },
+        "gqa_f16": {
+          "ns": 1439104,
+          "count": 32
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 821792,
+          "count": 64
+        },
+        "ew_binary_mul_f16": {
+          "ns": 199360,
+          "count": 64
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 101920,
+          "count": 32
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 10240,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5824,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 12,
+      "anchor": "vulkan.compute_call",
+      "call_us": 79943,
+      "subgraph_us": 38259,
+      "bind_check_us": 129,
+      "unattributed_in_call_us": 41555,
+      "unattributed_in_subgraph_us": 11774,
+      "tier1_total_us": 129,
+      "tier2_total_us": 26485,
+      "sibling_total_us": 26614,
+      "record_us": 5442,
+      "record_residual_us": 4070,
+      "siblings_us": {
+        "bind_check": {
+          "us": 129,
+          "count": 1
+        },
+        "fence_wait": {
+          "us": 20881,
+          "count": 1
+        },
+        "record": {
+          "us": 5442,
+          "count": 1
+        },
+        "submit": {
+          "us": 162,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 272,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 899,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 201,
+          "count": 355
+        }
+      },
+      "gpu_ns": 20178752,
+      "gpu_spans": 355,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 17596288,
+          "count": 161
+        },
+        "gqa_f16": {
+          "ns": 1455360,
+          "count": 32
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 824704,
+          "count": 64
+        },
+        "ew_binary_mul_f16": {
+          "ns": 193952,
+          "count": 64
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 93280,
+          "count": 32
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 9216,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 5952,
+          "count": 1
+        }
+      }
+    },
+    {
+      "index": 13,
+      "anchor": "vulkan.compute_call",
+      "call_us": 69830,
+      "subgraph_us": 35648,
+      "bind_check_us": 137,
+      "unattributed_in_call_us": 34045,
+      "unattributed_in_subgraph_us": 9082,
+      "tier1_total_us": 137,
+      "tier2_total_us": 26566,
+      "sibling_total_us": 26703,
+      "record_us": 5419,
+      "record_residual_us": 4059,
+      "siblings_us": {
+        "bind_check": {
+          "us": 137,
+          "count": 1
+        },
+        "fence_wait": {
+          "us": 20959,
+          "count": 1
+        },
+        "record": {
+          "us": 5419,
+          "count": 1
+        },
+        "submit": {
+          "us": 188,
+          "count": 1
+        }
+      },
+      "nested_us": {
+        "cmd_upload": {
+          "us": 241,
+          "count": 1
+        },
+        "desc_alloc": {
+          "us": 860,
+          "count": 355
+        },
+        "pipeline_lookup": {
+          "us": 259,
+          "count": 355
+        }
+      },
+      "gpu_ns": 20178976,
+      "gpu_spans": 355,
+      "gpu_per_label_ns": {
+        "q_gemv_matmul_nbits_f16": {
+          "ns": 17579456,
+          "count": 161
+        },
+        "gqa_f16": {
+          "ns": 1489920,
+          "count": 32
+        },
+        "skip_simplified_layer_norm_f16": {
+          "ns": 817824,
+          "count": 64
+        },
+        "ew_binary_mul_f16": {
+          "ns": 180704,
+          "count": 64
+        },
+        "ew_unary_sigmoid_f16": {
+          "ns": 95232,
+          "count": 32
+        },
+        "simplified_layer_norm_f16": {
+          "ns": 9216,
+          "count": 1
+        },
+        "gather_f16": {
+          "ns": 6624,
           "count": 1
         }
       }
@@ -1102,8 +1206,11 @@
       "anchor": "vulkan.compute_call",
       "call_us": null,
       "subgraph_us": null,
-      "outside_subgraph_us": null,
+      "bind_check_us": 0,
+      "unattributed_in_call_us": null,
       "unattributed_in_subgraph_us": null,
+      "tier1_total_us": 0,
+      "tier2_total_us": 0,
       "sibling_total_us": 0,
       "record_us": 0,
       "record_residual_us": 0,
@@ -1119,113 +1226,124 @@
     "cold": {
       "index": 0,
       "anchor": "vulkan.compute_call",
-      "call_us": 2055462,
-      "subgraph_us": 2034549,
-      "outside_subgraph_us": 20913,
-      "unattributed_in_subgraph_us": 477941,
-      "sibling_total_us": 1556608,
-      "record_us": 1360004,
-      "record_residual_us": 43309,
+      "call_us": 2827785,
+      "subgraph_us": 2798604,
+      "bind_check_us": 322,
+      "unattributed_in_call_us": 28859,
+      "unattributed_in_subgraph_us": 716672,
+      "tier1_total_us": 322,
+      "tier2_total_us": 2081932,
+      "sibling_total_us": 2082254,
+      "record_us": 1630168,
+      "record_residual_us": 44344,
       "siblings_us": {
+        "bind_check": {
+          "us": 322,
+          "count": 1
+        },
         "fence_wait": {
-          "us": 196248,
+          "us": 451415,
           "count": 1
         },
         "record": {
-          "us": 1360004,
+          "us": 1630168,
           "count": 1
         },
         "submit": {
-          "us": 356,
+          "us": 349,
           "count": 1
         }
       },
       "nested_us": {
         "cmd_upload": {
-          "us": 1291584,
+          "us": 1562359,
           "count": 1
         },
         "desc_alloc": {
-          "us": 4994,
+          "us": 4756,
           "count": 355
         },
         "pipeline_lookup": {
-          "us": 20117,
+          "us": 18709,
           "count": 355
         }
       },
-      "gpu_ns": 22722016,
+      "gpu_ns": 20206752,
       "gpu_spans": 355,
       "gpu_per_label_ns": {
         "q_gemv_matmul_nbits_f16": {
-          "ns": 19557312,
+          "ns": 17590016,
           "count": 161
         },
         "gqa_f16": {
-          "ns": 1862976,
+          "ns": 1488192,
           "count": 32
         },
         "skip_simplified_layer_norm_f16": {
-          "ns": 957184,
+          "ns": 833184,
           "count": 64
         },
         "ew_binary_mul_f16": {
-          "ns": 218976,
+          "ns": 185152,
           "count": 64
         },
         "ew_unary_sigmoid_f16": {
-          "ns": 108160,
+          "ns": 95872,
           "count": 32
         },
         "simplified_layer_norm_f16": {
-          "ns": 12288,
+          "ns": 10240,
           "count": 1
         },
         "gather_f16": {
-          "ns": 5120,
+          "ns": 4096,
           "count": 1
         }
       }
     },
     "anchor": "vulkan.compute_call",
-    "median_call_us": 56108.0,
-    "median_subgraph_us": 30509.0,
-    "median_outside_subgraph_us": 25269.0,
-    "median_unattributed_in_subgraph_us": 5224.0,
-    "median_sibling_total_us": 25316.0,
-    "median_record_us": 4546.0,
-    "median_record_residual_us": 3593.0,
-    "median_gpu_ns": 20136032.0,
+    "median_call_us": 76660.0,
+    "median_subgraph_us": 38259.0,
+    "median_bind_check_us": 129.0,
+    "median_unattributed_in_call_us": 36392.0,
+    "median_unattributed_in_subgraph_us": 9654.0,
+    "median_tier1_total_us": 129.0,
+    "median_tier2_total_us": 27490.0,
+    "median_sibling_total_us": 27623.0,
+    "median_record_us": 6416.0,
+    "median_record_residual_us": 4964.0,
+    "median_gpu_ns": 20178976.0,
     "median_gpu_spans": 355.0,
     "median_siblings_us": {
-      "fence_wait": 20662.0,
-      "record": 4546.0,
-      "submit": 143.0
+      "bind_check": 129.0,
+      "fence_wait": 20907.0,
+      "record": 6416.0,
+      "submit": 201.0
     },
     "median_nested_us": {
-      "cmd_upload": 153.0,
-      "desc_alloc": 786.0,
-      "pipeline_lookup": 37.0
+      "cmd_upload": 241.0,
+      "desc_alloc": 899.0,
+      "pipeline_lookup": 361.0
     },
     "median_gpu_per_label_ns": {
       "q_gemv_matmul_nbits_f16": {
-        "ns": 17551232.0,
+        "ns": 17579456.0,
         "calls": 13
       },
       "gqa_f16": {
-        "ns": 1456800.0,
+        "ns": 1470976.0,
         "calls": 13
       },
       "skip_simplified_layer_norm_f16": {
-        "ns": 820512.0,
+        "ns": 821728.0,
         "calls": 13
       },
       "ew_binary_mul_f16": {
-        "ns": 182944.0,
+        "ns": 190816.0,
         "calls": 13
       },
       "ew_unary_sigmoid_f16": {
-        "ns": 94528.0,
+        "ns": 95552.0,
         "calls": 13
       },
       "simplified_layer_norm_f16": {
@@ -1233,7 +1351,7 @@
         "calls": 13
       },
       "gather_f16": {
-        "ns": 5984.0,
+        "ns": 6176.0,
         "calls": 13
       }
     }
@@ -1248,18 +1366,18 @@
     "basis": "desc_alloc/pipeline_lookup fire once per dispatch during recording only",
     "not_ranked": "This says re-recording happens and that it costs something per dispatch. It does not say it is the largest remaining cost, and nothing measured here ranks it against the other candidates. The counters A/B below moves a term of its own, and the cross-workload deltas are non-uniform, so a ranking would need a per-candidate ablation that has not been run."
   },
-  "traced_median_ms": 59.364749991800636,
-  "untraced_median_ms": 46.96449999755714,
-  "overhead_ratio": 1.2640345366157095,
+  "traced_median_ms": 78.81609999458306,
+  "untraced_median_ms": 71.02814999234397,
+  "overhead_ratio": 1.1096459643546754,
   "verdict": "GPU_TIME_MEASURED",
   "traced_runs": 14,
-  "gpu_ms_total": 285.258432,
-  "gpu_ms_per_run_mean_all_calls": 20.375602285714287,
-  "gpu_ms_per_run": 20.136032,
+  "gpu_ms_total": 282.842944,
+  "gpu_ms_per_run_mean_all_calls": 20.203067428571426,
+  "gpu_ms_per_run": 20.178976,
   "gpu_ms_per_run_basis": "warm_call_median",
-  "gpu_share_traced": 0.339191725776343,
-  "gpu_share_untraced_cross_run": 0.4287500559155825,
-  "host_ms_per_run_residual_traced_axis": 39.228717991800636,
+  "gpu_share_traced": 0.25602606575797177,
+  "gpu_share_untraced_cross_run": 0.2840982906379381,
+  "host_ms_per_run_residual_traced_axis": 58.63712399458306,
   "cross_run_terms": {
     "gpu_share_untraced_cross_run": "traced-process warm-call device median / untraced-process wall median. Two processes, two runs. Not a bound and not tracer-overhead-immune: it assumes device time is the same in both runs, which this instrument cannot check because the untraced arm emits no GPU timestamps.",
     "observed_cross_run_device_spread": "12.17456 ms and 13.347296 ms \u2014 two device medians from separate runs on this machine, 9.6% apart. Any cross-run device ratio inherits at least this.",
@@ -1271,7 +1389,7 @@
       "supplies": [
         "untraced_median_ms"
       ],
-      "median_ms": 46.96449999755714,
+      "median_ms": 71.02814999234397,
       "tracing": "off",
       "gpu_timestamps": "NONE \u2014 the tracer is what queries the pool, so this arm has no device measurement of any kind",
       "counters_scope": "all_runs_INFLATES_TIMING"
@@ -1283,8 +1401,8 @@
         "every phase and span term",
         "compute_reconciliation"
       ],
-      "median_ms": 59.364749991800636,
-      "gpu_ms_per_run": 20.136032,
+      "median_ms": 78.81609999458306,
+      "gpu_ms_per_run": 20.178976,
       "gpu_span_count": 4970,
       "tracing": "on",
       "counters_scope": "all_runs_INFLATES_TIMING"
@@ -1297,41 +1415,45 @@
     "axis": "traced-run warm-call medians, in milliseconds",
     "anchor": "vulkan.compute_call",
     "sees_whole_compute": true,
-    "traced_wall_ms": 59.364749991800636,
-    "compute_call_ms": 56.108,
-    "subgraph_ms": 30.509,
-    "outside_subgraph_ms": 25.269,
-    "sibling_phases_ms": 25.316,
-    "unattributed_in_subgraph_ms": 5.224,
-    "outside_compute_call_ms": 3.256749991800639,
-    "outside_subgraph_attribution": "MEASURED, UNATTRIBUTED. This instrument reports the size of the region and which side of `vulkan.subgraph` it falls on. It does not name its cause.",
-    "do_not": "subtract these traced-axis terms from `untraced_median_ms`; the traced run is 1.264x the untraced one"
+    "traced_wall_ms": 78.81609999458306,
+    "compute_call_ms": 76.66,
+    "bind_check_ms": 0.129,
+    "subgraph_ms": 38.259,
+    "unattributed_in_call_ms": 36.392,
+    "tier2_phases_ms": 27.49,
+    "sibling_phases_ms": 27.623,
+    "unattributed_in_subgraph_ms": 9.654,
+    "outside_compute_call_ms": 2.156099994583059,
+    "tier1_decomposition": "compute_call = bind_check + subgraph + unattributed_in_call",
+    "tier2_decomposition": "subgraph = record + submit + fence_wait + unattributed_in_subgraph",
+    "unattributed_in_call_attribution": "MEASURED, UNATTRIBUTED. This instrument reports the size of the region and which side of `vulkan.subgraph` it falls on. It does not name its cause, and it is not bind-check time: `bind_check_ms` is measured separately and is reported above.",
+    "do_not": "subtract these traced-axis terms from `untraced_median_ms`; the traced run is 1.110x the untraced one"
   },
   "ort_fused_node": {
     "available": true,
     "traced": {
-      "ort_warm_median_ms": 57.118,
-      "wall_median_ms": 59.364749991800636,
+      "ort_warm_median_ms": 77.745,
+      "wall_median_ms": 78.81609999458306,
       "calls": 14,
       "counters_scope": "all_runs_INFLATES_TIMING",
       "basis": "ORT profiler `*_kernel_time` events with provider=Vulkan*, first call dropped as cold",
-      "outside_the_fused_node_ms": 2.246749991800634
+      "outside_the_fused_node_ms": 1.0710999945830508
     },
     "untraced": {
-      "ort_warm_median_ms": 45.908,
-      "wall_median_ms": 46.96449999755714,
+      "ort_warm_median_ms": 65.774,
+      "wall_median_ms": 71.02814999234397,
       "calls": 14,
       "counters_scope": "all_runs_INFLATES_TIMING",
       "basis": "ORT profiler `*_kernel_time` events with provider=Vulkan*, first call dropped as cold",
-      "outside_the_fused_node_ms": 1.0564999975571396
+      "outside_the_fused_node_ms": 5.254149992343969
     },
     "anchor_vs_ort": {
       "anchor": "vulkan.compute_call",
-      "anchor_ms": 56.108,
-      "ort_ms": 57.118,
-      "agreement_pct": -1.77,
-      "subgraph_ms": 30.509,
-      "subgraph_vs_ort_pct": -46.59,
+      "anchor_ms": 76.66,
+      "ort_ms": 77.745,
+      "agreement_pct": -1.4,
+      "subgraph_ms": 38.259,
+      "subgraph_vs_ort_pct": -50.79,
       "note": "two instruments sharing no code, bracketing the same callback in the same process. The anchor is credible to the extent these agree."
     }
   },
@@ -1353,15 +1475,15 @@
       "VulkanExecutionProvider": 1
     },
     "kernel_time_us": {
-      "CPUExecutionProvider": 5221.0,
-      "VulkanExecutionProvider": 3025389.0
+      "CPUExecutionProvider": 11465.0,
+      "VulkanExecutionProvider": 3032174.0
     },
     "executed_nodes": 9,
     "cpu_fallback_nodes": 8,
     "cpu_fallback_fraction_nodes": 0.8888888888888888,
-    "cpu_fallback_fraction_time": 0.0017227554848693828,
+    "cpu_fallback_fraction_time": 0.003766872483891815,
     "cpu_fallback_fraction_graph": 0.02203856749311295,
-    "cpu_fallback_fraction": 0.0017227554848693828,
+    "cpu_fallback_fraction": 0.003766872483891815,
     "fallback_node_names": [
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather",
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast",
@@ -1377,29 +1499,29 @@
     "vulkan_dispatches": 4970,
     "vulkan_fused_nodes": 1,
     "warmup_ms": [
-      66.10379999619909,
-      43.10459998669103,
-      41.647299978649244
+      78.2521000073757,
+      53.556099999696016,
+      63.40119999367744
     ],
     "steady_ms": [
-      47.15379999834113,
-      51.41489999368787,
-      51.548699993873015,
-      43.639700015774,
-      42.50880001927726,
-      46.77519999677315,
-      42.85430000163615,
-      50.21909999777563,
-      52.442199987126514,
-      46.34790000272915
+      61.81730001117103,
+      77.25370000116527,
+      67.71269999444485,
+      74.84560000011697,
+      65.77630000538193,
+      79.33099998626858,
+      65.5562000174541,
+      79.74680000916123,
+      74.13100000121631,
+      67.92529998347163
     ],
-    "session_create_ms": 534.5105000014883,
-    "first_run_ms": 2413.402300007874,
-    "median_ms": 46.96449999755714,
-    "p05_ms": 42.66427501133876,
-    "p95_ms": 52.04012499016244,
-    "rsd_pct": 7.995563635823885,
-    "tokens_per_s": 21.292678513601018,
+    "session_create_ms": 441.86669998453,
+    "first_run_ms": 2152.4679999856744,
+    "median_ms": 71.02814999234397,
+    "p05_ms": 63.49980501399841,
+    "p95_ms": 79.55968999885954,
+    "rsd_pct": 9.020272727440465,
+    "tokens_per_s": 14.078925047432444,
     "ort_version": "1.26.0",
     "ort_build_cuda": null,
     "python": "3.12.10",
@@ -1407,7 +1529,7 @@
     "model_bundle_sha256": "92f2fc001302d28cf5e0cf7dea51344fb80b7044dd0b3c77b9bd2f81c469f3fd",
     "device_identity": {},
     "peak_bytes": null,
-    "profile_path": "bench\\results\\_cuda69\\scratch_ab\\on\\untraced\\profile_vulkan_prefill_1_10800_2026-08-07_11-18-58_097.json",
+    "profile_path": "bench\\results\\_cuda69\\scratch_ab\\on_v4\\untraced\\profile_vulkan_prefill_1_10884_2026-08-07_12-36-43_615.json",
     "compute_regime": "float32",
     "provider_options": {
       "VulkanExecutionProvider": {},
@@ -1426,7 +1548,7 @@
           1,
           32064
         ],
-        "file": "bench\\results\\_cuda69\\scratch_ab\\on\\untraced\\outputs_vulkan_prefill_1\\out0.npy"
+        "file": "bench\\results\\_cuda69\\scratch_ab\\on_v4\\untraced\\outputs_vulkan_prefill_1\\out0.npy"
       },
       {
         "name": "present.0.key",
@@ -2148,7 +2270,7 @@
       }
     },
     "worker_returncode": 0,
-    "outputs_dir": "bench\\results\\_cuda69\\scratch_ab\\on\\untraced\\outputs_vulkan_prefill_1"
+    "outputs_dir": "bench\\results\\_cuda69\\scratch_ab\\on_v4\\untraced\\outputs_vulkan_prefill_1"
   },
   "traced_record": {
     "arm": "vulkan",
@@ -2165,15 +2287,15 @@
       "VulkanExecutionProvider": 1
     },
     "kernel_time_us": {
-      "CPUExecutionProvider": 7134.0,
-      "VulkanExecutionProvider": 2798446.0
+      "CPUExecutionProvider": 13464.0,
+      "VulkanExecutionProvider": 3864146.0
     },
     "executed_nodes": 9,
     "cpu_fallback_nodes": 8,
     "cpu_fallback_fraction_nodes": 0.8888888888888888,
-    "cpu_fallback_fraction_time": 0.0025427897261885244,
+    "cpu_fallback_fraction_time": 0.003472241922214973,
     "cpu_fallback_fraction_graph": 0.02203856749311295,
-    "cpu_fallback_fraction": 0.0025427897261885244,
+    "cpu_fallback_fraction": 0.003472241922214973,
     "fallback_node_names": [
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather",
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast",
@@ -2189,29 +2311,29 @@
     "vulkan_dispatches": 4970,
     "vulkan_fused_nodes": 1,
     "warmup_ms": [
-      69.47139999829233,
-      46.759999997448176,
-      49.67569999280386
+      116.7653999873437,
+      79.1124000097625,
+      78.25709998724051
     ],
     "steady_ms": [
-      50.612399994861335,
-      56.07540000346489,
-      57.8150000073947,
-      59.65539999306202,
-      60.02850001095794,
-      65.5380999960471,
-      56.876399990869686,
-      64.46880000294186,
-      59.07409999053925,
-      64.13390001398511
+      88.26010001939721,
+      80.21240000380203,
+      83.47979999962263,
+      88.82239999365993,
+      69.97530002263375,
+      73.44409998040646,
+      71.84409999172203,
+      77.41979998536408,
+      83.7906000087969,
+      73.52880001417361
     ],
-    "session_create_ms": 353.32590001053177,
-    "first_run_ms": 2057.5002999976277,
-    "median_ms": 59.364749991800636,
-    "p05_ms": 53.070749998732936,
-    "p95_ms": 65.05691499914974,
-    "rsd_pct": 7.606065979577996,
-    "tokens_per_s": 16.84501324671827,
+    "session_create_ms": 615.2594999875873,
+    "first_run_ms": 2833.342800004175,
+    "median_ms": 78.81609999458306,
+    "p05_ms": 70.81626000872348,
+    "p95_ms": 88.5693650052417,
+    "rsd_pct": 8.694262091960066,
+    "tokens_per_s": 12.687763034059397,
     "ort_version": "1.26.0",
     "ort_build_cuda": null,
     "python": "3.12.10",
@@ -2219,7 +2341,7 @@
     "model_bundle_sha256": "92f2fc001302d28cf5e0cf7dea51344fb80b7044dd0b3c77b9bd2f81c469f3fd",
     "device_identity": {},
     "peak_bytes": null,
-    "profile_path": "bench\\results\\_cuda69\\scratch_ab\\on\\traced\\profile_vulkan_prefill_1_10544_2026-08-07_11-19-05_710.json",
+    "profile_path": "bench\\results\\_cuda69\\scratch_ab\\on_v4\\traced\\profile_vulkan_prefill_1_16448_2026-08-07_12-36-51_902.json",
     "compute_regime": "float32",
     "provider_options": {
       "VulkanExecutionProvider": {},
@@ -2238,7 +2360,7 @@
           1,
           32064
         ],
-        "file": "bench\\results\\_cuda69\\scratch_ab\\on\\traced\\outputs_vulkan_prefill_1\\out0.npy"
+        "file": "bench\\results\\_cuda69\\scratch_ab\\on_v4\\traced\\outputs_vulkan_prefill_1\\out0.npy"
       },
       {
         "name": "present.0.key",
@@ -2960,18 +3082,7 @@
       }
     },
     "worker_returncode": 0,
-    "outputs_dir": "bench\\results\\_cuda69\\scratch_ab\\on\\traced\\outputs_vulkan_prefill_1",
-    "trace_path": "bench\\results\\_cuda69\\scratch_ab\\on\\traced\\trace_prefill_1.json"
-  },
-  "ab_experiment": {
-    "role": "ARM A - counters dump RETAINED inside the timed region",
-    "paired_with": "bench/results/_cuda69/profile_prefill_1.json (ARM B, counters first_run_only)",
-    "single_variable": "ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS=1. Same release DLL, same workload prefill_1, same machine, runs minutes apart on 2026-08-07.",
-    "what_it_isolates": "outside_subgraph_ms: 25.269 ms here vs 0.056 ms in arm B, while vulkan.subgraph barely moves (30.509 vs 32.627). The counters dump lands after dispatch_ort returns, which is exactly where the outer bracket sees it and the inner one does not.",
-    "scope": "prefill_1 only. Cross-workload deltas are non-uniform and are not pure counter costs, so this must not be extrapolated to other workloads.",
-    "device_time_moved_too": "20.136 ms here vs 18.904 ms in arm B - 6.5% apart between two runs of the same build. Cross-run device comparisons carry at least this spread.",
-    "not_a_ranking": "This measures one term. It does not rank the counters dump, command buffer re-recording, or anything else against each other."
-  },
-  "reanalysed_from": "bench\\results\\_cuda69\\profile_prefill_1_counters_retained.json",
-  "reanalysed_from_schema": "cuda_profile/3"
+    "outputs_dir": "bench\\results\\_cuda69\\scratch_ab\\on_v4\\traced\\outputs_vulkan_prefill_1",
+    "trace_path": "bench\\results\\_cuda69\\scratch_ab\\on_v4\\traced\\trace_prefill_1.json"
+  }
 }

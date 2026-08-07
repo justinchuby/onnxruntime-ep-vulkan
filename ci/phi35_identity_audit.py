@@ -155,8 +155,28 @@ IDENTITY_FIELDS = ("onnx_file", "onnx_sha256")
 
 #: Never walked: not our source, or build output.  Same list as
 #: ``ci/check_hardcoded_foundry_paths.py`` so the two screens cannot disagree about what
-#: "the tree" means.
+#: "the tree" means, and the same virtualenv rule below for the same reason.
 EXCLUDED_DIRS = (".git", ".venv", "venv", "target", "node_modules", "__pycache__", ".squad")
+
+
+def is_virtualenv(directory: Path) -> bool:
+    """A directory is a virtualenv if it contains ``pyvenv.cfg`` (PEP 405), whatever its name.
+
+    Duplicated from ``ci/check_hardcoded_foundry_paths.py`` in the same way ``EXCLUDED_DIRS``
+    is, and checked for agreement by ``ci/test_lane_checks.py``: these two screens are
+    standalone scripts that CI runs separately, and neither may grow an import of the other.
+
+    The name tuple above cannot answer this question. A developer with two CUDA toolchains has
+    ``.venv-cu12`` beside ``.venv``; it does not match ``".venv"`` exactly, it holds tens of
+    thousands of third-party ``.py`` files, and one of them has an AST deep enough to exhaust
+    the recursion limit of an ``ast.NodeVisitor``. This audit then fails with ``RecursionError``
+    on a file that is not in the repository at all — a local environment deciding whether a lane
+    check passes, which is the thing a lane check exists to rule out.
+
+    Detecting the marker file is a rule. Extending the name tuple is a list, and the next
+    environment defeats it.
+    """
+    return (directory / "pyvenv.cfg").is_file()
 
 #: Screens, not producers.  Each of these really does spawn a Python script with an
 #: inherited environment and really does write JSON — into a temporary directory, about a
@@ -572,6 +592,8 @@ def iter_python_files(root: Path):
     for path in sorted(root.rglob("*.py")):
         rel = path.relative_to(root)
         if any(part in EXCLUDED_DIRS for part in rel.parts):
+            continue
+        if any(is_virtualenv(root.joinpath(*rel.parts[:i])) for i in range(1, len(rel.parts))):
             continue
         yield path, rel.as_posix()
 

@@ -128,30 +128,65 @@ SCHEMA = "cuda_profile/3"
 TRACE_ENV = "ONNXRUNTIME_EP_VULKAN_TRACE"
 TRACE_GPU_ENV = "ONNXRUNTIME_EP_VULKAN_TRACE_GPU"
 
-#: Phases whose wall time may be summed.  Mirrors ``Phase::is_sibling`` in
-#: ``rust/src/trace.rs``; the trace itself carries ``nested_in`` per span, so this list is
-#: a cross-check rather than the source of truth.  A disagreement between the two is
-#: reported as a refusal instead of being resolved silently in either direction.
+#: Which span each phase must lie inside, and how deep.  Mirrors ``Phase::containment`` in
+#: ``rust/src/trace.rs``; the trace itself carries ``tier``/``nested_in``/``parent_span`` per
+#: span, so this table is a cross-check rather than the source of truth.  A disagreement between
+#: the two is reported as a refusal instead of being resolved silently in either direction.
 #:
-#: The equality between this tuple and ``trace.rs`` is asserted by
-#: ``bench/test_trace_vocabulary.py``, which parses ``Phase::as_str``/``Phase::nested_in``
+#: The equality between this table and ``trace.rs`` is asserted **bidirectionally** by
+#: ``bench/test_trace_vocabulary.py``, which parses ``Phase::as_str``/``Phase::containment``
 #: through :mod:`bench.trace_vocabulary`.  It is *not* derived at import time on purpose:
 #: this module must keep reducing a trace produced by a different checkout, and a reduction
 #: that imports the current ``trace.rs`` cannot read last month's artifact.  The declaration
 #: stays; the drift is caught by a test rather than by a shipped refusal.
-SIBLING_PHASES = ("compile", "prepack", "record", "submit", "fence_wait")
-NESTED_PHASES = ("upload", "readback", "desc_alloc", "pipeline_lookup", "cmd_upload")
-
-#: ``cat == "ep"`` structural spans.  These bracket regions; they are **not** phases, they are
-#: never summed into any total, and they add no level to the phase tree.
 #:
-#: ``vulkan.compute_call`` is the whole ORT ``Compute`` callback; ``vulkan.subgraph`` opens
-#: inside ``dispatch_ort`` and is contained by it.  Anchoring the per-call bucketing on the
-#: inner span means every span outside it — however large — lands in the ``None`` bucket and
-#: appears in no per-call or steady-state total.  Measured on Phi-3.5 ``prefill_1``, that is a
-#: warm median of **27.0 ms per call**, of which 26.9 ms is *after* ``vulkan.subgraph`` closes.
-#: That region was the harness's own counters dump, not the EP; it reads **0.053 ms** once the
-#: dump is scoped to the first run.  The bracket is what made either number sayable.
+#: Tier 0 is ``vulkan.compute_call``.  ``None`` means session scope — ORT invokes the phase from
+#: ``Compile()``, so no anchor exists yet.  That is the *only* admissible way for a phase to be
+#: outside the anchor, and it is a declaration that can be checked, not a skip.
+PHASE_TIER = {
+    "compile": None,
+    "prepack": None,
+    "bind_check": 1,
+    "record": 2,
+    "submit": 2,
+    "fence_wait": 2,
+    "upload": 3,
+    "readback": 3,
+    "desc_alloc": 3,
+    "pipeline_lookup": 3,
+    "cmd_upload": 3,
+}
+
+#: Phases that decompose the **anchor**, beside ``vulkan.subgraph``.  Summed against ``call_us``.
+TIER1_PHASES = tuple(p for p, t in PHASE_TIER.items() if t == 1)
+
+#: Phases that decompose the **dispatch region**.  Summed against ``subgraph_us``, never against
+#: ``call_us``: the anchor also contains ``bind_check`` and an undecomposed remainder, and adding
+#: tiers together is how a phase total is compared to a span that does not bound it.
+TIER2_PHASES = tuple(p for p, t in PHASE_TIER.items() if t == 2)
+
+#: Phases ORT invokes outside ``Compute()``.  Never in any per-call bucket.
+SESSION_PHASES = tuple(p for p, t in PHASE_TIER.items() if t is None)
+
+#: Phases no other phase contains — their wall times are disjoint, so they may be added.  This is
+#: **not** "same tier": ``bind_check`` and ``record`` are both here and answer to different spans.
+SIBLING_PHASES = tuple(p for p, t in PHASE_TIER.items() if t is None or t <= 2)
+
+#: Phases that open inside another phase's span.  Never added to their own parent's total.
+NESTED_PHASES = tuple(p for p, t in PHASE_TIER.items() if t is not None and t >= 3)
+
+#: ``cat == "ep"`` structural spans.  These bracket regions; they are **not** phases and are
+#: never summed into any phase total.
+#:
+#: ``vulkan.compute_call`` is **tier 0**, the bucketing anchor: the whole ORT ``Compute``
+#: callback, opened before anything else in it.  ``vulkan.subgraph`` is **tier 1**, the dispatch
+#: region: it opens inside ``dispatch_ort`` and is contained by the anchor, beside the tier-1
+#: phase ``bind_check``.  Anchoring the per-call bucketing on the inner span means every span
+#: outside it — however large — lands in the ``None`` bucket and appears in no per-call or
+#: steady-state total.  Measured on Phi-3.5 ``prefill_1``, that is a warm median of **27.0 ms per
+#: call**, of which 26.9 ms is *after* ``vulkan.subgraph`` closes.  That region was the harness's
+#: own counters dump, not the EP; it reads **0.056 ms** once the dump is scoped to the first run.
+#: The bracket is what made either number sayable.
 COMPUTE_CALL_SPAN = "vulkan.compute_call"
 SUBGRAPH_SPAN = "vulkan.subgraph"
 
@@ -162,6 +197,17 @@ ANCHOR_PREFERENCE = (COMPUTE_CALL_SPAN, SUBGRAPH_SPAN)
 GPU_TIME_MEASURED = "GPU_TIME_MEASURED"
 GPU_TIME_UNAVAILABLE = "GPU_TIME_UNAVAILABLE"
 TRACE_ABSENT = "TRACE_ABSENT"
+
+#: Device time was measured, but something else in the reduction refused.
+#:
+#: ``GPU_TIME_MEASURED`` **requires** ``refusals == []``.  The rejected revision of this module
+#: set the verdict from the GPU spans alone, so a profile could — and did — ship
+#: ``verdict: "GPU_TIME_MEASURED"`` with a phase-tree refusal sitting in the same document.  A
+#: verdict that survives its own refusals is not a verdict.  This is the state that says so.
+ATTRIBUTION_REFUSED = "ATTRIBUTION_REFUSED"
+
+#: Every verdict this module can emit.
+VERDICTS = (GPU_TIME_MEASURED, ATTRIBUTION_REFUSED, GPU_TIME_UNAVAILABLE, TRACE_ABSENT)
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +303,10 @@ def bucket_by_call(events: list, calls: list) -> list:
     trace they came from.
 
     When the anchor is ``vulkan.compute_call``, the inner ``vulkan.subgraph`` spans are
-    bucketed too.  They are never summed with the phases: they are the *inner bracket*, and
-    the difference between the two brackets is what :func:`_summarise_bucket` reports as
-    ``outside_subgraph_us`` — measured, and attributed to nothing.
+    bucketed too.  They are never summed with the phases: they are the tier-1 *dispatch region*,
+    and what neither ``bind_check`` nor the dispatch region covers is what
+    :func:`_summarise_bucket` reports as ``unattributed_in_call_us`` — measured, and attributed
+    to nothing.
     """
     if not calls:
         return []
@@ -291,29 +338,50 @@ def bucket_by_call(events: list, calls: list) -> list:
 
 
 def _summarise_bucket(bucket: dict) -> dict:
-    """Phase, GPU and bracket totals for a single ``Compute`` call."""
+    """Phase, GPU and bracket totals for a single ``Compute`` call, **tier by tier**.
+
+    Two decompositions, each against its own parent, never added to each other:
+
+    * tier 1 — ``call_us = bind_check_us + subgraph_us + unattributed_in_call_us``;
+    * tier 2 — ``subgraph_us = record + submit + fence_wait + unattributed_in_subgraph_us``.
+
+    ``unattributed_in_call_us`` is the ruling's required name for the undecomposed remainder. It
+    is **measured and attributed to nothing**.  It is emphatically not a bind-check cost:
+    ``bind_check`` is reported separately, on its own span, and on Phi-3.5 ``prefill_1`` it is a
+    warm median of 0.073 ms against a ~27 ms remainder — 0.27% of it — and runs on the wrong side
+    of ``dispatch_ort`` to have explained it.
+    """
     phases = phase_breakdown(bucket["phases"])
     gpu = gpu_breakdown(bucket["gpu"])
     call_us = bucket.get("dur")
     inner = [int(e.get("dur") or 0) for e in bucket.get("subgraph") or []]
     subgraph_us = sum(inner) if inner else None
-    # The two brackets differ by whatever the Compute callback does outside `dispatch_ort`.
-    # Reported, never charged: this reduction measures the size and the side of that region and
-    # has no instrument that names its cause.
-    outside_subgraph_us = (call_us - subgraph_us
-                           if call_us is not None and subgraph_us is not None else None)
-    # Time inside the *inner* bracket that no sibling phase covers — reading ORT input pointers,
-    # buffer and descriptor work before recording, output tensor writes after the fence.
-    covered = subgraph_us if subgraph_us is not None else call_us
-    unattributed_us = (max(0, covered - phases["sibling_total_us"])
-                       if covered is not None else None)
+    bind_check_us = phases["tier1_total_us"]
+    # On a fallback-anchored trace (no `vulkan.compute_call`), `call_us` *is* the dispatch
+    # region's duration, so it is the right denominator for the tier-2 residual and the wrong one
+    # for the tier-1 one — which is why `unattributed_in_call_us` stays `None` there rather than
+    # being computed against a bracket that cannot see the region it is about.
+    region_us = (subgraph_us if subgraph_us is not None
+                 else (call_us if bucket.get("anchor") == SUBGRAPH_SPAN else None))
+    # Tier 1: what neither the bind checks nor the dispatch region covers.  Reported, never
+    # charged: this reduction measures the size and the side of that region and has no instrument
+    # that names its cause.
+    unattributed_in_call_us = (max(0, call_us - bind_check_us - subgraph_us)
+                               if call_us is not None and subgraph_us is not None else None)
+    # Tier 2: time inside the dispatch region that no tier-2 phase covers — reading ORT input
+    # pointers, buffer and descriptor work before recording, output tensor writes after the fence.
+    unattributed_in_subgraph_us = (max(0, region_us - phases["tier2_total_us"])
+                                   if region_us is not None else None)
     return {
         "index": bucket["index"],
         "anchor": bucket.get("anchor"),
         "call_us": call_us,
         "subgraph_us": subgraph_us,
-        "outside_subgraph_us": outside_subgraph_us,
-        "unattributed_in_subgraph_us": unattributed_us,
+        "bind_check_us": bind_check_us,
+        "unattributed_in_call_us": unattributed_in_call_us,
+        "unattributed_in_subgraph_us": unattributed_in_subgraph_us,
+        "tier1_total_us": phases["tier1_total_us"],
+        "tier2_total_us": phases["tier2_total_us"],
         "sibling_total_us": phases["sibling_total_us"],
         "record_us": phases["record_us"],
         "record_residual_us": phases["record_residual_us"],
@@ -367,8 +435,11 @@ def steady_state(per_call: list) -> dict:
         "anchor": warm[0].get("anchor"),
         "median_call_us": med_opt("call_us"),
         "median_subgraph_us": med_opt("subgraph_us"),
-        "median_outside_subgraph_us": med_opt("outside_subgraph_us"),
+        "median_bind_check_us": med("bind_check_us"),
+        "median_unattributed_in_call_us": med_opt("unattributed_in_call_us"),
         "median_unattributed_in_subgraph_us": med_opt("unattributed_in_subgraph_us"),
+        "median_tier1_total_us": med("tier1_total_us"),
+        "median_tier2_total_us": med("tier2_total_us"),
         "median_sibling_total_us": med("sibling_total_us"),
         "median_record_us": med("record_us"),
         "median_record_residual_us": med("record_residual_us"),
@@ -422,15 +493,37 @@ def phase_breakdown(events: list) -> dict:
         dur = int(ev.get("dur") or 0)
         args = ev.get("args") or {}
         nested_in = args.get("nested_in", "none")
+        declared_tier = args.get("tier")
 
-        # Cross-check the span's own parentage claim against this module's table.
-        expect_sibling = phase in SIBLING_PHASES
-        if expect_sibling != (nested_in == "none"):
-            msg = (f"phase {phase!r} declares nested_in={nested_in!r} but this module "
-                   f"lists it as {'sibling' if expect_sibling else 'nested'}; "
-                   f"trace.rs and cuda_profile.py disagree about the phase tree")
+        # Cross-check the span's own parentage claim against this module's table, in both
+        # directions.  A phase this module does not know is a refusal, not a default: classifying
+        # an unknown phase as a sibling is how `bind_check` was summed against a span it was never
+        # inside, and the refusal was shipped inside a profile whose verdict read
+        # GPU_TIME_MEASURED.
+        expected_tier = PHASE_TIER.get(phase, "unknown")
+        if expected_tier == "unknown":
+            msg = (f"phase {phase!r} is in the trace but not in cuda_profile.PHASE_TIER, so this "
+                   f"module does not know which span bounds it; refusing to place it in a tier")
             if msg not in disagreements:
                 disagreements.append(msg)
+        else:
+            expect_sibling = expected_tier is None or expected_tier <= 2
+            if expect_sibling != (nested_in == "none"):
+                msg = (f"phase {phase!r} declares nested_in={nested_in!r} but this module "
+                       f"lists it as {'sibling' if expect_sibling else 'nested'}; "
+                       f"trace.rs and cuda_profile.py disagree about the phase tree")
+                if msg not in disagreements:
+                    disagreements.append(msg)
+            # `tier` is only present on traces from a build that emits it; absence is silence,
+            # not agreement, so it is not treated as a match.
+            if declared_tier is not None:
+                want = "session" if expected_tier is None else str(expected_tier)
+                if str(declared_tier) != want:
+                    msg = (f"phase {phase!r} declares tier={declared_tier!r} but this module "
+                           f"lists it as tier {want}; trace.rs and cuda_profile.py disagree "
+                           f"about which span bounds it")
+                    if msg not in disagreements:
+                        disagreements.append(msg)
 
         bucket = siblings if nested_in == "none" else nested
         bucket[phase][0] += dur
@@ -442,6 +535,11 @@ def phase_breakdown(events: list) -> dict:
         return {k: {"us": v[0], "count": v[1]} for k, v in sorted(d.items())}
 
     sibling_total = sum(v[0] for v in siblings.values())
+    # Summed **within a tier**, against that tier's own parent.  Adding tier 1 to tier 2 and
+    # comparing the result to one span is a category error: the anchor contains the dispatch
+    # region, so tier-2 time is already inside `subgraph_us`.
+    tier1_total = sum(v[0] for k, v in siblings.items() if PHASE_TIER.get(k) == 1)
+    tier2_total = sum(v[0] for k, v in siblings.items() if PHASE_TIER.get(k) == 2)
     record_us = siblings.get("record", [0, 0])[0]
     # `upload` and `cmd_upload` bracket the *same* memcpy — cmd_upload is the outer of
     # the two in session.rs — so charging both to `record`'s children double-counts it.
@@ -457,6 +555,8 @@ def phase_breakdown(events: list) -> dict:
         "nested_us": _fmt(nested),
         "nested_parent": parents,
         "sibling_total_us": sibling_total,
+        "tier1_total_us": tier1_total,
+        "tier2_total_us": tier2_total,
         "record_us": record_us,
         "record_claimed_children_us": claimed_children,
         # The vkCmd* calls themselves: what `record` costs that no child accounts for.
@@ -830,7 +930,12 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
         out["gpu_share_untraced_cross_run"] = None
         return out
 
-    out["verdict"] = GPU_TIME_MEASURED
+    # GPU_TIME_MEASURED requires `refusals == []`. Anything already in that list — a phase-tree
+    # disagreement, an unknown phase, a missing anchor — means part of this reduction declined to
+    # answer, and a document cannot claim the attribution stands while carrying the reason it
+    # does not. Set here rather than at the end so the refusals accumulated above are seen;
+    # anything appended below re-checks through `_finalise_verdict`.
+    out["verdict"] = ATTRIBUTION_REFUSED if out["refusals"] else GPU_TIME_MEASURED
     # Total inferences the traced process actually ran: the compile/first run, the
     # warmups, and the steady-state iterations.  Derived from the sample lists rather
     # than from the requested counts, because a run that refused partway through has
@@ -890,6 +995,19 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
     out["compute_reconciliation"] = compute_reconciliation(
         steady, traced_median, out.get("overhead_ratio"), anchor)
     out["ort_fused_node"] = ort_fused_node_cross_check(untraced, traced, out)
+    return _finalise_verdict(out)
+
+
+def _finalise_verdict(out: dict) -> dict:
+    """Re-derive the verdict from the refusal list, last thing before the report is returned.
+
+    ``GPU_TIME_MEASURED`` **requires** ``refusals == []``. Enforced here, once, rather than at
+    each site that appends a refusal — the rejected revision set the verdict from the GPU spans
+    alone and then kept appending, so a phase-tree refusal and the verdict that ignores it
+    travelled in the same committed document for days.
+    """
+    if out.get("verdict") == GPU_TIME_MEASURED and out.get("refusals"):
+        out["verdict"] = ATTRIBUTION_REFUSED
     return out
 
 
@@ -992,20 +1110,27 @@ def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
     falsely.  The withdrawn ``host_ms_per_run_residual`` was exactly that mistake; see
     ``cross_run_terms`` on the report.
 
-    The regions, outermost first::
+    The regions, outermost first, **tiered**::
 
         traced wall
-        └── vulkan.compute_call          the whole ORT Compute callback
-            ├── vulkan.subgraph          opened inside dispatch_ort
-            │   ├── sibling phases       record + submit + fence_wait (+ compile/prepack)
-            │   └── unattributed         no phase span covers it
-            └── outside_subgraph         measured; NOT attributed by this instrument
+        └── [tier 0] vulkan.compute_call     the whole ORT Compute callback — the anchor
+            ├── [tier 1] vulkan.bind_check   the three bind-validation checks
+            ├── [tier 1] vulkan.subgraph     the dispatch region, opened inside dispatch_ort
+            │   ├── [tier 2] record + submit + fence_wait
+            │   │   └── [tier 3] upload/readback/desc_alloc/pipeline_lookup/cmd_upload
+            │   └── unattributed_in_subgraph no tier-2 phase span covers it
+            └── unattributed_in_call         no tier-1 phase or span covers it
 
-    ``outside_subgraph`` is the region the previous revision of this module could not see at
+    Each tier sums against **its own parent** and never across tiers: tier-2 time is already
+    inside ``subgraph_ms``, so adding it to ``bind_check_ms`` and comparing against
+    ``compute_call_ms`` double-counts.
+
+    ``unattributed_in_call`` is the region the previous revision of this module could not see at
     all, because it anchored on the inner span.  It is reported as a number and a side, and
-    nothing else: this reduction has no instrument that can name its cause, and the last claim
-    made about it (``Phase::BindCheck``, "the binding checks") measured 0.073 ms against a
-    27.0 ms region and was withdrawn.
+    nothing else: this reduction has no instrument that can name its cause.  It is **never**
+    charged to ``bind_check`` — that claim measured 0.073 ms against a 27.0 ms region, 0.27% of
+    it, and was withdrawn.  ``bind_check`` appears in this decomposition as its own measured
+    term, which is the whole difference between reporting a phase and using it as an excuse.
     """
     if not steady or not steady.get("warm_calls"):
         return {"available": False,
@@ -1016,7 +1141,9 @@ def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
 
     call = ms(steady.get("median_call_us"))
     sub = ms(steady.get("median_subgraph_us"))
-    outside = ms(steady.get("median_outside_subgraph_us"))
+    bind_check = ms(steady.get("median_bind_check_us"))
+    unattr_call = ms(steady.get("median_unattributed_in_call_us"))
+    tier2 = ms(steady.get("median_tier2_total_us"))
     sibling = ms(steady.get("median_sibling_total_us"))
     unattr = ms(steady.get("median_unattributed_in_subgraph_us"))
     out_of_call = (traced_median_ms - call
@@ -1028,15 +1155,23 @@ def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
         "sees_whole_compute": anchor.get("sees_whole_compute"),
         "traced_wall_ms": traced_median_ms,
         "compute_call_ms": call,
+        "bind_check_ms": bind_check,
         "subgraph_ms": sub,
-        "outside_subgraph_ms": outside,
+        "unattributed_in_call_ms": unattr_call,
+        "tier2_phases_ms": tier2,
         "sibling_phases_ms": sibling,
         "unattributed_in_subgraph_ms": unattr,
         "outside_compute_call_ms": out_of_call,
-        "outside_subgraph_attribution": (
+        "tier1_decomposition": ("compute_call = bind_check + subgraph + unattributed_in_call"
+                                if unattr_call is not None else None),
+        "tier2_decomposition": ("subgraph = record + submit + fence_wait + "
+                                "unattributed_in_subgraph"
+                                if unattr is not None else None),
+        "unattributed_in_call_attribution": (
             "MEASURED, UNATTRIBUTED. This instrument reports the size of the region and which "
-            "side of `vulkan.subgraph` it falls on. It does not name its cause."
-            if outside else None),
+            "side of `vulkan.subgraph` it falls on. It does not name its cause, and it is not "
+            "bind-check time: `bind_check_ms` is measured separately and is reported above."
+            if unattr_call else None),
         "do_not": ("subtract these traced-axis terms from `untraced_median_ms`; the traced run "
                    f"is {overhead_ratio:.3f}x the untraced one"
                    if overhead_ratio else
@@ -1075,30 +1210,41 @@ def render(report: dict) -> str:
                      + ("" if rec.get("sees_whole_compute")
                         else " — **inner span only; the region outside it is invisible here**"))
         lines.append("")
-        lines.append("| region | ms | inside |")
-        lines.append("|---|---:|---|")
+        lines.append("| region | tier | ms | inside |")
+        lines.append("|---|---|---:|---|")
         rows = [
-            ("traced wall (one `session.run`)", rec.get("traced_wall_ms"), "—"),
-            ("outside `vulkan.compute_call` (ORT + harness)",
+            ("traced wall (one `session.run`)", "—", rec.get("traced_wall_ms"), "—"),
+            ("outside `vulkan.compute_call` (ORT + harness)", "—",
              rec.get("outside_compute_call_ms"), "traced wall"),
-            ("`vulkan.compute_call` (whole Compute callback)",
+            ("`vulkan.compute_call` (whole Compute callback — the anchor)", "0",
              rec.get("compute_call_ms"), "traced wall"),
-            ("`vulkan.subgraph` (inside `dispatch_ort`)",
+            ("`vulkan.bind_check` (the three bind checks)", "1",
+             rec.get("bind_check_ms"), "`vulkan.compute_call`"),
+            ("`vulkan.subgraph` (the dispatch region, inside `dispatch_ort`)", "1",
              rec.get("subgraph_ms"), "`vulkan.compute_call`"),
-            ("sibling phases (record+submit+fence_wait)",
-             rec.get("sibling_phases_ms"), "`vulkan.subgraph`"),
-            ("unattributed inside `vulkan.subgraph`",
+            ("**unattributed inside the callback**", "1",
+             rec.get("unattributed_in_call_ms"), "`vulkan.compute_call`"),
+            ("tier-2 phases (record+submit+fence_wait)", "2",
+             rec.get("tier2_phases_ms"), "`vulkan.subgraph`"),
+            ("unattributed inside `vulkan.subgraph`", "2",
              rec.get("unattributed_in_subgraph_ms"), "`vulkan.subgraph`"),
-            ("**outside `vulkan.subgraph`, inside the callback**",
-             rec.get("outside_subgraph_ms"), "`vulkan.compute_call`"),
         ]
-        for label, value, parent in rows:
-            lines.append(f"| {label} | {'—' if value is None else f'{value:.3f}'} | {parent} |")
+        for label, tier, value, parent in rows:
+            lines.append(f"| {label} | {tier} | "
+                         f"{'—' if value is None else f'{value:.3f}'} | {parent} |")
+        lines.append("")
+        lines.append("Each tier sums against its own parent. Rows from different tiers are not "
+                     "additive: tier-2 time is already inside `vulkan.subgraph`.")
+        if rec.get("tier1_decomposition"):
+            lines.append(f"- tier 1: `{rec['tier1_decomposition']}`")
+        if rec.get("tier2_decomposition"):
+            lines.append(f"- tier 2: `{rec['tier2_decomposition']}`")
         lines.append("")
         lines.append(f"All terms are {rec.get('axis')}. Do not {rec.get('do_not')}.")
-        if rec.get("outside_subgraph_attribution"):
+        if rec.get("unattributed_in_call_attribution"):
             lines.append("")
-            lines.append(f"`outside_subgraph`: {rec['outside_subgraph_attribution']}")
+            lines.append(f"`unattributed_in_call_ms`: "
+                         f"{rec['unattributed_in_call_attribution']}")
         lines.append("")
     ab = report.get("ab_experiment") or {}
     if ab:

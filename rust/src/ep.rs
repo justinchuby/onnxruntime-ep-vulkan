@@ -2583,7 +2583,8 @@ unsafe fn compute_impl(
     // it starts inside `dispatch_ort` and ends inside it. Without an outer bracket a reduction
     // cannot state how much of the callback no span covers, so it charges that time to whatever
     // span it can see. This is a structural span (`cat == "ep"`), not a `Phase`: it is never
-    // summed into a sibling total and it adds no level to the phase tree.
+    // summed into a phase total. It is TIER 0 — the bucketing anchor every phase is checked
+    // against, and by construction the first thing opened here so no phase can precede it.
     let t = crate::trace::tracer();
     let _compute_call = t.compute_region();
 
@@ -2624,6 +2625,17 @@ unsafe fn compute_impl(
             ),
         );
     }
+
+    // TIER 1 — `vulkan.bind_check`, inside the anchor and beside `vulkan.subgraph`.
+    //
+    // Scoped to exactly the three bind-validation calls below and dropped before `dispatch_ort`,
+    // so the two tier-1 regions are disjoint and neither can absorb the other's time. Every early
+    // return between here and the drop releases the guard, so a rejected bind is still measured.
+    //
+    // This measures the checks. It measures nothing else. On Phi-3.5 `prefill_1` it reads a warm
+    // median of 0.073 ms against a ~27 ms undecomposed region, and the remainder is reported by
+    // `bench/cuda_profile.py` as `unattributed_in_call_ms` — never charged here.
+    let bind_check = t.bind_check_region();
 
     // The counts the plan was built from come from the fused node; the counts ORT binds come from
     // the kernel context. If they disagree, every index past the first mismatch names a different
@@ -2679,6 +2691,11 @@ unsafe fn compute_impl(
             format!("VulkanExecutionProvider: {msg}"),
         );
     }
+
+    // Closes `vulkan.bind_check` here, explicitly, rather than at end of scope. If it were left to
+    // drop with the function it would enclose `dispatch_ort` and the tier-1 decomposition would
+    // read as `bind_check ⊃ subgraph` — the exact over-attribution this phase was rejected for.
+    drop(bind_check);
 
     // SAFETY: `info.session` is non-null (checked by `is_live`) and points into the
     // `Box<VulkanSession>` owned by the `VulkanEp` that produced this compute-info; ORT releases

@@ -48,64 +48,105 @@ None of that holds here. We have explicit command buffers, an explicit staging p
 PCIe boundary, and a queue that runs asynchronously with respect to the thread that filled it.
 So our span vocabulary is different, and the difference is the whole point:
 
-| Phase | What it wraps | What it actually measures |
-|---|---|---|
-| `compile` | Shader module creation, pipeline layout + compute pipeline creation, descriptor layout. | Real host CPU work. Once per subgraph, amortised over the session. |
-| `prepack` | Weight repacking/quantisation-layout fixups on the host. | Real host CPU work. Once. |
-| `upload` | Staging-buffer write + transfer of weights and inputs to device-local memory. | Host time *plus* a real transfer. Counters carry bytes and effective GiB/s. |
-| `record` | Filling the command buffer: binds, push constants, barriers, dispatches. | Real host CPU work. Per `ENGINE.md` §6.1 this is record-once/replay-many, so a steady-state inference should show *no* `record` span at all — if it does, something is invalidating the recording. |
-| `submit` | `vkQueueSubmit` itself. | **Almost nothing.** See §1.3. |
-| `fence_wait` | Waiting for the submission's fence. | An **upper bound** on GPU execution, inflated by queue contention, other clients' work, and driver scheduling. Not kernel time. |
-| `readback` | Device→host transfer of outputs. | Host time plus a real transfer. Bytes + GiB/s counters. |
+| Phase | Tier | What it wraps | What it actually measures |
+|---|---|---|---|
+| `compile` | session | Shader module creation, pipeline layout + compute pipeline creation, descriptor layout. | Real host CPU work. Once per subgraph, amortised over the session. |
+| `prepack` | session | Weight repacking/quantisation-layout fixups on the host. | Real host CPU work. Once. |
+| `bind_check` | 1 | The three `check_bound_*` calls at the top of `compute_impl`, before `dispatch_ort`. | Real host CPU work, and **small**: warm median 0.035 ms. It exists to *bound* the pre-dispatch region, not to explain it — see the withdrawn claim below. |
+| `upload` | 3 | Staging-buffer write + transfer of weights and inputs to device-local memory. | Host time *plus* a real transfer. Counters carry bytes and effective GiB/s. |
+| `record` | 2 | Filling the command buffer: binds, push constants, barriers, dispatches. | Real host CPU work. Per `ENGINE.md` §6.1 this is record-once/replay-many, so a steady-state inference should show *no* `record` span at all — if it does, something is invalidating the recording. |
+| `submit` | 2 | `vkQueueSubmit` itself. | **Almost nothing.** See §1.3. |
+| `fence_wait` | 2 | Waiting for the submission's fence. | An **upper bound** on GPU execution, inflated by queue contention, other clients' work, and driver scheduling. Not kernel time. |
+| `readback` | 3 | Device→host transfer of outputs. | Host time plus a real transfer. Bytes + GiB/s counters. |
 
-Those seven are *phases* (`cat == "ep.phase"`), plus three sub-`record` phases — `desc_alloc`,
+Those eight are *phases* (`cat == "ep.phase"`), plus three sub-`record` phases — `desc_alloc`,
 `pipeline_lookup`, `cmd_upload` — that are nested inside `record` and therefore must never be
-added to it. Ten in total; `Phase::ALL` is the list of record, and a Rust test asserts its length.
+added to it. Eleven in total; `Phase::ALL` is the list of record, and a Rust test asserts its
+length.
+
+#### The tier model
+
+Every phase has exactly one **parent span**, and its tier is that parent's depth. The tiers are
+not decoration: they say which totals may be summed and against what. Adding across tiers
+double-counts, because a tier-2 phase is already inside the tier-1 span that contains it.
+
+```
+vulkan.compute_call                                     tier 0 — the bucketing anchor
+├── vulkan.bind_check                                   tier 1
+├── vulkan.subgraph  (the dispatch region)              tier 1
+│   ├── vulkan.record                                   tier 2
+│   │   ├── vulkan.desc_alloc / pipeline_lookup /       tier 3
+│   │   │   cmd_upload / upload / readback
+│   ├── vulkan.submit                                   tier 2
+│   └── vulkan.fence_wait                               tier 2
+└── (unattributed_in_call — measured, deliberately unnamed)
+```
+
+* tier 1: `compute_call = bind_check + subgraph + unattributed_in_call`
+* tier 2: `subgraph = record + submit + fence_wait + unattributed_in_subgraph`
+
+`compile` and `prepack` are declared **session scope**: ORT invokes them from `Compile()`, so they
+structurally cannot lie inside a `Compute` span. That is asserted as a positive fact — every
+session-scope phase must fall *outside* every anchor — rather than skipped, and the set is held to
+exactly those two phases by `bench/test_trace_vocabulary.py`. It is a rule, not an exemption list
+that can be grown to silence a failure.
 
 **Two structural spans (`cat == "ep"`) are not phases and never enter a total:**
 
-| Span | Brackets | Why it exists |
-|---|---|---|
-| `vulkan.compute_call` | The whole ORT `Compute` callback, opened first thing in `compute_impl`. | It is the only span that can tell you whether the phases account for the callback. Without it the reduction can only see its own inner bracket and cannot notice work that happens on either side of it. |
-| `vulkan.subgraph` | The `dispatch_ort` call inside `Compute`. | The bracket every phase lies inside. This is the denominator for "share of time inside `Compute`" throughout this document. |
+| Span | Tier | Brackets | Why it exists |
+|---|---|---|---|
+| `vulkan.compute_call` | 0 | The whole ORT `Compute` callback, opened first thing in `compute_impl`. | **The bucketing anchor.** No phase may live outside it. It is the only span that can tell you whether the phases account for the callback; without it the reduction sees only the dispatch region and cannot notice work on either side of it. |
+| `vulkan.subgraph` | 1 | The `dispatch_ort` call inside `Compute`. | The **dispatch region**. It is *not* the whole callback, and it is not the denominator for "share of time inside `Compute`" — that is the anchor. Historic uses of this span as a whole-`Compute` proxy are noted where they appear. |
 
-The distinction is load-bearing, and was learned the expensive way. In the 2026-08-07 CUDA
-competition work the two brackets read a warm median of **62.329 ms** (`vulkan.compute_call`)
-against **33.868 ms** (`vulkan.subgraph`), a per-call gap with a warm median of **26.976 ms** —
-the gap median and the difference of the two medians are not the same statistic and are not
-expected to match exactly. A `bind_check` *phase* was added outside `vulkan.subgraph` to try to
-explain that gap. It explained 0.073 ms of it (0.27%), and being the first phase outside the
-subgraph bracket it broke `phase_containment`'s standing contract that every phase span lies
-inside its `vulkan.subgraph` span. That phase has been removed. The outer bracket stays, as a
-*structural* span: it exposes the region without claiming to explain it, and the phase tree is
-untouched.
+##### The withdrawn `bind_check` attribution
 
-The region itself turned out not to be the EP at all — and the way that was established matters
-as much as the answer. The first version of this claim rested on a before/after across two
-different EP builds, which confounds the build change with the change under test. The claim now
-rests on a **single-variable A/B**: one release build, one workload (`prefill_1`), one machine,
-runs minutes apart, varying only `ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS`.
+The distinction was learned the expensive way, and the wrong turn is recorded here because the
+correction is the evidence.
 
-| traced-run warm-call median | counters retained | counters `first_run_only` |
+A `bind_check` phase was originally added to explain the gap between the two brackets, and a
+comment claimed it accounted for roughly 23 ms of it. **That claim was false and is withdrawn.**
+`bind_check` is real and is still traced — it is now the tier-1 phase above — but it is two orders
+of magnitude too small to be that explanation, and it never moved with the gap:
+
+| traced-run warm-call median (`prefill_1`) | counters retained | counters `first_run_only` |
 |---|---:|---:|
-| outside `vulkan.subgraph`, inside the callback | **25.269 ms** | **0.056 ms** |
-| `vulkan.subgraph` | 30.509 ms | 32.627 ms |
-| `vulkan.compute_call` | 56.108 ms | 32.682 ms |
-| device time per run | 20.136 ms | 18.904 ms |
+| `vulkan.bind_check` | 0.129 ms | 0.035 ms |
+| **`unattributed_in_call`** (inside the callback, outside the dispatch region) | **36.392 ms** | **0.016 ms** |
+| `vulkan.subgraph` (dispatch region) | 38.259 ms | 31.092 ms |
+| `vulkan.compute_call` (anchor) | 76.660 ms | 31.163 ms |
+| traced median (whole `session.run`) | 78.816 ms | 31.526 ms |
+| untraced median | 71.028 ms | 30.316 ms |
+| device time per run | 20.179 ms | 19.002 ms |
 
-The inner span barely moves; the region outside it moves 25.2 ms. The benchmark harness's own
+The undecomposed region moves **36.4 ms** between the two arms; `bind_check` moves **0.09 ms**. So
+the region is not bind-check time, and the harness reports it as `unattributed_in_call_ms` —
+measured, located on a named side of a named span, and explicitly not attributed to any phase.
+`cuda_profile` will not print a bind-check attribution for it, and
+`bench/test_cuda_profile.py` fails if the two are ever conflated.
+
+The region itself turned out not to be the EP at all — and the way that was established matters as
+much as the answer. The first version of the claim rested on a before/after across two different
+EP builds, which confounds the build change with the change under test. The claim now rests on a
+**single-variable A/B**: one release build, one workload (`prefill_1`), one machine, runs minutes
+apart, varying only `ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS`. The benchmark harness's own
 counters dump runs inside every timed inference, after `dispatch_ort` returns — exactly the side
 the region is on — which is what
 `bench/test_cuda_competition.py::test_counters_dump_is_not_left_inside_the_timed_region`
-now forbids. Both arms are committed: `bench/results/_cuda69/profile_prefill_1.json` and
-`bench/results/_cuda69/profile_prefill_1_counters_retained.json`.
+now forbids. Both arms are committed with their commands and provenance:
+`bench/results/_cuda69/profile_prefill_1.{json,md,log}` (arm B) and
+`bench/results/_cuda69/profile_prefill_1_counters_retained.{json,md,log}` (arm A).
 
-Two limits on that result, stated because they are easy to forget:
+Three limits on that result, stated because they are easy to forget:
 
 * **It is scoped to `prefill_1`.** Cross-workload deltas are non-uniform and are not pure counter
   costs; the A/B has to be re-run per workload to say anything about another one.
-* **Device time moved 6.5% between those two runs of the same build** (20.136 vs 18.904 ms). Any
-  comparison that crosses a run boundary inherits at least that spread.
+* **The two arms are separate processes.** No number in the table is subtracted across the two
+  columns; each column is that arm's own within-process reduction, and the A/B is a comparison of
+  two decompositions, not a difference that may be quoted as a cost.
+* **Device time is not stable to better than a few percent across runs** — 20.179 vs 19.002 ms
+  here, and two device medians taken on this machine on one afternoon read 12.17456 and
+  13.347296 ms, 9.6% apart. Any comparison that crosses a run boundary inherits at least that
+  spread.
 
 An instrument that can see a region is worth having even when the answer is "this was never
 ours".
@@ -119,12 +160,17 @@ it does:
 
 | bracket | warm median | vs ORT |
 |---|---:|---:|
-| ORT fused node (`*_kernel_time`, provider `Vulkan*`) | 57.118 ms | — |
-| `vulkan.compute_call` | 56.108 ms | **−1.8%** |
-| `vulkan.subgraph` | 30.509 ms | **−46.6%** |
+| ORT fused node (`*_kernel_time`, provider `Vulkan*`) | 77.745 ms | — |
+| `vulkan.compute_call` (tier 0, the anchor) | 76.660 ms | **−1.4%** |
+| `vulkan.subgraph` (tier 1, the dispatch region) | 38.259 ms | **−50.8%** |
 
-A reduction anchored on the inner span was not describing the callback ORT timed. No amount of
-internal consistency among our own spans would have shown that.
+Both rows are from the **same process** as the ORT figure they are compared against; nothing is
+subtracted across runs. A reduction anchored on the dispatch region was not describing the
+callback ORT timed, and no amount of internal consistency among our own spans would have shown
+that. On the `first_run_only` arm the same check reads 31.859 ms (ORT) against 31.163 ms
+(anchor, −2.2%) and 31.092 ms (dispatch region, −2.4%) — the two brackets converge when the
+counters dump is out of the callback, which is itself corroboration that the dump is what sat
+between them.
 `bench/test_cuda_competition.py::test_the_anchor_is_corroborated_by_an_instrument_that_is_not_ours`
 requires every committed profile to carry this check and to agree within 10%.
 
@@ -156,15 +202,34 @@ Nothing here ranks the optimisation candidates against each other. Command-buffe
 above; neither has been ablated against the others, so neither is claimed to be the thing to fix
 first.
 
-**No emitted name may be a prefix of another.** Reducers match span names, and Python's
-`str.startswith` made `vulkan.compute` silently capture `vulkan.compute_region_...`; the
-`RecordPath` instants were likewise renamed from `vulkan.record_path[...]` to `vulkan.path[...]`
-because `vulkan.record` is a phase. Both the Rust test `no_trace_name_is_a_prefix_of_another`
-and `bench/test_trace_vocabulary.py` enforce it now, in both languages.
+**No emitted name may be a prefix of another within its `cat`.** Reducers match span names, and
+Python's `str.startswith` made `vulkan.compute` silently capture the `vulkan.compute[REPLAY]`
+instants — a real collision that the anchor work would have walked into. Matching is now **exact
+equality on `(cat, name)`, never `startswith`**, and the `RecordPath` instants are named
+`vulkan.record_path[...]`.
+
+That name creates one unavoidable tension, recorded rather than hidden: `vulkan.record` is a phase
+and is a literal prefix of `vulkan.record_path`, so *global* prefix-freedom is unsatisfiable given
+the ordered name. The rule is therefore scoped: **prefix-freedom is absolute within a `cat`**, and
+any cross-`cat` prefix pair must appear in an explicit one-entry allowlist
+(`trace_vocabulary.KNOWN_CROSS_CAT_PREFIXES`), justified because every consumer selects candidates
+by `cat` before it looks at a name. The allowlist is held to exactly one pair, is asserted
+non-vacuous, and the claim that the two consumers really do separate on `cat` is checked
+behaviourally by running both over a trace containing both names — not asserted in prose. A
+*same*-`cat` collision remains fatal. Boundary-tokenised prefixing was considered and rejected as
+too weak: it would have permitted the original `vulkan.compute` / `vulkan.compute[REPLAY]`
+collision. Both the Rust test
+`no_trace_name_is_a_prefix_of_another_within_its_category` and `bench/test_trace_vocabulary.py`
+enforce this, in both languages.
 
 The vocabulary is declared once, in the module header of `rust/src/trace.rs`, and
-`bench/trace_vocabulary.py` parses it so that `bench/phases.py` and `bench/cuda_profile.py` can
-be checked against it rather than trusted to have been updated.
+`bench/trace_vocabulary.py` parses it — including `Phase::containment`, from which the tier is
+*derived* on both sides rather than stored — so that `bench/phases.py` and `bench/cuda_profile.py`
+can be checked against it rather than trusted to have been updated. The guard is **bidirectional
+over every ordered pair** of the three modules, with the direction named on failure: a phase
+present upstream and missing downstream is silently dropped from a total, while a phase present
+downstream and missing upstream is a table row that can never appear. Both are defects and they
+need different fixes.
 
 Two further span-adjacent facts we record because they are the ones that mislead people:
 
@@ -1114,10 +1179,16 @@ comparison and that refusal stands.
 
 ### 9.3 The phase split
 
-Shares are of **time inside `Compute`** — the sum of `vulkan.subgraph` spans. That is the EP's
-own view of its execution and is **not** process wall time; ORT's graph execution, the CPU EP's
-nodes between islands and session setup are all outside it. These shares may not be restated as
-shares of the benchmark's wall clock.
+Shares are of **time inside the dispatch region** — the sum of `vulkan.subgraph` spans. That is a
+**tier-1** span, not the whole `Compute` callback: `vulkan.compute_call` is the tier-0 anchor, and
+anything the callback does before or after `dispatch_ort` (bind checks, and whatever
+`unattributed_in_call_ms` covers) is outside this denominator. The tables in this section predate
+the anchor and were computed against `vulkan.subgraph`; they are left on that basis and labelled,
+rather than rescaled against a bracket their traces do not contain.
+
+This is also **not** process wall time; ORT's graph execution, the CPU EP's nodes between islands
+and session setup are all outside it. These shares may not be restated as shares of the
+benchmark's wall clock, nor as shares of the `Compute` callback.
 
 The timed pass runs with tracing **off**; the split comes from a separate instrumented pass, and
 `tracing_overhead_ratio` (traced median ÷ untraced median) is measured rather than assumed:
@@ -1363,9 +1434,12 @@ Per R9: *confidence scales with agreeing instruments; evidence scales only with 
 | every island executed on every inference | `dispatch_accounting`: `compute_calls == islands × inferences`, **integer equality, no tolerance**. Caught a subgraph never invoked — which raises nothing and leaves `compute_failures` at 0. |
 | every dispatch produced GPU time | `gpu_span_accounting`: `sum(subgraph.nodes) == len(gpu_spans) == dispatches_executed`, integer equality. 5457 on both. |
 | the row names the device that ran | `devices.device_identity_check` — trace's own `timestampPeriod`/`validBits` vs the label. Caught the entire table naming the wrong GPU. |
-| the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span (the **inner** bracket, around `dispatch_ort`, not the outer `vulkan.compute_call`); `unattributed_in_compute_ms` reported, never folded away. |
-| the callback is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` and reports the region *outside* `vulkan.subgraph` but inside the callback as its own term. Measured, and explicitly not attributed. A single-variable A/B on one build sizes it at 25.269 ms with the harness's counters dump inside the timed region and 0.056 ms without, on `prefill_1` only. |
-| the anchor is not just our tracer agreeing with itself | `cuda_profile.ort_fused_node_cross_check` — ORT's own `*_kernel_time` warm median for the fused Vulkan node, from the same process, against our bracket. It agreed with `vulkan.compute_call` to 1.8% and disagreed with `vulkan.subgraph` by 46.6%, which is how the anchor was settled on evidence rather than argument. |
+| the phase split sums correctly | `phase_containment` — three tiers, each checked against its own parent: every tier-1 phase lies inside its `vulkan.compute_call` **anchor**, every tier-2 phase inside `vulkan.subgraph`, every tier-3 phase inside `record`. Session-scope phases (`compile`, `prepack`) must lie *outside* every anchor — a positive assertion, not a skip. `unattributed_*` is reported at each tier, never folded away, and totals are never added across tiers. |
+| a reduction cannot both refuse and pass | `cuda_profile._finalise_verdict` — `GPU_TIME_MEASURED` **requires** `refusals == []`, re-derived once at the end rather than at each site that appends a refusal; a report that refuses is demoted to `ATTRIBUTION_REFUSED` without losing its evidence. `test_a_committed_record_that_refuses_does_not_also_pass` fails on any committed artifact carrying both. The rejected revision shipped a phase-tree refusal under a `GPU_TIME_MEASURED` verdict. |
+| the callback is accounted for, not just the dispatch region | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` and reports the undecomposed remainder as `unattributed_in_call_ms`: measured, located, and explicitly **not** attributed to any phase. A single-variable A/B on one build sizes it at 36.392 ms with the harness's counters dump inside the timed region and 0.016 ms without, on `prefill_1` only, while `bind_check` moves 0.129 → 0.035 ms across the same pair. |
+| the gap is not silently blamed on bind checking | `bind_check` is traced as its own tier-1 phase and reported separately, so the withdrawn "a bind check explains ~23 ms" claim is *refuted by measurement* rather than deleted. `compute_reconciliation` states in the artifact that the unattributed term is not bind-check time, and `bench/test_cuda_profile.py` fails if the two are conflated. |
+| the anchor is not just our tracer agreeing with itself | `cuda_profile.ort_fused_node_cross_check` — ORT's own `*_kernel_time` warm median for the fused Vulkan node, from the same process, against our bracket. It agreed with `vulkan.compute_call` to 1.4% and disagreed with `vulkan.subgraph` by 50.8% on the counters-retained arm, which is how the anchor was settled on evidence rather than argument. |
+| the three phase vocabularies have not drifted | `bench/test_trace_vocabulary.py` — bidirectional equality of the phase set **and the tier** across `rust/src/trace.rs`, `bench/phases.py` and `bench/cuda_profile.py`, over every ordered pair, with the direction named on failure. The tier is *derived* from `Phase::containment` on both sides of the language boundary, so it cannot be stored inconsistently. |
 | no number is subtracted across two runs | `cuda_profile.run_provenance` plus `cross_run_terms` — the untraced arm emits no GPU timestamps, so `host_ms_per_run_residual` (43.819254 = 57.16655 − 13.347296) and `gpu_share_untraced_bound` are **withdrawn**, not corrected in place. A committed record must carry the provenance block and must not carry either key. |
 | GPU time is not over-scaled | `gpu_containment` — per-submission GPU busy ≤ `submit + fence_wait`, **ordinal attribution**, immune to the 314 ms anchor error. |
 | the 52× conversion is applied | `timestamp_conversion_integrality` — `gpu_ns ÷ period` must be a whole integer. **Decisive only where period ≠ 1.0**; reports `VACUOUS`, never "pass", on NVIDIA and lavapipe. `bench/timestamp_audit.py` exits non-zero when no local device can falsify it. |

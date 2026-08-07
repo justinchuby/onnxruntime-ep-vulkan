@@ -1,53 +1,75 @@
 # bench/results/_cuda69/profile_prefill_1_counters_retained.log
 #
-# ARM A of the counters A/B, 2026-08-07 ~11:19 (Mouse, issue #69 revision).
+# ARM A of the counters A/B.
+# Re-measured 2026-08-07 (Mouse, issue #69 revision) after Morpheus's tier ruling.
 #
 # Why this run exists
 # -------------------
-# The revision claimed that the ~25 ms sitting outside `vulkan.subgraph` but inside the
-# Compute callback was the benchmark harness's own counters-file dump. That claim was
-# originally supported only by a before/after across two different EP builds, which
-# confounds the build change with the counters change. This run isolates the variable.
+# The revision claimed the large undecomposed region inside the Compute callback was the
+# benchmark harness's own counters-file dump, not any EP phase. That claim was originally
+# supported only by a before/after across two different EP builds, which confounds the
+# build change with the counters change. This run isolates the variable.
+#
+# It was re-measured (not re-reduced) because the earlier generation predates the
+# `vulkan.bind_check` span and the tier arguments, and the whole point of the arm is to
+# show which tier the moving time lands in. A stored trace with no bind-check spans
+# cannot answer that under any reduction.
 #
 # Single variable: ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS=1.
 # Everything else is held: the same release DLL, the same workload (prefill_1), the same
 # machine, the same iteration counts, minutes apart from ARM B.
 #
-#   $env:ONNXRUNTIME_VULKAN_EP_LIB               = "<worktree>/rust/target/release/onnxruntime_vulkan_ep.dll"
-#   $env:ONNXRUNTIME_EP_VULKAN_BENCH_CUDA_PYTHON = "<worktree>/.venv-cu12/Scripts/python.exe"
+#   $env:ONNXRUNTIME_VULKAN_EP_LIB                 = "<worktree>/rust/target/release/onnxruntime_vulkan_ep.dll"
+#   $env:ONNXRUNTIME_EP_VULKAN_BENCH_CUDA_PYTHON   = "<worktree>/.venv-cu12/Scripts/python.exe"
 #   $env:ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS = "1"
-#   .venv-cu12/Scripts/python.exe bench/cuda_profile.py \
+#   .venv-cu12/Scripts/python.exe -m bench.cuda_profile \
 #       --workload prefill_1 --iters 10 --skip-cuda \
-#       --out bench/results/_cuda69/scratch_ab/profile_counters_on.json \
-#       --scratch bench/results/_cuda69/scratch_ab/on
+#       --out bench/results/_cuda69/scratch_ab/profile_counters_on_v4.json \
+#       --scratch bench/results/_cuda69/scratch_ab/on_v4
 #
-# The record was then copied to this name and re-reduced under cuda_profile/3 with
-# `--reanalyse` (no new measurement). Its `traced_record.trace_path` still points into
-# the gitignored scratch_ab/ directory, which is 12 MB of per-worker logs, ORT profiles,
-# counters dumps and the Chrome trace this report reduces.
+# `--skip-cuda`: this arm is a within-EP ablation. Re-running the CUDA reference would
+# add a third process to a comparison that is already careful about which process each
+# number came from.
 #
-# Result (traced-run warm-call medians, ms)
-# -----------------------------------------
-#   term                  ARM A (retained)   ARM B (first_run_only)
-#   outside_subgraph_ms          25.269               0.056
-#   subgraph_ms                  30.509              32.627
-#   compute_call_ms              56.108              32.682
-#   traced median                59.365              34.080
-#   untraced median              46.964              26.206
-#   gpu_ms_per_run               20.136              18.904
+# The record was copied to this name unmodified. Its `traced_record.trace_path` points
+# into the gitignored scratch_ab/ directory (per-worker logs, ORT profiles, counters
+# dumps, the Chrome trace this report reduces).
 #
-# The inner span barely moves; the region outside it moves 25.2 ms. The dump lands after
-# dispatch_ort returns, exactly where the outer bracket sees it and the inner one does
-# not. This is a measurement of that one term, on one build.
+# The tier decomposition (traced-run warm-call medians, ms)
+# --------------------------------------------------------
+#   tier 0  vulkan.compute_call            76.660   <- the bucketing anchor
+#   tier 1    vulkan.bind_check             0.129
+#   tier 1    vulkan.subgraph              38.259   <- the dispatch region
+#   tier 1    unattributed_in_call         36.392   <- the counters dump lands here
+#   tier 2      record+submit+fence_wait   27.490
+#   tier 2      unattributed_in_subgraph    9.654
 #
-# It is also the cleanest available demonstration that the anchor choice mattered: ORT's
-# own fused-node warm median here is 57.118 ms. `vulkan.compute_call` reads 56.108 ms
-# (-1.77%); `vulkan.subgraph` reads 30.509 ms (-46.59%). Two instruments sharing no code.
+# Result of the A/B (ARM A here, ARM B in profile_prefill_1.log)
+# --------------------------------------------------------------
+#   term                        ARM A (this)   ARM B (first_run_only)
+#   unattributed_in_call_ms         36.392             0.016
+#   bind_check_ms                    0.129             0.035
+#   subgraph_ms                     38.259            31.092
+#   compute_call_ms                 76.660            31.163
+#   traced median                   78.816            31.526
+#   untraced median                 71.028            30.316
+#   gpu_ms_per_run                  20.179            19.002
 #
-# Scope and limits
-# ----------------
-# * prefill_1 only. Cross-workload deltas are non-uniform and are not pure counter costs.
-# * Device time moved 6.5% between these two runs of the same build (20.136 vs 18.904).
-#   Any cross-run device comparison inherits at least that spread.
-# * This ranks nothing. It sizes one term; it does not establish that term, or command
-#   buffer re-recording, or anything else, as the highest-priority thing to fix.
+# `unattributed_in_call_ms` moves 36.4 ms; `bind_check_ms` moves 0.09 ms. The dump lands
+# after `dispatch_ort` returns -- exactly where the tier-0 anchor sees it and the tier-1
+# dispatch region does not. That is the whole finding.
+#
+# What this does NOT show
+# -----------------------
+# It does not attribute the region to bind checking. `bind_check` is measured separately,
+# is two orders of magnitude smaller, and barely moves. The withdrawn claim that a bind
+# check explains ~23 ms is refuted by this pair of runs, not merely deleted.
+#
+# It also does not rank optimisation candidates. Each arm's numbers are within-process;
+# nothing is subtracted across the two processes, and no per-candidate ablation was run.
+#
+# ORT cross-check on this arm: ORT fused node 77.745 ms vs anchor 76.660 ms (+1.4% on
+# ORT's side), within one process. The counters dump inflates ORT's own fused-node
+# measurement too, which is what an in-callback cost should do.
+#
+# verdict: GPU_TIME_MEASURED, refusals: []

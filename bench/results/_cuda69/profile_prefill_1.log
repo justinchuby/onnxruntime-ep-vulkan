@@ -1,39 +1,75 @@
 # bench/results/_cuda69/profile_prefill_1.log
 #
-# Corrected re-measurement, 2026-08-07 (Mouse, issue #69 revision).
+# ARM B of the counters A/B, and the primary committed profile.
+# Re-measured 2026-08-07 (Mouse, issue #69 revision) after Morpheus's tier ruling.
 #
-# Two earlier generations of this artifact (profile_prefill_1.json and
-# profile_prefill_1_v2.json) were produced before the counters-file dump was moved
-# out of the timed region, and v2 additionally shipped a phase-tree refusal
-# alongside a GPU_TIME_MEASURED verdict. Both fail
-# bench/test_cuda_competition.py::test_a_committed_record_that_refuses_does_not_also_pass
-# and are not committed. The superseded numbers are recorded in
-# .squad/decisions/inbox/mouse-issue69-bindcheck-removed-compute-call-anchor.md.
+# Why this generation exists
+# --------------------------
+# Every earlier generation of this artifact was recorded before the trace carried a
+# `vulkan.bind_check` span or a tier argument, so its span set could not answer the
+# question the report now asks: how much of the Compute callback is bind checking, and
+# how much is undecomposed. `--reanalyse` cannot supply that -- the spans are not in the
+# stored trace -- so this is a fresh measurement, not a re-reduction.
 #
-# Command (from the worktree root, with the release EP built from this tree):
+# Command (from the worktree ROOT, with the release EP built from this tree):
 #
-#   $env:ONNXRUNTIME_VULKAN_EP_LIB       = "<worktree>/rust/target/release/onnxruntime_vulkan_ep.dll"
+#   $env:ONNXRUNTIME_VULKAN_EP_LIB               = "<worktree>/rust/target/release/onnxruntime_vulkan_ep.dll"
 #   $env:ONNXRUNTIME_EP_VULKAN_BENCH_CUDA_PYTHON = "<worktree>/.venv-cu12/Scripts/python.exe"
+#   # ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS deliberately UNSET (first_run_only)
 #   .venv-cu12/Scripts/python.exe -m bench.cuda_profile \
 #       --workload prefill_1 --iters 10 \
-#       --out bench/results/_cuda69/profile_prefill_1.json \
-#       --scratch bench/results/_cuda69/scratch_profile_v3
+#       --out bench/results/_cuda69/scratch_ab/profile_counters_off_v4.json \
+#       --scratch bench/results/_cuda69/scratch_ab/off_v4
 #
-# The scratch directory is gitignored: it is 12 MB of per-worker claim logs, counters
-# dumps, ORT profiles, output tensors and the 5.6 MB Chrome trace this report reduces.
-
-[profile] untraced baseline: vulkan/prefill_1
-[profile] traced run: vulkan/prefill_1
-[profile] cuda reference: cuda/prefill_1
-
+# The record was then copied to this name unmodified. Its `traced_record.trace_path`
+# points into the gitignored scratch_ab/ directory, which holds the per-worker claim
+# logs, counters dumps, ORT profiles, output tensors and the multi-MB Chrome trace this
+# report reduces. That scratch is not committed; the reduction is.
+#
+# The tier decomposition (traced-run warm-call medians, ms)
+# --------------------------------------------------------
+#   tier 0  vulkan.compute_call            31.163   <- the bucketing anchor
+#   tier 1    vulkan.bind_check             0.035
+#   tier 1    vulkan.subgraph              31.092   <- the dispatch region
+#   tier 1    unattributed_in_call          0.016
+#   tier 2      record+submit+fence_wait   25.687
+#   tier 2      unattributed_in_subgraph    5.187
+#
+# Tiers sum against their own parent and are NOT additive across tiers.
+#
+# The A/B result (this arm vs profile_prefill_1_counters_retained)
+# ----------------------------------------------------------------
+#   term                        ARM B (this)   ARM A (retained)
+#   unattributed_in_call_ms          0.016            36.392
+#   bind_check_ms                    0.035             0.129
+#   subgraph_ms                     31.092            38.259
+#   compute_call_ms                 31.163            76.660
+#   traced median                   31.526            78.816
+#   untraced median                 30.316            71.028
+#   gpu_ms_per_run                  19.002            20.179
+#
+# Single variable: ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS. Same release DLL, same
+# workload, same machine, same iteration counts, minutes apart.
+#
+# What this licenses, and what it does not
+# ----------------------------------------
+# It licenses: the undecomposed region inside the Compute callback is dominated by the
+# harness's own counters-file dump, which lands after `dispatch_ort` returns. It moves
+# 36.4 ms between arms while `bind_check` moves 0.09 ms, so the region is NOT bind-check
+# time -- the claim Tank rejected, restated here as a measured refutation rather than a
+# comment.
+#
+# It does NOT license: any ranking of remaining optimisation candidates. The two arms are
+# separate processes and nothing here is subtracted across them; each row is that arm's
+# own within-process number. Command/descriptor reuse is supported by the RERECORDED_
+# EVERY_CALL finding but has not been ablated, so it is not ranked.
+#
+# ORT cross-check on this arm: ORT fused node 31.859 ms vs anchor 31.163 ms (-2.18%),
+# vs inner vulkan.subgraph 31.092 ms (-2.41%). ORT's profiler shares no code with our
+# tracer; it is the only independent corroboration of the anchor in this file.
+#
+# verdict: GPU_TIME_MEASURED, refusals: [] (required -- see
+# bench/test_cuda_competition.py::test_a_committed_record_that_refuses_does_not_also_pass)
+#
 # The report is bench/results/_cuda69/profile_prefill_1.md; the record it was rendered
 # from is bench/results/_cuda69/profile_prefill_1.json.
-#
-# Re-reduced 2026-08-07 under cuda_profile/3 (`--reanalyse`, same stored trace, no new
-# measurement) after the Fact Checker's verification of Tank's rejection. That revision
-# withdrew `host_ms_per_run_residual` and renamed `gpu_share_untraced_bound`; see
-# `cross_run_terms.withdrawn` on the record for the exact arithmetic that was wrong.
-# `reanalysed_from_schema` on the record names the generation it replaced.
-#
-# This is ARM B of the counters A/B: counters_scope == "first_run_only" on both arms.
-# ARM A is bench/results/_cuda69/profile_prefill_1_counters_retained.json.

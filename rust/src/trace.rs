@@ -57,30 +57,68 @@
 //!
 //! | Span | cat | Clock | What it means |
 //! |---|---|---|---|
-//! | `vulkan.compute_call` | `ep` | host | The **whole** `Compute` callback, ORT entry to return. Contains `vulkan.subgraph`. |
-//! | `vulkan.subgraph` | `ep` | host | One fused subgraph's dispatch region, opened inside `dispatch_ort`. |
+//! | `vulkan.compute_call` | `ep` | host | **Tier 0 — the bucketing anchor.** The whole `Compute` callback, ORT entry to return, opened first thing in `compute_impl`. |
+//! | `vulkan.subgraph` | `ep` | host | **Tier 1 — the dispatch region.** One fused subgraph's dispatch, opened inside `dispatch_ort`. *Not* the whole callback. |
 //!
-//! **Phases** (`cat == "ep.phase"`) are the summable vocabulary; each carries `nested_in`:
+//! # The tier model
 //!
-//! | Span | cat | Clock | What it means |
+//! Morpheus's ruling of 2026-08-07: **no phase may live outside the bucketing anchor.** A phase
+//! outside the anchor lands in no bucket, so it appears in no per-call total and no steady-state
+//! median — it is emitted, ignored, and invisible. That is how a 0.073 ms phase came to be
+//! documented as explaining a 27 ms region: nothing could add it up against the region it was
+//! said to explain.
+//!
+//! Every phase therefore declares its container in [`Phase::containment`], and the tier follows
+//! from that declaration rather than being written down twice:
+//!
+//! ```text
+//! tier 0   vulkan.compute_call                      the anchor; everything below is inside it
+//! tier 1   ├── vulkan.bind_check                    phase
+//!          ├── vulkan.subgraph                      structural (the dispatch region)
+//! tier 2   │   ├── vulkan.record                    phase
+//!          │   ├── vulkan.submit                    phase
+//!          │   └── vulkan.fence_wait                phase
+//! tier 3   │       ├── vulkan.upload                phase, inside record
+//!          │       ├── vulkan.cmd_upload            phase, inside record
+//!          │       ├── vulkan.desc_alloc            phase, inside record
+//!          │       ├── vulkan.pipeline_lookup       phase, inside record
+//!          │       └── vulkan.readback              phase, inside record
+//!          └── (residual)                           reported as `unattributed_in_call_ms`
+//! ```
+//!
+//! Sums are **within a tier, against that tier's parent**. Tier 1 sums to at most
+//! `vulkan.compute_call`; tier 2 sums to at most `vulkan.subgraph`; tier 3 sums to at most
+//! `vulkan.record`. Adding across tiers double-counts, which is what
+//! `bench/phases.py::phase_containment`'s `ERROR` arm exists to catch.
+//!
+//! `compile` and `prepack` run during ORT's **`Compile()`** callback, not `Compute()`, so they
+//! are `Containment::SessionScope` and are the only phases legitimately outside the anchor. That
+//! is a declared scope with its own containment check — every session-scope phase must lie
+//! *outside* every anchor span — not an exemption list.
+//!
+//! **Phases** (`cat == "ep.phase"`) are the summable vocabulary; each carries `nested_in` and
+//! `tier`:
+//!
+//! | Span | cat | Tier | What it means |
 //! |---|---|---|---|
-//! | `vulkan.compile` | `ep.phase` | host | `Compile`: plan build, pipeline/SPIR-V creation, descriptor layout. Once per subgraph. |
-//! | `vulkan.prepack` | `ep.phase` | host | Weight prepack + upload of block-quantised initializers. Once per `PackKey`. |
-//! | `vulkan.record` | `ep.phase` | host | The `Compute` recording bracket. **Despite the name, dominated by the staging upload it contains (~96-98% on Phi-3.5), not by command recording (1-3%).** See `Phase::Record::caveat`. |
-//! | `vulkan.upload` | `ep.phase` | host | Host→device staging copy of inference inputs. Carries `bytes`. **Nested in `record`.** |
-//! | `vulkan.cmd_upload` | `ep.phase` | host | The command-buffer-side bracket around the same memcpy as `upload`. **Nested in `record`; overlaps `upload` — take the larger, never the sum.** |
-//! | `vulkan.desc_alloc` | `ep.phase` | host | Descriptor-set allocation, once per dispatch while recording. **Nested in `record`.** |
-//! | `vulkan.pipeline_lookup` | `ep.phase` | host | Pipeline cache lookup, once per dispatch while recording. **Nested in `record`.** |
-//! | `vulkan.submit` | `ep.phase` | host | **`vkQueueSubmit` only.** Host bookkeeping. Measures no GPU work. |
-//! | `vulkan.fence_wait` | `ep.phase` | host | CPU blocked on the fence. Upper bound on GPU time, not GPU time. |
-//! | `vulkan.readback` | `ep.phase` | host | Device→host copy of outputs. Carries `bytes`. **Nested in `record`.** |
+//! | `vulkan.compile` | `ep.phase` | session | `Compile`: plan build, pipeline/SPIR-V creation, descriptor layout. Once per subgraph. Outside `Compute` by construction. |
+//! | `vulkan.prepack` | `ep.phase` | session | Weight prepack + upload of block-quantised initializers. Once per `PackKey`. Outside `Compute` by construction. |
+//! | `vulkan.bind_check` | `ep.phase` | 1 | Validating ORT's bound tensors before dispatch: counts, byte sizes, addressability. Inside the anchor, **beside** `vulkan.subgraph`. It measures only the checks; it explains nothing else in the callback. |
+//! | `vulkan.record` | `ep.phase` | 2 | The `Compute` recording bracket. **Despite the name, dominated by the staging upload it contains (~96-98% on Phi-3.5), not by command recording (1-3%).** See `Phase::Record::caveat`. |
+//! | `vulkan.submit` | `ep.phase` | 2 | **`vkQueueSubmit` only.** Host bookkeeping. Measures no GPU work. |
+//! | `vulkan.fence_wait` | `ep.phase` | 2 | CPU blocked on the fence. Upper bound on GPU time, not GPU time. |
+//! | `vulkan.upload` | `ep.phase` | 3 | Host→device staging copy of inference inputs. Carries `bytes`. **Nested in `record`.** |
+//! | `vulkan.cmd_upload` | `ep.phase` | 3 | The command-buffer-side bracket around the same memcpy as `upload`. **Nested in `record`; overlaps `upload` — take the larger, never the sum.** |
+//! | `vulkan.desc_alloc` | `ep.phase` | 3 | Descriptor-set allocation, once per dispatch while recording. **Nested in `record`.** |
+//! | `vulkan.pipeline_lookup` | `ep.phase` | 3 | Pipeline cache lookup, once per dispatch while recording. **Nested in `record`.** |
+//! | `vulkan.readback` | `ep.phase` | 3 | Device→host copy of outputs. Carries `bytes`. **Nested in `record`.** |
 //!
 //! **Other events:**
 //!
 //! | Event | cat | ph | What it means |
 //! |---|---|---|---|
 //! | `vulkan.gpu.*` | `gpu` | `X` | GPU execution, from `VkQueryPool` timestamp queries only. Emitted on a separate device lane. |
-//! | `vulkan.path[FIRST_RECORD\|REPLAY\|RERECORD]` | `ep.path` | `i` | Instant: did this call reuse the command buffer? Carries `path`, `nodes`, `subgraph`, `shape_key`. |
+//! | `vulkan.record_path[FIRST_RECORD\|REPLAY\|RERECORD]` | `ep.path` | `i` | Instant: did this call reuse the command buffer? Carries `path`, `nodes`, `subgraph`, `shape_key`. |
 //! | `vulkan.transfer_bytes`, `vulkan.transfer_gib_s` | `counter` | `C` | Explicit host↔device transfer volume and rate. |
 //! | `vulkan.island_count`, `vulkan.largest_island_flops`, `vulkan.concentration`, `vulkan.boundary_bytes` | `counter` | `C` | Partition shape, once per session. |
 //! | `vulkan.getcapability` | `ep.claim` | `i` | What the EP claimed at partitioning time. |
@@ -156,29 +194,47 @@ pub const ARG_VARIANT: &str = "kernel_variant";
 // --- Structural span names ------------------------------------------------------------------
 //
 // These are `cat == "ep"` *structural* spans, not [`Phase`]s. They bracket regions; they are
-// never summed into a sibling total and they are not part of the phase tree. They are named as
-// constants because three Python modules match on these strings and a name that is a prefix of
-// another name is a defect, not a style question:
+// never summed into a sibling total. They are named as constants because three Python modules
+// match on these strings.
 //
-// `record_path()` emits **instants** whose names used to be `vulkan.compute[REPLAY]` and friends.
-// Every subgraph matcher in `bench/` matched with `startswith`, so a whole-`Compute` span called
-// `vulkan.compute` would have been captured by the same matcher as those instants and the
-// reduction would have silently mixed a span vocabulary with an instant vocabulary. The instants
-// are now `vulkan.path[...]`. `vulkan.record_path[...]` was tried first and rejected by
-// `no_trace_name_is_a_prefix_of_another`, because `vulkan.record` is a phase and prefixes it —
-// which is the point of having the invariant as a test rather than as a naming habit.
+// # Matching is `(cat, name)` equality — never `startswith`
+//
+// Every reducer that consumes these names matches the **category** and the **exact** name. The
+// previous generation matched with `startswith`, and the EP simultaneously emitted instants
+// called `vulkan.compute[REPLAY]` while a proposed whole-`Compute` span was to be called
+// `vulkan.compute`: one matcher, two vocabularies, silently mixed.
+//
+// # The prefix invariant, and the one place it is deliberately relaxed
+//
+// `no_trace_name_is_a_prefix_of_another` enforces prefix-freedom **within each category**, which
+// is where a matcher could actually be confused. Morpheus's 2026-08-07 ruling orders the
+// `ep.path` instants to be named `vulkan.record_path[...]`, and `vulkan.record` is an `ep.phase`
+// — so the two do share a prefix *across* categories. That pair is safe for a structural reason
+// and not by exception: a phase matcher reads `cat == "ep.phase"` and an instant matcher reads
+// `cat == "ep.path"`, so no matcher ever sees both names in one candidate set. The test asserts
+// exactly that — any cross-category prefix pair must differ in `cat` — rather than listing the
+// pair, because a list would silence the next collision too.
+//
+// This tension between "rename to `vulkan.record_path`" and "no declared name prefixes another"
+// is recorded in the decision note for Morpheus to overrule if the categorical argument is not
+// accepted; the alternative is a different instant name.
 
-/// The whole `Compute` callback, from ORT's entry to its return. See
-/// [`VulkanTracer::compute_region`].
+/// **Tier 0**: the whole `Compute` callback, from ORT's entry to its return, and the bucketing
+/// anchor every other span is charged against. See [`VulkanTracer::compute_region`].
 pub const SPAN_COMPUTE_CALL: &str = "vulkan.compute_call";
-/// One fused subgraph's dispatch region, opened inside `dispatch_ort`. See
-/// [`VulkanTracer::subgraph_region`].
-pub const SPAN_SUBGRAPH: &str = "vulkan.subgraph";
-/// Name prefix of the `cat == "ep.path"` **instants** emitted by
-/// [`VulkanTracer::record_path`] — `vulkan.path[FIRST_RECORD|REPLAY|RERECORD]`.
+/// **Tier 1**: one fused subgraph's *dispatch region*, opened inside `dispatch_ort`.
 ///
-/// Deliberately shares no prefix with [`SPAN_COMPUTE_CALL`] or [`SPAN_SUBGRAPH`].
-pub const INSTANT_RECORD_PATH: &str = "vulkan.path";
+/// Historically read as "the Compute call"; it is not, and reading it that way is what hid a
+/// 25 ms region for a whole review cycle. It is a sibling of [`Phase::BindCheck`] inside
+/// [`SPAN_COMPUTE_CALL`]. See [`VulkanTracer::subgraph_region`].
+pub const SPAN_SUBGRAPH: &str = "vulkan.subgraph";
+/// Name stem of the `cat == "ep.path"` **instants** emitted by
+/// [`VulkanTracer::record_path`] — `vulkan.record_path[FIRST_RECORD|REPLAY|RERECORD]`.
+///
+/// Instants carry a variable `[...]` suffix, so they cannot be matched by whole-name equality.
+/// They are matched by **exact equality on the stem before `[`**, which is not `startswith`: it
+/// cannot capture `vulkan.record_path_v2` the way a prefix test would.
+pub const INSTANT_RECORD_PATH: &str = "vulkan.record_path";
 
 /// The `device` arg value for host-side spans. Deliberately not `"gpu"`: a host span that claims
 /// to be GPU work is how a trace starts lying.
@@ -214,6 +270,20 @@ pub enum Phase {
     Compile,
     /// Weight prepack (CPU repack) plus the upload of the packed bytes. Once per `PackKey`.
     Prepack,
+    /// Validating the tensors ORT bound before anything is dispatched: bound counts against the
+    /// plan, bound byte sizes against the sizes `Compile` computed, and bound input pointers
+    /// against being readable at all.
+    ///
+    /// **Tier 1 — a sibling of the dispatch region, not part of it.** It runs in `compute_impl`
+    /// before `dispatch_ort` is called, so it is inside [`SPAN_COMPUTE_CALL`] and outside
+    /// [`SPAN_SUBGRAPH`].
+    ///
+    /// It measures the checks and nothing else. An earlier revision of this enum introduced this
+    /// phase with a comment saying it explained the ~23 ms unaccounted for inside `Compute`; it
+    /// measured **0.073 ms**, 0.27% of that region, and 99.7% of the region was on the far side
+    /// of `dispatch_ort` where these checks do not run. The undecomposed remainder is reported as
+    /// `unattributed_in_call_ms` and is attributed to nothing. Do not restore that comment.
+    BindCheck,
     /// Host→device staging copy of this inference's inputs.
     Upload,
     /// The `Compute` recording bracket. The name is historical: this span's host wall time is
@@ -247,6 +317,7 @@ impl Phase {
         match self {
             Phase::Compile => "compile",
             Phase::Prepack => "prepack",
+            Phase::BindCheck => "bind_check",
             Phase::Upload => "upload",
             Phase::Record => "record",
             Phase::DescAlloc => "desc_alloc",
@@ -268,6 +339,13 @@ impl Phase {
                 "host: pipeline/descriptor creation; may hit the driver's shader compiler"
             }
             Phase::Prepack => "host: CPU repack + staging upload of weights; once per PackKey",
+            Phase::BindCheck => {
+                "host: validating ORT's bound tensors (counts, byte sizes, addressability) before \
+                 dispatch. TIER 1 — inside `vulkan.compute_call`, BESIDE `vulkan.subgraph`, not \
+                 inside it. It measures the checks only: it does not account for anything else \
+                 the callback does outside `dispatch_ort`, and the undecomposed remainder is \
+                 reported separately as `unattributed_in_call_ms`"
+            }
             Phase::Upload => {
                 "host: staging copy; on a discrete GPU this is PCIe time and users pay it. \
                  NESTED INSIDE `record` — already counted there, do not add to the sibling total"
@@ -329,27 +407,124 @@ impl Phase {
     /// Emitted as the `nested_in` span arg. A phase with `nested_in == Some(p)` must never be
     /// added to a total that also contains `p`.
     pub fn nested_in(self) -> Option<Phase> {
+        match self.containment() {
+            Containment::Phase(p) => Some(p),
+            Containment::SessionScope | Containment::Anchor | Containment::DispatchRegion => None,
+        }
+    }
+
+    /// What span contains this phase's span — the single declaration the tier follows from.
+    ///
+    /// # Why containment and not a tier number
+    ///
+    /// A tier number written next to a phase is a second copy of a fact that already exists in
+    /// the call graph, and second copies drift. `containment()` names the *parent*, and
+    /// [`Phase::tier`] derives the number from it, so a phase cannot be declared "tier 2" while
+    /// being opened inside `record`.
+    ///
+    /// # Why session scope is a variant and not an exemption
+    ///
+    /// Morpheus's ruling is that no phase may live outside the bucketing anchor. `Compile` and
+    /// `Prepack` run in ORT's `Compile()` callback and cannot be inside a `Compute` span — that
+    /// is a fact about when ORT calls us, not a licence. Making it a declared variant means the
+    /// containment checker can assert something *positive* about them (every session-scope phase
+    /// lies outside every anchor span) instead of skipping them, and a call-scope phase that
+    /// escapes the anchor still fails.
+    pub fn containment(self) -> Containment {
         match self {
-            // `vk::session` opens Phase::Record before vkBeginCommandBuffer and drops it after
-            // vkEndCommandBuffer; the input staging loop and the output readback both run inside
-            // that bracket. See session.rs (Record guard) — this is a fact about the call graph,
-            // not a policy, and it must be re-checked if that guard moves.
-            Phase::Upload | Phase::Readback => Some(Phase::Record),
+            // Emitted from `Compile()`, before any `Compute` span exists.
+            Phase::Compile | Phase::Prepack => Containment::SessionScope,
+            // Tier 1: opened in `compute_impl` before `dispatch_ort`, so inside the anchor and
+            // beside the dispatch region.
+            Phase::BindCheck => Containment::Anchor,
+            // Tier 2: opened inside `dispatch_ort`, which is what `vulkan.subgraph` brackets.
+            Phase::Record | Phase::Submit | Phase::FenceWait => Containment::DispatchRegion,
+            // Tier 3. `vk::session` opens Phase::Record before vkBeginCommandBuffer and drops it
+            // after vkEndCommandBuffer; the input staging loop and the output readback both run
+            // inside that bracket. See session.rs (Record guard) — this is a fact about the call
+            // graph, not a policy, and it must be re-checked if that guard moves.
+            Phase::Upload | Phase::Readback => Containment::Phase(Phase::Record),
             // Switch's per-dispatch sub-phases, added in `692e7d0`. They are documented in their
             // own caveats as "sub-record" and they are opened inside the Record guard.
-            Phase::DescAlloc | Phase::PipelineLookup | Phase::CmdUpload => Some(Phase::Record),
+            //
             // EXHAUSTIVE ON PURPOSE — do not add a `_` arm. A catch-all here classifies every
-            // future phase as a top-level sibling by default, which means a new sub-phase gets
-            // silently added into SIBLING TOTAL and double-counts its parent. That is how three
-            // phases arrived this session: they merged cleanly and would have been summed.
-            // Make the compiler ask.
-            Phase::Compile | Phase::Prepack | Phase::Record | Phase::Submit | Phase::FenceWait => {
-                None
+            // future phase by default, which means a new phase gets silently placed in a tier it
+            // does not belong to and either double-counts its parent or escapes the anchor. That
+            // is how three phases arrived in one session; they merged cleanly and would have been
+            // summed. Make the compiler ask.
+            Phase::DescAlloc | Phase::PipelineLookup | Phase::CmdUpload => {
+                Containment::Phase(Phase::Record)
             }
         }
     }
 
-    /// Phases that are top-level: their wall times may be summed.
+    /// How deep this phase sits under the bucketing anchor, or `None` when it is session-scope.
+    ///
+    /// Derived from [`Phase::containment`], never stored, so the two cannot disagree. Phases may
+    /// only be summed **within one tier, against that tier's parent**; adding across tiers
+    /// double-counts.
+    pub fn tier(self) -> Option<u8> {
+        match self.containment() {
+            Containment::SessionScope => None,
+            Containment::Anchor => Some(1),
+            Containment::DispatchRegion => Some(2),
+            Containment::Phase(p) => p.tier().map(|t| t + 1),
+        }
+    }
+
+    /// The full trace span name this phase emits: `"vulkan."` + [`as_str`](Self::as_str).
+    ///
+    /// Written out as literals rather than built with `format!` because a `&'static str` is what
+    /// [`parent_span`](Self::parent_span) needs and because the name has to appear somewhere a
+    /// grep for a span name will find it. The duplication is not load-bearing: the test
+    /// `span_name_is_exactly_vulkan_plus_as_str` fails if the two ever disagree.
+    pub fn span_name(self) -> &'static str {
+        match self {
+            Phase::Compile => "vulkan.compile",
+            Phase::Prepack => "vulkan.prepack",
+            Phase::BindCheck => "vulkan.bind_check",
+            Phase::Record => "vulkan.record",
+            Phase::Submit => "vulkan.submit",
+            Phase::FenceWait => "vulkan.fence_wait",
+            Phase::Upload => "vulkan.upload",
+            Phase::Readback => "vulkan.readback",
+            Phase::DescAlloc => "vulkan.desc_alloc",
+            Phase::PipelineLookup => "vulkan.pipeline_lookup",
+            Phase::CmdUpload => "vulkan.cmd_upload",
+        }
+    }
+
+    /// The tier as it appears in the trace: `"1"`, `"2"`, `"3"`, or `"session"`.
+    pub fn tier_label(self) -> &'static str {
+        match self.tier() {
+            None => "session",
+            Some(1) => "1",
+            Some(2) => "2",
+            Some(3) => "3",
+            // Unreachable for the current tree, and deliberately not a numeric formatter: a new
+            // tier must be declared here so the vocabulary stays a closed set the Python side can
+            // check against.
+            Some(_) => "unknown",
+        }
+    }
+
+    /// The span name this phase's span must lie inside, or `None` for session scope.
+    pub fn parent_span(self) -> Option<&'static str> {
+        match self.containment() {
+            Containment::SessionScope => None,
+            Containment::Anchor => Some(SPAN_COMPUTE_CALL),
+            Containment::DispatchRegion => Some(SPAN_SUBGRAPH),
+            Containment::Phase(p) => Some(p.span_name()),
+        }
+    }
+
+    /// Phases that are top-level: no other phase contains them, so their wall times are disjoint
+    /// and may be added.
+    ///
+    /// This is **not** "same tier". `compile`/`prepack` (session scope), `bind_check` (tier 1)
+    /// and `record`/`submit`/`fence_wait` (tier 2) are all top-level and all disjoint, but they
+    /// answer to three different parents. A decomposition of one span must filter by
+    /// [`tier`](Self::tier) as well — see the session-summary comment.
     pub fn is_sibling(self) -> bool {
         self.nested_in().is_none()
     }
@@ -365,9 +540,10 @@ impl Phase {
     }
 
     /// Every phase, in reporting order.
-    pub const ALL: [Phase; 10] = [
+    pub const ALL: [Phase; 11] = [
         Phase::Compile,
         Phase::Prepack,
+        Phase::BindCheck,
         Phase::Upload,
         Phase::Record,
         Phase::DescAlloc,
@@ -377,6 +553,25 @@ impl Phase {
         Phase::FenceWait,
         Phase::Readback,
     ];
+}
+
+/// What contains a [`Phase`]'s span. The one declaration [`Phase::tier`] is derived from.
+///
+/// Morpheus's ruling of 2026-08-07: no phase may live outside the bucketing anchor. This enum is
+/// how that is made checkable — each variant names a *container*, and the containment checker in
+/// `bench/phases.py` asserts the corresponding positive fact about every span it sees.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Containment {
+    /// Emitted during ORT's `Compile()` callback, so it cannot be inside a `Compute` span. The
+    /// checker requires these to lie **outside** every anchor span, which is an assertion rather
+    /// than a skip.
+    SessionScope,
+    /// Tier 1: directly inside [`SPAN_COMPUTE_CALL`], beside the dispatch region.
+    Anchor,
+    /// Tier 2: inside [`SPAN_SUBGRAPH`], the dispatch region.
+    DispatchRegion,
+    /// Tier 3+: inside another phase's span. Never summed into a total containing that phase.
+    Phase(Phase),
 }
 
 /// Which recording path one `Compute` call took — the Vulkan analogue of MLX's compile-cache
@@ -845,12 +1040,22 @@ impl VulkanTracer {
 
     // --- Execution view ----------------------------------------------------------------
 
-    /// Span around one fused subgraph's whole `Compute` call.
+    /// **Tier 1**: span around one fused subgraph's *dispatch region* — the work `dispatch_ort`
+    /// does, and only that.
     ///
-    /// Host wall time. On a Vulkan EP this covers upload, record-or-replay, submit, fence wait
-    /// and readback — i.e. it is the end-to-end latency of the subgraph *as the caller
-    /// experiences it*, which is the number a user pays, and which is deliberately not called
-    /// "GPU time" anywhere.
+    /// # This is not the `Compute` callback
+    ///
+    /// Morpheus's 2026-08-07 ruling keeps this span's name and pins its definition: it is the
+    /// dispatch region, a **sibling** of [`Phase::BindCheck`] inside [`SPAN_COMPUTE_CALL`], not
+    /// the whole callback. The name is older than the distinction and was read as the callback
+    /// for most of this project's life, which is precisely how a 25 ms region outside it stayed
+    /// invisible: it was outside the only bracket anything was bucketed against.
+    ///
+    /// Host wall time. It covers upload, record-or-replay, submit, fence wait and readback — the
+    /// end-to-end latency of the dispatch *as `dispatch_ort`'s caller experiences it*, which is
+    /// deliberately not called "GPU time" anywhere. What it does **not** cover is everything
+    /// `compute_impl` does on either side of the `dispatch_ort` call; that is the anchor's job,
+    /// and the residual is reported as `unattributed_in_call_ms`.
     pub fn subgraph_region(&self, node_count: usize) -> SpanGuard {
         if !self.is_enabled() {
             return self.ctx.span(SPAN_SUBGRAPH, "ep");
@@ -862,7 +1067,8 @@ impl VulkanTracer {
         )
     }
 
-    /// Span around the *whole* `Compute` callback, opened before anything else in it.
+    /// **Tier 0** — the bucketing anchor. Span around the *whole* `Compute` callback, opened
+    /// before anything else in it.
     ///
     /// [`subgraph_region`](Self::subgraph_region) opens inside `dispatch_ort`, which is not the
     /// entry point ORT calls, so it cannot see anything the callback does on either side of that
@@ -874,9 +1080,9 @@ impl VulkanTracer {
     /// That region was **not the EP**, and the evidence for that is an A/B rather than a
     /// before/after. A before/after across two EP builds would confound the build change with
     /// the change under test; on one release build, one workload and one machine, varying only
-    /// `ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS`, the region outside `vulkan.subgraph` reads
-    /// **25.269 ms** with the benchmark harness's counters-file dump retained inside the timed
-    /// region and **0.056 ms** without it, while `vulkan.subgraph` itself barely moves
+    /// `ONNXRUNTIME_EP_VULKAN_BENCH_KEEP_COUNTERS`, the region inside the callback that no phase
+    /// covers reads **25.269 ms** with the benchmark harness's counters-file dump retained inside
+    /// the timed region and **0.056 ms** without it, while `vulkan.subgraph` itself barely moves
     /// (30.509 ms against 32.627 ms). The dump runs from `counters::record_dispatches` after
     /// `dispatch_ort` returns — the side the region is on. Both arms are committed:
     /// `bench/results/_cuda69/profile_prefill_1_counters_retained.json` and
@@ -893,16 +1099,25 @@ impl VulkanTracer {
     /// same callback in the same process.
     ///
     /// This span is **structural, not a [`Phase`]**: it is `cat == "ep"` like `vulkan.subgraph`,
-    /// it is never summed into any sibling total, and it adds no level to the phase tree. It
-    /// exists so a reduction has an anchor that brackets the *whole* callback and can therefore
-    /// state how much of it no phase covers, instead of charging that time to whatever span it
-    /// can see.
+    /// and it is never summed into any total. It is the anchor every phase is bucketed against,
+    /// which is what makes "no phase may live outside the anchor" a checkable statement rather
+    /// than a wish — see [`Phase::containment`].
     ///
-    /// It does not by itself explain the region it exposes. What is measured is the size and the
-    /// side of the region; naming its cause needs a separate instrument, and
-    /// `bench/cuda_profile.py` reports it as `outside_subgraph_us` — measured and unattributed.
+    /// It does not by itself explain the region it exposes. Tier 1 decomposes it into
+    /// `vulkan.bind_check` and `vulkan.subgraph`; whatever neither covers is reported as
+    /// `unattributed_in_call_ms` by `bench/cuda_profile.py` — **measured and attributed to
+    /// nothing**. In particular it is never attributed to `bind_check`, which measured 0.073 ms
+    /// against a 27 ms region and runs on the wrong side of `dispatch_ort` to have explained it.
     pub fn compute_region(&self) -> SpanGuard {
         self.ctx.span(SPAN_COMPUTE_CALL, "ep")
+    }
+
+    /// **Tier 1** — the bind-validation phase, opened in `compute_impl` before `dispatch_ort`.
+    ///
+    /// A thin wrapper over [`phase`](Self::phase) that exists so the call site in `ep.rs` names
+    /// the tier it is placing work into rather than picking a `Phase` variant and hoping.
+    pub fn bind_check_region(&self) -> Option<PhaseGuard> {
+        self.phase(Phase::BindCheck)
     }
 
     /// Start a timing phase: a span plus a summary fold on drop. `None` (zero cost) when nothing
@@ -912,21 +1127,30 @@ impl VulkanTracer {
         if !self.active() {
             return None;
         }
-        let span = self
-            .ctx
-            .span(format!("vulkan.{}", phase.as_str()), "ep.phase")
-            .with_args(
-                Args::new()
-                    .with(ARG_DEVICE, DEVICE_HOST)
-                    .with("caveat", phase.caveat())
-                    // Machine-readable parentage. An aggregator that sums `ph:"X"` spans by name
-                    // must skip any span carrying `nested_in`, or it attributes a child's cost to
-                    // its parent and reports a memcpy as command-buffer recording.
-                    .with(
-                        "nested_in",
-                        phase.nested_in().map(Phase::as_str).unwrap_or("none"),
-                    ),
-            );
+        let span = self.ctx.span(phase.span_name(), "ep.phase").with_args(
+            Args::new()
+                .with(ARG_DEVICE, DEVICE_HOST)
+                .with("caveat", phase.caveat())
+                // Machine-readable parentage. An aggregator that sums `ph:"X"` spans by name
+                // must skip any span carrying `nested_in`, or it attributes a child's cost to
+                // its parent and reports a memcpy as command-buffer recording.
+                .with(
+                    "nested_in",
+                    phase.nested_in().map(Phase::as_str).unwrap_or("none"),
+                )
+                // The tier, and the span this phase must lie inside. Emitted so a reducer can
+                // check containment against the *right* parent without carrying its own copy
+                // of the tree: a tier-1 phase checked against `vulkan.subgraph` reads as an
+                // escaped span, and a tier-2 phase checked against the anchor reads as
+                // contained when it is not.
+                //
+                // A STRING, NOT A NUMBER, and session scope is the word `session` rather than
+                // a numeric sentinel. A sentinel (`-1`, `u64::MAX`) in a numeric field is
+                // addable, and the one thing that must never happen to a tier is being summed
+                // or compared against a tier it does not share a parent with.
+                .with("tier", phase.tier_label())
+                .with("parent_span", phase.parent_span().unwrap_or("none")),
+        );
         Some(PhaseGuard {
             phase,
             start: Instant::now(),
@@ -1307,16 +1531,25 @@ impl VulkanTracer {
         if !s.phase_us.is_empty() {
             // NESTING MATTERS AND THIS TABLE USED TO HIDE IT.
             //
-            // `compile`, `record`, `submit` and `fence_wait` are SIBLINGS — they partition the
-            // host thread's wall time. `upload` and `readback` are CHILDREN OF `record`: the
-            // staging memcpy is timed inside the `Phase::Record` guard (see `vk/session.rs`) and
-            // fed here through `record_transfer`. Summing this column therefore double-counts
-            // transfer, and printing it as a flat list invited exactly that.
+            // `compile`, `prepack`, `bind_check`, `record`, `submit` and `fence_wait` are all
+            // TOP-LEVEL PHASES — no one of them is inside another, so their wall times are
+            // disjoint and may be added. They are NOT all in the same tier: `compile`/`prepack`
+            // are session-scope (ORT's `Compile()` callback, outside any `Compute`), `bind_check`
+            // is tier 1 (inside `vulkan.compute_call`, beside `vulkan.subgraph`) and
+            // `record`/`submit`/`fence_wait` are tier 2 (inside `vulkan.subgraph`). The tier is
+            // printed per row so this column is not mistaken for a single-parent decomposition:
+            // adding tier 1 and tier 2 together and comparing the result to one span is a
+            // category error, and `bench/cuda_profile.py` does the per-tier reduction properly.
+            //
+            // `upload` and `readback` are CHILDREN OF `record`: the staging memcpy is timed
+            // inside the `Phase::Record` guard (see `vk/session.rs`) and fed here through
+            // `record_transfer`. Summing this column therefore double-counts transfer, and
+            // printing it as a flat list invited exactly that.
             //
             // Children are printed indented under their parent with an explicit marker, and the
-            // sibling total is computed and printed so nobody has to add the column by hand.
-            // Both the child set and the sibling total are DERIVED from `Phase::nested_in()`
-            // rather than restated here. They used to be two hardcoded lists, which is the same
+            // top-level total is computed and printed so nobody has to add the column by hand.
+            // Both the child set and that total are DERIVED from `Phase::containment()` rather
+            // than restated here. They used to be two hardcoded lists, which is the same
             // duplicate-truth defect one level down: changing the bracketing in `vk::session`
             // would have had to be remembered in three places, and the one that gets forgotten is
             // the one that prints.
@@ -1344,7 +1577,7 @@ impl VulkanTracer {
                     continue;
                 };
                 out.push_str(&format!(
-                    "              {}{:<11} {:>10} us (x{}) — {}\n",
+                    "              {}{:<11} {:>10} us (x{}) — [tier {}] {}\n",
                     if phase.is_sibling() {
                         "    "
                     } else {
@@ -1353,6 +1586,10 @@ impl VulkanTracer {
                     phase.as_str(),
                     us,
                     calls,
+                    match phase.tier() {
+                        Some(t) => t.to_string(),
+                        None => "session".to_string(),
+                    },
                     phase.caveat()
                 ));
             }
@@ -1933,35 +2170,197 @@ mod tests {
         assert_eq!(Phase::FenceWait.as_str(), "fence_wait");
     }
 
-    /// No structural span name may be a prefix of another trace name.
+    /// No trace name may be a prefix of another name **that a matcher could see beside it**.
     ///
     /// Every subgraph matcher in `bench/` matched with `startswith`. A whole-`Compute` span named
     /// `vulkan.compute` was therefore captured by the same matcher as the `record_path()` instants
     /// `vulkan.compute[REPLAY]` — separable only by `cat`/`ph`, which the matchers did not read.
     /// The two vocabularies would have been mixed inside one reduction with nothing raising.
     ///
-    /// This is the falsifier for the whole class, not for that one pair: it fails if any future
-    /// span, phase or instant name is a prefix of any other.
+    /// # Why this is scoped by `cat` and not global
+    ///
+    /// Morpheus's ruling orders the instant named `vulkan.record_path`. `vulkan.record` is a
+    /// phase. One is a literal prefix of the other, so a *global* prefix-freedom rule is
+    /// **unsatisfiable given the ordered name** — there is no way to obey both directives at
+    /// once, and silently weakening the rule to make it pass would be exactly the "silence by
+    /// adding a list" the ruling forbids.
+    ///
+    /// The rule is therefore scoped to what actually creates the hazard. A matcher picks
+    /// candidates out of one event stream by `cat`; two names in *different* `cat`s are never in
+    /// the same candidate set, so neither can shadow the other however it matches. Within a
+    /// `cat`, prefix-freedom is enforced absolutely. Any cross-`cat` pair where one name prefixes
+    /// the other must be exactly the pairs enumerated below, so a new one cannot appear quietly.
+    ///
+    /// Boundary-tokenised prefixing (`a` prefixes `b` only at a `.`/`[` boundary) was considered
+    /// and rejected: it admits `vulkan.compute` / `vulkan.compute_call`… no, it admits
+    /// `vulkan.compute` / `vulkan.compute[REPLAY]`, which is the original defect. Too weak.
+    ///
+    /// **Flagged for Morpheus.** This is the one directive that could not be satisfied as
+    /// written; the resolution above is mine, not the ruling's, and is recorded as D12.
     #[test]
-    fn no_trace_name_is_a_prefix_of_another() {
-        let mut names: Vec<String> = vec![
-            SPAN_COMPUTE_CALL.to_string(),
-            SPAN_SUBGRAPH.to_string(),
-            format!("{INSTANT_RECORD_PATH}["),
-            "vulkan.gpu.".to_string(),
+    fn no_trace_name_is_a_prefix_of_another_within_its_category() {
+        // (cat, name-as-a-matcher-would-see-it).
+        let mut names: Vec<(&str, String)> = vec![
+            ("ep", SPAN_COMPUTE_CALL.to_string()),
+            ("ep", SPAN_SUBGRAPH.to_string()),
+            ("ep.path", format!("{INSTANT_RECORD_PATH}[")),
+            ("gpu", "vulkan.gpu.".to_string()),
         ];
-        names.extend(Phase::ALL.iter().map(|p| format!("vulkan.{}", p.as_str())));
-        for a in &names {
-            for b in &names {
-                if std::ptr::eq(a, b) {
+        names.extend(
+            Phase::ALL
+                .iter()
+                .map(|p| ("ep.phase", p.span_name().to_string())),
+        );
+
+        // The only cross-category prefix pairs that are allowed to exist, as (prefix, longer).
+        // Adding to this list is not a way to make a *within*-category collision pass: the
+        // within-category assertion below never consults it.
+        let known_cross_cat: &[(&str, &str)] = &[("vulkan.record", "vulkan.record_path[")];
+
+        for (cat_a, a) in &names {
+            for (cat_b, b) in &names {
+                if a == b && cat_a == cat_b {
                     continue;
                 }
+                if !b.starts_with(a.as_str()) || a == b {
+                    continue;
+                }
+                if cat_a == cat_b {
+                    panic!(
+                        "{b:?} starts with {a:?} and both are cat={cat_a:?}; a matcher over that \
+                         category cannot tell them apart"
+                    );
+                }
                 assert!(
-                    !(a != b && b.starts_with(a.as_str())),
-                    "{b:?} starts with {a:?}; a prefix matcher cannot tell them apart"
+                    known_cross_cat.contains(&(a.as_str(), b.as_str())),
+                    "{b:?} (cat={cat_b}) starts with {a:?} (cat={cat_a}). Cross-category \
+                     prefixing is only safe because no matcher sees both in one candidate set. \
+                     If you are adding a name, prefer one that is prefix-free outright; if you \
+                     cannot, add it here AND prove every consumer selects on `cat` first."
                 );
             }
         }
+        // The exemption is not vacuous — if the ordered rename is ever undone, this goes red and
+        // the rule tightens back to global prefix-freedom on its own.
+        assert_eq!(INSTANT_RECORD_PATH, "vulkan.record_path");
+        assert_eq!(Phase::Record.span_name(), "vulkan.record");
+    }
+
+    /// The tier tree is declared once, in [`Phase::containment`], and everything else derives.
+    ///
+    /// Morpheus's ruling: **no phase may live outside the bucketing anchor**. That is checkable
+    /// only if every phase declares which span contains it, so this asserts the declaration is
+    /// total — every phase is either call-scope with a tier and a parent span, or session-scope
+    /// and explicitly so. There is no third state and no phase that simply is not mentioned.
+    #[test]
+    fn every_phase_declares_a_tier_or_is_explicitly_session_scope() {
+        for p in Phase::ALL {
+            match p.containment() {
+                Containment::SessionScope => {
+                    assert_eq!(p.tier(), None, "{p:?} is session-scope but claims a tier");
+                    assert_eq!(p.parent_span(), None);
+                    assert_eq!(p.tier_label(), "session");
+                    assert!(
+                        matches!(p, Phase::Compile | Phase::Prepack),
+                        "{p:?} is session-scope. That is only admissible for phases ORT invokes \
+                         outside Compute(); a phase that runs inside Compute() and is declared \
+                         session-scope has escaped the anchor"
+                    );
+                }
+                _ => {
+                    let tier = p.tier().unwrap_or_else(|| panic!("{p:?} has no tier"));
+                    assert!(
+                        (1..=3).contains(&tier),
+                        "{p:?} is tier {tier}; the declared tree is 3 deep"
+                    );
+                    assert_ne!(p.tier_label(), "unknown", "{p:?} has an undeclared tier");
+                    assert_ne!(p.tier_label(), "session");
+                }
+            }
+        }
+        // The ruling's tree, spelled out. If the bracketing in `ep.rs` or `vk/session.rs` moves,
+        // one of these fails rather than the tree silently re-shaping.
+        assert_eq!(Phase::BindCheck.tier(), Some(1));
+        assert_eq!(Phase::BindCheck.parent_span(), Some(SPAN_COMPUTE_CALL));
+        for p in [Phase::Record, Phase::Submit, Phase::FenceWait] {
+            assert_eq!(p.tier(), Some(2), "{p:?}");
+            assert_eq!(p.parent_span(), Some(SPAN_SUBGRAPH), "{p:?}");
+        }
+        for p in [
+            Phase::Upload,
+            Phase::Readback,
+            Phase::DescAlloc,
+            Phase::PipelineLookup,
+            Phase::CmdUpload,
+        ] {
+            assert_eq!(p.tier(), Some(3), "{p:?}");
+            assert_eq!(p.parent_span(), Some(Phase::Record.span_name()), "{p:?}");
+        }
+    }
+
+    /// `tier()` must be a function of `containment()` — never a second, driftable declaration.
+    #[test]
+    fn tier_is_derived_from_containment_and_cannot_disagree_with_it() {
+        for p in Phase::ALL {
+            let expected = match p.containment() {
+                Containment::SessionScope => None,
+                Containment::Anchor => Some(1),
+                Containment::DispatchRegion => Some(2),
+                Containment::Phase(parent) => parent.tier().map(|t| t + 1),
+            };
+            assert_eq!(p.tier(), expected, "{p:?}");
+            // A phase nested in another phase inherits that phase's scope; it cannot be inside a
+            // session-scope phase and also inside the anchor.
+            if let Containment::Phase(parent) = p.containment() {
+                assert_eq!(
+                    p.tier().is_some(),
+                    parent.tier().is_some(),
+                    "{p:?} and its parent {parent:?} disagree about being inside the anchor"
+                );
+            }
+        }
+    }
+
+    /// The span name a phase emits and the tag it is summed under must not drift apart.
+    #[test]
+    fn span_name_is_exactly_vulkan_plus_as_str() {
+        for p in Phase::ALL {
+            assert_eq!(p.span_name(), format!("vulkan.{}", p.as_str()), "{p:?}");
+        }
+    }
+
+    /// The two structural spans are not phases, and `bind_check` is one again.
+    ///
+    /// `Phase::BindCheck` was added to close a 23 ms blind spot, measured a warm median of
+    /// **0.073 ms** — 0.27% of the 27.0 ms region it was documented as explaining — and was then
+    /// removed outright. Removing it was over-correction: the *claim* was false, the
+    /// *measurement* was not, and deleting the instrument means the region between entering
+    /// `Compute` and entering `dispatch_ort` becomes unmeasured rather than measured-and-small.
+    /// Morpheus's ruling restores it as tier 1 beside the dispatch region. What must never come
+    /// back is the attribution: the undecomposed remainder is reported as
+    /// `unattributed_in_call_ms`, never charged to `bind_check`.
+    #[test]
+    fn the_structural_spans_are_not_phases_and_bind_check_is_one() {
+        for p in Phase::ALL {
+            assert_ne!(
+                p.span_name(),
+                SPAN_COMPUTE_CALL,
+                "the whole-Compute bracket must not be a summable phase"
+            );
+            assert_ne!(p.span_name(), SPAN_SUBGRAPH);
+        }
+        assert_eq!(Phase::ALL.len(), 11);
+        assert!(Phase::ALL.contains(&Phase::BindCheck));
+        // The withdrawn claim, spelled out so it cannot be reinstated by a well-meaning edit.
+        let c = Phase::BindCheck.caveat();
+        assert!(
+            !c.contains("23 ms") && !c.contains("27 ms") && !c.contains("explains"),
+            "bind_check must not be documented as explaining the undecomposed region: {c}"
+        );
+        assert!(
+            c.contains("unattributed_in_call_ms"),
+            "bind_check's caveat must name where the remainder actually goes: {c}"
+        );
     }
 
     /// The span-vocabulary table in this module's header must list every name the module emits.
@@ -1989,27 +2388,6 @@ mod tests {
                 "{name} is emitted but not declared in the span vocabulary table"
             );
         }
-    }
-
-    /// `compute_region` brackets the callback; it must not be modelled as a phase.
-    ///
-    /// `Phase::BindCheck` was added to this enum to close a 23 ms blind spot and measured a warm
-    /// median of **0.073 ms** — 0.27% of the 27.0 ms region it was documented as explaining. It
-    /// was also the first sibling phase structurally *outside* `vulkan.subgraph`, which the
-    /// containment contract in `docs/PERF.md` and `bench/phases.py` does not admit, so every
-    /// traced run self-reported a phase-tree disagreement. The region is now bracketed by a
-    /// structural span instead, which needs no place in the phase tree.
-    #[test]
-    fn the_compute_call_bracket_is_not_a_phase() {
-        for p in Phase::ALL {
-            assert_ne!(
-                format!("vulkan.{}", p.as_str()),
-                SPAN_COMPUTE_CALL,
-                "the whole-Compute bracket must not be a summable phase"
-            );
-            assert_ne!(format!("vulkan.{}", p.as_str()), SPAN_SUBGRAPH);
-        }
-        assert_eq!(Phase::ALL.len(), 10);
     }
 
     #[test]

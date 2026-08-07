@@ -4506,6 +4506,7 @@ def test_hardcoded_foundry_paths_negative_control_all_arms_pass():
 
 sys.path.insert(0, str(CI_DIR))
 import phi35_identity_audit as _identity_audit  # noqa: E402
+import check_hardcoded_foundry_paths as _foundry_paths  # noqa: E402
 
 
 def _repo_facts() -> dict:
@@ -4557,6 +4558,49 @@ def _writes_json_output(path: Path) -> bool:
     counted `print(json.dumps(doc))` as an evidence write."""
     rel = path.relative_to(REPO_ROOT).as_posix()
     return _repo_facts()[rel].writes_json_record
+
+
+def test_the_two_tree_screens_agree_on_what_a_virtualenv_is():
+    """`ci/check_hardcoded_foundry_paths.py` and `ci/phi35_identity_audit.py` both claim to walk
+    "the tree". They are standalone scripts CI runs separately and neither imports the other, so
+    the definition is duplicated on purpose — and duplicated definitions drift. This is the guard
+    the comment on each copy promises.
+    """
+    assert _identity_audit.EXCLUDED_DIRS == _foundry_paths._EXCLUDED_DIRS, (
+        "the two screens disagree about which directories are not source")
+    assert (_identity_audit.is_virtualenv.__doc__ or "").split("\n")[0] == \
+           (_foundry_paths.is_virtualenv.__doc__ or "").split("\n")[0], (
+        "the two virtualenv rules no longer state the same rule")
+
+
+@pytest.mark.parametrize("screen", ["phi35_identity_audit", "check_hardcoded_foundry_paths"])
+def test_a_local_virtualenv_is_not_part_of_the_tree_whatever_it_is_called(tmp_path, screen):
+    """A local environment must not be able to decide whether a lane check passes.
+
+    `EXCLUDED_DIRS` matches directory names exactly, so it excludes `.venv` and misses
+    `.venv-cu12` — the environment this repo's CUDA benchmarking actually uses, sitting in the
+    worktree root beside it. Both screens then walked ~30 000 third-party files, and
+    `phi35_identity_audit` died with `RecursionError` inside `ast.NodeVisitor` on a vendored
+    module, failing six lane tests that have nothing to do with the repository's contents.
+
+    The fix is the PEP 405 marker file rather than another name in the tuple, so the arbitrary
+    name below is the point of the test: `totally-not-a-venv` is excluded because it *is* one.
+    """
+    mod = _identity_audit if screen == "phi35_identity_audit" else _foundry_paths
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "real.py").write_text("x = 1\n", encoding="utf-8")
+    env = tmp_path / "totally-not-a-venv"
+    (env / "Lib" / "site-packages" / "vendored").mkdir(parents=True)
+    (env / "pyvenv.cfg").write_text("home = C:/python\n", encoding="utf-8")
+    (env / "Lib" / "site-packages" / "vendored" / "deep.py").write_text(
+        "y = " + "(" * 40 + "1" + ")" * 40 + "\n", encoding="utf-8")
+    found = {rel for _, rel in mod.iter_python_files(tmp_path)}
+    assert found == {"src/real.py"}, (
+        f"{screen} walked into a virtualenv it did not recognise by name: {sorted(found)}")
+    # And the rule is not "skip any directory with a Lib/ in it": drop the marker and the
+    # same tree is scanned again. Without this the test would pass for the wrong reason.
+    (env / "pyvenv.cfg").unlink()
+    assert len({rel for _, rel in mod.iter_python_files(tmp_path)}) == 2
 
 
 def test_phi35_model_reader_discovery_is_repo_wide_not_bench_results_only():

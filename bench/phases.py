@@ -52,13 +52,16 @@ THE INSTRUMENTS THAT GO RED
 Per R9 (``DESIGN.md`` §10.0.1), every number below is paired with something that fails if it is
 false. These are checks, not statistics:
 
-* :func:`phase_containment` — every phase span must lie inside a ``vulkan.subgraph`` span, and the
-  phases inside one subgraph must not sum to more than the subgraph itself. Goes red if the
-  nesting assumption used to attribute spans to islands is wrong. It checks **two tiers
-  separately** (siblings against their subgraph, children against their own ``record`` parent)
-  because summing a parent together with its children against the grandparent is not a
-  containment violation, it is an arithmetic mistake in the checker — and that mistake reported
-  RED for a whole day. See :data:`CONTAINMENT_BASIS` and the ``ERROR`` state below.
+* :func:`phase_containment` — every phase span must lie inside the tier-0 bucketing anchor
+  ``vulkan.compute_call``, and the phases in one tier must not sum to more than that tier's own
+  parent. Goes red if the nesting assumption used to attribute spans to islands is wrong. It
+  checks **each tier separately, against its own parent** — tier 1 (``bind_check``, beside
+  ``vulkan.subgraph``) against the anchor, tier 2 (``record``/``submit``/``fence_wait``) against
+  their ``vulkan.subgraph``, tier 3 against their own ``record`` — because summing a parent
+  together with its children against the grandparent is not a containment violation, it is an
+  arithmetic mistake in the checker, and that mistake reported RED for a whole day. Session-scope
+  phases (``compile``/``prepack``) are checked **positively**, as lying outside every anchor,
+  rather than skipped. See :data:`CONTAINMENT_BASIS` and the ``ERROR`` state below.
 * :func:`gpu_containment` — per submission, GPU busy time must be ≤ ``submit`` + ``fence_wait``.
   The CPU was blocked on the fence for that long; the GPU cannot have been busy longer. Goes red
   if the tick→nanosecond conversion **over**-scales, which is what a wrongly applied
@@ -89,20 +92,58 @@ from pathlib import Path
 #: ``Phase::BindCheck`` was added to ``trace.rs`` and not to this tuple, so :func:`phase_spans`
 #: dropped every one of its spans and the module of record for ``docs/PERF.md``'s phase table
 #: could not see a phase that existed.
-HOST_PHASES = ("compile", "prepack", "record", "upload", "desc_alloc", "pipeline_lookup",
-               "cmd_upload", "submit", "fence_wait", "readback")
+HOST_PHASES = ("compile", "prepack", "bind_check", "record", "upload", "desc_alloc",
+               "pipeline_lookup", "cmd_upload", "submit", "fence_wait", "readback")
+
+#: Which span each phase must lie inside, and how deep — the ruled tier tree.
+#:
+#: Tier 0 is ``vulkan.compute_call``, the bucketing anchor. **No phase may live outside it.**
+#: ``compile`` and ``prepack`` are the sole exception and are not an exemption: ORT invokes them
+#: from ``Compile()``, before any ``Compute`` span exists, so they are declared ``None`` and
+#: :func:`phase_containment` asserts a *positive* fact about them — that they lie outside every
+#: anchor — rather than skipping them. A phase that runs inside ``Compute`` and is declared
+#: ``None`` here still fails.
+#:
+#: Derived independently in ``rust/src/trace.rs`` from ``Phase::containment()``;
+#: ``bench/test_trace_vocabulary.py`` asserts the two agree in **both** directions.
+PHASE_TIER = {
+    "compile": None,
+    "prepack": None,
+    "bind_check": 1,
+    "record": 2,
+    "submit": 2,
+    "fence_wait": 2,
+    "upload": 3,
+    "readback": 3,
+    "desc_alloc": 3,
+    "pipeline_lookup": 3,
+    "cmd_upload": 3,
+}
+
+#: Phases ORT invokes outside `Compute()`, so structurally outside every anchor.
+#:
+#: Not an exemption list. :func:`phase_containment` asserts these lie **outside every**
+#: ``vulkan.compute_call``, which is a claim that can fail — and any phase not named here must be
+#: inside one. The ruling ("no phase may live outside the bucketing anchor") is enforced by the
+#: *pair* of assertions, not by skipping the awkward two.
+SESSION_SCOPE_PHASES = tuple(p for p, t in PHASE_TIER.items() if t is None)
 
 #: ``cat == "ep"`` **structural** spans. Brackets, not phases.
 #:
-#: ``vulkan.compute_call`` wraps the whole ORT ``Compute`` callback; ``vulkan.subgraph`` opens
-#: inside ``dispatch_ort`` and is contained by it. Neither belongs in :data:`HOST_PHASES` and
-#: neither may enter any total: adding a bracket to the sum of the things it brackets is exactly
-#: the arithmetic mistake :func:`phase_containment`'s ``ERROR`` arm exists to catch.
+#: ``vulkan.compute_call`` is **tier 0**, the bucketing anchor: it wraps the whole ORT ``Compute``
+#: callback and is opened before anything else in it. ``vulkan.subgraph`` is **tier 1**, the
+#: dispatch region: it opens inside ``dispatch_ort`` and is contained by the anchor. Neither
+#: belongs in :data:`HOST_PHASES` and neither may enter any total: adding a bracket to the sum of
+#: the things it brackets is exactly the arithmetic mistake :func:`phase_containment`'s ``ERROR``
+#: arm exists to catch.
 #:
-#: They are named here so the distinction is written down rather than implied by absence. The
-#: containment contract below is unchanged by ``vulkan.compute_call`` existing: every *phase*
-#: span still lies inside a ``vulkan.subgraph`` span, because no phase was added outside one.
-#: `Phase::BindCheck` would have been the first, which is why it is not a phase.
+#: They are named here so the distinction is written down rather than implied by absence. Tier 1
+#: holds one phase (``bind_check``) *beside* ``vulkan.subgraph``, not inside it, which is why the
+#: containment contract is stated per tier: a decomposition of the anchor is
+#: ``bind_check + subgraph + unattributed_in_call``, and a decomposition of ``vulkan.subgraph`` is
+#: ``record + submit + fence_wait``. Checking a tier-1 phase against ``vulkan.subgraph`` reports
+#: an escaped span that is not escaped, which is the refusal this harness used to emit on every
+#: traced run.
 STRUCTURAL_SPANS = ("vulkan.compute_call", "vulkan.subgraph")
 
 #: Phases the EP emits *nested inside* another phase's span.
@@ -152,10 +193,13 @@ def is_leaf_phase(phase: str) -> bool:
 
 #: `X` (complete) events on the host lane that bound one `Compute` call.
 #:
-#: The **inner** bracket, and deliberately so: `phase_containment` checks phases against the
-#: region `dispatch_ort` owns, which is the region every phase span is opened in. See
-#: :data:`STRUCTURAL_SPANS` for the outer one.
+#: The **tier-1 dispatch region**, and deliberately named separately from the anchor: tier-2
+#: phases (``record``/``submit``/``fence_wait``) are checked against this, and the tier-1 phase
+#: (``bind_check``) is checked against :data:`ANCHOR` instead. See :data:`STRUCTURAL_SPANS`.
 SUBGRAPH = "vulkan.subgraph"
+
+#: The tier-0 bucketing anchor: the whole ORT ``Compute`` callback.
+ANCHOR = "vulkan.compute_call"
 
 #: Prefix of a device-lane span produced from `VkQueryPool` results.
 GPU_PREFIX = "vulkan.gpu."
@@ -226,21 +270,60 @@ def subgraph_spans(events: "list[dict]") -> "list[dict]":
 
 
 def phase_spans(events: "list[dict]") -> "list[dict]":
-    """Every ``vulkan.<phase>`` host span, in start order, carrying the EP's own caveat string."""
+    """Every ``vulkan.<phase>`` host span, in start order, carrying the EP's own caveat string.
+
+    ``tier`` is read from the span's own ``tier`` arg when the producing build emitted one, and
+    falls back to :data:`PHASE_TIER` otherwise — traces recorded before the tier model existed are
+    still readable, and a phase this module does not know is left at ``None`` rather than guessed
+    into a tier. ``tier_source`` records which of the two answered, so a reduction can say whether
+    the tree it checked came from the artifact or from this checkout's expectation.
+    """
     names = {f"vulkan.{p}": p for p in HOST_PHASES}
-    out = [
-        {
-            "phase": names[e["name"]],
+    out = []
+    for e in events:
+        if e.get("ph") != "X" or e.get("name") not in names:
+            continue
+        phase = names[e["name"]]
+        a = e.get("args") or {}
+        declared = a.get("tier")
+        if isinstance(declared, str) and declared.isdigit():
+            tier, source = int(declared), "trace"
+        elif isinstance(declared, int) and not isinstance(declared, bool):
+            tier, source = declared, "trace"
+        elif declared == "session":
+            tier, source = None, "trace"
+        else:
+            tier, source = PHASE_TIER.get(phase), "expected"
+        out.append({
+            "phase": phase,
             "ts": e["ts"],
             "dur": e.get("dur", 0),
             "end": e["ts"] + e.get("dur", 0),
-            "caveat": (e.get("args") or {}).get("caveat"),
-            "nested_in": (e.get("args") or {}).get("nested_in"),
-        }
+            "caveat": a.get("caveat"),
+            "nested_in": a.get("nested_in"),
+            "tier": tier,
+            "tier_source": source,
+            "parent_span": a.get("parent_span"),
+        })
+    out.sort(key=lambda s: s["ts"])
+    return out
+
+
+def anchor_spans(events: "list[dict]") -> "list[dict]":
+    """The tier-0 ``vulkan.compute_call`` brackets, in start order.
+
+    One per ORT ``Compute`` callback. Every call-scope phase must lie inside one of these, and
+    every session-scope phase must lie outside all of them — see :func:`phase_containment`.
+    """
+    out = [
+        {"ts": e["ts"], "dur": e.get("dur", 0), "end": e["ts"] + e.get("dur", 0),
+         "tid": e.get("tid")}
         for e in events
-        if e.get("ph") == "X" and e.get("name") in names
+        if e.get("ph") == "X" and e.get("name") == ANCHOR
     ]
     out.sort(key=lambda s: s["ts"])
+    for i, s in enumerate(out):
+        s["index"] = i
     return out
 
 
@@ -786,27 +869,46 @@ def partition_stats(events: "list[dict]") -> dict:
 # ---------------------------------------------------------------------------
 
 def phase_containment(subgraphs: "list[dict]", siblings: "list[dict]",
-                      nested: "list[dict] | None" = None) -> dict:
-    """Two tiers of containment, each checked against its own parent. R13 three-state.
+                      nested: "list[dict] | None" = None,
+                      anchors: "list[dict] | None" = None) -> dict:
+    """Containment checked **per tier, against that tier's own parent**. R13 three-state.
 
-    **Tier 1 — siblings against their subgraph.** The phases that get summed (``record``,
-    ``submit``, ``fence_wait``, …) are wall-clock intervals opened inside one ``Compute`` call.
-    They may not sum past the ``vulkan.subgraph`` span that brackets that call, and none of them
-    may fall outside every subgraph.
+    Morpheus's ruling: *no phase may live outside the bucketing anchor.* That is only checkable
+    if every tier states which span contains it, so this checks four things and never mixes them.
 
-    **Tier 2 — children against their own ``record``.** ``desc_alloc``, ``pipeline_lookup`` and
-    ``cmd_upload`` are real ``ph:"X"`` spans *inside* ``vulkan.record``. Their parent is
+    **Tier 0 — every call-scope phase inside an anchor.** ``vulkan.compute_call`` brackets the
+    whole ORT ``Compute`` callback. Any phase with a tier must lie inside one. This is the ruling
+    stated as an assertion rather than as prose.
+
+    **Session scope, checked positively.** ``compile`` and ``prepack`` run in ORT's ``Compile()``
+    callback, so no anchor exists yet when they open. They are not *skipped*: this asserts they
+    lie **outside every anchor**, which is a fact that can fail. A phase that runs inside
+    ``Compute`` and is declared session-scope therefore still goes red — which is what makes this
+    a rule rather than an exemption list.
+
+    **Tier 1 — ``bind_check`` against the anchor, beside ``vulkan.subgraph``.** These two
+    partition the anchor with a remainder; the remainder is `unattributed_in_call_ms` in
+    ``bench/cuda_profile.py`` and is attributed to nothing. Checking ``bind_check`` against
+    ``vulkan.subgraph`` — the previous behaviour — reports an escaped span on every traced run,
+    because it *is* outside the subgraph and is supposed to be.
+
+    **Tier 2 — ``record``/``submit``/``fence_wait`` against their subgraph.** They may not sum
+    past the ``vulkan.subgraph`` span that brackets them, and none may fall outside every
+    subgraph.
+
+    **Tier 3 — children against their own ``record``.** ``desc_alloc``, ``pipeline_lookup``,
+    ``cmd_upload``, ``upload`` and ``readback`` are inside ``vulkan.record``. Their parent is
     ``record``, not the subgraph. Checking them against the subgraph while ``record`` is also in
     the sum asks the subgraph to contain the same microseconds twice.
 
     # The three terminal states (R13)
 
-    ``PASS`` — both tiers close.
+    ``PASS`` — every tier closes.
     ``FAIL`` — a real containment violation in the EP or in the attribution.
     ``ERROR`` — **this checker was handed the wrong set of spans**, so it is not entitled to a
-    verdict at all. Specifically: a span declaring itself nested appearing in the sibling list.
-    An instrument error is not a detection, and reporting it as one costs the guard its
-    authority.
+    verdict at all. Specifically: a span declaring itself nested appearing in the sibling list, or
+    tier-1 phases handed in with no anchor spans to check them against. An instrument error is not
+    a detection, and reporting it as one costs the guard its authority.
 
     # Why the ERROR arm exists
 
@@ -846,10 +948,92 @@ def phase_containment(subgraphs: "list[dict]", siblings: "list[dict]",
                        "a detection — this is neither a pass nor a failure."),
         }
 
-    orphans = [p for p in siblings
-               if p["subgraph_index"] is None and p["phase"] not in ("compile", "prepack")]
+    def tier_of(p: dict) -> "int | None":
+        t = p.get("tier")
+        return t if t is not None else PHASE_TIER.get(p["phase"])
+
+    tier1 = [p for p in siblings if tier_of(p) == 1]
+    tier2 = [p for p in siblings if tier_of(p) == 2]
+    session = [p for p in siblings if tier_of(p) is None]
+    untiered = sorted({p["phase"] for p in siblings
+                       if tier_of(p) is None and p["phase"] not in SESSION_SCOPE_PHASES})
+
+    if untiered:
+        return {
+            "red": False,
+            "state": "ERROR",
+            "basis": CONTAINMENT_BASIS,
+            "instrument_error": (
+                f"{', '.join(untiered)} carry no tier and are not declared session-scope, so this "
+                f"checker does not know which span they must lie inside. Guessing a parent is how "
+                f"a phase gets checked against a span it was never inside — the refusal this "
+                f"harness emitted on every traced run. No verdict is issued."),
+            "orphan_phase_spans": None,
+            "over_subscribed_subgraphs": None,
+            "examples": [],
+            "detail": ("ERROR (instrument): untiered phases handed to phase_containment "
+                       f"({', '.join(untiered)}). Per R13 an instrument error is not a "
+                       "detection — this is neither a pass nor a failure."),
+        }
+
+    anchors = list(anchors or [])
+    if tier1 and not anchors:
+        return {
+            "red": False,
+            "state": "ERROR",
+            "basis": CONTAINMENT_BASIS,
+            "instrument_error": (
+                f"{len(tier1)} tier-1 phase span(s) were handed in with no vulkan.compute_call "
+                f"spans to check them against. A tier-1 phase lies beside vulkan.subgraph, not "
+                f"inside it, so falling back to the subgraph would report every one of them as "
+                f"escaped. No verdict is issued."),
+            "orphan_phase_spans": None,
+            "over_subscribed_subgraphs": None,
+            "examples": [],
+            "detail": ("ERROR (instrument): tier-1 phases with no anchor spans. Per R13 an "
+                       "instrument error is not a detection."),
+        }
+
+    def inside_any(p: dict, spans: "list[dict]") -> bool:
+        return any(s["ts"] <= p["ts"] and p["end"] <= s["end"] for s in spans)
+
+    # Tier 0. Every call-scope phase inside an anchor; every session-scope phase outside them all.
+    #
+    # A trace recorded before `vulkan.compute_call` existed carries no anchors at all. That is not
+    # a pass and it is not a failure: it is a check that could not run, so it is reported by name
+    # in `anchor_check` and in the PASS detail rather than contributing a silent zero. The ERROR
+    # arm above still fires if tier-1 phases are present, because those are the ones a missing
+    # anchor would mis-verdict.
+    anchor_check = ("checked" if anchors else
+                    "unavailable — this trace carries no vulkan.compute_call spans, so the "
+                    "'no phase outside the anchor' rule could not be evaluated")
+    escaped_anchor = [p for p in tier1 + tier2 if anchors and not inside_any(p, anchors)]
+    session_inside_anchor = [p for p in session if inside_any(p, anchors)]
+
+    # Tier 1. `bind_check` and `vulkan.subgraph` are siblings under the anchor; neither may sum
+    # past it, and they may not overlap each other.
+    per_anchor: "dict[int, float]" = {}
+    for p in tier1:
+        owner = next((a["index"] for a in anchors
+                      if a["ts"] <= p["ts"] and p["end"] <= a["end"]), None)
+        if owner is not None:
+            per_anchor[owner] = per_anchor.get(owner, 0) + p["dur"]
+    for s in subgraphs:
+        owner = next((a["index"] for a in anchors
+                      if a["ts"] <= s["ts"] and s["end"] <= a["end"]), None)
+        if owner is not None:
+            per_anchor[owner] = per_anchor.get(owner, 0) + s["dur"]
+    over_anchors = [
+        {"anchor_index": i, "tier1_us": per_anchor[i], "anchor_us": anchors[i]["dur"],
+         "ratio": round(per_anchor[i] / anchors[i]["dur"], 4)}
+        for i in per_anchor
+        if anchors[i]["dur"] > 0 and per_anchor[i] > anchors[i]["dur"] * (1 + CONTAINMENT_SLACK)
+    ]
+
+    # Tier 2, against the dispatch region.
+    orphans = [p for p in tier2 if p["subgraph_index"] is None]
     per: "dict[int, float]" = {}
-    for p in siblings:
+    for p in tier2:
         if p["subgraph_index"] is not None:
             per[p["subgraph_index"]] = per.get(p["subgraph_index"], 0) + p["dur"]
     over = [
@@ -859,7 +1043,7 @@ def phase_containment(subgraphs: "list[dict]", siblings: "list[dict]",
         if subgraphs[i]["dur"] > 0 and per[i] > subgraphs[i]["dur"] * (1 + CONTAINMENT_SLACK)
     ]
 
-    # Tier 2. Parents are located by timestamp containment, not by name order: `record` spans are
+    # Tier 3. Parents are located by timestamp containment, not by name order: `record` spans are
     # disjoint, so the enclosing one is unique when it exists.
     kids = list(nested or [])
     parents = sorted([p for p in siblings if p["phase"] == "record"], key=lambda p: p["ts"])
@@ -878,32 +1062,47 @@ def phase_containment(subgraphs: "list[dict]", siblings: "list[dict]",
         if parents[i]["dur"] > 0 and per_parent[i] > parents[i]["dur"] * (1 + CONTAINMENT_SLACK)
     ]
 
-    red = bool(orphans or over or stray_children or over_parents)
+    red = bool(orphans or over or stray_children or over_parents
+               or escaped_anchor or session_inside_anchor or over_anchors)
     if red:
         detail = (
-            f"FAIL: tier 1 — {len(orphans)} sibling phase spans outside any subgraph, "
-            f"{len(over)} subgraphs whose sibling phases exceed their own duration; "
-            f"tier 2 — {len(stray_children)} sub-record spans outside every vulkan.record span, "
+            f"FAIL: tier 0 — {len(escaped_anchor)} call-scope phase spans outside every "
+            f"vulkan.compute_call, {len(session_inside_anchor)} session-scope phase spans inside "
+            f"one, {len(over_anchors)} anchors whose tier-1 spans exceed their own duration; "
+            f"tier 2 — {len(orphans)} phase spans outside any subgraph, "
+            f"{len(over)} subgraphs whose tier-2 phases exceed their own duration; "
+            f"tier 3 — {len(stray_children)} sub-record spans outside every vulkan.record span, "
             f"{len(over_parents)} record spans whose children exceed them. The attribution of "
             f"phases to islands is not sound and no phase share below may be read.")
     else:
         detail = (
-            f"PASS: {len(siblings)} sibling spans all lie inside a subgraph and no subgraph's "
-            f"siblings sum past it; {len(kids)} sub-record spans all lie inside a vulkan.record "
-            f"span and no record's children sum past it. Checked over "
-            f"{len(subgraphs)} subgraph spans. Basis: {CONTAINMENT_BASIS}.")
+            f"PASS: tier 0 — {anchor_check}"
+            + (f" ({len(tier1) + len(tier2)} call-scope phase spans all lie inside a "
+               f"vulkan.compute_call, {len(session)} session-scope spans all lie outside every "
+               f"one, no anchor's tier-1 spans sum past it)" if anchors else "")
+            + f"; tier 2 — {len(tier2)} spans all lie inside a subgraph and no subgraph's tier-2 "
+            f"phases sum past it; tier 3 — {len(kids)} sub-record spans all lie inside a "
+            f"vulkan.record span and no record's children sum past it. Checked over "
+            f"{len(anchors)} anchor and {len(subgraphs)} subgraph spans. "
+            f"Basis: {CONTAINMENT_BASIS}.")
 
     return {
         "red": red,
         "state": "FAIL" if red else "PASS",
         "basis": CONTAINMENT_BASIS,
+        "anchor_check": anchor_check,
+        "phases_outside_anchor": len(escaped_anchor) if anchors else None,
+        "session_phases_inside_anchor": len(session_inside_anchor) if anchors else None,
+        "over_subscribed_anchors": len(over_anchors) if anchors else None,
         "orphan_phase_spans": len(orphans),
         "over_subscribed_subgraphs": len(over),
         "stray_sub_record_spans": len(stray_children),
         "over_subscribed_record_spans": len(over_parents),
+        "anchor_spans_checked": len(anchors),
+        "tier1_spans_checked": len(tier1),
         "sibling_spans_checked": len(siblings),
         "nested_spans_checked": len(kids),
-        "examples": (over + over_parents)[:3],
+        "examples": (over_anchors + over + over_parents)[:3],
         "worst_subgraph_ratio": (max((o["ratio"] for o in (
             {"ratio": round(per[i] / subgraphs[i]["dur"], 4)}
             for i in per if subgraphs[i]["dur"] > 0)), default=None)),
@@ -2077,6 +2276,7 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
     not a quotable number. See :func:`gpu_steady_tail`'s amendment of 2026-08-01.
     """
     subs = subgraph_spans(events)
+    anchors = anchor_spans(events)
     all_phases = phase_spans(events)
     nesting = phase_nesting(all_phases)
     attributed = attribute(subs, all_phases)
@@ -2183,7 +2383,7 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
                                            ordinal.get("busy_us"), transfers),
         "contention_signature": contention,
         "falsifiers": {
-            "phase_containment": phase_containment(subs, siblings, nested_attr),
+            "phase_containment": phase_containment(subs, siblings, nested_attr, anchors),
             "gpu_span_accounting": gpu_span_accounting(subs, gpus, counters),
             "gpu_containment": gpu_containment(subs, attributed, gpus),
             "timestamp_conversion_integrality": timestamp_conversion_integrality(gpus),

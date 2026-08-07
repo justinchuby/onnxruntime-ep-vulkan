@@ -107,6 +107,21 @@ _ALLOWED_FILES = (
 _EXCLUDED_DIRS = (".git", ".venv", "venv", "target", "node_modules", "__pycache__", ".squad")
 
 
+def is_virtualenv(directory: Path) -> bool:
+    """A directory is a virtualenv if it contains ``pyvenv.cfg`` (PEP 405), whatever its name.
+
+    The name tuple above cannot answer this. A developer with two CUDA toolchains has
+    ``.venv-cu12`` beside ``.venv``; it does not match ``".venv"`` exactly, it holds tens of
+    thousands of third-party ``.py`` files, and one of them has an AST deep enough to exhaust
+    the recursion limit of an ``ast.NodeVisitor``. The screen then fails on a file that is not
+    in the repository at all — a local environment deciding whether a lane check passes.
+
+    Detecting the marker file is a rule. Extending the name tuple is a list, and the next
+    environment defeats it.
+    """
+    return (directory / "pyvenv.cfg").is_file()
+
+
 def is_allowlisted(rel_posix: str) -> bool:
     if rel_posix in _ALLOWED_FILES:
         return True
@@ -117,6 +132,8 @@ def iter_python_files(root: Path):
     for path in sorted(root.rglob("*.py")):
         rel = path.relative_to(root)
         if any(part in _EXCLUDED_DIRS for part in rel.parts):
+            continue
+        if any(is_virtualenv(root.joinpath(*rel.parts[:i])) for i in range(1, len(rel.parts))):
             continue
         yield path, rel.as_posix()
 

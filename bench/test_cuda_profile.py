@@ -104,7 +104,12 @@ def test_a_trace_without_the_outer_bracket_still_reduces_and_says_it_is_bounded(
     assert out["subgraph_us"] is None, (
         "with no outer bracket there is no inner-vs-outer difference to report; None means "
         "'this anchor cannot see it', and 0 would mean 'it costs nothing'")
-    assert out["outside_subgraph_us"] is None
+    assert out["unattributed_in_call_us"] is None, (
+        "the tier-1 remainder is `call - bind_check - subgraph`, and this anchor cannot see "
+        "the callback the tier-1 spans partition")
+    assert out["unattributed_in_subgraph_us"] is not None, (
+        "the tier-2 residual IS computable here: the fallback anchor is the dispatch region "
+        "itself, so `call_us` is the right denominator for it")
     assert traced["median_ms"] == 50.0
 
 
@@ -112,12 +117,15 @@ def test_the_region_between_the_two_brackets_is_measured_and_reported():
     """The number Tank's review is about: 62.3 ms outer, 33.9 ms inner, 27.0 ms between.
 
     Shaped exactly like the real trace — almost all of the difference falls *after* the
-    inner span closes, not before it.
+    inner span closes, not before it. Under Morpheus's tier model the region is decomposed one
+    step further: `bind_check` is measured on its own span, and what neither it nor the dispatch
+    region covers is `unattributed_in_call_us` — never charged to `bind_check`.
     """
     events = []
     for i in range(4):
         base = i * 1_000_000
         events += _call(base, 62_329, base + 152, 33_868)
+        events.append(_phase("bind_check", base + 60, 73))
         events.append(_phase("record", base + 200, 5_581))
         events.append(_phase("submit", base + 6_000, 236))
         events.append(_phase("fence_wait", base + 6_300, 20_825))
@@ -126,11 +134,18 @@ def test_the_region_between_the_two_brackets_is_measured_and_reported():
     steady = cp.steady_state(per_call)
     assert steady["median_call_us"] == pytest.approx(62_329)
     assert steady["median_subgraph_us"] == pytest.approx(33_868)
-    assert steady["median_outside_subgraph_us"] == pytest.approx(62_329 - 33_868)
-    # And the phases still reconcile inside the INNER bracket, which is what the containment
-    # contract is about.
-    assert steady["median_sibling_total_us"] == pytest.approx(26_642)
+    assert steady["median_bind_check_us"] == pytest.approx(73)
+    assert steady["median_unattributed_in_call_us"] == pytest.approx(62_329 - 73 - 33_868)
+    # bind_check is 0.27% of the region it was once documented as explaining. Asserted as a
+    # number so the withdrawn claim cannot be restated in prose without this going red.
+    assert (steady["median_bind_check_us"]
+            / steady["median_unattributed_in_call_us"]) < 0.01
+    # And the tier-2 phases still reconcile inside the dispatch region, which is what the
+    # containment contract is about.
+    assert steady["median_tier2_total_us"] == pytest.approx(26_642)
     assert steady["median_unattributed_in_subgraph_us"] == pytest.approx(33_868 - 26_642)
+    # The tier-1 sum must NOT include the tier-2 phases: they are already inside subgraph_us.
+    assert steady["median_tier1_total_us"] == pytest.approx(73)
 
 
 def test_the_reconciliation_terms_do_not_overlap_and_stay_on_one_axis():
@@ -139,6 +154,7 @@ def test_the_reconciliation_terms_do_not_overlap_and_stay_on_one_axis():
     for i in range(4):
         base = i * 1_000_000
         events += _call(base, 60_000, base + 100, 30_000)
+        events.append(_phase("bind_check", base + 20, 60))
         events.append(_phase("record", base + 200, 5_000))
         events.append(_phase("fence_wait", base + 6_000, 20_000))
     per_call = [cp._summarise_bucket(b)
@@ -147,16 +163,26 @@ def test_the_reconciliation_terms_do_not_overlap_and_stay_on_one_axis():
     rec = cp.compute_reconciliation(steady, traced_median_ms=70.0, overhead_ratio=1.14,
                                     anchor=cp.choose_anchor(events))
     assert rec["available"] is True
-    assert rec["subgraph_ms"] + rec["outside_subgraph_ms"] == pytest.approx(
-        rec["compute_call_ms"]), "the two children must exactly partition their parent"
-    assert (rec["sibling_phases_ms"] + rec["unattributed_in_subgraph_ms"]
+    # Tier 1 partitions the anchor exactly: bind_check + subgraph + unattributed.
+    assert (rec["bind_check_ms"] + rec["subgraph_ms"] + rec["unattributed_in_call_ms"]
+            == pytest.approx(rec["compute_call_ms"])), (
+        "the tier-1 terms must exactly partition their parent")
+    # Tier 2 partitions the dispatch region exactly.
+    assert (rec["tier2_phases_ms"] + rec["unattributed_in_subgraph_ms"]
             == pytest.approx(rec["subgraph_ms"]))
+    # And the two tiers are NOT additive against one parent: tier-2 time is inside subgraph_ms,
+    # so adding it to the tier-1 terms overshoots the anchor. This is the category error the
+    # ruling forbids, asserted as arithmetic.
+    assert (rec["bind_check_ms"] + rec["subgraph_ms"] + rec["unattributed_in_call_ms"]
+            + rec["tier2_phases_ms"]) > rec["compute_call_ms"]
     assert rec["outside_compute_call_ms"] == pytest.approx(70.0 - 60.0)
     assert "traced" in rec["axis"]
     assert "untraced" in rec["do_not"]
-    assert "UNATTRIBUTED" in rec["outside_subgraph_attribution"], (
+    assert "UNATTRIBUTED" in rec["unattributed_in_call_attribution"], (
         "the region is measured, not explained; the last claim made about it "
         "(Phase::BindCheck, 'the binding checks') was 0.073 ms against 27.0 ms")
+    assert "not bind-check time" in rec["unattributed_in_call_attribution"], (
+        "the withdrawn attribution must be denied by name, next to the number")
 
 
 def test_a_reduction_of_an_admissible_traced_run_issues_no_refusals():
@@ -191,6 +217,62 @@ def test_a_reduction_of_an_admissible_traced_run_issues_no_refusals():
     assert out["phases"]["phase_tree_disagreements"] == []
     assert out.get("scope_limits") is None, "the outer anchor was present; nothing is bounded"
     assert out["anchor"]["span"] == cp.COMPUTE_CALL_SPAN
+
+
+def test_a_refusal_demotes_the_verdict_and_cannot_ride_along_with_it():
+    """Directive 8, as the negative case: ``GPU_TIME_MEASURED`` requires ``refusals == []``.
+
+    The test above proves a clean run refuses nothing. That is the easy half, and it is the
+    half the rejected revision also passed. This is the half it failed: when a refusal *does*
+    arise, the verdict must move. The shipped artifact carried a phase-tree refusal under
+    ``"verdict": "GPU_TIME_MEASURED"`` precisely because the verdict was decided from the GPU
+    spans early and never re-examined.
+
+    The trace here is fully measurable — real GPU spans, a real anchor — so the *only* reason
+    the verdict may not read MEASURED is the refusal itself. An unknown phase name is used to
+    provoke it, because that is a disagreement this module cannot resolve by looking harder.
+    """
+    events = []
+    for i in range(3):
+        base = i * 1_000_000
+        events += _call(base, 60_000, base + 100, 40_000)
+        for name in cp.SIBLING_PHASES:
+            events.append(_phase(name, base + 200, 1_000))
+        events.append(_gpu("matmul", base + 500, 50, ns=50_000))
+    # A phase this module has never heard of: trace.rs grew a phase and nobody told the
+    # reduction. It cannot be summed, so it must be refused, not quietly dropped.
+    events.append(_phase("teleport", 200, 1_000))
+    traced = {"workload": "w", "median_ms": 65.0, "warmup_ms": [1.0],
+              "steady_ms": [65.0, 65.0], "verdict": "ADMISSIBLE", "refusals": []}
+    trace_file = Path(__file__).resolve().parent / "_test_trace_refusal_demotes.json"
+    trace_file.write_text(json.dumps(events), "utf-8")
+    try:
+        out = cp.attribute(traced, {"median_ms": 57.0}, trace_file)
+    finally:
+        trace_file.unlink()
+    assert out["refusals"], "an unknown phase must be refused, not dropped"
+    assert any("teleport" in r for r in out["refusals"])
+    assert out["verdict"] != cp.GPU_TIME_MEASURED, (
+        f"the reduction refused and still reported {out['verdict']!r}; that is the exact "
+        f"pairing Tank rejected")
+    assert out["verdict"] == cp.ATTRIBUTION_REFUSED
+    # And the GPU numbers are still there. A refusal bounds what may be *concluded*; it does
+    # not delete the evidence, which is what makes the demotion honest rather than punitive.
+    assert out["gpu"]["total_ns"] > 0
+
+
+def test_the_verdict_and_refusal_invariant_holds_for_every_verdict():
+    """The invariant stated over the whole enum, not just the one pairing that was caught.
+
+    ``_finalise_verdict`` is a single choke point, so it is cheap to assert the property for
+    every verdict this module can emit rather than for the one that shipped broken.
+    """
+    for verdict in cp.VERDICTS:
+        clean = cp._finalise_verdict({"verdict": verdict, "refusals": []})
+        assert clean["verdict"] == verdict, "a clean report's verdict is never rewritten"
+        dirty = cp._finalise_verdict({"verdict": verdict, "refusals": ["cannot read x"]})
+        assert dirty["verdict"] != cp.GPU_TIME_MEASURED, (
+            f"{verdict!r} plus a refusal resolved to GPU_TIME_MEASURED")
 
 
 # ---------------------------------------------------------------------------

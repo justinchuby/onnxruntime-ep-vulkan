@@ -3,54 +3,59 @@
 workload: `prefill_1`  
 verdict: **GPU_TIME_MEASURED**
 
-- untraced median: 26.2063 ms
-- traced median: 34.0796 ms
-- tracer overhead ratio: 1.300x (host phases inflate, device time does not)
-- CUDA median: 15.5207 ms
+- untraced median: 30.3160 ms
+- traced median: 31.5258 ms
+- tracer overhead ratio: 1.040x (host phases inflate, device time does not)
+- CUDA median: 15.7097 ms
 
 ## Where one warm inference goes
 
 Anchor: `vulkan.compute_call`
 
-| region | ms | inside |
-|---|---:|---|
-| traced wall (one `session.run`) | 34.080 | — |
-| outside `vulkan.compute_call` (ORT + harness) | 1.398 | traced wall |
-| `vulkan.compute_call` (whole Compute callback) | 32.682 | traced wall |
-| `vulkan.subgraph` (inside `dispatch_ort`) | 32.627 | `vulkan.compute_call` |
-| sibling phases (record+submit+fence_wait) | 25.708 | `vulkan.subgraph` |
-| unattributed inside `vulkan.subgraph` | 6.437 | `vulkan.subgraph` |
-| **outside `vulkan.subgraph`, inside the callback** | 0.056 | `vulkan.compute_call` |
+| region | tier | ms | inside |
+|---|---|---:|---|
+| traced wall (one `session.run`) | — | 31.526 | — |
+| outside `vulkan.compute_call` (ORT + harness) | — | 0.363 | traced wall |
+| `vulkan.compute_call` (whole Compute callback — the anchor) | 0 | 31.163 | traced wall |
+| `vulkan.bind_check` (the three bind checks) | 1 | 0.035 | `vulkan.compute_call` |
+| `vulkan.subgraph` (the dispatch region, inside `dispatch_ort`) | 1 | 31.092 | `vulkan.compute_call` |
+| **unattributed inside the callback** | 1 | 0.016 | `vulkan.compute_call` |
+| tier-2 phases (record+submit+fence_wait) | 2 | 25.687 | `vulkan.subgraph` |
+| unattributed inside `vulkan.subgraph` | 2 | 5.187 | `vulkan.subgraph` |
 
-All terms are traced-run warm-call medians, in milliseconds. Do not subtract these traced-axis terms from `untraced_median_ms`; the traced run is 1.300x the untraced one.
+Each tier sums against its own parent. Rows from different tiers are not additive: tier-2 time is already inside `vulkan.subgraph`.
+- tier 1: `compute_call = bind_check + subgraph + unattributed_in_call`
+- tier 2: `subgraph = record + submit + fence_wait + unattributed_in_subgraph`
 
-`outside_subgraph`: MEASURED, UNATTRIBUTED. This instrument reports the size of the region and which side of `vulkan.subgraph` it falls on. It does not name its cause.
+All terms are traced-run warm-call medians, in milliseconds. Do not subtract these traced-axis terms from `untraced_median_ms`; the traced run is 1.040x the untraced one.
+
+`unattributed_in_call_ms`: MEASURED, UNATTRIBUTED. This instrument reports the size of the region and which side of `vulkan.subgraph` it falls on. It does not name its cause, and it is not bind-check time: `bind_check_ms` is measured separately and is reported above.
 
 ## Cross-check: ORT's own measurement of the same callback
 
 | arm | ORT fused-node warm median | that arm's wall median | outside the fused node | counters in timed region |
 |---|---:|---:|---:|---|
-| traced | 33.453 ms | 34.080 ms | 0.627 ms | `first_run_only` |
-| untraced | 26.792 ms | 26.206 ms | -0.586 ms | `first_run_only` |
+| traced | 31.859 ms | 31.526 ms | -0.333 ms | `first_run_only` |
+| untraced | 30.379 ms | 30.316 ms | -0.063 ms | `first_run_only` |
 
 Each row subtracts within **one** process. ORT's profiler shares no code with our tracer, so this is the only line in the report that is not the EP measuring itself.
 
-- anchor `vulkan.compute_call`: **32.682 ms** vs ORT's **33.453 ms** — **-2.30%**
-- inner `vulkan.subgraph`: 32.627 ms vs ORT's 33.453 ms — **-2.47%**
+- anchor `vulkan.compute_call`: **31.163 ms** vs ORT's **31.859 ms** — **-2.18%**
+- inner `vulkan.subgraph`: 31.092 ms vs ORT's 31.859 ms — **-2.41%**
 
 ## Device time
 
-- GPU kernel time per run: **18.9043 ms** (basis: warm_call_median, 13 warm calls, 4970 timestamped spans across all calls)
-- share of untraced wall: **72.1%** — **cross-run**: traced-process device median over untraced-process wall. Not a bound. Two device medians taken on this machine on the same afternoon differ by 9.6% (12.17456 / 13.347296 ms), and the untraced arm emits no device timestamps at all, so this cannot be checked here.
-- host-side residual (traced axis): **15.1753 ms** — traced wall median minus traced device median, both from the same process. The untraced-axis version of this number (`host_ms_per_run_residual`) is withdrawn: it subtracted across two runs.
+- GPU kernel time per run: **19.0020 ms** (basis: warm_call_median, 13 warm calls, 4970 timestamped spans across all calls)
+- share of untraced wall: **62.7%** — **cross-run**: traced-process device median over untraced-process wall. Not a bound. Two device medians taken on this machine on the same afternoon differ by 9.6% (12.17456 / 13.347296 ms), and the untraced arm emits no device timestamps at all, so this cannot be checked here.
+- host-side residual (traced axis): **12.5238 ms** — traced wall median minus traced device median, both from the same process. The untraced-axis version of this number (`host_ms_per_run_residual`) is withdrawn: it subtracted across two runs.
 
 | kernel | device ms (warm-call median) | dispatches/call |
 |---|---:|---:|
-| `q_gemv_matmul_nbits_f16` | 16.485 | 161 |
-| `gqa_f16` | 1.402 | 32 |
-| `skip_simplified_layer_norm_f16` | 0.764 | 64 |
+| `q_gemv_matmul_nbits_f16` | 16.613 | 161 |
+| `gqa_f16` | 1.346 | 32 |
+| `skip_simplified_layer_norm_f16` | 0.767 | 64 |
 | `ew_binary_mul_f16` | 0.167 | 64 |
-| `ew_unary_sigmoid_f16` | 0.085 | 32 |
+| `ew_unary_sigmoid_f16` | 0.084 | 32 |
 | `simplified_layer_norm_f16` | 0.009 | 1 |
 | `gather_f16` | 0.006 | 1 |
 
@@ -60,36 +65,38 @@ Cumulative totals are not shown as a per-run figure: on this EP the first `Compu
 
 | phase | cold call 0 (ms) | warm median (ms) |
 |---|---:|---:|
-| `fence_wait` | 196.624 | 20.672 |
-| `record` | 1230.592 | 4.724 |
-| `submit` | 0.302 | 0.222 |
-| **sibling total** | 1427.518 | 25.708 |
+| `bind_check` | 0.042 | 0.035 |
+| `fence_wait` | 193.493 | 20.677 |
+| `record` | 1297.414 | 4.947 |
+| `submit` | 0.850 | 0.175 |
+| **sibling total** | 1491.799 | 25.722 |
 
 | nested phase | cold call 0 (ms) | warm median (ms) | inside |
 |---|---:|---:|---|
-| `cmd_upload` | 1189.755 | 0.164 | `record` |
-| `desc_alloc` | 3.691 | 0.754 | `record` |
-| `pipeline_lookup` | 12.924 | 0.032 | `record` |
-| `record` residual (vkCmd* calls) | 24.222 | 3.673 | `record` |
+| `cmd_upload` | 1228.650 | 0.128 | `record` |
+| `desc_alloc` | 8.852 | 0.789 | `record` |
+| `pipeline_lookup` | 16.068 | 0.356 | `record` |
+| `record` residual (vkCmd* calls) | 43.844 | 3.683 | `record` |
 
-- GPU device time, cold call 0: 22.707 ms
-- GPU device time, warm median: 18.904 ms
+- GPU device time, cold call 0: 20.151 ms
+- GPU device time, warm median: 19.002 ms
 
 ## Host phases, cumulative over every call (provenance only)
 
 | phase | ms | calls |
 |---|---:|---:|
-| `fence_wait` | 488.135 | 14 |
-| `record` | 1296.556 | 14 |
-| `submit` | 3.155 | 14 |
-| **sibling total** | 1787.846 | |
+| `bind_check` | 0.886 | 14 |
+| `fence_wait` | 480.823 | 14 |
+| `record` | 1375.193 | 14 |
+| `submit` | 3.398 | 14 |
+| **sibling total** | 1860.300 | |
 
 | nested phase | ms | calls | inside |
 |---|---:|---:|---|
-| `cmd_upload` | 1192.049 | 14 | `record` |
-| `desc_alloc` | 13.953 | 4970 | `record` |
-| `pipeline_lookup` | 15.127 | 4970 | `record` |
-| `record` residual (vkCmd* calls) | 75.427 | | `record` |
+| `cmd_upload` | 1230.862 | 14 | `record` |
+| `desc_alloc` | 21.314 | 4970 | `record` |
+| `pipeline_lookup` | 21.051 | 4970 | `record` |
+| `record` residual (vkCmd* calls) | 101.966 | | `record` |
 
 ## Transfers
 
