@@ -3894,48 +3894,94 @@ one artifact over — the register worked, the reader did not exist. Two things 
   than remembered.
 
 **What is still open after the repair, stated rather than left to be found — and stated against the
-API, not against the belief about it.** The step is **advisory**. Read on 2026-08-07:
-`branches/main/protection` is **404 not protected**, and ruleset `20479180` (`main`, active) carries
-exactly `[{"type":"deletion"},{"type":"non_fast_forward"}]`. There are **no required status checks on
-this repository at all**. Three consequences, none of them optional:
+API, not against the belief about it.** The step is **enforced**, and the sentence that had to be
+retired to write that is the one above it in this file's history: for two days this paragraph said
+*advisory*, and it was right to. Read on 2026-08-07, after the change described below:
+`branches/main/protection` is still **404 not protected** — the classic API is unused and always was —
+and ruleset `20479180` (`main`, `active`, `bypass_actors: []`, `~DEFAULT_BRANCH`) now carries
+`deletion`, `non_fast_forward`, and a `required_status_checks` rule with
+`strict_required_status_checks_policy: true` over exactly four contexts: `rustfmt check`,
+`Lane-check self-test (two polarities, no GPU)` — the job this step runs in — `Build + op tests (Linux,
+lavapipe)` and `Build + op tests (Windows, lavapipe via mesa-dist-win)`. Three consequences, none of
+them optional:
 
-* this step's colour is **not a merge precondition** — nothing consumes it, so nothing is blocked by it;
-* there is no required check for GitHub to **invalidate** when the base moves, and "require branches to
-  be up to date before merging" is a `strict` policy *on* required checks, so it has nothing to apply
-  to. Naming only the missing up-to-date rule names a residual **smaller than the one this repository
-  has**;
-* the exact residual is therefore: **the base can move after this step goes green and before the merge
-  button is pressed, and the merge is still permitted.** The screen narrows the window to the interval
-  between the last run and the merge; it does not close it, and nothing today makes it close it.
+* this step's colour **is** a merge precondition now, transitively: its job is required, and the job is
+  red if the step is red;
+* `strict` means GitHub recomputes up-to-dateness at merge time, so when the base moves the pull
+  request is marked **BEHIND** and the merge is refused until the lane has re-run **against the moved
+  base**. That is the exact interval this section spent its length naming, and it is closed;
+* what replaces it is a **smaller residual, and naming it is the whole discipline here: a required
+  context is a JOB, not a step.** What GitHub verifies is that `Lane-check self-test` concluded
+  `success`. A landing gate that stopped running *inside* a green job — a bad `if:`, a gate that
+  decided NOT-REQUIRED because its path derivation broke — would satisfy the rule exactly as well as
+  one that ran. Nothing GitHub offers can require a step, so this residual is not removable at the
+  policy layer; it is held by `ci/negative_control_landing_simulation.py`, which is **unconditional**
+  for precisely this reason, and by reading the run's skipped-step count rather than its colour.
+  A second, smaller one: the rule is scoped to `~DEFAULT_BRANCH`, so nothing here constrains any other
+  branch, and none is claimed to be constrained.
 
-What is unchanged is why that is survivable: the failure mode is **fail-closed**. An unscreened
-collision produces a red on `main` in the `push` job — a red in an inconvenient place, never a green
-over an undeclared move.
+What is unchanged is why the old residual was survivable while it lasted: the failure mode was
+**fail-closed**. An unscreened collision produced a red on `main` in the `push` job — a red in an
+inconvenient place, never a green over an undeclared move.
 
-**Why enforcement is not switched on in this change, and what would switch it on.** `main` is red —
-run `31169478658` at `3e38ae3`, three of four jobs (`Lane-check self-test`, `Build + op tests (Linux,
-lavapipe)`, `Build + op tests (Windows, lavapipe via mesa-dist-win)`). A `required_status_checks` rule
-with `strict_required_status_checks_policy: true` added today would make **every** pull request
-unmergeable, including the ones that close those three reds. That is stopping the workflow, not
-hardening it. So the enforcement is **sequenced behind the condition that makes it satisfiable**, and
-the sequence is written down with an owner and a verification for each step in
-`ci/landing_enforcement_followup.json`: `main` genuinely green (blocked on issue #24) → the
-`main_is_green` open red closed on that evidence → ruleset `20479180` gains `required_status_checks`
-naming `Lane-check self-test (two polarities, no GPU)` with `strict_required_status_checks_policy:
-true` → **base movement demonstrably invalidates a green landing check and forces a re-run** → #60
-closes. `ci/test_lane_checks.py::test_the_landing_simulation_declares_its_enforcement_follow_up` keeps
-that file well-formed and keeps it pointed at an open red that still exists, so "the follow-up is
-sequenced" cannot decay into "the follow-up was forgotten"; and
-`test_no_artifact_claims_the_landing_gate_is_enforced` fails if this paragraph or the lane inventory
-starts claiming an enforcement the repository does not have. **Issue #60 stays open until step 4 is
-evidenced**; the pull request that added this screen says `Refs #60`, not `Closes #60`.
+**How enforcement was switched on, and the two things that had to be true first.** It was sequenced
+behind the condition that made it satisfiable, with an owner and a verification per step, in
+`ci/landing_enforcement_followup.json`; that file is now a record of what happened rather than a plan.
+`main` was red — run `31169478658` at `3e38ae3`, and then run `31178244578` at `ca10bff`, where both
+op-test lanes carried a single regression of their own — and a strict required-check rule added on
+either day would have made **every** pull request unmergeable, including the ones repairing those
+reds. That is stopping the workflow, not hardening it. The order actually walked was: the `ca10bff`
+regression repaired in PR #66 → `main` genuinely green at `fbbb898`, run `31181293838`, **all four
+jobs, zero skipped steps in each** → the ruleset extended by `PUT`, re-sending `deletion` and
+`non_fast_forward` verbatim so that adding a rule could not silently drop the two that were already
+there → **base movement observed to invalidate a green landing check**.
 
-One cheaper variant was investigated rather than assumed: requiring *only* the landing gate. Required
-contexts are per **job** (the check-run name), not per step, and the gate runs inside `Lane-check
-self-test`, which is one of the three currently red jobs — so the cheap version needs the gate lifted
-into its own job first. That is a real and inexpensive option (19 s on the hosted lane) and it is
-recorded in the follow-up file as its own reviewed artifact, because changing the lane's job topology
-as a side effect of a review round is exactly the kind of silent change this section exists to refuse.
+That last step was going to be staged, on a disposable pull request carrying one empty commit, and it
+did not need to be. PR #67 — an unrelated change, another author, its own schedule — merged and moved
+`main` to `8e6417e` while the experiment was still being set up. Two pull requests that had gone green
+on all four required contexts minutes earlier, the disposable one and the one carrying this paragraph,
+both immediately read `mergeable_state: behind`. The label was then tested rather than believed:
+`PUT /repos/.../pulls/70/merge` returned **HTTP 405, `4 of 4 required status checks are expected`**. A
+pull request whose four contexts had all concluded `success` was refused — because they concluded it
+against a base nobody was merging into any more. That is the residual this section spent its length
+naming, arriving as a refusal instead of as a merge, on a base movement nobody arranged.
+
+Direct pushes are refused by the same rule, which was also tested rather than assumed: `git push
+origin HEAD:main` with an empty commit was declined with `GH013 … 4 of 4 required status checks are
+expected`, and `main` was unmoved. A policy that only constrained the merge button would have left the
+push open beside it.
+
+**What the rule now makes possible, said plainly, because it is the price and not an objection.** A
+required context is a **string** in repository settings; the job that produces it is a string in
+`.github/workflows/ci.yml`, and nothing in GitHub relates the two. Rename the job and the context
+never arrives again: every pull request waits forever, **including the one that would rename it
+back**, and the way out is a settings change by somebody who still has the access and has worked out
+what happened. PR #67 edited `ci.yml` in the same hour this rule went live and happened not to touch a
+`name:`. Happening not to is not a control, so
+`ci/test_lane_checks.py::test_every_required_context_is_a_job_this_workflow_still_produces` holds the
+two strings against each other in the lane, on the branch, before a rename can reach the policy.
+
+**One step of the written sequence is deliberately NOT done, and it is not a loose end.** The
+`main_is_green` entry in `ci/open_reds.json` stays open at `expect=red`. It censuses the **last ten
+pushes** to `main`, and three of those ten are still the historical reds of issue #24; flipping it to
+`expect=green` today would make the register red while claiming the opposite, which is the failure that
+entry was written to catch. It closes when the window clears, and that flip belongs to #24's lane. The
+sequence file put it before enforcement because its *purpose* was "do not deadlock the repository"; a
+green latest push discharges that purpose, and a ten-run census does not gate it.
+`ci/test_lane_checks.py::test_the_landing_simulation_declares_its_enforcement_follow_up` and
+`test_no_artifact_claims_the_landing_gate_is_enforced` both moved in the same commit as the settings
+change, because they assert the CURRENT state — and they now fail if any artifact describes the
+enforcement as *larger* than it is, which is the same test with its polarity turned over.
+
+One cheaper variant was investigated rather than assumed, and it is recorded because the finding
+outlived the decision: requiring *only* the landing gate. Required contexts are per **job** (the
+check-run name), not per step, so the gate — which runs inside `Lane-check self-test` — is not
+separately requirable without being lifted into a job of its own. That is why the four required
+contexts are the four jobs the lane already has, and why the per-step residual named above exists
+at all rather than having been designed away. Lifting the gate into its own job remains a real and
+inexpensive option (19 s on the hosted lane) and remains its own reviewed artifact, because changing
+the lane's job topology as a side effect of a settings change is exactly the kind of silent change
+this section exists to refuse.
 
 **The gate and the engine agree about which commit is the branch head.** `check_landing_simulation.py`
 resolves the real head — `HEAD^2` when the checkout is a `pull_request` merge ref, whose *first* parent

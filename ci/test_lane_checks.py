@@ -7722,38 +7722,163 @@ def test_an_unreadable_worktree_blob_is_an_instrument_error_not_a_condition(monk
 
 
 def test_the_landing_simulation_declares_its_enforcement_follow_up():
-    """B1. The step is ADVISORY: this repository has no required status checks at all, so
-    nothing invalidates a green landing check when the base moves under it. The follow-up
-    that would change that is sequenced behind `main_is_green` and recorded where it can be
-    checked rather than remembered."""
+    """B1. The step is ENFORCED, and this pins the record of how — including the one step of
+    the written sequence that is deliberately NOT done.
+
+    The polarity of this test is turned over from the revision that wrote it. It used to
+    assert that nothing was done yet and that the follow-up pointed at a live open red, so
+    that "sequenced" could not decay into "forgotten". Enforcement has since been switched on,
+    so what needs guarding is the opposite decay: a record that rounds itself up. It therefore
+    asserts that the settings the file CLAIMS are the settings it also RECORDS having read,
+    that the before-state was kept rather than overwritten, and — the one that matters — that
+    any step still marked `done: false` is marked deliberate and carries its reason. A
+    checklist that quietly drops an unsatisfied step is the same artifact as one that never
+    had it.
+    """
     followup = json.loads(
         (CI_DIR / "landing_enforcement_followup.json").read_text(encoding="utf-8")
     )
-    assert followup["enforced_today"] is False
-    assert followup["blocked_by"] == "main_is_green"
+    assert followup["enforced_today"] is True
     assert followup["ruleset_id"] == 20479180
-    assert followup["observed"]["branch_protection"] == "404 not protected"
-    assert followup["observed"]["required_status_checks"] == []
 
-    reds = json.loads((CI_DIR / "open_reds.json").read_text(encoding="utf-8"))
-    declared = {c["id"] for c in reds["checks"]}
-    assert followup["blocked_by"] in declared, (
-        "the follow-up is sequenced behind an open red that is not declared, so nothing "
-        "will ever tell anybody it became satisfiable"
+    obs = followup["observed"]
+    assert obs["branch_protection"] == "404 not protected", (
+        "the classic API is deliberately unused; if that changed, two overlapping mechanisms "
+        "now decide merges and no single endpoint answers which"
     )
+    assert obs["before"]["required_status_checks"] == [], obs["before"]
+    after = obs["after"]
+    assert after["strict_required_status_checks_policy"] is True
+    assert after["bypass_actors"] == [], (
+        "a bypass actor makes the rule advice for somebody, which is not what this file says"
+    )
+    for kept in ("deletion", "non_fast_forward"):
+        assert kept in after["ruleset_20479180_rules"], (
+            f"{kept} is missing from the post-change ruleset: the PUT that added the required "
+            f"checks replaced the ruleset and dropped a protection that was already there"
+        )
+
+    ctx = [c["context"] for c in after["required_status_checks"]]
+    assert "Lane-check self-test (two polarities, no GPU)" in ctx, ctx
+    assert followup["required_contexts"] == ctx, "the summary and the reading disagree"
+    assert all(c["integration_id"] == 15368 for c in after["required_status_checks"]), (
+        "an unpinned context can be satisfied by a differently-owned check of the same name"
+    )
+
     steps = followup["checklist"]
-    assert len(steps) >= 4 and all(s["done"] is False for s in steps), steps
+    assert len(steps) >= 4
     assert any("up to date" in s["step"].lower() for s in steps), steps
     assert any("base" in s["verify"].lower() and "re-run" in s["verify"].lower()
                for s in steps), steps
+    deliberate = [s for s in steps if s["done"] is False and s.get("not_done_on_purpose") is True]
+    for s in steps:
+        assert s.get("evidence"), f"step {s['id']} carries no evidence either way"
+        if s["done"] is False:
+            # Three states, not two. A step may be done, deliberately not done, or in flight —
+            # and the third is the one an honest record loses first, because "in flight" reads
+            # as "done" to anybody skimming and as "abandoned" to anybody who comes back later.
+            assert isinstance(s.get("not_done_on_purpose"), bool), (
+                f"step {s['id']} is not done and does not say whether that was the intention"
+            )
+            assert s.get("why_not_done"), (
+                f"step {s['id']} is not done and gives no reason; an enforcement record with a "
+                f"silently unsatisfied step is the residual wearing a tick"
+            )
+    assert len(deliberate) <= 1, (
+        f"more than one step is deliberately skipped: {[s['id'] for s in deliberate]}"
+    )
+    # Both directions, because one direction leaves the pairing free to rot from either end:
+    # a flagged step whose explanation vanished, or an explanation still describing a step
+    # that has quietly been reclassified or ticked.
+    explained = followup["not_done_on_purpose"]["what"]
+    named = re.match(r"step `([^`]+)`", explained)
+    assert named, f"the deliberate-skip explanation does not name a step: {explained!r}"
+    by_id = {s["id"]: s for s in steps}
+    assert named.group(1) in by_id, (
+        f"the deliberate-skip explanation names {named.group(1)!r}, which is not a step in "
+        f"this checklist: {sorted(by_id)}"
+    )
+    target = by_id[named.group(1)]
+    assert target["done"] is False and target.get("not_done_on_purpose") is True, (
+        f"step {target['id']} is still carrying the file's deliberate-skip explanation while "
+        f"reading done={target['done']} / on_purpose={target.get('not_done_on_purpose')}. "
+        f"Either it got done and the explanation was left behind, or it stopped being "
+        f"deliberate and nothing said so."
+    )
+    assert deliberate and deliberate[0]["id"] == target["id"], (
+        "the checklist and the explanation disagree about which step is the deliberate one"
+    )
+
+    reds = json.loads((CI_DIR / "open_reds.json").read_text(encoding="utf-8"))
+    declared = {c["id"] for c in reds["checks"]}
+    assert "main_is_green" in declared, (
+        "`main_is_green` is the entry step 2 is waiting on; if it has been deleted rather "
+        "than closed, nothing will ever say the wait ended"
+    )
 
 
-def test_no_artifact_claims_the_landing_gate_is_enforced():
-    """The rejection this revision answers: three artifacts said closing #60 needed
-    "require branches to be up to date before merging", which the repository lacks — while
-    the repository in fact has no required status checks AT ALL, so the base is unconstrained
-    at merge time and GitHub has nothing to invalidate. A document whose stated purpose is
-    naming residuals must not name a smaller one."""
+def test_every_required_context_is_a_job_this_workflow_still_produces():
+    """THE DEADLOCK THE PREVIOUS TEST'S SUBJECT NOW MAKES POSSIBLE, held shut.
+
+    A required status check is a STRING in repository settings. The job that produces it is a
+    string in `.github/workflows/ci.yml`. Nothing in GitHub relates the two: rename the job
+    and the context it used to produce simply never arrives again, so every pull request waits
+    forever and NONE of them can merge — including the one that would rename it back. The
+    repair for that state is a settings change made by somebody who still has the access and
+    has worked out what happened, which is a bad thing to need on a Friday.
+
+    This is not hypothetical. PR #67 edited `ci.yml` in the same hour the required-check rule
+    went live, and happened not to touch a `name:`. Happening not to is not a control.
+
+    So the two strings are held against each other here, in the lane, on the branch, BEFORE
+    the rename can be merged into the policy. The direction matters: every required context
+    must still be produced. The converse is deliberately not asserted — a job that is not
+    required is a choice, and this repository has made it before.
+
+    The `misses` note in `ci/lane_inventory.py` and `ci/landing_enforcement_followup.json`
+    carry the same fact in prose. This test is what makes it true rather than remembered.
+    """
+    followup = json.loads(
+        (CI_DIR / "landing_enforcement_followup.json").read_text(encoding="utf-8")
+    )
+    required = followup["required_contexts"]
+    assert required, "the follow-up records no required contexts, so this test is vacuous"
+
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    # Job-level `name:` is indented exactly one level below the job key, which is two levels
+    # below `jobs:`. Step names sit deeper, so the anchor keeps this to job names only.
+    produced = set(re.findall(r"^    name: (.+?)\s*$", workflow, re.MULTILINE))
+    assert produced, "no job names parsed out of ci.yml; the parse broke, not the workflow"
+
+    missing = [c for c in required if c not in produced]
+    assert not missing, (
+        f"required status check(s) {missing!r} name no job in ci.yml, which now produces "
+        f"{sorted(produced)!r}. GitHub will wait for a context that never arrives and EVERY "
+        f"pull request becomes unmergeable, this one included. Rename the job back, or change "
+        f"the ruleset FIRST and this file with it."
+    )
+
+    assert followup["the_deadlock_this_now_risks"], (
+        "the deadlock note has been deleted from the follow-up; the next person to rename a "
+        "job will meet this test's failure with no idea why the rule exists"
+    )
+
+
+def test_no_artifact_claims_the_landing_gate_is_enforced_MORE_THAN_IT_IS():
+    """The successor to the rejection this whole thread answers.
+
+    That rejection was: three artifacts named a residual SMALLER than the one the repository
+    had — they said closing #60 needed only "require branches to be up to date before
+    merging", while in fact there were no required status checks at all for that policy to
+    apply to. A document whose stated purpose is naming residuals must not name a smaller one.
+
+    Enforcement now exists, so the identical failure has a new shape: claiming it is complete.
+    A required context is a JOB, not a step, so what GitHub verifies is that the lane job
+    concluded `success` — a landing gate that stopped running INSIDE a green job satisfies the
+    rule exactly as well as one that ran, and no GitHub setting can require a step. This test
+    asserts every artifact still says so, and refuses the words that would mean it had stopped
+    saying so.
+    """
     import importlib
 
     sys.path.insert(0, str(CI_DIR))
@@ -7761,13 +7886,30 @@ def test_no_artifact_claims_the_landing_gate_is_enforced():
 
     checks = {c.id: c for c in inv.CHECKS}
     misses = " ".join(checks["hostfree.landing_simulation"].misses).lower()
-    assert "advisory" in misses, misses
-    assert "no required status checks" in misses, misses
+    assert "enforced" in misses, misses
+    assert "job" in misses and "not a step" in misses, (
+        "the lane inventory no longer names the job/step grain, which is the residual that "
+        f"survives enforcement: {misses}"
+    )
+    assert "strict_required_status_checks_policy" in misses, misses
 
     design = (REPO_ROOT / "docs" / "DESIGN.md").read_text(encoding="utf-8")
     part5b = design[design.index("A CONCURRENT EDIT TO A DECLARED CAUSE PATH"):]
     part5b = part5b[:part5b.index("§8.9.20") if "§8.9.20" in part5b else 12000]
-    assert "no required status checks" in part5b.lower(), (
-        "DESIGN.md still describes the missing enforcement as only the up-to-date rule"
+    # Prose wraps, so the claim is matched on normalised whitespace with the emphasis marks
+    # stripped: a guard that a reflow can silence is not guarding the sentence, only its layout.
+    low = re.sub(r"\s+", " ", part5b.replace("*", "").replace("`", "")).lower()
+    assert "a required context is a job, not a step" in low, (
+        "DESIGN.md no longer names the grain of the enforcement it claims"
     )
-    assert "advisory" in part5b.lower(), part5b[-2000:]
+    assert "404 not protected" in low, (
+        "DESIGN.md stopped recording that the classic branch-protection API is unused; the "
+        "reader can no longer tell whether one mechanism decides merges here or two"
+    )
+    for overclaim in (
+        "the residual is closed",
+        "there is no residual",
+        "fully enforced",
+        "no longer possible",
+    ):
+        assert overclaim not in low, f"DESIGN.md now overclaims: {overclaim!r}"
