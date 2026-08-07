@@ -68,6 +68,18 @@ WHAT THIS SCREEN DOES NOT CLAIM
     is reported UNOBSERVABLE, never 0/0.  A ratio of zero over zero presented as coverage
     is the identity defect this screen exists to refuse.
 
+A FOURTH THING, ADDED AFTER ISSUE #58: STALE ABSENCE CLAIMS
+=============================================================
+The three questions above are about the census's *coverage*.  Issue #58 was about the
+map's *prose* falling out of date with the tree it describes — a ``reason`` field kept
+asserting "no counter names the variant" a full round after
+``counters::record_pipeline_variant`` started doing exactly that.  A surface map entry may
+opt in to a checkable version of that claim via ``"absence_claims": ["symbol", ...]``:
+symbols the entry's ``reason`` says do not exist anywhere in production Rust.  This screen
+greps the tree directly (never the map's own bookkeeping, and never a census artifact) for
+a ``fn``/``static`` definition of each named symbol, and fails loudly if one is found. See
+``check_stale_absence_claims`` below.
+
 TERMINAL STATES (§10.0.1 R13)
 =============================
 
@@ -332,6 +344,77 @@ def load_map(path: Path) -> tuple[dict, str | None]:
 
 
 # ---------------------------------------------------------------------------
+# STALE ABSENCE CLAIMS — issue #58's class, made checkable.
+#
+# Issue #58's defect was not a missing mechanism: it was a `reason` string that asserted
+# "no counter names the variant" a full round after `counters::record_pipeline_variant`
+# started doing exactly that. A census map is read as ground truth by the next author
+# ("Align ... so they state the same mechanism truth"), so a prose claim that a named
+# production symbol does not exist is itself a claim this screen can check — the same way
+# `extract_counters`/`extract_env_switches` already read production Rust directly rather
+# than trusting the map's account of it, this reads the map's *negative* claims the same
+# way.
+#
+# A surface map entry may carry `"absence_claims": ["record_pipeline_variant", ...]` —
+# symbols its `reason` asserts are NOT defined anywhere in production Rust. This is opt-in
+# and defaults to empty: most `reason` text makes no such claim, and inferring one from
+# free-form prose would be exactly the kind of unreliable text-mining this project's own
+# incidents (the `SOURCE-COSMETIC`/digest confusions) warn against. Declaring the claim
+# explicitly is the same discipline as `mechanism_names`' `name_asserts` field: a claim
+# that is not written down cannot be checked, and one that is can be.
+#
+# NOT circular: the oracle is a `fn <symbol>` definition grepped directly out of the Rust
+# tree (the same `root` `build_whole()` already treats as the independent whole for R11),
+# never the map's own `censused`/`uncensused` bookkeeping and never a census artifact. A
+# symbol can be present here and still be dead code, unreachable, or wrong in some other
+# way this check does not claim to rule on — it only refuses "does not exist" once the
+# definition is sitting in the tree.
+# ---------------------------------------------------------------------------
+
+_FN_DEF = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*[<(]")
+_STATIC_DEF = re.compile(r"\bstatic\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:")
+
+
+def _defined_symbols(root: Path) -> dict[str, tuple[str, int]]:
+    """Every `fn NAME` / `static NAME` defined anywhere under *root*, first site wins."""
+    found: dict[str, tuple[str, int]] = {}
+    for path in _rust_files(root):
+        code = strip_comments_and_strings(path.read_text(encoding="utf-8", errors="replace"))
+        rel = str(path.relative_to(root.parent.parent)).replace("\\", "/")
+        for idx, line in enumerate(code.splitlines(), start=1):
+            for pattern in (_FN_DEF, _STATIC_DEF):
+                mo = pattern.search(line)
+                if mo:
+                    found.setdefault(mo.group(1), (rel, idx))
+    return found
+
+
+def check_stale_absence_claims(root: Path, mapping: dict) -> list[dict]:
+    """Surface map entries whose `absence_claims` name a symbol that DOES exist.
+
+    Returns one row per stale claim: the entry that made it, the symbol, and where the
+    symbol is actually defined. An entry with no `absence_claims` (the default) never
+    appears here regardless of what its prose says — this check only rules on claims an
+    owner opted into making checkable.
+    """
+    defined = _defined_symbols(root)
+    stale: list[dict] = []
+    for entry in mapping.get("surfaces", []):
+        for symbol in entry.get("absence_claims", []):
+            hit = defined.get(symbol)
+            if hit is not None:
+                stale.append(
+                    {
+                        "kind": entry["kind"],
+                        "id": entry["id"],
+                        "symbol": symbol,
+                        "defined_at": f"{hit[0]}:{hit[1]}",
+                    }
+                )
+    return stale
+
+
+# ---------------------------------------------------------------------------
 # The census's own output.  Read from the artifact, never from the test source: the
 # artifact is what the census produced, and R10 is explicit that the falsifier for "X is
 # wired" is an artifact X produced, never a reading of X's code.
@@ -570,6 +653,24 @@ def main(argv=None) -> int:
 
     cov = coverage(surfaces, mapping, set(mechanisms) if artifacts else set(mapping_mechs(mapping)))
     findings: list[str] = []
+
+    stale_claims = check_stale_absence_claims(args.rust_src, mapping)
+    if stale_claims:
+        lines = [
+            "Surface map entries claim a named production symbol does not exist, and it",
+            "does — checked against production Rust directly, not against the map's own",
+            "bookkeeping. A 'reason' that asserts an absence the tree contradicts is the",
+            "exact defect class issue #58 found in ONNXRUNTIME_EP_VULKAN_GEMV_PACKED's",
+            "entry: the next author reads the reason to decide whether a gap is still",
+            "open, and a stale absence claim keeps it open past the evidence.",
+            "",
+        ]
+        for c in stale_claims:
+            lines.append(
+                f"  [{c['kind']}] {c['id']} claims '{c['symbol']}' does not exist; "
+                f"defined at {c['defined_at']}"
+            )
+        findings.append(("stale_absence_claim", "\n".join(lines)))
 
     if cov["unmapped"]:
         lines = [

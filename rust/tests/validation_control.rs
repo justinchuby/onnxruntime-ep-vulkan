@@ -59,11 +59,13 @@ impl ProbeRun {
 }
 
 fn run_probe(plant: bool) -> ProbeRun {
+    run_probe_args(if plant { &["--plant-violation"] } else { &[] })
+}
+
+fn run_probe_args(extra: &[&str]) -> ProbeRun {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_epctl"));
     cmd.arg("--probe-validation");
-    if plant {
-        cmd.arg("--plant-violation");
-    }
+    cmd.args(extra);
     // The require-flag is the *caller's* choice, not this harness's; clear it so an ambient
     // setting cannot change what the probe reports mid-suite.
     cmd.env_remove("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION");
@@ -135,6 +137,93 @@ fn a_planted_vulkan_violation_is_caught_by_the_validation_layer() {
          stdout:\n{}\nstderr:\n{}",
         run.stdout,
         run.stderr
+    );
+}
+
+/// THE CONTROL FOR THE GEMV ROW TILE'S `groupCountY` CLAMP (issue #7).
+///
+/// `ops::quant::matmul_nbits_gemv` clamps `groupCountY` to 65535 — the floor every Vulkan 1.1
+/// implementation must offer — and `q_gemv.comp` covers a taller prefill with a y-grid-stride
+/// loop rather than a taller grid. The clamp exists because exceeding
+/// `maxComputeWorkGroupCount[1]` is *invalid*, not merely slow. A prefill that ran without
+/// complaint is evidence for the clamp only if a dispatch above the limit *would* have produced
+/// one, and the only way to know that is to make it happen.
+///
+/// Note on the VUID number: issue #7 cites `VUID-vkCmdDispatch-groupCountY-00418`, which is what
+/// the limit was numbered under in older spec revisions. The layer shipped with Vulkan SDK
+/// 1.4.350 reports it as `VUID-vkCmdDispatch-groupCountY-00387`. The assertion therefore matches
+/// on the *limit name* — text that has been stable across every renumbering — rather than on a
+/// number that has already moved once, because a control that silently stops matching is exactly
+/// the failure mode this file exists to prevent.
+#[test]
+fn a_dispatch_above_the_workgroup_count_limit_is_caught_by_the_validation_layer() {
+    let run = run_probe_args(&["--plant-dispatch-overflow"]);
+    if run.unavailable() {
+        skip_or_fail(&run, "the groupCountY dispatch-overflow control");
+        return;
+    }
+    assert_eq!(
+        run.code,
+        Some(0),
+        "the probe itself failed rather than reporting a verdict.\nstdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+    let caught: Vec<&str> = run
+        .stderr
+        .lines()
+        .chain(run.stdout.lines())
+        .filter(|l| l.contains("maxComputeWorkGroupCount[1]") && l.contains("groupCountY"))
+        .collect();
+    assert!(
+        !caught.is_empty(),
+        "THE CONTROL FAILED. epctl recorded a vkCmdDispatch whose groupCountY exceeds this \
+         device's maxComputeWorkGroupCount[1] and the validation layer said nothing about it.\n\n\
+         That does NOT mean the GEMV's y clamp is unnecessary. It means this machine cannot \
+         demonstrate that exceeding the limit is observable, and therefore that a clean prefill \
+         run here is not evidence the clamp is doing anything. `ops::quant::GEMV_MAX_GROUPS_Y` \
+         and the y-grid-stride loop in `q_gemv.comp` are only justified while this control \
+         fires.\n\n\
+         stdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+}
+
+/// The two plants must not be interchangeable: each asserts that ONE named VUID is observable.
+#[test]
+fn the_two_plants_are_mutually_exclusive_and_each_names_its_own_vuid() {
+    let both = run_probe_args(&["--plant-violation", "--plant-dispatch-overflow"]);
+    assert_eq!(
+        both.code,
+        Some(2),
+        "planting two violations in one run must be refused. A run that caught 'a' validation \
+         error would otherwise satisfy either control with the other's message, which is the \
+         same conflation the device-free design of --plant-violation exists to avoid.\n\
+         stdout:\n{}\nstderr:\n{}",
+        both.stdout,
+        both.stderr
+    );
+
+    // And the stateless plant must NOT be able to pass the dispatch control's assertion.
+    let stateless = run_probe(true);
+    if stateless.unavailable() {
+        skip_or_fail(&stateless, "the cross-plant discrimination check");
+        return;
+    }
+    assert!(
+        stateless.caught_lines() > 0,
+        "precondition: the stateless plant should have been caught"
+    );
+    assert!(
+        !stateless
+            .stderr
+            .lines()
+            .chain(stateless.stdout.lines())
+            .any(|l| l.contains("maxComputeWorkGroupCount[1]")),
+        "the stateless plant produced a groupCountY complaint, so the two controls are not \
+         distinguishable and neither one names what it claims to.\nstderr:\n{}",
+        stateless.stderr
     );
 }
 

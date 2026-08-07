@@ -1,0 +1,593 @@
+{
+  "label": "untiled-rows1",
+  "iters": 60,
+  "warmup": 20,
+  "gpu_timestamps": false,
+  "ep_available": true,
+  "barrier_backend": "device default",
+  "environment": {
+    "captured_at": "2026-08-06T19:01:04-0700",
+    "host": {
+      "os": "Windows",
+      "release": "11",
+      "version": "10.0.26200",
+      "machine": "AMD64",
+      "cpu": "Intel64 Family 6 Model 143 Stepping 8, GenuineIntel",
+      "cpu_count": 24,
+      "python": "3.12.10",
+      "onnxruntime": "1.28.0"
+    },
+    "build": {
+      "lib": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-7\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "present": true,
+      "bytes": 2506240,
+      "mtime": "2026-08-06T18:59:51",
+      "profile": "release",
+      "sha256": "a3b6f22a1716e826aeda6db8e299b185ec08ebcaff541b9b2b2d13832f6b0ca3"
+    },
+    "devices": [
+      {
+        "index": 0,
+        "name": "NVIDIA RTX A1000 [Vulkan 1.4.303]  \u00e2\u20ac\u201d gate PASS",
+        "detail": "",
+        "line": "Device 0 [Vulkan enum index 0]: NVIDIA RTX A1000 [Vulkan 1.4.303]  \u00e2\u20ac\u201d gate PASS"
+      }
+    ],
+    "device_note": "",
+    "device_facts": {
+      "devices": [
+        {
+          "index": 0,
+          "name": "NVIDIA RTX A1000",
+          "device_type": "VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU",
+          "api_version": "1.4.303",
+          "driver_version": "573.44",
+          "driver_name": "NVIDIA",
+          "timestamp_period_ns": 1,
+          "timestamp_valid_bits": 64,
+          "compute_queue_family": 0,
+          "compute_queue_count": 16,
+          "max_compute_shared_memory": 49152,
+          "max_workgroup_invocations": 1024,
+          "subgroup_size": 32,
+          "min_subgroup_size": 32,
+          "max_subgroup_size": 32,
+          "uma": false,
+          "device_local_host_visible": true,
+          "device_local_bytes": 8428453888,
+          "has_calibrated_timestamps": true,
+          "has_host_query_reset": true,
+          "notes": [],
+          "fingerprint": "nvidia-rtx-a1000/vk_physical_device_type_discrete_gpu/api1.4.303/drv573.44",
+          "timestamp_wrap_seconds": 18446744073.709553,
+          "timestamps_usable": true,
+          "transfer_class": "discrete"
+        }
+      ],
+      "note": "",
+      "source": "vulkaninfo (Vulkan SDK)"
+    },
+    "env": {
+      "ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS": "1"
+    },
+    "contention": {
+      "verdict": "UNMEASURED",
+      "reason": "no load sample was requested at capture time; see the per-pass machine_quiescence records, which are the authoritative ones"
+    },
+    "contention_note": "How busy the machine was. This belongs next to the driver version and the CPU model for the same reason those do: it changes the answer. The same device, build and test measured 9.5x apart on host command-buffer recording depending only on what else was running (docs/PERF.md \u00a710). Without this field a stored number cannot be re-checked later, because the one thing that most affected it left no trace. The authoritative record is the per-pass `machine_quiescence` in the result artifact, which covers the whole measurement; this is a spot-check of the moment the environment was captured.",
+    "producers": [
+      {
+        "name": "tests/ops/_models.py",
+        "kind": "op",
+        "version": null,
+        "digest": "f2180d6fe9c14129a2b56d1c3a45e96908ec9e8b419229d4e3d1cdf3d5746e27",
+        "opsets": {},
+        "model_family": null,
+        "fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+        "notes": "Synthetic single-op graphs shared with the correctness tests, so a benchmark cannot drift from what is tested. Says nothing about any model family."
+      }
+    ]
+  },
+  "device": {
+    "index": 0,
+    "name": "NVIDIA RTX A1000",
+    "device_type": "VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU",
+    "api_version": "1.4.303",
+    "driver_version": "573.44",
+    "driver_name": "NVIDIA",
+    "timestamp_period_ns": 1,
+    "timestamp_valid_bits": 64,
+    "compute_queue_family": 0,
+    "compute_queue_count": 16,
+    "max_compute_shared_memory": 49152,
+    "max_workgroup_invocations": 1024,
+    "subgroup_size": 32,
+    "min_subgroup_size": 32,
+    "max_subgroup_size": 32,
+    "uma": false,
+    "device_local_host_visible": true,
+    "device_local_bytes": 8428453888,
+    "has_calibrated_timestamps": true,
+    "has_host_query_reset": true,
+    "notes": [],
+    "fingerprint": "nvidia-rtx-a1000/vk_physical_device_type_discrete_gpu/api1.4.303/drv573.44",
+    "timestamp_wrap_seconds": 18446744073.709553,
+    "timestamps_usable": true,
+    "transfer_class": "discrete"
+  },
+  "device_fingerprint": "nvidia-rtx-a1000/vk_physical_device_type_discrete_gpu/api1.4.303/drv573.44",
+  "device_note": "",
+  "all_devices": [
+    {
+      "index": 0,
+      "name": "NVIDIA RTX A1000",
+      "device_type": "VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU",
+      "api_version": "1.4.303",
+      "driver_version": "573.44",
+      "driver_name": "NVIDIA",
+      "timestamp_period_ns": 1,
+      "timestamp_valid_bits": 64,
+      "compute_queue_family": 0,
+      "compute_queue_count": 16,
+      "max_compute_shared_memory": 49152,
+      "max_workgroup_invocations": 1024,
+      "subgroup_size": 32,
+      "min_subgroup_size": 32,
+      "max_subgroup_size": 32,
+      "uma": false,
+      "device_local_host_visible": true,
+      "device_local_bytes": 8428453888,
+      "has_calibrated_timestamps": true,
+      "has_host_query_reset": true,
+      "notes": [],
+      "fingerprint": "nvidia-rtx-a1000/vk_physical_device_type_discrete_gpu/api1.4.303/drv573.44",
+      "timestamp_wrap_seconds": 18446744073.709553,
+      "timestamps_usable": true,
+      "transfer_class": "discrete"
+    }
+  ],
+  "producers": [
+    {
+      "name": "tests/ops/_models.py",
+      "kind": "op",
+      "version": null,
+      "digest": "f2180d6fe9c14129a2b56d1c3a45e96908ec9e8b419229d4e3d1cdf3d5746e27",
+      "opsets": {},
+      "model_family": null,
+      "fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+      "notes": "Synthetic single-op graphs shared with the correctness tests, so a benchmark cannot drift from what is tested. Says nothing about any model family."
+    }
+  ],
+  "portability_floor": {
+    "shared_memory_bytes": 16384,
+    "workgroup_invocations": 256,
+    "source": "DESIGN.md \u00a77.2 R3/R4",
+    "device_shared_memory_bytes": 49152,
+    "device_subgroup_size": 32,
+    "device_transfer_class": "discrete",
+    "note": "Both local GPUs sit well above this floor. A configuration that fits here is not thereby selectable on every device the EP admits (\u00a77.0: shortfalls degrade op coverage, not device availability)."
+  },
+  "cases": [
+    {
+      "name": "matmulnbits_q4_b32_K1024_N1024",
+      "group": "gemm",
+      "note": "accuracy_level pinned to 1 by the builder (Trinity's oracle-pinning rule).",
+      "tags": [
+        "gemm",
+        "quantized",
+        "decode"
+      ],
+      "oq12_anchor": false,
+      "flops": 2097152,
+      "boundary_bytes_per_inference": 8192,
+      "producer": {
+        "name": "tests/ops/_models.py",
+        "kind": "op",
+        "version": null,
+        "digest": "f2180d6fe9c14129a2b56d1c3a45e96908ec9e8b419229d4e3d1cdf3d5746e27",
+        "opsets": {},
+        "model_family": null,
+        "fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+        "notes": "Synthetic single-op graphs shared with the correctness tests, so a benchmark cannot drift from what is tested. Says nothing about any model family."
+      },
+      "producer_fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+      "cpu": {
+        "name": "matmulnbits_q4_b32_K1024_N1024/cpu",
+        "n": 60,
+        "median_ms": 0.0399,
+        "min_ms": 0.0356,
+        "mad_ms": 0.0025,
+        "iqr_ms": 0.0048,
+        "p05_ms": 0.0361,
+        "p95_ms": 0.0504,
+        "rsd": 0.091,
+        "noisy": false
+      },
+      "vulkan": {
+        "name": "matmulnbits_q4_b32_K1024_N1024/vulkan",
+        "n": 60,
+        "median_ms": 0.1295,
+        "min_ms": 0.1168,
+        "mad_ms": 0.0039,
+        "iqr_ms": 0.0141,
+        "p05_ms": 0.1192,
+        "p95_ms": 0.1921,
+        "rsd": 0.0441,
+        "noisy": false
+      },
+      "speedup_end_to_end": 0.308,
+      "gpu_kernel_ms": null,
+      "tile_config": null,
+      "portability": {
+        "verdict": "unknown",
+        "reasons": [
+          "shared memory budget not recorded",
+          "workgroup size not recorded"
+        ],
+        "quotable_as_ep_behaviour": false
+      },
+      "claim": {
+        "claimed": true,
+        "claimed_nodes": 1,
+        "total_nodes": 1,
+        "island_count": null,
+        "largest_island_nodes": null,
+        "largest_island_flops": null,
+        "declined": []
+      },
+      "measurement": "end-to-end host latency (upload+record/replay+submit+fence+readback)",
+      "achieved_gflops_end_to_end": 16.188
+    },
+    {
+      "name": "matmulnbits_q4_b32_K4096_N4096",
+      "group": "gemm",
+      "note": "OQ-12 anchor: the \u22651.5x-over-CPU bar is measured here (DESIGN.md \u00a711.1). accuracy_level pinned to 1 by the builder.",
+      "tags": [
+        "gemm",
+        "quantized",
+        "decode"
+      ],
+      "oq12_anchor": true,
+      "flops": 33554432,
+      "boundary_bytes_per_inference": 32768,
+      "producer": {
+        "name": "tests/ops/_models.py",
+        "kind": "op",
+        "version": null,
+        "digest": "f2180d6fe9c14129a2b56d1c3a45e96908ec9e8b419229d4e3d1cdf3d5746e27",
+        "opsets": {},
+        "model_family": null,
+        "fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+        "notes": "Synthetic single-op graphs shared with the correctness tests, so a benchmark cannot drift from what is tested. Says nothing about any model family."
+      },
+      "producer_fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+      "cpu": {
+        "name": "matmulnbits_q4_b32_K4096_N4096/cpu",
+        "n": 60,
+        "median_ms": 0.2729,
+        "min_ms": 0.2368,
+        "mad_ms": 0.0043,
+        "iqr_ms": 0.009,
+        "p05_ms": 0.2383,
+        "p95_ms": 0.2828,
+        "rsd": 0.0236,
+        "noisy": false
+      },
+      "vulkan": {
+        "name": "matmulnbits_q4_b32_K4096_N4096/vulkan",
+        "n": 60,
+        "median_ms": 0.3034,
+        "min_ms": 0.2579,
+        "mad_ms": 0.0251,
+        "iqr_ms": 0.045,
+        "p05_ms": 0.2636,
+        "p95_ms": 0.3742,
+        "rsd": 0.1224,
+        "noisy": true
+      },
+      "speedup_end_to_end": 0.899,
+      "gpu_kernel_ms": null,
+      "tile_config": null,
+      "portability": {
+        "verdict": "unknown",
+        "reasons": [
+          "shared memory budget not recorded",
+          "workgroup size not recorded"
+        ],
+        "quotable_as_ep_behaviour": false
+      },
+      "claim": {
+        "claimed": true,
+        "claimed_nodes": 1,
+        "total_nodes": 1,
+        "island_count": null,
+        "largest_island_nodes": null,
+        "largest_island_flops": null,
+        "declined": []
+      },
+      "measurement": "end-to-end host latency (upload+record/replay+submit+fence+readback)",
+      "achieved_gflops_end_to_end": 110.576
+    },
+    {
+      "name": "matmulnbits_q4_b32_K4096_N4096_M2",
+      "group": "gemm",
+      "note": "prefill: M rows share one pass over the packed weights (issue #7). accuracy_level pinned to 1 by the builder.",
+      "tags": [
+        "gemm",
+        "quantized",
+        "prefill"
+      ],
+      "oq12_anchor": false,
+      "flops": 67108864,
+      "boundary_bytes_per_inference": 65536,
+      "producer": {
+        "name": "tests/ops/_models.py",
+        "kind": "op",
+        "version": null,
+        "digest": "f2180d6fe9c14129a2b56d1c3a45e96908ec9e8b419229d4e3d1cdf3d5746e27",
+        "opsets": {},
+        "model_family": null,
+        "fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+        "notes": "Synthetic single-op graphs shared with the correctness tests, so a benchmark cannot drift from what is tested. Says nothing about any model family."
+      },
+      "producer_fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+      "cpu": {
+        "name": "matmulnbits_q4_b32_K4096_N4096_M2/cpu",
+        "n": 60,
+        "median_ms": 0.9454,
+        "min_ms": 0.7943,
+        "mad_ms": 0.0087,
+        "iqr_ms": 0.0314,
+        "p05_ms": 0.8488,
+        "p95_ms": 0.968,
+        "rsd": 0.0137,
+        "noisy": false
+      },
+      "vulkan": {
+        "name": "matmulnbits_q4_b32_K4096_N4096_M2/vulkan",
+        "n": 60,
+        "median_ms": 0.3526,
+        "min_ms": 0.3323,
+        "mad_ms": 0.0089,
+        "iqr_ms": 0.0512,
+        "p05_ms": 0.3369,
+        "p95_ms": 0.4618,
+        "rsd": 0.0374,
+        "noisy": false
+      },
+      "speedup_end_to_end": 2.681,
+      "gpu_kernel_ms": null,
+      "tile_config": null,
+      "portability": {
+        "verdict": "unknown",
+        "reasons": [
+          "shared memory budget not recorded",
+          "workgroup size not recorded"
+        ],
+        "quotable_as_ep_behaviour": false
+      },
+      "claim": {
+        "claimed": true,
+        "claimed_nodes": 1,
+        "total_nodes": 1,
+        "island_count": null,
+        "largest_island_nodes": null,
+        "largest_island_flops": null,
+        "declined": []
+      },
+      "measurement": "end-to-end host latency (upload+record/replay+submit+fence+readback)",
+      "achieved_gflops_end_to_end": 190.353
+    },
+    {
+      "name": "matmulnbits_q4_b32_K4096_N4096_M4",
+      "group": "gemm",
+      "note": "prefill: M rows share one pass over the packed weights (issue #7). accuracy_level pinned to 1 by the builder.",
+      "tags": [
+        "gemm",
+        "quantized",
+        "prefill"
+      ],
+      "oq12_anchor": false,
+      "flops": 134217728,
+      "boundary_bytes_per_inference": 131072,
+      "producer": {
+        "name": "tests/ops/_models.py",
+        "kind": "op",
+        "version": null,
+        "digest": "f2180d6fe9c14129a2b56d1c3a45e96908ec9e8b419229d4e3d1cdf3d5746e27",
+        "opsets": {},
+        "model_family": null,
+        "fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+        "notes": "Synthetic single-op graphs shared with the correctness tests, so a benchmark cannot drift from what is tested. Says nothing about any model family."
+      },
+      "producer_fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+      "cpu": {
+        "name": "matmulnbits_q4_b32_K4096_N4096_M4/cpu",
+        "n": 60,
+        "median_ms": 0.8665,
+        "min_ms": 0.8086,
+        "mad_ms": 0.0286,
+        "iqr_ms": 0.0536,
+        "p05_ms": 0.8159,
+        "p95_ms": 0.9302,
+        "rsd": 0.049,
+        "noisy": false
+      },
+      "vulkan": {
+        "name": "matmulnbits_q4_b32_K4096_N4096_M4/vulkan",
+        "n": 60,
+        "median_ms": 0.5813,
+        "min_ms": 0.5501,
+        "mad_ms": 0.0277,
+        "iqr_ms": 0.1034,
+        "p05_ms": 0.5532,
+        "p95_ms": 0.7465,
+        "rsd": 0.0705,
+        "noisy": false
+      },
+      "speedup_end_to_end": 1.491,
+      "gpu_kernel_ms": null,
+      "tile_config": null,
+      "portability": {
+        "verdict": "unknown",
+        "reasons": [
+          "shared memory budget not recorded",
+          "workgroup size not recorded"
+        ],
+        "quotable_as_ep_behaviour": false
+      },
+      "claim": {
+        "claimed": true,
+        "claimed_nodes": 1,
+        "total_nodes": 1,
+        "island_count": null,
+        "largest_island_nodes": null,
+        "largest_island_flops": null,
+        "declined": []
+      },
+      "measurement": "end-to-end host latency (upload+record/replay+submit+fence+readback)",
+      "achieved_gflops_end_to_end": 230.892
+    },
+    {
+      "name": "matmulnbits_q4_b32_K4096_N4096_M5",
+      "group": "gemm",
+      "note": "prefill: M rows share one pass over the packed weights (issue #7). accuracy_level pinned to 1 by the builder.",
+      "tags": [
+        "gemm",
+        "quantized",
+        "prefill"
+      ],
+      "oq12_anchor": false,
+      "flops": 167772160,
+      "boundary_bytes_per_inference": 163840,
+      "producer": {
+        "name": "tests/ops/_models.py",
+        "kind": "op",
+        "version": null,
+        "digest": "f2180d6fe9c14129a2b56d1c3a45e96908ec9e8b419229d4e3d1cdf3d5746e27",
+        "opsets": {},
+        "model_family": null,
+        "fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+        "notes": "Synthetic single-op graphs shared with the correctness tests, so a benchmark cannot drift from what is tested. Says nothing about any model family."
+      },
+      "producer_fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+      "cpu": {
+        "name": "matmulnbits_q4_b32_K4096_N4096_M5/cpu",
+        "n": 60,
+        "median_ms": 0.935,
+        "min_ms": 0.8344,
+        "mad_ms": 0.0461,
+        "iqr_ms": 0.088,
+        "p05_ms": 0.8588,
+        "p95_ms": 1.0828,
+        "rsd": 0.073,
+        "noisy": false
+      },
+      "vulkan": {
+        "name": "matmulnbits_q4_b32_K4096_N4096_M5/vulkan",
+        "n": 60,
+        "median_ms": 0.6762,
+        "min_ms": 0.6478,
+        "mad_ms": 0.0169,
+        "iqr_ms": 0.0409,
+        "p05_ms": 0.6509,
+        "p95_ms": 0.7938,
+        "rsd": 0.0372,
+        "noisy": false
+      },
+      "speedup_end_to_end": 1.383,
+      "gpu_kernel_ms": null,
+      "tile_config": null,
+      "portability": {
+        "verdict": "unknown",
+        "reasons": [
+          "shared memory budget not recorded",
+          "workgroup size not recorded"
+        ],
+        "quotable_as_ep_behaviour": false
+      },
+      "claim": {
+        "claimed": true,
+        "claimed_nodes": 1,
+        "total_nodes": 1,
+        "island_count": null,
+        "largest_island_nodes": null,
+        "largest_island_flops": null,
+        "declined": []
+      },
+      "measurement": "end-to-end host latency (upload+record/replay+submit+fence+readback)",
+      "achieved_gflops_end_to_end": 248.129
+    },
+    {
+      "name": "matmulnbits_q4_b32_K4096_N4096_M8",
+      "group": "gemm",
+      "note": "prefill: M rows share one pass over the packed weights (issue #7). accuracy_level pinned to 1 by the builder.",
+      "tags": [
+        "gemm",
+        "quantized",
+        "prefill"
+      ],
+      "oq12_anchor": false,
+      "flops": 268435456,
+      "boundary_bytes_per_inference": 262144,
+      "producer": {
+        "name": "tests/ops/_models.py",
+        "kind": "op",
+        "version": null,
+        "digest": "f2180d6fe9c14129a2b56d1c3a45e96908ec9e8b419229d4e3d1cdf3d5746e27",
+        "opsets": {},
+        "model_family": null,
+        "fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+        "notes": "Synthetic single-op graphs shared with the correctness tests, so a benchmark cannot drift from what is tested. Says nothing about any model family."
+      },
+      "producer_fingerprint": "tests/ops/_models.py@-#f2180d6fe9c1",
+      "cpu": {
+        "name": "matmulnbits_q4_b32_K4096_N4096_M8/cpu",
+        "n": 60,
+        "median_ms": 0.9435,
+        "min_ms": 0.8821,
+        "mad_ms": 0.0531,
+        "iqr_ms": 0.1651,
+        "p05_ms": 0.8872,
+        "p95_ms": 1.0994,
+        "rsd": 0.0834,
+        "noisy": false
+      },
+      "vulkan": {
+        "name": "matmulnbits_q4_b32_K4096_N4096_M8/vulkan",
+        "n": 60,
+        "median_ms": 0.9611,
+        "min_ms": 0.9505,
+        "mad_ms": 0.0038,
+        "iqr_ms": 0.0144,
+        "p05_ms": 0.9541,
+        "p95_ms": 1.1805,
+        "rsd": 0.0059,
+        "noisy": false
+      },
+      "speedup_end_to_end": 0.982,
+      "gpu_kernel_ms": null,
+      "tile_config": null,
+      "portability": {
+        "verdict": "unknown",
+        "reasons": [
+          "shared memory budget not recorded",
+          "workgroup size not recorded"
+        ],
+        "quotable_as_ep_behaviour": false
+      },
+      "claim": {
+        "claimed": true,
+        "claimed_nodes": 1,
+        "total_nodes": 1,
+        "island_count": null,
+        "largest_island_nodes": null,
+        "largest_island_flops": null,
+        "declined": []
+      },
+      "measurement": "end-to-end host latency (upload+record/replay+submit+fence+readback)",
+      "achieved_gflops_end_to_end": 279.3
+    }
+  ],
+  "disclaimer": "Vulkan numbers are end-to-end host latency, not GPU kernel time. Cases marked not-claimed ran on the CPU EP. See docs/PERF.md."
+}

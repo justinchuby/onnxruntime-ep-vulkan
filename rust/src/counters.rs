@@ -4295,6 +4295,42 @@ mod tests {
         reset();
     }
 
+    /// The row tile appended a seventh specialisation constant. Appending must not repoint the
+    /// field this module reads by index, and the new constant must reach the witness on its own.
+    ///
+    /// `record_pipeline_variant` names a variant by its whole constant vector, so `QB_ROWS`
+    /// separates a tiled prefill pipeline from a decode one without this module growing a field —
+    /// and without the ~185 recorded artifacts that mirror the counters JSON needing a new key.
+    #[test]
+    fn appending_the_row_tile_constant_leaves_the_packed_field_where_it_was() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        // Seven constants: [wg, bits, block, has_zp, cols, packed, rows].
+        record_pipeline_variant("q_gemv_f16", &[32, 4, 32, 0, 16, 1, 1]);
+        assert_eq!(
+            gemv_packed_spec_constant(),
+            "1",
+            "index 5 must still be `packed` after `rows` was appended at index 6"
+        );
+        // Decode and prefill differ only in the appended constant, and are still distinguished.
+        record_pipeline_variant("q_gemv_f16", &[32, 4, 32, 0, 16, 1, 2]);
+        assert_eq!(
+            gemv_packed_spec_constant(),
+            "1",
+            "both variants are packed; the row tile must not make the packed field ambiguous"
+        );
+        assert_eq!(
+            pipeline_variants(),
+            vec![
+                "q_gemv_f16:32,4,32,0,16,1,1".to_string(),
+                "q_gemv_f16:32,4,32,0,16,1,2".to_string(),
+            ],
+            "the row tile is witnessed by the variant vector itself"
+        );
+        reset();
+    }
+
     /// The verdict vocabulary is duplicated in `tests/ops/_verdict.py`. Duplicated vocabularies
     /// drift, and a drifted one fails *quietly*: `extract_equivalence` maps any token it does not
     /// recognise to `UNMEASURED`, so a token the Python side renamed would arrive here as "no

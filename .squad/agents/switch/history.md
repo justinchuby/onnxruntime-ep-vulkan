@@ -146,3 +146,44 @@ contains what you think before destroying the original.
 **Left open:** `Sin`/`Cos`/`Tan`/`Atan` carry the same exposure (`sin`/`cos` allowed an absolute
 2^-11 = 4.9e-4, 49x our atol) and are on the RoPE path. Not fixed here — second body of math,
 would make the change unreviewable. Recorded in `BUILTIN_SCREEN` and §8.9.28(6).
+
+## Session 53 — 2026-08-06 — issue #7: the row tile is a register budget, and the A/B harness lied twice before the kernel did
+
+**Shipped:** `QB_ROWS` (spec constant 6) tiles MatMulNBits prefill rows in `q_gemv.comp`. Weight
+amplification over the real 161-node Phi-3.5 graph: M=2 2.0->1.0, M=4 4.0->2.0, M=5 5.0->3.0,
+M=1 unchanged at 1.0. Wall clock on the A1000: M=8 **1.618x**, M=4 1.367x, M=2 1.162x, M=1 0.994x
+(both arms are the same pipeline at M=1 — that number is the noise floor, and it is the control).
+Rows reduce sequentially through one reuse of `red[]`, so shared memory is unchanged and no device
+limit is consulted; the cap is the accumulator register budget. `QB_ROWS == 1` holds the verbatim
+old body.
+
+**The harness was wrong twice, and both times it was wrong in a way that looked like a result.**
+(1) Fixed arm order — untiled then tiled, every repeat — produced a **0.905x "slowdown" at M=1**,
+where the two arms build the *identical* pipeline. That is a systematic bias reported as a
+measurement. Alternating arm order per repeat brought it to 0.994x. (2) The A/B bypassed
+`bench.py::select_device` and ran on `device None`, i.e. silently possibly not the A1000. `bench.py`
+refuses to do that; my script had reimplemented the easy half of it. **If you write a new timing
+harness, call the existing device selector, and put a null arm in it — one where you know the
+answer must be 1.0 — and do not believe any other number until that one lands.**
+
+**fp16 `max_rel` over a GEMM output is a cancellation meter, not an accuracy meter.** The real-weight
+differential reported `max_rel` 2.1e-1 at M=4 and I nearly filed it as accuracy loss. Cancellation
+chances grow with M, so the metric grows with M for a kernel that is exactly as accurate. Reported
+`max_abs` (exact fp16 ULPs) plus relative error restricted to elements >= 0.1x RMS: **flat at
+~9.5e-04 from M=1 to M=8**, 72/72 match.
+
+**Cost me time:** `src/ops/` forbids `unsafe` (`tests/layering.rs`), so env-var plumbing cannot be
+tested in-module — split the pure logic (`clamp_max_rows`, `gemv_tile_with`) into `src/` and put the
+env test in `rust/tests/`. The lib crate is `onnxruntime_vulkan_ep`, not `onnxruntime_ep_vulkan`.
+`bench/results/_ledger_models/` is **version-controlled**; I deleted it as scratch and had to
+restore it. `bench.py` needs `PYTHONIOENCODING=utf-8` or its own output crashes it on cp1252.
+`VUID-vkCmdDispatch-groupCountY-00418` has been **renumbered to -00387** — assert on the stable
+text `maxComputeWorkGroupCount[1]`, not the number. A validation-layer callback that returns
+`VK_FALSE` forwards the invalid dispatch to the driver and you get 0xC0000005; return `VK_TRUE`
+while armed.
+
+**Left open:** the tiled arm uses 32-bit scalar B loads where decode uses 128-bit, which is why
+time improves less than traffic; raising `GEMV_MAX_TILE` past 32 and widening those loads are the
+next two levers. The modelrunner is still honestly UNSUPPORTED end-to-end (GroupQueryAttention
+rejects generated inputs on the **CPU reference arm**), so the operator-level real-weights probe is
+the strongest proof available and the PR says so rather than implying a model-level one.

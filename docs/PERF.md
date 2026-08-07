@@ -3771,7 +3771,6 @@ Reproduce: `python bench/results/probe_weight_reread.py`, then
 Locked by `bench/test_weight_reread.py` (15 tests).
 
 ## 23. The lever every grouped model pays for, and a ledger with no derivation (2026-08-03)
-
 Two items, one shader change, one retraction. Neither needed a clock.
 
 ### 23.1 `Nq/Nkv > 1` writes `present` G times
@@ -4211,3 +4210,190 @@ ext-inst at all**. Neither opcode is in the affected set `{30, 37, 40, 43, 50}`,
 the silent subset `{37, 43}`. **The weight read amplification of exactly 1.000000 is untouched and
 needs no re-run.**
 
+
+
+## 25. The amplification the anchor was hiding: `M` passes over the weights (2026-08-06)
+
+§22 made the weight-read amplification falsifiable and read it at **1.000000**. That reading was
+correct and it was also *narrow*, in a way the section did not say: it was taken at `M = 1`. The
+probe walked one dispatch of a decode-shaped GEMV, and a decode-shaped GEMV reads each weight byte
+exactly once because there is only one activation row to read it for.
+
+Prefill is not decode. `q_gemv.comp` mapped one workgroup to one `(row, column-tile)` pair, so a
+prefill of `M` rows dispatched `M` times as many workgroups and **every one of them re-read the
+whole packed column tile it was assigned**. The amplification at `M` was `M`. Nothing in the tree
+said so, because nothing in the tree had ever asked the probe for `M > 1`.
+
+Issue #7. This section is the reading, before and after.
+
+### 25.1 The defect, measured before it was fixed
+
+The first thing the extended probe did was walk the *unmodified* kernel at `M > 1`, so the number
+being fixed is a measurement and not a motivation:
+
+| M | amplification, pre-change | what that is |
+|---|---|---|
+| 1 | 1.000000 | §22's anchor, unchanged |
+| 2 | 2.000000 | every weight byte read twice |
+| 4 | 4.000000 | every weight byte read four times |
+| 5 | 5.000000 | every weight byte read five times |
+
+Denominator as in §22: **1,861,189,632** bytes of int4 initializer over Phi-3.5's 161 MatMulNBits
+nodes, summed off the graph's external-data `length` fields, not restated.
+
+### 25.2 The change
+
+One specialisation constant, `QB_ROWS` at id 6, and a second arm in `main()`. A workgroup now owns
+a `QB_ROWS x QB_COLS` tile of the output: it loads a packed weight blob once and applies it to all
+`QB_ROWS` activation rows before moving on. Weight amplification falls from `M` to `ceil(M/QB_ROWS)`.
+
+Four properties are worth naming because each of them is what makes this portable rather than a
+tuning win on one card:
+
+* **It costs no shared memory.** The reduction is *sequential over rows*, reusing the one `red[]`
+  array the decode path already had. Shared-memory usage is byte-for-byte what it was, so no device
+  that can run the decode kernel can fail to run the tiled one. The row tile is deliberately not a
+  device-limit question.
+* **It needs no new feature, extension or capability.** Vulkan 1.1 core, unchanged.
+* **`QB_ROWS == 1` is a specialisation-constant branch holding the verbatim pre-change code.** That
+  makes "decode is bit-identical" a property of the *source text* rather than an argument about
+  floating-point associativity. At `M = 1` the host selects `rows = 1`, both arms bind the same
+  constants, and the same SPIR-V produces the same pipeline.
+* **It is bounded, and the bound is checked twice.** `QB_ROWS * QB_COLS <= 32` is the accumulator
+  register budget. The host refuses with `EpError::Internal` rather than dispatching an illegal
+  tile, and the shader's first statement is a spec-constant guard that returns before any
+  `barrier()`. Both operands are specialisation constants, so it folds away in every real pipeline
+  and costs nothing.
+
+The bound is not decorative. `rows=4, cols=16` indexes `acc[r*QB_COLS+c]` up to 63 against a
+32-element array, and the SPIR-V interpreter caught it as an out-of-bounds *before* either guard
+existed. The host cannot select that tile — but "unreachable" is not the same claim as
+"fail-closed", and `test_an_illegal_tile_computes_nothing_rather_than_overrunning` is the control
+that makes the difference visible.
+
+### 25.3 The reading, after
+
+Same probe, same denominator, same module-by-content-digest binding, same four positive controls
+(the fourth, `row_tile_removes_the_M_fold_weight_reread`, is new and fires):
+
+| M | pre-change | post-change | predicted `ceil(M/rows)` | weight bytes no longer named |
+|---|---|---|---|---|
+| 1 | 1.000000 | **1.000000** | 1 | — (decode is untouched) |
+| 2 | 2.000000 | **1.000000** | 1 | 1,861,189,632 |
+| 4 | 4.000000 | **2.000000** | 2 | 3,722,379,264 |
+| 5 | 5.000000 | **3.000000** | 3 | 3,722,379,264 |
+
+Every one of Phi-3.5's five distinct MatMulNBits shapes selects `(cols=16, rows=2)` and every one
+reaches coverage 1.000000 in both arms. `M = 5` landing on 3 rather than 2.5 is the tail tile being
+counted honestly: `ceil(5/2) = 3`, and the third tile does a full pass to compute one row.
+
+**The `M = 4` row is where the tile is currently leaving something.** `gemv_tile` picks `rows = 2`,
+not 4, and the reason is arithmetic rather than caution: when `cols | N` the byte model's weight
+term depends only on `rows` and its activation term only on `rows/cols`, so `(16, 2)` and `(8, 4)`
+name *exactly the same bytes* and the strict-improvement rule keeps the first. `(16, 4)` would be
+strictly better and is refused by `cols * rows = 64 > 32`. Raising the accumulator budget is the
+obvious next lever and is not taken here.
+
+### 25.4 What it is worth on a clock
+
+A byte the shader does not name is not automatically a microsecond saved, so this was measured
+rather than inferred. `bench/results/ab_row_tile.py` alternates the two arms inside one process on
+one pinned device — `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS=1` against `=4`, five interleaved repeats,
+50 timed iterations after 20 warmup each — on the **NVIDIA RTX A1000** (`vk 1.4.303`, driver
+`573.44`, discrete). Shape is the OQ-12 anchor's `K=N=4096`, q4, block 32, fp32.
+
+| M | untiled (ms) | tiled (ms) | speedup, median of paired ratios | [min, max] |
+|---|---|---|---|---|
+| **1** | 0.248 | 0.229 | **0.994x** | [0.944, 1.151] |
+| 2 | 0.323 | 0.290 | 1.162x | [1.082, 1.169] |
+| 4 | 0.526 | 0.381 | 1.367x | [1.237, 1.512] |
+| 5 | 0.674 | 0.482 | 1.344x | [1.285, 1.429] |
+| 8 | 0.938 | 0.582 | **1.618x** | [1.537, 1.704] |
+
+**The `M = 1` row is not a result, it is the control.** Both arms bind identical specialisation
+constants and identical SPIR-V there, so its measured 0.994x with a spread of [0.944, 1.151] *is*
+this harness's noise floor, and every other row has to be read against it. The `M >= 2` speedups
+all sit above the control's maximum, so they are not the harness.
+
+Two disclosures about how that table was obtained, because the first version of it was wrong:
+
+* **A fixed arm order is a systematic bias, not noise.** Running untiled-then-tiled every repeat
+  produced a **0.905x** "slowdown" at `M = 1` — on a shape where the two arms are the same
+  pipeline, so the only thing it could have been measuring was the order. The GPU clock and the
+  page cache drift monotonically inside a repeat and whichever arm always runs second inherits it.
+  The arms are now alternated per repeat and the control comes back to 0.994x.
+* **An unpinned device is not a device.** The first run did not pin and reported `device None`; on
+  this two-GPU box `bench.py::select_device` exists precisely because an unattributed result is not
+  a slightly worse result. The A/B now refuses to run rather than report an unnamed device, and the
+  device name is in the JSON.
+
+Against the CPU EP at the same shape (`bench/results/prefill_{tiled,untiled}.json`, both pinned to
+the A1000), the tile moves prefill from roughly parity into a real win: at `M = 8`, 0.98x untiled
+becomes 1.79x tiled; at `M = 4`, 1.49x becomes 2.47x.
+
+The wall-clock gain is smaller than the traffic gain, and the reason is stated rather than glossed:
+the tiled arm currently issues **32-bit scalar B loads** where the decode arm issues 128-bit ones
+(`tiled_load_widths_bytes: [4]` against `untiled_load_widths_bytes: [16]` in the probe output). It
+names the same bytes in four times as many instructions. That is a register-pressure decision, it
+is visible in the instrument, and it is the second obvious next lever.
+
+### 25.5 Whether it is still right
+
+Traffic is only interesting if the answer is unchanged, so the equivalence was re-established at
+three levels.
+
+**The proof ledger.** The shader edit moved the digest, `gen_proof_ledger.py --check` failed closed
+with `FAIL(LEDGER_DOES_NOT_DESCRIBE_THE_BUILD)` naming exactly the six MatMulNBits entries, and all
+six were re-proven on the A1000. 133/133 entries live, all MATCH.
+
+**The model's own weights.** `bench/results/probe_real_matmulnbits_rows.py` lifts real MatMulNBits
+nodes out of the resolved Phi-3.5 file — real packed int4, real scales, real zero-points, real fp16,
+real K and N — into one-node graphs and runs each on both providers at `M ∈ {1,2,3,4,5,8}`. Twelve
+nodes covering every distinct form present, **72/72 match**:
+
+| M | match | max abs err | max rel err, significant elements | max rel err, all elements |
+|---|---|---|---|---|
+| 1 | 12/12 | 1.953e-03 | 9.234e-04 | 6.792e-03 |
+| 2 | 12/12 | 3.906e-03 | 9.461e-04 | 1.881e-02 |
+| 3 | 12/12 | 3.906e-03 | 9.766e-04 | 3.883e-02 |
+| 4 | 12/12 | 7.812e-03 | 9.699e-04 | 2.093e-01 |
+| 5 | 12/12 | 3.906e-03 | 9.756e-04 | 5.649e-02 |
+| 8 | 12/12 | 1.562e-02 | 9.756e-04 | 1.364e-01 |
+
+The `rel(all)` column looks alarming and is not. It is a **cancellation meter, not an accuracy
+meter**: where the CPU result lands near zero a one-ulp difference reads as a huge relative one, and
+the number of chances to land near zero grows linearly with `M`. The two columns that are actually
+about accuracy say so plainly — `rel(significant)`, restricted to elements at least a tenth of the
+output RMS, is **flat at ~9.5e-04 from `M = 1` to `M = 8`**, and every `max abs` value is an exact
+power of two, i.e. one to two fp16 ULPs at that magnitude. The tiled arm is neither better nor
+worse than the decode arm; it is the same arithmetic in a different order.
+
+**The one honest limitation.** `rust/modelrunner` still reports
+`UNSUPPORTED(reason=reference_run_unsupported)` for this model: its GroupQueryAttention nodes reject
+*that tool's own generated* inputs on the **CPU reference arm** (`seqlens_k[0] = 7 is out of range
+[0, 1)`) because the model's inputs are interdependent and the runner's generic input generator does
+not know that. That is a limit of `rust/modelrunner`'s input generation specifically, it has nothing
+to do with MatMulNBits or with this change, and it does **not** mean there is no whole-model CPU
+reference available at all: `bench/phi35.py`'s `_run_device` already builds one, on real
+hand-constructed feeds (`tests/ops/test_phi35.py`'s `_build_phi35_feeds()`, not generated ones), by
+opening the same artifact a second time with `providers=["CPUExecutionProvider"]` and running it
+through `classify_outputs` as the §10.0 gate *before* anything is timed — a Vulkan run that
+disagrees with that CPU run is refused, never silently reported. Nothing here is a new end-to-end
+logits claim beyond what §10.0 already established, and nothing here should be read as one. What is
+claimed in this section is the operator, on the model's own bytes, plus the graph-wide traffic
+reading — which is the narrowest thing that is still about the real model.
+
+### 25.6 The fallback, and why it is the same mechanism as the control
+
+`ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` clamps the largest selectable row tile. Setting it to `1`
+restores the pre-issue-#7 geometry exactly — `rows = 1` is the seed of the tile search and the
+shader's `QB_ROWS == 1u` arm is the verbatim old kernel — without a rebuild. It is deliberately the
+*same* knob the A/B above uses, for the reason `gemv_packed`'s override already established: an arm
+you cannot switch in-place is an arm you cannot measure honestly, and an arm you cannot measure is
+one you will not be able to diagnose in the field either. Values are clamped to `[1, 4]` rather
+than trusted, and an unparseable value means "the default" rather than "refuse to run".
+
+Reproduce: `python bench/results/probe_weight_reread.py`;
+`python bench/results/ab_row_tile.py`; `python bench/results/probe_real_matmulnbits_rows.py`.
+Locked by `bench/test_weight_reread.py` (26 tests), `tests/ops/test_matmulnbits.py` (77 tests),
+`rust/tests/validation_control.rs` (5 tests), and the `ops::quant` unit tests.
