@@ -375,29 +375,55 @@ _FN_DEF = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*[<(]")
 _STATIC_DEF = re.compile(r"\bstatic\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:")
 
 
-def _defined_symbols(root: Path) -> dict[str, tuple[str, int]]:
-    """Every `fn NAME` / `static NAME` defined anywhere under *root*, first site wins."""
+def _defined_symbols(root: Path) -> tuple[dict[str, tuple[str, int]], dict]:
+    """Every `fn NAME` / `static NAME` defined anywhere under *root*, first site wins.
+
+    Held out: lines inside `#[cfg(test)] mod ... { ... }` blocks, using the SAME
+    `test_line_span()` this file already imports and the SAME reason
+    `extract_env_switches()` holds them out for (issue #61) — a symbol defined only
+    inside a test module is not a production definition, and reading it as one convicts
+    an `absence_claims` entry of a lie about production it never told. The held-out
+    count is returned alongside the symbol table and published rather than dropped
+    silently (R12): a screen that does not say what it declined to read is a screen
+    whose silence cannot be audited. `test_line_span()`'s own limits apply unchanged —
+    it recognises the literal `#[cfg(test)]` attribute text (not e.g.
+    `#[cfg_attr(test, ...)]`) and is brace-counted, not a real Rust parser; this
+    extractor inherits both limits rather than papering over them, exactly as
+    `extract_env_switches()` does.
+    """
     found: dict[str, tuple[str, int]] = {}
+    scanned = 0
+    held_out = 0
     for path in _rust_files(root):
         code = strip_comments_and_strings(path.read_text(encoding="utf-8", errors="replace"))
+        skip = test_line_span(code)
         rel = str(path.relative_to(root.parent.parent)).replace("\\", "/")
         for idx, line in enumerate(code.splitlines(), start=1):
+            if idx in skip:
+                held_out += 1
+                continue
+            scanned += 1
             for pattern in (_FN_DEF, _STATIC_DEF):
                 mo = pattern.search(line)
                 if mo:
                     found.setdefault(mo.group(1), (rel, idx))
-    return found
+    return found, {
+        "defined_symbol_lines_scanned": scanned,
+        "defined_symbol_lines_held_out": held_out,
+    }
 
 
-def check_stale_absence_claims(root: Path, mapping: dict) -> list[dict]:
+def check_stale_absence_claims(root: Path, mapping: dict) -> tuple[list[dict], dict]:
     """Surface map entries whose `absence_claims` name a symbol that DOES exist.
 
     Returns one row per stale claim: the entry that made it, the symbol, and where the
     symbol is actually defined. An entry with no `absence_claims` (the default) never
     appears here regardless of what its prose says — this check only rules on claims an
-    owner opted into making checkable.
+    owner opted into making checkable. Also returns the `_defined_symbols()` frame (lines
+    scanned / held out as `#[cfg(test)]`) so the caller can publish it — this oracle must
+    be as auditable about what it declined to read as `extract_env_switches()` already is.
     """
-    defined = _defined_symbols(root)
+    defined, symbol_frame = _defined_symbols(root)
     stale: list[dict] = []
     for entry in mapping.get("surfaces", []):
         for symbol in entry.get("absence_claims", []):
@@ -411,7 +437,7 @@ def check_stale_absence_claims(root: Path, mapping: dict) -> list[dict]:
                         "defined_at": f"{hit[0]}:{hit[1]}",
                     }
                 )
-    return stale
+    return stale, symbol_frame
 
 
 # ---------------------------------------------------------------------------
@@ -654,7 +680,8 @@ def main(argv=None) -> int:
     cov = coverage(surfaces, mapping, set(mechanisms) if artifacts else set(mapping_mechs(mapping)))
     findings: list[str] = []
 
-    stale_claims = check_stale_absence_claims(args.rust_src, mapping)
+    stale_claims, symbol_frame = check_stale_absence_claims(args.rust_src, mapping)
+    frame.update(symbol_frame)
     if stale_claims:
         lines = [
             "Surface map entries claim a named production symbol does not exist, and it",
@@ -832,6 +859,12 @@ def print_report(surfaces, frame, cov, mechanisms, rows_extent, rows_name, artif
         f"  frame: {frame['production_lines_scanned']} production lines read, "
         f"{frame['cfg_test_lines_held_out']} lines held out as #[cfg(test)] "
         "(UNOBSERVABLE by frame, not zero findings)."
+    )
+    print(
+        f"  absence-claim oracle frame: {frame['defined_symbol_lines_scanned']} "
+        f"production lines read for fn/static definitions, "
+        f"{frame['defined_symbol_lines_held_out']} lines held out as #[cfg(test)] "
+        "(UNOBSERVABLE by frame, not a claim those spans define nothing)."
     )
     print(
         "  The census does not write any of these files. A mechanism added to the Rust "
