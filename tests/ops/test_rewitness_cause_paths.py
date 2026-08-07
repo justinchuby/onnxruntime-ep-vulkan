@@ -34,6 +34,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -363,6 +364,80 @@ def test_an_untracked_symlink_still_reads_as_its_target(tmp_path):
         pytest.skip(f"this environment cannot create a symlink ({exc})")
     assert mod._index_mode(repo, "link") is None
     assert mod._blob_at(repo, mod.WORKTREE, "link") == b"../elsewhere.txt"
+
+
+def test_an_untracked_symlink_is_not_refused_for_being_untracked(tmp_path, monkeypatch):
+    """The same assertion as the test directly above, ON EVERY PLATFORM, by faking the two
+    syscalls instead of the privilege.
+
+    THIS TEST EXISTS BECAUSE ITS TWIN IS ABSENT EXACTLY WHERE IT IS READ FIRST. The
+    real-symlink assertions in this file skip wherever the process cannot create a symlink,
+    which is every unelevated developer box — including the one this change's predecessor was
+    verified on before it merged. The hosted lanes DO create symlinks and both of them went
+    red on the twin at `ca10bff`; that red was nonetheless not what stopped the merge, because
+    the op-test lanes were already red at the merge base for an unrelated reason (#24), and a
+    lane that is red before your change cannot tell you your change made it redder. A skip on
+    the box where a human looks, plus a pre-existing red on the box where the machine looks,
+    compose into a merge nobody screened — which is the failure §8.9 is about. This assertion
+    runs in both places.
+
+    The refusal it pins the boundary of is for DISAGREEING ORACLES: the index says one thing,
+    the filesystem another. An untracked path has no index entry, so there is nothing to
+    disagree with, and the blob git would store the moment it is added is mode 120000 carrying
+    the target string. Refusing it would turn "written but not staged yet" — a state the gate
+    reads DELIBERATELY, because a cause path may be authored and not yet committed — into an
+    instrument outage.
+    """
+    mod = _census()
+    repo = tmp_path / "faked"
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    (repo / "link").write_text("placeholder\n", encoding="utf-8")
+    assert mod._index_mode(repo, "link") is None, "fixture is not untracked; test is vacuous"
+
+    class _LinkStat:
+        st_mode = stat.S_IFLNK | 0o777
+
+    real_lstat = Path.lstat
+    monkeypatch.setattr(
+        Path, "lstat",
+        lambda self, *a, **k: _LinkStat() if self.name == "link" else real_lstat(self, *a, **k),
+    )
+    monkeypatch.setattr(
+        os, "readlink",
+        lambda p, *a, **k: "../elsewhere.txt" if Path(p).name == "link" else (_ for _ in ()).throw(OSError()),
+    )
+
+    assert mod._blob_at(repo, mod.WORKTREE, "link") == b"../elsewhere.txt"
+
+
+def test_a_tracked_file_that_is_a_link_on_disk_is_still_refused_on_every_platform(
+    tmp_path, monkeypatch
+):
+    """The OTHER polarity of the test above, also unskippable, so that relaxing the untracked
+    case cannot quietly relax the disagreement case with it. Here the index DOES record a mode,
+    it says ordinary blob, and the filesystem says symlink: two oracles, no verdict."""
+    mod = _census()
+    repo = tmp_path / "faked-disagree"
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    (repo / "subject.txt").write_text("subject\n", encoding="utf-8")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "an ordinary file"], repo)
+    assert mod._index_mode(repo, "subject.txt") not in (None, mod.GIT_MODE_SYMLINK)
+
+    class _LinkStat:
+        st_mode = stat.S_IFLNK | 0o777
+
+    real_lstat = Path.lstat
+    monkeypatch.setattr(
+        Path, "lstat",
+        lambda self, *a, **k: (
+            _LinkStat() if self.name == "subject.txt" else real_lstat(self, *a, **k)
+        ),
+    )
+    with pytest.raises(mod.WorktreeBlobError):
+        mod._blob_at(repo, mod.WORKTREE, "subject.txt")
 
 
 def test_the_index_and_the_filesystem_disagreeing_is_refused_not_guessed(tmp_path):

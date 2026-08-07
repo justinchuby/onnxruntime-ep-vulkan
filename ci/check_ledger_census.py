@@ -355,9 +355,11 @@ def _worktree_blob(repo: Path, rel: str) -> bytes | None:
     * tracked as a regular blob, but a link or a reparse point on disk -> REFUSED. The index
       and the filesystem disagree about what this path is, and a screen that picks one of two
       disagreeing oracles has decided rather than observed.
-    * untracked -> classified from the filesystem alone, by the same rules; a directory (which
-      is what a Windows junction lstats as) is a tree and not a blob, and any other reparse
-      point is refused rather than read through.
+    * untracked -> classified from the filesystem alone, by the same rules: an untracked
+      SYMLINK reads as its target string, because there is no index entry for it to disagree
+      with and the blob git would store once it is added is mode 120000 carrying exactly that.
+      A directory (which is what a Windows junction lstats as) is a tree and not a blob, and
+      any other reparse point is refused rather than read through.
     """
     path = repo / rel
     mode = _index_mode(repo, rel)
@@ -385,6 +387,16 @@ def _worktree_blob(repo: Path, rel: str) -> bytes | None:
             f"{rel!r} is tracked as a symlink (mode 120000) but the working tree holds "
             f"something that is neither a link nor a regular file. Refusing to guess at its blob"
         )
+
+    if is_link and mode is None:
+        # UNTRACKED, AND THEREFORE NOT A DISAGREEMENT. The refusal below is for the case where
+        # the index and the filesystem describe one path DIFFERENTLY; an untracked path has no
+        # index entry to differ, and the blob git would store for it once added is mode 120000
+        # carrying the target string — the same answer the tracked branch above gives. The gate
+        # reads uncommitted state on purpose (a cause path may be written and not yet staged),
+        # so refusing here would turn "not staged yet" into an instrument outage. The target is
+        # still never followed.
+        return _link_target_bytes(path)
 
     if is_link or is_junction:
         raise WorktreeBlobError(
