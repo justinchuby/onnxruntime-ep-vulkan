@@ -134,6 +134,63 @@ def _declare(repo: Path, revision: str, owner: str, reason: str) -> None:
     )
 
 
+def _v2(field: str, caused_by: str, transitions: list[tuple[str, str, str]], **extra) -> dict:
+    """A schema `rewitness/2` record: content-addressed, with no `revision` to erase."""
+    rec = {
+        "schema": "rewitness/2",
+        "field": field,
+        "owner": "switch",
+        "date": "2026-08-06",
+        "reason": "planted",
+        "caused_by": caused_by,
+        "transitions": [{"key": k, "old": o, "new": n} for k, o, n in transitions],
+    }
+    rec.update(extra)
+    return rec
+
+
+def _squash_merge(repo: Path, ledger: dict[str, str], decl: dict | None) -> str:
+    """Replay the real squash-merge shape and return the ERASED branch head.
+
+    On a branch: commit the ledger move, then commit the declaration describing it (an
+    author cannot name a commit that does not exist yet, which is the whole problem). Then
+    land the branch TREE on main as one brand-new commit and delete the branch, exactly as
+    `gh pr merge --squash` does. The branch shas still RESOLVE — the objects are there —
+    but they are no longer ancestors of anything, which is precisely the state that turned
+    a correct #35 declaration into `stale_rewitness_declaration` + `undeclared_witness_move`.
+    """
+    base = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    _git(["checkout", "-q", "-b", "feature"], repo)
+    (repo / "evidence" / "proof_ledger.jsonl").write_text(
+        "".join(
+            json.dumps({"key": k, "verdict": "MATCH", "shader_digest": "0" * 16,
+                        "source_digest": v, "toolchain": "planted"}) + "\n"
+            for k, v in ledger.items()
+        ),
+        encoding="utf-8",
+    )
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "branch: move the witness"], repo)
+    branch_head = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    if decl is not None:
+        doc = decl(branch_head) if callable(decl) else decl
+        (repo / "evidence" / "proof_rewitness.json").write_text(
+            json.dumps({"schema": 1, "screened_since": "", "rewitness": [doc]}, indent=2),
+            encoding="utf-8",
+        )
+        _git(["add", "-A"], repo)
+        _git(["commit", "-q", "-m", "branch: declare the move"], repo)
+    tree = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    _git(["checkout", "-q", "main"], repo)
+    _git(["checkout", "-q", tree, "--", "."], repo)
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "squash merge (new sha, branch history erased)"], repo)
+    _git(["checkout", "-q", "--detach", "HEAD"], repo)
+    _git(["branch", "-q", "-D", "feature"], repo)
+    _git(["checkout", "-q", "main"], repo)
+    return branch_head or base
+
+
 def _plant_frames(tmp: Path, history: list[dict[str, str]]) -> Path:
     """A repo whose ledger keeps the SAME KEYS and moves only their frame witnesses.
 
@@ -583,6 +640,226 @@ def main() -> int:
             "PLANTED",
             "a SHALLOW clone is an instrument ERROR, not a PASS",
             r.returncode == 2 and "SHALLOW" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # ── the squash-safe (rewitness/2) declaration arm ──────────────────────────
+        # Every arm below is about ONE claim: a declaration must survive the merge that
+        # lands it. v1 could not, and these arms hold both polarities of that.
+        #
+        # These arms plant REAL-SHAPED digests (16 lowercase hex) rather than the "X"/"Y"
+        # placeholders above, because v2 validates digest shape: a malformed digest can
+        # never match a real transition, so accepting one would let a record declare
+        # nothing while looking like a declaration.
+        HX, HY, HZ, HW = "a" * 16, "b" * 16, "c" * 16, "d" * 16
+        HP, HQ, HM, HN = "e" * 16, "f" * 16, "0" * 16, "1" * 16
+
+        # THE DEFECT, REPRODUCED. A correct, timely v1 declaration naming the branch
+        # commit that carries the move — erased by the squash, so the register now reports
+        # BOTH failures for a move that was declared in advance and in good faith.
+        repo = _plant_frames(tmp / "15", [{"a": HX}])
+        _squash_merge(
+            repo, {"a": HY},
+            lambda b: {"revision": b, "field": "source_digest", "owner": "link",
+                       "date": "2026-08-06", "reason": "planted: declared before the merge"},
+        )
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "a v1 declaration naming its own branch commit SELF-INVALIDATES on squash",
+            r.returncode == 1
+            and "undeclared_witness_move" in r.stdout
+            and "stale_rewitness_declaration" not in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # THE FIX, UNDER THE IDENTICAL SHAPE. Same repo shape, same squash, same erased
+        # branch — the only difference is that the declaration is content-addressed, so
+        # there is nothing for the squash to erase.
+        repo = _plant_frames(tmp / "16", [{"a": HX}])
+        base = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+        _squash_merge(repo, {"a": HY},
+                      lambda _b: _v2("source_digest", base, [("a", HX, HY)]))
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "the SAME squash with a rewitness/2 declaration is green — no re-point needed",
+            r.returncode == 0 and "0 UNDECLARED" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # A v2 record must not become a wildcard. Each arm plants exactly one wrong thing.
+        for name, trans, expect in [
+            ("a WRONG `old` declares a move that never happened", [("a", HW, HY)],
+             "undeclared_witness_move"),
+            ("a WRONG `new` is caught the same way", [("a", HX, HZ)],
+             "undeclared_witness_move"),
+        ]:
+            repo = _plant_frames(tmp / f"17-{expect}-{trans[0][1][:2]}", [{"a": HX}])
+            base = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+            _squash_merge(repo, {"a": HY}, lambda _b, t=trans: _v2("source_digest", base, t))
+            r = run(["--repo", str(repo)], cwd=repo)
+            record("PLANTED", name, r.returncode == 1 and expect in r.stdout,
+                   f"exit={r.returncode}")
+
+        # A MISSING key: two moves, one declared. The declared one must not vouch for the
+        # other — which a bare `keys: 2` count would have let it do.
+        repo = _plant_frames(tmp / "18", [{"a": HX, "b": HP}])
+        base = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+        _squash_merge(repo, {"a": HY, "b": HQ},
+                      lambda _b: _v2("source_digest", base, [("a", HX, HY)]))
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "declaring 1 of 2 moves convicts the OTHER one (enumeration, not a count)",
+            r.returncode == 1
+            and "undeclared_witness_move" in r.stdout
+            and "moved on 1 entr" in r.stdout
+            and "e.g. b\n" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # AN EXTRA key: everything real is declared, plus one row that matches nothing.
+        # This is the arm a bare count cannot have, and it is the one that catches a row
+        # copied in from another move.
+        repo = _plant_frames(tmp / "19", [{"a": HX}])
+        base = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+        _squash_merge(
+            repo, {"a": HY},
+            lambda _b: _v2("source_digest", base, [("a", HX, HY), ("ghost", HM, HN)]),
+        )
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "an OVER-declared transition inside a matching record is convicted",
+            r.returncode == 1 and "overdeclared_witness_move" in r.stdout and "ghost" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # `caused_by` is the one revision v2 still reads, so it gets the treatment v1's
+        # `revision` could not survive: it must be LANDED. A branch-only sha resolves and
+        # must still fail, or the schema would reintroduce its own defect through the
+        # single field it kept.
+        repo = _plant_frames(tmp / "20", [{"a": HX}])
+        erased = _squash_merge(repo, {"a": HY}, None)
+        _write_rewitness(repo, {"schema": 1, "screened_since": "",
+                                "rewitness": [_v2("source_digest", erased, [("a", HX, HY)])]})
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "a BRANCH-ONLY `caused_by` resolves but is convicted as not landed",
+            r.returncode == 1 and "unlanded_rewitness_cause" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        repo = _plant_frames(tmp / "21", [{"a": HX}, {"a": HY}])
+        _write_rewitness(repo, {"schema": 1, "screened_since": "",
+                                "rewitness": [_v2("source_digest", "b" * 40, [("a", HX, HY)])]})
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "a `caused_by` that does not resolve at all is convicted, not ignored",
+            r.returncode == 1 and "unlanded_rewitness_cause" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # Schema errors are UNOBSERVABLE (exit 2), never a colour: a register the checker
+        # could not parse has ruled on nothing, and printing PASS over it is the failure
+        # this whole file exists to prevent.
+        head = None
+        for name, rec_doc, needle in [
+            ("an UNKNOWN schema is refused, never treated as v1",
+             {"schema": "rewitness/99", "field": "source_digest", "owner": "x",
+              "date": "d", "reason": "r", "caused_by": "HEAD",
+              "transitions": [{"key": "a", "old": "0" * 16, "new": "1" * 16}]},
+             "does not know"),
+            ("a v2 record MISSING `caused_by` is refused",
+             {"schema": "rewitness/2", "field": "source_digest", "owner": "x",
+              "date": "d", "reason": "r",
+              "transitions": [{"key": "a", "old": "0" * 16, "new": "1" * 16}]},
+             "is missing"),
+            ("a `keys` count disagreeing with the enumeration is refused",
+             {"schema": "rewitness/2", "field": "source_digest", "owner": "x",
+              "date": "d", "reason": "r", "caused_by": "HEAD", "keys": 7,
+              "transitions": [{"key": "a", "old": "0" * 16, "new": "1" * 16}]},
+             "enumerates"),
+            ("a transition with old == new is refused (it declares a non-event)",
+             {"schema": "rewitness/2", "field": "source_digest", "owner": "x",
+              "date": "d", "reason": "r", "caused_by": "HEAD",
+              "transitions": [{"key": "a", "old": "0" * 16, "new": "0" * 16}]},
+             "old == new"),
+            ("a malformed digest is refused rather than left unmatchable",
+             {"schema": "rewitness/2", "field": "source_digest", "owner": "x",
+              "date": "d", "reason": "r", "caused_by": "HEAD",
+              "transitions": [{"key": "a", "old": "nope", "new": "1" * 16}]},
+             "16-hex-digit"),
+            ("an extra field inside a transition is refused, not ignored",
+             {"schema": "rewitness/2", "field": "source_digest", "owner": "x",
+              "date": "d", "reason": "r", "caused_by": "HEAD",
+              "transitions": [{"key": "a", "old": "0" * 16, "new": "1" * 16, "why": "?"}]},
+             "exactly key/old/new"),
+        ]:
+            repo = _plant_frames(tmp / f"22-{needle[:6]}", [{"a": HX}, {"a": HY}])
+            head = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+            doc = json.loads(json.dumps(rec_doc).replace('"HEAD"', json.dumps(head)))
+            _write_rewitness(repo, {"schema": 1, "screened_since": "", "rewitness": [doc]})
+            r = run(["--repo", str(repo)], cwd=repo)
+            record("PLANTED", name,
+                   r.returncode == 2 and needle in r.stdout,
+                   f"exit={r.returncode}")
+
+        # A DUPLICATE transition, across two records. One real move must not be able to
+        # consume two declarations, because the second one then vouches for nothing while
+        # looking like it vouches for something.
+        repo = _plant_frames(tmp / "23", [{"a": HX}, {"a": HY}])
+        head = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+        dup = _v2("source_digest", head, [("a", HX, HY)])
+        _write_rewitness(repo, {"schema": 1, "screened_since": "",
+                                "rewitness": [dup, json.loads(json.dumps(dup))]})
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "a DUPLICATE transition (across records) is refused",
+            r.returncode == 2 and "more than once" in r.stdout,
+            f"exit={r.returncode}",
+        )
+
+        # BACKWARDS COMPATIBILITY. Every record already in the real register is v1, so a
+        # v1 record that still matches must stay green, and v1 and v2 must coexist in one
+        # file. Migration is opt-in per record, not a flag day.
+        repo = _plant_frames(tmp / "24", [{"a": HX, "b": HP}, {"a": HY, "b": HQ}])
+        head = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+        _write_rewitness(repo, {
+            "schema": 1, "screened_since": "",
+            "rewitness": [
+                {"revision": head, "field": "source_digest", "owner": "link",
+                 "date": "2026-08-06", "reason": "planted v1, still matching"},
+            ],
+        })
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "an UNMIGRATED v1 record that still matches stays green (no flag day)",
+            r.returncode == 0,
+            f"exit={r.returncode}",
+        )
+
+        repo = _plant_frames(tmp / "25", [{"a": HX, "b": HP}, {"a": HY, "b": HQ}])
+        head = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+        parent = _git(["rev-parse", "HEAD~1"], repo).stdout.strip()
+        _write_rewitness(repo, {
+            "schema": 1, "screened_since": "",
+            "rewitness": [
+                {"revision": head, "field": "source_digest", "owner": "link",
+                 "date": "2026-08-06", "reason": "planted v1 covering the revision"},
+                _v2("source_digest", parent, [("b", HP, HQ)]),
+            ],
+        })
+        r = run(["--repo", str(repo)], cwd=repo)
+        record(
+            "PLANTED",
+            "v1 and v2 records coexist in one register without either shadowing the other",
+            r.returncode == 0,
             f"exit={r.returncode}",
         )
 
