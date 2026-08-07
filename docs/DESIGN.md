@@ -5758,6 +5758,147 @@ CPU reference to compare a Vulkan run against**, so nothing here is an end-to-en
 
 ---
 
+### 8.13 The GQA workgroup size — one lane per subgroup was 1/32 of the machine (issue #56)
+
+`gqa_f16.comp` declared `layout(local_size_x = 1, local_size_y = 1, local_size_z = 1)`. That is
+the honest first-pass shape for a kernel written correctness-first — no barriers, no shared memory,
+no wave-level reductions — and §8's account of it said so.
+
+What it costs was never measured until issue #56 measured it. **The hardware's unit of scheduling
+is the subgroup, not the invocation.** A workgroup of one invocation does not occupy one lane; it
+occupies a whole subgroup with one lane enabled. On the RTX A1000 the subgroup is 32 wide, so 31
+of every 32 lanes were masked off for the entire kernel, on every device this EP runs on.
+
+#### The measurement that made it the target
+
+The per-kernel attribution comes from the EP's own GPU timestamp queries
+(`ONNXRUNTIME_EP_VULKAN_TRACE` + `..._TRACE_GPU`) on the real Foundry Phi-3.5 int4 graph — ORT's
+profiler cannot answer this question, because it attributes every Vulkan node to the single fused
+node it hands the EP. **One committed artifact holds that aggregate and this table is read off it:**
+`bench/results/real_model_gqa_local_size.json` → `timing[].points[local_size == 1].by_kernel_us`,
+keys `vulkan.gpu.gqa_f16` and `vulkan.gpu.q_gemv_matmul_nbits_f16`, against that point's `total_us`.
+`local_size = 1` is the pre-change geometry, so those points are the before state.
+
+| case | GPU total | `gqa_f16` | `q_gemv_matmul_nbits_f16` |
+|---|---|---|---|
+| prefill `M=1` | 20.03 ms | 1.48 (7.4%) | 17.46 (87.2%) |
+| prefill `M=128` | 2927.34 ms | **1891.19 (64.6%)** | 1029.21 (35.2%) |
+| decode past=1024 | 287.18 ms | **268.57 (93.5%)** | 17.52 (6.1%) |
+
+`docs/PERF.md` §26.4 prints the same six rows from the same field, and the two tables now agree
+digit for digit. They did not before: an earlier draft of this section cited
+`bench/results/real_model_diagnostics.json` — which carries ORT's node table, counters, fallback
+and dispatch records and **no** per-kernel GPU field at all — and quoted a `M=128` row of
+2911.21 / 1884.19 (64.7%) / 1020.11 and a decode row of 286.24 / 267.68 / 17.47 that appear in no
+artifact in this repository. Both rows are withdrawn and replaced by the surviving artifact's, which
+is why the headline reads 64.6% here and not 64.7%.
+
+GQA, not the quantised GEMM this EP has spent its optimisation effort on, is the largest single
+consumer of device time in Phi-3.5 at every width above `M = 1`. PR #53's own named next levers
+(widen the 32-bit scalar `B` loads, raise the accumulator budget) address the *minority* cost;
+`docs/PERF.md` §26 shows the differential bandwidth measurement that establishes that.
+
+#### The mechanism
+
+The workgroup size becomes specialisation constant 0
+(`layout(local_size_x_id = 0, local_size_x = 1, ...)`), the host picks it with
+`ops::attention::gqa_local_size`, and the dispatch becomes `ceil(total / local)` workgroups
+instead of `total`.
+
+Nothing else changes. Invocation `gid` computes exactly what it computed before, in the same
+order, reading and writing the same addresses; only the *packing* of invocations into workgroups
+moves. The atomics that `gqa_f16.comp` already used for its half-word writes — previously
+described as "never actually contended at local_size=1" — are what make sizes above 1 correct, and
+they were always written for the contended case.
+
+#### Why this is a portability-neutral change
+
+Same test as §8.12: what does it **not** need?
+
+* **No shared memory, no barrier, no subgroup operation.** The kernel is still a plain serial
+  algorithm per invocation. Nothing was added that a device could fail to support.
+* **No new feature, extension, capability or query.** Vulkan 1.1 core, within §7.2's frozen set.
+* **No device-dependent decision.** `GQA_MAX_LOCAL_SIZE = 64` is a *specification* number:
+  `maxComputeWorkGroupInvocations` has a required floor of 128, so 64 is inside the guarantee with
+  a factor of two to spare on every conformant implementation, whatever it reports. Two devices
+  running the same graph pick the same size, exactly as they pick the same row tile.
+* **Vendor-neutral by arithmetic.** 64 is a multiple of every subgroup width in circulation (32
+  NVIDIA, 64 AMD, 8/16/32 Intel), so it fills whole subgroups on all three rather than being tuned
+  to the one machine that measured it.
+
+#### The bound that binds, and why it is the *work*, not the device
+
+The cap is not what usually decides the size — the available parallelism is. Workgroups are the
+unit the hardware distributes, so packing *all* the work into one workgroup hands the kernel to a
+single compute unit. Phi-3.5 decode has `B * Nq * S = 32` invocations in total; at size 64 that is
+one workgroup and the rest of the device idles.
+
+`GQA_MIN_GROUPS = 32` is the floor on workgroups kept, and `gqa_local_size` returns the largest
+power of two at or below the cap that still leaves that many. `docs/PERF.md` §26.5 is the sweep it
+was read off, including the one point where the rule deliberately leaves 16% on the table to
+protect decode.
+
+#### Decode is bit-identical, and its dispatch is unchanged
+
+At 32 invocations the rule returns `local = 1`, so decode's dispatch is `[32, 1, 1]` with
+`spec_constants = [1]` — the same geometry, the same grid, the same pipeline behaviour as before
+issue #56. That is asserted twice, in `translate_gqa_phi35_decode_produces_one_dispatch` (which
+predates this change and still passes untouched) and in
+`gqa_decode_stays_at_one_invocation_per_workgroup`.
+
+For every *other* size, "bit-identical" is a claim about the source text, so it is verified as one
+rather than argued: `bench/results/probe_gqa_local_size.py` compares whole-model outputs
+byte-for-byte against the `local = 1` reference in the same case. Six cases at seven sizes are
+**42 measured points**, and each case contributes **6 non-reference comparisons** — the reference
+is not compared with itself — so the verification is **36 cross-arm comparisons, 36
+`BITWISE-IDENTICAL`**, 65 output tensors each
+(`bench/results/real_model_gqa_local_size.json` → `equivalence[].comparisons[].verdict`). No
+tolerance is involved and none would be appropriate. That count is not the same as the harness's
+whole-model equivalence gate, which is 18 cases and 54 arm verdicts under budgets — of which 18 are
+the reference arm compared with itself (`self: true`) and **36 are independent comparisons**, a
+different 36 from this one, in a different artifact — see `docs/PERF.md` §26.2 and §26.5.
+
+#### The tail
+
+`ceil(total / local)` over-dispatches whenever the size does not divide the invocation count. The
+shader's existing `if (b >= pc.batch_size) return;` is the whole bounds check for it: `gid >= B*Nq*S`
+implies `gid / (Nq*S) >= B`, so every over-dispatched invocation lands at `b >= batch_size` by
+construction and retires before touching a buffer. `gqa_dispatch_grid_covers_every_invocation`
+walks counts that are deliberately not multiples of any candidate size and asserts both halves:
+the grid covers every invocation, and the tail is never a whole wasted workgroup.
+
+As a side effect the dispatch also gains headroom against `maxComputeWorkGroupCount[0]` (65,535
+guaranteed): dividing the x extent by up to 64 moves the first count that could exceed it from
+65,536 invocations to 4,194,304.
+
+#### The kill switch
+
+`ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE` overrides the size, clamped to `[1, GQA_MAX_LOCAL_SIZE]`
+and never trusted — `=0` (which is what the environment can actually produce, and which would be a
+division by zero in `div_ceil`) clamps to 1, under the planted control
+`gqa_local_size_override_of_zero_is_clamped_not_dispatched`. Setting it to `1` restores the
+pre-issue-#56 geometry exactly, so it is the operational fallback and the A/B control at once,
+exactly as `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS=1` is for §8.12. It is mapped in
+`ci/census_surface_map.json` as `uncensused/Switch`, for the same reachability reason: the
+census's six-node elementwise graph carries no `GroupQueryAttention` node, so no run of it can
+build a `gqa_f16` pipeline at all.
+
+The resolved value is witnessed in an artifact the **EP** produced, not in a host-side record of
+what was asked for. `gqa_f16`'s dispatch previously passed an empty `spec_constants` vector; it now
+passes `vec![local]`, so the size rides the unchanged `counters::record_pipeline_variant` call into
+`pipeline_variants` and into the §8.9.20 `spec_digest`.
+
+#### What this does *not* fix, stated rather than implied
+
+Decode. At 32 invocations there is no packing to do — the sweep's own numbers say every size above
+1 makes decode *slower* — and decode is where `gqa_f16` holds 93.5% of GPU time. Making decode
+faster needs a different kernel shape: parallelism over the **KV sequence** inside a workgroup,
+with a reduction, which is a shared-memory and barrier change and therefore a portability question
+of exactly the kind §8.12 declined to open without evidence. `docs/PERF.md` §26.7 names it as the
+next lever and says what it would have to prove.
+
+---
+
 ## 9. Testing and benchmarking strategy
 
 ### 9.1 Differential testing against the ORT CPU EP — Trinity

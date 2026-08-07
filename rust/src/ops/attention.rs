@@ -711,10 +711,18 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     push.extend_from_slice(&scale.to_bits().to_le_bytes());
 
     // -- Dispatch: one invocation per (batch, query_head, query_seq_pos) ---------------
+    //
+    // The invocation *count* is unchanged; how many of them share a workgroup is not. A
+    // workgroup of one invocation costs a whole subgroup with one lane enabled — 1/32 of the
+    // machine on this class of device — and `gqa_f16` is the largest single consumer of GPU
+    // time in Phi-3.5 (§26). `gqa_local_size` picks the packing; the shader's `b >= batch_size`
+    // guard retires the tail when the size does not divide `total`.
     let total = (batch_size * num_heads * seq_len).max(1);
+    let local = gqa_local_size(total);
+    let groups = total.div_ceil(local);
     ctx.dispatch(KernelRequest {
         shader: "gqa_f16",
-        spec_constants: vec![],
+        spec_constants: vec![local],
         push_constants: push,
         bindings: vec![
             qkv_buf,     // binding 0: packed_qkv
@@ -727,8 +735,114 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
             pres_k_buf,  // binding 7: present_key
             pres_v_buf,  // binding 8: present_value
         ],
-        workgroups: [total, 1, 1],
+        workgroups: [groups, 1, 1],
     })
+}
+
+/// Largest workgroup this EP will ask a Vulkan 1.1 implementation for.
+///
+/// `maxComputeWorkGroupInvocations` is **required** to be at least 128 by the Vulkan 1.1
+/// specification, so 64 is inside the guaranteed floor with a factor of two to spare on every
+/// conformant implementation, whatever it happens to report. A number derived from the local
+/// device would make the pipeline — and therefore the arithmetic's scheduling — device-dependent
+/// for no measured gain; this stays a property of the *specification*, like
+/// `GEMV_MAX_GROUPS_Y` next door.
+///
+/// It is also where the measured curve stops paying: at `M = 128` the sweep reads 201.7 ms at 32
+/// and 194.3 ms at 64 (3.7%), against 9.4x already banked between 1 and 32. There is no evidence
+/// for going further and the specification floor forbids assuming it.
+pub const GQA_MAX_LOCAL_SIZE: u32 = 64;
+
+/// Overrides [`gqa_local_size`]. Clamped to `[1, GQA_MAX_LOCAL_SIZE]`, never trusted.
+///
+/// `=1` restores the pre-#56 geometry exactly (one invocation per workgroup, an exact grid), so
+/// it is the kill switch for this change in the same sense that
+/// `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS=1` is the kill switch for the row tile.
+pub const ENV_GQA_LOCAL_SIZE: &str = "ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE";
+
+/// How many invocations of `gqa_f16` share a workgroup.
+///
+/// Pure so it can be tested without a device. Two properties matter and they pull opposite ways:
+///
+///   * **Lane occupancy.** A workgroup smaller than the subgroup wastes the lanes it does not
+///     fill, and the subgroup width is not knowable portably at translate time (32 on NVIDIA,
+///     64 on AMD, 8/16/32 on Intel). A size of 64 is a multiple of every one of those, so it
+///     fills whole subgroups on all three rather than being tuned to one.
+///
+///   * **Spread across compute units.** Workgroups are the unit the hardware distributes, so
+///     packing *all* the work into one workgroup hands the kernel to one compute unit. A decode
+///     step has `B * Nq * S = 32` invocations in total; at 64 that is a single workgroup and the
+///     rest of the device is idle, which is why the size is capped by the work available rather
+///     than being a constant.
+///
+/// So: fill subgroups when there is enough work to keep the machine busy anyway, and keep the
+/// spread when there is not. [`GQA_MIN_GROUPS`] is the number of workgroups below which the
+/// spread is judged to matter more than the packing.
+///
+/// MEASURED, not assumed — `bench/results/real_model_gqa_local_size.json`, Foundry Phi-3.5 int4
+/// on an RTX A1000, `gqa_f16`'s own GPU milliseconds per inference, one process per point:
+///
+/// ```text
+///   invocations   local=1     2      4      8     16     32     64    rule picks
+///   32  (decode)     1.48   1.76   1.69   1.70   1.89   1.97   1.81      1  <- best
+///   32  (past 512) 135.56 139.72 141.11 146.84 166.96 209.19 203.80      1  <- best
+///   32  (past1024) 268.57 273.77 278.69 291.81 322.72 392.42 390.53      1  <- best
+///   256 (M=8)       20.96  16.58  11.10   5.92   5.30   5.10   6.09      8
+///   1024 (M=32)    154.59  90.78  60.57  49.43  35.37  25.48  25.69     32  <- best
+///   4096 (M=128)  1891.19 1002.68 549.56 315.98 229.62 201.71 194.27    64  <- best
+/// ```
+///
+/// The rule is best or tied-best at five of the six points. The one place it leaves something is
+/// `M = 8`, where it picks 8 (5.92 ms) over the sweep's best 32 (5.10 ms) — 16%, on the smallest
+/// absolute number in the table, and the price of a rule that keeps **32 workgroups** of spread.
+/// Buying that 0.8 ms means lowering `GQA_MIN_GROUPS` to 8, which changes the 32-invocation rows
+/// from 1 to 4 and costs 135.56 -> 141.11 ms and 268.57 -> 278.69 ms on the two decode rows.
+/// Decode is where a generation loop spends nearly all of its time, so the trade is declined and
+/// decode keeps *exactly* its pre-#56 geometry: local 1, 32 workgroups, an exact grid.
+///
+/// Every NON-REFERENCE point above was also checked byte-for-byte against its case's `local = 1`
+/// reference: 6 cases x 6 non-reference sizes = **36 comparisons, 36 BITWISE-IDENTICAL** (the
+/// reference is not compared with itself; 7 sizes x 6 cases = 42 is the count of measured points,
+/// not of comparisons). The packing changes scheduling, not arithmetic, and that is a claim about
+/// the source text, so it is verified as one.
+pub fn gqa_local_size(total: u32) -> u32 {
+    gqa_local_size_with(total, gqa_local_size_override())
+}
+
+/// Fewest workgroups a GQA dispatch keeps, so packing never starves the device of parallelism.
+///
+/// Same rule and the same reasoning as `ops::quant`'s `GEMV_MIN_WORKGROUPS`: a small
+/// absolute number, not a multiple of anything the device reports, so the geometry cannot become
+/// device-dependent.
+///
+/// 32 rather than 8 or 16 because Phi-3.5 decode has exactly 32 invocations, and every value
+/// below 32 packs them and makes decode slower — see the table on [`gqa_local_size`].
+pub const GQA_MIN_GROUPS: u32 = 32;
+
+fn gqa_local_size_override() -> Option<u32> {
+    std::env::var(ENV_GQA_LOCAL_SIZE)
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .map(|n| n.clamp(1, GQA_MAX_LOCAL_SIZE))
+}
+
+/// The body of [`gqa_local_size`] with the environment lifted out, so it is testable.
+///
+/// The clamp is repeated here rather than trusted from [`gqa_local_size_override`]: this function
+/// is `pub(crate)` and a caller that hands it `Some(0)` must get a dispatchable geometry, not a
+/// division by zero. `0` is not a hypothetical — it is what
+/// `ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE=0` parses to.
+pub(crate) fn gqa_local_size_with(total: u32, override_size: Option<u32>) -> u32 {
+    if let Some(n) = override_size {
+        return n.clamp(1, GQA_MAX_LOCAL_SIZE);
+    }
+    let total = total.max(1);
+    // The largest power of two that still leaves `GQA_MIN_GROUPS` workgroups to spread.
+    let mut local = 1u32;
+    while local * 2 <= GQA_MAX_LOCAL_SIZE && total / (local * 2) >= GQA_MIN_GROUPS {
+        local *= 2;
+    }
+    local
 }
 
 crate::op_table! {
@@ -1141,6 +1255,212 @@ mod tests {
             (scale - 96f32.sqrt().recip()).abs() < 1e-6,
             "scale = 1/sqrt(D)"
         );
+    }
+
+    // -- #56: the GQA workgroup size ------------------------------------------------------
+    //
+    // Every test below names the wrong reading it prevents, because a table of expected
+    // outputs proves only that someone typed the same numbers twice.
+
+    /// The whole point of the rule: **decode keeps its pre-#56 geometry, exactly.**
+    ///
+    /// Phi-3.5 decode is `B * Nq * S = 1 * 32 * 1 = 32` invocations, and the sweep
+    /// (`bench/results/real_model_gqa_local_size.json`) says every packing above 1 makes it
+    /// *slower* — 135.56 ms at local 1 against 209.19 ms at local 32, on the `past = 512` row.
+    /// A refactor that "simplified" `GQA_MIN_GROUPS` away, or lowered it to catch the `M = 8`
+    /// point, would silently take that regression on the case a generation loop spends its
+    /// life in. This asserts local 1, not merely "small".
+    #[test]
+    fn gqa_decode_stays_at_one_invocation_per_workgroup() {
+        assert_eq!(
+            gqa_local_size_with(32, None),
+            1,
+            "32 invocations is Phi-3.5 decode; packing it measured SLOWER at every size"
+        );
+        assert_eq!(
+            32u32.div_ceil(gqa_local_size_with(32, None)),
+            32,
+            "and the grid stays exact: 32 workgroups, no over-dispatched tail"
+        );
+    }
+
+    /// The rule reproduces the sweep's own choices at the invocation counts it measured.
+    ///
+    /// This is the differential test against the artifact: if someone changes the constants or
+    /// the loop, this fails and names the row that no longer agrees. `M = 8` is included with
+    /// the value the rule picks (8), *not* the sweep's best (32), so the deliberate trade
+    /// documented on `gqa_local_size` cannot be quietly reversed in either direction.
+    #[test]
+    fn gqa_local_size_matches_the_measured_sweep() {
+        // (invocations, expected local size, what the row is)
+        for (total, want, what) in [
+            (32u32, 1u32, "decode / prefill M=1 — best measured"),
+            (
+                256,
+                8,
+                "prefill M=8 — rule trades 16% here to keep 32 groups of spread",
+            ),
+            (1024, 32, "prefill M=32 — best measured"),
+            (4096, 64, "prefill M=128 — best measured"),
+        ] {
+            assert_eq!(
+                gqa_local_size_with(total, None),
+                want,
+                "{total} invocations ({what})"
+            );
+        }
+    }
+
+    /// The cap is a Vulkan 1.1 guarantee, not a device reading, so no input can exceed it.
+    ///
+    /// `maxComputeWorkGroupInvocations` has a specification floor of 128; asking for more than
+    /// 64 would make the pipeline creation fail on a conformant implementation that reports
+    /// exactly the floor for the x dimension. Neither a huge grid nor a hostile override may
+    /// produce one.
+    #[test]
+    fn gqa_local_size_never_exceeds_the_portable_cap() {
+        for total in [4096u32, 1 << 20, u32::MAX] {
+            let local = gqa_local_size_with(total, None);
+            assert!(
+                local <= GQA_MAX_LOCAL_SIZE,
+                "{total} invocations produced local size {local}"
+            );
+            assert!(local.is_power_of_two(), "sizes stay powers of two");
+        }
+        assert_eq!(
+            gqa_local_size_with(4096, Some(4096)),
+            GQA_MAX_LOCAL_SIZE,
+            "an override above the cap clamps to it rather than being honoured"
+        );
+    }
+
+    /// **Planted control.** `ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE=0` parses to `Some(0)`, and a
+    /// workgroup size of zero is an undispatchable geometry *and* a division by zero in
+    /// `total.div_ceil(local)`. The clamp must survive being handed the value the environment
+    /// can actually produce, not just the values a well-behaved caller would.
+    #[test]
+    fn gqa_local_size_override_of_zero_is_clamped_not_dispatched() {
+        assert_eq!(gqa_local_size_with(4096, Some(0)), 1);
+        assert_eq!(gqa_local_size_with(32, Some(0)), 1);
+        // And the geometry that comes out of it is dispatchable.
+        let local = gqa_local_size_with(4096, Some(0));
+        assert!(local >= 1, "div_ceil below would panic on 0");
+        assert_eq!(4096u32.div_ceil(local), 4096);
+    }
+
+    /// The kill switch means what it says: `=1` restores the pre-#56 dispatch exactly.
+    #[test]
+    fn gqa_local_size_override_of_one_restores_the_original_geometry() {
+        for total in [32u32, 256, 1024, 4096] {
+            assert_eq!(gqa_local_size_with(total, Some(1)), 1);
+            assert_eq!(
+                total.div_ceil(1),
+                total,
+                "one workgroup per invocation, which is the geometry #56 replaced"
+            );
+        }
+    }
+
+    /// **Boundary.** The grid must cover every invocation and never lose one.
+    ///
+    /// `div_ceil` over-dispatches when the size does not divide the count, and the shader's
+    /// `b >= batch_size` guard retires the tail. Under-dispatching would silently drop query
+    /// positions — attention output for the last tokens would be whatever the buffer held. This
+    /// walks counts that are deliberately *not* multiples of any candidate size.
+    #[test]
+    fn gqa_dispatch_grid_covers_every_invocation() {
+        for total in [
+            1u32, 2, 31, 32, 33, 255, 257, 1023, 1025, 4095, 4097, 100_003,
+        ] {
+            let local = gqa_local_size_with(total, None);
+            let groups = total.div_ceil(local);
+            let covered = groups * local;
+            assert!(
+                covered >= total,
+                "{total} invocations: {groups} x {local} = {covered} does not cover them"
+            );
+            assert!(
+                covered - total < local,
+                "{total} invocations: tail of {} is a whole extra workgroup",
+                covered - total
+            );
+        }
+    }
+
+    /// **Monotone, and it must never shrink as work grows.**
+    ///
+    /// A rule that packed *less* at a larger invocation count would mean the loop's condition is
+    /// reading the wrong way round — a defect that the four spot values above could not see,
+    /// because they are all powers of two and the loop's bug would be at the edges.
+    #[test]
+    fn gqa_local_size_never_decreases_as_work_grows() {
+        let mut prev = 0u32;
+        for total in (0u32..=8192).step_by(7) {
+            let local = gqa_local_size_with(total, None);
+            assert!(
+                local >= prev,
+                "local size fell from {prev} to {local} at {total} invocations"
+            );
+            prev = local;
+        }
+    }
+
+    /// Zero invocations must still produce a dispatchable size — `translate_gqa` clamps `total`
+    /// to 1, but this function is `pub(crate)` and must not depend on its caller doing that.
+    #[test]
+    fn gqa_local_size_of_zero_work_is_still_dispatchable() {
+        assert_eq!(gqa_local_size_with(0, None), 1);
+    }
+
+    /// The prefill dispatch geometry, end to end through `translate_gqa`.
+    ///
+    /// The pure-function tests above cannot see a wiring mistake: passing `total` where `groups`
+    /// belongs, or forgetting to put the size in `spec_constants`, would leave every one of them
+    /// green while the shader ran at its default size of 1 over 1/64th of the grid. This reads
+    /// the recorded dispatch.
+    #[test]
+    fn translate_gqa_prefill_packs_the_workgroup_and_declares_it() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        // Phi-3.5 prefill at M=128: B=1, S=128, Nq=32 -> 4096 invocations.
+        let node = gqa_node(1, 128, 32, 32, 96, 0);
+        let mut ctx = Recorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+        let k = &ctx.dispatches[0];
+        // B * Nq * S, written out so the geometry is legible.
+        let (b, nq, s) = (1u32, 32u32, 128u32);
+        let total = b * nq * s;
+        let local = gqa_local_size(total);
+        assert_eq!(
+            k.spec_constants,
+            vec![local],
+            "the size must reach the pipeline; without it the shader keeps its default of 1 \
+             and the grid is 64x too small"
+        );
+        assert_eq!(k.workgroups, [total.div_ceil(local), 1, 1]);
+        assert_eq!(
+            k.workgroups[0] * local,
+            total,
+            "4096 divides evenly, so this grid is exact"
+        );
+    }
+
+    /// Decode's dispatch, through the same path, asserted as *unchanged*.
+    ///
+    /// `translate_gqa_phi35_decode_produces_one_dispatch` already pins `[32, 1, 1]`. This adds
+    /// the half that test predates: the specialisation constant decode is dispatched with.
+    #[test]
+    fn translate_gqa_decode_declares_the_unpacked_size() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        let node = gqa_node(1, 1, 32, 32, 96, 256);
+        let mut ctx = Recorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+        let k = &ctx.dispatches[0];
+        assert_eq!(k.spec_constants, vec![1], "decode is not packed");
+        assert_eq!(k.workgroups, [32, 1, 1], "and its grid is untouched");
     }
 
     /// Defect 2 falsifier (R9/R10): with an **empty** past KV (`past_max == 0`, the prefill /
