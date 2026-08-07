@@ -1,0 +1,17 @@
+{
+  "armed_reason": "epctl reports VALIDATION ARMED",
+  "armed_state": "ARMED",
+  "attempts": [
+    {
+      "detail": "VK_LAYER_KHRONOS_validation is not installed",
+      "mechanism": "layer_search_path",
+      "state": "LAYER-ABSENT"
+    }
+  ],
+  "criterion": "3d",
+  "criterion_text": "The armed gate changes its answer when the validation layer is removed.",
+  "high_integrity_process": false,
+  "mechanism": "layer_search_path",
+  "stripped_reason": "VK_LAYER_KHRONOS_validation is not installed",
+  "stripped_state": "LAYER-ABSENT"
+}

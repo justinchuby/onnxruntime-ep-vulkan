@@ -836,6 +836,31 @@ One ordering bug of exactly this shape was found and fixed while writing the gat
 
 ---
 
+#### 7.4.5 The real reason every env-var suppression arm fails on Windows CI — proven, not the "old loader" theory (issue #1, 2026-08-06)
+
+**What was assumed going in, and why it was wrong to assume.** PR #42's evidence (2026-08-06 CI) showed BOTH the ICD-removal arms (`driver_search_path`, `loader_driver_filter`) and BOTH the layer-removal arms (`layer_search_path`, `loader_layer_filter`) coming back ineffective on the GitHub-hosted Windows runner, including the two *filter* variables (`VK_LOADER_DRIVERS_DISABLE`, `VK_LOADER_LAYERS_DISABLE`) that the loader's own **markdown** documentation (`LoaderDriverInterface.md`) does not list under "Exception for Elevated Privileges" — only `VK_ICD_FILENAMES`/`VK_DRIVER_FILES`/`VK_ADD_DRIVER_FILES`/`VK_LAYER_PATH`/`VK_ADD_LAYER_PATH` are named there. Read literally, that implied the filter variables should have worked regardless of elevation, and their also failing looked like a *second*, unrelated defect — a natural candidate being a stale/System32-vintage `vulkan-1.dll` on the runner predating the 1.3.234/1.3.262 filter-variable floor. **This was not assumed into the fix. It was checked, and it is wrong.**
+
+**Proof 1 — the runner's loader is not stale.** Real Windows CI (PR #42, job `92670932473`, step "Probe Vulkan loader") logs `[vulkan-ep] INFO:   loader version = 1.3.301` from `vkEnumerateInstanceVersion`, which is *newer* than both the 1.3.234 floor `VK_LOADER_DRIVERS_DISABLE`/`VK_LOADER_DRIVERS_SELECT` require and the 1.3.296 LunarG SDK this same CI job installs into `C:\VulkanSDK\`. The loader actually resolved at runtime is modern. The age theory is falsified by this project's own log, not by inference.
+
+**Proof 2 — the loader's own C source gates the filter variables too, undocumented in the markdown.** `loader/loader_environment.c` (KhronosGroup/Vulkan-Loader, upstream, unmodified here) shows `parse_generic_filter_environment_var` — the function that reads `VK_LOADER_DRIVERS_DISABLE`/`VK_LOADER_DRIVERS_SELECT`/`VK_LOADER_LAYERS_ENABLE`/`VK_LOADER_LAYERS_DISABLE` — calling `loader_secure_getenv`, **the identical gate** used for `VK_ICD_FILENAMES`/`VK_DRIVER_FILES`/`VK_LAYER_PATH`. On Windows:
+
+```c
+bool is_high_integrity() {
+    ... GetTokenInformation(..., TokenIntegrityLevel, ...) ...
+    return integrity_level >= SECURITY_MANDATORY_HIGH_RID;
+}
+char *loader_secure_getenv(...) {
+    if (is_high_integrity()) { ...; return NULL; }   // ALL of the above vars, filters included
+    return loader_getenv(name, inst);
+}
+```
+
+So every VK_* variable this project's negative controls tried — search-path and filter alike — is silently dropped whenever the child process token's mandatory integrity level is High or above. The GitHub-hosted Windows runner's job process is High integrity (this is what makes both the ICD registration and the layer registration succeed via the registry mechanism below, and is exactly what makes every env-var-based *removal* attempt a no-op). This is a documentation gap in the upstream project (its markdown table under-lists what its own source gates), not a loader version or vendor-driver defect, and no loader — however new — changes what `is_high_integrity()` returns for this process.
+
+**The fix (`tests/ops/_registry_suppression.py`).** Both the mesa lavapipe ICD (this project's own CI step) and the LunarG SDK's `VK_LAYER_KHRONOS_validation` layer are *also* registered the other way Windows discovers Vulkan components — the registry keys `HKLM\SOFTWARE\Khronos\Vulkan\Drivers` and `HKLM\SOFTWARE\Khronos\Vulkan\ExplicitLayers`, each mapping a manifest path to a DWORD (`0` = enabled, `1` = disabled), scanned "regardless of elevation" per `LoaderDriverInterface.md`'s own "Driver Discovery on Windows" section. `ci.yml`'s existing ICD-registration step already needs — and has — write access to this key; the fix reuses that same access in reverse: a context manager flips the matching DWORD(s) to `1`, runs the child `epctl` process, and restores the original value(s) afterward, with the restoration itself read back and verified (a failed restore raises loudly rather than leaving the runner's Vulkan registration mutated for later CI steps in the same job). `test_criterion4_icd_polarity_witness` and `test_the_armed_gate_changes_its_answer_when_the_layer_is_removed` now try this `registry_disable` arm after the two (still-kept, still informative on non-elevated dev boxes) env-var arms, and it is the one proven to take on the GitHub-hosted runner.
+
+*Sources: [`loader/loader_environment.c`](https://github.com/KhronosGroup/Vulkan-Loader/blob/main/loader/loader_environment.c) (upstream); [`docs/LoaderDriverInterface.md`](https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md) §"Driver Discovery on Windows", §"Driver Filtering", §"Exception for Elevated Privileges"; [`docs/LoaderInterfaceArchitecture.md`](https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md) §"Elevated Privilege Caveats"; this project's CI run 741a903/job 92670932473.*
+
 ---
 
 ## 7.5 Three-Way Capability Diff (lavapipe WSL 25.2.8 × Intel Iris Xe × RTX 4060 Laptop)
