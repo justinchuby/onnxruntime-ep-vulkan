@@ -22,6 +22,7 @@ tree, and the screen's whole point is that those are different facts (§10.0.1 R
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -86,8 +87,27 @@ def _run(src: Path, mapping: Path, artifacts: Path | None) -> tuple[int, str]:
         argv.append("--no-artifacts")
     else:
         argv += ["--artifacts", str(artifacts)]
-    proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8")
-    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+    # Complete encoding pair, the same one run_check() in ci/test_lane_checks.py:54
+    # already documents: pinning only the PARENT-side decode (the previous
+    # `text=True, encoding="utf-8"`) is not enough, because the CHILD screen picks its
+    # own stdout encoding from locale.getpreferredencoding() -- cp1252 on a default
+    # Windows shell -- and this screen prints em-dashes and section signs in its report.
+    # That lesson was written down for run_check and never carried here, so on Windows
+    # the child's bytes failed to decode inside subprocess's reader thread, the
+    # exception surfaced only as a PytestUnhandledThreadException-style warning, `out`
+    # came back empty, and ALL TWELVE arms reported `arm_did_not_fire` -- including
+    # "a new EP env switch appears and nobody tells the census", the arm that exists to
+    # catch exactly the ONNXRUNTIME_EP_VULKAN_RANK_INFERENCE regression this file's
+    # sibling map entry corrects (#47). A control that cannot read its subject reports
+    # "no detection" for a mutation the screen DID name: an outage wearing a finding's
+    # clothes. PYTHONIOENCODING pins the child's encode side; decoding the bytes here
+    # with errors="replace" pins ours and guarantees an unexpected byte degrades to a
+    # visible substitution rather than to silence.
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    proc = subprocess.run(argv, capture_output=True, env=env)
+    out = proc.stdout.decode("utf-8", errors="replace")
+    err = proc.stderr.decode("utf-8", errors="replace")
+    return proc.returncode, out + err
 
 
 # ---------------------------------------------------------------------------
