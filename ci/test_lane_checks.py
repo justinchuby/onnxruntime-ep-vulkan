@@ -3191,20 +3191,37 @@ _LANDING_READING_FORBIDDEN_ARGS = ("--follow", "-M", "-C", "--find-renames", "--
 def _first_commit_adding_current_path(
     rel_path: str, repo_root: Path = REPO_ROOT
 ) -> str:
-    """Short SHA of the first commit that added `rel_path` **at exactly this path**.
+    """Short SHA of the commit that added the **incarnation of `rel_path` living at HEAD**.
+
+    Read as: *the* commit that added the current one, not *the first* commit that ever
+    added something at this name. Those differ whenever a path has been deleted and
+    re-added, and this helper deliberately returns the **newest** `--diff-filter=A`
+    event rather than the oldest one — `shas[0]`, since `git log` lists newest first.
 
     THIS is the source of truth for every "landed at <sha>" claim a doc or a record
     file makes, and it is deliberately read WITHOUT `git log --follow`.
 
-    Issue #24 item (g) (Morpheus): `--follow` answers a *different* question — "where
-    does the content now at this path first appear, across renames" — and for the two
-    `*-devunset-liveness.json` artifacts it answers `b669eb9` / `b262292`, the
-    pre-rename ancestors, rather than `fb5f0b2` / `1f41095`, the commits that actually
-    introduced the paths `docs/PLATFORMS.md` §7.18.11 cites. Both readings are true
-    about the repository; only one of them is the answer to *"when did this file, under
-    this name, land"*. A landing claim checked against the lineage reading silently
-    accepts a pre-rename SHA, so the two readings are separate functions here rather
-    than one function with a comment.
+    Two separate ways a landing claim goes wrong, and this helper is the answer to both:
+
+    **Renames** — issue #24 item (g) (Morpheus): `--follow` answers a *different*
+    question — "where does the content now at this path first appear, across renames" —
+    and for the two `*-devunset-liveness.json` artifacts it answers `b669eb9` /
+    `b262292`, the pre-rename ancestors, rather than `fb5f0b2` / `1f41095`, the commits
+    that actually introduced the paths `docs/PLATFORMS.md` §7.18.11 cites. Both readings
+    are true about the repository; only one of them is the answer to *"when did this
+    file, under this name, land"*. A landing claim checked against the lineage reading
+    silently accepts a pre-rename SHA, so the two readings are separate functions here
+    rather than one function with a comment.
+
+    **Delete-and-re-add** — a path that was removed and later reintroduced has more than
+    one `A` event *at the same name*, and no rename is involved, so the guard above does
+    nothing about it. The oldest such event names a file that no longer exists: its
+    content was deleted, and whatever stands at the path today arrived later and may
+    share nothing with it but a name. A doc that says "landed at <oldest A>" is then
+    citing a dead incarnation — a SHA where the reader will find a *different* file.
+    The current incarnation is the one every "landed at" claim is about, so the newest
+    `A` event is the answer and `test_current_path_landing_uses_the_current_incarnation_issue_24`
+    pins it against a purpose-built repository.
 
     Fail-closed in three ways, each of them load-bearing rather than documentary:
 
@@ -3241,7 +3258,10 @@ def _first_commit_adding_current_path(
     assert proc.returncode == 0, (rel_path, proc.stderr)
     shas = [s for s in proc.stdout.splitlines() if s.strip()]
     assert shas, f"no commit adds {rel_path} in this checkout's history (shallow clone?)"
-    return shas[0]  # newest -> the introduction of the current path incarnation
+    # `git log` is newest-first, so shas[0] is the most recent `A` event: the commit that
+    # added the incarnation standing at HEAD. shas[-1] would be the oldest `A` event,
+    # which for a deleted-and-re-added path names a file that is no longer there.
+    return shas[0]
 
 
 def _first_commit_in_rename_lineage(rel_path: str) -> str:
@@ -3387,7 +3407,13 @@ def test_landing_reading_does_not_cross_renames_issue_24():
 
 
 def test_current_path_landing_uses_the_current_incarnation_issue_24(tmp_path):
-    """A deleted and re-added path lands at its newest addition, not its dead first one."""
+    """A deleted and re-added path lands at its newest addition, not its dead first one.
+
+    Both `A` events name the same path, so the `--follow` guard on the landing reading is
+    silent here: no rename is involved. The oldest one points at content that has since
+    been deleted, so a "landed at <sha>" claim derived from it sends the reader to a
+    commit where the file they are reading about is a *different* file.
+    """
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -3419,6 +3445,74 @@ def test_current_path_landing_uses_the_current_incarnation_issue_24(tmp_path):
 
     assert first != current
     assert _first_commit_adding_current_path("artifact.json", repo) == current
+    # The mutant, run here rather than described: the oldest `A` event is a real,
+    # plausible-looking SHA, which is why reading it as the landing is a silent defect
+    # instead of a crash.
+    assert _first_commit_adding_current_path("artifact.json", repo) != first
+
+
+def test_the_landing_helper_documents_the_incarnation_it_actually_returns_issue_24():
+    """Link's blocker on PR #71: the body returned the newest `A` event while the
+    docstring still said "the first commit that added `rel_path` at exactly this path".
+
+    Behaviour was right and the prose was wrong, which is the worse of the two failures
+    to ship: `test_current_path_landing_uses_the_current_incarnation_issue_24` was green,
+    so nothing was red, and the next person to derive a "landed at <sha>" claim would
+    have read the docstring — the only part of this helper a caller normally sees — and
+    written down the dead first incarnation *by following the documentation correctly*.
+
+    So the docstring is checked against the body rather than against a fixed string. The
+    index the `return` actually subscribes to is read out of the AST and required to
+    appear verbatim in the docstring, which makes the two drift together or not at all:
+
+    * flip `shas[0]` to `shas[-1]` and the docstring no longer names the index returned;
+    * "correct" the docstring back to the oldest-`A` reading and it no longer matches the
+      body, plus the stale phrasing is named below and forbidden outright.
+
+    Deliberately narrow. It does not police tone, length, or anything else about the
+    prose — only the one claim that has already been observed to drift out from under
+    the code, and that a reader has no way to falsify from the docstring alone.
+    """
+    import inspect
+    import textwrap
+
+    doc = inspect.getdoc(_first_commit_adding_current_path)
+    assert doc, "the landing helper's docstring is the thing under test here"
+
+    landing_ast = ast.parse(
+        textwrap.dedent(inspect.getsource(_first_commit_adding_current_path))
+    ).body[0]
+    returns = [n for n in ast.walk(landing_ast) if isinstance(n, ast.Return)]
+    assert len(returns) == 1, (
+        "this drift check assumes the landing helper has exactly one return; it now has "
+        f"{len(returns)}, so re-derive it rather than weakening it"
+    )
+    returned = returns[0].value
+    assert isinstance(returned, ast.Subscript), (
+        "the landing helper no longer returns an element of the `A`-event list, so "
+        "'which incarnation does it return' is a different question than this asks"
+    )
+    returned_src = ast.unparse(returned)
+    assert returned_src in doc, (
+        f"the landing helper returns `{returned_src}` and its docstring does not say so. "
+        f"`git log` is newest-first, so `shas[0]` is the current incarnation and "
+        f"`shas[-1]` is the oldest `A` event — for a deleted-and-re-added path those are "
+        f"different commits, and a caller who trusts the docstring over the body writes "
+        f"the wrong SHA into a doc. Whichever one this helper returns, say which."
+    )
+
+    # The exact wording Link rejected. It describes the oldest-`A` reading, which is the
+    # other helper's job description, not this one's.
+    stale = "first commit that added"
+    assert stale not in doc, (
+        f"the landing helper's docstring says {stale!r}, which reads as the oldest `A` "
+        f"event; it returns `{returned_src}`, the newest. Say 'the commit that added the "
+        f"incarnation at HEAD' instead."
+    )
+    assert "newest" in doc, (
+        "the docstring must state the newest-`A` semantics in words as well as by index, "
+        "because `shas[0]` only means 'newest' if you already know git log's order"
+    )
 
 
 def test_landing_reading_is_fail_closed_and_the_mutant_is_visible_issue_24():
