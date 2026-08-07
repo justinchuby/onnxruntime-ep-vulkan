@@ -4685,7 +4685,8 @@ python bench/results/probe_gqa_local_size.py                     # -> real_model
 Artifacts: `bench/results/real_model_latency.json`,
 `real_model_latency_before_gqa.json` (§26.3's baseline, kept so the before column is a file and not
 a memory), `real_model_diagnostics.json`, `real_model_diagnostics_before_gqa.json`,
-`real_model_gqa_local_size.json`.
+`real_model_gqa_local_size.json`, `real_model_latency_postmerge.json` (§26.9) and
+`real_model_latency_on_main.json` (§26.10).
 
 Locked by `bench/test_real_model.py` (62 GPU-free tests) and the `ops::attention` unit tests
 (`gqa_decode_stays_at_one_invocation_per_workgroup`,
@@ -4716,3 +4717,50 @@ All three cases are `PASS` on the equivalence gate with `MATCH` on all three arm
 points move by 0.2% and 0.8%; the decode point moves 3.2%, which is inside the host-round-trip
 variance §26.7 already describes and is not a reading about the kernel — decode's dispatch geometry
 is unchanged by this change and by the merge alike. The merge did not move the result.
+
+### 26.10 Re-measured a third time, on the head that is actually proposed
+
+§26.9's build no longer exists as a proposable tree. PR #53 landed on `main` as the **squash**
+`ca61252`, not as `8f12b32`, so the branch this section belongs to was rebuilt as a single commit
+on top of `main` and then merged `main` twice more (`5113a0a`, then `3e38ae3`). None of those
+commits touch `rust/`: `git diff --stat ed73a4a HEAD -- rust` is empty, and the whole delta is five
+`ci/` and `tests/` files from #61. So the compiled EP is bit-for-bit the §26.9 EP and the honest
+expectation was *no change at all*.
+
+That expectation is still a claim about a binary that was rebuilt, on a device shared with a
+desktop, so it was measured rather than asserted. `cargo build --release` from the proposed head,
+then the same three points, same protocol, artifact
+`bench/results/real_model_latency_on_main.json`:
+
+| case | §26.6 (ms) | §26.9 (ms) | on the proposed head (ms) | untiled (ms) | CPU EP (ms) |
+|---|---|---|---|---|---|
+| prefill M=1 (null control) | 27.29 | 27.08 | 29.83 | 26.10 | 85.69 |
+| prefill M=128 | 1407.40 | 1403.98 | 1410.09 | 2363.04 | 1531.89 |
+| decode past=1024 | 608.21 | 627.50 | 652.18 | 654.13 | 185.21 |
+
+`PASS` on all three cases, `MATCH` on all nine arms. The M=128 point — the one this change is
+about — moves 0.2% across three separate builds on two different bases, and the 1.68× advantage
+over the untiled arm is reproduced. The two rows that move more are the two rows §26.7 already
+declines to read: the M=1 null control moves 9% *and inverts sign* between the two Vulkan arms
+that compile the identical SPIR-V, which is the noise floor doing exactly what a null control is
+for; decode moves 4% for the same host-round-trip reason as §26.9. Neither is a kernel reading,
+and neither is claimed as one.
+
+Reproduce:
+
+```
+python bench/results/probe_real_model_latency.py --device 0 \
+  --models phi-3.5-mini-instruct-cuda-int4-rtn-block-32 \
+  --prefill-m 1,128 --decode-past 1024 --out bench/results/real_model_latency_on_main.json
+```
+
+The history reconciliation itself is a hazard rather than a result, and is written down where it
+can be found by the next person who stacks on an unmerged PR:
+`.squad/decisions/inbox/niobe-stacked-branch-squash-ledger-hazard.md`. The short version is that a
+squash-merged dependency carries the *pre-change* state of every file you edited on top of it, and
+is *younger* than your commits, so `ci/check_ledger_census.py`'s reversed topological walk reads it
+as an undeclared backward witness move — and a backward transition can never be declared, because
+`tests/ops/test_proof_ledger.py::test_every_declared_transition_lands_on_the_digest_this_build_computes`
+correctly requires every declared transition to end at what the build computes. Rebuilding the
+stack on `main` is the only fix; merging `main` is not, because CI screens
+`refs/pull/N/merge`, which has the same shape.
