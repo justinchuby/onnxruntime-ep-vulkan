@@ -121,18 +121,29 @@ TABLE: dict[str, dict[str, str]] = {
     },
     "ci/check_powershell_exit_status.py": {
         "verdict": "EXTERNAL",
-        "subject": "Windows `pwsh` step bodies in the workflow files that capture $LASTEXITCODE",
+        "subject": (
+            "Windows `pwsh` step bodies in the workflow files whose $LASTEXITCODE at the "
+            "implicit wrapper tail may disagree with what the step printed: PS1 covers steps "
+            "that capture $LASTEXITCODE into a named variable, PS2 covers steps that invoke "
+            "a native command anywhere in the body (no capture required) and end on a "
+            "Write-Host verdict"
+        ),
         "oracle": (
-            "the structural rule that a step which captures $LASTEXITCODE into a variable "
-            "must end by consuming it (an explicit exit/throw), derived from GitHub Actions' "
-            "own documented implicit wrapper tail rather than from the step's own text"
+            "the structural rule that a step's final printed verdict must agree with the "
+            "$LASTEXITCODE the generated pwsh wrapper tail will actually exit on -- derived "
+            "from GitHub Actions' own documented implicit wrapper tail rather than from the "
+            "step's own text"
         ),
         "note": (
             "sibling of check_tautological_assertions.py below: the oracle is an "
             "independently-stated rule about how the generated pwsh wrapper behaves, not the "
-            "step's own printed verdict agreeing with itself. Exists because issue #49 found "
-            "two Windows steps that printed PASSED while exiting on an earlier command's "
-            "stale code."
+            "step's own printed verdict agreeing with itself. PS1 exists because issue #49 "
+            "found two Windows steps that printed PASSED while exiting on an earlier "
+            "command's stale captured code. PS2 exists because issue #55 found the PS1 "
+            "framing was over-general in its own negative-control commentary and too narrow "
+            "in practice: 'Install Mesa lavapipe' had no $LASTEXITCODE capture at all, only a "
+            "bare `& $exe` invocation followed by an unconsumed Write-Host verdict, so PS1's "
+            "capture-variable requirement let it through."
         ),
     },
     "ci/check_readme_usage.py": {

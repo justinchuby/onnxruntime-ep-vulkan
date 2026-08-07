@@ -1,0 +1,70 @@
+{
+  "schema": "cleanroom-redaction-replay/1",
+  "why": [
+    "ci/negative_control_cleanroom_redaction.py needs the REAL bytes of the two rejected",
+    "revisions of python/verify_cleanroom.py to prove today's privacy suite is",
+    "load-bearing. Reaching them through `git show <branch-sha>` made the control depend",
+    "on commits that no landing preserves: this repository allows only squash and rebase",
+    "(allow_merge_commit: false) and deletes the branch on merge, and CI's fetch-depth: 0",
+    "never fetches a deleted PR head. The control then loses every REPLAYED arm on the",
+    "first push to main and reports FAIL(condition=arm_did_not_fire) forever.",
+    "These files ARE the evidence, committed in the tree, bound by content digest. They",
+    "replay identically on a branch, on a squash, on a rebase, on a cherry-pick and in a",
+    "fresh main-only clone, because nothing about them mentions a commit."
+  ],
+  "digest": {
+    "algorithm": "sha256",
+    "over": "the file's bytes with CRLF newlines normalised to LF",
+    "why_normalised": [
+      "this repository is developed with core.autocrlf=true on Windows and checked out",
+      "with LF on Linux CI. A digest over raw checkout bytes would be a platform test,",
+      "not an integrity test. `.gitattributes` additionally marks this directory -text so",
+      "the checkout is byte-stable, and the normalisation makes the binding hold even in",
+      "a clone that ignores it."
+    ]
+  },
+  "how_to_add_a_fixture": [
+    "1. Write the file with the exact bytes to replay, LF-terminated.",
+    "2. Add an entry here with its sha256 (LF-normalised) and, in `carries`, the defects",
+    "   it is being kept for. Every `carries` entry must be reproduced by a named arm in",
+    "   ci/negative_control_cleanroom_redaction.py -- a fixture whose defect no arm",
+    "   demonstrates is a file nobody would notice going stale.",
+    "3. `origin` is provenance for a human reader ONLY. Nothing in the control resolves",
+    "   it, and the control must stay green in a clone where it cannot resolve."
+  ],
+  "fixtures": [
+    {
+      "id": "rejected-r1",
+      "file": "verify_cleanroom.rejected-r1.pysrc",
+      "sha256": "f95c7f125a4b29559f5d382538585357eec7ce053f206d7421b0c513c2e8fec8",
+      "bytes": 13575,
+      "origin": {
+        "path": "python/verify_cleanroom.py",
+        "ref_at_authoring": "d5bab5d",
+        "note": "PR #57 revision 1, the head of the first rejection (issue #55 B1/B2/B3). Provenance only."
+      },
+      "carries": [
+        "B1: _echo_cmd gates on `\"://\" in s`, so a scheme-relative or schemeless credential URL is echoed raw",
+        "B2: main() calls _scrub_text(install.stderr[-1500:], url) -- truncate before scrub, so a straddling credential survives",
+        "B3: _redact_url_userinfo leaves query and fragment credentials untouched"
+      ]
+    },
+    {
+      "id": "rejected-r2",
+      "file": "verify_cleanroom.rejected-r2.pysrc",
+      "sha256": "99e5aac6307140979c13817dab1bd6a525656b0fe55db1abac51eee19b030d19",
+      "bytes": 24651,
+      "origin": {
+        "path": "python/verify_cleanroom.py",
+        "ref_at_authoring": "15e20a8",
+        "note": "PR #57 revision 2, the head of the second rejection (R2/R3). Provenance only."
+      },
+      "carries": [
+        "R2: _echo_cmd scans generally and never sees the run's own raw --index-url, so a schemeless URL whose credential is in the query or fragment is echoed raw while the record redacts the identical input",
+        "R3: the scanner's schemeless `@`-gated alternative rewrites ordinary Windows paths -- C:\\Users\\justin.chu@contoso.com\\... becomes REDACTED@contoso.com\\..., in the echoed argv AND in record['venv'] / record['wheel'] / registered_path",
+        "R3b: the same alternative rewrites a bare e-mail address in ordinary prose",
+        "N1: _sanitize_urls_in_text is not idempotent -- a second pass over already-sanitised text rewrites it again"
+      ]
+    }
+  ]
+}

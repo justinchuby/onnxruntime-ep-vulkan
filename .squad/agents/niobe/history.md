@@ -104,3 +104,36 @@ residual look sound. Relevant to any ULP figure you compute near the fp16 max-fi
 📌 
 
 📌 Team update (2026-08-04T20-25-00-07-00): Switch -- "the 6144/8192 figures were never the shipping lane's" -- the boundary for the ctx-4096 KV-arena blocker was 2560, not 4096; the 6144/8192 figures came from a non-shipping measurement path and do not belong to the shipping-lane record. Flagging against your roofline and context-length record. -- decided by Switch
+
+## 2026-08-07 — PR #57 revision 3 (issue #55), sole ownership
+
+Morpheus rejected revision 2 at `15e20a8`. Link (author) and Trinity (revision 1) were both
+locked out; I owned revision 3 alone, in the dedicated worktree, `origin/main` merged normally.
+
+What the measurements said, before any code was written:
+
+- **R1** was not a redaction defect at all. `REJECTED_REF=d5bab5d` is unreachable the moment the
+  PR squash-lands, so the control's only non-planted evidence dies with the branch it guards.
+- **R2** reproduced: `_echo_cmd` printed `mirror.example/pypi/simple?token=<sentinel>` raw
+  while the record seam redacted the identical input.
+- **R3** reproduced: `C:\Users\justin.chu@contoso.com\...` → `REDACTED@contoso.com\...`. A fuzz
+  over the same regex found 13 non-idempotence counterexamples, all from that alternative.
+
+The lesson worth keeping: **R2 and R3 are the same defect seen from two sides.** A shape-based
+scanner tight enough not to corrupt `first.last@corp` paths cannot see a schemeless credential
+URL, and one loose enough to see it corrupts them. No regex resolves that. What resolves it is
+knowing the value: redact **by value**, then **by literal**, then — only as a backstop — **by
+syntax**, with syntax requiring an explicit `//`. Every echo, error and record surface routes
+through one function, and an AST test enforces that the general scanner has exactly one caller.
+
+The second lesson: **the negative control found five holes in my own suite that 350 green tests
+did not.** Three PLANTED arms came back GREEN (the `://` echo gate, the echo losing the run's own
+URL, truncate-before-scrub) because defence-in-depth was masking them, one because the literal pass
+was covered by the value pass, and one REPLAYED arm did not reproduce — the spelling I picked
+was one revision 2 actually handled. Each was a real assertion I had not written. Write the control
+before believing the suite.
+
+Evidence is now **content-addressed**: `ci/fixtures/cleanroom-redaction/*.pysrc` + a sha256
+manifest, refused on mismatch, with a LANDING arm that runs in a tree with no `.git` and
+`ci/simulate_squash_cleanroom_redaction.py` that proves it against a real squash with the reflog
+expired and the objects pruned. 12/12 replay arms fire with the rejected refs gone.

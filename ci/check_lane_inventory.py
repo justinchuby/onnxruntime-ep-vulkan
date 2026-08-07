@@ -121,6 +121,15 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
         "hostfree.powershell_exit_status_negative_control",
     ),
     ("PowerShell exit-status screen", "hostfree.powershell_exit_status"),
+    # Order matters again: "Cleanroom index-URL privacy negative control" does not
+    # substring "Cleanroom index-URL privacy tests", but both share the prefix
+    # "Cleanroom index-URL privacy", so the control is listed first to stay safe under a
+    # future rename that shortens either name to that shared prefix.
+    (
+        "Cleanroom index-URL privacy negative control",
+        "hostfree.cleanroom_index_url_privacy_control",
+    ),
+    ("Cleanroom index-URL privacy tests", "hostfree.cleanroom_index_url_privacy"),
     ("Two-polarity tests", "hostfree.lane_check_tests"),
     ("Two-polarity suite asserted something", "hostfree.lane_check_productivity"),
     ("Suite-productivity negative control", "hostfree.suite_productivity_negative_control"),

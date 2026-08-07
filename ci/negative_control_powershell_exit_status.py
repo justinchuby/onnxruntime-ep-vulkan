@@ -11,13 +11,15 @@ just fixed. Provenance:
                  show``. Not text written to make the screen fire: the exact bytes that
                  were on ``origin/main`` at the commit issue #49 was filed against, where
                  both Windows "Gate negative control" steps carried the stale-exit-code
-                 shape.
+                 shape; and separately, the exact bytes at the commit issue #55 was filed
+                 against (``d2bf65f``, PR #50 merged), where "Install Mesa lavapipe"
+                 still carried the no-capture sibling shape PS1 could not reach.
 * ``PLANTED``  — text written to exercise a path. Proves the path is wired; proves
                  nothing about whether that shape occurs in the wild.
 
-The REPLAYED arm is the one that matters: it is the defect as it actually shipped,
+The REPLAYED arms are the ones that matter: they are the defect as it actually shipped,
 retrieved rather than reconstructed. If a future refactor of this screen stops catching
-it, this arm goes red for a reason nobody can argue with.
+either, that arm goes red for a reason nobody can argue with.
 
 Exit 0 when every arm fired as declared, 1 otherwise.
 """
@@ -42,6 +44,11 @@ EXIT_ERROR_INSTRUMENT = 4
 #: The commit both Windows "Gate negative control" steps still carried the bug at —
 #: origin/main's HEAD when issue #49 was filed, the commit this fix branches from.
 HISTORICAL_REF = "f8cfbf4"
+#: The commit issue #55 was filed against (PR #50, "fix(ci): Windows gate negative
+#: controls must consume their own exit status", merged). PS1 closed both Gate
+#: negative-control steps there, but "Install Mesa lavapipe" — same fall-through
+#: mechanism, no named-variable capture — still ended on an un-consumed Write-Host.
+HISTORICAL_REF_PS2 = "d2bf65f"
 WORKFLOW_REL = ".github/workflows/ci.yml"
 
 MINIMAL_HEAD = """name: control
@@ -76,15 +83,15 @@ def write(tmp: Path, name: str, text: str) -> Path:
     return path
 
 
-def historical_workflow() -> str | None:
-    """The real ci.yml at the commit that still carried the stale-exit-code shape.
+def historical_workflow(ref: str = HISTORICAL_REF) -> str | None:
+    """The real ci.yml at `ref`.
 
     Returns None rather than raising: a shallow clone legitimately may not have the
     object, and a control that cannot read its subject must say UNOBSERVABLE rather
     than quietly dropping an arm.
     """
     proc = subprocess.run(
-        ["git", "show", f"{HISTORICAL_REF}:{WORKFLOW_REL}"],
+        ["git", "show", f"{ref}:{WORKFLOW_REL}"],
         capture_output=True,
         encoding="utf-8",
         errors="replace",
@@ -105,7 +112,8 @@ def main() -> int:
         rc, out = run([str(REPO_ROOT / WORKFLOW_REL)])
         arms.append((
             "LIVE",
-            "this repository's own ci.yml passes (both steps now `exit 0`)",
+            "this repository's own ci.yml passes (PS1's two steps and PS2's "
+            "'Install Mesa lavapipe' all now `exit 0`)",
             rc == EXIT_PASS and "POWERSHELL-EXIT-STATUS: PASS" in out,
             "the green arm: a screen that only ever reddens is a lock on a broken state",
         ))
@@ -138,6 +146,39 @@ def main() -> int:
                 "issue #49 was filed against the second step only; the first carries "
                 "the identical shape and would have gone red the moment ICD "
                 "suppression actually took on an elevated Windows runner",
+            ))
+
+        # ---- REPLAYED: issue #55's PS2 defect, as it really shipped --------------
+        hist_ps2 = historical_workflow(HISTORICAL_REF_PS2)
+        if hist_ps2 is None:
+            arms.append((
+                "REPLAYED",
+                f"the real no-capture lavapipe shape at {HISTORICAL_REF_PS2} goes red",
+                False,
+                f"could not `git show {HISTORICAL_REF_PS2}:{WORKFLOW_REL}` — "
+                "UNOBSERVABLE, and an unreadable subject is not a passing arm",
+            ))
+        else:
+            path = write(tmp, "historical-ci-ps2.yml", hist_ps2)
+            rc, out = run([str(path)])
+            arms.append((
+                "REPLAYED",
+                f"the real no-capture 'Install Mesa lavapipe' shape at "
+                f"{HISTORICAL_REF_PS2} goes red under PS2",
+                rc == EXIT_FAIL_CONDITION
+                and "native_exit_stale_at_verdict_print" in out
+                and "Install Mesa lavapipe" in out,
+                "PS2 on the exact bytes PR #50 shipped (issue #49's fix, before issue "
+                "#55's PS2 widening) -- PS1 alone leaves this tree PASS, because "
+                "'Install Mesa lavapipe' never names a variable for $LASTEXITCODE",
+            ))
+            arms.append((
+                "REPLAYED",
+                "and PS1 alone would have missed it (the gap issue #55 was filed over)",
+                "stale_exit_code_after_native_capture" not in out,
+                "confirms the residual: no `$name = $LASTEXITCODE` capture appears in "
+                "this step, so PS1's own condition token never fires on it -- only "
+                "PS2's wider, capture-free rule does",
             ))
 
         # ---- PLANTED: the shape, on a different variable name and step name -----
@@ -199,7 +240,8 @@ def main() -> int:
             "line is the thing that sets its exit status, not an earlier stale one",
         ))
 
-        # ---- PLANTED: a step that never captures the code is out of scope -------
+        # ---- PLANTED: a step with no capture and no dangling verdict print stays
+        # clean under BOTH rules — the narrow, uncontroversial case ----------------
         rc, out = run([str(write(tmp, "planted-no-capture.yml", MINIMAL_HEAD + """    steps:
       - name: Ordinary build step
         run: |
@@ -209,13 +251,25 @@ def main() -> int:
             exit 1
           }
 """))])
+        # Corrected per issue #55: the note this arm carried before was true of THIS
+        # example (its last statement is the `if (Test-Path ...)` artifact check
+        # itself, not a `Write-Host` quoting a conclusion reached earlier) but
+        # over-general as written -- it read as a blanket amnesty for "no `$name =
+        # $LASTEXITCODE` capture appears here", and 'Install Mesa lavapipe' has exactly
+        # that (no capture) while NOT being correct by construction: its last
+        # statement IS a Write-Host verdict print sitting downstream of
+        # vulkaninfoSDK.exe's unread exit code. PS2 exists for that shape; this arm
+        # only proves the narrower case where no verdict print follows the native call
+        # at all, so there is nothing for the implicit trailer to get right or wrong.
         arms.append((
             "PLANTED",
-            "a step that never captures $LASTEXITCODE into a variable is not flagged",
+            "a step that never captures $LASTEXITCODE and never prints a dangling "
+            "verdict after its last native call is not flagged",
             rc == EXIT_PASS,
-            "nothing has second-guessed the implicit trailer here, so it already "
-            "carries the exit code of the last real command — correct by construction, "
-            "and flagging it would just be noise",
+            "true only because this step's LAST statement is the artifact check "
+            "itself, with no separate Write-Host verdict downstream of it -- not "
+            "because it 'never captures the code' in general (see PS2 and the "
+            "REPLAYED lavapipe arms above, which never capture anything either)",
         ))
 
         # ---- PLANTED: accumulate-then-exit ($rc pattern) stays clean ------------
@@ -253,6 +307,123 @@ def main() -> int:
             rc == EXIT_FAIL_CONDITION and "stale_exit_code_after_native_capture" in out,
             "the check must look past trailing comments to the last REAL statement, "
             "not stop at whatever the last line of text happens to be",
+        ))
+
+        # ==== PS2 arms: the no-capture sibling shape (issue #55) ===================
+
+        # ---- PLANTED: a bare `&`-called tool, then a dangling Write-Host verdict --
+        rc, out = run([str(write(tmp, "planted-ps2-basic.yml", MINIMAL_HEAD + """    steps:
+      - name: Some other smoke-check step
+        run: |
+          $probe = & "C:\\tools\\probeToolSDK.exe" --summary 2>&1
+          Write-Host $probe
+          if (-not ($probe | Select-String -Quiet -SimpleMatch "ready")) {
+            Write-Error "probe did not report ready"
+            exit 1
+          }
+          Write-Host "probe smoke-check: OK (ready)"
+"""))])
+        arms.append((
+            "PLANTED",
+            "PS2 fires on the shape under a different tool, path, and step name",
+            rc == EXIT_FAIL_CONDITION and "native_exit_stale_at_verdict_print" in out,
+            "the rule is the shape (a native call whose exit is never read, followed "
+            "by an unrelated Write-Host verdict with no exit), not the literal tool "
+            "name `vulkaninfoSDK.exe` or the literal step name",
+        ))
+
+        # ---- PLANTED: the fix — explicit exit 0 on the same shape clears it ------
+        rc, out = run([str(write(tmp, "planted-ps2-fixed.yml", MINIMAL_HEAD + """    steps:
+      - name: Some other smoke-check step
+        run: |
+          $probe = & "C:\\tools\\probeToolSDK.exe" --summary 2>&1
+          Write-Host $probe
+          if (-not ($probe | Select-String -Quiet -SimpleMatch "ready")) {
+            Write-Error "probe did not report ready"
+            exit 1
+          }
+          Write-Host "probe smoke-check: OK (ready)"
+          exit 0
+"""))])
+        arms.append((
+            "PLANTED",
+            "an explicit `exit 0` on the same shape clears PS2, same as PS1",
+            rc == EXIT_PASS,
+            "this is the actual fix applied to 'Install Mesa lavapipe' for issue #55",
+        ))
+
+        # ---- PLANTED: a bare *.exe invocation (no `&`) reaches PS2 too -----------
+        rc, out = run([str(write(tmp, "planted-ps2-bare-exe.yml", MINIMAL_HEAD + """    steps:
+      - name: Probe the loader directly
+        run: |
+          rust\\target\\release\\probeCtl.exe --probe-loader
+          Write-Host "loader probe finished"
+"""))])
+        arms.append((
+            "PLANTED",
+            "a bare, unquoted `*.exe` invocation (no call operator) also reaches PS2",
+            rc == EXIT_FAIL_CONDITION and "native_exit_stale_at_verdict_print" in out,
+            "PS2's native-call detection is not limited to the `&` call operator: a "
+            "path ending in `.exe` invoked directly, as this repo's own 'Probe Vulkan "
+            "loader' step does, sets $LASTEXITCODE exactly the same way",
+        ))
+
+        # ---- PLANTED: a known bare tool name (git) earlier reaches PS2 too -------
+        rc, out = run([str(write(tmp, "planted-ps2-known-tool.yml", MINIMAL_HEAD + """    steps:
+      - name: Tag check step
+        run: |
+          git fetch --tags
+          Write-Host "tag fetch complete"
+"""))])
+        arms.append((
+            "PLANTED",
+            "a known bare tool name (git, cargo, python, ...) earlier also reaches PS2",
+            rc == EXIT_FAIL_CONDITION and "native_exit_stale_at_verdict_print" in out,
+            "the allowlist of bare tool names is deliberately explicit and small (see "
+            "_NATIVE_CALL_RE) -- this proves it is wired for a tool this repository "
+            "actually invokes by bare name (`git`), not just for `&`-prefixed calls",
+        ))
+
+        # ---- PLANTED (false-positive guard): a *.exe substring inside a quoted URL
+        # or path VALUE -- never invoked -- must NOT trip PS2 ----------------------
+        rc, out = run([str(write(tmp, "planted-ps2-url-string.yml", MINIMAL_HEAD + """    steps:
+      - name: Install some other SDK
+        run: |
+          $url = "https://example.invalid/download/SomeSdk-Installer.exe"
+          Write-Host "Downloading SDK from $url"
+          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\\SomeSdk.exe"
+          Start-Process -Wait -FilePath "$env:TEMP\\SomeSdk.exe" -ArgumentList '/quiet'
+          Write-Host "SDK installed"
+"""))])
+        arms.append((
+            "PLANTED",
+            "a `.exe` substring inside a quoted URL/path VALUE is not a native call "
+            "and must not trip PS2 (regression guard for the false positive this "
+            "screen's own first draft produced on 'Install LunarG Vulkan SDK')",
+            rc == EXIT_PASS,
+            "`Invoke-WebRequest` and `Start-Process` are cmdlets, not the call "
+            "operator -- neither sets $LASTEXITCODE, and a `*.exe` token that only "
+            "ever appears inside quotes (as a URL or a -FilePath argument) was never "
+            "invoked as a command in its own right; PS2's native-call regex requires "
+            "an unquoted `*.exe` token or the `&` call operator, not a bare substring "
+            "match anywhere on the line",
+        ))
+
+        # ---- PLANTED (false-positive guard): a verdict print with NO earlier
+        # native call at all must not trip PS2 --------------------------------------
+        rc, out = run([str(write(tmp, "planted-ps2-no-native.yml", MINIMAL_HEAD + """    steps:
+      - name: Pure cmdlet step
+        run: |
+          $items = Get-ChildItem -Recurse -Path "C:\\some\\dir"
+          New-Item -ItemType Directory -Force -Path "C:\\some\\other" | Out-Null
+          Write-Host "housekeeping complete: $($items.Count) item(s)"
+"""))])
+        arms.append((
+            "PLANTED",
+            "a Write-Host verdict with no native call anywhere earlier is not flagged",
+            rc == EXIT_PASS,
+            "nothing in this step's body could have left a stale native exit code "
+            "behind, so there is nothing for the implicit trailer to disagree with",
         ))
 
         # ---- PLANTED: instrument paths -------------------------------------------
