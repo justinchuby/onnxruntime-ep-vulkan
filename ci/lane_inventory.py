@@ -1468,6 +1468,96 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.powershell_exit_status",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="PowerShell exit-status screen (a verdict step must consume its own code)",
+        watches=(
+            "Issue #49: a Windows `run:` step that captures `$LASTEXITCODE` into a "
+            "named variable to brand or print its OWN verdict, but whose success path "
+            "ends without an explicit `exit`. GitHub's generated `pwsh` wrapper appends "
+            "`if ((Test-Path variable:\\LASTEXITCODE)) { exit $LASTEXITCODE }` after the "
+            "script body, so the step's real exit code stays pinned to whatever native "
+            "command ran LAST before the fall-through -- on a step built around an "
+            "intentionally-failing command (a negative control), that is never the "
+            "step's own verdict. Both Windows 'Gate negative control' steps carried this "
+            "shape; the second is what issue #49 was filed against, the first is a "
+            "second, proven-coupled instance that had simply never been exercised "
+            "because ICD suppression never used to take on an elevated Windows runner."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "REPLAYED: the real ci.yml bytes at the commit issue #49 was filed against, "
+            "which carry the defect on BOTH Windows negative-control steps. PLANTED: a "
+            "renamed step and variable exercising the same shape, plus arms proving the "
+            "screen stays clean on every adjacent, correct shape (`exit $LASTEXITCODE` "
+            "directly, an explicit `exit 0`, a step that never captures the code at all, "
+            "and a two-command accumulate-then-exit pattern)."
+        ),
+        arm_healthy=(
+            "POWERSHELL-EXIT-STATUS: PASS -- 2 workflow files, 121 named steps scanned, "
+            "0 findings (after both Windows steps gained an explicit `exit 0`)"
+        ),
+        arm_broken=(
+            "POWERSHELL-EXIT-STATUS: FAIL(condition=stale_exit_code_after_native_capture) "
+            "naming both `.github/workflows/ci.yml` Gate-negative-control steps by line "
+            "and their last (non-exiting) script line"
+        ),
+        observed="2026-08-07",
+        misses=(
+            "It is a STATIC screen over YAML text with no YAML parser, for the same "
+            "reason check_build_precondition.py is: the lane-checks job installs only "
+            "pytest/onnx/numpy, and a screen skipped because an import failed is a "
+            "screen that does not exist. It reports ERROR(instrument=no_steps_parsed) "
+            "rather than PASS if its block-structure assumption ever stops matching.",
+            "It keys on the PowerShell-only spelling `$LASTEXITCODE` rather than on "
+            "`runs-on: windows-*`, so it is precise about the MECHANISM rather than the "
+            "platform -- but that also means a step that mishandles a native exit code "
+            "through some OTHER PowerShell idiom (e.g. `$?`, or a `try`/`catch` around a "
+            "native call) is outside its one named rule.",
+            "It only asks whether the LAST line of the script consumes the captured "
+            "code explicitly. A step whose success path passes through a captured "
+            "value and consumes it several statements before genuinely new, unrelated "
+            "native output follows would be a different, unproven shape this rule does "
+            "not reach.",
+        ),
+    ),
+    Check(
+        id="hostfree.powershell_exit_status_negative_control",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="PowerShell exit-status negative control (demand red on the real shape)",
+        watches=(
+            "That the PowerShell exit-status screen still goes RED on the real "
+            "defect and on the general shape, not just on the two specific steps this "
+            "repository already fixed. A screen that has stopped firing is "
+            "indistinguishable from a clean tree."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "12 arms: 1 LIVE (today's ci.yml is clean), 2 REPLAYED (the real bytes at "
+            "the commit issue #49 was filed against, asserting the condition token AND "
+            "that both known offending step names are reported, not just the one filed "
+            "in the issue), 9 PLANTED (the shape under a different name, each adjacent "
+            "correct idiom staying clean, and both instrument paths)."
+        ),
+        arm_healthy="12/12 arms fire as specified, exit 0",
+        arm_broken=(
+            "Caught a real bug in the screen on its first run: the FAIL branch printed "
+            "the human-readable report but never the R13 `FAIL(condition=...)` token "
+            "itself -- the exact defect class `check_build_precondition.py`'s own "
+            "negative control found in that screen on 2026-08-03, in a different "
+            "screen written four days later."
+        ),
+        observed="2026-08-07",
+        misses=(
+            "The REPLAYED arm pins a commit hash. If that commit is ever unreachable "
+            "(a squashed history, a fresh shallow clone) those two arms "
+            "ERROR(instrument=...) rather than passing quietly, but that still leaves "
+            "the screen's only non-planted evidence unavailable.",
+        ),
+    ),
+    Check(
         id="device.flake_witness",
         falsifier=FALSIFIER_OBSERVED,
         lane="both",
