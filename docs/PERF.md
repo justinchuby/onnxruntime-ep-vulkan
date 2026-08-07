@@ -4532,7 +4532,7 @@ batching is for.
 The noise floor is the `M = 1` null control, where the tiled and untiled arms bind identical SPIR-V
 under identical specialisation and must be the same pipeline. Quoted as the **min–max over the
 three per-repeat ratios**, the same convention §26.6 uses, from
-`real_model_latency_before_gqa.json` → `models[0].noise_floor.ratios` = `[0.994657, 0.926348,
+`real_model_latency_before_gqa.json` → `models[0].noise_floor.ratios` = `[0.99411, 0.926348,
 1.264193]`: **0.926 – 1.264**, median 0.994. Row-tile ratios anywhere inside that interval — which
 is every decode row — are therefore **not readings**; §20's `STEADY_UNCERTIFIED` applies to them.
 MobileNetV2's floor in this same run is worse still, `[0.988282, 5.605136, 0.939699]`: a **5.6×**
@@ -4712,6 +4712,16 @@ by this edit, which is the point: the change moved lane occupancy, not graph par
   × 2.291 GB) between two arms, so it inherits both arms' noise and assumes the arms differ only in
   weight passes — which is true by construction of the `QB_ROWS` specialisation, but is an argument
   about the source, not a counter reading.
+* **No reading here identifies its device beyond index, name and driver.** Every §26 artifact was
+  taken before `main` grew stable device identity (#54: `uuid`/`luid`/`pci`), so on a box with two
+  identical cards these artifacts could not say which one ran. This box has exactly one Vulkan
+  device and records that absence explicitly, which is what closes the gap *for these readings* —
+  not the identity field, which arrives with the next run of the instrument.
+* **No §26 number was re-measured on the head that is now proposed.** §26.6/§26.9/§26.10 were taken
+  at `024027d`; two `main` merges (#54, #62) have moved `rust/src/` since. No shader moved
+  (`git diff 024027d..HEAD -- rust/shaders` is empty) and the GQA dispatch rule is untouched, so
+  the kernel readings stand on identical SPIR-V — but #54 changes device *selection*, and a future
+  reading on a multi-device box could legitimately differ.
 
 ### 26.8 Reproduce
 
@@ -4763,8 +4773,20 @@ is unchanged by this change and by the merge alike. The merge did not move the r
 §26.9's build no longer exists as a proposable tree. PR #53 landed on `main` as the **squash**
 `ca61252`, not as `8f12b32`, so the branch this section belongs to was rebuilt as a single commit
 on top of `main` and then merged `main` twice more (`5113a0a`, then `3e38ae3`). None of those
-commits touch `rust/`: `git diff --stat ed73a4a HEAD -- rust` is empty, and the whole delta is five
-`ci/` and `tests/` files from #61.
+commits touch `rust/`: at the head measured here, `git diff --stat ed73a4a HEAD -- rust` was empty
+and the whole delta was five `ci/` and `tests/` files from #61.
+
+**This section was measured at `024027d`, and the head now proposed is not that tree.** Two
+later `main` merges — #54 (stable-identity Vulkan device selection) and #62 (the landing
+simulator) — moved `rust/src/` under `vk/instance.rs`, `vk/device.rs`, `factory.rs`, `registry.rs`
+and others, and this branch's own revision moved eight rustdoc lines in `ops/attention.rs`. What is
+*not* moved is what these numbers are about: `git diff 024027d..HEAD -- rust/shaders` is **empty**,
+so every SPIR-V module in the table below is byte-identical to the one that produced it, and the
+GQA dispatch geometry is unchanged (`gqa_local_size` and `GQA_MIN_GROUPS` are untouched, and the
+36 comparisons of §26.5 are read off an artifact, not re-derived). Nothing in §26 was re-measured
+on the merged head, and nothing here claims it was: #54 changes which device the EP *selects* and
+how it *identifies* it, which is a real reason a future reading could differ, and is recorded as a
+limitation rather than dismissed.
 
 **The exact property that holds is source identity, not binary identity, and the artifacts say so.**
 Each of the three runs records the sha256 of the `.dll` it loaded, and all three differ:
