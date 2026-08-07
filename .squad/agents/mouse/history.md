@@ -192,3 +192,77 @@ stale ORT 1.17.1 from `System32` unless given `--ort-lib` pointing at the venv's
 The dispatch counters are **process-global cumulative atomics**, so two readings in one process are
 comparable only as consecutive differences. ORT's CSE folds two `Reshape` nodes with identical
 inputs into one, so a fan-out test needs branches that differ in something other than a node name.
+
+---
+
+## Issue #47 — my own regression: RANK_INFERENCE landed unmapped in the census surface map
+
+PR #46 added `ONNXRUNTIME_EP_VULKAN_RANK_INFERENCE` as a production env switch and never added the
+matching entry to `ci/census_surface_map.json`. `ci/check_census_completeness.py` enumerates the
+independent whole straight from production Rust and demands an explicit disposition for every
+surface it finds, so the unmapped switch turned it `FAIL(condition=unmapped_surface)` and took three
+`ci/test_lane_checks.py` tests red on `main` @ `f242e4e`. The screen was right. I was wrong.
+
+Measured, not assumed: `fa39a69` (parent of #46) = 1 failed / 261 passed; `f242e4e` = 4 failed /
+258 passed. Exactly three are mine. The fourth,
+`test_conftest_actually_collects_with_tests_requirements_txt_dependencies_issue_24`, fails
+identically at `fa39a69` and belongs to #24 — I kept it out of this fix rather than sweeping it in.
+
+**It escaped twice over.** PR #46's CI never completed (GitHub Actions outage), and no local
+command I ran covers `ci/` — `cargo ci` and `pytest tests/ops` were both green and neither executes
+`ci/test_lane_checks.py`. That is the lesson worth keeping: green on the lanes I habitually run is
+not green.
+
+### The disposition is `uncensused`, and that was the whole judgement call
+
+The tempting move was `censused`, because the switch really is well discriminated —
+`tests/ops/test_rank_inference_chain.py` pairs it 0/unset across ten cases and
+`probe_model_op_census.py` reads 4 -> 367 dispatches on bertsquad-12. But none of those is the
+wiring census, and the census could not observe it even if asked: its graph is a six-node Add/Mul
+elementwise chain the EP claims in full, every edge already ranked by ORT, so an armed/unarmed pair
+would read "no difference" — a 0 for an event that cannot occur (R12), which is exactly the
+reachability defect `GEMV_PACKED` already carries. Recording `censused` would have been the
+green-by-label claim the whole map exists to prevent. So: `uncensused`, owner me, with the two
+things that would actually close it written down (an unranked chain in the census lane, or a C ABI
+counter publishing `shape_infer`'s `ranks_proved`).
+
+### Two instrument defects found while fixing it, both worse than the original
+
+1. **The screen died on its own input.** A `→` (U+2192) in my map prose made
+   `check_census_completeness.py` exit `ERROR(instrument=screen_raised)` with `UnicodeEncodeError`
+   on a cp1252 console — *after* it had done its work correctly. Under R13 an ERROR is explicitly
+   not a detection, so a real unmapped surface would have been reported as "the screen could not
+   answer" instead of as the finding it is.
+2. **The control that should have caught me was blind.**
+   `negative_control_census_completeness.py` decoded the child as UTF-8 while letting the child
+   pick cp1252 for itself. On Windows the decode blew up inside subprocess's reader thread, the
+   exception surfaced only as a thread warning, the output came back empty, and **all twelve arms**
+   reported `arm_did_not_fire` — including "a new EP env switch appears and nobody tells the
+   census". `arm_did_not_fire` and "the harness could not read its subject" are opposite findings
+   that looked identical. The fix is the complete encoding pair that `run_check()` in
+   `ci/test_lane_checks.py:54` had already documented and this file never adopted.
+
+### Both fixes are pinned by arms I proved can fail
+
+I injected each defect back and confirmed the new test fails, then restored and confirmed it
+passes. The first arm deliberately does **not** use `run_check()`, because `run_check` forces
+`PYTHONIOENCODING=utf-8` into the child — the exact condition under which the bug cannot happen —
+so an arm built on it would have passed either way. It pins the child to cp1252 instead, which also
+stops the arm from passing vacuously on a UTF-8 Linux runner. My first draft of that arm planted the
+non-ASCII into a *new* `out_of_frame` entry and passed with the defect injected, because the screen
+never prints a reason for a surface it does not report; planting into an existing `uncensused`
+entry is what made it real.
+
+### Result
+
+Lane suite 1 failed / 263 passed — only #24's, against a 261-passed baseline plus my 2 new arms.
+`check_census_completeness.py` PASS, 64 surfaces (was 63), 33 env switches (was 32), artifact
+byte-identical across two runs. Negative control 12/12 arms fire. Open-reds went 4 -> 3 and the one
+that left is exactly `lane_checks_suite`; `ledger_census`, `ledger_census_negative_control` and
+`main_is_green` are pre-existing and unrelated (PR #44 owns the witness move).
+
+No Rust changed. I still re-ran the BERT A/B on this worktree's own fresh build rather than argue
+from the diff: ON 52 Vulkan nodes / 367 dispatches / 489 claims, OFF 4 / 4 / 481, all three outputs
+AGREE/EXACT with `max_abs_diff` identical to the merged #46 evidence to the last digit. Criterion 12
+is untouched — the artifact still says Trinity owns row 12, and a PASS on this screen does not close
+it.
