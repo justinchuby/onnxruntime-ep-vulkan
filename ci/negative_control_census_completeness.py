@@ -299,6 +299,70 @@ def arm_extractor_blinded() -> tuple[str, bool, str]:
     )
 
 
+def arm_stale_absence_claim() -> tuple[str, bool, str]:
+    """Issue #58, replayed: a map entry claims a real production symbol does not exist.
+
+    Reconstructs the exact shape of the defect issue #58 found in
+    ``ONNXRUNTIME_EP_VULKAN_GEMV_PACKED``'s entry — a `reason` asserting no artifact
+    records the pipeline variant, when `counters::record_pipeline_variant` already does
+    and did before the entry was last read. The check must catch this from the tree, not
+    from the map re-describing itself.
+    """
+    mapping = _copy_map("map-stale-absence.json")
+    doc = json.loads(mapping.read_text(encoding="utf-8"))
+    hit = False
+    for entry in doc.get("surfaces", []):
+        if entry["id"] == "ONNXRUNTIME_EP_VULKAN_GEMV_PACKED":
+            entry["absence_claims"] = ["record_pipeline_variant"]
+            hit = True
+    if not hit:
+        raise AnchorMissing("no GEMV_PACKED entry in the surface map to plant the claim on")
+    mapping.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    code, out = _run(RUST_SRC, mapping, ARTIFACTS)
+    ok = (
+        code == EXIT_FAIL_CONDITION
+        and "record_pipeline_variant" in out
+        and "stale_absence_claim" in out
+    )
+    return (
+        "issue #58 replayed: a map entry claims 'record_pipeline_variant' does not exist",
+        ok,
+        f"exit={code} (want {EXIT_FAIL_CONDITION}); named the symbol: "
+        f"{'record_pipeline_variant' in out}; named the condition: "
+        f"{'stale_absence_claim' in out}",
+    )
+
+
+def arm_absence_claim_true() -> tuple[str, bool, str]:
+    """The counter-control: a claim naming a symbol that really is absent must not fire.
+
+    Without this arm, `arm_stale_absence_claim` alone cannot distinguish a check that
+    correctly reads the tree from one that fails every `absence_claims` entry regardless
+    of content — the same reasoning the frame-witness arm's REPLAYED/PLANTED split uses.
+    `gemv_packed_dispatches` is the counter this project's own tests once asked for and
+    never built (see tests/ops/test_wiring_census.py's prior comment, corrected 2026-08-07)
+    — a genuinely absent symbol on this tree today.
+    """
+    mapping = _copy_map("map-absence-claim-true.json")
+    doc = json.loads(mapping.read_text(encoding="utf-8"))
+    hit = False
+    for entry in doc.get("surfaces", []):
+        if entry["id"] == "ONNXRUNTIME_EP_VULKAN_GEMV_PACKED":
+            entry["absence_claims"] = ["gemv_packed_dispatches"]
+            hit = True
+    if not hit:
+        raise AnchorMissing("no GEMV_PACKED entry in the surface map to plant the claim on")
+    mapping.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    code, out = _run(RUST_SRC, mapping, ARTIFACTS)
+    ok = code == EXIT_PASS and "stale_absence_claim" not in out
+    return (
+        "counter-control: a claim naming a genuinely absent symbol must not be flagged",
+        ok,
+        f"exit={code} (want {EXIT_PASS}); stale_absence_claim raised: "
+        f"{'stale_absence_claim' in out}",
+    )
+
+
 def arm_empty_tree() -> tuple[str, bool, str]:
     empty = SCRATCH / "src-empty"
     empty.mkdir(parents=True, exist_ok=True)
@@ -320,6 +384,8 @@ ARMS = [
     arm_mechanism_dropped,
     arm_unclaimed_name,
     arm_name_claim_contradicted,
+    arm_stale_absence_claim,
+    arm_absence_claim_true,
     arm_map_missing,
     arm_artifacts_missing,
     arm_extractor_blinded,
@@ -364,9 +430,10 @@ def main() -> int:
         f"\n{TAG}: PASS — the screen names a counter, a trace phase and an env switch "
         "planted in production Rust that the census does not know about; names a "
         "mechanism the census stopped enumerating; refuses a name recorded as verified "
-        "against arms that never varied; and reports a missing map, a missing artifact "
-        "set, a moved extractor anchor and an empty tree as instrument outages rather "
-        "than as coverage.",
+        "against arms that never varied; catches a replayed issue-#58 stale absence "
+        "claim against the real tree while leaving a genuinely-absent-symbol claim "
+        "unflagged; and reports a missing map, a missing artifact set, a moved extractor "
+        "anchor and an empty tree as instrument outages rather than as coverage.",
         flush=True,
     )
     return EXIT_PASS
