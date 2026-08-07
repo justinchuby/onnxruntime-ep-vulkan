@@ -662,6 +662,7 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
             },
         ),
     ]
+    winning_arm: "tuple[str, str, str] | None" = None
     for mechanism_name, overrides in env_arms:
         no_layer_env = _cargo_env()
         no_layer_env.update(overrides)
@@ -688,33 +689,39 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
             f"{stripped_reason}",
             file=sys.stderr,
         )
-        if stripped_state != _verdict.VALIDATION_ARMED:
-            mechanism = mechanism_name
-            break
+        # No `break`: the remaining mechanisms are still tried, so the artifact records
+        # the whole field rather than the first arm to score. A sweep that stops at its
+        # first winner cannot say anything about the arms it never ran.
+        if stripped_state != _verdict.VALIDATION_ARMED and winning_arm is None:
+            winning_arm = (mechanism_name, stripped_state, stripped_reason)
 
-    if stripped_state == _verdict.VALIDATION_ARMED:
-        mechanism_name = "registry_disable"
-        try:
-            with _registry_suppression.suppress_validation_layer_registry() as disabled:
-                env_applied_by_arm[mechanism_name] = []
-                no_layer_env = _cargo_env()
-                no_layer_env.pop("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION", None)
-                stripped_state, stripped_reason = _probe_validation_frame(no_layer_env)
-            attempts.append((mechanism_name, stripped_state, stripped_reason))
-            print(
-                f"[CRITERION 3d] frame with {mechanism_name} applied "
-                f"(registry values disabled: {disabled}): {stripped_state} — "
-                f"{stripped_reason}",
-                file=sys.stderr,
-            )
-            if stripped_state != _verdict.VALIDATION_ARMED:
-                mechanism = mechanism_name
-        except _registry_suppression.RegistryMechanismUnavailable as exc:
-            attempts.append((mechanism_name, "mechanism_unavailable", str(exc)))
-            print(
-                f"[CRITERION 3d] {mechanism_name} unavailable: {exc}",
-                file=sys.stderr,
-            )
+    mechanism_name = "registry_disable"
+    try:
+        with _registry_suppression.suppress_validation_layer_registry() as disabled:
+            env_applied_by_arm[mechanism_name] = []
+            no_layer_env = _cargo_env()
+            no_layer_env.pop("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION", None)
+            stripped_state, stripped_reason = _probe_validation_frame(no_layer_env)
+        attempts.append((mechanism_name, stripped_state, stripped_reason))
+        print(
+            f"[CRITERION 3d] frame with {mechanism_name} applied "
+            f"(registry values disabled: {disabled}): {stripped_state} — "
+            f"{stripped_reason}",
+            file=sys.stderr,
+        )
+        if stripped_state != _verdict.VALIDATION_ARMED and winning_arm is None:
+            winning_arm = (mechanism_name, stripped_state, stripped_reason)
+    except _registry_suppression.RegistryMechanismUnavailable as exc:
+        attempts.append((mechanism_name, "mechanism_unavailable", str(exc)))
+        print(
+            f"[CRITERION 3d] {mechanism_name} unavailable: {exc}",
+            file=sys.stderr,
+        )
+
+    if winning_arm is not None:
+        # The verdict rows belong to the arm that actually took the layer away, not to
+        # whichever arm happened to run last in the sweep above.
+        mechanism, stripped_state, stripped_reason = winning_arm
 
     assert stripped_state != _verdict.VALIDATION_PROBE_ERROR, (
         "removing the layer manifests must produce a *classified* unavailability, not a "
@@ -783,6 +790,20 @@ def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
                 "not a comparison between suppression mechanisms.\n"
                 f"artifact: {artifact_path}"
             )
+
+    # Every declared arm must appear in the record. With the sweep no longer stopping at
+    # its first winner, a re-introduced `break` would silently shrink the field back to
+    # one mechanism — the shape of the PR #45 evidence Morpheus rejected.
+    attempted_names = [n for n, _s, _d in attempts]
+    declared_names = [n for n, _ in env_arms] + ["registry_disable"]
+    if attempted_names != declared_names:
+        raise _verdict.InstrumentError(
+            "[criterion 3d instrument failure] ERROR(instrument): the layer-suppression "
+            f"sweep recorded {attempted_names} but this test declares {declared_names}. "
+            "Every arm is offered on every run so the winner's margin is over mechanisms "
+            "that actually acted.\n"
+            f"artifact: {artifact_path}"
+        )
 
     if stripped_state == _verdict.VALIDATION_ARMED:
         # Some loaders find the layer through registry entries VK_LAYER_PATH does not

@@ -381,6 +381,8 @@ def test_criterion4_icd_polarity_witness() -> None:
 
     records: dict[str, dict] = {}
     suppression_attempts: list[dict] = []
+    winning_record: "dict | None" = None
+    last_attempted_record: "dict | None" = None
 
     record = _run_row(row="icd_present", lib=lib, extra_env={}, quiet_seconds=90)
     records["icd_present"] = record
@@ -443,9 +445,21 @@ def test_criterion4_icd_polarity_witness() -> None:
                 "env_observed_in_child": {k: observed_vk_env.get(k) for k in sorted(arm_env)},
             }
         )
-        records["icd_suppressed"] = record
-        if state == link.STATE_SUPPRESSED:
-            break
+        last_attempted_record = record
+        if state == link.STATE_SUPPRESSED and winning_record is None:
+            # First arm to actually suppress becomes the witness row.  The loop does NOT
+            # stop here: every remaining arm is still run, because "registry_disable beat
+            # the env arms" is only a claim about mechanisms if the env arms were run at
+            # all (Morpheus, PR #45).  Stopping at the first winner is what left the
+            # earlier revision with a single attempt and nothing to compare it to.
+            winning_record = record
+
+    if winning_record is not None:
+        records["icd_suppressed"] = winning_record
+    elif last_attempted_record is not None:
+        # No arm suppressed anything.  Keep the last child that actually ran so check 1
+        # below reports a fired-but-negative control rather than an instrument outage.
+        records["icd_suppressed"] = last_attempted_record
 
     if "icd_suppressed" not in records:
         # Every arm was unavailable on this machine (e.g. non-Windows and no HKLM to
@@ -499,7 +513,10 @@ def test_criterion4_icd_polarity_witness() -> None:
             "while its intended environment was not is a DEAD ARM, and a mechanism that "
             "'won' against dead arms won by walkover, which is not a comparison "
             "(Morpheus, PR #45 rejection at head e2b7e00). A registry arm's `env_applied` "
-            "is legitimately empty: it acts on HKLM, not on the environment."
+            "is legitimately empty: it acts on HKLM, not on the environment. Every arm is "
+            "attempted on every run — the sweep does not stop at the first winner — so "
+            "`suppression_attempts` is the full field, and `suppression_mechanism` names "
+            "the first arm in it that actually suppressed the ICD."
         ),
         "classifier": "ci/check_icd_suppression.py::classify (Link's; not re-implemented)",
         "rows": records,
@@ -576,6 +593,22 @@ def test_criterion4_icd_polarity_witness() -> None:
                 + f"\nartifact: {path}"
             )
 
+
+    # ── 1.7. Every declared arm was actually attempted.  With the sweep no longer
+    #        stopping at the first winner, a future `break` (or an exception swallowed
+    #        mid-loop) would quietly shrink the comparison back to one arm, which is the
+    #        shape the PR #45 evidence had.  The artifact must name every mechanism. ──
+    attempted = [a["mechanism"] for a in suppression_attempts]
+    declared = [name for name, _ in suppression_arms]
+    if attempted != declared:
+        raise _verdict.InstrumentError(
+            "[criterion 4 instrument failure] ERROR(instrument): the suppression sweep "
+            f"recorded {attempted} but this file declares {declared}. Every arm is run on "
+            "every platform so that the winner's margin is over mechanisms that actually "
+            "acted; a short sweep is not a comparison.\n"
+            "attempts: " + _format_attempts(suppression_attempts)
+            + f"\nartifact: {path}"
+        )
 
     assert pos["icd_suppression_state"] != neg["icd_suppression_state"], (
         "Criterion 4 FAILS as a witness: the suppression classifier returned "
@@ -884,22 +917,37 @@ def _planted_record(*, row: str, suppressed: bool, vk_env: "dict[str, str]") -> 
     }
 
 
-def _plant_criterion4_seams(monkeypatch, tmp_path) -> dict:
+def _plant_criterion4_seams(
+    monkeypatch,
+    tmp_path,
+    *,
+    winning_arm: str = "registry_disable",
+    high_integrity: bool = True,
+) -> dict:
     """Stub the child spawn, the classifier and the registry arm; record what happens.
 
     Everything else — arm selection, context entry, the checks, the artifact — is the
     real code under test.  The returned dict is the observation: every ``_run_row`` call
     with the environment it was handed, and the registry arm's arm/restore counts.
+
+    ``winning_arm`` chooses which planted world is being modelled: ``registry_disable``
+    is the Windows shape (env arms are delivered and lose), any env arm name is the
+    Linux shape (the first arm suppresses and the sweep must still run the rest).
     """
     state = {"calls": [], "registry_entered": 0, "registry_exited": 0, "registry_armed": False}
+    winning_env = _arm_intended_env(dict(_icd_suppression_arms())[winning_arm])
 
     def fake_run_row(*, row: str, lib: Path, extra_env: "dict[str, str]", quiet_seconds: float):
         state["calls"].append({"row": row, "extra_env": dict(extra_env)})
-        # The planted world: only the registry mechanism actually suppresses anything,
-        # which is what the GitHub-hosted Windows runner is expected to show. The env
-        # arms are armed and delivered — they simply lose, which is the whole point:
+        # The planted world: exactly one mechanism actually suppresses anything. Every
+        # other arm is armed and delivered — it simply loses, which is the whole point:
         # losing and never running are different states and must read differently.
-        suppressed = row == "icd_suppressed" and state["registry_armed"]
+        if row != "icd_suppressed":
+            suppressed = False
+        elif winning_arm == "registry_disable":
+            suppressed = state["registry_armed"]
+        else:
+            suppressed = extra_env == winning_env
         return _planted_record(row=row, suppressed=suppressed, vk_env=extra_env)
 
     @contextlib.contextmanager
@@ -919,7 +967,7 @@ def _plant_criterion4_seams(monkeypatch, tmp_path) -> dict:
     monkeypatch.setattr(
         _registry_suppression, "suppress_icd_registry", fake_suppress_icd_registry
     )
-    monkeypatch.setattr(_registry_suppression, "is_high_integrity", lambda: True)
+    monkeypatch.setattr(_registry_suppression, "is_high_integrity", lambda: high_integrity)
     monkeypatch.setenv("ONNXRUNTIME_VULKAN_EP_LIB", str(tmp_path / "planted_lib.bin"))
     monkeypatch.delenv("ONNXRUNTIME_EP_VULKAN_WITNESS_CHILD", raising=False)
     return state
@@ -964,7 +1012,7 @@ def test_every_icd_arm_delivers_its_own_environment_to_its_child(monkeypatch, tm
     )
     suppressed_calls = [c for c in calls if c["row"] == "icd_suppressed"]
     assert len(suppressed_calls) == 3, (
-        "all three arms must be tried when the earlier ones do not suppress; "
+        "every declared arm must be run — the sweep does not stop early; "
         f"got {len(suppressed_calls)}"
     )
 
@@ -1008,6 +1056,44 @@ def test_every_icd_arm_delivers_its_own_environment_to_its_child(monkeypatch, tm
         )
     assert attempts["registry_disable"]["env_applied"] == []
     assert attempts["registry_disable"]["state"] == _PlantedClassifier.STATE_SUPPRESSED
+
+
+def test_the_sweep_does_not_stop_at_the_first_arm_that_wins(monkeypatch, tmp_path) -> None:
+    """The Linux shape: arm 1 suppresses, and the remaining arms are STILL run.
+
+    A sweep that stops at its first winner records one attempt and calls it a comparison.
+    That is how PR #45's evidence came to rest on a single mechanism, and it is why this
+    control plants the opposite world from the one above: here ``driver_search_path``
+    wins, and the artifact must still name every mechanism that was offered.
+    """
+    state = _plant_criterion4_seams(
+        monkeypatch, tmp_path, winning_arm="driver_search_path", high_integrity=False
+    )
+
+    test_criterion4_icd_polarity_witness()
+
+    suppressed_calls = [c for c in state["calls"] if c["row"] == "icd_suppressed"]
+    assert len(suppressed_calls) == 3, (
+        "the first arm suppressed the ICD and the sweep stopped — the remaining "
+        f"mechanisms were never compared against it; got {len(suppressed_calls)} attempt(s)"
+    )
+    assert state["registry_entered"] == 1 and state["registry_exited"] == 1
+
+    payload = json.loads(
+        next(iter(tmp_path.glob("criterion4_icd_witness-dev*.json"))).read_text(encoding="utf-8")
+    )
+    assert payload["suppression_mechanism"] == "driver_search_path", (
+        "the witness row must be the arm that actually suppressed the ICD"
+    )
+    assert payload["high_integrity_process"] is False
+    attempts = {a["mechanism"]: a for a in payload["suppression_attempts"]}
+    assert set(attempts) == {"driver_search_path", "loader_driver_filter", "registry_disable"}
+    assert attempts["driver_search_path"]["state"] == _PlantedClassifier.STATE_SUPPRESSED
+    for name in ("driver_search_path", "loader_driver_filter"):
+        assert attempts[name]["env_applied"], f"arm {name!r} delivered no environment"
+        assert attempts[name]["env_observed_in_child"] == _arm_intended_env(
+            dict(_icd_suppression_arms())[name]
+        )
 
 
 def test_the_dead_arm_defect_is_detected_when_planted(monkeypatch, tmp_path) -> None:
