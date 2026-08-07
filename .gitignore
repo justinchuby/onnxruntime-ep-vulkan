@@ -82,6 +82,12 @@ bench/results/link-gate/
 gate_chain_fp32_profile_*.json
 bench/results/claim_log_attribution.jsonl
 
+# Written by ci/check_landing_simulation.py on a runner and uploaded as a build
+# artifact (Tank 2026-08-07, issue #60). Not committed: it names the base and head
+# shas of one particular run, so a committed copy is stale the moment main moves and
+# reads as a claim about a landing nobody simulated.
+bench/results/landing-simulation.json
+
 # Mouse: models fetched for op-census work. Large, and reproducible from the URL recorded in
 # bench/results/model_provenance.json — an artifact belongs in the repo, a 14 MB blob does not.
 .scratch-models/

@@ -142,6 +142,35 @@
       "timeout": 900
     },
     {
+      "id": "landing_simulation",
+      "cmd": [
+        "python",
+        "ci/check_landing_simulation.py",
+        "--explain-only"
+      ],
+      "expect": "green",
+      "owner": "tank",
+      "opened": "2026-08-07",
+      "review_by": "2026-11-01",
+      "reason": "Declared here for the reason the entry above it was: the lane step is GATED, and a gate that has silently stopped firing is indistinguishable from one that correctly found nothing. The register runs it in --explain-only, which is the DECISION and not the two-minute simulation, so what this entry pins is that the gate still parses evidence/proof_rewitness.json, still derives its corroboration inputs from the register rather than from a stale list, and still exits 0/2 rather than throwing. Issue #60: rewitness/3 survives squash, merge and rebase, but not somebody landing an edit to a declared cause path between the declaration and the merge; the branch head and GitHub's two-parent merge ref both pass and only the squash is red, which is a red that arrives on main after the merge button.",
+      "closes_when": "n/a — this is expected green and must stay green.",
+      "timeout": 600
+    },
+    {
+      "id": "landing_simulation_negative_control",
+      "cmd": [
+        "python",
+        "ci/negative_control_landing_simulation.py"
+      ],
+      "expect": "green",
+      "owner": "tank",
+      "opened": "2026-08-07",
+      "review_by": "2026-11-01",
+      "reason": "The control that keeps the gate falsifiable: 10 arms, 2 STRUCTURAL / 4 PLANTED / 4 REPLAYED, ratio printed. Its contrast arm is the finding that made the wiring worth doing — simulate_squash_rewitness.py built its squash with `git checkout <pr> -- .`, an OVERLAY, which silently drops the base's edit to a file both sides changed and is therefore GREEN on the exact defect the simulation exists for. Wiring it unrepaired would have produced a green step on issue #60. The arm keeps that printed rather than remembered.",
+      "closes_when": "n/a — this is expected green and must stay green.",
+      "timeout": 1200
+    },
+    {
       "id": "ledger_loss_probe",
       "cmd": [
         "python",
@@ -276,6 +305,8 @@
     "verification_subjects",
     "ledger_census",
     "ledger_census_negative_control",
+    "landing_simulation",
+    "landing_simulation_negative_control",
     "ledger_loss_probe",
     "artifact_frame",
     "artifact_frame_negative_control",

@@ -122,7 +122,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat as statmod
 import subprocess
 import sys
 from pathlib import Path
@@ -259,14 +261,165 @@ def content_id(data: bytes) -> str:
 _ABSENT = "ABSENT"
 
 
+#: git's tree mode for a symlink. Its BLOB IS THE TARGET STRING, not the bytes at the other end.
+GIT_MODE_SYMLINK = "120000"
+#: git's tree mode for a submodule. There is no blob at all behind one.
+GIT_MODE_GITLINK = "160000"
+
+
+class WorktreeBlobError(RuntimeError):
+    """A working-tree path this screen must hash cannot be read the way git stores it.
+
+    Raised, never swallowed and never guessed at. Every caller of `_blob_at` is computing a
+    `content_id` that a v3 cause is judged against, so a byte string this function is not
+    certain about is a wrong verdict rather than a missing one — and a wrong verdict in the
+    acquitting direction is the entire failure class this screen exists to close.
+    """
+
+
+def _index_mode(repo: Path, rel: str) -> str | None:
+    """The mode git has recorded for `rel` in the index, or None if it is not tracked.
+
+    THE INDEX IS THE ORACLE, NOT THE FILESYSTEM, AND THAT IS THE PORTABILITY FIX. On a
+    Windows checkout with `core.symlinks=false` — the default when the process lacks
+    SeCreateSymbolicLinkPrivilege, which is every unelevated developer box and this
+    repository's own Windows lane — git materialises a symlink as an ORDINARY FILE whose
+    contents are the link target string. `os.path.islink` is then false, the bytes on disk
+    are already the blob git stores, and a filesystem-only reader would come to the right
+    answer for the wrong reason. Asking the index instead gives the same answer on every
+    platform, including the one where the two representations differ.
+    """
+    r = _git(["ls-files", "--stage", "-z", "--", rel], repo)
+    if r.returncode != 0:
+        return None
+    for row in (r.stdout or "").split("\0"):
+        if not row:
+            continue
+        head, _, name = row.partition("\t")
+        if name != rel:
+            continue
+        return head.split()[0]
+    return None
+
+
+def _link_target_bytes(path: Path) -> bytes:
+    """The blob git stores for the symlink at `path`: its TARGET STRING, read, never followed.
+
+    `os.readlink` returns the target as recorded, so nothing at the other end is opened — a
+    link pointing outside the repository, at a device node, or at nothing at all is read
+    identically and costs one syscall. Windows records absolute targets with an extended-length
+    `\\\\?\\` prefix and `\\` separators; git stores POSIX separators, so both are normalised here
+    for the same reason `normalize_source_text` folds CRLF: a content id that moves because of
+    the checkout's operating system is a machine fingerprint, not a fact about the tree.
+    """
+    try:
+        target = os.readlink(path)
+    except OSError as exc:  # a reparse point that is not a link we can read
+        raise WorktreeBlobError(
+            f"{path} is a link git records as a symlink, and its target could not be read "
+            f"({exc}). Refusing to guess at its blob"
+        ) from exc
+    if isinstance(target, bytes):
+        text = target.decode("utf-8", "surrogateescape")
+    else:
+        text = target
+    if os.name == "nt":
+        for prefix in ("\\\\?\\UNC\\", "\\\\?\\"):
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                break
+        text = text.replace("\\", "/")
+    return text.encode("utf-8", "surrogateescape")
+
+
+def _worktree_blob(repo: Path, rel: str) -> bytes | None:
+    """The bytes git WOULD STORE for `rel`, read out of the working tree. Never a followed link.
+
+    ISSUE #60. This used to be `(repo / rel).read_bytes()`, which follows symlinks — so for a
+    committed symlink the working-tree branch of `_blob_at` returned the bytes of the file at
+    the far end while the `git show <rev>:<path>` branch returned the link target string, as
+    git tree semantics require (mode 120000, blob content = target). Two branches of one
+    function disagreeing about what a path contains is a screen with two answers, and the
+    working-tree one could read a file OUTSIDE the repository, which no census of this
+    repository's content should ever be able to do. It never laundered an undeclared move —
+    a mismatch fails closed — but "fails closed for the wrong reason" is not a verdict.
+
+    The rule now matches git's:
+
+    * tracked as `120000` -> the target string. If the checkout materialised the link as a
+      plain file (`core.symlinks=false`) those bytes ARE the target string already, so they
+      are read directly; if it is a real link, `readlink` supplies them. Either way the
+      target is never opened.
+    * tracked as `160000` (a submodule) -> no blob exists, exactly as `git show <rev>:<path>`
+      reports for a gitlink. ABSENT, so both branches agree.
+    * tracked as a regular blob, but a link or a reparse point on disk -> REFUSED. The index
+      and the filesystem disagree about what this path is, and a screen that picks one of two
+      disagreeing oracles has decided rather than observed.
+    * untracked -> classified from the filesystem alone, by the same rules; a directory (which
+      is what a Windows junction lstats as) is a tree and not a blob, and any other reparse
+      point is refused rather than read through.
+    """
+    path = repo / rel
+    mode = _index_mode(repo, rel)
+    if mode == GIT_MODE_GITLINK:
+        return None
+    try:
+        st = path.lstat()
+    except (OSError, ValueError):
+        return None
+
+    is_link = statmod.S_ISLNK(st.st_mode)
+    tag = getattr(st, "st_reparse_tag", 0)
+    # A junction lstats as a directory carrying IO_REPARSE_TAG_MOUNT_POINT; some Windows
+    # reparse tags (cloud placeholders, for one) sit on paths that read as ordinary files and
+    # must keep doing so. Only a tag that changes WHAT THE PATH IS is treated as one.
+    is_junction = tag == getattr(statmod, "IO_REPARSE_TAG_MOUNT_POINT", -1)
+
+    if mode == GIT_MODE_SYMLINK:
+        if is_link:
+            return _link_target_bytes(path)
+        if statmod.S_ISREG(st.st_mode):
+            # core.symlinks=false: the checked-out file's bytes are the target string.
+            return path.read_bytes()
+        raise WorktreeBlobError(
+            f"{rel!r} is tracked as a symlink (mode 120000) but the working tree holds "
+            f"something that is neither a link nor a regular file. Refusing to guess at its blob"
+        )
+
+    if is_link or is_junction:
+        raise WorktreeBlobError(
+            f"{rel!r} is "
+            + ("a directory junction" if is_junction else "a symlink")
+            + " in the working tree"
+            + (f", and the index records it as mode {mode}" if mode else " and is untracked")
+            + ". git would store something different from what is on disk here, and this "
+            "screen will not choose between two disagreeing oracles. Refusing"
+        )
+    if statmod.S_ISDIR(st.st_mode):
+        return None
+    if not statmod.S_ISREG(st.st_mode):
+        raise WorktreeBlobError(
+            f"{rel!r} is neither a regular file nor a symlink in the working tree "
+            f"(st_mode={st.st_mode:#o}). git stores no blob for it and this screen will "
+            "not invent one"
+        )
+    return path.read_bytes()
+
+
 def _blob_at(repo: Path, rev: str | None, rel: str) -> bytes | None:
-    """The bytes of `rel` at `rev`, or from the working tree for `WORKTREE`/`None`."""
+    """The bytes of `rel` at `rev`, or from the working tree for `WORKTREE`/`None`.
+
+    Both branches answer the same question — WHAT BLOB DOES GIT HOLD FOR THIS PATH — so a
+    symlink reads as its target string on both, and neither ever opens the file at the far
+    end of one. See `_worktree_blob` for why that alignment needed writing down (issue #60).
+    """
     if rev is None or rev == WORKTREE:
-        path = repo / rel
-        if not path.is_file():
-            return None
-        return path.read_bytes()
-    r = _git_bytes(["show", f"{rev}:{rel}"], repo)
+        return _worktree_blob(repo, rel)
+    # `git show <rev>:<path>` is not blob-typed: for a directory it prints a tree listing and
+    # for a gitlink it prints the SUBMODULE'S COMMIT LOG, either of which would then be hashed
+    # as if it were the file's content. `cat-file blob` refuses anything that is not a blob,
+    # which is exactly the "no blob here" answer the working-tree branch gives (ABSENT).
+    r = _git_bytes(["cat-file", "blob", f"{rev}:{rel}"], repo)
     if r.returncode != 0:
         return None
     return r.stdout
@@ -1421,12 +1574,26 @@ def screen(argv: list[str] | None = None) -> int:
     ever = ever_proven(repo, args.at)
     now = present_at(repo, args.at)
     rw_doc = load_rewitness(repo / "evidence" / "proof_rewitness.json")
-    _trans, _walk, _origins = witness_transitions(repo, args.at)
-    undeclared, stale_decl, out_of_frame, overdeclared, live_content = screen_transitions(
-        repo, _trans, _walk, rw_doc, args.at
-    )
-    unlanded_cause = unlanded_causes(repo, rw_doc, args.at, live_content)
-    uncorroborated = uncorroborated_causes(repo, rw_doc, _origins, args.at, live_content)
+    try:
+        _trans, _walk, _origins = witness_transitions(repo, args.at)
+        undeclared, stale_decl, out_of_frame, overdeclared, live_content = screen_transitions(
+            repo, _trans, _walk, rw_doc, args.at
+        )
+        unlanded_cause = unlanded_causes(repo, rw_doc, args.at, live_content)
+        uncorroborated = uncorroborated_causes(repo, rw_doc, _origins, args.at, live_content)
+    except WorktreeBlobError as exc:
+        # R13 again: a path this screen could not read the way git stores it is an INSTRUMENT
+        # state, never a colour. Acquitting would launder whatever is behind it and convicting
+        # would blame an author for the checkout's filesystem, so the screen declines instead.
+        print("LEDGER-CENSUS: ERROR(instrument=unreadable_worktree_blob)")
+        print(f"  {exc}")
+        print(
+            "  A v3 cause is judged on the content id of production source read out of two "
+            "trees. This screen reads the working tree the way git does — a symlink's blob is "
+            "its TARGET STRING and is never followed — and it refuses rather than guess when "
+            "the index and the filesystem describe a path differently."
+        )
+        return 2
     where = args.at or "the working tree"
 
     vanished = sorted(k for k in ever if k not in now and k not in retired)
