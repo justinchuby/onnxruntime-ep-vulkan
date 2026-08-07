@@ -551,9 +551,30 @@ def test_bootstrap_refuses_below_three_samples():
 
 
 def test_bootstrap_is_deterministic_for_a_fixed_seed():
+    """Two independent invocations must agree.
+
+    Written as two named calls rather than ``f(a, b) == f(a, b)``. The claim is about
+    what happens *across* invocations, so the two sides being separate calls is the
+    substance of the test, not an incidental detail -- and the identical-operands form
+    reads as a plain tautology to anyone who does not already know the function reseeds.
+    It reads that way to the lane screen too, which is what caught it.
+
+    The regression actually guarded here is the seed ceasing to be fixed:
+    ``bootstrap_ratio_ci`` builds ``random.Random(seed)`` fresh from a constant default,
+    so passing ``seed=None`` (OS entropy) makes two calls disagree and fails this test.
+    Verified by negative control. The function holds no RNG state between calls, so this
+    is the only way it can become non-reproducible -- which is worth saying, because
+    otherwise the next reader will draw the same conclusion the screen did.
+    """
     a = [10.0 + 0.1 * i for i in range(20)]
     b = [20.0 + 0.1 * i for i in range(20)]
-    assert cc.bootstrap_ratio_ci(a, b) == cc.bootstrap_ratio_ci(a, b)
+    first = cc.bootstrap_ratio_ci(a, b)
+    second = cc.bootstrap_ratio_ci(a, b)
+    assert first == second
+    # Determinism of a *refusal* would satisfy the assertion above while saying nothing
+    # about the resampling, so require a real interval before believing the claim.
+    assert first["lo"] is not None, "a refused interval makes the agreement above vacuous"
+    assert first["hi"] > first["lo"], "a degenerate interval is deterministic for free"
 
 
 def test_bootstrap_interval_brackets_the_point_estimate():
