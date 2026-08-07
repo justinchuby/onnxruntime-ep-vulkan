@@ -30,3 +30,10 @@
 # same defect that forced `squad-history` on .squad/decisions.md, one directory
 # over. Evidence conflicts are meant to stop a merge and be resolved by the
 # owner named in the register's `owner` field (issue #3, 2026-08-05).
+
+# Replay fixtures for the cleanroom index-URL privacy control are CONTENT-ADDRESSED:
+# ci/fixtures/cleanroom-redaction/manifest.json pins a sha256 per fixture. They are the
+# exact module bytes two rejected heads of PR #57 shipped, kept as evidence because a
+# squash landing deletes the branch and the refs with it. Mark them binary so no
+# line-ending translation can touch them on checkout -- the digest is the whole point.
+ci/fixtures/cleanroom-redaction/*.pysrc -text

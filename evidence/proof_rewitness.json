@@ -1,445 +1,445 @@
 {
-  "schema": 1,
-  "purpose": "Every deliberate move of a \u00a78.9.19 FRAME WITNESS (`source_digest`, `toolchain`) in evidence/proof_ledger.jsonl, with an owner and a reason. Read ci/check_ledger_census.py for the argument; the short form is that on 2026-08-04 an author regenerating the ledger from a base that predated a re-witness put the withdrawn digests back on 115 of 121 entries, and NOTHING SAW IT: no key went missing, so the key census and the loss invariant both reported 0, and on Windows a stale source digest with matching SPIR-V is SOURCE-COSMETIC, which forgives, so `--check` printed PASS over all 115. Only the Linux lane declined, and it declined 115 entries and the op suite with them. A witness move is legitimate and routine; a witness move NOBODY WROTE DOWN is indistinguishable from that accident.",
-  "why_not_a_value_rule": "The first version of this arm asked 'did the value go back to something a later revision replaced'. That question is SYMMETRIC: it convicted the repair exactly as loudly as it convicted the regression, because from the values alone the two are the same event seen from opposite ends. A screen cannot rank two alternating values without a frame, and the ledger records no frame for its own hashing rule. So the question asked is not 'which value is right' \u2014 it is 'did the writer say they were moving it', which has an answer in the repository and needs no build, no device and no second platform.",
-  "how_to_add_a_record": "WRITE NEW RECORDS IN SCHEMA `rewitness/3` WHEN THE SOURCE CHANGE THAT MOVED THE WITNESS IS IN THE SAME CHANGE AS THE LEDGER EDIT, AND IN `rewitness/2` WHEN IT ALREADY LANDED. Both are content-addressed in the same way and share one matching rule: a move IS `(field, key, old, new)`, a fact about this ledger's bytes, so it matches identically on a branch commit, a squash, a rebase, a cherry-pick or in the working tree. Neither schema has a `revision`. ENUMERATE, DO NOT COUNT: a bare `keys: <n>` declares a number and a number matches any n moves including n nobody intended; an enumerated `transitions` list of {key, old, new} makes a wrong `old`, a typo'd key or a row copied from another move fail as `overdeclared_witness_move`. An optional `keys` may accompany the list only if it equals its length. Say WHY the witness moved: `--reprove` (the kernel changed) and `--backfill-frame --rewitness-source` (the source text or the hashing rule changed while the SPIR-V is byte-identical, which is the evidence the subject did not) are different events and only the second is a re-witness. -- v2, THE CAUSE ALREADY LANDED: `caused_by` names the LANDED commit whose source change made the re-witness necessary. It is evidence, not an index; it is knowable before the merge exists (it is already in main); it is checked for ancestry, so a branch-only sha fails as `unlanded_rewitness_cause` rather than being quietly accepted. -- v3, THE CAUSE IS IN THIS SAME CHANGE: there is NO sha that can be right here, and that is a hole in the schema rather than an author's mistake -- the only sha writable before the merge is a branch commit, and a squash un-ancestors it, so `caused_by` fails on landing for a declaration that was correct in advance. A v3 record therefore carries NO commit at all. It carries `caused_by_content: {kind: \"same_change\", paths: [{path, old, new}]}`, where `old`/`new` are the sha256 of the file's NORMALISED text (UTF-8 BOM stripped, CRLF and lone CR folded to LF -- byte-for-byte the rule `rust/build_support/shader_source_digest.rs` applies before hashing) in the two trees the witness moved between: the last revision whose ledger carried `old`, and the revision that carried `new`. HOW TO WRITE ONE. (1) Run the re-proof and let the ledger move. (2) For each moved key, take the `shaders` stems from its ledger entry; the screen resolves each stem to its `.comp` through `rust/src/ops/shader_variants.txt` and follows `#include` exactly as the build does, which is the closure `source_digest` hashes. (3) Declare EVERY file in that closure whose content differs between the two trees -- plus `rust/src/ops/shader_variants.txt` if the moved stem's own row changed -- and nothing else. `python ci/check_ledger_census.py` prints the exact content ids it read when a declaration disagrees with the trees. WHAT A v3 RECORD MAY NOT DO, each of which is a `uncorroborated_rewitness_cause` arm in `ci/negative_control_ledger_census.py`: declare a path whose `old` is not the base tree's content (absent, stale, or a cause that already landed in an earlier commit without the witness moving); declare a path whose `new` is not the moved tree's content; declare a path outside the closure of the stems the moved entries name (unrelated, or over-broad); declare a path under `evidence/`, `bench/`, `ci/`, `docs/`, `tests/`, `.github/`, `.squad/` or `target/` (generated evidence and lane machinery -- a cause read from the evidence the record is part of proves itself); leave a changed closure file UNDECLARED; authorise a key whose own stems' closure carries no declared change; or claim a same-change cause for a field other than `source_digest`, which is the only frame witness that is a function of that content. A record whose transitions match no move is `stale_rewitness_declaration` as before. EXISTING v1 AND v2 RECORDS STAY VALID AND ARE NOT REWRITTEN. v1 is one record per (revision, field), matched by revision; `revision` may be the literal WORKTREE for an uncommitted move, which must be re-pointed at the real sha before merge. All three schemas coexist in this file and all three are screened -- migration is per record, not a flag day. Do not write new v1 records: they are the schema whose branch shas this repository's squash-merge erases. An unknown `schema`, and an unknown `caused_by_content.kind`, are refused outright rather than read as the nearest thing the checker knows.",
-  "screened_since": "aea0147b4cd4697d2b79e68cc4d369455cf9b61e",
-  "screened_since_note": "The merge that first carried a portable source_digest into main. Moves in revisions that are not descendants of it predate the rule this screen enforces and are counted and named, not failed \u2014 the same append-only discipline as `retired` in ci/open_reds.json. Adopting a screen must not retroactively convict history it could not have governed.",
-  "rewitness": [
+ "schema": 1,
+ "purpose": "Every deliberate move of a §8.9.19 FRAME WITNESS (`source_digest`, `toolchain`) in evidence/proof_ledger.jsonl, with an owner and a reason. Read ci/check_ledger_census.py for the argument; the short form is that on 2026-08-04 an author regenerating the ledger from a base that predated a re-witness put the withdrawn digests back on 115 of 121 entries, and NOTHING SAW IT: no key went missing, so the key census and the loss invariant both reported 0, and on Windows a stale source digest with matching SPIR-V is SOURCE-COSMETIC, which forgives, so `--check` printed PASS over all 115. Only the Linux lane declined, and it declined 115 entries and the op suite with them. A witness move is legitimate and routine; a witness move NOBODY WROTE DOWN is indistinguishable from that accident.",
+ "why_not_a_value_rule": "The first version of this arm asked 'did the value go back to something a later revision replaced'. That question is SYMMETRIC: it convicted the repair exactly as loudly as it convicted the regression, because from the values alone the two are the same event seen from opposite ends. A screen cannot rank two alternating values without a frame, and the ledger records no frame for its own hashing rule. So the question asked is not 'which value is right' — it is 'did the writer say they were moving it', which has an answer in the repository and needs no build, no device and no second platform.",
+ "how_to_add_a_record": "WRITE NEW RECORDS IN SCHEMA `rewitness/3` WHEN THE SOURCE CHANGE THAT MOVED THE WITNESS IS IN THE SAME CHANGE AS THE LEDGER EDIT, AND IN `rewitness/2` WHEN IT ALREADY LANDED. Both are content-addressed in the same way and share one matching rule: a move IS `(field, key, old, new)`, a fact about this ledger's bytes, so it matches identically on a branch commit, a squash, a rebase, a cherry-pick or in the working tree. Neither schema has a `revision`. ENUMERATE, DO NOT COUNT: a bare `keys: <n>` declares a number and a number matches any n moves including n nobody intended; an enumerated `transitions` list of {key, old, new} makes a wrong `old`, a typo'd key or a row copied from another move fail as `overdeclared_witness_move`. An optional `keys` may accompany the list only if it equals its length. Say WHY the witness moved: `--reprove` (the kernel changed) and `--backfill-frame --rewitness-source` (the source text or the hashing rule changed while the SPIR-V is byte-identical, which is the evidence the subject did not) are different events and only the second is a re-witness. -- v2, THE CAUSE ALREADY LANDED: `caused_by` names the LANDED commit whose source change made the re-witness necessary. It is evidence, not an index; it is knowable before the merge exists (it is already in main); it is checked for ancestry, so a branch-only sha fails as `unlanded_rewitness_cause` rather than being quietly accepted. -- v3, THE CAUSE IS IN THIS SAME CHANGE: there is NO sha that can be right here, and that is a hole in the schema rather than an author's mistake -- the only sha writable before the merge is a branch commit, and a squash un-ancestors it, so `caused_by` fails on landing for a declaration that was correct in advance. A v3 record therefore carries NO commit at all. It carries `caused_by_content: {kind: \"same_change\", paths: [{path, old, new}]}`, where `old`/`new` are the sha256 of the file's NORMALISED text (UTF-8 BOM stripped, CRLF and lone CR folded to LF -- byte-for-byte the rule `rust/build_support/shader_source_digest.rs` applies before hashing) in the two trees the witness moved between: the last revision whose ledger carried `old`, and the revision that carried `new`. HOW TO WRITE ONE. (1) Run the re-proof and let the ledger move. (2) For each moved key, take the `shaders` stems from its ledger entry; the screen resolves each stem to its `.comp` through `rust/src/ops/shader_variants.txt` and follows `#include` exactly as the build does, which is the closure `source_digest` hashes. (3) Declare EVERY file in that closure whose content differs between the two trees -- plus `rust/src/ops/shader_variants.txt` if the moved stem's own row changed -- and nothing else. `python ci/check_ledger_census.py` prints the exact content ids it read when a declaration disagrees with the trees. WHAT A v3 RECORD MAY NOT DO, each of which is a `uncorroborated_rewitness_cause` arm in `ci/negative_control_ledger_census.py`: declare a path whose `old` is not the base tree's content (absent, stale, or a cause that already landed in an earlier commit without the witness moving); declare a path whose `new` is not the moved tree's content; declare a path outside the closure of the stems the moved entries name (unrelated, or over-broad); declare a path under `evidence/`, `bench/`, `ci/`, `docs/`, `tests/`, `.github/`, `.squad/` or `target/` (generated evidence and lane machinery -- a cause read from the evidence the record is part of proves itself); leave a changed closure file UNDECLARED; authorise a key whose own stems' closure carries no declared change; or claim a same-change cause for a field other than `source_digest`, which is the only frame witness that is a function of that content. A record whose transitions match no move is `stale_rewitness_declaration` as before. EXISTING v1 AND v2 RECORDS STAY VALID AND ARE NOT REWRITTEN. v1 is one record per (revision, field), matched by revision; `revision` may be the literal WORKTREE for an uncommitted move, which must be re-pointed at the real sha before merge. All three schemas coexist in this file and all three are screened -- migration is per record, not a flag day. Do not write new v1 records: they are the schema whose branch shas this repository's squash-merge erases. An unknown `schema`, and an unknown `caused_by_content.kind`, are refused outright rather than read as the nearest thing the checker knows.",
+ "screened_since": "aea0147b4cd4697d2b79e68cc4d369455cf9b61e",
+ "screened_since_note": "The merge that first carried a portable source_digest into main. Moves in revisions that are not descendants of it predate the rule this screen enforces and are counted and named, not failed — the same append-only discipline as `retired` in ci/open_reds.json. Adopting a screen must not retroactively convict history it could not have governed.",
+ "rewitness": [
+  {
+   "revision": "eee65aab6cc8940bfdbaeda562106f5aaa519f30",
+   "field": "source_digest",
+   "owner": "mouse",
+   "date": "2026-08-03",
+   "deliberate": false,
+   "keys": 115,
+   "repaired_by": "69ac22255175a987b165e87b9aba5b2993818479",
+   "reason": "NOT a re-witness — an accident, recorded because it happened and not to excuse it. The Conv commit regenerated evidence/proof_ledger.jsonl from a base predating aea0147 and restored the digests computed under the WITHDRAWN pre-`normalize_shader_text` rule on 115 of 121 entries. Every existing screen read clean: no key went missing (key census 0 VANISHED, loss invariant 0 missing) and Windows `--check` printed PASS because a stale source digest with matching SPIR-V is SOURCE-COSMETIC, which forgives. Linux read the same 115 as SUBJECT-CHANGED and declined; the op suite went 8 failed to 50 failed, the criterion-10 gate to UNATTRIBUTED, epctl --check-counters to exit 3 and the portability screen to claimed_nothing. Repaired in the 69ac222 record above. This arm is the screen that would have caught it at the merge.",
+   "how_this_gets_closed": "It does not get deleted. The same argument as `retired` in ci/open_reds.json: deleting the record removes the CHECK's memory of the event, not the event. It stays with deliberate=false so the next reader can see that this class of accident has happened once and what it cost."
+  },
+  {
+   "revision": "69ac22255175a987b165e87b9aba5b2993818479",
+   "field": "source_digest",
+   "owner": "link",
+   "date": "2026-08-04",
+   "deliberate": true,
+   "keys": 115,
+   "tool": "rust/tools/gen_proof_ledger.py --backfill-frame --rewitness-source",
+   "reason": "Re-running the re-witness that aea0147 landed and eee65aa undid. eee65aa regenerated the ledger from a base predating aea0147, restoring the digests computed under the WITHDRAWN pre-`normalize_shader_text` rule on 115 of 121 entries; the 6 survivors are the entries that commit newly proved (Conv x4, Add f32, Clip f32), which carry a current digest by construction. Windows read the result as 121 entries = 6 identical + 115 SOURCE-COSMETIC and printed PASS; Linux read the same file as 6 PROVEN-ELSEWHERE{toolchain} + 115 SUBJECT-CHANGED and declined, taking the op suite from 8 failed to 50. After the re-witness Windows reads 121 identical."
+  },
+  {
+   "revision": "18ddece72e24d1eb358d8c9629a46c07b05a1266",
+   "field": "source_digest",
+   "owner": "mouse",
+   "date": "2026-08-04",
+   "deliberate": false,
+   "keys": 13,
+   "repaired_by": "e40d1046fef9be73b55c00cad7ac04142002be0a",
+   "owner_attribution": "DERIVED, not claimed by the author. Every commit in this repository is authored by justinchuby; the owner recorded here is read off the commits subject and the paths it touched (counters.rs plus a wholesale rewrite of bench/results counter artifacts, which is Mouses lane). If mouse says otherwise this field is wrong and should be corrected rather than deleted.",
+   "reason": "The SECOND firing of the eee65aa accident, same shape, smaller count, and it went unseen for the same reason: the ledger write rode along inside a commit about something else. A counters commit regenerated evidence/proof_ledger.jsonl from a base predating the 69ac222 re-witness and put the withdrawn pre-normalize_shader_text source_digest back on 13 entries. No key moved, so the key census and the loss invariant both read 0; Windows --check forgives a stale source digest whose SPIR-V still matches as SOURCE-COSMETIC. Recorded because it happened, not to excuse it: this arm is the only screen in the repository that can see a field move inside a surviving entry."
+  },
+  {
+   "revision": "e40d1046fef9be73b55c00cad7ac04142002be0a",
+   "field": "source_digest",
+   "owner": "link",
+   "date": "2026-08-04",
+   "deliberate": true,
+   "keys": 9,
+   "tool": "rust/tools/gen_proof_ledger.py --backfill-frame --rewitness-source",
+   "reason": "The repair of 18ddece, declared late: the commit landed on main before this register was consulted, which is itself the finding — a re-witness that is correct and undeclared is indistinguishable to this screen from the accident it repairs, and the screen said so by convicting both. 9 and not 13 because four of the thirteen keys were retired by Morpheus 8.9.23 between the accident and the repair and are now in evidence/retired_proof_keys.json; the surviving nine carry d29f419bfe2c97ee, the digest computed under the current normalize_shader_text rule, which is what the ledger reads today."
+  },
+  {
+   "revision": "e3d3cf66537f1710557b0c798009d11d9db790aa",
+   "field": "source_digest",
+   "owner": "switch",
+   "date": "2026-08-06",
+   "deliberate": true,
+   "keys": 2,
+   "tool": "rust/tools/gen_proof_ledger.py --reprove --append --model evidence/cases/asin_f32.onnx --model evidence/cases/acos_f32.onnx",
+   "keys_moved": [
+    "ai.onnx::Asin/7+/f32>f32/ew_unary_asin_f32/static/n1",
+    "ai.onnx::Acos/7+/f32>f32/ew_unary_acos_f32/static/n1"
+   ],
+   "reason": "NOT a re-witness in the sense this register was built for — the hashing rule did not move, the KERNEL did. Issue #4 replaced GLSL's `asin()`/`acos()` in rust/shaders/glsl/templates/ew_unary.comp with a portable minimax core (`ew_asin_core`/`ew_asin_abs`/`ew_asin`/`ew_acos`), because Vulkan defines both built-ins by inheritance from `atan2`, which is allowed 4096 ULP in single precision; lavapipe measured 3831/3903 ULP against the ORT CPU EP and was conformant while missing FP32_TRANSCENDENTAL by 15x. Different source and different SPIR-V means a different subject, so the two entries had to be re-proved rather than re-witnessed: without the reprove the EP correctly read both as SUBJECT-CHANGED and declined them, which is the negative control working. Re-proved on NVIDIA RTX A1000, verdict MATCH, worst_rel 1.79e-07 (Acos) with dispatches_executed=1. Declared here because the screen cannot tell a deliberate kernel change from a regeneration off a stale base by looking at the digests alone — only the writer can say which happened.",
+   "how_this_gets_closed": "It does not get deleted. `revision` was WORKTREE while the change was uncommitted, was re-pointed at 601ddcf on squad/4-portable-inverse-trig, and was re-pointed AGAIN at e3d3cf6 here (issue #43) because PR #35 landed as a SQUASH merge: the squash minted a new commit for the whole branch and 601ddcf is not an ancestor of main, so the declaration named a revision this repository no longer contains and ci/check_ledger_census.py read it as `stale_rewitness_declaration` while reading the identical move under e3d3cf6 as `undeclared_witness_move`. Both arms were describing ONE event from two sides. The lesson generalises past this record: under a squash-merge workflow, any `revision` in this register that names a branch commit is live only until the PR merges, so a record written on a branch MUST be re-pointed at the merge commit — the same discipline `how_to_add_a_record` already states for WORKTREE, for the same reason and with one more step."
+  },
+  {
+   "schema": "rewitness/2",
+   "field": "source_digest",
+   "owner": "switch",
+   "date": "2026-08-06",
+   "deliberate": true,
+   "caused_by": "e3d3cf66537f1710557b0c798009d11d9db790aa",
+   "tool": "rust/tools/gen_proof_ledger.py --backfill-frame --rewitness-source",
+   "reason": "The OTHER half of e3d3cf6 (the PR #35 squash), and the cause of issue #43. `source_digest_for` hashes the WHOLE text of a template plus its includes, so per-variant uniqueness comes from STEM + VARIANT-DEFINE + ARGV and not from preprocessing. rust/shaders/glsl/templates/ew_unary.comp is shared by 42 op selectors, so #35's edits to it moved the source_digest of ALL 55 ew_unary-derived entries at once, not just the 2 whose kernel changed. #35 re-proved those 2 and left the other 53 carrying a digest computed from source text that no longer exists. NOTHING SAW IT, for the third time and by the third distinct route: the census arm sees only values that MOVE IN THE FILE and these never moved in the file, they went stale under it; and on Windows a stale source_digest whose SPIR-V still matches is SOURCE-COSMETIC, which forgives, so --check printed PASS over all 55. Linux convicted 5 of them (IsInf@sel1/sel2/sel3, IsNaN and Not) because CI's shaderc emits different SPIR-V for exactly those five, and once BOTH witnesses have moved the checker cannot tell a moved compiler from a moved kernel and must decline. The EP declining is the negative control WORKING: test_op_table[IsInf|IsNaN|Not] failed at assert_vulkan_claims, with correct numerics throughout. TWO SOURCE TEXTS ARE INVOLVED, and that is why the ledger was ALREADY STALE AT e3d3cf6 rather than being made stale by this branch. 53 of the `old` values below were computed from the pre-#35 template at 7752b84 and went stale at 601ddcf, when the Asin/Acos code entered the shared template. The remaining 2 (Asin, Acos) were computed at 601ddcf and went stale at 8028299 -- the #35 review-fix commit that added the Cephes attribution header, i.e. a COMMENT-ONLY edit, which is exactly the change class this digest is designed to notice and the SPIR-V is designed to forgive. Both of those commits landed inside e3d3cf6, which is why `caused_by` names the squash and not either branch commit. Re-witnessed and not re-proved because the subject demonstrably did not change: --backfill-frame refuses per entry unless the recorded spirv_digest AND toolchain both match this build's, and all 55 passed that guard (55 re-witnessed, 0 skipped); independently, the SPIR-V is byte-identical across both historical texts and today's build for all 55. Re-proving would have been the wrong instrument twice over: it asserts a kernel change that did not happen, and it would have rewritten 55 canonical `device` frames from the ledger's NVIDIA GeForce RTX 4060 Laptop GPU to this machine's NVIDIA RTX A1000. The diff is 55 source_digest fields and nothing else: no key added, none removed, no spirv_digest and no device touched. Windows --check goes 78 identical + 55 SOURCE-COSMETIC to 133 identical.",
+   "evidence": "Every `old` below was REPRODUCED, not inferred. For each entry the named historical text of rust/shaders/glsl/templates/ew_unary.comp was restored, the EP release DLL rebuilt, and OrtEpVulkanGetShaderSubject queried with that entry's own `shaders` list -- the same call rust/tools/gen_proof_ledger.py::_shader_subject makes, and not a reimplementation of the hash. 53 keys reproduce exactly from 7752b84 (pre-#35), 2 (Asin, Acos) exactly from 601ddcf; 0 keys are unexplained. Every `new` equals the digest computed by two independent `cargo clean --release` + rebuild cycles, which agreed byte-for-byte on all 96 stems -- so the digest is deterministic and content-derived, and the movement here is a stale RECORD being corrected, not a wandering hash. SPIR-V is unchanged for 55/55. No key OUTSIDE this list disagrees with the current build, so the edit is exactly as wide as the staleness and no wider.",
+   "why_schema_v2": "This record is schema rewitness/2 and names NO `revision`, because naming one cannot work here. A declaration must exist in the commit that carries the ledger edit, so at writing time the only sha an author can name is a branch commit -- and this repository SQUASH-MERGES, which mints a new commit and leaves the branch commit permanently un-ancestored. The v1 record for e3d3cf6 hit exactly this and had to be re-pointed after the fact; the first draft of THIS record named the branch commit a7deb38 and would have hit it again, producing the same `undeclared_witness_move` + `stale_rewitness_declaration` pair it was written to fix. A content-addressed declaration has no such failure mode: (field, key, old, new) is a fact about the ledger's own bytes, so it matches identically on a branch commit, a squash, a rebase, a cherry-pick or an uncommitted worktree, and needs no follow-up re-point. `caused_by` is EVIDENCE rather than an index -- it names the LANDED source change that made the re-witness necessary, it is knowable before the merge exists, and it is the one field still read for ancestry, so a branch-only value fails as `unlanded_rewitness_cause` instead of being quietly accepted. Transitions are ENUMERATED rather than counted so that a wrong `old`, a typo'd key or a row copied from another move cannot ride along unobserved: an unmatched row inside an otherwise-matching record fails as `overdeclared_witness_move`. The bare `keys: 55` this record used to carry could not have caught any of that.",
+   "standing_repair": "tests/ops/test_proof_ledger.py::test_no_entry_carries_a_stale_source_digest, added with this record. It compares every recorded source_digest against the one this build computes and fails on a mismatch WITHOUT consulting SPIR-V, so it is platform-independent and would have failed on the author's own Windows machine the moment #35 touched the shared template. Both pre-existing screens are blind to a stale-but-unmoved witness: the census sees only values that move in the file, and --check forgives a stale source digest whose SPIR-V still matches. That test is the one that is not blind; tests/ops/test_unary_boundary.py is the collateral-damage control on what the shared ops COMPUTE.",
+   "transitions": [
     {
-      "revision": "eee65aab6cc8940bfdbaeda562106f5aaa519f30",
-      "field": "source_digest",
-      "owner": "mouse",
-      "date": "2026-08-03",
-      "deliberate": false,
-      "keys": 115,
-      "repaired_by": "69ac22255175a987b165e87b9aba5b2993818479",
-      "reason": "NOT a re-witness \u2014 an accident, recorded because it happened and not to excuse it. The Conv commit regenerated evidence/proof_ledger.jsonl from a base predating aea0147 and restored the digests computed under the WITHDRAWN pre-`normalize_shader_text` rule on 115 of 121 entries. Every existing screen read clean: no key went missing (key census 0 VANISHED, loss invariant 0 missing) and Windows `--check` printed PASS because a stale source digest with matching SPIR-V is SOURCE-COSMETIC, which forgives. Linux read the same 115 as SUBJECT-CHANGED and declined; the op suite went 8 failed to 50 failed, the criterion-10 gate to UNATTRIBUTED, epctl --check-counters to exit 3 and the portability screen to claimed_nothing. Repaired in the 69ac222 record above. This arm is the screen that would have caught it at the merge.",
-      "how_this_gets_closed": "It does not get deleted. The same argument as `retired` in ci/open_reds.json: deleting the record removes the CHECK's memory of the event, not the event. It stays with deliberate=false so the next reader can see that this class of accident has happened once and what it cost."
+     "key": "ai.onnx::Abs/6+/f32>f32/ew_unary_abs_f32/static/n1",
+     "old": "9e1bd68fc0bb45ae",
+     "new": "4c4c78166c2fe47c"
     },
     {
-      "revision": "69ac22255175a987b165e87b9aba5b2993818479",
-      "field": "source_digest",
-      "owner": "link",
-      "date": "2026-08-04",
-      "deliberate": true,
-      "keys": 115,
-      "tool": "rust/tools/gen_proof_ledger.py --backfill-frame --rewitness-source",
-      "reason": "Re-running the re-witness that aea0147 landed and eee65aa undid. eee65aa regenerated the ledger from a base predating aea0147, restoring the digests computed under the WITHDRAWN pre-`normalize_shader_text` rule on 115 of 121 entries; the 6 survivors are the entries that commit newly proved (Conv x4, Add f32, Clip f32), which carry a current digest by construction. Windows read the result as 121 entries = 6 identical + 115 SOURCE-COSMETIC and printed PASS; Linux read the same file as 6 PROVEN-ELSEWHERE{toolchain} + 115 SUBJECT-CHANGED and declined, taking the op suite from 8 failed to 50. After the re-witness Windows reads 121 identical."
+     "key": "ai.onnx::Acos/7+/f32>f32/ew_unary_acos_f32/static/n1",
+     "old": "93a50fc893de0fdb",
+     "new": "e50d6c43418d79d5"
     },
     {
-      "revision": "18ddece72e24d1eb358d8c9629a46c07b05a1266",
-      "field": "source_digest",
-      "owner": "mouse",
-      "date": "2026-08-04",
-      "deliberate": false,
-      "keys": 13,
-      "repaired_by": "e40d1046fef9be73b55c00cad7ac04142002be0a",
-      "owner_attribution": "DERIVED, not claimed by the author. Every commit in this repository is authored by justinchuby; the owner recorded here is read off the commits subject and the paths it touched (counters.rs plus a wholesale rewrite of bench/results counter artifacts, which is Mouses lane). If mouse says otherwise this field is wrong and should be corrected rather than deleted.",
-      "reason": "The SECOND firing of the eee65aa accident, same shape, smaller count, and it went unseen for the same reason: the ledger write rode along inside a commit about something else. A counters commit regenerated evidence/proof_ledger.jsonl from a base predating the 69ac222 re-witness and put the withdrawn pre-normalize_shader_text source_digest back on 13 entries. No key moved, so the key census and the loss invariant both read 0; Windows --check forgives a stale source digest whose SPIR-V still matches as SOURCE-COSMETIC. Recorded because it happened, not to excuse it: this arm is the only screen in the repository that can see a field move inside a surviving entry."
+     "key": "ai.onnx::Acosh/9+/f32>f32/ew_unary_acosh_f32/static/n1",
+     "old": "0fe1ef95b26c8c77",
+     "new": "d209e9ad4ec78fbb"
     },
     {
-      "revision": "e40d1046fef9be73b55c00cad7ac04142002be0a",
-      "field": "source_digest",
-      "owner": "link",
-      "date": "2026-08-04",
-      "deliberate": true,
-      "keys": 9,
-      "tool": "rust/tools/gen_proof_ledger.py --backfill-frame --rewitness-source",
-      "reason": "The repair of 18ddece, declared late: the commit landed on main before this register was consulted, which is itself the finding \u2014 a re-witness that is correct and undeclared is indistinguishable to this screen from the accident it repairs, and the screen said so by convicting both. 9 and not 13 because four of the thirteen keys were retired by Morpheus 8.9.23 between the accident and the repair and are now in evidence/retired_proof_keys.json; the surviving nine carry d29f419bfe2c97ee, the digest computed under the current normalize_shader_text rule, which is what the ledger reads today."
+     "key": "ai.onnx::Asin/7+/f32>f32/ew_unary_asin_f32/static/n1",
+     "old": "81b16661792e892d",
+     "new": "4a8bdbf02bbfd5de"
     },
     {
-      "revision": "e3d3cf66537f1710557b0c798009d11d9db790aa",
-      "field": "source_digest",
-      "owner": "switch",
-      "date": "2026-08-06",
-      "deliberate": true,
-      "keys": 2,
-      "tool": "rust/tools/gen_proof_ledger.py --reprove --append --model evidence/cases/asin_f32.onnx --model evidence/cases/acos_f32.onnx",
-      "keys_moved": [
-        "ai.onnx::Asin/7+/f32>f32/ew_unary_asin_f32/static/n1",
-        "ai.onnx::Acos/7+/f32>f32/ew_unary_acos_f32/static/n1"
-      ],
-      "reason": "NOT a re-witness in the sense this register was built for \u2014 the hashing rule did not move, the KERNEL did. Issue #4 replaced GLSL's `asin()`/`acos()` in rust/shaders/glsl/templates/ew_unary.comp with a portable minimax core (`ew_asin_core`/`ew_asin_abs`/`ew_asin`/`ew_acos`), because Vulkan defines both built-ins by inheritance from `atan2`, which is allowed 4096 ULP in single precision; lavapipe measured 3831/3903 ULP against the ORT CPU EP and was conformant while missing FP32_TRANSCENDENTAL by 15x. Different source and different SPIR-V means a different subject, so the two entries had to be re-proved rather than re-witnessed: without the reprove the EP correctly read both as SUBJECT-CHANGED and declined them, which is the negative control working. Re-proved on NVIDIA RTX A1000, verdict MATCH, worst_rel 1.79e-07 (Acos) with dispatches_executed=1. Declared here because the screen cannot tell a deliberate kernel change from a regeneration off a stale base by looking at the digests alone \u2014 only the writer can say which happened.",
-      "how_this_gets_closed": "It does not get deleted. `revision` was WORKTREE while the change was uncommitted, was re-pointed at 601ddcf on squad/4-portable-inverse-trig, and was re-pointed AGAIN at e3d3cf6 here (issue #43) because PR #35 landed as a SQUASH merge: the squash minted a new commit for the whole branch and 601ddcf is not an ancestor of main, so the declaration named a revision this repository no longer contains and ci/check_ledger_census.py read it as `stale_rewitness_declaration` while reading the identical move under e3d3cf6 as `undeclared_witness_move`. Both arms were describing ONE event from two sides. The lesson generalises past this record: under a squash-merge workflow, any `revision` in this register that names a branch commit is live only until the PR merges, so a record written on a branch MUST be re-pointed at the merge commit \u2014 the same discipline `how_to_add_a_record` already states for WORKTREE, for the same reason and with one more step."
+     "key": "ai.onnx::Asinh/9+/f32>f32/ew_unary_asinh_f32/static/n1",
+     "old": "11ddd1ab42f08fe5",
+     "new": "06a4889a55c44c33"
     },
     {
-      "schema": "rewitness/2",
-      "field": "source_digest",
-      "owner": "switch",
-      "date": "2026-08-06",
-      "deliberate": true,
-      "caused_by": "e3d3cf66537f1710557b0c798009d11d9db790aa",
-      "tool": "rust/tools/gen_proof_ledger.py --backfill-frame --rewitness-source",
-      "reason": "The OTHER half of e3d3cf6 (the PR #35 squash), and the cause of issue #43. `source_digest_for` hashes the WHOLE text of a template plus its includes, so per-variant uniqueness comes from STEM + VARIANT-DEFINE + ARGV and not from preprocessing. rust/shaders/glsl/templates/ew_unary.comp is shared by 42 op selectors, so #35's edits to it moved the source_digest of ALL 55 ew_unary-derived entries at once, not just the 2 whose kernel changed. #35 re-proved those 2 and left the other 53 carrying a digest computed from source text that no longer exists. NOTHING SAW IT, for the third time and by the third distinct route: the census arm sees only values that MOVE IN THE FILE and these never moved in the file, they went stale under it; and on Windows a stale source_digest whose SPIR-V still matches is SOURCE-COSMETIC, which forgives, so --check printed PASS over all 55. Linux convicted 5 of them (IsInf@sel1/sel2/sel3, IsNaN and Not) because CI's shaderc emits different SPIR-V for exactly those five, and once BOTH witnesses have moved the checker cannot tell a moved compiler from a moved kernel and must decline. The EP declining is the negative control WORKING: test_op_table[IsInf|IsNaN|Not] failed at assert_vulkan_claims, with correct numerics throughout. TWO SOURCE TEXTS ARE INVOLVED, and that is why the ledger was ALREADY STALE AT e3d3cf6 rather than being made stale by this branch. 53 of the `old` values below were computed from the pre-#35 template at 7752b84 and went stale at 601ddcf, when the Asin/Acos code entered the shared template. The remaining 2 (Asin, Acos) were computed at 601ddcf and went stale at 8028299 -- the #35 review-fix commit that added the Cephes attribution header, i.e. a COMMENT-ONLY edit, which is exactly the change class this digest is designed to notice and the SPIR-V is designed to forgive. Both of those commits landed inside e3d3cf6, which is why `caused_by` names the squash and not either branch commit. Re-witnessed and not re-proved because the subject demonstrably did not change: --backfill-frame refuses per entry unless the recorded spirv_digest AND toolchain both match this build's, and all 55 passed that guard (55 re-witnessed, 0 skipped); independently, the SPIR-V is byte-identical across both historical texts and today's build for all 55. Re-proving would have been the wrong instrument twice over: it asserts a kernel change that did not happen, and it would have rewritten 55 canonical `device` frames from the ledger's NVIDIA GeForce RTX 4060 Laptop GPU to this machine's NVIDIA RTX A1000. The diff is 55 source_digest fields and nothing else: no key added, none removed, no spirv_digest and no device touched. Windows --check goes 78 identical + 55 SOURCE-COSMETIC to 133 identical.",
-      "evidence": "Every `old` below was REPRODUCED, not inferred. For each entry the named historical text of rust/shaders/glsl/templates/ew_unary.comp was restored, the EP release DLL rebuilt, and OrtEpVulkanGetShaderSubject queried with that entry's own `shaders` list -- the same call rust/tools/gen_proof_ledger.py::_shader_subject makes, and not a reimplementation of the hash. 53 keys reproduce exactly from 7752b84 (pre-#35), 2 (Asin, Acos) exactly from 601ddcf; 0 keys are unexplained. Every `new` equals the digest computed by two independent `cargo clean --release` + rebuild cycles, which agreed byte-for-byte on all 96 stems -- so the digest is deterministic and content-derived, and the movement here is a stale RECORD being corrected, not a wandering hash. SPIR-V is unchanged for 55/55. No key OUTSIDE this list disagrees with the current build, so the edit is exactly as wide as the staleness and no wider.",
-      "why_schema_v2": "This record is schema rewitness/2 and names NO `revision`, because naming one cannot work here. A declaration must exist in the commit that carries the ledger edit, so at writing time the only sha an author can name is a branch commit -- and this repository SQUASH-MERGES, which mints a new commit and leaves the branch commit permanently un-ancestored. The v1 record for e3d3cf6 hit exactly this and had to be re-pointed after the fact; the first draft of THIS record named the branch commit a7deb38 and would have hit it again, producing the same `undeclared_witness_move` + `stale_rewitness_declaration` pair it was written to fix. A content-addressed declaration has no such failure mode: (field, key, old, new) is a fact about the ledger's own bytes, so it matches identically on a branch commit, a squash, a rebase, a cherry-pick or an uncommitted worktree, and needs no follow-up re-point. `caused_by` is EVIDENCE rather than an index -- it names the LANDED source change that made the re-witness necessary, it is knowable before the merge exists, and it is the one field still read for ancestry, so a branch-only value fails as `unlanded_rewitness_cause` instead of being quietly accepted. Transitions are ENUMERATED rather than counted so that a wrong `old`, a typo'd key or a row copied from another move cannot ride along unobserved: an unmatched row inside an otherwise-matching record fails as `overdeclared_witness_move`. The bare `keys: 55` this record used to carry could not have caught any of that.",
-      "standing_repair": "tests/ops/test_proof_ledger.py::test_no_entry_carries_a_stale_source_digest, added with this record. It compares every recorded source_digest against the one this build computes and fails on a mismatch WITHOUT consulting SPIR-V, so it is platform-independent and would have failed on the author's own Windows machine the moment #35 touched the shared template. Both pre-existing screens are blind to a stale-but-unmoved witness: the census sees only values that move in the file, and --check forgives a stale source digest whose SPIR-V still matches. That test is the one that is not blind; tests/ops/test_unary_boundary.py is the collateral-damage control on what the shared ops COMPUTE.",
-      "transitions": [
-        {
-          "key": "ai.onnx::Abs/6+/f32>f32/ew_unary_abs_f32/static/n1",
-          "old": "9e1bd68fc0bb45ae",
-          "new": "4c4c78166c2fe47c"
-        },
-        {
-          "key": "ai.onnx::Acos/7+/f32>f32/ew_unary_acos_f32/static/n1",
-          "old": "93a50fc893de0fdb",
-          "new": "e50d6c43418d79d5"
-        },
-        {
-          "key": "ai.onnx::Acosh/9+/f32>f32/ew_unary_acosh_f32/static/n1",
-          "old": "0fe1ef95b26c8c77",
-          "new": "d209e9ad4ec78fbb"
-        },
-        {
-          "key": "ai.onnx::Asin/7+/f32>f32/ew_unary_asin_f32/static/n1",
-          "old": "81b16661792e892d",
-          "new": "4a8bdbf02bbfd5de"
-        },
-        {
-          "key": "ai.onnx::Asinh/9+/f32>f32/ew_unary_asinh_f32/static/n1",
-          "old": "11ddd1ab42f08fe5",
-          "new": "06a4889a55c44c33"
-        },
-        {
-          "key": "ai.onnx::Atan/7+/f32>f32/ew_unary_atan_f32/static/n1",
-          "old": "68efd50592017538",
-          "new": "82c8444c1ec24919"
-        },
-        {
-          "key": "ai.onnx::Atanh/9+/f32>f32/ew_unary_atanh_f32/static/n1",
-          "old": "e8b5989f937e2dd8",
-          "new": "e08be850ab032816"
-        },
-        {
-          "key": "ai.onnx::BitwiseNot/18+/i32>i32/ew_unary_bitnot_i32/static/n1",
-          "old": "f2831ad64504b4cc",
-          "new": "3c644b5ac3965ac6"
-        },
-        {
-          "key": "ai.onnx::Ceil/6+/f32>f32/ew_unary_ceil_f32/static/n1",
-          "old": "1f19b3388bef79e7",
-          "new": "b8ad77bd24c42b1a"
-        },
-        {
-          "key": "ai.onnx::Celu/12+/f32>f32/ew_unary_celu_f32/static/n1",
-          "old": "0cb40213caece6c7",
-          "new": "a4a8437aafcfdd60"
-        },
-        {
-          "key": "ai.onnx::Cos/7+/f32>f32/ew_unary_cos_f32/static/n1",
-          "old": "a73fb73f342764a9",
-          "new": "d54a3e62b76b2ecc"
-        },
-        {
-          "key": "ai.onnx::Cosh/9+/f32>f32/ew_unary_cosh_f32/static/n1",
-          "old": "4845269cf0b39545",
-          "new": "015bc93cb7b0d541"
-        },
-        {
-          "key": "ai.onnx::Elu/6+/f32>f32/ew_unary_elu_f32/static/n1",
-          "old": "7139ed65d388ef5c",
-          "new": "37e08ba767e5dcdb"
-        },
-        {
-          "key": "ai.onnx::Erf/9+/f16>f16/ew_unary_erf_f16/static/n1",
-          "old": "1db16ee3a8d11319",
-          "new": "5e3446891df1a683"
-        },
-        {
-          "key": "ai.onnx::Erf/9+/f32>f32/ew_unary_erf_f32/static/n1",
-          "old": "c583c27a1baea2f7",
-          "new": "ce4a8948b31ee90c"
-        },
-        {
-          "key": "ai.onnx::Exp/6+/f16>f16/ew_unary_exp_f16/static/n1",
-          "old": "66c92bef3496d20a",
-          "new": "53b5cb4da2beb5f9"
-        },
-        {
-          "key": "ai.onnx::Exp/6+/f32>f32/ew_unary_exp_f32/runtime-extent/n1",
-          "old": "48924ecbe06fcc55",
-          "new": "55c4e92eb39a7f8c"
-        },
-        {
-          "key": "ai.onnx::Exp/6+/f32>f32/ew_unary_exp_f32/static/n1",
-          "old": "48924ecbe06fcc55",
-          "new": "55c4e92eb39a7f8c"
-        },
-        {
-          "key": "ai.onnx::Floor/6+/f32>f32/ew_unary_floor_f32/static/n1",
-          "old": "078c54e88a1203f0",
-          "new": "dfaa8f2ff819ad17"
-        },
-        {
-          "key": "ai.onnx::Gelu/20+/f16>f16/ew_unary_gelu_f16/static/n1",
-          "old": "cb65561dcce99381",
-          "new": "d682fcec04c9e819"
-        },
-        {
-          "key": "ai.onnx::Gelu/20+/f32>f32/ew_unary_gelu_f32/static/n1",
-          "old": "87dba6ffcbccbeba",
-          "new": "0f51ad5418a14588"
-        },
-        {
-          "key": "ai.onnx::HardSigmoid/6+/f32>f32/ew_unary_hardsigmoid_f32/static/n1",
-          "old": "8d35df0ae441967a",
-          "new": "f99a0611e183ba49"
-        },
-        {
-          "key": "ai.onnx::HardSwish/14+/f32>f32/ew_unary_hardswish_f32/static/n1",
-          "old": "ab93464618c97f97",
-          "new": "b866eae4ab560486"
-        },
-        {
-          "key": "ai.onnx::Identity/1+/f32>f32/ew_unary_identity_f32/static/n1",
-          "old": "3d04b046f40196b9",
-          "new": "e82069121561b59b"
-        },
-        {
-          "key": "ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel1/static/n1",
-          "old": "67ec786f798705d6",
-          "new": "d46a773d7d778764"
-        },
-        {
-          "key": "ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel2/static/n1",
-          "old": "67ec786f798705d6",
-          "new": "d46a773d7d778764"
-        },
-        {
-          "key": "ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel3/static/n1",
-          "old": "67ec786f798705d6",
-          "new": "d46a773d7d778764"
-        },
-        {
-          "key": "ai.onnx::IsNaN/9+/f32>bool/ew_unary_isnan_f32/static/n1",
-          "old": "e75f05a742a43ec8",
-          "new": "aa39610fc7b5ad39"
-        },
-        {
-          "key": "ai.onnx::LeakyRelu/6+/f32>f32/ew_unary_leakyrelu_f32/static/n1",
-          "old": "d71b62652a6ebbc7",
-          "new": "73fb37ef074118e8"
-        },
-        {
-          "key": "ai.onnx::Log/6+/f32>f32/ew_unary_log_f32/runtime-extent/n1",
-          "old": "46864003d91807ff",
-          "new": "0ba0b2e8c6f99d06"
-        },
-        {
-          "key": "ai.onnx::Log/6+/f32>f32/ew_unary_log_f32/static/n1",
-          "old": "46864003d91807ff",
-          "new": "0ba0b2e8c6f99d06"
-        },
-        {
-          "key": "ai.onnx::Mish/18+/f32>f32/ew_unary_mish_f32/static/n1",
-          "old": "528847a8dd380649",
-          "new": "193a415a00250eae"
-        },
-        {
-          "key": "ai.onnx::Neg/6+/f32>f32/ew_unary_neg_f32/static/n1",
-          "old": "101196761010fe4a",
-          "new": "81aeea555fd0f4c9"
-        },
-        {
-          "key": "ai.onnx::Not/1+/bool>bool/ew_unary_not_bool/static/n1",
-          "old": "c065a2f2d237aad0",
-          "new": "5bedb6be1ae2ca01"
-        },
-        {
-          "key": "ai.onnx::Reciprocal/6+/f32>f32/ew_unary_recip_f32/static/n1",
-          "old": "8b35da692da217c3",
-          "new": "04e56bfba01e6c05"
-        },
-        {
-          "key": "ai.onnx::Relu/6+/f16>f16/ew_unary_relu_f16/static/n1",
-          "old": "c1c3039ba7629ee1",
-          "new": "fd02fe2411d34742"
-        },
-        {
-          "key": "ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/static/n1",
-          "old": "3bd10b311db42a42",
-          "new": "8706d3d67f18ff64"
-        },
-        {
-          "key": "ai.onnx::Round/11+/f32>f32/ew_unary_round_f32/static/n1",
-          "old": "bfffc411da8cca28",
-          "new": "4a5427a5e51fe264"
-        },
-        {
-          "key": "ai.onnx::Selu/6+/f32>f32/ew_unary_selu_f32/static/n1",
-          "old": "5e3e29ff6821f96a",
-          "new": "84217233b1330e7f"
-        },
-        {
-          "key": "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1",
-          "old": "fa2b06358fc4d5ae",
-          "new": "c51e51fd66ea5256"
-        },
-        {
-          "key": "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/static/n1",
-          "old": "fa2b06358fc4d5ae",
-          "new": "c51e51fd66ea5256"
-        },
-        {
-          "key": "ai.onnx::Sigmoid/6+/f32>f32/ew_unary_sigmoid_f32/runtime-extent/n1",
-          "old": "2d8c2df8e4844d42",
-          "new": "fd7cd5a1636bd8f6"
-        },
-        {
-          "key": "ai.onnx::Sigmoid/6+/f32>f32/ew_unary_sigmoid_f32/static/n1",
-          "old": "2d8c2df8e4844d42",
-          "new": "fd7cd5a1636bd8f6"
-        },
-        {
-          "key": "ai.onnx::Sign/9+/f32>f32/ew_unary_sign_f32/static/n1",
-          "old": "914666cd0c1d1e7e",
-          "new": "4f55a24fd475f460"
-        },
-        {
-          "key": "ai.onnx::Sin/7+/f32>f32/ew_unary_sin_f32/static/n1",
-          "old": "79b38ef8f3287644",
-          "new": "0fec1db1366e05f1"
-        },
-        {
-          "key": "ai.onnx::Sinh/9+/f32>f32/ew_unary_sinh_f32/static/n1",
-          "old": "587c044b58452632",
-          "new": "babddc35f5b0dfbb"
-        },
-        {
-          "key": "ai.onnx::Softplus/1+/f32>f32/ew_unary_softplus_f32/static/n1",
-          "old": "7e827488b9228e1f",
-          "new": "1f768bdfa16e0694"
-        },
-        {
-          "key": "ai.onnx::Softsign/1+/f32>f32/ew_unary_softsign_f32/static/n1",
-          "old": "ae0c3f33d20a9660",
-          "new": "ac94f2168645613e"
-        },
-        {
-          "key": "ai.onnx::Sqrt/6+/f16>f16/ew_unary_sqrt_f16/static/n1",
-          "old": "b63578c0b2de9ffb",
-          "new": "d89c184935081884"
-        },
-        {
-          "key": "ai.onnx::Sqrt/6+/f32>f32/ew_unary_sqrt_f32/static/n1",
-          "old": "e37bee50ca6bf195",
-          "new": "3f8299b52f1fa4d8"
-        },
-        {
-          "key": "ai.onnx::Tan/7+/f32>f32/ew_unary_tan_f32/static/n1",
-          "old": "870b7e227e055f73",
-          "new": "4c8922671897c185"
-        },
-        {
-          "key": "ai.onnx::Tanh/6+/f16>f16/ew_unary_tanh_f16/static/n1",
-          "old": "5250c65f20ba0927",
-          "new": "40906fe108bc4ab7"
-        },
-        {
-          "key": "ai.onnx::Tanh/6+/f32>f32/ew_unary_tanh_f32/runtime-extent/n1",
-          "old": "a05342a57e8409af",
-          "new": "73b0fa3c946d1377"
-        },
-        {
-          "key": "ai.onnx::Tanh/6+/f32>f32/ew_unary_tanh_f32/static/n1",
-          "old": "a05342a57e8409af",
-          "new": "73b0fa3c946d1377"
-        },
-        {
-          "key": "ai.onnx::ThresholdedRelu/10+/f32>f32/ew_unary_trelu_f32/static/n1",
-          "old": "8fc22777fdc9998e",
-          "new": "578369f076f7feb5"
-        }
-      ]
+     "key": "ai.onnx::Atan/7+/f32>f32/ew_unary_atan_f32/static/n1",
+     "old": "68efd50592017538",
+     "new": "82c8444c1ec24919"
     },
     {
-      "schema": "rewitness/3",
-      "field": "source_digest",
-      "owner": "tank",
-      "date": "2026-08-06",
-      "deliberate": true,
-      "caused_by_content": {
-        "kind": "same_change",
-        "paths": [
-          {
-            "path": "rust/shaders/glsl/templates/q_gemv.comp",
-            "old": "a9b44041b10d46e3ceb76772e46b8b967e7474c5e15c2a0dd47cb77ba11781cf",
-            "new": "5f043e3aa6888dc62bd065fdcdbbd92fb48fe1ec61c8caeb0e608cb4d34010e8"
-          }
-        ]
-      },
-      "tool": "rust/tools/gen_proof_ledger.py --reprove --append --model bench/results/_ledger_models/matmulnbits_f16_scales.onnx --model bench/results/_ledger_models/matmulnbits_f16_scales_zp.onnx --model bench/results/_ledger_models/matmulnbits_f16_scales_dyn.onnx --model bench/results/_ledger_models/matmulnbits_f16_scales_zp_dyn.onnx --model bench/results/_ledger_models/matmulnbits_f32_scales.onnx --model bench/results/_ledger_models/matmulnbits_f32_scales_zp.onnx",
-      "reason": "A KERNEL change, not a hashing-rule move -- the same distinction `caused_by e3d3cf6` above exists to make, decided the same way: by asking the writer, not the digests. Issue #7 (PR #53, `79c7a4f`) gave `rust/shaders/glsl/templates/q_gemv.comp` a seventh specialisation constant, `QB_ROWS`, plus the folded spec-constant guard that fails closed when `QB_ROWS*QB_COLS > QB_MAX_TILE || QB_ROWS > QB_MAX_ROWS`, and restructured the row-reduction loop to reuse `red[]` across a tile of rows. That is new source text in the one template every MatMulNBits GEMV form is generated from, so `source_digest_for` -- which hashes the whole template plus its includes -- necessarily moved for every entry that stem produces, exactly as `e3d3cf6` moved it for all 55 `ew_unary`-derived entries when THAT shared template changed. This is the `--reprove` half of that same rule, not the `--backfill-frame` half: `QB_ROWS == 1u` is a spec-constant branch holding the byte-identical pre-change body (`test_the_decode_arm_is_untouched_by_the_row_tile` pins the 16-byte load width that proves it), but the SPIR-V for `rows > 1` is genuinely new object code implementing a new reduction strategy, not a comment or whitespace change the old build happens to still match. `--backfill-frame` refuses per entry unless the recorded `spirv_digest` matches this build's; it would have refused all six here, correctly, because the SPIR-V is not byte-identical to what `af66fa3` recorded. `--reprove` is therefore the only available and the correct instrument: it measures the new kernel on this device rather than asserting the old one is still what is being described.",
-      "evidence": "All six re-proofs are `MATCH` on **NVIDIA RTX A1000** (this machine), `ort_build 1.28.0`, `toolchain shaderc v2026.2 v2026.2`, `dispatches_executed: 1` each, against the six committed case models named in `tool` above (`bench/results/_ledger_models/matmulnbits_*.onnx`, pinned by `artifact_sha256` in the ledger). `gen_proof_ledger.py --check` reads `133/133 entries identical, 0 declines` after this re-proof: the move is exactly as wide as the six entries this record declares and no wider -- `git diff af66fa3..79c7a4f -- evidence/proof_ledger.jsonl` names precisely these six keys' `source_digest` and touches no other field on them, and no OTHER key's `source_digest` or `toolchain` moved. Two of the six (`f16, static/scales` and `f16, runtime-extent/scales`) share one `old`/`new` pair because both keys are produced from one shader stem, `q_gemv_matmul_nbits_f16`, under the identical template text -- likewise the `scales+zero_points` pair and the `f32` pair -- so `source_digest_for`'s per-stem hash is unaffected by the static/runtime-extent or scales/scales+zero_points axis, and moves in lockstep across the keys that share a stem exactly as it must.",
-      "reproof_run_recorded_by": "link, revision 2 of PR #53, unchanged and re-verified here. The six `MATCH` re-proofs and their digests are committed ledger content; this revision changes only WHICH RULE authorises them, not what was measured or by whom.",
-      "why_schema_v3": "Because there is no commit this record could name and be right. `rewitness/2` requires `caused_by` to be an ANCESTOR of the history being screened, and the source change that moved these six digests -- `rust/shaders/glsl/templates/q_gemv.comp`'s seventh specialisation constant -- arrives in THIS change, not an earlier one. The only sha an author can write before the merge exists is a branch commit, and a squash erases it: measured on this branch, `ci/check_ledger_census.py` was green on the head and on a merge-commit landing and `FAIL(condition=unlanded_rewitness_cause)` on a squash onto main. A screen that turns main red BECAUSE the change landed is the defect, and a differently-spelled sha is not a repair -- the register already convicts the after-the-fact re-point by name. `rewitness/3` states the cause the same way the matching rule already states the move: as content under comparison. The declared transition of `q_gemv.comp` is read out of the two trees the ledger itself moved between (the last revision carrying the `old` digests, and the revision carrying the `new` ones), so it reads identically on this branch head, on a squash, on a rebase, on a merge commit and in the working tree, and it names no commit, branch, PR number, author or timestamp that any of those landings could erase.",
-      "why_this_is_not_circular": "The corroborating bytes are production shader source -- the one template every MatMulNBits GEMV form is generated from -- read from the compared trees, never from this register and never from `evidence/`. It is the same text `source_digest_for` hashes, so it is the cause of the move rather than a restatement of it, and a cause path under any generated root is refused outright. The path set is not the author's either: the screen derives it from the `shaders` stems the six moved entries name, resolved through the build's own include rules, so this record cannot widen the set it is judged against, cannot leave a changed closure file undeclared, and cannot borrow one key's cause for another key that does not share its stem.",
-      "standing_repair": "None added by this record beyond what `f8cfbf4`/`e3d3cf6` already established (`tests/ops/test_proof_ledger.py::test_no_entry_carries_a_stale_source_digest`); that test already covers these six entries because it walks every recorded `source_digest` against the current build for every key, not a fixed list.",
-      "transitions": [
-        {
-          "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales",
-          "old": "ee2901c1275da648",
-          "new": "00d6a2587e50688f"
-        },
-        {
-          "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points",
-          "old": "ee2901c1275da648",
-          "new": "00d6a2587e50688f"
-        },
-        {
-          "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales",
-          "old": "ee2901c1275da648",
-          "new": "00d6a2587e50688f"
-        },
-        {
-          "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points",
-          "old": "ee2901c1275da648",
-          "new": "00d6a2587e50688f"
-        },
-        {
-          "key": "com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales",
-          "old": "3bb491fcee808f26",
-          "new": "87d83257fafcf9ee"
-        },
-        {
-          "key": "com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points",
-          "old": "3bb491fcee808f26",
-          "new": "87d83257fafcf9ee"
-        }
-      ]
+     "key": "ai.onnx::Atanh/9+/f32>f32/ew_unary_atanh_f32/static/n1",
+     "old": "e8b5989f937e2dd8",
+     "new": "e08be850ab032816"
     },
     {
-      "schema": "rewitness/3",
-      "field": "source_digest",
-      "owner": "niobe",
-      "date": "2026-08-07",
-      "deliberate": true,
-      "caused_by_content": {
-        "kind": "same_change",
-        "paths": [
-          {
-            "path": "rust/shaders/glsl/gqa_f16.comp",
-            "old": "29831f5f85c16023e7b9e1d6644d3dd2dbf7c229086a8810891772e421a15aec",
-            "new": "e9b9bb91dfdd3c32964be2178839f8aa7a7e8d1126cb33160d62b90364a61721"
-          }
-        ]
-      },
-      "tool": "rust/tools/ledger_case_models.py bench/results/_ledger_models && rust/tools/gen_proof_ledger.py --reprove --model bench/results/_ledger_models/group_query_attention_f16.onnx --device 0",
-      "reason": "A KERNEL change, not a hashing-rule move, and decided the way this register has decided it since `caused_by e3d3cf6`: by asking the writer rather than the digests. Issue #56 gave `rust/shaders/glsl/gqa_f16.comp` a specialisation constant for its workgroup size -- `layout(local_size_x_id = 0, local_size_x = 1) in;` where the file had hardcoded `local_size_x = 1` -- so the host can dispatch `total.div_ceil(local)` workgroups of `local` invocations instead of `total` workgroups of one lane each. That is new source text in the only file this key's SPIR-V is generated from, so `source_digest_for`, which hashes the file plus its transitive includes, necessarily moved. The header comment above the layout was rewritten in the same edit to record the finding; separating the two would have produced two records for one edit and no additional evidence, and the content id declared above covers the file as a whole either way. This is the `--reprove` half of the rule and not the `--backfill-frame` half: the SPIR-V is genuinely different object code. It declares a specialisation constant the old module did not have and its `gl_WorkGroupSize` is no longer a literal, so `--backfill-frame`, which refuses per entry unless the recorded `spirv_digest` matches this build's, would have declined -- correctly. The claim was re-obtained on the device, not re-framed on paper.",
-      "evidence": "The re-proof is `MATCH` on **NVIDIA RTX A1000** (driver 573.44, the only Vulkan device on this host), `ort_build 1.28.0`, against the committed case model `bench/results/_ledger_models/group_query_attention_f16.onnx` named in `tool`. `gen_proof_ledger.py --check` reads 133/133 entries identical, 0 declines after the re-proof, at ledger digest 27239541b6d2819e, and `--reprove` reported `replaced 1 entr(ies)` -- the move is exactly as wide as the single entry this record declares and no wider. GroupQueryAttention has one live key and one shader stem, `gqa_f16`, so there is no sibling key sharing this stem whose digest should have moved in lockstep and did not. That the new object code computes the same answers was measured, not asserted: `bench/results/real_model_gqa_local_size.json` records an equivalence pass over 7 workgroup sizes x 6 real Phi-3.5 cases (prefill M=1/8/32/128 and decode at past=512 and past=1024) in which all 42 output sets are BITWISE-IDENTICAL to the `local = 1` arm, run to completion before a single timing was taken. The kernel's answer did not move; only the rate at which it produces it did.",
-      "why_schema_v3": "For the reason `tank 2026-08-06` gives above, met here on the first change written after that record landed. The source change that moved this digest arrives in THIS change, so the only sha a `rewitness/2` `caused_by` could name is a branch commit, and a squash erases it. This branch measured exactly that: written as v2 naming `d350591`, `ci/simulate_squash_rewitness.py` reported `FAIL(condition=unlanded_rewitness_cause)` on the squash -- two of them, this one and PR #53's, which is the same defect twice and is why v3 exists. Restated as content, the record reads identically on this branch head, on a squash, on a rebase, on a merge commit and in the working tree.",
-      "why_this_is_not_circular": "The corroborating bytes are production shader source -- `gqa_f16.comp` is the file the build hashes to produce the very `source_digest` that moved -- read from the two compared trees and never from `evidence/`. It is the cause of the move rather than a restatement of it. The path is not the author's choice either: the screen derives the admissible set from the `shaders` stems the moved entry names, resolved through the build's own include rules, so this record cannot widen the set it is judged against nor leave a changed closure file undeclared.",
-      "standing_repair": "None beyond what already exists: `tests/ops/test_proof_ledger.py::test_no_entry_carries_a_stale_source_digest` walks every recorded `source_digest` against the current build for every key, so it covers this entry without a list to maintain. The behavioural half is new and is in this change: `bench/results/probe_gqa_local_size.py` re-runs the bitwise equivalence pass on demand, and `rust/src/ops/attention.rs`'s tests pin the dispatch geometry the spec constant feeds.",
-      "transitions": [
-        {
-          "key": "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/gqa_f16/runtime-extent/past_key+past_value+cos_cache+sin_cache",
-          "old": "634f03f75aa0f093",
-          "new": "e5cbc779c736055b"
-        }
-      ],
-      "keys": 1
+     "key": "ai.onnx::BitwiseNot/18+/i32>i32/ew_unary_bitnot_i32/static/n1",
+     "old": "f2831ad64504b4cc",
+     "new": "3c644b5ac3965ac6"
+    },
+    {
+     "key": "ai.onnx::Ceil/6+/f32>f32/ew_unary_ceil_f32/static/n1",
+     "old": "1f19b3388bef79e7",
+     "new": "b8ad77bd24c42b1a"
+    },
+    {
+     "key": "ai.onnx::Celu/12+/f32>f32/ew_unary_celu_f32/static/n1",
+     "old": "0cb40213caece6c7",
+     "new": "a4a8437aafcfdd60"
+    },
+    {
+     "key": "ai.onnx::Cos/7+/f32>f32/ew_unary_cos_f32/static/n1",
+     "old": "a73fb73f342764a9",
+     "new": "d54a3e62b76b2ecc"
+    },
+    {
+     "key": "ai.onnx::Cosh/9+/f32>f32/ew_unary_cosh_f32/static/n1",
+     "old": "4845269cf0b39545",
+     "new": "015bc93cb7b0d541"
+    },
+    {
+     "key": "ai.onnx::Elu/6+/f32>f32/ew_unary_elu_f32/static/n1",
+     "old": "7139ed65d388ef5c",
+     "new": "37e08ba767e5dcdb"
+    },
+    {
+     "key": "ai.onnx::Erf/9+/f16>f16/ew_unary_erf_f16/static/n1",
+     "old": "1db16ee3a8d11319",
+     "new": "5e3446891df1a683"
+    },
+    {
+     "key": "ai.onnx::Erf/9+/f32>f32/ew_unary_erf_f32/static/n1",
+     "old": "c583c27a1baea2f7",
+     "new": "ce4a8948b31ee90c"
+    },
+    {
+     "key": "ai.onnx::Exp/6+/f16>f16/ew_unary_exp_f16/static/n1",
+     "old": "66c92bef3496d20a",
+     "new": "53b5cb4da2beb5f9"
+    },
+    {
+     "key": "ai.onnx::Exp/6+/f32>f32/ew_unary_exp_f32/runtime-extent/n1",
+     "old": "48924ecbe06fcc55",
+     "new": "55c4e92eb39a7f8c"
+    },
+    {
+     "key": "ai.onnx::Exp/6+/f32>f32/ew_unary_exp_f32/static/n1",
+     "old": "48924ecbe06fcc55",
+     "new": "55c4e92eb39a7f8c"
+    },
+    {
+     "key": "ai.onnx::Floor/6+/f32>f32/ew_unary_floor_f32/static/n1",
+     "old": "078c54e88a1203f0",
+     "new": "dfaa8f2ff819ad17"
+    },
+    {
+     "key": "ai.onnx::Gelu/20+/f16>f16/ew_unary_gelu_f16/static/n1",
+     "old": "cb65561dcce99381",
+     "new": "d682fcec04c9e819"
+    },
+    {
+     "key": "ai.onnx::Gelu/20+/f32>f32/ew_unary_gelu_f32/static/n1",
+     "old": "87dba6ffcbccbeba",
+     "new": "0f51ad5418a14588"
+    },
+    {
+     "key": "ai.onnx::HardSigmoid/6+/f32>f32/ew_unary_hardsigmoid_f32/static/n1",
+     "old": "8d35df0ae441967a",
+     "new": "f99a0611e183ba49"
+    },
+    {
+     "key": "ai.onnx::HardSwish/14+/f32>f32/ew_unary_hardswish_f32/static/n1",
+     "old": "ab93464618c97f97",
+     "new": "b866eae4ab560486"
+    },
+    {
+     "key": "ai.onnx::Identity/1+/f32>f32/ew_unary_identity_f32/static/n1",
+     "old": "3d04b046f40196b9",
+     "new": "e82069121561b59b"
+    },
+    {
+     "key": "ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel1/static/n1",
+     "old": "67ec786f798705d6",
+     "new": "d46a773d7d778764"
+    },
+    {
+     "key": "ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel2/static/n1",
+     "old": "67ec786f798705d6",
+     "new": "d46a773d7d778764"
+    },
+    {
+     "key": "ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel3/static/n1",
+     "old": "67ec786f798705d6",
+     "new": "d46a773d7d778764"
+    },
+    {
+     "key": "ai.onnx::IsNaN/9+/f32>bool/ew_unary_isnan_f32/static/n1",
+     "old": "e75f05a742a43ec8",
+     "new": "aa39610fc7b5ad39"
+    },
+    {
+     "key": "ai.onnx::LeakyRelu/6+/f32>f32/ew_unary_leakyrelu_f32/static/n1",
+     "old": "d71b62652a6ebbc7",
+     "new": "73fb37ef074118e8"
+    },
+    {
+     "key": "ai.onnx::Log/6+/f32>f32/ew_unary_log_f32/runtime-extent/n1",
+     "old": "46864003d91807ff",
+     "new": "0ba0b2e8c6f99d06"
+    },
+    {
+     "key": "ai.onnx::Log/6+/f32>f32/ew_unary_log_f32/static/n1",
+     "old": "46864003d91807ff",
+     "new": "0ba0b2e8c6f99d06"
+    },
+    {
+     "key": "ai.onnx::Mish/18+/f32>f32/ew_unary_mish_f32/static/n1",
+     "old": "528847a8dd380649",
+     "new": "193a415a00250eae"
+    },
+    {
+     "key": "ai.onnx::Neg/6+/f32>f32/ew_unary_neg_f32/static/n1",
+     "old": "101196761010fe4a",
+     "new": "81aeea555fd0f4c9"
+    },
+    {
+     "key": "ai.onnx::Not/1+/bool>bool/ew_unary_not_bool/static/n1",
+     "old": "c065a2f2d237aad0",
+     "new": "5bedb6be1ae2ca01"
+    },
+    {
+     "key": "ai.onnx::Reciprocal/6+/f32>f32/ew_unary_recip_f32/static/n1",
+     "old": "8b35da692da217c3",
+     "new": "04e56bfba01e6c05"
+    },
+    {
+     "key": "ai.onnx::Relu/6+/f16>f16/ew_unary_relu_f16/static/n1",
+     "old": "c1c3039ba7629ee1",
+     "new": "fd02fe2411d34742"
+    },
+    {
+     "key": "ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/static/n1",
+     "old": "3bd10b311db42a42",
+     "new": "8706d3d67f18ff64"
+    },
+    {
+     "key": "ai.onnx::Round/11+/f32>f32/ew_unary_round_f32/static/n1",
+     "old": "bfffc411da8cca28",
+     "new": "4a5427a5e51fe264"
+    },
+    {
+     "key": "ai.onnx::Selu/6+/f32>f32/ew_unary_selu_f32/static/n1",
+     "old": "5e3e29ff6821f96a",
+     "new": "84217233b1330e7f"
+    },
+    {
+     "key": "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1",
+     "old": "fa2b06358fc4d5ae",
+     "new": "c51e51fd66ea5256"
+    },
+    {
+     "key": "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/static/n1",
+     "old": "fa2b06358fc4d5ae",
+     "new": "c51e51fd66ea5256"
+    },
+    {
+     "key": "ai.onnx::Sigmoid/6+/f32>f32/ew_unary_sigmoid_f32/runtime-extent/n1",
+     "old": "2d8c2df8e4844d42",
+     "new": "fd7cd5a1636bd8f6"
+    },
+    {
+     "key": "ai.onnx::Sigmoid/6+/f32>f32/ew_unary_sigmoid_f32/static/n1",
+     "old": "2d8c2df8e4844d42",
+     "new": "fd7cd5a1636bd8f6"
+    },
+    {
+     "key": "ai.onnx::Sign/9+/f32>f32/ew_unary_sign_f32/static/n1",
+     "old": "914666cd0c1d1e7e",
+     "new": "4f55a24fd475f460"
+    },
+    {
+     "key": "ai.onnx::Sin/7+/f32>f32/ew_unary_sin_f32/static/n1",
+     "old": "79b38ef8f3287644",
+     "new": "0fec1db1366e05f1"
+    },
+    {
+     "key": "ai.onnx::Sinh/9+/f32>f32/ew_unary_sinh_f32/static/n1",
+     "old": "587c044b58452632",
+     "new": "babddc35f5b0dfbb"
+    },
+    {
+     "key": "ai.onnx::Softplus/1+/f32>f32/ew_unary_softplus_f32/static/n1",
+     "old": "7e827488b9228e1f",
+     "new": "1f768bdfa16e0694"
+    },
+    {
+     "key": "ai.onnx::Softsign/1+/f32>f32/ew_unary_softsign_f32/static/n1",
+     "old": "ae0c3f33d20a9660",
+     "new": "ac94f2168645613e"
+    },
+    {
+     "key": "ai.onnx::Sqrt/6+/f16>f16/ew_unary_sqrt_f16/static/n1",
+     "old": "b63578c0b2de9ffb",
+     "new": "d89c184935081884"
+    },
+    {
+     "key": "ai.onnx::Sqrt/6+/f32>f32/ew_unary_sqrt_f32/static/n1",
+     "old": "e37bee50ca6bf195",
+     "new": "3f8299b52f1fa4d8"
+    },
+    {
+     "key": "ai.onnx::Tan/7+/f32>f32/ew_unary_tan_f32/static/n1",
+     "old": "870b7e227e055f73",
+     "new": "4c8922671897c185"
+    },
+    {
+     "key": "ai.onnx::Tanh/6+/f16>f16/ew_unary_tanh_f16/static/n1",
+     "old": "5250c65f20ba0927",
+     "new": "40906fe108bc4ab7"
+    },
+    {
+     "key": "ai.onnx::Tanh/6+/f32>f32/ew_unary_tanh_f32/runtime-extent/n1",
+     "old": "a05342a57e8409af",
+     "new": "73b0fa3c946d1377"
+    },
+    {
+     "key": "ai.onnx::Tanh/6+/f32>f32/ew_unary_tanh_f32/static/n1",
+     "old": "a05342a57e8409af",
+     "new": "73b0fa3c946d1377"
+    },
+    {
+     "key": "ai.onnx::ThresholdedRelu/10+/f32>f32/ew_unary_trelu_f32/static/n1",
+     "old": "8fc22777fdc9998e",
+     "new": "578369f076f7feb5"
     }
-  ],
-  "threat_model": "WHAT THIS REGISTER DEFENDS AGAINST, AND WHAT IT DOES NOT. The event it exists for is a frame witness moving inside surviving ledger entries -- no key lost, every count-based screen clean, one platform forgiving the staleness and the other declining 115 proofs because of it. So the question is never 'is this digest right' (a screen cannot rank two alternating values without a frame) but 'did someone declare this move, and is the declaration corroborated by something they could not simply assert'. ADVERSARY MODEL for a `rewitness/3` same-change cause: an author (or a regeneration, or a bad merge) that can write anything it likes into `evidence/` -- the ledger, this register, any generated reading of either -- and can write commit messages, branch names, PR bodies and dates. The screen therefore reads NONE of those as evidence. It reads: the declared `(field, key, old, new)` moves against the ledger's real byte history; the declared cause paths' content against the two trees the ledger moved between; and the closure of those paths derived from the build's own stem/include rules. To pass while lying, an author would have to make the production shader source itself carry the exact declared transition, which is the change the record claims happened -- at which point the claim is true. WHAT IS STILL TRUSTED, stated so nobody has to discover it: (1) the ledger entry's `shaders` list names the stems the proof was really built from -- if that list is forged, the closure is computed for the wrong shader, so the screen requires it to be identical in both trees and refuses an entry that names none; (2) the ledger's recorded digests are what the build produced -- `gen_proof_ledger.py --check` and `tests/ops/test_proof_ledger.py::test_no_entry_carries_a_stale_source_digest` are the screens for that, and they run against a built EP, which this one deliberately never does; (3) `rust/build.rs`'s shader directories are where this screen looks for them, pinned by `tests/ops/test_rewitness_cause_paths.py` so a moved directory fails loudly instead of emptying the closure. OUT OF SCOPE, deliberately: a re-witness caused by something other than shader source -- a registry change that alters which stems an entry names, a compiler move, a hashing-rule change -- must NOT be written as a same-change cause; it fails closed here, which is the correct answer rather than an inconvenience."
+   ]
+  },
+  {
+   "schema": "rewitness/3",
+   "field": "source_digest",
+   "owner": "tank",
+   "date": "2026-08-06",
+   "deliberate": true,
+   "caused_by_content": {
+    "kind": "same_change",
+    "paths": [
+     {
+      "path": "rust/shaders/glsl/templates/q_gemv.comp",
+      "old": "a9b44041b10d46e3ceb76772e46b8b967e7474c5e15c2a0dd47cb77ba11781cf",
+      "new": "5f043e3aa6888dc62bd065fdcdbbd92fb48fe1ec61c8caeb0e608cb4d34010e8"
+     }
+    ]
+   },
+   "tool": "rust/tools/gen_proof_ledger.py --reprove --append --model bench/results/_ledger_models/matmulnbits_f16_scales.onnx --model bench/results/_ledger_models/matmulnbits_f16_scales_zp.onnx --model bench/results/_ledger_models/matmulnbits_f16_scales_dyn.onnx --model bench/results/_ledger_models/matmulnbits_f16_scales_zp_dyn.onnx --model bench/results/_ledger_models/matmulnbits_f32_scales.onnx --model bench/results/_ledger_models/matmulnbits_f32_scales_zp.onnx",
+   "reason": "A KERNEL change, not a hashing-rule move -- the same distinction `caused_by e3d3cf6` above exists to make, decided the same way: by asking the writer, not the digests. Issue #7 (PR #53, `79c7a4f`) gave `rust/shaders/glsl/templates/q_gemv.comp` a seventh specialisation constant, `QB_ROWS`, plus the folded spec-constant guard that fails closed when `QB_ROWS*QB_COLS > QB_MAX_TILE || QB_ROWS > QB_MAX_ROWS`, and restructured the row-reduction loop to reuse `red[]` across a tile of rows. That is new source text in the one template every MatMulNBits GEMV form is generated from, so `source_digest_for` -- which hashes the whole template plus its includes -- necessarily moved for every entry that stem produces, exactly as `e3d3cf6` moved it for all 55 `ew_unary`-derived entries when THAT shared template changed. This is the `--reprove` half of that same rule, not the `--backfill-frame` half: `QB_ROWS == 1u` is a spec-constant branch holding the byte-identical pre-change body (`test_the_decode_arm_is_untouched_by_the_row_tile` pins the 16-byte load width that proves it), but the SPIR-V for `rows > 1` is genuinely new object code implementing a new reduction strategy, not a comment or whitespace change the old build happens to still match. `--backfill-frame` refuses per entry unless the recorded `spirv_digest` matches this build's; it would have refused all six here, correctly, because the SPIR-V is not byte-identical to what `af66fa3` recorded. `--reprove` is therefore the only available and the correct instrument: it measures the new kernel on this device rather than asserting the old one is still what is being described.",
+   "evidence": "All six re-proofs are `MATCH` on **NVIDIA RTX A1000** (this machine), `ort_build 1.28.0`, `toolchain shaderc v2026.2 v2026.2`, `dispatches_executed: 1` each, against the six committed case models named in `tool` above (`bench/results/_ledger_models/matmulnbits_*.onnx`, pinned by `artifact_sha256` in the ledger). `gen_proof_ledger.py --check` reads `133/133 entries identical, 0 declines` after this re-proof: the move is exactly as wide as the six entries this record declares and no wider -- `git diff af66fa3..79c7a4f -- evidence/proof_ledger.jsonl` names precisely these six keys' `source_digest` and touches no other field on them, and no OTHER key's `source_digest` or `toolchain` moved. Two of the six (`f16, static/scales` and `f16, runtime-extent/scales`) share one `old`/`new` pair because both keys are produced from one shader stem, `q_gemv_matmul_nbits_f16`, under the identical template text -- likewise the `scales+zero_points` pair and the `f32` pair -- so `source_digest_for`'s per-stem hash is unaffected by the static/runtime-extent or scales/scales+zero_points axis, and moves in lockstep across the keys that share a stem exactly as it must.",
+   "reproof_run_recorded_by": "link, revision 2 of PR #53, unchanged and re-verified here. The six `MATCH` re-proofs and their digests are committed ledger content; this revision changes only WHICH RULE authorises them, not what was measured or by whom.",
+   "why_schema_v3": "Because there is no commit this record could name and be right. `rewitness/2` requires `caused_by` to be an ANCESTOR of the history being screened, and the source change that moved these six digests -- `rust/shaders/glsl/templates/q_gemv.comp`'s seventh specialisation constant -- arrives in THIS change, not an earlier one. The only sha an author can write before the merge exists is a branch commit, and a squash erases it: measured on this branch, `ci/check_ledger_census.py` was green on the head and on a merge-commit landing and `FAIL(condition=unlanded_rewitness_cause)` on a squash onto main. A screen that turns main red BECAUSE the change landed is the defect, and a differently-spelled sha is not a repair -- the register already convicts the after-the-fact re-point by name. `rewitness/3` states the cause the same way the matching rule already states the move: as content under comparison. The declared transition of `q_gemv.comp` is read out of the two trees the ledger itself moved between (the last revision carrying the `old` digests, and the revision carrying the `new` ones), so it reads identically on this branch head, on a squash, on a rebase, on a merge commit and in the working tree, and it names no commit, branch, PR number, author or timestamp that any of those landings could erase.",
+   "why_this_is_not_circular": "The corroborating bytes are production shader source -- the one template every MatMulNBits GEMV form is generated from -- read from the compared trees, never from this register and never from `evidence/`. It is the same text `source_digest_for` hashes, so it is the cause of the move rather than a restatement of it, and a cause path under any generated root is refused outright. The path set is not the author's either: the screen derives it from the `shaders` stems the six moved entries name, resolved through the build's own include rules, so this record cannot widen the set it is judged against, cannot leave a changed closure file undeclared, and cannot borrow one key's cause for another key that does not share its stem.",
+   "standing_repair": "None added by this record beyond what `f8cfbf4`/`e3d3cf6` already established (`tests/ops/test_proof_ledger.py::test_no_entry_carries_a_stale_source_digest`); that test already covers these six entries because it walks every recorded `source_digest` against the current build for every key, not a fixed list.",
+   "transitions": [
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales",
+     "old": "ee2901c1275da648",
+     "new": "00d6a2587e50688f"
+    },
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points",
+     "old": "ee2901c1275da648",
+     "new": "00d6a2587e50688f"
+    },
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales",
+     "old": "ee2901c1275da648",
+     "new": "00d6a2587e50688f"
+    },
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales+zero_points",
+     "old": "ee2901c1275da648",
+     "new": "00d6a2587e50688f"
+    },
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales",
+     "old": "3bb491fcee808f26",
+     "new": "87d83257fafcf9ee"
+    },
+    {
+     "key": "com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points",
+     "old": "3bb491fcee808f26",
+     "new": "87d83257fafcf9ee"
+    }
+   ]
+  },
+  {
+   "schema": "rewitness/3",
+   "field": "source_digest",
+   "owner": "niobe",
+   "date": "2026-08-07",
+   "deliberate": true,
+   "caused_by_content": {
+    "kind": "same_change",
+    "paths": [
+     {
+      "path": "rust/shaders/glsl/gqa_f16.comp",
+      "old": "29831f5f85c16023e7b9e1d6644d3dd2dbf7c229086a8810891772e421a15aec",
+      "new": "e9b9bb91dfdd3c32964be2178839f8aa7a7e8d1126cb33160d62b90364a61721"
+     }
+    ]
+   },
+   "tool": "rust/tools/ledger_case_models.py bench/results/_ledger_models && rust/tools/gen_proof_ledger.py --reprove --model bench/results/_ledger_models/group_query_attention_f16.onnx --device 0",
+   "reason": "A KERNEL change, not a hashing-rule move, and decided the way this register has decided it since `caused_by e3d3cf6`: by asking the writer rather than the digests. Issue #56 gave `rust/shaders/glsl/gqa_f16.comp` a specialisation constant for its workgroup size -- `layout(local_size_x_id = 0, local_size_x = 1) in;` where the file had hardcoded `local_size_x = 1` -- so the host can dispatch `total.div_ceil(local)` workgroups of `local` invocations instead of `total` workgroups of one lane each. That is new source text in the only file this key's SPIR-V is generated from, so `source_digest_for`, which hashes the file plus its transitive includes, necessarily moved. The header comment above the layout was rewritten in the same edit to record the finding; separating the two would have produced two records for one edit and no additional evidence, and the content id declared above covers the file as a whole either way. This is the `--reprove` half of the rule and not the `--backfill-frame` half: the SPIR-V is genuinely different object code. It declares a specialisation constant the old module did not have and its `gl_WorkGroupSize` is no longer a literal, so `--backfill-frame`, which refuses per entry unless the recorded `spirv_digest` matches this build's, would have declined -- correctly. The claim was re-obtained on the device, not re-framed on paper.",
+   "evidence": "The re-proof is `MATCH` on **NVIDIA RTX A1000** (driver 573.44, the only Vulkan device on this host), `ort_build 1.28.0`, against the committed case model `bench/results/_ledger_models/group_query_attention_f16.onnx` named in `tool`. `gen_proof_ledger.py --check` reads 133/133 entries identical, 0 declines after the re-proof, at ledger digest 27239541b6d2819e, and `--reprove` reported `replaced 1 entr(ies)` -- the move is exactly as wide as the single entry this record declares and no wider. GroupQueryAttention has one live key and one shader stem, `gqa_f16`, so there is no sibling key sharing this stem whose digest should have moved in lockstep and did not. That the new object code computes the same answers was measured, not asserted: `bench/results/real_model_gqa_local_size.json` records an equivalence pass over 7 workgroup sizes x 6 real Phi-3.5 cases (prefill M=1/8/32/128 and decode at past=512 and past=1024) in which all 42 output sets are BITWISE-IDENTICAL to the `local = 1` arm, run to completion before a single timing was taken. The kernel's answer did not move; only the rate at which it produces it did.",
+   "why_schema_v3": "For the reason `tank 2026-08-06` gives above, met here on the first change written after that record landed. The source change that moved this digest arrives in THIS change, so the only sha a `rewitness/2` `caused_by` could name is a branch commit, and a squash erases it. This branch measured exactly that: written as v2 naming `d350591`, `ci/simulate_squash_rewitness.py` reported `FAIL(condition=unlanded_rewitness_cause)` on the squash -- two of them, this one and PR #53's, which is the same defect twice and is why v3 exists. Restated as content, the record reads identically on this branch head, on a squash, on a rebase, on a merge commit and in the working tree.",
+   "why_this_is_not_circular": "The corroborating bytes are production shader source -- `gqa_f16.comp` is the file the build hashes to produce the very `source_digest` that moved -- read from the two compared trees and never from `evidence/`. It is the cause of the move rather than a restatement of it. The path is not the author's choice either: the screen derives the admissible set from the `shaders` stems the moved entry names, resolved through the build's own include rules, so this record cannot widen the set it is judged against nor leave a changed closure file undeclared.",
+   "standing_repair": "None beyond what already exists: `tests/ops/test_proof_ledger.py::test_no_entry_carries_a_stale_source_digest` walks every recorded `source_digest` against the current build for every key, so it covers this entry without a list to maintain. The behavioural half is new and is in this change: `bench/results/probe_gqa_local_size.py` re-runs the bitwise equivalence pass on demand, and `rust/src/ops/attention.rs`'s tests pin the dispatch geometry the spec constant feeds.",
+   "transitions": [
+    {
+     "key": "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/gqa_f16/runtime-extent/past_key+past_value+cos_cache+sin_cache",
+     "old": "634f03f75aa0f093",
+     "new": "e5cbc779c736055b"
+    }
+   ],
+   "keys": 1
+  }
+ ],
+ "threat_model": "WHAT THIS REGISTER DEFENDS AGAINST, AND WHAT IT DOES NOT. The event it exists for is a frame witness moving inside surviving ledger entries -- no key lost, every count-based screen clean, one platform forgiving the staleness and the other declining 115 proofs because of it. So the question is never 'is this digest right' (a screen cannot rank two alternating values without a frame) but 'did someone declare this move, and is the declaration corroborated by something they could not simply assert'. ADVERSARY MODEL for a `rewitness/3` same-change cause: an author (or a regeneration, or a bad merge) that can write anything it likes into `evidence/` -- the ledger, this register, any generated reading of either -- and can write commit messages, branch names, PR bodies and dates. The screen therefore reads NONE of those as evidence. It reads: the declared `(field, key, old, new)` moves against the ledger's real byte history; the declared cause paths' content against the two trees the ledger moved between; and the closure of those paths derived from the build's own stem/include rules. To pass while lying, an author would have to make the production shader source itself carry the exact declared transition, which is the change the record claims happened -- at which point the claim is true. WHAT IS STILL TRUSTED, stated so nobody has to discover it: (1) the ledger entry's `shaders` list names the stems the proof was really built from -- if that list is forged, the closure is computed for the wrong shader, so the screen requires it to be identical in both trees and refuses an entry that names none; (2) the ledger's recorded digests are what the build produced -- `gen_proof_ledger.py --check` and `tests/ops/test_proof_ledger.py::test_no_entry_carries_a_stale_source_digest` are the screens for that, and they run against a built EP, which this one deliberately never does; (3) `rust/build.rs`'s shader directories are where this screen looks for them, pinned by `tests/ops/test_rewitness_cause_paths.py` so a moved directory fails loudly instead of emptying the closure. OUT OF SCOPE, deliberately: a re-witness caused by something other than shader source -- a registry change that alters which stems an entry names, a compiler move, a hashing-rule change -- must NOT be written as a same-change cause; it fails closed here, which is the correct answer rather than an inconvenience."
 }
