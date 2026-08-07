@@ -2480,6 +2480,99 @@ def test_census_completeness_is_registered_and_does_not_close_row_12():
 
 
 # ---------------------------------------------------------------------------
+# Issue #47: the two ways this screen went blind, each pinned by its own arm.
+# ---------------------------------------------------------------------------
+#
+# ONNXRUNTIME_EP_VULKAN_RANK_INFERENCE reached main unmapped (PR #46 / issue #8) and
+# the census screen was correctly red about it for ten days. Neither of the arms
+# below would have prevented THAT -- the screen already named the surface, and CI
+# simply never ran because of an Actions outage. They exist because chasing that
+# regression surfaced two separate defects in the instruments themselves, and in both
+# the instrument reported an OUTAGE where a reader would read COVERAGE.
+
+
+def test_the_screen_survives_non_ascii_in_the_map_s_own_prose():
+    """Found while writing the RANK_INFERENCE entry (#47): a U+2192 arrow in a
+    `reason` string made the screen exit ERROR(instrument=screen_raised) with
+    UnicodeEncodeError, on a Windows console, AFTER it had done its work correctly.
+
+    The map's prose is meant to be written by humans explaining a gap, and this file's
+    own entries already carry section signs and em-dashes. A screen that dies on a
+    character in its own input turns a real unmapped surface into an instrument
+    outage, which DESIGN.md 10.0.1 R13 says is explicitly NOT a detection -- so the
+    gap would be reported as "the screen could not answer" instead of as the finding
+    it is.
+
+    This arm does NOT use run_check(): run_check forces PYTHONIOENCODING=utf-8 into
+    the child, which is precisely the condition under which the bug cannot happen, so
+    an arm built on it would pass whether or not the screen is fixed. The shipping
+    invocation has no such pin -- the ci.yml step is a bare `python
+    ci/check_census_completeness.py`, and a developer's shell is barer still. So this
+    pins the child to a narrow codepage on purpose. cp1252 is chosen because it is
+    what a default Windows shell actually hands the screen; pinning it explicitly
+    makes the arm reproduce that condition on Linux CI too, rather than passing
+    vacuously there because the locale happened to be UTF-8."""
+    doc = json.loads((CI_DIR / "census_surface_map.json").read_text(encoding="utf-8"))
+    # Inject into an EXISTING uncensused entry rather than appending a new one. The
+    # screen only prints a `reason` for surfaces it actually reports, so a fabricated
+    # id -- which matches nothing in production Rust -- would have its prose skipped
+    # and the arm would pass without ever exercising the encode path.
+    victims = [
+        s
+        for s in doc["surfaces"]
+        if s.get("kind") == "env_switch" and s.get("disposition") == "uncensused"
+    ]
+    assert victims, "no uncensused env_switch to plant into; this arm has lost its subject"
+    # An arrow, a CJK glyph and an emoji: all outside cp1252.
+    victims[0]["reason"] = (
+        "planted \u2192 non-ascii \u6f22 \U0001f9ea prose for issue #47. "
+        + victims[0]["reason"]
+    )
+    with tempfile.TemporaryDirectory() as td:
+        m = Path(td) / "map.json"
+        m.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+        env.pop("PYTHONUTF8", None)
+        proc = subprocess.run(
+            [sys.executable, str(CI_DIR / "check_census_completeness.py"), "--map", str(m)],
+            capture_output=True,
+            env=env,
+        )
+        out = proc.stdout.decode("utf-8", errors="replace") + proc.stderr.decode(
+            "utf-8", errors="replace"
+        )
+        assert "screen_raised" not in out, out[-3000:]
+        assert "UnicodeEncodeError" not in out, out[-3000:]
+        assert "CENSUS-EXTENT:" in out, out[-3000:]
+        # It reached an observation, and specifically it got far enough to render the
+        # prose that used to kill it.
+        assert "planted" in out, out[-3000:]
+        assert proc.returncode in (EXIT_PASS, EXIT_FAIL_CONDITION), out[-3000:]
+
+
+def test_the_census_negative_control_can_actually_read_the_screen():
+    """The arm that should have caught #47 was blind. `_run` decoded the child as
+    UTF-8 while letting the child pick cp1252 for itself, so on Windows every one of
+    the twelve arms -- including "a new EP env switch appears and nobody tells the
+    census" -- came back with empty output and reported `arm_did_not_fire`.
+
+    `arm_did_not_fire` and "the harness could not read the child" are opposite
+    findings that looked identical. This asserts the harness reads real text, so a
+    future `arm_did_not_fire` means the screen was silent and nothing else."""
+    import importlib
+
+    nc = importlib.import_module("negative_control_census_completeness")
+    code, out = nc._run(nc.RUST_SRC, nc.MAP, nc.ARTIFACTS)
+    assert out.strip(), "the control read nothing back from the screen"
+    assert "CENSUS-EXTENT:" in out, out[:2000]
+    assert code == nc.EXIT_PASS, out[-2000:]
+    # The decode is lossless on the real tree, not merely non-empty: a report full of
+    # U+FFFD would still satisfy the assertions above while hiding the surface names
+    # the arms match on.
+    assert "\ufffd" not in out, "the control decoded the screen lossily"
+
+
+# ---------------------------------------------------------------------------
 # The device-loss screen (ci/check_device_loss.py)
 # ---------------------------------------------------------------------------
 #
