@@ -234,8 +234,9 @@ impl TransferModel {
 pub struct Island {
     /// How many nodes it contains.
     pub nodes: usize,
-    /// How many of those are *anchors* — ops heavy enough to justify a boundary on their own
-    /// (see [`is_anchor`]).
+    /// How many of those are *anchors* — nodes heavy enough to justify a boundary on their own
+    /// (see [`is_anchor`]). Anchor status is a property of the *node*, not the op type: a heavy
+    /// op reading no resident weight does not count here.
     pub anchors: usize,
     /// Estimated floating-point operations inside the island.
     pub flops: u64,
@@ -374,11 +375,31 @@ impl Island {
     }
 }
 
-/// Ops heavy enough that a single one of them justifies an island.
+/// Whether a node's operands include a resident (constant-initializer) weight.
 ///
-/// A lone `Add` is never worth a round-trip; a single `MatMul` on LLM-sized weights always is.
-/// The list is the §4 inventory's "L/XL, compute-bound" rows.
-pub fn is_anchor(qualified_op: &str) -> bool {
+/// Three states, not a `bool`: "every operand was inspected and none is constant" and "constancy
+/// could not be established at all" must not collapse into the same value, because only one of
+/// them is a statement about the graph. Both decline anchor status (see [`is_anchor`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeightOperand {
+    /// At least one operand is a constant initializer.
+    Present,
+    /// Every operand was inspected and none is a constant initializer.
+    Absent,
+    /// Constancy could not be established for this node at all. Fails closed — never an anchor.
+    Unknown,
+}
+
+/// Op families whose arithmetic is matmul- or convolution-shaped.
+///
+/// This is the §4 inventory's "L/XL, compute-bound" rows, and it answers exactly one question:
+/// how should this op's FLOPs be estimated. It is **not** the anchor predicate — see [`is_anchor`]
+/// — and it stays keyed on the op name only, on purpose: an estimator that stopped recognising
+/// `MatMul` as matmul-shaped work would misclassify a real batched product as elementwise scatter
+/// and under-count it by orders of magnitude. This function is bit-identical to what `is_anchor`
+/// used to be, before issue #73; it is kept that way deliberately, as the FLOP question was never
+/// wrong and does not need to change.
+pub fn is_heavy_op_family(qualified_op: &str) -> bool {
     matches!(
         qualified_op,
         "MatMul"
@@ -393,6 +414,60 @@ pub fn is_anchor(qualified_op: &str) -> bool {
             | "com.microsoft::QMoE"
             | "com.microsoft::LinearAttention"
     )
+}
+
+/// Whether a *node* is heavy enough that it alone justifies an island (issue #73).
+///
+/// # The op-name-only version was unsound, and here is the population it actually mispriced
+///
+/// Before this fix, `is_anchor` matched on `qualified_op` alone — the same list
+/// [`is_heavy_op_family`] still carries. That is wrong for the same reason a FLOP estimate keyed
+/// on op name is *right*: how much arithmetic a node does follows from the operator, but whether
+/// that arithmetic is worth a boundary on its own follows from the operands. A `MatMul`/`Gemm`
+/// reading a resident weight amortises its arithmetic against a boundary it does not pay for; one
+/// whose second operand is itself a runtime tensor has no such amortisation, and every byte it
+/// reads crossed the boundary.
+///
+/// **This is a real, currently-claimable population, and it is narrower than issue #73's original
+/// motivating example.** The issue's motivating claim — that MiniLM-L6-v2's six attention `AV`
+/// batched matmuls are claimed as anchor-exempt 1-node islands — does not hold: `ops::matmul::matmul`
+/// requires operand `B` to be a **fully-static rank-2** tensor (see that module's doc comment and
+/// `matmul_2d_extents`), and an attention batched matmul's `B` is rank >= 3 (both operands carry a
+/// batch/head axis). Such a node is declined `[dynamic-shape]` by `matmul.rs` itself — the
+/// `b_shape.len() == 2` check fails before the extents are even inspected — before this EP ever
+/// clusters it into an island: `is_anchor` is never consulted, because the node was never
+/// claimed. Measured on BERT-SQuAD-12 (`matmul.rs` doc comment, 2026-08-04): 24 of 95 `MatMul`
+/// nodes are exactly this rank->=3-B form, declined by name and shape, not by economics.
+///
+/// The real population this predicate protects against is narrower and still real: **ONNX places
+/// no constraint requiring `Gemm`'s or rank-2-`B` `MatMul`'s second operand to be a constant.** A
+/// graph with a `Gemm` or a rank-2-`B` `MatMul` whose `B` is a runtime activation — two encoder
+/// states multiplied together, say — is schema-valid, passes every check in `gemm`/`matmul`'s
+/// claim predicates (which check rank, dtype and static-shape, never constancy), and would have
+/// been exempted from the economics gate by name alone. No model this project has censused
+/// contains one; the population is stated because it is real and reachable through the claim
+/// path today, not because a census has found it.
+///
+/// # Fail-closed
+///
+/// [`WeightOperand::Unknown`] is never an anchor, and neither is [`WeightOperand::Absent`]: only
+/// [`WeightOperand::Present`] is. `ep.rs::weight_operand` returns `Unknown` for any op this
+/// function does not have a mapped weight-input index for (including every `is_heavy_op_family`
+/// member this project has not examined), and `Absent` for a mapped input that turns out not to
+/// be constant — either way, no island is exempted on a guess, and the gate then decides on bytes
+/// and FLOPs, which is the direction that fails towards "run it on the CPU EP" and is therefore
+/// safe.
+///
+/// # Monotonicity
+///
+/// For any `qualified_op` and any [`WeightOperand`], `is_anchor(op, w)` implies
+/// `is_heavy_op_family(op)` — i.e. the new anchor set is a **subset** of the set the op-name-only
+/// version recognised, never a superset. An anchor can only move a verdict from `Reject` to
+/// `Claim` (via the gate-2 exemption below); shrinking the anchor set can therefore only move a
+/// verdict from `Claim` to `Reject`, never the other way. This is pinned by
+/// `anchor_set_only_shrinks` in this module's tests.
+pub fn is_anchor(qualified_op: &str, weights: WeightOperand) -> bool {
+    is_heavy_op_family(qualified_op) && weights == WeightOperand::Present
 }
 
 /// The thresholds the rule is expressed in.
@@ -528,12 +603,15 @@ impl Verdict {
 ///    case: a graph of unsupported ops sprinkled with lone `Add`s.
 /// 2. **Economics.** `compute_ns` must exceed `margin × transfer_ns`. This kills the subtler case:
 ///    a large island of cheap elementwise work whose tensors are bigger than its arithmetic.
-///    **Anchor-containing islands are exempt from gate 2**: an op in `is_anchor` is by definition
-///    heavy enough to justify a boundary on its own — that is the design invariant of `is_anchor`.
-///    The provisional `TransferModel` constants are calibrated against real model execution and
-///    may not reflect isolated unit-test input sizes; applying the economic check to anchors
-///    would reject them when tested in isolation, which contradicts the stated design intent
-///    ("a single MatMul on LLM-sized weights always is worth it").
+///    **Anchor-containing islands are exempt from gate 2**: a node satisfying [`is_anchor`] is by
+///    definition heavy enough to justify a boundary on its own — that is the design invariant of
+///    [`is_anchor`], and since issue #73 it requires a resident weight operand rather than merely
+///    a heavy op type, so the exemption can no longer be earned by, say, a `Gemm` or rank-2-`B`
+///    `MatMul` whose second operand is itself a runtime activation. The provisional
+///    `TransferModel` constants are calibrated against real model execution and may not reflect
+///    isolated unit-test input sizes; applying the economic check to anchors would reject them
+///    when tested in isolation, which contradicts the stated design intent ("a single MatMul on
+///    LLM-sized weights always is worth it").
 pub fn evaluate(island: &Island, model: &TransferModel, policy: &Policy) -> Verdict {
     if island.nodes < policy.min_nodes && island.anchors == 0 {
         return Verdict::Reject(RejectReason::TooSmall {
@@ -1045,13 +1123,339 @@ mod tests {
     }
 
     #[test]
-    fn anchors_are_the_heavy_ops_only() {
-        assert!(is_anchor("MatMul"));
-        assert!(is_anchor("Conv"));
-        assert!(is_anchor("com.microsoft::MatMulNBits"));
-        assert!(is_anchor("com.microsoft::GroupQueryAttention"));
-        assert!(!is_anchor("Add"));
-        assert!(!is_anchor("Reshape"));
+    fn heavy_op_family_is_the_old_anchor_list_unchanged() {
+        // Bit-identical to what `is_anchor` used to be (pre-#73): the FLOP question never
+        // changed, only the anchor question did.
+        assert!(is_heavy_op_family("MatMul"));
+        assert!(is_heavy_op_family("Conv"));
+        assert!(is_heavy_op_family("com.microsoft::MatMulNBits"));
+        assert!(is_heavy_op_family("com.microsoft::GroupQueryAttention"));
+        assert!(!is_heavy_op_family("Add"));
+        assert!(!is_heavy_op_family("Reshape"));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Issue #73 v2 — anchor status requires a resident weight operand
+    // ---------------------------------------------------------------------------------------
+    //
+    // Only the op families this project actually claims today (`Ready`/`Live` rows) get a
+    // "must anchor when weighted" assertion, and only where there is a stated reason a real
+    // graph's operand always reads that way. `ConvTranspose`, `Attention`,
+    // `MultiHeadAttention`, `QMoE` and `LinearAttention` are `Staged` — unimplemented, never
+    // claimed, and this project has no operand evidence about them at all — so they are
+    // exercised only through `is_heavy_op_family` above, not asserted to anchor here.
+
+    #[test]
+    fn matmul_and_gemm_anchor_only_with_a_resident_weight() {
+        use WeightOperand::{Absent, Present, Unknown};
+        // `MatMul`/`Gemm` schema places no constraint on `B` being constant — `ops::matmul`'s
+        // claim predicates check rank, dtype and static shape, never constancy — so both states
+        // are real, reachable outcomes of the claim path, not merely defensive cases.
+        assert!(is_anchor("MatMul", Present));
+        assert!(is_anchor("Gemm", Present));
+        assert!(!is_anchor("MatMul", Absent));
+        assert!(!is_anchor("Gemm", Absent));
+        assert!(!is_anchor("MatMul", Unknown));
+        assert!(!is_anchor("Gemm", Unknown));
+    }
+
+    #[test]
+    fn conv_and_matmul_nbits_anchor_with_a_resident_weight_and_fail_closed_without_one() {
+        use WeightOperand::{Absent, Present, Unknown};
+        // `Conv`'s `W` and `MatMulNBits`'s `B`/`scales` are constant on every graph this project
+        // has censused (`ops::conv::conv`'s doc comment; `MatMulNBits` is, by its own schema, a
+        // *weight-only* quantization format — `ops::quant`'s "Weight-only quantization" section —
+        // so there is no runtime-quantized-activation form of it to misclassify). The `Absent`/
+        // `Unknown` arms are still asserted: the predicate must fail closed even for a family
+        // whose real-world operand is always a weight, because "always so far" is not "by
+        // construction", and the predicate does not get to assume the two are the same.
+        assert!(is_anchor("Conv", Present));
+        assert!(is_anchor("com.microsoft::MatMulNBits", Present));
+        assert!(!is_anchor("Conv", Absent));
+        assert!(!is_anchor("com.microsoft::MatMulNBits", Absent));
+        assert!(!is_anchor("Conv", Unknown));
+        assert!(!is_anchor("com.microsoft::MatMulNBits", Unknown));
+    }
+
+    /// `GroupQueryAttention`'s schema minimum is 7 inputs (`attention.rs::GROUP_QUERY_ATTENTION`):
+    /// `query, key, value, past_key, past_value, seqlens_k, total_sequence_length`. Every one of
+    /// those is a runtime tensor — none is a weight — so a schema-valid GQA node built from
+    /// exactly the required 7 has **no** constant operand at all, and correctly does not anchor.
+    /// `cos_cache`/`sin_cache` (inputs 7-8) are optional and, when present, may or may not be
+    /// constant depending on the model's RoPE construction — this project asserts nothing about
+    /// that population, because it has not verified it against a real graph.
+    ///
+    /// This is the fact `ep.rs::weight_operand` must produce for such a node (see
+    /// `ep::tests::group_query_attention_has_no_weight_input_by_schema`
+    /// for the operand-pattern-level proof); here we pin only the second half of the chain: what
+    /// `is_anchor` does with that fact once it has it.
+    #[test]
+    fn group_query_attention_does_not_anchor_on_its_schema_minimum() {
+        assert!(is_anchor(
+            "com.microsoft::GroupQueryAttention",
+            WeightOperand::Present
+        ));
+        assert!(!is_anchor(
+            "com.microsoft::GroupQueryAttention",
+            WeightOperand::Absent
+        ));
+        assert!(!is_anchor(
+            "com.microsoft::GroupQueryAttention",
+            WeightOperand::Unknown
+        ));
+    }
+
+    /// **Monotonicity.** The new anchor set is a *subset* of the op-name-only set, never a
+    /// superset, for every op and every operand fact. An anchor can only ever move a verdict from
+    /// `Reject` to `Claim` (the gate-2 exemption); a strictly smaller anchor set can therefore
+    /// only move verdicts from `Claim` to `Reject`, never the reverse — this is the shape a
+    /// tightening fix is required to have, and it is checked here rather than merely asserted in
+    /// a doc comment.
+    #[test]
+    fn anchor_set_only_shrinks_relative_to_the_op_name_only_predicate() {
+        let ops = [
+            "MatMul",
+            "Gemm",
+            "Conv",
+            "ConvTranspose",
+            "Attention",
+            "com.microsoft::MatMulNBits",
+            "com.microsoft::GroupQueryAttention",
+            "com.microsoft::MultiHeadAttention",
+            "com.microsoft::Attention",
+            "com.microsoft::QMoE",
+            "com.microsoft::LinearAttention",
+            "Add",
+            "Reshape",
+            "Transpose",
+        ];
+        let weights = [
+            WeightOperand::Present,
+            WeightOperand::Absent,
+            WeightOperand::Unknown,
+        ];
+        let mut saw_an_anchor = false;
+        for &op in &ops {
+            for &w in &weights {
+                if is_anchor(op, w) {
+                    saw_an_anchor = true;
+                    assert!(
+                        is_heavy_op_family(op),
+                        "{op}/{w:?} is an anchor but not in the heavy-op family; the new \
+                         predicate must never recognise an anchor the old one did not"
+                    );
+                }
+            }
+        }
+        // The property is vacuously true if nothing in the grid anchors; guard against that.
+        assert!(
+            saw_an_anchor,
+            "the grid above must contain at least one true anchor case"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Issue #73 v2 — the real, currently-claimable affected population
+    // ---------------------------------------------------------------------------------------
+    //
+    // The issue's original motivating example (MiniLM's attention `AV` batched matmul, claimed
+    // as a 1-node anchor-exempt island) does not survive: `ops::matmul::matmul` requires a
+    // fully-static **rank-2** `B`, and an attention batched matmul's `B` carries a batch/head
+    // axis (rank >= 3) — it is declined `[dynamic-shape]` before this EP ever clusters it, so
+    // `is_anchor` is never consulted for that node. `ops::matmul`'s own module-level doc comment
+    // measures
+    // this on BERT-SQuAD-12 (24 of 95 `MatMul` nodes are exactly this form). See
+    // `ops::matmul::tests::a_rank_three_b_is_declined_before_any_partition_or_anchor_logic_runs`.
+    //
+    // The population this fix actually protects is narrower: a `Gemm`, or a rank-2-`B` `MatMul`,
+    // whose second operand is a *runtime activation* rather than a weight. Nothing in either
+    // op's claim predicate rules this out — see `ops::matmul::tests::
+    // a_rank_two_b_matmul_with_a_runtime_activation_operand_is_still_claimed_by_matmul_rs` — so it
+    // is real and reachable, not hypothetical. It is uncensused: no model this project has
+    // examined contains one.
+
+    /// A schema-valid, claimable 1-node island: a rank-2-`B` `MatMul` (or a `Gemm`) whose second
+    /// operand is a runtime activation, not a weight. Node count, byte totals and FLOPs are
+    /// arbitrary but held fixed across both polarities — this is a **constructed** worst case
+    /// (issue #73's actual affected population), not a model measurement.
+    ///
+    /// **`anchors` is derived by calling [`is_anchor`], never hardcoded.** The chain under test
+    /// is `WeightOperand -> is_anchor -> Island::anchors -> evaluate`, mirroring `ep.rs`'s
+    /// counting loop, so reverting the fix turns this test red rather than leaving it green.
+    fn activation_squared_matmul_island(weights: WeightOperand) -> Island {
+        Island {
+            nodes: 1,
+            anchors: usize::from(is_anchor("MatMul", weights)),
+            flops: 2 * 3072 * 3072,
+            input_bytes: 983_040,
+            output_bytes: 196_608,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_weightless_matmul_island_is_rejected_and_a_weighted_one_is_claimed() {
+        let policy = Policy::default();
+        let model = TransferModel::DISCRETE;
+
+        let weighted = activation_squared_matmul_island(WeightOperand::Present);
+        assert_eq!(
+            weighted.anchors, 1,
+            "the weighted node must count as an anchor"
+        );
+        assert_eq!(
+            evaluate(&weighted, &model, &policy),
+            Verdict::Claim,
+            "a lone MatMul over a resident weight is still an anchor and still claims"
+        );
+
+        let weightless = activation_squared_matmul_island(WeightOperand::Absent);
+        assert_eq!(
+            weightless.anchors, 0,
+            "an activation-only MatMul must not count as an anchor"
+        );
+        let verdict = evaluate(&weightless, &model, &policy);
+        assert!(
+            !verdict.is_claim(),
+            "an activation-only MatMul alone in an island must not be claimed"
+        );
+        // At exactly one node, below `min_nodes` (4, default) and with zero anchors, the *size*
+        // gate answers first — honestly reported as `TooSmall`, not `TransferDominated`. The
+        // economics arm is exercised on the same island in the next test, where size cannot
+        // answer first.
+        assert!(
+            matches!(
+                verdict,
+                Verdict::Reject(RejectReason::TooSmall {
+                    nodes: 1,
+                    min_nodes: 4
+                })
+            ),
+            "expected the size gate to answer for a 1-node island, got {verdict:?}"
+        );
+
+        assert!(
+            !evaluate(
+                &activation_squared_matmul_island(WeightOperand::Unknown),
+                &model,
+                &policy
+            )
+            .is_claim(),
+            "unknown constancy must land on the rejecting side"
+        );
+    }
+
+    /// The same island, with the size gate moved out of the way (`min_nodes: 1`), so **economics**
+    /// is the branch that answers — `RejectReason::TransferDominated`, the reason issue #73's
+    /// text names. `TransferDominated` is not a new code path: it already exists and is already
+    /// exercised, unconditionally on this fix, by the pre-existing
+    /// `a_wide_but_cheap_island_is_rejected_as_transfer_dominated` test above.
+    #[test]
+    fn the_economics_gate_rejects_the_weightless_matmul_when_size_cannot_answer() {
+        let policy = Policy {
+            min_nodes: 1,
+            ..Policy::default()
+        };
+        let model = TransferModel::DISCRETE;
+
+        assert_eq!(
+            evaluate(
+                &activation_squared_matmul_island(WeightOperand::Present),
+                &model,
+                &policy
+            ),
+            Verdict::Claim,
+            "the weighted island is exempt from economics and claims"
+        );
+
+        let verdict = evaluate(
+            &activation_squared_matmul_island(WeightOperand::Absent),
+            &model,
+            &policy,
+        );
+        let Verdict::Reject(RejectReason::TransferDominated {
+            transfer_ns,
+            compute_ns,
+            margin,
+        }) = verdict.clone()
+        else {
+            panic!("expected TransferDominated for the weightless island, got {verdict:?}");
+        };
+        assert!(
+            compute_ns < margin * transfer_ns,
+            "the rejection must be the arithmetic, not a constant: \
+             compute={compute_ns} transfer={transfer_ns} margin={margin}"
+        );
+    }
+
+    /// A multi-node cluster of activation-only `MatMul`s is rejected by economics under the
+    /// **default** policy, with no threshold nudging.
+    #[test]
+    fn a_multi_node_activation_only_cluster_is_transfer_dominated_by_default() {
+        let anchors = (0..6)
+            .filter(|_| is_anchor("MatMul", WeightOperand::Absent))
+            .count();
+        let island = Island {
+            nodes: 6,
+            anchors,
+            flops: 6 * 2 * 3072 * 3072,
+            input_bytes: 6 * 983_040,
+            output_bytes: 6 * 196_608,
+            ..Default::default()
+        };
+        assert!(matches!(
+            evaluate(&island, &TransferModel::DISCRETE, &Policy::default()),
+            Verdict::Reject(RejectReason::TransferDominated { .. })
+        ));
+        // Positive control on the identical island: one weight-bearing node restores the
+        // exemption, so the rejection above is about anchors, not the byte totals.
+        let with_anchor = Island {
+            anchors: usize::from(is_anchor("MatMul", WeightOperand::Present)),
+            ..island
+        };
+        assert_eq!(with_anchor.anchors, 1);
+        assert_eq!(
+            evaluate(&with_anchor, &TransferModel::DISCRETE, &Policy::default()),
+            Verdict::Claim
+        );
+    }
+
+    /// Every rejection this fix produces must be *visible* as a partition decline, in the same
+    /// histogram as a dtype or rank decline — not silently absent.
+    #[test]
+    fn the_new_rejections_render_as_partition_declines() {
+        let policy = Policy::default();
+        let model = TransferModel::DISCRETE;
+        let island = activation_squared_matmul_island(WeightOperand::Absent);
+        let Verdict::Reject(reason) = evaluate(&island, &model, &policy) else {
+            panic!("the weightless island must reject");
+        };
+        assert_eq!(
+            DeclineCode::of_reason(&decline_for(&reason)),
+            Some(DeclineCode::Partition)
+        );
+
+        let econ_policy = Policy {
+            min_nodes: 1,
+            ..policy
+        };
+        let Verdict::Reject(reason) = evaluate(&island, &model, &econ_policy) else {
+            panic!("the weightless island must reject under the economics gate too");
+        };
+        assert_eq!(
+            DeclineCode::of_reason(&decline_for(&reason)),
+            Some(DeclineCode::Partition)
+        );
+
+        // Negative control: `of_reason` must be capable of answering something else, or the two
+        // assertions above would pass against a function that only ever returns `Partition`.
+        assert_ne!(
+            DeclineCode::of_reason(&crate::registry::decline(
+                DeclineCode::DType,
+                "not this one"
+            )),
+            Some(DeclineCode::Partition)
+        );
     }
 
     #[test]

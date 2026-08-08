@@ -564,6 +564,66 @@ unsafe extern "C" fn get_capability(
     }
 }
 
+/// Where an op's weight-bearing operand lives, if it has one with a known, single index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WeightSite {
+    /// Check constancy of the input at this index.
+    InputIndex(usize),
+    /// This op has no weight-bearing input **by schema design** — every required input is a
+    /// runtime tensor, not merely "no input happened to be constant on graphs examined so far".
+    /// Reads as `Absent` unconditionally, distinct from `Unknown` (an op this mapping simply has
+    /// no evidence about).
+    NoWeightInputBySchema,
+}
+
+/// Maps a qualified op name to where its weight-bearing operand lives, if this project has
+/// examined the op's schema/real graphs enough to know.
+///
+/// `MatMul`/`Gemm`'s `B` and `Conv`'s `W`/`MatMulNBits`'s `B` are all input 1 of their respective
+/// ops (`ops::matmul`, `ops::conv`, `ops::quant`).
+///
+/// `com.microsoft::GroupQueryAttention` has no such input by schema design, not by an oversight:
+/// its 7 required inputs (query, key, value, past_key, past_value, seqlens_k,
+/// total_sequence_length — `ops::attention::GROUP_QUERY_ATTENTION`) are all runtime attention
+/// state, never weights. The optional `cos_cache`/`sin_cache` (slots 7-8) are deliberately left
+/// unmapped: this project has not examined a real graph to say whether either is emitted as a
+/// constant, and asserting one way or the other without that evidence is exactly the kind of
+/// unverified claim issue #73's original fix was rejected for making.
+///
+/// Every other op — including the `Staged`, never-claimed families in `is_heavy_op_family`'s
+/// list — returns `None`, which [`weight_operand`] turns into `Unknown` and which fails closed
+/// identically to a genuinely indeterminate case: this mapping does not need to distinguish "not
+/// claimed today" from "claimed but operand-status not modelled", because
+/// [`partition::is_anchor`] treats both the same way.
+fn weight_site(qualified_op: &str) -> Option<WeightSite> {
+    match qualified_op {
+        "MatMul" | "Gemm" | "Conv" | "com.microsoft::MatMulNBits" => {
+            Some(WeightSite::InputIndex(1))
+        }
+        "com.microsoft::GroupQueryAttention" => Some(WeightSite::NoWeightInputBySchema),
+        _ => None,
+    }
+}
+
+/// Determines whether a claimed node has a resident weight operand, for [`partition::is_anchor`]
+/// (issue #73). `input_is_constant` already answers `false` for a missing input, so a single
+/// check at [`WeightSite::InputIndex`] covers both "absent" and "present but not constant" — both
+/// are `WeightOperand::Absent`, which is the correct verdict for either.
+fn weight_operand(view: &NodeView<'_>) -> partition::WeightOperand {
+    use partition::WeightOperand::{Absent, Present, Unknown};
+    match weight_site(&view.qualified_name()) {
+        Some(WeightSite::InputIndex(i)) => {
+            if view.input_is_constant(i) {
+                Present
+            } else {
+                Absent
+            }
+        }
+        Some(WeightSite::NoWeightInputBySchema) => Absent,
+        None => Unknown,
+    }
+}
+
 /// # Safety
 /// `p`, `graph` and `support` must be the live pointers ORT passed to `GetCapability`.
 unsafe fn get_capability_impl(
@@ -1281,8 +1341,31 @@ unsafe fn get_capability_impl(
             // SAFETY: api live; node is a live graph node.
             let view = unsafe { NodeView::new(api, node) };
             let qual = view.qualified_name();
-            if partition::is_anchor(&qual) {
-                island.anchors += 1;
+            // Two different questions, deliberately asked separately (issue #73).
+            //
+            // *How much arithmetic is this?* follows from the operator, so the FLOP estimate stays
+            // keyed on `is_heavy_op_family`, bit-identical to what `is_anchor` used to be.
+            // Demoting a weightless `MatMul` to the elementwise branch would under-count a real
+            // batched matmul by two orders of magnitude and could sink an island the gate should
+            // keep — the fix must not buy its correctness with a worse estimator.
+            //
+            // *Is this worth a boundary on its own?* is `is_anchor`, and it now requires a
+            // resident weight operand. The constancy fact comes from the body node, which is the
+            // only level that answers it: the fused node reports `false` for every input (see the
+            // `const_names` recovery in `compile_plan`), whereas body nodes reported 388 constant
+            // inputs on the same Phi-3.5 island. That is the same source the boundary-byte
+            // accounting a few lines below already trusts.
+            //
+            // Phi-3.5's single fused island stays claimed under the tightened rule for a reason
+            // that does not depend on `GroupQueryAttention`'s operand status at all: the same
+            // island's 161 `MatMulNBits` nodes anchor regardless (`MatMulNBits`'s `B`/`scales`
+            // are, by the format's own definition, a quantized *weight* — there is no
+            // runtime-quantized-activation form of it), so `island.anchors > 0` holds from those
+            // alone. Whether any of the island's 32 `GroupQueryAttention` nodes individually
+            // anchor is not needed to explain the unchanged behaviour, and this module does not
+            // assume it either way — see `weight_operand`'s own doc comment for what a
+            // schema-minimal GQA node (7 required inputs, all runtime tensors) actually reads.
+            if partition::is_heavy_op_family(&qual) {
                 // Anchor flop estimate: 2 × K × N for a matmul-family op.
                 // Conservative minimum: 2 × 3072 × 3072 when shapes are unavailable.
                 island.flops = island.flops.saturating_add(2 * 3072 * 3072);
@@ -1292,6 +1375,9 @@ unsafe fn get_capability_impl(
                 let out_slots = unsafe { node_slots(api, node, Slots::Outputs) };
                 let out_bytes: u64 = out_slots.iter().map(|&s| slot_bytes(s)).sum();
                 island.flops = island.flops.saturating_add(out_bytes / 2);
+            }
+            if partition::is_anchor(&qual, weight_operand(&view)) {
+                island.anchors += 1;
             }
 
             // Boundary activation bytes: only non-constant inputs that cross the island edge.
@@ -2897,6 +2983,63 @@ unsafe fn check_bound_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ------------------------------------------------------------------------------------------
+    // Issue #73 v2 — `weight_site`, the op-name-to-weight-input mapping `weight_operand` uses
+    // ------------------------------------------------------------------------------------------
+
+    /// The four live anchor-family ops with a known weight input all map to index 1 — `MatMul`/
+    /// `Gemm`'s `B`, `Conv`'s `W`, `MatMulNBits`'s `B` — matching `ops::matmul`, `ops::conv` and
+    /// `ops::quant`'s own claim predicates, which all read their weight-shaped operand from that
+    /// position.
+    #[test]
+    fn the_live_anchor_families_with_a_known_weight_map_to_input_one() {
+        for op in ["MatMul", "Gemm", "Conv", "com.microsoft::MatMulNBits"] {
+            assert_eq!(
+                weight_site(op),
+                Some(WeightSite::InputIndex(1)),
+                "{op} should read its weight-shaped operand from input 1"
+            );
+        }
+    }
+
+    /// `GroupQueryAttention`'s schema minimum (`ops::attention::GROUP_QUERY_ATTENTION`,
+    /// `min_inputs: 7`) is query, key, value, past_key, past_value, seqlens_k,
+    /// total_sequence_length — every one a runtime attention tensor. This is a fact about the
+    /// schema, not a per-graph observation, so it maps to `NoWeightInputBySchema` rather than to
+    /// an input index or to `None`/`Unknown`.
+    #[test]
+    fn group_query_attention_has_no_weight_input_by_schema() {
+        assert_eq!(
+            weight_site("com.microsoft::GroupQueryAttention"),
+            Some(WeightSite::NoWeightInputBySchema)
+        );
+    }
+
+    /// Every other op — elementwise ops this project has never associated with a weight, and the
+    /// `Staged`, never-claimed heavy-op-family members (`ConvTranspose`, `Attention`,
+    /// `MultiHeadAttention`, `QMoE`, `LinearAttention`) alike — is unmapped. `weight_operand`
+    /// turns `None` into `Unknown`, which fails closed exactly like a genuinely indeterminate
+    /// case; this mapping does not need a separate answer for "never claimed" versus "claimed but
+    /// not modelled".
+    #[test]
+    fn unmapped_ops_including_staged_heavy_families_have_no_weight_site() {
+        for op in [
+            "Add",
+            "Reshape",
+            "ConvTranspose",
+            "Attention",
+            "com.microsoft::MultiHeadAttention",
+            "com.microsoft::QMoE",
+            "com.microsoft::LinearAttention",
+        ] {
+            assert_eq!(
+                weight_site(op),
+                None,
+                "{op} should not have a mapped weight site"
+            );
+        }
+    }
 
     // ------------------------------------------------------------------------------------------
     // Session-creation disclosure — the two-arm control (DESIGN.md §8.9.7, RAI-009)

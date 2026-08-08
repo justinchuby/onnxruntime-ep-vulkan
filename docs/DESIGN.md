@@ -1309,6 +1309,20 @@ accident and is not a discovered defect — **it is the design, working.** 3c wa
 cheap elementwise scatter whose tensors outweigh its arithmetic, and Phi-3.5's fused island is not
 that. The doc comment at `partition.rs:458` says so in as many words.
 
+> **Superseded in its criterion, not its conclusion — see §5.4.2 (issue #73).** "The anchor set is
+> {list}" above named an **op-name-only** predicate: `is_anchor(qualified_op)`. Issue #73 found
+> that predicate unsound — it does not ask whether the node's arithmetic-heavy operand is actually
+> a resident weight, so a `Gemm`/`MatMul` multiplying two runtime activations together read as an
+> anchor by name alone. `is_anchor` now takes the operand fact as a second argument
+> (`is_anchor(qualified_op, weights: WeightOperand)`) and anchors only when that operand is
+> `Present`. This does not disturb finding (ii)'s conclusion for Phi-3.5: its fused island still
+> contains 161 `MatMulNBits` nodes, and `MatMulNBits`'s `B`/`scales` are a quantized weight by the
+> format's own definition (`ops::quant`, "weight-only quantization") — never a runtime tensor in
+> any graph this project has censused — so `island.anchors > 0` still holds from those alone,
+> independent of `GroupQueryAttention`'s own operand status. What changes is only which *other*
+> graphs' islands the exemption reaches; see §5.4.2 for the corrected population and the warrant
+> that replaces "every non-trivial island contains one" with a monotonicity argument instead.
+
 **So what is actually wrong is narrower, and I want it stated without inflation.** Three things:
 
 1. **The exemption is load-bearing for a question it was not designed to answer.** Its stated
@@ -1497,6 +1511,118 @@ M0/M1 have a defined behaviour before Niobe's measurements exist. `CoverageRepor
 the same `(kept, dropped)` pair, is what produces `largest_island_flops` for §10.0's milestone
 reporting — the rule and its metric live in one module deliberately, because their drifting apart is
 exactly how a coverage number becomes a lie.
+
+#### 5.4.2 The anchor predicate now requires a resident weight operand, and the motivating premise it was first given was false — issue #73, v2 (2026-08-08, Trinity)
+
+**Context: this section replaces an unmerged, rejected first attempt (PR #77, `036252a3`).**
+Morpheus rejected that PR's motivating claim as statically false and its coverage as tautological
+in places; the mechanism it proposed was sound and is kept, rebuilt independently rather than
+cherry-picked, per this project's reviewer-lockout rule. Mouse (PR #77's author) did not
+contribute to this section or to the code it describes.
+
+**The problem, correctly stated.** §5.4.1(ii) named the pre-#73 anchor predicate,
+`is_anchor(qualified_op: &str) -> bool`, matching on op name alone. That predicate answers "is this
+op family arithmetic-heavy," which is the right question for FLOP estimation and the wrong one for
+the anchor exemption. The exemption's own warrant (`partition.rs`, pre-#73) is "an anchor is by
+definition heavy enough to justify a boundary on its own" — a claim that only holds when the node's
+weight-shaped operand is actually resident (an initializer, prepacked once, amortised over every
+inference), not when it is a second runtime tensor recomputed on every call. Nothing in `is_anchor`
+checked that, so a `Gemm` or `MatMul` multiplying two activations together read as an anchor by
+name alone, and any island built entirely around one such node was exempted from the economics gate
+(3c) it should have been subject to.
+
+**The motivating example this issue first shipped with was false, and it does not survive contact
+with `ops::matmul`.** The claim, as PR #77 stated it: MiniLM-L6-v2 emits six single-node islands,
+each one an attention `AV` batched matmul, each claimed and anchor-exempted by op-name alone. This
+does not happen, for a reason internal to `ops::matmul` and unrelated to the partitioner: `matmul()`
+requires operand `B` to be a **fully-static rank-2** tensor (`b_shape.len() == 2`, checked before
+`matmul_2d_extents` ever runs); an attention batched matmul's `B` carries a batch/head axis on top
+of its two matrix axes, i.e. rank ≥ 3, and is declined `[dynamic-shape]` by `matmul.rs` itself,
+**before** the node is ever claimed and therefore before `ops::partition` ever clusters it into an
+island. `is_anchor` — old or new — is never consulted for that node, because it never reaches
+`GetCapability`'s per-node anchor count at all. `ops::matmul`'s own module doc comment already
+carried the measurement that falsifies the premise: **24 of BERT-SQuAD-12's 95 `MatMul` nodes are
+exactly this rank-≥3-`B` form** (the attention `QKᵀ`/`AV` products), declined by shape, not claimed
+and then wrongly exempted. See `ops::matmul::tests::
+a_rank_three_b_is_refused_as_a_2d_operand_before_any_partition_or_anchor_logic_runs`, which pins
+this on the exact function `matmul()` calls.
+
+**The real, narrower population — stated as narrowly as the evidence supports.** ONNX's `Gemm` and
+`MatMul` schemas place no constraint requiring the second operand to be a constant initializer, and
+neither claim predicate checks constancy — only rank, dtype and static shape
+(`ops::matmul::tests::a_rank_two_b_matmul_with_a_runtime_activation_operand_is_still_claimed`). So a
+schema-valid **`Gemm`, or a rank-2-`B` `MatMul`, whose second operand is itself a runtime
+activation** — two encoder states multiplied together, for instance — passes claim exactly as a
+weight-bearing one would, and would have been exempted from gate 3c by name alone under the
+pre-#73 rule. **This population is stated as uncensused: no model this project has examined
+contains one.** It is real and reachable through the claim path today, which is why it is worth
+fixing regardless of whether a census ever finds an instance, and it is exactly and only what this
+fix protects against — narrower than the original issue text, and this document says so rather
+than deferring the correction to a future measurement.
+
+**The warrant is a latent defect plus monotonicity, not a model-behaviour claim.** The new
+predicate, `is_anchor(qualified_op: &str, weights: WeightOperand) -> bool`, is
+`is_heavy_op_family(qualified_op) && weights == WeightOperand::Present` — a strict narrowing of the
+old predicate, never a broadening: for every op and every operand fact, `is_anchor(op, w) ⟹
+is_heavy_op_family(op)`. §5.4.1's gate order is unchanged: an anchor can only move a verdict from
+`Reject` to `Claim` (the 3b exemption), so a **smaller** anchor set can only move verdicts from
+`Claim` to `Reject`, never the reverse — a graph that partitions correctly today cannot be made to
+partition worse by this change, only (in the narrow, uncensused population above) less optimistically.
+This is pinned by `ops::partition::tests::anchor_set_only_shrinks_relative_to_the_op_name_only_predicate`,
+a property test over a grid of ops and operand states, not an assertion about any one model.
+
+**Fail-closed, restated for the two-argument form.** `WeightOperand::Unknown` — the operand
+constancy could not be established at all — is never an anchor, and neither is `Absent`. Only
+`Present` is. This is the same direction §5.4.1 already required: on missing information, the
+gate falls back to bytes and FLOPs (3c), which fails towards the CPU EP, never towards an
+unjustified exemption.
+
+**`GroupQueryAttention`, examined honestly rather than asserted.** `com.microsoft::GroupQueryAttention`'s
+schema minimum is 7 inputs (`ops::attention::GROUP_QUERY_ATTENTION`, cross-checked against
+ContribOperators.md and `bert_defs.cc`): query, key, value, past_key, past_value, seqlens_k,
+total_sequence_length. Every one of those is a runtime attention tensor by the schema's own
+definition — none is a weight. A schema-minimal GQA node therefore has no resident weight operand
+at all and correctly does not anchor (`ep.rs::weight_operand` reads it as `Absent`, deliberately,
+not as a fallthrough). The optional `cos_cache`/`sin_cache` inputs (slots 7–8) are left unchecked
+by this fix: this project has not examined a real graph to establish whether either is emitted as
+a constant, and asserting one way or the other without that evidence would repeat the mistake this
+section exists to correct. **Phi-3.5's continued correctness under the tightened rule does not
+depend on GQA's operand status at all** — see §5.4.1(ii)'s supersession note above: its single
+fused island holds 161 `MatMulNBits` nodes, and `MatMulNBits` is weight-only by construction
+(`ops::quant`), so `island.anchors > 0` is already established from those.
+
+**Conv, Attention, MultiHeadAttention, QMoE, LinearAttention — scoped out, not silently kept.**
+`is_heavy_op_family`'s list still includes `ConvTranspose`, `Attention` (Ms-domain),
+`MultiHeadAttention`, `QMoE` and `LinearAttention`; the op registry (`crate::op_table!`) marks all
+five `Staged`, meaning none is claimed by this EP today. This document makes no claim about their
+operand behaviour, for or against, because there is no claim-path evidence to examine yet — they
+are exercised only through the FLOP-estimation function, never through `is_anchor`'s "must anchor"
+assertions. `Conv`'s existing weighted-anchor test (`W` resident) and fail-closed tests (`Absent`/
+`Unknown`) are unchanged: `conv()`'s claim predicate does not itself guarantee `W`'s constancy
+either, in principle, but this project has not found nor examined a dynamic-filter `Conv` on any
+censused graph, and the issue's narrow population statement above is scoped to `Gemm`/`MatMul`
+only — Conv's treatment is unchanged by this fix and is not re-litigated here.
+
+**No measurement claim is made or required by this fix, and none is owed before merge.** This is a
+static correction to a claim predicate and its tests; it changes no dispatch code, no kernel, and
+no byte/FLOP estimator (`is_heavy_op_family` is bit-identical to the pre-#73 `is_anchor`). MiniLM
+remains usable as a **negative-control motivation** for why a rank-check-before-clustering
+discipline matters — its attention matmuls are the real-world reason `ops::matmul` declines
+rank ≥ 3 `B` at all — but this document no longer claims MiniLM demonstrates the defect this fix
+closes, because it does not: MiniLM's attention matmuls were never claimed, so they were never
+anchor-exempted, so they are not an instance of the population `is_anchor` now excludes. Whether the
+narrow population above (activation×activation `Gemm`/rank-2-`B` `MatMul`) occurs on any model in
+this project's corpus remains an open, uncensused question and may be answered by a later census
+or left unanswered — it is not a precondition for this correction, which is sound independent of
+whether the population it protects against is ever observed in the wild.
+
+**`rust/tools/probe_island_counterfactual.py`.** `DEFAULT_ANCHORS` is a name-only list used to rank
+counterfactual islands outside the compiled EP; it has no access to per-node operand-constancy
+data (the claim log this tool reads does not record it) and cannot be upgraded to the two-argument
+predicate without that data. It is annotated in place to say plainly that it mirrors the **retired**
+op-name-only policy and is therefore an optimistic ceiling on anchor count, not a current
+prediction — see the tool's own comment for the exact wording. Fixing that instrument's fidelity
+(recording per-input constancy in the claim log) is out of scope for this correction.
 
 ### 5.5 `Compile` — plan build and prepacking
 

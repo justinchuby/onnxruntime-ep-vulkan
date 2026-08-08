@@ -66,8 +66,18 @@ import collections
 import json
 import pathlib
 
-# Mirrors `ops::partition::is_anchor` closely enough to rank with. Not authoritative; the
-# partitioner in the DLL is. Kept short and named so a reader can check it against that list.
+# Mirrors `ops::partition::is_heavy_op_family` — the op-name-only question — not
+# `ops::partition::is_anchor`, which since issue #73 also requires a resident weight operand
+# (`WeightOperand::Present`) on top of the op name. This list is the **retired**, name-only anchor
+# policy: it silently over-counts anchors relative to the DLL's actual behaviour whenever a listed
+# op's arithmetic-heavy operand is a runtime activation rather than a constant (a `Gemm`/`MatMul`
+# with a non-initializer `B`), because this tool's claim log carries no per-input constancy data
+# and therefore cannot ask the question `is_anchor` now asks. Treat a count produced from this list
+# as an **optimistic ceiling** on anchors, not a prediction — the partitioner in the DLL is
+# authoritative and may claim fewer islands than this tool ranks. Kept short and named so a reader
+# can check it against `is_heavy_op_family`'s list; upgrading it to track `is_anchor` exactly would
+# require this tool's claim log to record, per input, whether the producing value was a graph
+# initializer, which it does not do today.
 DEFAULT_ANCHORS = ("Conv", "Gemm", "MatMul", "MatMulNBits", "Attention", "GroupQueryAttention")
 
 

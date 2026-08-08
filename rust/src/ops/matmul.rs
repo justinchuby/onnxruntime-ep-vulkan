@@ -779,12 +779,76 @@ mod tests {
         assert!(spec.blind_axes.contains(&"transB"));
     }
 
-    /// `Gemm` is already an anchor in the partitioner, which is why a lone one at a model's tail
-    /// is claimable at all. If that ever changed, this row would go live and never be used.
+    /// `Gemm` is already an anchor in the partitioner when its `B` is a resident weight, which is
+    /// why a lone one at a model's tail is claimable at all. `MatMul` is the same, for the same
+    /// reason, when its `B` is a resident weight; neither anchors on a runtime-activation `B`
+    /// (issue #73). If either op's anchor status ever changed, this row would go live and never
+    /// be used.
     #[test]
-    fn gemm_is_a_partition_anchor() {
-        assert!(crate::ops::partition::is_anchor("Gemm"));
-        assert!(crate::ops::partition::is_anchor("MatMul"));
+    fn gemm_and_matmul_anchor_only_over_a_resident_weight() {
+        use crate::ops::partition::WeightOperand;
+        assert!(crate::ops::partition::is_anchor(
+            "Gemm",
+            WeightOperand::Present
+        ));
+        assert!(crate::ops::partition::is_anchor(
+            "MatMul",
+            WeightOperand::Present
+        ));
+        assert!(!crate::ops::partition::is_anchor(
+            "Gemm",
+            WeightOperand::Absent
+        ));
+        assert!(!crate::ops::partition::is_anchor(
+            "MatMul",
+            WeightOperand::Absent
+        ));
+    }
+
+    /// **Issue #73's actual falsifier.** `matmul_2d_extents` is the function `matmul()` calls once
+    /// its own `b_shape.len() == 2` gate has already passed — but that gate is exactly what a
+    /// batched attention matmul (both operands carrying a batch/head axis, so `B` is rank >= 3)
+    /// fails. This test pins the fact one level up from that gate, on the function whose contract
+    /// is "given a `B` shape, say whether it is a valid 2-D operand": a rank-3 `B`, shaped exactly
+    /// like BERT/MiniLM's `AV` product (`[batch*heads, seq, head_dim]`), is refused.
+    ///
+    /// Combined with `matmul()`'s own `require!(b_shape.len() == 2 .. DynamicShape)` gate (which
+    /// runs *before* `matmul_2d_extents` and would itself decline this shape first), this proves
+    /// the node is declined by `matmul.rs` alone, before `ops::partition` clusters anything —
+    /// `is_anchor` is never reached for it. That is the fact that falsifies issue #73's original
+    /// premise (MiniLM's six attention islands being anchor-exempted): they are never claimed, so
+    /// they were never anchor-exempted, and the fix's real target is the population in
+    /// `a_rank_two_b_matmul_with_a_runtime_activation_operand_is_still_claimed` instead.
+    #[test]
+    fn a_rank_three_b_is_refused_as_a_2d_operand_before_any_partition_or_anchor_logic_runs() {
+        // BERT-shaped attention `AV`: A = [batch*heads, seq, seq], B = [batch*heads, seq, head_dim].
+        let a = [12, 128, 128];
+        let b = [12, 128, 64];
+        let err = matmul_2d_extents(&a, &b).unwrap_err();
+        assert!(
+            err.contains("rank 3"),
+            "expected the rank-3 B to be named in the refusal, got: {err}"
+        );
+    }
+
+    /// The real, narrow, currently-claimable population issue #73 protects: a rank-2-`B` `MatMul`
+    /// whose `B` is schema-valid but is **not** a constant. `matmul()`'s claim predicate checks
+    /// rank, dtype and static-shape — never constancy — so this passes the gate exactly like a
+    /// weight-bearing `MatMul` would. This is not a hypothetical: it is what `matmul_2d_extents`
+    /// (the same function the previous test exercises) accepts once the rank check has passed,
+    /// regardless of which operand supplied the data.
+    #[test]
+    fn a_rank_two_b_matmul_with_a_runtime_activation_operand_is_still_claimed() {
+        // Two same-shaped encoder activations multiplied together: schema-valid, rank-2 `B`,
+        // and nothing in this function's contract distinguishes it from a weight-bearing `B`.
+        let a = [8, 256];
+        let b = [256, 256];
+        assert_eq!(
+            matmul_2d_extents(&a, &b).unwrap(),
+            (8, 256, 256),
+            "a rank-2 B is accepted regardless of whether it is a weight or a runtime tensor; \
+             that determination is `WeightOperand`'s job (`ops::partition`), not this function's"
+        );
     }
 
     // ---------------------------------------------------------------------------------------
