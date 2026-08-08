@@ -1541,6 +1541,15 @@ def test_a_ratio_of_two_named_fields_is_witnessed_by_the_artifact():
     A guard that demanded the printed digits appear verbatim would force every derived share
     to be deleted, so shares are checked against the ratio of the fields actually named. A
     share whose fields are *not* named, or which no pair of them produces, still convicts.
+
+    This arm is deliberately weaker than the rule the reviewers settled on, and cannot
+    replace it. Naming the two fields a share divides is necessary, not sufficient: the
+    artifact must also identify the *quantity* being claimed. The 88.9% below is the worked
+    example -- `claimed_nodes` and `total_nodes_probed` are real fields, but neither is a
+    per-provider profile-node count, so no ratio of them witnesses a 1-Vulkan/8-CPU split.
+    It convicts here because no pair of fields produces the figure; had one coincidentally
+    produced it, the claim would still have to go, and that judgement is a reader's, not
+    this screen's.
     """
     good = ("`claimed_nodes` 355 of `total_nodes_probed` 363, so 97.8% of the probed graph, "
             "committed in bench/results/barrier_ab-post-dev0-0.json")

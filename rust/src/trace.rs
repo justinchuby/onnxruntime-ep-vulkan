@@ -875,9 +875,9 @@ impl VulkanTracer {
     /// the success path*, not as the callback's true wall time.
     ///
     /// [`subgraph_region`](Self::subgraph_region) opens inside `dispatch_ort`, deeper still, so it
-    /// cannot see anything the callback does on either side of that call. Measured on Phi-3.5
-    /// `prefill_1`, the two spans differed by a large term, nearly all of it landing *after*
-    /// `vulkan.subgraph` closed rather than before it.
+    /// cannot see anything the instrumented region does on either side of that call. Measured on
+    /// Phi-3.5 `prefill_1`, the two spans differed by a large term, nearly all of it landing
+    /// *after* `vulkan.subgraph` closed rather than before it.
     ///
     /// That term was **not the EP**. Re-measured on the same workload with the benchmark
     /// harness's counters-file dump moved out of the timed region, it collapses to a small
@@ -891,10 +891,14 @@ impl VulkanTracer {
     ///
     /// This span is **structural, not a [`Phase`]**: it is `cat == "ep"` like `vulkan.subgraph`,
     /// it is never summed into any sibling total, and it adds no level to the phase tree. It
-    /// exists so a reduction has an anchor wider than `vulkan.subgraph` — the instrumented
-    /// success-path region inside `compute_impl`, not ORT's literal `Compute` entry-to-return
-    /// wall — and can therefore state how much of *that region* no phase covers, instead of
-    /// charging that time to whatever span it can see.
+    /// exists so a reduction has an anchor *outside* `dispatch_ort` — one bracket wider than
+    /// `vulkan.subgraph`, and still strictly inside the instrumented success path that opens in
+    /// `compute_impl` — and can therefore measure how much time inside that instrumented region
+    /// no phase covers, instead of charging that time to whatever span it can see. The anchor is
+    /// not ORT's literal `Compute` extern callback and not its entry-to-return wall: work before
+    /// `compute_impl` opens the span, work after `disclose_broken_commitment`, and every call
+    /// that early-outs before `compute_impl` are all outside what this anchor can measure, so the
+    /// uncovered time it reports is uncovered time *within the instrumented region only*.
     ///
     /// It does not by itself explain the region it exposes. What is measured is the size and the
     /// side of the region; naming its cause needs a separate instrument, and
@@ -2067,6 +2071,123 @@ mod tests {
             doc.contains("dispatch_ort"),
             "subgraph_region's doc must describe it as the dispatch region opened inside \
              dispatch_ort"
+        );
+    }
+
+    /// The full doc comment above `pub fn compute_region`, extracted from this file's own source.
+    ///
+    /// The header vocabulary row is guarded separately by
+    /// [`compute_call_vocabulary_row_does_not_claim_the_literal_whole_callback`], but a row guard
+    /// is not sufficient: the row and the doc are 1100 lines apart and the doc is what a reader of
+    /// the API sees. This reads every `///` line immediately preceding the function so a claim
+    /// reintroduced anywhere in the doc -- not just in its first paragraph -- is in scope.
+    fn compute_region_doc() -> String {
+        let src = include_str!("trace.rs");
+        let fn_pos = src
+            .find("pub fn compute_region(")
+            .expect("compute_region must exist");
+        let mut doc: Vec<&str> = Vec::new();
+        for line in src[..fn_pos].lines().rev() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("///") {
+                doc.push(trimmed);
+            } else if trimmed.is_empty() && doc.is_empty() {
+                continue;
+            } else {
+                break;
+            }
+        }
+        assert!(
+            doc.len() > 10,
+            "compute_region's doc comment did not extract; the guard would pass vacuously"
+        );
+        doc.reverse();
+        doc.join("\n")
+    }
+
+    /// Affirmative literal-whole-callback claims. Negations ("not the callback's true wall time")
+    /// are the correct wording and are deliberately not matched.
+    const WHOLE_CALLBACK_CLAIMS: [&str; 6] = [
+        "*whole* callback",
+        "whole callback",
+        "whole `Compute`",
+        "entire callback",
+        "entire `Compute`",
+        "ORT entry to return",
+    ];
+
+    fn whole_callback_offences(doc: &str) -> Vec<&'static str> {
+        WHOLE_CALLBACK_CLAIMS
+            .iter()
+            .copied()
+            .filter(|banned| doc.contains(banned))
+            .collect()
+    }
+
+    /// `compute_region`'s **whole doc comment** must describe an anchor outside `dispatch_ort` that
+    /// measures uncovered time within the instrumented region -- never the literal whole callback.
+    ///
+    /// The doc said the span "brackets the *whole* callback" and that the reduction could state
+    /// "how much of it no phase covers". Both halves were wrong in the same way: the anchor opens
+    /// inside `compute_impl`, closes before `disclose_broken_commitment`, and is absent entirely on
+    /// an early-out, so what it can measure is uncovered time *within the instrumented region*, not
+    /// within ORT's `Compute` callback. Guarding only the header vocabulary row left this
+    /// contradiction live in the doc a reader of the API actually reads, which is why this test
+    /// scans the doc comment in full.
+    #[test]
+    fn compute_region_doc_never_claims_the_literal_whole_callback() {
+        let doc = compute_region_doc();
+        let offences = whole_callback_offences(&doc);
+        assert!(
+            offences.is_empty(),
+            "compute_region's doc reintroduced literal-whole-callback wording: {offences:?}. \
+             The span is the instrumented success-path bracket opened inside compute_impl and \
+             absent on early-outs -- an anchor outside dispatch_ort that measures how much time \
+             inside that instrumented region no phase covers. It is never the literal extern \
+             Compute callback and never ORT's entry-to-return wall."
+        );
+        for required in ["compute_impl", "dispatch_ort", "outside", "early-out"] {
+            assert!(
+                doc.contains(required),
+                "compute_region's doc must still say it is an anchor outside `dispatch_ort`, \
+                 opened inside `compute_impl`, absent on early-outs; missing: {required:?}"
+            );
+        }
+    }
+
+    /// The negative control for the test above: restoring the rejected wording must turn it red.
+    ///
+    /// A guard that reads a doc comment is only worth its line count if it fails when the claim
+    /// comes back. This mutates the real doc the same way the regression did -- and also deletes
+    /// the corrected framing -- and asserts both arms of the screen fire.
+    #[test]
+    fn the_compute_region_doc_guard_fires_on_a_restored_whole_callback_claim() {
+        let doc = compute_region_doc();
+        assert!(whole_callback_offences(&doc).is_empty(), "precondition: doc is clean");
+
+        let mutated = doc.replace(
+            "an anchor *outside* `dispatch_ort`",
+            "an anchor that brackets the *whole* callback",
+        );
+        assert_ne!(mutated, doc, "the mutation must actually change the doc");
+        assert!(
+            whole_callback_offences(&mutated).contains(&"*whole* callback"),
+            "restoring `*whole* callback` must be convicted, or the guard is decorative"
+        );
+
+        for restored in ["the whole callback", "ORT entry to return", "the entire `Compute` call"]
+        {
+            let mutated = format!("{doc}\n/// {restored}");
+            assert!(
+                !whole_callback_offences(&mutated).is_empty(),
+                "restoring {restored:?} anywhere in the doc must be convicted"
+            );
+        }
+
+        let stripped = doc.replace("compute_impl", "the callee");
+        assert!(
+            !stripped.contains("compute_impl"),
+            "deleting the compute_impl framing must be visible to the required-phrase arm"
         );
     }
 

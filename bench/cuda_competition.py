@@ -180,8 +180,13 @@ COUNTERS_SCOPES = frozenset({COUNTERS_SCOPE_FIRST_RUN, COUNTERS_SCOPE_ALL_RUNS})
 #: No profile-node census is quoted here for either arm -- not the fused arm's
 #: Vulkan-vs-host node split, not a percentage derived from it, and not the
 #: non-fusing CUDA arm's counterpart.  No committed artifact in this tree witnesses
-#: a per-provider profile node census for any arm, and a figure whose only support
-#: is arithmetic on a neighbouring one is the defect this branch exists to remove.
+#: a per-provider profile node census for any arm.  ``barrier_ab-post-dev0-0.json``
+#: carries ``claimed_nodes``, ``total_nodes_probed`` and ``island_count``, a
+#: ``providers`` *request* list, and a ``vk_inference_count`` -- none of which names
+#: how many profile nodes each provider ran.  A reader can divide those fields into a
+#: plausible-looking share, and that is precisely the move this branch forbids: a
+#: figure is retained only when a committed artifact identifies the quantity it
+#: claims, never when adjacent counts merely permit the arithmetic.
 #: The qualitative finding needs no magnitude: a metric whose answer moves with how
 #: an EP fuses is measuring fusion, not fallback.
 #:
