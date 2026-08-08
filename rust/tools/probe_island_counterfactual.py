@@ -47,7 +47,8 @@ claimed. The old baseline treated all 364 `Add` nodes as claimable when 182 were
 
 Islands are connected components over the graph's data edges, restricted to claimable nodes.
 The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; `--anchors` mirrors its
-anchor exemption. Neither is the partitioner -- this is a *ranking* instrument, and it says so:
+*heavy-op family* list, which is an optimistic ceiling on its anchor rule -- see the note on
+`DEFAULT_ANCHORS`. Neither is the partitioner -- this is a *ranking* instrument, and it says so:
 it reports island structure, and the partitioner's cost model is the thing that finally decides.
 The number to read is the **delta**, which is much more robust than either absolute.
 
@@ -65,10 +66,59 @@ import argparse
 import collections
 import json
 import pathlib
+import re
 
-# Mirrors `ops::partition::is_anchor` closely enough to rank with. Not authoritative; the
-# partitioner in the DLL is. Kept short and named so a reader can check it against that list.
-DEFAULT_ANCHORS = ("Conv", "Gemm", "MatMul", "MatMulNBits", "Attention", "GroupQueryAttention")
+# The production heavy-op family list, read out of the Rust source rather than retyped.
+#
+# This probe's anchor set was previously a hand-maintained 6-tuple, and it had silently drifted
+# four families behind `ops::partition` (`ConvTranspose`, `MultiHeadAttention`, `QMoE`,
+# `LinearAttention` were all missing), which made every counterfactual it printed an
+# *understatement* of the retained population -- in the one direction that makes a proposed
+# change look better than it is. Deriving it removes the drift rather than fixing this instance
+# of it. `tests/ops/test_probe_anchor_mirror.py` additionally asserts set equality and mutates
+# both sides to prove the assertion is not vacuous.
+PARTITION_RS = pathlib.Path(__file__).resolve().parents[1] / "src" / "ops" / "partition.rs"
+
+_FAMILIES_DECL = re.compile(
+    r"pub const HEAVY_OP_FAMILIES:\s*&\[&str\]\s*=\s*&\[(?P<body>.*?)\];", re.S
+)
+
+
+def production_heavy_op_families(source: str | None = None) -> frozenset[str]:
+    """The bare op_types of `ops::partition::HEAVY_OP_FAMILIES`.
+
+    Bare, because this probe compares against `NodeProto.op_type`, which carries no domain: an
+    ONNX `Attention` and a `com.microsoft::Attention` are both spelled `Attention` there. That
+    collapse is *widening* (it can only include more nodes), which is the safe direction for a
+    ranking ceiling, and it is why the mirror test compares bare names on both sides.
+
+    Raises rather than falling back to a literal. A stale hardcoded list is exactly the defect
+    this function exists to remove, so a silent default would reintroduce it.
+    """
+    text = source if source is not None else PARTITION_RS.read_text(encoding="utf-8")
+    m = _FAMILIES_DECL.search(text)
+    if m is None:
+        raise RuntimeError(
+            f"could not find `pub const HEAVY_OP_FAMILIES` in {PARTITION_RS}; this probe derives "
+            "its anchor set from that declaration and will not guess one"
+        )
+    names = re.findall(r'"([^"]+)"', m.group("body"))
+    if not names:
+        raise RuntimeError("HEAVY_OP_FAMILIES parsed as empty; refusing to rank with no anchors")
+    return frozenset(n.rsplit("::", 1)[-1] for n in names)
+
+
+# Every production heavy-op family, by bare op_type.
+#
+# NOTE ON WHAT THIS SET MEANS. `ops::partition::is_anchor` requires a heavy family **and** a
+# resident weight at a schema-designated site (issue #73). The claim log this probe reads
+# records op names and operand ranks, not per-input constancy, so the weight half cannot be
+# evaluated here. Treating every heavy-family node as an anchor is therefore an **optimistic
+# ceiling** on the retained population, not a model of the shipped predicate -- a node counted
+# as an anchor here may be rejected in production, never the reverse. Stated rather than
+# quietly assumed, because the delta this probe reports is a ranking signal and a ceiling that
+# reads as a prediction is how the 32-GQA-anchors claim got into the docs.
+DEFAULT_ANCHORS = tuple(sorted(production_heavy_op_families()))
 
 
 def islands(nodes, keepset: set[int], producer) -> list[list[str]]:

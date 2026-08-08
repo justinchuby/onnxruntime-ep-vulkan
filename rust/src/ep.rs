@@ -1281,10 +1281,38 @@ unsafe fn get_capability_impl(
             // SAFETY: api live; node is a live graph node.
             let view = unsafe { NodeView::new(api, node) };
             let qual = view.qualified_name();
-            if partition::is_anchor(&qual) {
+            // Anchor eligibility is a property of the NODE, not of the op name (issue #73).
+            //
+            // We are inside `GetCapability`, looking at **body graph nodes**, which is the one
+            // level at which `ValueInfo_IsConstantInitializer` answers truthfully — the
+            // fused-node caveat recorded further down this file applies to `Compile`, where the
+            // boundary value_info reports `false` for all 457 inputs. Body nodes are where the
+            // existing initializer accounting for `input_bytes` already reads its answer, a few
+            // statements below, so the anchor fact and the byte fact come from the same source.
+            //
+            // `has_input` distinguishes an omitted interior optional input (a real "no weight
+            // here" — e.g. a packed-QKV GQA whose `cos_cache` is absent) from a present
+            // activation. Both are `Some(false)`; neither invents a weight. No arm of this
+            // closure can return `Some(true)` from the op name alone, which is what makes the
+            // name-only path unreachable rather than merely discouraged.
+            let weights = partition::classify_weight_operand(&qual, |i| {
+                if !view.has_input(i) {
+                    return Some(false);
+                }
+                Some(view.input_is_constant(i))
+            });
+            if partition::is_anchor(&qual, weights) {
                 island.anchors += 1;
-                // Anchor flop estimate: 2 × K × N for a matmul-family op.
+            }
+            if partition::is_heavy_op_family(&qual) {
+                // Heavy-op flop estimate: 2 × K × N for a matmul-family op.
                 // Conservative minimum: 2 × 3072 × 3072 when shapes are unavailable.
+                //
+                // Keyed on the op-name family, NOT on anchor status, and deliberately so: the
+                // arithmetic a node performs does not change because its `B` is an activation.
+                // Tying the FLOP estimate to the anchor predicate would have silently shrunk
+                // every affected island's `flops` at the same time as its `anchors`, moving the
+                // economics gate's own input under cover of a partition change.
                 island.flops = island.flops.saturating_add(2 * 3072 * 3072);
             } else {
                 // Light elementwise op: 1 FLOP per output element (fp16: 2 bytes → 1 FLOP).

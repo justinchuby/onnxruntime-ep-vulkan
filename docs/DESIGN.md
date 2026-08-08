@@ -1309,6 +1309,17 @@ accident and is not a discovered defect — **it is the design, working.** 3c wa
 cheap elementwise scatter whose tensors outweigh its arithmetic, and Phi-3.5's fused island is not
 that. The doc comment at `partition.rs:458` says so in as many words.
 
+> **SUPERSEDED IN PART by §5.4.2 (issue #73, 2026-08-08).** The list above is now
+> `partition::HEAVY_OP_FAMILIES`, and it is no longer the anchor set: `is_anchor` requires a
+> heavy family **and** a resident weight at a schema-designated input. The sentence *"every
+> non-trivial island of any transformer contains at least one"* was true of the name-only
+> predicate and is **not** true of the shipped one — an attention block's batched Q·Kᵀ and
+> P·V products are `MatMul` nodes with two activation operands and they anchor nothing.
+> Prediction (i) of this ruling — "an anchor-bearing island that genuinely should be declined
+> … a small `MatMul` surrounded by large boundary traffic … this is where I expect this to
+> bite first" — is exactly the defect issue #73 found, so the ruling's *reasoning* stands; only
+> its inventory of which nodes qualify was wrong. §5.4.2 records what changed and what did not.
+
 **So what is actually wrong is narrower, and I want it stated without inflation.** Three things:
 
 1. **The exemption is load-bearing for a question it was not designed to answer.** Its stated
@@ -1497,6 +1508,111 @@ M0/M1 have a defined behaviour before Niobe's measurements exist. `CoverageRepor
 the same `(kept, dropped)` pair, is what produces `largest_island_flops` for §10.0's milestone
 reporting — the rule and its metric live in one module deliberately, because their drifting apart is
 exactly how a coverage number becomes a lie.
+
+#### 5.4.2 An anchor is a property of the node, not of the op name — RULING (issue #73, 2026-08-08)
+
+**What was wrong.** `partition::is_anchor` matched an op-name list and nothing else. Its own doc
+comment stated the warrant — *"a lone `Add` is never worth a round-trip; a single `MatMul` **on
+LLM-sized weights** always is"* — and the body never tested the emphasised clause. Matching the
+bare string `"MatMul"` therefore exempted every `MatMul` from the economics gate, including the
+ones whose operands are both runtime activations: an attention block's batched Q·Kᵀ and P·V
+products carry no weights at all, and reload their entire input across the boundary on every
+inference. §5.4.1(i) established that on an anchor-bearing island *no property of the island can
+change stage 3's answer*; the defect is that a node could join that set by being spelled a
+certain way.
+
+**The fix, and the shape of it.** Two predicates where there was one:
+
+| symbol | question | consumer |
+|---|---|---|
+| `HEAVY_OP_FAMILIES` / `is_heavy_op_family` | is this op's arithmetic matmul-shaped? | the FLOP estimate in `ep.rs`'s island builder |
+| `weight_sites` | which of this op's inputs does its **schema** designate as parameter data? | the operand classifier |
+| `WeightOperand` (`Present`/`Absent`/`Unknown`) | does *this node* present a resident initializer at one of those sites? | `is_anchor` |
+| `is_anchor(op, w)` = family ∧ `w == Present` | is this node worth a boundary on its own? | the exemption at stage 3b |
+
+The family list is **bit-identical** to the old predicate's; only its name and its consumer
+changed. Keeping the FLOP estimate keyed on the family and not on anchor status is deliberate:
+the arithmetic a node performs does not change because its `B` is an activation, and tying the
+two together would have moved the economics gate's own input under cover of a partition change.
+
+**`Absent` and `Unknown` both fail closed.** A node that does not anchor is not thereby rejected —
+it goes on to meet the size and economics gates like anything else. The failure mode of guessing
+wrong in that direction is a CPU fallback; in the other direction it is a claim we cannot justify.
+
+**Monotonicity, and how it is proven.** `is_anchor(op, w) ⟹ is_heavy_op_family(op)`, so the new
+anchor set is a strict subset of the retired one and no verdict can move `Reject → Claim`. That
+statement is *not* pinned by comparing the two predicates — they differ by a conjunct, so such a
+comparison is true by construction and proves nothing about what ships. It is pinned by
+`new_anchor_semantics_never_newly_claim_over_the_production_chain`, which builds an `Island` for
+every (op × operand state × node count × boundary bytes) combination **the way `ep.rs` builds
+one** and runs the shipped `evaluate` on it under both rules, asserting that nothing is newly
+claimed *and* that at least one combination is strictly `Claim → Reject`. Rolling `is_anchor`
+back to name-only makes the second assertion fail, because the two rules become the same
+function. Ten tests go red under that mutation; the count is recorded here so that a future
+reader can re-run it rather than trust it.
+
+**Gate ordering is unchanged.** A 1-node island that is no longer an anchor now reaches gate 3a
+and answers `TooSmall`, which is the honest reason — it *is* below `min_nodes`. `TransferDominated`
+is reachable for such a node only once size can no longer answer, and it is proven separately
+(`the_economics_gate_rejects_a_weightless_cluster_when_size_cannot_answer`) by two independent
+routes: `min_nodes = 1`, and a six-node activation-only cluster at shipping defaults. Conflating
+the two would have let a size rejection be reported as an economics one.
+
+**GQA's schema, corrected against the source rather than against a recollection.** An earlier
+draft of this fix asserted that `GroupQueryAttention` has *seven required, weightless inputs* and
+can therefore never anchor. That is false at the pinned revision. At ORT
+`da9b5e364c465de65c49d91e696cd6485270757f` (v1.28.0),
+`onnxruntime/core/graph/contrib_ops/bert_defs.cc:1216-1335`, `GroupQueryAttention` declares
+**sixteen** inputs of which exactly **three** are required — `query` (0), `seqlens_k` (5),
+`total_sequence_length` (6). Inputs 1–4 (`key`, `value`, `past_key`, `past_value`) are
+`OpSchema::Optional`, which is what makes packed-QKV legal; shape inference branches on
+`hasInputShape(ctx, 2)` accordingly. And inputs **14 (`q_norm_weight`) and 15 (`k_norm_weight`)
+exist and are learned 1-D `(head_size)` RMS-norm parameters** (Qwen3-style), alongside
+`cos_cache` (7), `sin_cache` (8) and the quantised-cache scales `k_scale` (12) / `v_scale` (13).
+So a GQA node *can* anchor, and whether a given one does is a question about that node's
+initializers. Those six indices are its `weight_sites`; the other ten — activations, caches,
+masks, position ids — are not, so a folded constant `seqlens_k` confers nothing.
+
+**What is withdrawn, and what is not.** The claim that Phi-3.5's island contains 32
+`GroupQueryAttention` anchors is **withdrawn, not restated**. It was derived from op names, and no
+census in this repository recorded per-input constancy, so under the new rule the anchor status of
+those 32 nodes is simply **not established** — it depends on whether that export folds
+`cos_cache`/`sin_cache` into initializers, which we have not measured. The recorded figure
+`anchors: 193` in `Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED` is **kept unedited**,
+because it is a record of what that run counted and not a prediction; falsifying a census reading
+would be worse than labelling it, and the doc comment now labels it. The verdict is unaffected
+either way: `evaluate` branches on `anchors > 0`, and the 161 `MatMulNBits` nodes anchor without a
+new census — `B` (1) and `scales` (2) are required inputs and are initializers by the format's own
+definition (`contrib_defs.cc:3672-3686`).
+
+**The affected population is narrow, and stating it narrowly is the point.** The obvious candidate
+— MiniLM's six per-layer attention products — does **not** reach this gate. `ops::matmul` already
+declines a rank-4 batched `B` **before clustering**, with a `[dynamic-shape]`/`Rank` reason, so
+those nodes were never in an island to begin with
+(`a_batched_b_is_declined_and_the_reason_names_the_traversal`; 24 of BERT-SQuAD-12's 95 `MatMul`s
+take the same path). What this fix actually changes is the *remaining* population: a rank-2 `MatMul`
+or a `Gemm` whose `B` is a runtime activation. **No censused model in this repository contains
+one.** So the honest statement of benefit is a closed hole and a cross-model generality risk
+retired — §5.4.1's own prediction — and **not** an island-count or claim-count movement on any
+model we have measured. No such movement is claimed here, and none was measured.
+
+**The static tool is now derived rather than retyped.** `rust/tools/probe_island_counterfactual.py`
+carried a hand-maintained six-name anchor tuple against a production list of eleven families, and
+had silently drifted four behind it: `ConvTranspose`, `MultiHeadAttention`, `QMoE`,
+`LinearAttention`. A probe that under-counts anchors under-counts retained islands, which flatters
+every counterfactual delta it prints — drift in exactly the direction that favours the author.
+`DEFAULT_ANCHORS` now parses `HEAVY_OP_FAMILIES` out of the Rust source and refuses (raises) rather
+than falling back to a literal, and `tests/ops/test_probe_anchor_mirror.py` asserts set equality
+*and mutates both sides* to prove the assertion is not vacuous. Its docstring also states what the
+set now means: heavy-family membership is an **optimistic ceiling** on `is_anchor`, because the
+claim log records op names and operand ranks and cannot answer the weight question at all. Saying
+so is what keeps the probe's delta a ranking signal — a ceiling that reads as a prediction is how
+"32 GQA nodes are anchors" got into this document.
+
+**Baseline discipline.** `cargo test --lib` on the exact parent commit `85fbda2` is **749 passed,
+0 failed, 4 ignored**. An earlier draft of this work reported a 759 baseline; that figure was taken
+in a worktree carrying its own changes and is contaminated. The head total is 760 — 749 plus eleven
+new tests — and both numbers were run, not derived.
 
 ### 5.5 `Compile` — plan build and prepacking
 

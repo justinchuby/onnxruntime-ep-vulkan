@@ -781,10 +781,29 @@ mod tests {
 
     /// `Gemm` is already an anchor in the partitioner, which is why a lone one at a model's tail
     /// is claimable at all. If that ever changed, this row would go live and never be used.
+    ///
+    /// Updated for issue #73: family membership and anchor eligibility are now separate
+    /// questions, so both are asserted. A `Gemm` whose `B` is a runtime activation is in the
+    /// heavy family but is **not** an anchor — that is the whole correction, and asserting only
+    /// the `Present` arm would be the tautology PR #77 was rejected for.
     #[test]
-    fn gemm_is_a_partition_anchor() {
-        assert!(crate::ops::partition::is_anchor("Gemm"));
-        assert!(crate::ops::partition::is_anchor("MatMul"));
+    fn gemm_is_a_partition_anchor_only_with_a_resident_weight() {
+        use crate::ops::partition::{WeightOperand, is_anchor, is_heavy_op_family};
+        for op in ["Gemm", "MatMul"] {
+            assert!(is_heavy_op_family(op), "{op} is a heavy family");
+            assert!(
+                is_anchor(op, WeightOperand::Present),
+                "{op} anchors over a resident weight"
+            );
+            assert!(
+                !is_anchor(op, WeightOperand::Absent),
+                "{op} must not anchor on an activation-only operand set"
+            );
+            assert!(
+                !is_anchor(op, WeightOperand::Unknown),
+                "{op} must fail closed when constancy is unanswerable"
+            );
+        }
     }
 
     // ---------------------------------------------------------------------------------------

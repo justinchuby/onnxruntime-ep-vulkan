@@ -774,13 +774,18 @@ def _probe_vulkan_device() -> bool:
     """Return True if the registered Vulkan EP claims at least one node in a probe session.
 
     Uses a minimal MatMulNBits (com.microsoft, 4-bit, K=32 N=32) model: MatMulNBits is an
-    anchor op (partition::is_anchor), so it passes the partition economics gate regardless of
-    transfer cost — the anchor exemption unconditionally claims any island containing one.
-    Returns False if the EP is registered but advertises zero devices (no Vulkan ICD, or all
-    devices fail the capability gate).
+    anchor op here because `B` and `scale` are built below as graph **initializers**, which is
+    what `partition::is_anchor` requires since issue #73 — a heavy op family *and* a resident
+    weight at a schema-designated site (inputs 1 and 2 per ORT v1.28.0
+    contrib_defs.cc:3672-3686, both required). So it passes the partition economics gate
+    regardless of transfer cost — the anchor exemption unconditionally claims any island
+    containing one. Returns False if the EP is registered but advertises zero devices (no
+    Vulkan ICD, or all devices fail the capability gate).
 
     A plain Add model is NOT sufficient here: a 1-node Add forms a non-anchor island and is
-    correctly declined by the partition TooSmall gate (1 < min_nodes=4, anchors=0).
+    correctly declined by the partition TooSmall gate (1 < min_nodes=4, anchors=0). Neither
+    would a MatMulNBits whose weights arrived as graph inputs rather than initializers — the
+    op name alone has not conferred anchor status since issue #73.
     """
     import onnx
     import onnx.helper as oh
