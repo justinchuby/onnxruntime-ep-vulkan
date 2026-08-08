@@ -444,6 +444,20 @@ BENCH_INSTRUMENT_FILES = [
     # to keep, so it is screened rather than treated as capture.
     "ceiling.py",
     "clock_log.py",
+    # Arrived with the issue #69 CUDA competition harness. All four render a verdict about
+    # a measurement rather than record one, which is the line this list draws:
+    #   `cuda_competition.py`  -- ADMISSIBLE / SPLIT_FRAME / INSTRUMENT_ERROR per arm, plus
+    #                             the numeric-equivalence verdict across arms.
+    #   `cuda_profile.py`      -- GPU_TIME_MEASURED / GPU_TIME_UNAVAILABLE / TRACE_ABSENT,
+    #                             and refuses rather than sums when the phase tree disagrees.
+    #   `cuda_probe.py`        -- decides whether a node partition actually ran on the EP it
+    #                             names, which is a verdict about what was measured.
+    #   `bench_models.py`      -- MODEL_OK / MODEL_ABSENT / MODEL_DIGEST_MISMATCH. The digest
+    #                             mismatch is explicitly "a finding, not a re-pin".
+    "cuda_competition.py",
+    "cuda_profile.py",
+    "cuda_probe.py",
+    "bench_models.py",
     # Arrived with issue #56 (Niobe, the real-model harness). Screened rather than held
     # out because its `classify_*`/`bitwise_identical` functions decide whether two arms
     # of a benchmark agree, and `dispatch_diagnosis`/`fallback_diagnosis` decide whether a
@@ -530,29 +544,78 @@ BENCH_HELD_OUT: dict[str, str] = {
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."
     ),
+    # Arrived with the issue #69 CUDA competition harness (2026-08-07, Tank). Declared by
+    # hand rather than left to drift, and each with the reason it is NOT an instrument.
+    "cuda_workloads.py": (
+        "workload table — data. It builds feeds and digests them so two arms can be shown "
+        "the same bytes; it renders no verdict about any measurement taken on them."
+    ),
+    "trace_vocabulary.py": (
+        "parser — reads the span vocabulary declared in rust/src/trace.rs so bench/ can be "
+        "checked against it instead of trusted. `prefix_collisions` reports a list; the "
+        "verdict that a collision is fatal is asserted by bench/test_trace_vocabulary.py "
+        "and by the Rust test `no_trace_name_is_a_prefix_of_another`, in both languages."
+    ),
+    "public_paths.py": (
+        "provenance sanitiser — it renders a verdict about a PAYLOAD (does this artifact "
+        "name a machine?), not about a measurement, which is the line this list draws. It "
+        "refuses by raising `PathLeak`; both polarities of every function it exports are "
+        "screened in bench/test_public_paths.py, including the `sanitise=False` path that "
+        "proves the refusal fires."
+    ),
+    "gen_public_path_legacy.py": (
+        "generator for the checked-in legacy ratchet bench/public_path_legacy.json — the "
+        "same relationship rust/tools/instrument_census.json's generator has to this file. "
+        "It surveys; the ratchet's verdict is asserted in bench/test_public_paths.py."
+    ),
+    "test_cuda_competition.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_cuda_profile.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_trace_vocabulary.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_public_paths.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries both "
+        "polarities of the provenance sanitiser and the repository-wide leak ratchet."
+    ),
+    "test_result_staleness.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries both "
+        "polarities of `cuda_competition.ep_provenance` and the screen that stops a "
+        "committed result outliving the EP build it measured."
+    ),
 }
 
 
-def _harness_instruments(tests_root=None, files=None, fn_re=None, prefix="tests") -> dict[str, str]:
-    """Return {fn_name: "file::fn"} for every harness instrument."""
+def _harness_instruments(tests_root=None, files=None, fn_re=None, prefix="tests") -> dict[str, dict]:
+    """Return ``{"<prefix>/<rel>::<fn>": {...}}`` for every harness instrument.
+
+    KEYED BY FILE AND FUNCTION, NEVER BY FUNCTION ALONE.  The first version of this
+    returned ``{fn_name: qualified_id}``, and a dict keyed on a bare name silently keeps
+    the LAST module that defines it.  Eight names collide across the screened bench
+    modules — ``attribute``, ``audit``, ``describe``, ``load``, ``probe``, ``render``,
+    ``sha256_file``, ``summarise`` — so ``phases.py::attribute``, ``devices.py::probe`` and
+    ``win_gpu_counters.py::summarise`` were not merely mis-scored: they were absent from
+    the census, which printed ``PASS`` over a list they were never in.  A screen whose
+    frame is decided by dict-insertion order is the ``out-of-frame`` state applied to
+    itself.
+    """
     import ast as _ast
 
     tests_root = TESTS if tests_root is None else Path(tests_root)
     files = HARNESS_INSTRUMENT_FILES if files is None else files
     fn_re = HARNESS_FN if fn_re is None else fn_re
-    out: dict[str, str] = {}
+    out: dict[str, dict] = {}
     for rel in files:
         path = tests_root / rel
         tree = _ast.parse(path.read_text(encoding="utf-8"))
         for node in tree.body:
             if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
                 if fn_re.search(node.name):
-                    out[node.name] = f"{prefix}/{rel}::{node.name}"
+                    qual = f"{prefix}/{rel}::{node.name}"
+                    out[qual] = {"id": qual, "fn": node.name, "rel": rel,
+                                 "module": Path(rel).stem, "path": path.resolve()}
     return out
 
 
-def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
-    """Return the subset of harness instruments that are pytest fixtures.
+def _fixture_instruments(tests_root=None, files=None, fn_re=None, prefix="tests") -> set[str]:
+    """Return the subset of harness instruments that are pytest fixtures, by qualified id.
 
     A fixture is invoked by **parameter name**, never by a call expression, so the
     call-shaped caller model that screens every other instrument scores one as
@@ -582,7 +645,7 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
                 continue
             for dec in node.decorator_list:
                 if "fixture" in _ast.dump(dec):
-                    out.add(node.name)
+                    out.add(f"{prefix}/{rel}::{node.name}")
                     break
     return out
 
@@ -618,8 +681,13 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
 # actually varies the thing under test.  That is earned by mutation —
 # `bench/test_devices_identity.py` for this instrument, `tests/ops/test_guard_d.py` for
 # the harness domain — and it is not claimed by this screen.
-VALUE_REJECT_FN = frozenset({"refuses"})
-VALUE_ACCEPT_FN = frozenset({"selects"})
+# A verdict gate is total in a second shape: it takes a record and returns the same record
+# with its green verdict either withheld or left standing, because the refusal has to travel
+# with the numbers it disqualifies.  `withholds(...)`/`publishes(...)` name those polarities
+# and enforce them at run time exactly as `refuses`/`selects` do — a gate wired to nothing
+# cannot pass `withholds`, and a gate that fires on everything cannot pass `publishes`.
+VALUE_REJECT_FN = frozenset({"refuses", "withholds", "omits"})
+VALUE_ACCEPT_FN = frozenset({"selects", "publishes", "records"})
 
 
 def _polarity_wrapped(fn, wrapper_names: "frozenset[str]") -> "set[int]":
@@ -659,7 +727,188 @@ def _is_gated(fn) -> bool:
     return False
 
 
-def harness_survey(tests_root=None, files=None, fn_re=None, prefix="tests") -> list[dict]:
+def _dotted(node) -> "str | None":
+    """``self._mod`` / ``mod`` / ``a.b.c`` as a string; anything else is None."""
+    import ast as _ast
+
+    parts: list[str] = []
+    while isinstance(node, _ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, _ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _module_bindings(tree, self_module: str) -> dict:
+    """What every name in one file is bound to, as far as its own imports declare it.
+
+    Returns ``{"aliases": {local: module}, "names": {local: (module, original_fn)},
+    "stars": [module], "self": self_module, "shadowed": {name}}``.
+
+    This is deliberately a *declaration* reader and not an import graph: it believes what
+    the file says about itself and nothing else.  `import cuda_workloads as cw` binds
+    ``cw`` to the module ``cuda_workloads``; `from real_model import build_feeds` binds the
+    bare name; `from x import *` binds nothing this screen can name, and a module-level
+    ``def``/assignment of the same name shadows the import.  Everything else is unresolved,
+    and unresolved is not credit.
+
+    ONE INFERENCE BEYOND THE IMPORT STATEMENTS, AND WHY IT IS NOT A SLIPPERY SLOPE.  A
+    module that may be absent is imported inside an accessor
+    (``def _windows_module(): import win_gpu_counters; return win_gpu_counters``) and used
+    through the value it returns — ``mod = _windows_module()``, then ``mod.observe(...)``.
+    That is a real call to a real instrument, and refusing to see it would have printed
+    ``UNINVOKED win_gpu_counters.py::observe``: a *fabricated detection*, which this file
+    already records (``instrument_census.json``, the ``require_vulkan`` row) as worse than
+    a missing row, because someone will act on it.  So an assignment from a function whose
+    every ``return`` is a module this file imported binds its target — including
+    ``self._mod`` — to that module.  Nothing else infers anything.
+    """
+    import ast as _ast
+
+    aliases: dict[str, str] = {}
+    names: dict[str, tuple[str, str]] = {}
+    stars: list[str] = []
+    shadowed: set[str] = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Import):
+            for a in node.names:
+                mod = a.name.split(".")[-1]
+                aliases[a.asname or a.name.split(".")[0]] = mod
+                if a.asname is None and "." not in a.name:
+                    aliases[a.name] = mod
+        elif isinstance(node, _ast.ImportFrom):
+            mod = (node.module or "").split(".")[-1]
+            for a in node.names:
+                if a.name == "*":
+                    stars.append(mod)
+                    continue
+                # `from bench import devices` binds a MODULE under a local name; the two
+                # cases are told apart at resolution time by which table matches.
+                aliases.setdefault(a.asname or a.name, a.name)
+                names[a.asname or a.name] = (mod, a.name)
+        elif isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            if node.name not in names:
+                shadowed.add(node.name)
+        elif isinstance(node, _ast.Assign):
+            for t in node.targets:
+                if isinstance(t, _ast.Name):
+                    shadowed.add(t.id)
+
+    # Accessor functions: every return statement hands back a module imported above.
+    accessors: dict[str, str] = {}
+    for node in _ast.walk(tree):
+        if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        returned = {r.value.id for r in _ast.walk(node)
+                    if isinstance(r, _ast.Return) and isinstance(r.value, _ast.Name)}
+        mods = {aliases[n] for n in returned if n in aliases}
+        if len(mods) == 1 and len(returned) == len(mods):
+            accessors[node.name] = mods.pop()
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Assign):
+            continue
+        mod = None
+        value = node.value
+        if isinstance(value, _ast.Call) and isinstance(value.func, _ast.Name):
+            mod = accessors.get(value.func.id)
+        elif isinstance(value, _ast.Name):
+            mod = aliases.get(value.id)
+        if mod is None:
+            continue
+        for t in node.targets:
+            dotted = _dotted(t)
+            if dotted:
+                aliases[dotted] = mod
+    return {"aliases": aliases, "names": names, "stars": stars,
+            "self": self_module, "shadowed": shadowed}
+
+
+def _call_target(node, binds: dict, by_module: dict, by_fn: dict):
+    """Which instrument, if any, this call expression names. Fails closed.
+
+    Returns ``(qualified_id, None)`` when the caller's own imports decide it, and
+    ``(None, (why, fn_name))`` when a call *looks* like an instrument by name and the file
+    does not say which module it came from.  ``(None, None)`` is the ordinary case: a call
+    to something that is not an instrument at all.
+
+    The three resolvable shapes, and nothing else:
+
+    * ``mod.fn()`` where ``mod`` is a module this file imported;
+    * ``fn()`` where ``fn`` was imported from a module by name;
+    * ``fn()`` inside the module that defines it.
+
+    `obj.summarise()` on an instance is NOT resolvable — ``win_gpu_counters.summarise`` and
+    ``cuda_competition.summarise`` are both real, and picking one by name is how a census
+    ends up crediting a module that was never called.
+    """
+    import ast as _ast
+
+    def _plausible(name: str) -> bool:
+        """Does this file import any module that defines an instrument of this name?
+
+        The unresolved list is meant to be read, so it reports the sites where a reader
+        could reasonably think an instrument was called: ones whose owning module this
+        file actually imports.  ``Path(x).resolve()`` in a file that has never heard of
+        ``bench_models`` is not an ambiguity about ``bench_models.resolve``; listing it
+        would bury the real cases under a hundred method calls.  Nothing is credited
+        either way — this only decides what gets printed.
+        """
+        owners = {q.split("::")[0].rsplit("/", 1)[-1][:-3] for q in by_fn.get(name, [])}
+        seen = set(binds["aliases"].values()) | {m for m, _ in binds["names"].values()}
+        seen |= set(binds["stars"]) | {binds["self"]}
+        return bool(owners & seen)
+
+    func = node.func
+    if isinstance(func, _ast.Attribute):
+        name = func.attr
+        if name not in by_fn:
+            return None, None
+        value = func.value
+        if isinstance(value, _ast.Name) or isinstance(value, _ast.Attribute):
+            dotted = _dotted(value)
+            mod = binds["aliases"].get(dotted) if dotted else None
+            if mod is not None and (mod, name) in by_module:
+                return by_module[(mod, name)], None
+            if mod is not None:
+                return None, None  # a real module, just not one with this instrument
+        if not _plausible(name):
+            return None, None
+        return None, ("attribute call on a value this file does not bind to a module",
+                      name)
+    if isinstance(func, _ast.Name):
+        name = func.id
+        if name not in by_fn:
+            return None, None
+        bound = binds["names"].get(name)
+        if bound is not None:
+            key = (bound[0], bound[1])
+            if key in by_module:
+                return by_module[key], None
+            return None, None  # imported from somewhere that is not a screened module
+        if name in binds["shadowed"]:
+            # This file defines the name itself, so the call is to its own function. Not
+            # an instrument call, and not an ambiguity either.
+            if (binds["self"], name) in by_module:
+                return by_module[(binds["self"], name)], None
+            return None, None
+        if (binds["self"], name) in by_module:
+            return by_module[(binds["self"], name)], None
+        if binds["stars"]:
+            owners = [q for m in binds["stars"] if (m, name) in by_module
+                      for q in [by_module[(m, name)]]]
+            if len(owners) == 1:
+                return owners[0], None
+            return None, ("star import makes the origin of this name undecidable", name)
+        if not _plausible(name):
+            return None, None
+        return None, ("bare call to an instrument name this file never imported", name)
+    return None, None
+
+
+def harness_survey(tests_root=None, files=None, fn_re=None, prefix="tests",
+                   unresolved_out=None) -> list[dict]:
     """Screen every harness instrument for callers and for two-polarity coverage.
 
     *tests_root* and *files* are parameters rather than constants so this screen can be
@@ -667,52 +916,82 @@ def harness_survey(tests_root=None, files=None, fn_re=None, prefix="tests") -> l
     ``tests/ops/test_harness_census.py``.  A screen that has only ever been run against the
     real repository, where it happens to print a plausible answer, is precisely the Guard D
     shape it exists to catch.
+
+    CALL SITES ARE RESOLVED MODULE-AWARE (2026-08-07).  A call is credited to an instrument
+    only when the caller file's own imports say which module the name came from — see
+    :func:`_call_target`.  Before this, ``stats`` was keyed by bare function name, so
+    ``bench/test_cuda_workloads.py``'s ``pytest.raises(...)`` around
+    ``cuda_workloads.build_feeds`` was recorded as reject polarity for
+    ``real_model.py::build_feeds``, an instrument that test has never called.  A polarity
+    credit that arrives from another module is worse than a missing one: `unfalsified` is
+    an honest "nobody has watched this", and a borrowed `screened` is a claim that somebody
+    has.
+
+    Unresolved and ambiguous sites are **failed closed** — no credit to anybody — and
+    appended to *unresolved_out* when one is supplied, because a screen that silently drops
+    evidence it could not attribute is reporting a smaller world than it looked at.
     """
     import ast as _ast
 
     tests_root = TESTS if tests_root is None else Path(tests_root)
     files = HARNESS_INSTRUMENT_FILES if files is None else files
     fn_re = HARNESS_FN if fn_re is None else fn_re
-    names = _harness_instruments(tests_root, files, fn_re, prefix)
-    fixtures = _fixture_instruments(tests_root, files, fn_re)
-    stats = {n: {"calls": 0, "reject": 0, "accept": 0} for n in names}
+    instruments = _harness_instruments(tests_root, files, fn_re, prefix)
+    fixtures = _fixture_instruments(tests_root, files, fn_re, prefix)
+    by_module: dict[tuple[str, str], str] = {
+        (rec["module"], rec["fn"]): qual for qual, rec in instruments.items()}
+    by_fn: dict[str, list[str]] = {}
+    for qual, rec in instruments.items():
+        by_fn.setdefault(rec["fn"], []).append(qual)
+    stats = {qual: {"calls": 0, "reject": 0, "accept": 0} for qual in instruments}
+    unresolved: list[dict] = [] if unresolved_out is None else unresolved_out
 
-    owner_files = {tests_root / rel for rel in files}
+    def _record_unresolved(path, node, name, why) -> None:
+        unresolved.append({"file": str(path), "line": getattr(node, "lineno", 0),
+                           "name": name, "why": why,
+                           "candidates": sorted(by_fn.get(name, []))})
+
+    owner_files = {(tests_root / rel).resolve() for rel in files}
     # Calls from inside the owner module count as callers (an instrument invoked at import
     # time, like the Q/DQ oracle probe, is wired) but can never supply a polarity: polarity
     # is a property of a test that was written to watch it disagree.
-    for path in sorted(owner_files):
+    for rel in files:
+        path = (tests_root / rel).resolve()
         tree = _ast.parse(path.read_text(encoding="utf-8"))
+        binds = _module_bindings(tree, Path(rel).stem)
         for node in _ast.walk(tree):
             if not isinstance(node, _ast.Call):
                 continue
-            func = node.func
-            name = (
-                func.attr
-                if isinstance(func, _ast.Attribute)
-                else func.id
-                if isinstance(func, _ast.Name)
-                else None
-            )
-            if name in stats:
-                stats[name]["calls"] += 1
+            target, why = _call_target(node, binds, by_module, by_fn)
+            if target is not None:
+                stats[target]["calls"] += 1
+            elif why:
+                _record_unresolved(path, node, why[1], why[0])
 
     for path in sorted(tests_root.rglob("*.py")):
-        if path in owner_files:
+        if path.resolve() in owner_files:
             continue
         try:
             tree = _ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
+        binds = _module_bindings(tree, path.stem)
         for fn in [n for n in _ast.walk(tree) if isinstance(n, _ast.FunctionDef)]:
             gated = _is_gated(fn)
             # A fixture is depended on by naming it as a parameter.  This is the only
             # invocation it ever gets, so it is counted here and nowhere else.  It never
             # supplies a polarity: nothing in the parameter list says which answer the
-            # fixture gave.
+            # fixture gave.  A fixture name defined by two modules is ambiguous — pytest
+            # would resolve it by conftest scope, which is not visible here — so it is
+            # failed closed rather than credited to whichever one sorts first.
             for arg in fn.args.args:
-                if arg.arg in fixtures:
-                    stats[arg.arg]["calls"] += 1
+                owners = [q for q in by_fn.get(arg.arg, []) if q in fixtures]
+                if len(owners) == 1:
+                    stats[owners[0]]["calls"] += 1
+                elif len(owners) > 1:
+                    _record_unresolved(path, fn, arg.arg,
+                                       "fixture parameter names an instrument defined in "
+                                       "more than one screened module")
             # Map every node in this function to whether it sits inside `pytest.raises`.
             raising: set[int] = set()
             for node in _ast.walk(fn):
@@ -736,39 +1015,35 @@ def harness_survey(tests_root=None, files=None, fn_re=None, prefix="tests") -> l
             for node in _ast.walk(fn):
                 if not isinstance(node, _ast.Call):
                     continue
-                func = node.func
-                name = (
-                    func.attr
-                    if isinstance(func, _ast.Attribute)
-                    else func.id
-                    if isinstance(func, _ast.Name)
-                    else None
-                )
-                if name not in stats:
+                target, why = _call_target(node, binds, by_module, by_fn)
+                if target is None:
+                    if why:
+                        _record_unresolved(path, node, why[1], why[0])
                     continue
-                stats[name]["calls"] += 1
+                stats[target]["calls"] += 1
                 if gated:
                     continue
                 if id(node) in raising or id(node) in value_reject:
-                    stats[name]["reject"] += 1
+                    stats[target]["reject"] += 1
                 else:
-                    stats[name]["accept"] += 1
+                    stats[target]["accept"] += 1
 
     rows: list[dict] = []
-    for name, qual in sorted(names.items()):
-        s = stats[name]
+    for qual, rec in sorted(instruments.items()):
+        s = stats[qual]
         if s["calls"] == 0:
             state = "uninvoked"
         elif s["reject"] and s["accept"]:
             state = "screened"
         else:
             state = "unfalsified"
-        rows.append({"id": qual, "fn": name, "state": state, **s})
+        rows.append({"id": qual, "fn": rec["fn"], "state": state, **s})
     return rows
 
 
 def harness_report(
-    rows: list[dict], title: str | None = None, files=None, note: str | None = None
+    rows: list[dict], title: str | None = None, files=None, note: str | None = None,
+    unresolved: "list[dict] | None" = None
 ) -> tuple[list[str], list[str]]:
     """Print the harness screen; return (uninvoked, unfalsified) id lists."""
     title = (
@@ -803,6 +1078,19 @@ def harness_report(
     print("  nothing in the always-on lane has ever watched this instrument disagree, so a")
     print("  broken one and a working one would look the same. Guard D lived here for its")
     print("  whole life while the Rust screen's question ('has it got a caller?') said WIRED.")
+    if unresolved is not None:
+        print()
+        print(f"  CALL SITES THIS SCREEN COULD NOT ATTRIBUTE ({len(unresolved)}), credited to")
+        print("  nobody. Each names a function this census screens under a module it cannot")
+        print("  decide from the caller's imports — a method on a value, or a bare name the")
+        print("  file never imported. Fail-closed is the rule: a call that MIGHT be an")
+        print("  instrument's earns it nothing, because the alternative is polarity credit")
+        print("  borrowed from another module, which reads exactly like coverage.")
+        for u in unresolved[:12]:
+            where = f"{Path(u['file']).name}:{u['line']}"
+            print(f"    {where:<44} {u['name']:<24} {u['why']}")
+        if len(unresolved) > 12:
+            print(f"    ... and {len(unresolved) - 12} more")
     if note:
         print()
         for line in note.strip("\n").splitlines():
@@ -998,16 +1286,20 @@ def main(argv: list[str]) -> int:
     print("  NOTE: this screen cannot see whether a WIRED instrument reports the right thing.")
     print("  Phase::Record passed it cleanly while 96% of its time was a memcpy nested inside it.")
 
-    h_rows = harness_survey()
-    h_uninvoked, h_unfalsified = harness_report(h_rows)
+    h_unresolved: "list[dict]" = []
+    h_rows = harness_survey(unresolved_out=h_unresolved)
+    h_uninvoked, h_unfalsified = harness_report(h_rows, unresolved=h_unresolved)
 
+    b_unresolved: "list[dict]" = []
     b_rows = harness_survey(
-        tests_root=BENCH, files=BENCH_INSTRUMENT_FILES, fn_re=BENCH_FN, prefix="bench"
+        tests_root=BENCH, files=BENCH_INSTRUMENT_FILES, fn_re=BENCH_FN, prefix="bench",
+        unresolved_out=b_unresolved,
     )
     b_uninvoked, b_unfalsified = harness_report(
         b_rows,
         title="BENCH INSTRUMENT SCREEN (bench/ — the certification apparatus, in frame since 2026-08-02)",
         files=BENCH_INSTRUMENT_FILES,
+        unresolved=b_unresolved,
         note=(
             "READ THE UNFALSIFIED COUNT HERE AS A PROPERTY OF THIS SCREEN, NOT AS A VERDICT ON\n"
             "bench/'s TESTS. Most bench instruments are TOTAL functions: they return a token\n"

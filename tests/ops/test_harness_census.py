@@ -446,3 +446,174 @@ def test_new_harness_instrument_without_a_self_test_goes_red(tmp_path: Path) -> 
         "a new unfalsified harness instrument was not reported as drift — the gate that "
         "would have caught Guard D's successor is itself inert"
     )
+
+
+# ---------------------------------------------------------------------------
+# NAME COLLISIONS ACROSS MODULES (added 2026-08-07)
+#
+# The screen keyed `instruments` and `stats` by BARE FUNCTION NAME. Eight names are
+# defined by two or more screened bench modules, and a dict keyed on a bare name keeps
+# only the last one: `phases.py::attribute`, `devices.py::probe`,
+# `win_gpu_counters.py::summarise` and `real_model.py::build_feeds` were not in the
+# census at all, while it printed PASS. Worse than the missing rows was the credit:
+# `bench/test_cuda_competition.py` wraps `cuda_workloads.build_feeds` in
+# `pytest.raises`, and that reject polarity was recorded against `real_model.py`'s
+# unrelated `build_feeds` — a `screened` verdict for an instrument that test has never
+# called.
+#
+# Synthetic trees, differing in one thing, and the screen must disagree about them.
+# ---------------------------------------------------------------------------
+
+_COLLIDING_A = '''
+def check_thing(x):
+    if x > 0:
+        return x
+    raise ValueError("a refused it")
+'''
+
+_COLLIDING_B = '''
+def check_thing(x):
+    return x
+'''
+
+# Both polarities, aimed unambiguously at module A through its import.
+_COLLISION_TEST_A = '''
+import pytest
+import _models as a
+
+def test_accepts():
+    assert a.check_thing(1) == 1
+
+def test_refuses():
+    with pytest.raises(ValueError):
+        a.check_thing(-1)
+'''
+
+# The same two polarities aimed at module B, which is NOT screened here.
+_COLLISION_TEST_B = '''
+import pytest
+import _other as b
+
+def test_accepts():
+    assert b.check_thing(1) == 1
+
+def test_refuses():
+    with pytest.raises(ValueError):
+        b.check_thing(-1)
+'''
+
+# A bare call to the name: the file imports the module but calls the name unqualified, so
+# nothing in it says whether this is the instrument or a local of the same name.
+_COLLISION_TEST_BARE = '''
+import pytest
+import _models  # noqa: F401
+
+def test_refuses():
+    with pytest.raises(ValueError):
+        check_thing(-1)
+'''
+
+
+def _build_collision_tree(root: Path, test_src: str) -> Path:
+    ops = root / "ops"
+    ops.mkdir(parents=True, exist_ok=True)
+    (ops / "_models.py").write_text(_COLLIDING_A, encoding="utf-8")
+    (ops / "_other.py").write_text(_COLLIDING_B, encoding="utf-8")
+    (ops / "test_it.py").write_text(test_src, encoding="utf-8")
+    return root
+
+
+def _collision_rows(audit, root: Path) -> "dict[str, dict]":
+    rows = audit.harness_survey(
+        tests_root=root, files=["ops/_models.py", "ops/_other.py"])
+    return {r["id"]: r for r in rows}
+
+
+def test_two_modules_with_the_same_function_name_both_get_a_row(tmp_path: Path) -> None:
+    """One row per (file, function). A dict keyed by name would have kept one of these."""
+    audit = _load_audit()
+    root = _build_collision_tree(tmp_path / "t_collide_rows", _COLLISION_TEST_A)
+    rows = _collision_rows(audit, root)
+    assert set(rows) == {"tests/ops/_models.py::check_thing",
+                         "tests/ops/_other.py::check_thing"}, sorted(rows)
+
+
+def test_polarity_lands_on_the_module_the_test_actually_imported(tmp_path: Path) -> None:
+    """POSITIVE POLARITY: the credited row is the imported one, and only it."""
+    audit = _load_audit()
+    root = _build_collision_tree(tmp_path / "t_collide_a", _COLLISION_TEST_A)
+    rows = _collision_rows(audit, root)
+    assert rows["tests/ops/_models.py::check_thing"]["state"] == "screened", rows
+    assert rows["tests/ops/_other.py::check_thing"]["state"] == "uninvoked", rows
+
+
+def test_the_other_modules_row_is_not_credited_by_a_same_named_call(tmp_path: Path) -> None:
+    """NEGATIVE POLARITY, and the specimen defect: `cw.build_feeds` credited `real_model`.
+
+    The two trees here differ only in which module the test imports, and the screen's
+    verdict must move with it. Under the bare-name model both trees produced the same
+    answer, which is what made the census unable to tell a screened instrument from an
+    unwatched one with a popular name.
+    """
+    audit = _load_audit()
+    root = _build_collision_tree(tmp_path / "t_collide_b", _COLLISION_TEST_B)
+    rows = _collision_rows(audit, root)
+    assert rows["tests/ops/_other.py::check_thing"]["state"] == "screened", rows
+    assert rows["tests/ops/_models.py::check_thing"]["state"] == "uninvoked", (
+        "a call to another module's function credited this one; that is a borrowed "
+        "polarity, and it reads exactly like coverage")
+
+
+def test_an_unattributable_call_earns_nobody_anything(tmp_path: Path) -> None:
+    """Fail closed on an unresolved name, and say so rather than dropping it silently."""
+    audit = _load_audit()
+    root = _build_collision_tree(tmp_path / "t_collide_bare", _COLLISION_TEST_BARE)
+    unresolved: list = []
+    rows = {r["id"]: r for r in audit.harness_survey(
+        tests_root=root, files=["ops/_models.py", "ops/_other.py"],
+        unresolved_out=unresolved)}
+    assert rows["tests/ops/_models.py::check_thing"]["state"] == "uninvoked", rows
+    assert rows["tests/ops/_other.py::check_thing"]["state"] == "uninvoked", rows
+    assert [u["name"] for u in unresolved] == ["check_thing"], unresolved
+    assert len(unresolved[0]["candidates"]) == 2, unresolved
+
+
+def test_the_colliding_bench_instruments_are_in_the_census(tmp_path: Path) -> None:
+    """The fact the discrimination above was built to establish, on the files on disk.
+
+    Every one of these was missing from the bench screen because another module defines a
+    function with the same name.
+    """
+    audit = _load_audit()
+    rows = {r["id"]: r for r in audit.harness_survey(
+        tests_root=audit.BENCH, files=audit.BENCH_INSTRUMENT_FILES,
+        fn_re=audit.BENCH_FN, prefix="bench")}
+    for want in ("bench/phases.py::attribute", "bench/cuda_profile.py::attribute",
+                 "bench/devices.py::probe", "bench/cuda_probe.py::probe",
+                 "bench/win_gpu_counters.py::summarise",
+                 "bench/cuda_competition.py::summarise",
+                 "bench/real_model.py::sha256_file",
+                 "bench/bench_models.py::sha256_file",
+                 "bench/real_model.py::build_feeds"):
+        assert want in rows, f"{want} is not in the bench census at all"
+        assert rows[want]["state"] != "uninvoked", (
+            f"{want} reads UNINVOKED; every one of these has a production caller, and a "
+            f"fabricated detection is worse than a missing row: {rows[want]}")
+
+
+def test_real_model_build_feeds_is_not_credited_by_the_cuda_workloads_test() -> None:
+    """The exact borrowed polarity that was in the tree, named.
+
+    `bench/test_cuda_competition.py` does `with pytest.raises(ValueError): cw.build_feeds(...)`
+    where `cw` is `cuda_workloads`, a module this census does not screen. `real_model.py`
+    also defines `build_feeds`, and it was the row that collected the reject.
+    """
+    audit = _load_audit()
+    rows = {r["id"]: r for r in audit.harness_survey(
+        tests_root=audit.BENCH, files=audit.BENCH_INSTRUMENT_FILES,
+        fn_re=audit.BENCH_FN, prefix="bench")}
+    row = rows["bench/real_model.py::build_feeds"]
+    assert row["reject"] == 0, (
+        "real_model.build_feeds has reject polarity, but the only `pytest.raises` around a "
+        f"`build_feeds` in bench/ is aimed at cuda_workloads: {row}")
+    assert row["state"] == "unfalsified", row

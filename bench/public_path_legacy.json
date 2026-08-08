@@ -1,0 +1,1830 @@
+{
+  "schema": "public_path_legacy/2",
+  "note": "Committed evidence files that named a machine before bench/public_paths.py existed. This list may only shrink. Adding an entry to make a test pass is the defect the test is for.",
+  "scan": "structural kinds only (public_paths.scan_structural): every shape is decided from the file's text, so this list is the same on every machine. The account-name screen is deliberately absent \u2014 it is a fact about the process that runs it, and a ratchet nobody else can reproduce is not a ratchet.",
+  "kinds": [
+    "windows_home",
+    "posix_home",
+    "macos_home",
+    "windows_drive_abs",
+    "virtualenv",
+    "worktree_name"
+  ],
+  "never_legacy": [
+    "bench/results/_cuda69/"
+  ],
+  "regenerate_with": "python bench/gen_public_path_legacy.py",
+  "files": {
+    ".squad/agents/morpheus/charter.md": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    ".squad/agents/mouse/history.md": {
+      "leaks": 2,
+      "kinds": [
+        "windows_drive_abs",
+        "worktree_name"
+      ]
+    },
+    ".squad/agents/niobe/history.md": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    ".squad/agents/switch/history.md": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    ".squad/casting/history.json": {
+      "leaks": 2,
+      "kinds": [
+        "worktree_name"
+      ]
+    },
+    ".squad/decisions-archive/2026-07-30T20-58-11-07-00-rounds-1-3.md": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    ".squad/decisions-archive/2026-08-02T14-42-30-07-00-round7.md": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    ".squad/team.md": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    ".squad/templates/skills/e2e-template-testing/SKILL.md": {
+      "leaks": 3,
+      "kinds": [
+        "posix_home",
+        "windows_home"
+      ]
+    },
+    ".squad/templates/skills/windows-compatibility/SKILL.md": {
+      "leaks": 4,
+      "kinds": [
+        "posix_home",
+        "windows_home"
+      ]
+    },
+    "README.md": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/agreement_mnist-12_rank.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/agreement_mobilenetv2-12_rank.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/barrier_ab-post-dev0-0.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/barrier_ab-post-dev0-1.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/barrier_ab-pre-dev0-0.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/barrier_ab-pre-dev0-1.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/barrier_ab.json": {
+      "leaks": 6,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/c10_counters_dev0.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/c10_counters_dev0_bound.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/c10_counters_dev0_preswitch_bound.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/c10_counters_dev1.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/c10_counters_dev1_bound.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/census-completeness.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/census_frame_after.txt": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/cleanroom_install_dev0.json": {
+      "leaks": 10,
+      "kinds": [
+        "macos_home",
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/consumption_surface_dev0.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/contention_gate/round38_before_fix_device_selector.json": {
+      "leaks": 28,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/contention_gate/round38_head52f9635_PREFIX_control.json": {
+      "leaks": 48,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/contention_gate/round38_merged_head_PREFIX_control.json": {
+      "leaks": 32,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/counters-crit10-dev0-r26.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/counters-crit10-dev0.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/counters-crit10-dev1-r26.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/counters-crit10-dev1.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/counters-full-dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/counters-phi35-dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/counters-phi35-dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/counters-suite-dev1-r26.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/counters_abi_drift.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10-dev0.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10-dev1.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10_chain-dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10_chain-dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10_route-dev0-device_authoritative.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10_route-dev0-host_staging.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10_route-dev0-preswitch_control.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10_route-dev1-device_authoritative.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10_route-dev1-host_staging.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10_side-dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10_side-dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10_witness_arms-dev1-armed.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion10_witness_arms-dev1-unarmed.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion4_icd_witness-dev0.json": {
+      "leaks": 7,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion4_icd_witness-dev1.json": {
+      "leaks": 7,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion4_icd_witness-devunset.json": {
+      "leaks": 14,
+      "kinds": [
+        "virtualenv",
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/criterion5_shaderless_witness-dev0.json": {
+      "leaks": 7,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/criterion5_shaderless_witness-dev1.json": {
+      "leaks": 5,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/criterion5_shaderless_witness-devunset.json": {
+      "leaks": 5,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx4096_AFTER.json": {
+      "leaks": 6,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx4096_BEFORE_samebinary.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx4096_chain.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx4096_identity.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx4096_separating.json": {
+      "leaks": 6,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx512_lane_resident.txt": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx512_lane_shipping.txt": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx512_loss_run.txt": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx512_soak.txt": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx_device_loss-lane_resident.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx_device_loss-lane_shipping.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/ctx_device_loss-lane_shipping_capture.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_loss_arms_predictions.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_loss_gate-BOTHLANES.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_loss_gate-res-ctx4096.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_loss_gate-ship-ctx4096.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_loss_gate/armA_rep000.capture.txt": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_loss_gate/armA_rep001.capture.txt": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_loss_gate/armA_rep002.capture.txt": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_loss_gate_armB_budget.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_loss_gate_armD2_cotenant3584.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_loss_gate_armD_cotenant.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_concurrency-AFTER.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_concurrency-AFTER.txt": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_concurrency-BEFORE.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_concurrency-BEFORE.txt": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_concurrency-prefix.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_concurrency-prefix.txt": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_concurrency-register.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_concurrency.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_concurrency.txt": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_hazards-dev0.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_hazards-dev1.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_kv_lanes/kv_bytes_earned-armed.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/device_memory_kv_lanes/kv_bytes_earned-default.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/full-dev0.log": {
+      "leaks": 36,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/full-dev1.log": {
+      "leaks": 58,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_ab_p0_r1_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_ab_p0_r2_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_ab_p0_r3_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_ab_p1_long_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_ab_p1_r1_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_ab_p1_r2_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_ab_p1_r3_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_abi_p0_r1_dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_abi_p0_r2_dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_abi_p1_r1_dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_abi_p1_r2_dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_after_coldboard_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_base_b_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_baseline24_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_baseline_certified_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_baseline_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_baseline_dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_bindseam_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_contended3_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_contended_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_final_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_final_dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_gb2_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_gb_intel_dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_notile_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_notile_dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_packed2_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_packed_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_packed_final_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_packed_final_dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_soloA_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_tiled_atomic_store_dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_tiled_dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gemv_tiled_dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gqa_attribution.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gqa_grouping_arena_dev0.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gqa_grouping_arena_dev1.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gqa_grouping_arena_dev1_noenv.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gqa_grouping_arena_dev1_recheck.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gqa_grouping_grow_dev0.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/gqa_grouping_grow_dev1.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/inverse_trig_ulp_lavapipe_builtin.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/inverse_trig_ulp_lavapipe_portable.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/inverse_trig_ulp_nvidia_builtin.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/inverse_trig_ulp_nvidia_portable.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/islandab_slope_frag_n25.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/islandab_slope_frag_n5.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/islandab_slope_fused_n25.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/islandab_slope_fused_n5.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/kv_arena_graph_accepts.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/kv_bytes_earned.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/kv_bytes_earned.prefix-stale-cache.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/lane-identity-armA-arena0.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/lane-identity-armA-screened-r1.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/lane-identity-armA-screened-r2.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/lane-identity-armA-screened-r3.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/lane-identity-armB-arena1.json": {
+      "leaks": 7,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/link-linux-downstream/artifact-frame.json": {
+      "leaks": 1,
+      "kinds": [
+        "posix_home"
+      ]
+    },
+    "bench/results/link-linux-downstream/counters-linux.json": {
+      "leaks": 1,
+      "kinds": [
+        "macos_home"
+      ]
+    },
+    "bench/results/link-linux-downstream/gate-armb.log": {
+      "leaks": 7,
+      "kinds": [
+        "macos_home"
+      ]
+    },
+    "bench/results/link-linux-downstream/ledger-check-linux.log": {
+      "leaks": 2,
+      "kinds": [
+        "macos_home",
+        "posix_home"
+      ]
+    },
+    "bench/results/link-linux-downstream/pytest-linux.log": {
+      "leaks": 14,
+      "kinds": [
+        "macos_home",
+        "windows_home"
+      ]
+    },
+    "bench/results/link-linux-downstream/session17-device-steps.txt": {
+      "leaks": 3,
+      "kinds": [
+        "macos_home"
+      ]
+    },
+    "bench/results/link-linux-downstream/session19-device-steps.txt": {
+      "leaks": 3,
+      "kinds": [
+        "macos_home",
+        "posix_home"
+      ]
+    },
+    "bench/results/link-linux-downstream/verdict-linux.json": {
+      "leaks": 1,
+      "kinds": [
+        "macos_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/ARM-A-prefix-nodep.log": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/ARM-B-postfix-nodep.log": {
+      "leaks": 5,
+      "kinds": [
+        "macos_home",
+        "virtualenv",
+        "windows_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/ARM-LIVE-integration-cdylib-empty.log": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/ARM-LIVE-layering-empty.log": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/cargo-test-integration-linux.log": {
+      "leaks": 5,
+      "kinds": [
+        "macos_home",
+        "posix_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/cargo-test-integration-windows.log": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/cargo-test-layering-linux.log": {
+      "leaks": 2,
+      "kinds": [
+        "macos_home",
+        "posix_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/cargo-test-layering-windows.log": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/cargo-test-lib-windows.log": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/cargo-test-portability-linux.log": {
+      "leaks": 2,
+      "kinds": [
+        "macos_home",
+        "posix_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/cargo-test-portability-windows.log": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/link-suite-productivity/lane-checks-windows.log": {
+      "leaks": 9,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/link-win-downstream/criterion10-windows-s17.log": {
+      "leaks": 5,
+      "kinds": [
+        "macos_home",
+        "windows_home"
+      ]
+    },
+    "bench/results/link-win-downstream/pytest-windows-s17.log": {
+      "leaks": 66,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/link-win-downstream/pytest-windows.log": {
+      "leaks": 72,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/logits_reduction-dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/logits_reduction-dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_bert_r14_final.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_bert_r14_post_reprove.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_bert_r14_postmerge.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_bert_r15_after.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_bert_r15_before.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_bert_r15_mid.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_bert_r16.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_bert_rank_after.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/op_census_bert_rank_before.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/op_census_bert_shapes.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_bertsquad-12.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_bertsquad12.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_bertsquad12_after.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_gptoss20b.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_gptoss20b_after.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_gptoss20b_r13_after.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_gptoss20b_r13_before.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_gptoss20b_r2.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mnist-12_rank_after.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/op_census_mnist-12_rank_before.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/op_census_mnv2_r14_final.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mnv2_r14_post_reprove.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mnv2_r14_postmerge.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mnv2_r15_after.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mnv2_r16.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mobilenetv2-12.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mobilenetv2-12_rank_after.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/op_census_mobilenetv2-12_rank_before.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/op_census_mobilenetv2.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mobilenetv2_mid.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mobilenetv2_r13_after.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mobilenetv2_r14_after.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mobilenetv2_r14_before.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_mobilenetv2_r14_mid.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_phi35.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_phi35_after.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_phi35_r13_after.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_phi35_r13_before.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_phi35_r15_after.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/op_census_phi35_r16.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-0baf660-dev0.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-2026-07-30-phases.json": {
+      "leaks": 5,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-2026-07-31.json": {
+      "leaks": 5,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-7c9d1b7-dev0.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-certified-dev0-b.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-certified-dev0-c.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-certified-dev0.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-certified-dev1.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-postbarrier-dev0-long.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-postbarrier-dev0.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-postbarrier-dev1-long.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35-prebarrier-dev0-long.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx2048-dev0.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx4096-BOTH-dev0.json": {
+      "leaks": 7,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx4096-BOTH-retry1.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx4096-BOTH-retry2.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx4096-BOTH-retry3.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx4096-BOTH-retry4.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx4096-dev0.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx4096-dev1.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx4096-resident-retry1.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx4096-resident-retry2.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx4096-resident-retry3.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx512-dev0.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx512-dev1.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx6144-host-dev0.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx6144-resident-dev0.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-ctx8192-resident-dev0.json": {
+      "leaks": 6,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-default-dev0.json": {
+      "leaks": 5,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain-default-dev1.json": {
+      "leaks": 5,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/phi35_kv_chain.json": {
+      "leaks": 7,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/post-gqa-dev0.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/post-gqa-dev1.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/pre-gqa-dev0.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/prefill_tiled.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/prefill_untiled.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/rank8/modelrunner_bertsquad-12_off.json": {
+      "leaks": 4,
+      "kinds": [
+        "virtualenv",
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/rank8/modelrunner_bertsquad-12_on.json": {
+      "leaks": 4,
+      "kinds": [
+        "virtualenv",
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/rank8/modelrunner_mnist-12.json": {
+      "leaks": 6,
+      "kinds": [
+        "virtualenv",
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/rank8/modelrunner_mobilenetv2-12.json": {
+      "leaks": 6,
+      "kinds": [
+        "virtualenv",
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/real_matmulnbits_rows.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/roofline_phi35.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/roofline_split-dev0-cf-GroupQueryAttention.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/roofline_split-dev0.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/roofline_split-dev1.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/rust-model-runner/mnist-12.json": {
+      "leaks": 6,
+      "kinds": [
+        "virtualenv",
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/rust-model-runner/mobilenetv2-12-device-selector-negative-control.json": {
+      "leaks": 11,
+      "kinds": [
+        "virtualenv",
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/rust-model-runner/mobilenetv2-12-device-selector.json": {
+      "leaks": 6,
+      "kinds": [
+        "virtualenv",
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/rust-model-runner/mobilenetv2-12.json": {
+      "leaks": 6,
+      "kinds": [
+        "virtualenv",
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/rust-model-runner/phi-3.5-mini-device-selector.json": {
+      "leaks": 4,
+      "kinds": [
+        "virtualenv",
+        "windows_home"
+      ]
+    },
+    "bench/results/rust-model-runner/phi-3.5-mini.json": {
+      "leaks": 4,
+      "kinds": [
+        "virtualenv",
+        "windows_home"
+      ]
+    },
+    "bench/results/source_digest_eol_probe.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/stall_guard_census-dev0-healthy_loaded.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/stall_guard_census-dev0-healthy_quiet.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/stall_guard_census-dev0-hung_loaded.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/stall_guard_census-dev0-hung_quiet.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/stall_guard_probe-dev0.log": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/tank-ctx512-uma.json": {
+      "leaks": 4,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/tenancy_signature.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/timestamp-audit.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/trinity-suite-dev0.log": {
+      "leaks": 23,
+      "kinds": [
+        "macos_home",
+        "windows_home"
+      ]
+    },
+    "bench/results/trinity-suite-dev1-census-included.log": {
+      "leaks": 58,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/trinity-suite-dev1.log": {
+      "leaks": 10,
+      "kinds": [
+        "macos_home",
+        "windows_home"
+      ]
+    },
+    "bench/results/weight_reread_phi35.json": {
+      "leaks": 2,
+      "kinds": [
+        "windows_home",
+        "worktree_name"
+      ]
+    },
+    "bench/results/wiring_census-dev0.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/wiring_census-dev1.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "bench/results/wiring_census-devunset.json": {
+      "leaks": 3,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "ci/fixtures/cleanroom-redaction/manifest.json": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "ci/fixtures/flake-witness/real-lib-linux-run-a.log": {
+      "leaks": 1,
+      "kinds": [
+        "posix_home"
+      ]
+    },
+    "ci/fixtures/flake-witness/real-lib-linux-run-b.log": {
+      "leaks": 1,
+      "kinds": [
+        "posix_home"
+      ]
+    },
+    "ci/link-linux-repro/README.md": {
+      "leaks": 1,
+      "kinds": [
+        "posix_home"
+      ]
+    },
+    "docs/ENGINE.md": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "docs/OP_COVERAGE.md": {
+      "leaks": 1,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "evidence/proof_attempts.jsonl": {
+      "leaks": 8,
+      "kinds": [
+        "windows_home"
+      ]
+    },
+    "rust/README.md": {
+      "leaks": 3,
+      "kinds": [
+        "windows_drive_abs"
+      ]
+    }
+  }
+}
