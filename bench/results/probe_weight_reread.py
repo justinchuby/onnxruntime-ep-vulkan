@@ -45,11 +45,27 @@ that argument is `probe_roofline.py`'s, unchanged and still an argument. What ha
 that the multiplicity is now measured: if two workgroups named the same blob, or one workgroup
 named it twice, this probe now says so.
 
-Run:  python bench/results/probe_weight_reread.py
+Run:  python bench/results/probe_weight_reread.py            (writes bench/_scratch/, untracked)
+      python bench/results/probe_weight_reread.py --out X.json
+      python bench/results/probe_weight_reread.py --out bench/results/weight_reread_phi35.json \
+             --allow-tracked                                  (regenerate the committed witness)
+
+OUTPUT IS NOT WRITTEN WHERE IT USED TO BE
+=========================================
+This probe used to end by overwriting `bench/results/weight_reread_phi35.json` unconditionally --
+a **committed witness** that `docs/PERF.md` §22 and §25 quote. Running the probe to *read* a
+number therefore rewrote that number and left the tree dirty, which is precisely the state you
+cannot afford to be in while reproducing a disagreement about it. The default target is now
+`bench/_scratch/`, which git already ignores; writing over anything git tracks needs
+`--allow-tracked`, typed in the same command line. Every record also goes through
+`bench/public_paths.py`, which rewrites absolute local paths -- the old record stamped a resolved
+Foundry path under a home directory, which names a machine and a person and is reproducible by
+nobody else.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -64,6 +80,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bench"))
 sys.path.insert(0, str(ROOT / "bench" / "results"))
 
+from public_paths import PublicPathError, dump_public_json, untracked_default  # noqa: E402
 from spirv_simt import Dispatch, InstrumentError, SpirvModule  # noqa: E402
 
 LEDGER = ROOT / "evidence" / "proof_ledger.jsonl"
@@ -558,7 +575,41 @@ def positive_controls(mod: SpirvModule) -> dict:
 # -- main --------------------------------------------------------------------------------------
 
 
-def main() -> int:
+#: The committed witness this probe used to overwrite on every run. Named here so the refusal
+#: message and the docs can quote one constant, and so `--out` defaulting *away* from it is
+#: visible in the source rather than implied by the absence of a line.
+TRACKED_WITNESS = ROOT / "bench" / "results" / "weight_reread_phi35.json"
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        description=(
+            "Execute the compiled q_gemv module over the Phi-3.5 dispatch grid and report "
+            "weight-read amplification. Writes to an untracked scratch path unless --out says "
+            "otherwise; it will not overwrite committed evidence implicitly."
+        )
+    )
+    ap.add_argument(
+        "--out",
+        default=None,
+        help=(
+            "where to write the JSON record. Default: bench/_scratch/weight_reread_phi35.json, "
+            "which git already ignores. Regenerating the committed witness at "
+            f"{TRACKED_WITNESS.relative_to(ROOT).as_posix()} additionally needs --allow-tracked."
+        ),
+    )
+    ap.add_argument(
+        "--allow-tracked",
+        action="store_true",
+        help=(
+            "permit writing over a git-tracked file. Regenerating a committed witness is a "
+            "legitimate act and this is how it is said out loud, in the command line of the run "
+            "that did it."
+        ),
+    )
+    args = ap.parse_args(argv)
+    out = pathlib.Path(args.out) if args.out else untracked_default("weight_reread_phi35.json")
+
     try:
         path, blob, digest = locate_module(SHADER_STEM)
         mod = SpirvModule(blob)
@@ -701,8 +752,15 @@ def main() -> int:
         print(f"ERROR(instrument): {e}", file=sys.stderr)
         return 4
 
-    out = ROOT / "bench" / "results" / "weight_reread_phi35.json"
-    out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    # Scrub, screen, then write — and refuse a tracked destination unless the operator said so.
+    # The scrub matters here specifically: `_result_identity` stamps the resolved model path, and
+    # under the Foundry resolver that path is inside a user's home directory. A record naming a
+    # home directory is not provenance, it only looks like provenance.
+    try:
+        written = dump_public_json(report, out, allow_tracked=args.allow_tracked, root=ROOT)
+    except PublicPathError as e:
+        print(f"ERROR(instrument): {e}", file=sys.stderr)
+        return 5
 
     print("WEIGHT RE-READ — executed against the compiled kernel, not asserted")
     print("=" * 78)
@@ -738,7 +796,7 @@ def main() -> int:
               f"   tiled {r['tiled_amplification']:>9.6f}"
               f"   weight bytes not named {r['weight_bytes_not_named_because_of_the_tile']:>15,}")
     print(f"\n  -> {verdict}")
-    print(f"\n  record: {out}")
+    print(f"\n  record: {written}")
     return 0
 
 

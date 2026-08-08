@@ -5735,6 +5735,57 @@ arm you cannot measure honestly**, and it is also an arm you cannot bisect in th
 plumbing is locked by `rust/tests/row_tile_fallback.rs`, which lives outside `src/ops/` because
 `tests/layering.rs` forbids `unsafe` there and mutating process environment requires it.
 
+#### The tile request — the one arm the kill switch cannot reach (issue #81)
+
+`ONNXRUNTIME_EP_VULKAN_GEMV_TILE="cols,rows"` names an **exact** tile. It is an instrument, not a
+tuning knob, and it exists because of a gap the ceiling above cannot close.
+
+`GEMV_MAX_ROWS` is a *ceiling*: it only removes candidates, so every pair it can reach is a pair
+`gemv_tile` would already have chosen for some ceiling. When `cols` divides `N`,
+`gemv_named_bytes`'s weight term depends only on `rows` and its activation term only on `cols`, so
+on every Phi-3.5 shape `(16, 2)` and `(8, 4)` name **exactly equal** byte counts and
+`gemv_tile_with`'s strict-`<` improvement rule keeps the incumbent. **No value of the ceiling can
+break a tie** — measured, not argued: 30 runs across its value range built the same two pipelines
+as the unset control.
+
+`(8, 4)` is the one arm that isolates the register-pressure and occupancy cost of `rows = 4` at
+*identical named traffic*, which is exactly the risk that gates any future widening of
+`GEMV_MAX_TILE`. Before this variable existed that risk was **unmeasured**, and unmeasured is not
+the same fact as measured-and-negative (R12).
+
+Four properties, and the third is the one that makes it an instrument rather than a knob:
+
+* **Unset is not a value.** `gemv_tile_selection` with the variable absent *is* a call to
+  `gemv_tile`. The default path is identical by construction, not by resemblance.
+* **The grammar is narrow and the parser is pure.** Exactly `<digits>,<digits>` — one comma, no
+  sign, no whitespace anywhere, no trailing text, no radix prefix, both values at least 1 and
+  inside `u32`. `" 8 , 4 "`, `"8,4,"`, `"8,4junk"` and `"0,4"` are all refusals. A lenient reading
+  would mean the value recorded in an artifact no longer identifies what the operator typed.
+* **An illegal pair refuses; it is never clamped, ignored, or fallen back from.** `tile_request_legality`
+  restates every rule the selector already respects — `GEMV_MAX_ROWS`, `GEMV_MAX_COLS`,
+  `GEMV_MAX_TILE`, `wg * cols <= GEMV_RED_WORDS`, `cols | N`, the `GEMV_MIN_WORKGROUPS` floor — so
+  the override can move a measurement onto a different pipeline but **never onto one the shipping
+  selector was forbidden to build**. A refusal is an `EpError` raised before any pipeline exists,
+  and its reason is carried in the `gemv_tile_request_refused` counter field, because a refusal
+  builds no pipeline and `pipeline_variants` is therefore silent about it in a way that is
+  otherwise indistinguishable from the variable never having been set.
+* **The witness is the existing one.** An honoured request is read back off
+  `counters::record_pipeline_variant` at indices 4 and 6 of the recorded specialisation vector —
+  the *effective* pair handed to `get_or_create`, not what the environment asked for. No new
+  observer was added, and none was needed: `pipeline_variants` already recorded the whole vector.
+
+Locked in both polarities by `rust/tests/gemv_tile_request.rs`, which drives the shipping
+translate handler through `registry::spec_for` — unset records
+`q_gemv_matmul_nbits_f16:32,4,32,0,16,1,2` at `M = 128` and `...,16,1,1` at `M = 1`, `8,4` records
+`...,8,1,4`, and every illegal or malformed request refuses with an empty `pipeline_variants`. The
+grammar and the bounds are locked separately as pure functions in `ops::quant`'s unit tests.
+Mapped `uncensused`/Switch in `ci/census_surface_map.json`, for the same reachability reason as its
+two siblings: the census's six-node elementwise graph carries no `MatMulNBits` node.
+
+**This variable takes no reading and changes no default.** It makes one specific unmeasured
+configuration measurable. See `PERF.md` §26.4.1 for what is and is not established about the arm
+it unblocks.
+
 #### What is proven, and the one thing that is not
 
 Three levels, none of them a whole-model claim:

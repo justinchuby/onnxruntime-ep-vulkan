@@ -448,6 +448,321 @@ fn gemv_max_rows() -> u32 {
     )
 }
 
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+// The tile override — an instrument, not an optimisation
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The exact `(cols, rows)` tile to select, when an operator names one.
+///
+/// # Why a second knob, when `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` already exists
+///
+/// `GEMV_MAX_ROWS` is a **ceiling**. It can only make the tile smaller, so every pair it can
+/// reach is a pair [`gemv_tile`] would already have chosen for *some* `max_rows`. There is one
+/// pair that matters and that no value of it can reach.
+///
+/// When `cols` divides `N`, [`gemv_named_bytes`]'s weight term depends only on `rows` and its
+/// activation term only on `cols`. For every Phi-3.5 `MatMulNBits` shape the incumbent
+/// `(16, 2)` and the candidate `(8, 4)` therefore name **exactly equal** byte counts, and
+/// [`gemv_tile_with`]'s strict-`<` improvement rule keeps the incumbent. Lowering the ceiling
+/// cannot break that tie; it only removes candidates. Measured, not argued: 30 runs across the
+/// value range built the same two pipelines as the unset control
+/// (`bench/results/real_model_diagnostics{,_before_gqa}.json` →
+/// `runs[].counters.pipeline_variants`).
+///
+/// `(8, 4)` is the one arm that isolates the **register-pressure and occupancy** cost of
+/// `rows = 4` at *identical named traffic*, which is the risk gating any future widening of
+/// [`GEMV_MAX_TILE`]. Without a way to select it, that risk is **unmeasured** — which is not the
+/// same fact as measured-and-negative, and R12 forbids reporting it as one.
+///
+/// # What this is not
+///
+/// It is not a tuning knob and it changes no default. Unset, this module selects byte-for-byte
+/// what it selected before — [`gemv_tile`] is untouched and is still the only selector. Set, it
+/// **replaces** the search with the named pair, and a pair that any existing rule forbids is
+/// **refused before dispatch** rather than clamped, ignored, or silently fallen back from. A knob
+/// that quietly downgrades an impossible request is how a measurement comes to describe a
+/// configuration nobody ran — the defect class `ONNXRUNTIME_EP_VULKAN_DEVICE` already produced
+/// once, where `DEVICE=0` said what was asked for while the run happened on device 1.
+const GEMV_TILE_VAR: &str = "ONNXRUNTIME_EP_VULKAN_GEMV_TILE";
+
+/// Why a tile request was refused. Every variant names the request, so the diagnostic can quote
+/// the operator's own text back rather than a paraphrase of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TileRequestError {
+    /// The value is not exactly `<digits>,<digits>`.
+    Syntax {
+        /// The rejected value, verbatim.
+        raw: String,
+        /// Which rule of the grammar it broke.
+        detail: &'static str,
+    },
+    /// The value parses but names a tile some existing rule forbids.
+    Illegal {
+        /// Output columns requested.
+        cols: u32,
+        /// Activation rows requested.
+        rows: u32,
+        /// The rule it broke, spelled with the numbers that broke it.
+        detail: String,
+    },
+}
+
+impl std::fmt::Display for TileRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Syntax { raw, detail } => write!(
+                f,
+                "{GEMV_TILE_VAR}={raw:?} is not a tile: {detail}. The grammar is exactly \
+                 `<cols>,<rows>` — two base-ten integers, one comma, no sign, no spaces, no \
+                 trailing text, both at least 1"
+            ),
+            Self::Illegal { cols, rows, detail } => write!(
+                f,
+                "{GEMV_TILE_VAR} requested the tile cols={cols} rows={rows}, which this build \
+                 cannot dispatch: {detail}. Refused rather than clamped — a tile the kernel \
+                 would not have run is not a tile any reading may be attributed to"
+            ),
+        }
+    }
+}
+
+/// Parse a tile request. **Pure**: no environment, no clock, no device.
+///
+/// `None` is "unset" and is not an error — it is the only input for which the caller must behave
+/// exactly as it did before this function existed.
+///
+/// The grammar is deliberately narrow. Every rejection below is a spelling that *could* be given
+/// a generous reading, and a generous reading is precisely what makes an instrument untrustworthy:
+/// if `" 8 , 4 "` and `"8,4,"` and `"8,4junk"` all quietly mean `(8, 4)`, then the value recorded
+/// in an artifact no longer identifies what the operator typed, and a typo becomes indistinguishable
+/// from an intent.
+///
+/// * Exactly one comma, and a non-empty field on each side.
+/// * Each field is ASCII digits only — no sign, no whitespace (leading, trailing or interior), no
+///   underscore, no radix prefix, no exponent, no unicode digit.
+/// * At most 10 digits, and the value must fit in `u32`. A 20-digit number is a typo, not a tile,
+///   and silently wrapping it would be the worst possible answer.
+/// * Both values are at least 1. `0` columns or `0` rows names an empty dispatch.
+/// * The empty string is a syntax error, not "unset". (Note for operators on Windows: `set VAR=`
+///   *removes* the variable there, so the empty string generally reaches this function only from
+///   a caller that constructed it deliberately — which is exactly when it should be refused.)
+pub fn parse_tile_request(raw: Option<&str>) -> Result<Option<(u32, u32)>, TileRequestError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let syntax = |detail: &'static str| TileRequestError::Syntax {
+        raw: raw.to_string(),
+        detail,
+    };
+    if raw.is_empty() {
+        return Err(syntax("the value is empty"));
+    }
+    let mut fields = raw.split(',');
+    let (Some(cols_s), Some(rows_s)) = (fields.next(), fields.next()) else {
+        return Err(syntax("no comma, so this names one number and not a pair"));
+    };
+    if fields.next().is_some() {
+        return Err(syntax(
+            "more than one comma, so this names more than a pair",
+        ));
+    }
+    let field = |s: &str, which: &'static str| -> Result<u32, TileRequestError> {
+        if s.is_empty() {
+            return Err(syntax(match which {
+                "cols" => "the columns field is empty",
+                _ => "the rows field is empty",
+            }));
+        }
+        if !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(syntax(match which {
+                "cols" => "the columns field has a character that is not a base-ten digit",
+                _ => "the rows field has a character that is not a base-ten digit",
+            }));
+        }
+        if s.len() > 10 {
+            return Err(syntax(match which {
+                "cols" => "the columns field has more digits than any u32 has",
+                _ => "the rows field has more digits than any u32 has",
+            }));
+        }
+        let v: u32 = s.parse().map_err(|_| {
+            syntax(match which {
+                "cols" => "the columns field does not fit in a u32",
+                _ => "the rows field does not fit in a u32",
+            })
+        })?;
+        if v == 0 {
+            return Err(syntax(match which {
+                "cols" => "zero columns names an empty dispatch",
+                _ => "zero rows names an empty dispatch",
+            }));
+        }
+        Ok(v)
+    };
+    Ok(Some((field(cols_s, "cols")?, field(rows_s, "rows")?)))
+}
+
+/// Is `(cols, rows)` a tile this build could already have dispatched? **Pure.**
+///
+/// Every clause is an existing rule, restated against a requested pair instead of a searched one.
+/// None of them is new, and that is the point: **the override may select only a tile production
+/// could safely execute**, so it can move a measurement onto a different pipeline but never onto a
+/// pipeline the shipping selector was forbidden to build.
+///
+/// The rules, and where each already lives:
+///
+/// * `rows <= GEMV_MAX_ROWS` — [`gemv_tile_with`]'s search bound and `q_gemv.comp`'s
+///   `QB_MAX_ROWS` activation window.
+/// * `cols <= GEMV_MAX_COLS` — [`gemv_cols`]'s seed and the shader's `QB_MAX_COLS` per-column
+///   arrays.
+/// * `cols * rows <= GEMV_MAX_TILE` — the accumulator register budget the shader sizes
+///   `acc`/`bacc` by, and the bound `matmul_nbits_gemv`'s fail-closed guard and the shader's own
+///   folded spec-constant guard both already enforce.
+/// * `wg * cols <= GEMV_RED_WORDS` — the shared reduction array `red[]`. This is the one bound
+///   backed by a number the *specification* promises (the 16 KiB `maxComputeSharedMemorySize`
+///   floor), so it is the one that must never be relaxed for a measurement.
+/// * `n % cols == 0` — no tail column tile. The shader is correct with one (out-of-range columns
+///   are redirected and re-checked at the store) but the paired non-atomic store is only taken
+///   when the tile owns both fp16 lanes, so a tail tile silently changes which store path a
+///   reading exercises.
+/// * `cols == 1 || n / cols >= GEMV_MIN_WORKGROUPS` — a narrow output must not trade all its
+///   parallelism for reuse.
+///
+/// `m` and `k` are accepted and checked for a different reason than the rest: they are the shape
+/// facts that decide whether the request is *meaningful*, not whether it is safe. `k` must be a
+/// whole number of blocks (it always is — `blocks_per_col` is `K / block_size` — but a caller that
+/// reached here with a `k` that is not is a caller whose `wg` is wrong), and a `rows` above `m`
+/// is permitted deliberately: it is legal, it is what a tail tile does anyway, and refusing it
+/// would make the instrument unable to measure the tail case on purpose.
+#[allow(clippy::too_many_arguments)]
+pub fn tile_request_legality(
+    cols: u32,
+    rows: u32,
+    m: u64,
+    n: u64,
+    k: u64,
+    wg: u32,
+    blocks_per_col: u64,
+) -> Result<(), TileRequestError> {
+    let illegal = |detail: String| TileRequestError::Illegal { cols, rows, detail };
+    if rows > GEMV_MAX_ROWS {
+        return Err(illegal(format!(
+            "rows={rows} exceeds GEMV_MAX_ROWS={GEMV_MAX_ROWS}, the per-row activation window \
+             q_gemv.comp sizes `av[]` by"
+        )));
+    }
+    if cols > GEMV_MAX_COLS {
+        return Err(illegal(format!(
+            "cols={cols} exceeds GEMV_MAX_COLS={GEMV_MAX_COLS}, the width q_gemv.comp sizes its \
+             per-column arrays by"
+        )));
+    }
+    let tile = cols.checked_mul(rows).ok_or_else(|| {
+        illegal("cols*rows overflows a u32 before it can even be compared to a bound".to_string())
+    })?;
+    if tile > GEMV_MAX_TILE {
+        return Err(illegal(format!(
+            "cols*rows={tile} exceeds GEMV_MAX_TILE={GEMV_MAX_TILE}, the accumulator register \
+             budget `acc[]`/`bacc[]` are sized by; the shader's own folded guard would compute \
+             nothing rather than overrun"
+        )));
+    }
+    let red = wg.checked_mul(cols).ok_or_else(|| {
+        illegal("wg*cols overflows a u32 before it can even be compared to a bound".to_string())
+    })?;
+    if red > GEMV_RED_WORDS {
+        return Err(illegal(format!(
+            "wg*cols={red} exceeds GEMV_RED_WORDS={GEMV_RED_WORDS} at wg={wg}; that array is the \
+             16 KiB shared-memory floor the specification promises, and no measurement may spend it"
+        )));
+    }
+    if n % u64::from(cols) != 0 {
+        return Err(illegal(format!(
+            "cols={cols} does not divide N={n}, so the dispatch would carry a tail column tile \
+             and exercise the masked store instead of the paired one"
+        )));
+    }
+    if cols > 1 && n / u64::from(cols) < GEMV_MIN_WORKGROUPS {
+        return Err(illegal(format!(
+            "N/cols={} leaves fewer than GEMV_MIN_WORKGROUPS={GEMV_MIN_WORKGROUPS} workgroups in \
+             x at N={n}",
+            n / u64::from(cols)
+        )));
+    }
+    // The x extent of the dispatch, which nothing else bounds.
+    //
+    // `groupCountY` is clamped by `matmul_nbits_gemv` to the guaranteed floor and the shader
+    // carries a y-grid-stride loop, so a long prefill is covered. **`groupCountX` has neither.**
+    // The shipping selector cannot reach a bad value — `gemv_cols` seeds at `min(16, ...)` and
+    // only ever halves — but a request can: `cols = 1` also bypasses the parallelism clause above,
+    // so `1,1` on a large-vocabulary `lm_head` asks for `groupCountX == N`. Above the guaranteed
+    // `maxComputeWorkGroupCount[0]` floor that dispatch is not slow, it is **invalid**
+    // (VUID-vkCmdDispatch-groupCountX-00417). Nothing in `matmul_nbits`'s claim predicate bounds
+    // `N`, and 128k/256k vocabularies are ordinary, so this is reachable rather than theoretical.
+    let groups_x = n.div_ceil(u64::from(cols));
+    if groups_x > u64::from(GEMV_MAX_GROUPS_Y) {
+        return Err(illegal(format!(
+            "N/cols={groups_x} exceeds the guaranteed maxComputeWorkGroupCount floor of \
+             {GEMV_MAX_GROUPS_Y} at N={n}; the x extent has no grid-stride loop, so that dispatch \
+             would be invalid rather than slow (VUID-vkCmdDispatch-groupCountX-00417)"
+        )));
+    }
+    if blocks_per_col == 0 {
+        return Err(illegal(format!(
+            "K={k} yields no whole quantisation block, so there is no reduction to tile"
+        )));
+    }
+    if m == 0 {
+        return Err(illegal(
+            "M=0 dispatches nothing, so no tile of it can be measured".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The `(cols, rows)` this process will dispatch: the searched tile, or an operator's exact one.
+///
+/// The **only** caller that consults the environment. [`gemv_tile`] stays pure and stays the
+/// selector; this wraps it so that "unset" is not merely equivalent to the old behaviour but is
+/// literally a call to it, and so `bench/results/probe_weight_reread.py`'s mirror of the selector
+/// remains a mirror of the thing that actually runs.
+#[allow(clippy::too_many_arguments)]
+pub fn gemv_tile_selection(
+    m: u64,
+    n: u64,
+    k: u64,
+    bits: u32,
+    a_bytes: u64,
+    wg: u32,
+    blocks_per_col: u64,
+) -> Result<(u32, u32), TileRequestError> {
+    // `var_os`, not `var`. `std::env::var` collapses `NotPresent` and `NotUnicode` into one
+    // `Err`, so `.ok()` would turn a mangled value — a driver script that built the string badly —
+    // into "unset", and the run would take the searched tile while the operator believed it took
+    // theirs. That is the exact silent-substitution this variable refuses to do for an illegal
+    // pair, and it would be worse here because nothing would be recorded as refused.
+    let raw = std::env::var_os(GEMV_TILE_VAR);
+    let raw = match raw.as_ref().map(|v| v.to_str()) {
+        None => None,
+        Some(Some(s)) => Some(s),
+        Some(None) => {
+            return Err(TileRequestError::Syntax {
+                raw: raw
+                    .as_ref()
+                    .map_or_else(String::new, |v| v.to_string_lossy().into_owned()),
+                detail: "the value is not valid UTF-8, so it names no pair of numbers",
+            });
+        }
+    };
+    match parse_tile_request(raw)? {
+        None => Ok(gemv_tile(m, n, k, bits, a_bytes, wg)),
+        Some((cols, rows)) => {
+            tile_request_legality(cols, rows, m, n, k, wg, blocks_per_col)?;
+            Ok((cols, rows))
+        }
+    }
+}
+
 /// The `(cols, rows)` tile one workgroup takes: the pair that names the fewest bytes.
 ///
 /// `rows == 1` is the decode geometry and is *always* what a one-row dispatch gets — the search
@@ -597,14 +912,28 @@ fn matmul_nbits_gemv(
 
     let wg = gemv_workgroup(blocks_per_col as u64);
     let a_bytes = dtype.byte_size() as u64;
-    let (cols, rows) = gemv_tile(
+    // The tile: the byte model's choice, or the exact pair an operator named. `gemv_tile_selection`
+    // is the only consultant of the environment here, and with the variable unset it *is* a call to
+    // `gemv_tile` — so the unset path is identical by construction rather than by resemblance.
+    //
+    // A refused request stops here, before a pipeline is built and long before a dispatch is
+    // recorded. It is deliberately an error and not a clamp: this variable exists to make one
+    // specific unmeasured configuration measurable, and an instrument that silently substitutes a
+    // different configuration for the one requested would attribute the reading to the wrong
+    // kernel — which is the whole failure `pipeline_variants` was added to close.
+    let (cols, rows) = gemv_tile_selection(
         m_total.max(0) as u64,
         n as u64,
         k as u64,
         bits as u32,
         a_bytes,
         wg,
-    );
+        blocks_per_col as u64,
+    )
+    .map_err(|e| {
+        crate::counters::record_gemv_tile_request_refused(&e.to_string());
+        EpError::Internal(format!("`{}`: {e}", node.op_type))
+    })?;
     let mut push = Vec::with_capacity(16);
     for v in [m_total, k, n, blocks_per_col] {
         push.extend_from_slice(&(v as u32).to_le_bytes());
@@ -1354,6 +1683,309 @@ mod tests {
                 "junk {junk:?} means default"
             );
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    // The tile request — parser
+    // ──────────────────────────────────────────────────────────────────────────────────────
+
+    /// Unset is not a value. This is the clause the whole instrument rests on: with the variable
+    /// absent the caller must take the *same code path* it took before this function existed, not
+    /// a path that happens to agree today.
+    #[test]
+    fn an_absent_tile_request_is_not_a_request() {
+        assert_eq!(parse_tile_request(None), Ok(None));
+    }
+
+    /// The pairs an operator is actually going to type, including the one this instrument exists
+    /// for.
+    #[test]
+    fn a_well_formed_tile_request_parses_to_exactly_the_pair_it_names() {
+        assert_eq!(parse_tile_request(Some("8,4")), Ok(Some((8, 4))));
+        assert_eq!(parse_tile_request(Some("16,2")), Ok(Some((16, 2))));
+        assert_eq!(parse_tile_request(Some("1,1")), Ok(Some((1, 1))));
+        assert_eq!(
+            parse_tile_request(Some("08,04")),
+            Ok(Some((8, 4))),
+            "a leading zero is still base ten; the recorded witness is the resolved pair, not \
+             the spelling, so this needs no second rule"
+        );
+    }
+
+    /// **The refusal table.** Every row is a spelling that a lenient parser would have accepted,
+    /// and accepting any of them means an artifact's recorded value no longer identifies what the
+    /// operator asked for.
+    ///
+    /// Deliberately *not* a loop over one assertion: each row names the rule it exercises, so a
+    /// regression says which rule went missing rather than only that something did.
+    #[test]
+    fn every_lenient_reading_of_a_tile_request_is_refused() {
+        let cases: [(&str, &str); 16] = [
+            ("", "empty"),
+            ("8", "no comma"),
+            ("8,", "empty rows field"),
+            (",4", "empty cols field"),
+            (",", "both fields empty"),
+            ("8,4,2", "three fields"),
+            ("8,,4", "an empty middle field is still three fields"),
+            (" 8,4", "leading space"),
+            ("8,4 ", "trailing space"),
+            ("8 ,4", "interior space before the comma"),
+            ("8, 4", "interior space after the comma"),
+            ("+8,4", "an explicit sign"),
+            ("-8,4", "a negative"),
+            ("8,-4", "a negative in the second field"),
+            ("8,4junk", "trailing junk"),
+            ("0x8,4", "a radix prefix"),
+        ];
+        for (raw, why) in cases {
+            let got = parse_tile_request(Some(raw));
+            assert!(
+                matches!(got, Err(TileRequestError::Syntax { .. })),
+                "{raw:?} ({why}) must be a syntax error, got {got:?}"
+            );
+        }
+    }
+
+    /// Zero is syntactically a number and semantically not a tile.
+    #[test]
+    fn a_zero_extent_is_refused_rather_than_promoted_to_one() {
+        for raw in ["0,4", "8,0", "0,0", "00,4"] {
+            assert!(
+                matches!(
+                    parse_tile_request(Some(raw)),
+                    Err(TileRequestError::Syntax { .. })
+                ),
+                "{raw:?} names an empty dispatch and must be refused, not clamped to 1"
+            );
+        }
+    }
+
+    /// A number too large to be a `u32` must fail as a number, not wrap into a plausible tile.
+    #[test]
+    fn an_overflowing_tile_request_refuses_instead_of_wrapping() {
+        // 4294967296 == u32::MAX + 1. Wrapping would make this `(0, 4)`, which the zero rule
+        // would then reject for the wrong reason — so this asserts the width guard fires and the
+        // request never becomes a small plausible number.
+        for raw in [
+            "4294967296,4",
+            "8,4294967296",
+            "99999999999999999999,4",
+            "8,99999999999999999999",
+        ] {
+            let got = parse_tile_request(Some(raw));
+            assert!(
+                matches!(got, Err(TileRequestError::Syntax { .. })),
+                "{raw:?} must refuse, got {got:?}"
+            );
+        }
+        assert_eq!(
+            parse_tile_request(Some("4294967295,1")),
+            Ok(Some((u32::MAX, 1))),
+            "the largest u32 is still a parse; it is the legality check's job to refuse it"
+        );
+    }
+
+    /// The refusal text has to name the variable and quote the operator's own value back, or a
+    /// reader has to guess which of nine switches produced it.
+    #[test]
+    fn a_refusal_names_the_variable_and_quotes_the_request() {
+        let err = parse_tile_request(Some("8, 4")).unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains(GEMV_TILE_VAR),
+            "the refusal must name the variable: {text}"
+        );
+        assert!(
+            text.contains("\"8, 4\""),
+            "the refusal must quote the value verbatim: {text}"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    // The tile request — legality
+    // ──────────────────────────────────────────────────────────────────────────────────────
+
+    /// The Phi-3.5 K=N=3072 projection, which is the shape every claim in this area is about.
+    fn phi35_legality(cols: u32, rows: u32) -> Result<(), TileRequestError> {
+        let wg = gemv_workgroup(96);
+        tile_request_legality(cols, rows, 128, 3072, 3072, wg, 96)
+    }
+
+    /// **The arm this instrument exists to make reachable.** `(8,4)` names exactly the bytes
+    /// `(16,2)` names, and no value of `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` can select it,
+    /// because the strict-`<` rule keeps the incumbent on a tie.
+    #[test]
+    fn the_equal_traffic_arm_is_legal_and_the_incumbent_it_ties_with_is_too() {
+        assert_eq!(phi35_legality(8, 4), Ok(()), "(8,4) must be selectable");
+        assert_eq!(phi35_legality(16, 2), Ok(()), "(16,2) must stay selectable");
+
+        // The tie itself, restated here so a change to `gemv_named_bytes` that broke it would
+        // fail in the file that documents it rather than silently making this instrument moot.
+        let wg = gemv_workgroup(96);
+        assert_eq!(
+            gemv_named_bytes(128, 3072, 3072, 4, 2, 16, 2),
+            gemv_named_bytes(128, 3072, 3072, 4, 2, 8, 4),
+            "the two arms must name equal bytes, or (8,4) is not an equal-traffic control"
+        );
+        assert_eq!(
+            gemv_tile_with(128, 3072, 3072, 4, 2, wg, GEMV_MAX_ROWS),
+            (16, 2),
+            "the shipping selector keeps the incumbent on that tie — the fact that makes the \
+             override necessary"
+        );
+    }
+
+    /// Every bound is a rule that already existed. A request may move a measurement onto a
+    /// different pipeline; it may never move one onto a pipeline the shipping selector was
+    /// forbidden to build.
+    #[test]
+    fn a_tile_request_may_not_reach_past_any_bound_the_selector_respects() {
+        // The accumulator register budget: `(16,4)` is exactly the pair §25.3 names as "strictly
+        // better and refused", and it must stay refused here for the same reason.
+        assert!(
+            matches!(phi35_legality(16, 4), Err(TileRequestError::Illegal { .. })),
+            "cols*rows=64 exceeds GEMV_MAX_TILE and must refuse"
+        );
+        // The row cap.
+        assert!(matches!(
+            phi35_legality(4, 8),
+            Err(TileRequestError::Illegal { .. })
+        ));
+        // The column cap.
+        assert!(matches!(
+            phi35_legality(32, 1),
+            Err(TileRequestError::Illegal { .. })
+        ));
+        // Divisibility of N.
+        assert!(matches!(
+            tile_request_legality(16, 2, 128, 3000, 3072, gemv_workgroup(96), 96),
+            Err(TileRequestError::Illegal { .. })
+        ));
+        // The parallelism floor: N=512 at cols=16 leaves 32 workgroups, below the floor of 64.
+        assert!(matches!(
+            tile_request_legality(16, 2, 128, 512, 3072, gemv_workgroup(96), 96),
+            Err(TileRequestError::Illegal { .. })
+        ));
+        // The shared reduction array, at the workgroup size K=8192 takes.
+        let wg_big = gemv_workgroup(256);
+        assert_eq!(wg_big, 128, "K=8192 must still take a 128-invocation group");
+        assert!(
+            matches!(
+                tile_request_legality(16, 2, 128, 3072, 8192, wg_big, 256),
+                Ok(())
+            ),
+            "128*16 is exactly GEMV_RED_WORDS and must be allowed"
+        );
+        // An empty dispatch.
+        assert!(matches!(
+            tile_request_legality(16, 2, 0, 3072, 3072, gemv_workgroup(96), 96),
+            Err(TileRequestError::Illegal { .. })
+        ));
+        assert!(matches!(
+            tile_request_legality(16, 2, 128, 3072, 16, gemv_workgroup(96), 0),
+            Err(TileRequestError::Illegal { .. })
+        ));
+    }
+
+    /// Overflow in the *bounds* check, not in the parser.
+    ///
+    /// **What this actually asserts, stated honestly:** the caps run first, so `u32::MAX` columns
+    /// is refused by `GEMV_MAX_COLS` long before `cols.checked_mul(rows)` is reached. The
+    /// `checked_mul`s in `tile_request_legality` are therefore defence in depth against a future
+    /// reordering, not a live path — and a test claiming to exercise them would be claiming
+    /// something false. What is checked here is the property that matters to an operator: a
+    /// gigantic request is refused, by a named rule, rather than wrapping into a small
+    /// legal-looking product.
+    #[test]
+    fn a_huge_tile_request_is_refused_by_a_named_cap_before_anything_can_wrap() {
+        for (cols, rows, expect) in [
+            (u32::MAX, 2, "GEMV_MAX_COLS"),
+            (u32::MAX, 1, "GEMV_MAX_COLS"),
+            (1u32 << 20, 1u32 << 20, "GEMV_MAX_ROWS"),
+            (16, u32::MAX, "GEMV_MAX_ROWS"),
+        ] {
+            let got = tile_request_legality(cols, rows, 128, 3072, 3072, 32, 96);
+            let err = got.expect_err(&format!("({cols},{rows}) must refuse"));
+            assert!(
+                err.to_string().contains(expect),
+                "({cols},{rows}) must be refused by {expect}; got {err}"
+            );
+        }
+    }
+
+    /// The shared reduction array, refused. **This clause is the only one backed by a number the
+    /// specification promises** (the 16 KiB `maxComputeSharedMemorySize` floor), and it was the
+    /// one clause with no case showing it fire — every other bound had a refusal case and this one
+    /// had only a boundary `Ok`.
+    ///
+    /// `K = 16384` at block 32 gives 512 blocks, so `gemv_workgroup` returns 256, and 256 × 16
+    /// names 4096 words against a 2048-word array.
+    #[test]
+    fn a_request_that_would_overrun_the_shared_reduction_array_is_refused() {
+        let wg = gemv_workgroup(512);
+        assert_eq!(wg, 256, "K=16384 must take a 256-invocation group");
+        let err = tile_request_legality(16, 2, 128, 3072, 16384, wg, 512)
+            .expect_err("wg*cols = 4096 must refuse");
+        assert!(
+            err.to_string().contains("GEMV_RED_WORDS"),
+            "the refusal must name the shared array: {err}"
+        );
+        // And the boundary immediately below it is still allowed, or the clause is off by one.
+        assert_eq!(
+            tile_request_legality(8, 4, 128, 3072, 16384, wg, 512),
+            Ok(())
+        );
+    }
+
+    /// The dispatch x extent, which nothing else bounds and which has no grid-stride loop.
+    ///
+    /// `cols = 1` also bypasses the `GEMV_MIN_WORKGROUPS` clause, so this is the one combination
+    /// that can ask for an invalid `vkCmdDispatch` rather than a slow one.
+    #[test]
+    fn a_request_whose_x_grid_exceeds_the_guaranteed_floor_is_refused() {
+        let wg = gemv_workgroup(96);
+        // A large-vocabulary lm_head. Nothing in the claim predicate bounds N.
+        let n = 128_256u64;
+        let err = tile_request_legality(1, 1, 128, n, 3072, wg, 96)
+            .expect_err("cols=1 at N=128256 asks for 128256 workgroups in x and must refuse");
+        assert!(
+            err.to_string().contains("maxComputeWorkGroupCount"),
+            "the refusal must name the limit: {err}"
+        );
+        // The shipping selector cannot reach that value, which is why this is a request-only
+        // hazard: `gemv_cols` seeds at 16 and only halves.
+        assert!(
+            gemv_cols(n, wg) > 1,
+            "the searched selector must not be able to produce cols=1 here"
+        );
+        // A legal wide tile at the same N is still accepted.
+        assert_eq!(tile_request_legality(16, 2, 128, n, 3072, wg, 96), Ok(()));
+    }
+
+    /// A legality refusal has to say which rule and with which numbers, or the operator is left
+    /// bisecting a table of six bounds by hand.
+    #[test]
+    fn a_legality_refusal_names_the_rule_and_the_numbers_that_broke_it() {
+        let err = phi35_legality(16, 4).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("cols=16"), "{text}");
+        assert!(text.contains("rows=4"), "{text}");
+        assert!(
+            text.contains("GEMV_MAX_TILE"),
+            "the refusal must name the rule: {text}"
+        );
+    }
+
+    /// `rows > m` is legal on purpose. It is what a tail tile already does on the last row tile
+    /// of any prefill, and refusing it would make the tail case unmeasurable.
+    #[test]
+    fn a_row_tile_wider_than_m_is_legal_because_the_tail_tile_already_is() {
+        assert_eq!(
+            tile_request_legality(16, 2, 1, 3072, 3072, gemv_workgroup(96), 96),
+            Ok(()),
+            "M=1 with rows=2 is exactly the tail-tile geometry and must be selectable"
+        );
     }
 
     #[test]

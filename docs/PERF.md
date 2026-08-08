@@ -4705,20 +4705,86 @@ Two facts fall out, and both were surprises:
 
 * **`q_gemv` decode time is flat at ~17.5 ms at every cache length.** All of decode's growth is
   GQA. The quantised GEMM is not the decode problem; it is not even a large part of it.
-* **Weight streaming is a minority cost at width.** The tiled and untiled arms differ *only* in how
-  many passes they make over the same 2.291 GB of packed weights — `M` passes untiled against
+* **Weight streaming is a minority cost at width.** ~~The tiled and untiled arms differ *only* in
+  how many passes they make over the same 2.291 GB of packed weights — `M` passes untiled against
   `ceil(M/4)` tiled — so differencing them gives a marginal streaming bandwidth. Eight prefill `M`
   points yield **seven** differential points: `M = 1` yields none, because both arms make exactly
   one pass there and Δpasses is zero. Over those seven (`M = 2 … 128`, from
   `real_model_latency_before_gqa.json`) the readings are **199.7, 244.5, 242.8, 238.8, 226.8,
-  222.5, 217.4 GB/s** — range **200–245**, median **227**, and above the ~192 GB/s spec sheet at
+  222.5, 217.4 GB/s** — range 200–245, median 227, and above the ~192 GB/s spec sheet at
   every point, which is what L2 reuse looks like. `M = 2` is the low end and the noisiest point
   (one differenced pass, no averaging); the six points from `M = 4` up sit in 217–245. One full
   weight pass costs 9.4–11.5 ms (median 10.1). At `M = 128` the tiled arm makes 32 passes, so
-  streaming is ~323 ms of the 3004.55 ms tiled time — **~11%**.
+  streaming is ~323 ms of the 3004.55 ms tiled time — **~11%**.~~
+  **WITHDRAWN 2026-08-08 (issue #81). The divisor was wrong. See §26.4.1.**
 
-So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — would be
-optimising a tenth of the wide-prefill cost. The data said to go elsewhere, so this branch did.
+~~So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — would be
+optimising a tenth of the wide-prefill cost. The data said to go elsewhere, so this branch did.~~
+**Withdrawn with the bullet above.** That sentence is the reason `.squad/decisions.md` carries a
+standing instruction not to spend further effort on `MatMulNBits` weight streaming. The
+instruction rested on the ~11%, and the ~11% rested on a pass count the tree contradicts.
+
+### 26.4.1 The pass count above is wrong, and the correction is arithmetic (2026-08-08, issue #81)
+
+**What is withdrawn:** the divisor, and everything downstream of it. **What is not:** any measured
+quantity. The eight prefill medians, the per-kernel split, and the artifacts are untouched; only
+the number they were divided by changes.
+
+**The refutation, read off the tree rather than argued.** §26.4 computed
+`Δpasses = M − ceil(M/4)`. The tiled arm does not take `rows = 4`. It takes `rows = 2`, on every
+Phi-3.5 `MatMulNBits` shape, and the artifacts of this very section say so — the specialisation
+vector is `[wg, bits, block_size, has_zp, cols, packed, rows]` and index 6 is the row tile:
+
+| artifact | arm | recorded `pipeline_variants` at `M = 128` | `QB_ROWS` |
+|---|---|---|---|
+| `real_model_diagnostics_before_gqa.json` | tiled (`GEMV_MAX_ROWS=4`) | `q_gemv_matmul_nbits_f16:32,4,32,0,16,1,2` | **2** |
+| `real_model_diagnostics_before_gqa.json` | untiled (`GEMV_MAX_ROWS=1`) | `q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1` | 1 |
+
+§25.3 states the same fact in prose and explains it: when `cols` divides `N`, `gemv_named_bytes`'s
+weight term depends only on `rows` and its activation term only on `cols`, so `(16,2)` and `(8,4)`
+name **exactly equal** bytes and the strict-improvement rule keeps the incumbent. So the correct
+divisor is `Δpasses = M − ceil(M/2)`, and the SPIR-V amplification the tiled arm actually achieves
+is **`ceil(M/2)`** — `M=4 → 2`, `M=5 → 3`, `M=32 → 16`, `M=128 → **64**`. At the §22/§25
+denominator of 1,861,189,632 int4 weight bytes, `M = 128` names **119.1 GB**.
+
+**Re-differenced, same artifact, same medians, corrected divisor** — every column below is
+`(untiled − tiled) ÷ Δpasses` over `real_model_latency_before_gqa.json`:
+
+| M | Δ (ms) | Δpasses, published | Δpasses, correct | ms/pass, published | ms/pass, correct |
+|---|---|---|---|---|---|
+| 2 | 11.47 | 1 | 1 | 11.47 | 11.47 |
+| 4 | 28.11 | 3 | 2 | 9.37 | 14.06 |
+| 8 | 56.62 | 6 | 4 | 9.44 | 14.16 |
+| 16 | 115.15 | 12 | 8 | 9.60 | 14.39 |
+| 32 | 242.41 | 24 | 16 | 10.10 | 15.15 |
+| 64 | 494.26 | 48 | 32 | 10.30 | 15.45 |
+| 128 | 1011.90 | 96 | 64 | 10.54 | **15.81** |
+
+**MODEL class, and the label is load-bearing.** Under §22's taxonomy the medians are MEASUREMENT
+and everything in the two right-hand columns is a **derivation over them** — an analytic
+construction, never quotable as a measurement. The same was true of the withdrawn figures; the
+difference is that this section says so.
+
+**What follows, and what deliberately does not.**
+
+* The published span (200–245) and its median (227), both in GB/s, are **withdrawn**. They were
+  the arithmetic
+  consequence of the wrong divisor, and their most-quoted property — sitting *above* the ~192 GB/s
+  spec sheet, explained as L2 reuse — was an artefact of it.
+* **No replacement bandwidth or latency figure is published here.** The corrected per-pass column
+  is arithmetic on a difference of two medians taken in separate sessions, it drifts 12.5% across
+  the range (14.06 → 15.81 ms), and a marginal cost that drifts is not a constant to quote. What
+  can be said without inventing anything: **the streaming term is a much larger share of `q_gemv`
+  than ~11%, and how much larger is not established by this artifact.**
+* **`(8,4)` remains UNMEASURED.** It is the one arm that isolates the register-pressure cost of
+  `rows = 4` at *identical* named traffic, and until issue #81 no surface in the tree could select
+  it: `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` is a ceiling and a ceiling cannot break a tie, which
+  30 runs across its value range confirmed by building the same two pipelines as the unset
+  control. Issue #81 lands the selector that makes the arm reachable and **takes no reading**.
+  Unmeasured is not the same fact as measured-and-negative, and R12 forbids reporting it as one.
+* Consequently PR #53's next lever (widening the tiled arm's 32-bit scalar `B` loads) is **no
+  longer deprioritised on evidence**. It was set aside for optimising "a tenth" of the cost; that
+  tenth is not established. It is not hereby prioritised either — it is returned to undecided.
 
 ### 26.5 The finding: one lane per subgroup
 

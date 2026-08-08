@@ -175,6 +175,21 @@ NOT_A_PRODUCER = (
 _SUBPROCESS_SPAWNERS = ("run", "Popen", "call", "check_call", "check_output")
 _JSON_WRITE_SINKS = ("write_text", "write", "writelines")
 
+#: Helpers that serialise and write a JSON record themselves, so the caller never names
+#: ``json.dumps`` and the sink detection above cannot see the write.
+#:
+#: Added when `bench/results/probe_weight_reread.py` moved from a bare
+#: ``out.write_text(json.dumps(report))`` to ``public_paths.dump_public_json(report, out)``
+#: (issue #81). The probe still writes exactly the same record; only the spelling moved. Without
+#: this list the producer set silently fell from 25 to 24 and the probe stopped being audited for
+#: naming the model at all — which is the *discovery set shrank* failure
+#: `test_the_real_source_tree_has_no_unattributed_phi35_evidence_producer` asserts against, and it
+#: is worth noting that the assertion caught this rather than a human did.
+#:
+#: A name here is a claim that the function writes a JSON record. Adding one widens what the
+#: audit will *check*; it never excuses anything from being checked.
+_JSON_RECORD_WRITERS = ("dump_public_json",)
+
 
 @dataclass(frozen=True)
 class Spawn:
@@ -524,6 +539,9 @@ class _Analyzer(ast.NodeVisitor):
             ):
                 self.json_record_lines.append(node.lineno)
                 return
+            if func.attr in _JSON_RECORD_WRITERS:
+                self.json_record_lines.append(node.lineno)
+                return
             if func.attr in _JSON_WRITE_SINKS:
                 if any(self._is_json_dumps(a) for a in node.args):
                     self.json_record_lines.append(node.lineno)
@@ -532,6 +550,8 @@ class _Analyzer(ast.NodeVisitor):
             if func.id in self.json_load_aliases:
                 self.reads_json = True
             elif func.id in self.json_dump_aliases:
+                self.json_record_lines.append(node.lineno)
+            elif func.id in _JSON_RECORD_WRITERS:
                 self.json_record_lines.append(node.lineno)
 
 
