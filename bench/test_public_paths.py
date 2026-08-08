@@ -378,6 +378,86 @@ def test_bench_models_serialises_a_rooted_path_but_keeps_the_real_one_in_memory(
     assert d["files"][0]["path"] == "<repo>/bench/m.onnx"
 
 
+def test_a_scratch_directory_given_as_an_absolute_path_is_rooted(tmp_path):
+    """Every committed record was produced with a *relative* `--scratch`.
+
+    So the scratch paths in them (`outputs_dir`, `file`, `profile_path`) read
+    `_bench_scratch\\rep0\\...` -- clean, but clean by accident of invocation
+    rather than by anything this suite checks. The one shape that has never
+    been exercised is the shape that would reintroduce the defect this issue is
+    about: `--scratch C:\\Users\\<account>\\scratch`, which is a perfectly
+    ordinary thing to type and would put an account name into ~200 fields of a
+    1.5MB evidence record.
+
+    This asserts the boundary handles it, so the suite stops depending on how
+    the operator happened to invoke the harness.
+    """
+    scratch = Path.home() / "scratch-abs-probe"
+    payload = {
+        "outputs_dir": str(scratch / "rep0" / "outputs_vulkan_prefill_1"),
+        "profile_path": str(scratch / "rep0" / "profile.json"),
+        "outputs": [{"file": str(scratch / "rep0" / "outputs" / "o0.npy")}],
+    }
+    assert Path(payload["outputs_dir"]).is_absolute()
+
+    out = tmp_path / "rec.json"
+    pp.dump_public_json(payload, out)
+    written = out.read_text(encoding="utf-8")
+
+    assert pp.scan(written) == [], pp.scan(written)
+    # Not `str(Path.home()) not in written`: json.dumps escapes separators, so a
+    # leaked `C:\Users\ann` is serialised `C:\\Users\\ann` and the naive check
+    # passes on a dirty file. Compare against the escaped form too.
+    assert str(Path.home()) not in written
+    assert json.dumps(str(Path.home()))[1:-1] not in written
+    assert "<home>/scratch-abs-probe/rep0/outputs_vulkan_prefill_1" in written
+
+
+def test_a_relative_scratch_path_survives_the_boundary_unchanged(tmp_path):
+    """The other half: rooting must not mangle the form already committed.
+
+    If the boundary rewrote `_bench_scratch/rep0/...` into `<repo>/...` or
+    `<elsewhere>/...`, every committed evidence record would churn on the next
+    regeneration for no gain. Relative provenance is explicitly one of the two
+    acceptable forms, so it must pass through untouched.
+    """
+    payload = {"outputs_dir": "_bench_scratch\\rep0\\outputs_vulkan_prefill_1"}
+    out = tmp_path / "rec.json"
+    pp.dump_public_json(payload, out)
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["outputs_dir"] == "_bench_scratch\\rep0\\outputs_vulkan_prefill_1"
+
+
+def test_a_dirty_relative_path_is_rooted_or_refused_but_never_published(tmp_path):
+    """The other side of preserving relative provenance.
+
+    Leaving relative strings alone is right for `_bench_scratch/rep0/...`, but a
+    relative path can still name the account -- `..\\..\\Users\\<account>\\...`
+    walks out through the home directory, and a bare `..\\<account>\\x` names it
+    outright. Neither is exotic; both are what a `--scratch` argument typed from
+    a sibling directory looks like.
+
+    The invariant is *sanitised or refused, never published* -- not "raises".
+    Rooting a traversal that escapes the repo is a good outcome and is what
+    happens; refusing is the fallback for when rooting cannot clean it. Asserting
+    the exception specifically would fail on correct behaviour.
+    """
+    probes = [
+        str(Path("..") / ".." / "Users" / Path.home().name / "scratch" / "out.npy"),
+        str(Path("..") / Path.home().name / "x.npy"),
+        f"run by {Path.home().name}",
+    ]
+    for probe in probes:
+        assert pp.scan(probe), f"probe is not dirty, so it tests nothing: {probe!r}"
+        out = tmp_path / "d.json"
+        try:
+            pp.dump_public_json({"outputs_dir": probe}, out)
+        except pp.PathLeak:
+            continue  # refused: also acceptable
+        published = json.loads(out.read_text(encoding="utf-8"))["outputs_dir"]
+        assert pp.scan(published) == [], (probe, published, pp.scan(published))
+
+
 def test_every_cuda_writer_goes_through_the_boundary():
     """No committed-artifact writer may call `write_text` with `json.dumps`.
 
