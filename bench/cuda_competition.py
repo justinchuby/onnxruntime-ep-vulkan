@@ -62,8 +62,10 @@ PROCESS ISOLATION
 -----------------
 Each (arm, workload) pair runs in its own subprocess, launched with the
 interpreter belonging to that arm's runtime.  Two ORT versions cannot coexist in
-one process, and a 2.3 GB model left resident from a previous arm changes the
-allocator state the next arm starts from.  The parent never imports onnxruntime.
+one process, and a 2.29 GB model left resident from a previous arm changes the
+allocator state the next arm starts from (``model.weights_bytes`` 2291238912,
+committed in ``bench/results/real_model_gqa_local_size.json``).  The parent never
+imports onnxruntime.
 """
 
 from __future__ import annotations
@@ -168,15 +170,20 @@ COUNTERS_SCOPES = frozenset({COUNTERS_SCOPE_FIRST_RUN, COUNTERS_SCOPE_ALL_RUNS})
 #: **Why time and not node count.**  The first version of this gate counted profile
 #: nodes, and it was wrong for exactly the arm it mattered most for.  The Vulkan EP
 #: is a *fusing* EP: it claims a contiguous island of the graph and ORT replaces the
-#: whole island with one fused node.  On Phi-3.5 it claimed 355 of 363 nodes and the
-#: profile showed **one** ``VulkanExecutionProvider_..._0`` node beside 8 residual
-#: host nodes — a node-count reading of 8/9 = 88.9% "CPU fallback" for a graph that
-#: is 97.8% on the GPU (`claimed_nodes`/`total_nodes_probed`, committed in
-#: ``bench/results/barrier_ab-post-dev0-0.json``).  The CUDA EP does not fuse, so the
-#: same metric reads a small single-digit percentage for it instead — a much higher
-#: node-count "fallback" reading for the fusing arm than for the non-fusing one, on
-#: the same underlying work.  A metric that disagrees this much between two arms
-#: doing the same thing is measuring fusion, not fallback.
+#: whole island with one fused node.  On Phi-3.5 it claimed 355 of 363 probed nodes
+#: into a single island -- `claimed_nodes` 355, `total_nodes_probed` 363, so 97.8% of
+#: the probed graph, and `island_count` 1, all committed in
+#: ``bench/results/barrier_ab-post-dev0-0.json``.  A node-counting reader sees that
+#: island as *one* provider node, so the same run reads as overwhelmingly GPU by
+#: claimed nodes and as overwhelmingly host by profile-node share.
+#:
+#: No profile-node census is quoted here for either arm -- not the fused arm's
+#: Vulkan-vs-host node split, not a percentage derived from it, and not the
+#: non-fusing CUDA arm's counterpart.  No committed artifact in this tree witnesses
+#: a per-provider profile node census for any arm, and a figure whose only support
+#: is arithmetic on a neighbouring one is the defect this branch exists to remove.
+#: The qualitative finding needs no magnitude: a metric whose answer moves with how
+#: an EP fuses is measuring fusion, not fallback.
 #:
 #: Kernel-time share is fusion-invariant and is what the word "fallback" is actually
 #: reaching for: how much of the run happened somewhere other than the named
@@ -185,8 +192,8 @@ COUNTERS_SCOPES = frozenset({COUNTERS_SCOPE_FIRST_RUN, COUNTERS_SCOPE_ALL_RUNS})
 #:
 #: 0.05 is not tuned: it is "essentially all of the work happened on the named
 #: provider", with room for the shape/mask/rope preprocessing ORT keeps on the host
-#: in every partitioning of this graph.  A 30%-CPU CUDA arm is not a slow CUDA arm;
-#: it is not a CUDA arm.
+#: in every partitioning of this graph.  A CUDA arm that spends a large share of its
+#: kernel time on the host is not a slow CUDA arm; it is not a CUDA arm.
 FALLBACK_SPLIT_THRESHOLD = 0.05
 
 #: Output-equivalence budget, in **ULP measured at the reference tensor's peak
@@ -583,8 +590,12 @@ def ulp_distance(subject, reference):
 
     Deliberately **not** ``np.spacing``: Trinity found (2026-08-04) that
     ``np.spacing`` returns ``inf`` at fp16's largest finite value, which made a
-    504-unit error read back as 0.0 ULP — an instrument that makes a wrong residual
-    look sound.  The bit-pattern form has no such boundary.
+    504-unit error read back as zero — an instrument that makes a wrong residual
+    look sound.  The 504 is not a measurement of any run: it is a property of the
+    fp16 format, executed and pinned by
+    ``bench/test_cuda_competition.py``'s ``test_ulp_distance_at_float16_max_finite_does_not_read_zero``,
+    which walks that many representable steps down from the maximum finite value and
+    asserts the distance back.  The bit-pattern form has no such boundary.
 
     **This is reported but no longer gates.**  Raw ULP is the right metric for values
     of comparable magnitude and the wrong one near zero, where the spacing collapses
@@ -733,8 +744,8 @@ def compare_outputs(subject, reference, output_meta, *, top_k: int = TOP_K,
     mistake a wide budget for a tight one.
 
     Reports the evidence unconditionally, not only on failure: a passing check whose
-    peak-ULP distance is 0 for every output is a different event from one at 90% of
-    budget, and only the numbers distinguish them.
+    peak-ULP distance is 0 for every output is a different event from one that passes
+    just inside its budget, and only the numbers distinguish them.
     """
     import numpy as np
 
@@ -831,7 +842,8 @@ def compare_outputs(subject, reference, output_meta, *, top_k: int = TOP_K,
             # The quantity actually wanted is the *typical* rounding noise between
             # the two tensors, which a sparse plant does not move and distributed
             # rounding does.  A high quantile gives that: at p99 a plant touching
-            # under 1% of elements leaves the estimate at the noise floor, so every
+            # fewer elements than the quantile's own tail leaves the estimate at the
+            # noise floor, so every
             # row stays resolvable and the plant is caught, while genuine
             # element-wise rounding raises it and tied rows correctly abstain.
             #
@@ -1154,7 +1166,8 @@ def _npy_dump(outputs, names, path: Path) -> "list[dict]":
     """Persist an arm's outputs so the parent can compare across processes.
 
     Full tensors, not summaries: an equivalence check computed from summaries is a
-    check of the summariser.  Phi-3.5's 65 outputs at past 2048 are large, so only
+    check of the summariser.  Phi-3.5's outputs at the longest ``decode_past`` workload
+    this suite defines are large, so only
     the first output (``logits`` in every model here) is written in full and the KV
     outputs are recorded by shape and digest.
     """

@@ -386,8 +386,10 @@ def test_a_scratch_directory_given_as_an_absolute_path_is_rooted(tmp_path):
     rather than by anything this suite checks. The one shape that has never
     been exercised is the shape that would reintroduce the defect this issue is
     about: `--scratch C:\\Users\\<account>\\scratch`, which is a perfectly
-    ordinary thing to type and would put an account name into ~200 fields of a
-    1.5MB evidence record.
+    ordinary thing to type and would put an account name into every path field of
+    an evidence record. No count or size is quoted for that record: neither is
+    witnessed by a committed artifact, and the defect does not depend on how
+    many fields it lands in.
 
     This asserts the boundary handles it, so the suite stops depending on how
     the operator happened to invoke the harness.
@@ -490,8 +492,9 @@ def test_no_committed_evidence_file_leaks_unless_it_is_declared():
     """Every tracked evidence file is scanned; new leaks are a failure.
 
     Not a repository-wide *gate*: 299 files named a machine before
-    `bench/public_paths.py` existed, and a screen that is red on the day it
-    lands is a screen that gets skipped. So the declared set in
+    `bench/public_paths.py` existed — that is the entry count of the `files` map
+    in `bench/public_path_legacy.json`, not a measurement — and a screen that is
+    red on the day it lands is a screen that gets skipped. So the declared set in
     `bench/public_path_legacy.json` is the ceiling and this test is the ratchet
     — an undeclared leak, or a declared file leaking more than declared, fails.
 

@@ -66,8 +66,14 @@ added to it. Ten in total; `Phase::ALL` is the list of record, and a Rust test a
 
 | Span | Brackets | Why it exists |
 |---|---|---|
-| `vulkan.compute_call` | The **instrumented success path** of the ORT `Compute` callback: opened inside `compute_impl`, after the null check / `this_info` / `guard_ffi_status` entry, and closed before `disclose_broken_commitment`. Not the literal extern entry, and absent entirely on an early-out. | It is the only span that can tell you whether the phases account for the callback. Without it the reduction can only see its own inner bracket and cannot notice work that happens on either side of it. Read it as the widest bracket the EP instruments, not as ORT's true wall time for the call. |
-| `vulkan.subgraph` | The `dispatch_ort` call inside `Compute`. | The bracket every phase lies inside. This is the denominator for "share of time inside the `vulkan.compute_call` bracket" throughout this document — that bracket is the instrumented success-path region, not ORT's literal `Compute` entry, so the denominator is bounded by what this EP instruments, never claimed as a share of the true extern-to-extern call. |
+| `vulkan.compute_call` | The **instrumented success path** of the ORT `Compute` callback: opened inside `compute_impl`, after the null check / `this_info` / `guard_ffi_status` entry, and closed before `disclose_broken_commitment`. Not the literal extern entry, and absent entirely on an early-out. | It is the only span that can tell you whether the phases account for that instrumented region. Without it the reduction can only see its own inner bracket and cannot notice work that happens on either side of it. Read it as the widest bracket the EP instruments, not as ORT's true wall time for the call. |
+| `vulkan.subgraph` | The `dispatch_ort` dispatch region for one fused subgraph, opened inside `dispatch_ort`. | The bracket every phase lies inside, and **the denominator for every phase share in this document**. Phase shares are shares of the summed `vulkan.subgraph` spans — written "inside `vulkan.subgraph`" from here on, never "inside `Compute`". They are not shares of `vulkan.compute_call` (which is wider), and they are certainly not shares of ORT's literal `Compute` entry-to-return wall (wider still, and not instrumented anywhere in this repository). |
+
+Neither structural span is ORT's `Compute` callback. `vulkan.compute_call` is the instrumented
+success-path bracket opened inside `compute_impl` and absent on early-outs; `vulkan.subgraph` is
+narrower again. **No number in this document is a share of ORT's entry-to-return wall**, and the
+phrase "inside `Compute`" is not used for one: where an older revision of this document wrote it,
+it meant the summed `vulkan.subgraph` spans, and it now says so.
 
 The distinction is load-bearing, and was learned the expensive way. In the 2026-08-07 CUDA
 competition work the gap between the two brackets measured a warm-call median far larger than the
@@ -969,7 +975,7 @@ lavapipe CI runner, the arithmetic is a no-op and the check cannot fail. It is r
 `decisive: false` and surfaced by `red_flags()` as "NOT DECISIVE", never as a pass.
 
 **Why this matters more now, not less.** GPU kernel time is 12.6% (NVIDIA) / 43.9% (Intel) of
-time inside `Compute` (§9.3). A 52× under-report of the Intel GPU column would move the *wall
+time inside `vulkan.subgraph` (§9.3). A 52× under-report of the Intel GPU column would move the *wall
 clock* not at all — the wall clock is dominated by host staging — so it is invisible to every
 end-to-end benchmark on the project. Only the integrality check sees it.
 
@@ -1051,7 +1057,7 @@ python bench\phi35.py --iters 20 --warmup 10 --repeats 3 --trace-iters 6
 A fixed per-submission cost was proposed and deliberately **not** designed around until an
 instrument existed. The instrument now exists, and the hypothesis is dead:
 
-| | share of time inside `Compute` |
+| | share of time inside `vulkan.subgraph` |
 |---|---|
 | `vulkan.submit` | **0.6%** (NVIDIA) / **16.4%** (Intel) |
 
@@ -1108,8 +1114,10 @@ comparison and that refusal stands.
 
 ### 9.3 The phase split
 
-Shares are of **time inside `Compute`** — the sum of `vulkan.subgraph` spans. That is the EP's
-own view of its execution and is **not** process wall time; ORT's graph execution, the CPU EP's
+Shares are of **time inside `vulkan.subgraph`** — the sum of those spans, which is the
+`dispatch_ort` dispatch region for each fused subgraph. It is **not** ORT's `Compute` callback
+(that is wider than even the `vulkan.compute_call` bracket, and nothing here instruments it) and
+it is **not** process wall time; ORT's graph execution, the CPU EP's
 nodes between islands and session setup are all outside it. These shares may not be restated as
 shares of the benchmark's wall clock.
 
@@ -1118,7 +1126,7 @@ The timed pass runs with tracing **off**; the split comes from a separate instru
 1.0207× on NVIDIA, 0.8659× on Intel. The Intel figure being below 1.0 is not negative overhead —
 it means the machine state moved between the two passes, and it is reported for that reason.
 
-**NVIDIA RTX 4060 Laptop** — 48563.24 ms inside `Compute`, 561 subgraph invocations:
+**NVIDIA RTX 4060 Laptop** — 48563.24 ms inside `vulkan.subgraph`, 561 subgraph invocations:
 
 | phase | total | share | n | median |
 |---|---|---|---|---|
@@ -1127,10 +1135,10 @@ it means the machine state moved between the two passes, and it is reported for 
 | └ of which: command construction | **414.10 ms** | 1.2% of record | 561 | 0.459 ms |
 | `vulkan.submit` | 308.18 ms | 0.6% | 561 | 0.452 ms |
 | `vulkan.fence_wait` | 13980.26 ms | 28.8% | 561 | 27.776 ms |
-| unattributed inside `Compute` | 818.63 ms | 1.7% | — | — |
+| unattributed inside `vulkan.subgraph` | 818.63 ms | 1.7% | — | — |
 | **GPU kernels (sum)** | **6110.00 ms** | **12.6%** | 5457 | — |
 
-**Intel Iris Xe** — 72148.67 ms inside `Compute`, 561 subgraph invocations:
+**Intel Iris Xe** — 72148.67 ms inside `vulkan.subgraph`, 561 subgraph invocations:
 
 | phase | total | share | n | median |
 |---|---|---|---|---|
@@ -1139,7 +1147,7 @@ it means the machine state moved between the two passes, and it is reported for 
 | └ of which: command construction | 6714.48 ms | 28.0% of record | 561 | 1.393 ms |
 | `vulkan.submit` | 11830.53 ms | 16.4% | 561 | 0.349 ms |
 | `vulkan.fence_wait` | 34978.91 ms | 48.5% | 561 | 56.652 ms |
-| unattributed inside `Compute` | 1393.01 ms | 1.9% | — | — |
+| unattributed inside `vulkan.subgraph` | 1393.01 ms | 1.9% | — | — |
 | **GPU kernels (sum)** | **31652.94 ms** | **43.9%** | 5457 | — |
 
 Per-kernel GPU time (summed from the per-span `gpu_ns` float, **not** from the integer-µs `dur`
@@ -1359,7 +1367,7 @@ Per R9: *confidence scales with agreeing instruments; evidence scales only with 
 | the row names the device that ran | `devices.device_identity_check` — trace's own `timestampPeriod`/`validBits` vs the label. Caught the entire table naming the wrong GPU. |
 | the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span (the **inner** bracket, around `dispatch_ort`, not the outer `vulkan.compute_call`); `unattributed_in_compute_ms` reported, never folded away. |
 | the reconciliation's terms are not mistaken for a sum | `cuda_profile.compute_reconciliation.partition_note` — states the arithmetic it is explaining: `sibling_phases_ms + unattributed_in_subgraph_ms` does not equal `subgraph_ms`. Each is an **independently-taken median** over the warm calls, and the median of a sum is not the sum of the medians unless every call splits identically, so the residual is a property of the statistic, **not** unaccounted-for time. Do not report it as a gap. The figures are quoted with the committed profile, which this instrumentation head does not carry; `partition_note` computes them from the run in hand. Pinned by `test_the_reconciliation_says_out_loud_that_medians_do_not_partition`. |
-| the callback is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` (the instrumented success-path region, not the literal extern entry) and reports the region *outside* `vulkan.subgraph` but inside that bracket as its own term. Measured, and explicitly not attributed. No magnitude is quoted on this branch: the instrumentation head carries no committed profile to point at, and the citation pin reads the figure out of the artifact wherever one exists. It was far larger before the harness's counters dump was moved out of the timed region, but that pre-fix run is not a committed artifact either. |
+| the compute-call bracket is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` (the instrumented success-path region opened inside `compute_impl` and absent on early-outs, not the literal extern callback and not ORT's entry-to-return wall) and reports the region *outside* `vulkan.subgraph` but inside that bracket as its own term. Measured, and explicitly not attributed. No magnitude is quoted on this branch: the instrumentation head carries no committed profile to point at, and the citation pin reads the figure out of the artifact wherever one exists. It was far larger before the harness's counters dump was moved out of the timed region, but that pre-fix run is not a committed artifact either. |
 | GPU time is not over-scaled | `gpu_containment` — per-submission GPU busy ≤ `submit + fence_wait`, **ordinal attribution**, immune to the 314 ms anchor error. |
 | the 52× conversion is applied | `timestamp_conversion_integrality` — `gpu_ns ÷ period` must be a whole integer. **Decisive only where period ≠ 1.0**; reports `VACUOUS`, never "pass", on NVIDIA and lavapipe. `bench/timestamp_audit.py` exits non-zero when no local device can falsify it. |
 | valid bits are masked | `valid_bits_applied` — green on both. |
@@ -2219,7 +2227,7 @@ on both devices. Warm inferences only, cold excluded.
 
 **Shares are printed. The milliseconds they are shares *of* are not** — see §13.5.
 
-| share of time inside `Compute`, warm | NVIDIA RTX 4060 | Intel Iris Xe |
+| share of time inside `vulkan.subgraph`, warm | NVIDIA RTX 4060 | Intel Iris Xe |
 |---|---|---|
 | `fence_wait` | 68.7% | 97.9% |
 | ├ **GPU actually busy** | **67.7%** | **97.7%** |
@@ -2230,7 +2238,7 @@ on both devices. Warm inferences only, cold excluded.
 | ├ `pipeline_lookup` | 0.18% | 0.01% |
 | └ `cmd_upload` (the feeds) | 0.14% | 0.03% |
 | `submit` | 0.27% | 0.01% |
-| unattributed inside `Compute` | 5.97% | 0.90% |
+| unattributed inside `vulkan.subgraph` | 5.97% | 0.90% |
 
 `gpu_busy` is **not** a sibling of the host phases — it overlaps `submit` + `fence_wait`. It is
 printed against the same denominator so the two can be compared, never so they can be added.
@@ -2249,9 +2257,9 @@ described a run in which this EP did not execute. Re-ranked against a run in whi
 
 | # | lever | evidence | owner | was |
 |---|---|---|---|---|
-| **1** | **`q_gemv_matmul_nbits_f16` — one kernel, see §13.4.2** | GPU is busy **67.7%** (NVIDIA) and **97.7%** (Intel) of time inside `Compute`, and **95.11% / 98.28%** of that GPU time is a single kernel. Everything else in the EP sums to 4.9% / 1.7%. | Switch / Mouse | rank 4 |
-| **2** | **Command-buffer reuse — stop re-recording every inference** | `record` is paid on **every** `Compute` call (15 spans, 15 inferences, 353 `desc_alloc` + 353 `pipeline_lookup` each time). 23.5% of NVIDIA in-`Compute` time is host `vkCmd*` construction the GPU waits through. **NVIDIA-only: 1.0% on Intel.** | Switch | not ranked |
-| **3** | **The 5.97% unattributed inside `Compute` (NVIDIA)** | Time inside `vulkan.subgraph` that **no phase span covers** — input pointer reads, buffer/descriptor work before recording, output tensor writes after the fence. It is larger than every sub-record phase combined and it is currently *invisible*. Needs spans before it can be ranked properly. | Switch (spans), me (analysis) | not ranked |
+| **1** | **`q_gemv_matmul_nbits_f16` — one kernel, see §13.4.2** | GPU is busy **67.7%** (NVIDIA) and **97.7%** (Intel) of time inside `vulkan.subgraph`, and **95.11% / 98.28%** of that GPU time is a single kernel. Everything else in the EP sums to 4.9% / 1.7%. | Switch / Mouse | rank 4 |
+| **2** | **Command-buffer reuse — stop re-recording every inference** | `record` is paid on **every** `Compute` call (15 spans, 15 inferences, 353 `desc_alloc` + 353 `pipeline_lookup` each time). 23.5% of NVIDIA in-`vulkan.subgraph` time is host `vkCmd*` construction the GPU waits through. **NVIDIA-only: 1.0% on Intel.** | Switch | not ranked |
+| **3** | **The 5.97% unattributed inside `vulkan.subgraph` (NVIDIA)** | Time inside `vulkan.subgraph` that **no phase span covers** — input pointer reads, buffer/descriptor work before recording, output tensor writes after the fence. It is larger than every sub-record phase combined and it is currently *invisible*. Needs spans before it can be ranked properly. | Switch (spans), me (analysis) | not ranked |
 | **4** | **Device-backed allocation** | `memory configuration: staging-bound`; `alloc_device_authoritative_spans` is `UNOBSERVABLE` (R12) until `offer_shared_device` is called — still `UNINVOKED`, red in Tank's census. Cannot be measured, so cannot be ranked higher than a hypothesis. | Tank / Switch | rank 1 (as residency) |
 | ~~5~~ | ~~fence-wait GPU idle~~ | **Effectively dead: 0.99% NVIDIA, 0.18% Intel.** The fence wait is almost entirely the GPU working. Submission is not the problem. | — | **was rank 3** |
 | ✅ | persistent weight residency | **LANDED.** 1997.977 → 0.387 MiB per inference. | Tank / Switch | was rank 1 |
@@ -2260,7 +2268,7 @@ described a run in which this EP did not execute. Re-ranked against a run in whi
 **The one-line version for the team: we are now GPU-bound, and on the Intel part we are*
 ***only*** *GPU-bound. Kernel work is the top lever for the first time in this project's history.**
 
-Two caveats I will not let travel without the ranking. First, `record` at 23.5% of NVIDIA in-`Compute`
+Two caveats I will not let travel without the ranking. First, `record` at 23.5% of NVIDIA in-`vulkan.subgraph`
 time is a *host* cost measured on a contended machine, so its true share is at or below 23.5% —
 which only strengthens the case for putting kernels first. Second, the Intel figure is not a
 compliment: 97.7% GPU-busy with a per-inference time far above the CPU EP's means the kernels are

@@ -161,8 +161,8 @@ pub const ARG_VARIANT: &str = "kernel_variant";
 // another name is a defect, not a style question:
 //
 // `record_path()` emits **instants** whose names used to be `vulkan.compute[REPLAY]` and friends.
-// Every subgraph matcher in `bench/` matched with `startswith`, so a whole-`Compute` span called
-// `vulkan.compute` would have been captured by the same matcher as those instants and the
+// Every subgraph matcher in `bench/` matched with `startswith`, so a compute-call bracket span
+// named `vulkan.compute` would have been captured by the same matcher as those instants and the
 // reduction would have silently mixed a span vocabulary with an instant vocabulary. The instants
 // are now `vulkan.path[...]`. `vulkan.record_path[...]` was tried first and rejected by
 // `no_trace_name_is_a_prefix_of_another`, because `vulkan.record` is a phase and prefixes it —
@@ -891,9 +891,10 @@ impl VulkanTracer {
     ///
     /// This span is **structural, not a [`Phase`]**: it is `cat == "ep"` like `vulkan.subgraph`,
     /// it is never summed into any sibling total, and it adds no level to the phase tree. It
-    /// exists so a reduction has an anchor that brackets the *whole* callback and can therefore
-    /// state how much of it no phase covers, instead of charging that time to whatever span it
-    /// can see.
+    /// exists so a reduction has an anchor wider than `vulkan.subgraph` — the instrumented
+    /// success-path region inside `compute_impl`, not ORT's literal `Compute` entry-to-return
+    /// wall — and can therefore state how much of *that region* no phase covers, instead of
+    /// charging that time to whatever span it can see.
     ///
     /// It does not by itself explain the region it exposes. What is measured is the size and the
     /// side of the region; naming its cause needs a separate instrument, and
@@ -1932,8 +1933,9 @@ mod tests {
 
     /// No structural span name may be a prefix of another trace name.
     ///
-    /// Every subgraph matcher in `bench/` matched with `startswith`. A whole-`Compute` span named
-    /// `vulkan.compute` was therefore captured by the same matcher as the `record_path()` instants
+    /// Every subgraph matcher in `bench/` matched with `startswith`. A compute-call bracket span
+    /// named `vulkan.compute` was therefore captured by the same matcher as the `record_path()`
+    /// instants
     /// `vulkan.compute[REPLAY]` — separable only by `cat`/`ph`, which the matchers did not read.
     /// The two vocabularies would have been mixed inside one reduction with nothing raising.
     ///
@@ -2056,7 +2058,9 @@ mod tests {
                 !doc.contains(banned),
                 "subgraph_region's doc reintroduced whole-Compute wording: {banned:?}. \
                  subgraph_region is the dispatch_ort dispatch bracket for one subgraph, not the \
-                 whole Compute callback -- that is compute_region."
+                 wider compute-call bracket -- that is compute_region, which is itself the \
+                 instrumented success-path region inside compute_impl and not ORT's literal \
+                 Compute callback either."
             );
         }
         assert!(
@@ -2066,7 +2070,8 @@ mod tests {
         );
     }
 
-    /// `compute_region` brackets the callback; it must not be modelled as a phase.
+    /// `compute_region` brackets the instrumented success path inside `compute_impl`; it must not
+    /// be modelled as a phase.
     ///
     /// `Phase::BindCheck` was added to this enum to close a large blind spot and accounted for a
     /// tiny fraction of the region it was documented as explaining — the exact figures came from
@@ -2081,7 +2086,7 @@ mod tests {
             assert_ne!(
                 format!("vulkan.{}", p.as_str()),
                 SPAN_COMPUTE_CALL,
-                "the whole-Compute bracket must not be a summable phase"
+                "the compute-call bracket must not be a summable phase"
             );
             assert_ne!(format!("vulkan.{}", p.as_str()), SPAN_SUBGRAPH);
         }

@@ -212,9 +212,10 @@ def test_a_reduction_of_an_admissible_traced_run_issues_no_refusals():
 def test_cold_first_call_does_not_contaminate_the_steady_state():
     """The exact shape of the real defect: one huge cold call, many cheap warm ones.
 
-    A mean over all calls reports ~201 ms of upload per run. No call in this trace costs
-    that: the cold one costs 2000 ms and every warm one costs 1 ms. The median of the warm
-    calls is the only number that describes a run a user actually experiences.
+    The figures below are a **synthetic trace**, built in this test rather than observed: a
+    cold call that costs orders of magnitude more than a warm one, so a mean over all calls
+    lands on a number no call in the trace costs. The median of the warm calls is the only
+    number that describes a run a user actually experiences.
     """
     events = [_span("vulkan.subgraph", "ep", 0, 2_100_000, {"nodes": 3})]
     events.append(_phase("record", 10, 2_050_000))
@@ -294,10 +295,13 @@ def test_upload_and_cmd_upload_are_not_double_counted():
 # ---------------------------------------------------------------------------
 
 def test_rerecording_every_call_is_detected_without_ep_path_events():
-    """The real observation: 355 descriptor sets allocated on every warm call.
+    """One descriptor set allocated per claimed node, on every warm call.
 
-    ``record_paths`` sees nothing here because this EP emits no ``ep.path`` instants. The
-    per-dispatch recording work still proves the command buffer was rebuilt.
+    A **synthetic trace**: the island size used here matches Phi-3.5's `claimed_nodes` 355
+    (committed in ``bench/results/barrier_ab-post-dev0-0.json``) so the fixture is the shape
+    the EP really produces, but the per-call recording work below is constructed, not
+    measured.  ``record_paths`` sees nothing here because this EP emits no ``ep.path``
+    instants. The per-dispatch recording work still proves the command buffer was rebuilt.
     """
     events = []
     for i in range(6):

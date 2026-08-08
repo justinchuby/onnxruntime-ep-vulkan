@@ -265,7 +265,15 @@ def choose_anchor(events: list) -> dict:
 
 
 def compute_calls(events: list, anchor: "str | None" = None) -> list:
-    """The anchor spans — one per ORT ``Compute`` call — in time order.
+    """The anchor spans — one per *instrumented* ``Compute`` call — in time order.
+
+    "Instrumented" is not a hedge.  When the anchor is :data:`COMPUTE_CALL_SPAN` the span opens
+    inside the EP's ``compute_impl`` and closes before ``disclose_broken_commitment``, so a call
+    that early-outs before ``compute_impl`` contributes no anchor here at all: this list counts
+    brackets the EP opened on its success path, never ORT's ``Compute`` entry-to-return calls.
+    A count taken from here is therefore a lower bound on ORT's call count, and
+    ``dispatch_accounting`` reconciles it against the EP's own ``compute_calls`` counter rather
+    than assuming the two are the same quantity.
 
     These are the bucketing anchors for everything else.  Without them a reduction
     can only report cumulative totals, and cumulative totals on this EP are
@@ -344,7 +352,9 @@ def _summarise_bucket(bucket: dict) -> dict:
     call_us = bucket.get("dur")
     inner = [int(e.get("dur") or 0) for e in bucket.get("subgraph") or []]
     subgraph_us = sum(inner) if inner else None
-    # The two brackets differ by whatever the Compute callback does outside `dispatch_ort`.
+    # The two brackets differ by whatever the EP's instrumented success path does outside
+    # `dispatch_ort` — not by whatever ORT's `Compute` callback does, which is wider than the
+    # outer bracket and is not measured here.
     # Reported, never charged: this reduction measures the size and the side of that region and
     # has no instrument that names its cause.
     outside_subgraph_us = (call_us - subgraph_us
@@ -1037,7 +1047,7 @@ def render(report: dict) -> str:
              rec.get("sibling_phases_ms"), "`vulkan.subgraph`"),
             ("unattributed inside `vulkan.subgraph`",
              rec.get("unattributed_in_subgraph_ms"), "`vulkan.subgraph`"),
-            ("**outside `vulkan.subgraph`, inside the callback**",
+            ("**outside `vulkan.subgraph`, inside the `vulkan.compute_call` bracket**",
              rec.get("outside_subgraph_ms"), "`vulkan.compute_call`"),
         ]
         for label, value, parent in rows:

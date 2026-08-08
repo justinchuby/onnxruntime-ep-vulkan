@@ -2588,9 +2588,9 @@ unsafe fn compute_impl(
     //
     // It still exists for the reason it was added: `dispatch_ort` opens `vulkan.subgraph`, which
     // starts and ends *inside* `dispatch_ort`, so without an outer bracket a reduction cannot
-    // state how much of the callback no span covers and charges that time to whatever span it can
-    // see. This is a structural span (`cat == "ep"`), not a `Phase`: it is never summed into a
-    // sibling total and it adds no level to the phase tree.
+    // state how much of this instrumented region no span covers and charges that time to whatever
+    // span it can see. This is a structural span (`cat == "ep"`), not a `Phase`: it is never
+    // summed into a sibling total and it adds no level to the phase tree.
     let t = crate::trace::tracer();
     let _compute_call = t.compute_region();
 

@@ -14,12 +14,15 @@ would not.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import inspect
+import io
 import json
 import os
 import re
 import sys
+import tokenize
 from pathlib import Path
 
 import numpy as np
@@ -105,11 +108,16 @@ def test_missing_provider_arg_is_unattributed_not_dropped(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_fusing_ep_node_share_is_misleading_and_time_share_is_not():
-    """The real Phi-3.5 shape: 1 fused Vulkan node beside 8 residual host nodes.
+    """A **synthetic fixture** in the shape a fusing EP produces: one fused provider
+    node beside a handful of residual host nodes, with almost all kernel time on the
+    provider.
 
-    Node share says 88.9% CPU.  Time share says 0.2%.  This test pins the exact
-    disagreement that made node-counting unusable, so nobody re-adopts it by
-    accident.
+    The numbers below are constructed inputs, not an observation: no committed artifact
+    in this tree records a per-provider profile node census for any arm, so this test
+    quotes none and neither does `cuda_competition`'s own docstring. What is pinned is
+    the *disagreement* — a partition whose node share is over the threshold while its
+    time share is far under it — which is what made node-counting unusable and what a
+    future refactor might quietly undo.
     """
     partition = {"VulkanExecutionProvider": 1, "CPUExecutionProvider": 8}
     kernel_us = {"VulkanExecutionProvider": 45000.0, "CPUExecutionProvider": 90.0}
@@ -245,16 +253,19 @@ def test_identical_outputs_match():
 def test_peak_ulp_spacing_uses_the_tensor_scale_not_the_element():
     """The fix for the metric that rejected every honest arm.
 
-    Raw ULP is measured in units of the *local* spacing, which collapses near zero,
-    so a physically irrelevant difference between two near-zero logits scored ~18000
-    against a 32-ULP budget on every GPU arm.  Peak-scaled ULP measures the same
-    difference in units of the spacing at the tensor's largest magnitude, which is
-    the scale softmax and argmax actually care about.
+    Raw ULP is measured in units of the *local* spacing, which collapses near zero, so a
+    physically irrelevant difference between two near-zero logits scores enormously
+    against a tight budget on every GPU arm.  No magnitude is quoted for that rejection:
+    the run that produced it is not a committed artifact in this tree.  Peak-scaled ULP
+    measures the same difference in units of the spacing at the tensor's largest
+    magnitude, which is the scale softmax and argmax actually care about — and the
+    fixture below, whose values are constructed here rather than observed, demonstrates
+    both readings on one difference.
     """
     ref = np.array([[16.0, 1e-3, -1e-3]], dtype=np.float16)
     sub = ref.copy()
-    # Move a near-zero element across zero: physically 2e-3 on a tensor peaking at
-    # 16, but thousands of representable fp16 values.
+    # Move a near-zero element across zero: a small physical difference on a tensor
+    # peaking far above it, but thousands of representable fp16 values.
     sub[0, 1] = np.float16(-1e-3)
     raw = cc.ulp_distance(sub, ref)
     assert raw.max() > 1000, "raw ULP should blow up across zero — that is its flaw"
@@ -280,10 +291,11 @@ def test_peak_ulp_spacing_is_finite_at_float16_max():
 def test_tf32_regime_widens_the_budget_and_float32_does_not():
     """The CUDA EP computes fp32 MatMul/Conv in TF32 by default — 10 mantissa bits.
 
-    Measured on MobileNetV2 that is 18060 peak-ULP of error against the CPU EP where
-    the Vulkan EP has 23, on identical model bytes.  The budget must follow the
-    declared precision or the comparison either disqualifies the competitor or
-    silently licenses a precision loss the subject does not take.
+    That is a large precision difference against a graph declaring 23, by construction of
+    the formats and not as an observation: no peak-ULP magnitude is quoted here, because
+    the MobileNetV2 run that produced one is not a committed artifact in this tree.  The
+    budget must follow the declared precision or the comparison either disqualifies the
+    competitor or silently licenses a precision loss the subject does not take.
     """
     strict = cc.equivalence_budget_ulp("float32", "float32")
     loose = cc.equivalence_budget_ulp("float32", "tf32")
@@ -1155,83 +1167,428 @@ def test_the_unwitnessed_ratio_guard_would_notice_a_regression():
 # Fact Checker's de-claim scan: a general numeric-witness guard
 # ---------------------------------------------------------------------------
 #
-# `_UNWITNESSED_RATIO_RE` above catches one shape (a bare decimal ratio). The de-claim
-# scan found the same underlying defect in several other shapes across bench/cuda_profile.py
-# and bench/cuda_competition.py: decimal millisecond figures, decimal percentages, bare
-# integer ratios ("40x", "785x"), comma-grouped counts ("18,060"), and approximate counts
-# ("~3200 dispatches"). Rather than adding a narrower regex per shape forever, this test
-# scans both production modules for any of those shapes and requires each match to sit near
-# either (a) an explicit citation to a committed artifact, or (b) the standard disclaimer
-# this codebase already uses when a figure is deliberately withheld ("no magnitude is quoted
-# here", "not witnessed by", etc.). Neither a synthetic test fixture nor a code constant
-# (`ROUNDING_DEPTH_BOUND = 128`, `MANTISSA_BITS`, a `sha256`/byte-count table pinned to a
-# resolver) matches these shapes, so this is additive to, not a replacement for, the
-# citation-pin tests in `test_cuda_profile.py` and the ratio guard above.
-_MEASUREMENT_SHAPED_RE = re.compile(
-    r"\b\d+\.\d+x\b"                          # decimal ratio (same shape as _UNWITNESSED_RATIO_RE)
-    r"|\b\d+\.\d+\s?ms\b"                     # decimal ms figure
-    r"|\b\d+\.\d+%"                            # decimal percent figure
-    r"|\b\d{2,}x\b"                            # bare integer ratio: 40x, 785x
-    r"|\b\d{1,3}(?:,\d{3})+\b"                 # comma-grouped count: 18,060
-    r"|~\s?\d+(?:\.\d+)?\s?(?:ms|dispatches|MB|GB)?\b"  # approximate figure: ~45 ms
+# `_UNWITNESSED_RATIO_RE` above catches one shape (a bare decimal ratio). The de-claim scan
+# found the same underlying defect in many other shapes across the production modules:
+# decimal and integer timings, decimal and integer percentages, bare integer ratios,
+# comma-grouped and compact counts, and sizes carrying a unit -- `2.3 GB`, `26 MB`,
+# `2,291,238,912 bytes`, `45 ms`, `355`. So the shape half of this guard is deliberately
+# wide.
+#
+# The *witness* half is the part the second review round rewrote, and it is the part that
+# matters. The previous version accepted any figure that merely had citation-*looking* text
+# nearby: the literal substring `bench/results/` within a few hundred characters was enough
+# to bless it. That blesses three separate defects at once -- a path that does not exist in
+# this tree, a real artifact that does not carry the figure at all, and a figure quoted from
+# a *neighbouring* field of a real artifact ("2.2 GB" beside a witness that says
+# 2,291,238,912 bytes). All three shipped on this branch and all three are now convictions:
+#
+#   1. every cited repo-relative path is parsed out and must exist;
+#   2. the field names named beside the figure are looked up in the cited artifact;
+#   3. the figure must actually be *there* -- equal to a named field, equal to a named
+#      field scaled by its stated unit and rounded to the precision printed, or equal to a
+#      ratio of two named fields rounded the same way. Failing all of those, the digits must
+#      at least appear verbatim in the cited file.
+#
+# The alternative to (3) is the standard withheld-figure disclaimer this codebase already
+# uses, which claims nothing and so needs no witness.
+#
+# Only *prose* is scanned -- comments and string literals, extracted with `tokenize`. Code is
+# not prose: `ROUNDING_DEPTH_BOUND = 128`, `MANTISSA_BITS`, a `sha256`/byte-count provenance
+# table and a synthetic fixture's `{"CPUExecutionProvider": 8}` are constants and inputs, not
+# claims about a run, and a guard that reads them as claims would be trained out of the tree
+# within a week.
+
+#: ISO dates (`2026-08-04`) and dotted version/serial numbers (`573.44`, `1.4.309`) are not
+#: measurements. They are removed before scanning rather than special-cased in the pattern,
+#: which keeps the pattern readable and keeps the exemption auditable in one place.
+_NOT_A_MEASUREMENT_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d+(?:\.\d+){2,}\b|\b\d+\.\d+(?=\s*,?\s*r\d)")
+
+#: Units a figure may carry. Unit-separated (`2.3 GB`), compact (`2.3GB`) and hyphenated
+#: (`2.3-GB`) spellings are one pattern on purpose: the hyphen was a live escape hatch.
+_UNIT_ALTERNATION = (
+    r"x|ns|us|\u00b5s|ms|s|sec|secs|seconds|minutes|bytes|B|KB|KiB|MB|MiB|GB|GiB|TB|TiB"
+    r"|ULP|ulp|dispatches|nodes|calls|spans|elements"
 )
 
-#: Phrases this codebase already uses to mark a citation to committed evidence, or to mark
-#: a figure as deliberately withheld. Either kind of neighbour makes a numeric-shaped match
-#: acceptable; neither is itself a measurement.
-_NUMERIC_WITNESS_OR_DISCLAIMER_MARKERS = (
-    "bench/results/", "committed in", "cited to", "committed artifact",
+_MEASUREMENT_SHAPED_RE = re.compile(
+    r"(?<![\w.$-])"
+    r"(?P<approx>~\s?)?"
+    r"(?P<value>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"(?:[\s-]?(?P<unit>%|(?:" + _UNIT_ALTERNATION + r")\b)(?!\s?(?:CI\b|confidence)))?"
+    r"(?!\.?\d)"
+)
+
+#: Units whose figure is a scaled restatement of a byte count, with the scale to divide a
+#: witnessed byte count by before comparing. Both decimal and binary readings are accepted:
+#: a document may legitimately print either, and the guard's job is to catch a figure the
+#: artifact cannot produce *at all*, not to legislate SI-vs-IEC.
+_BYTE_SCALES = {
+    "bytes": (1,), "b": (1,),
+    "kb": (10 ** 3, 2 ** 10), "kib": (2 ** 10,),
+    "mb": (10 ** 6, 2 ** 20), "mib": (2 ** 20,),
+    "gb": (10 ** 9, 2 ** 30), "gib": (2 ** 30,),
+    "tb": (10 ** 12, 2 ** 40), "tib": (2 ** 40,),
+}
+
+#: Phrases that mark a figure as deliberately withheld, or mark the surrounding numbers as a
+#: constructed fixture rather than an observation. Neither kind is a claim about a run, so
+#: neither needs a witness. Note what is *not* here any more: `bench/results/`. A path-shaped
+#: substring is no longer a blessing -- it is now an obligation, checked below.
+_WITHHELD_FIGURE_DISCLAIMERS = (
     "no specific", "no magnitude is quoted", "no figure is quoted", "no ratio is quoted",
     "not quoted here", "no dispatch count is quoted", "not witnessed by", "no committed artifact",
-    "none is quoted", "none is witnessed",
+    "none is quoted", "none is witnessed", "no figure for it is quoted", "is not quoted",
+    "synthetic fixture", "synthetic trace", "constructed fixture", "fixture, not a measurement",
 )
 
 #: Production modules this guard screens. Deliberately narrow: docs like docs/PERF.md carry
-#: real, individually cited measurements throughout (see its own §26.1 provenance table) and
-#: a blanket scan there would flag legitimate witnessed figures, not catch unwitnessed ones.
-_NUMERIC_WITNESS_SCREENED_MODULES = ("cuda_profile.py", "cuda_competition.py")
+#: real, individually cited measurements throughout (see its own §26.1 provenance table) and a
+#: blanket scan there would flag legitimate witnessed figures, not catch unwitnessed ones.
+_NUMERIC_WITNESS_SCREENED_MODULES = ("cuda_profile.py", "cuda_competition.py", "bench_models.py")
+
+#: Repo-relative citation targets. A citation is a *path*, and this is what "parse the path"
+#: means: it is extracted, resolved against the repository root, and required to exist.
+_CITED_PATH_RE = re.compile(
+    r"(?<![\w/.-])((?:bench|docs|rust|tests|\.github)/[\w./+-]*[\w]+"
+    r"\.(?:json|jsonl|md|txt|log|csv|py|rs|toml|yml|yaml))")
+
+#: Field names named beside a figure, in any of this codebase's three backtick spellings.
+#: Dotted paths (`model.weights_bytes`) are kept whole *and* reduced to their last segment,
+#: because artifacts nest and prose cites the reader-friendly path.
+_CITED_FIELD_RE = re.compile(r"`{1,2}([A-Za-z_][\w.]*(?:\[\d+\])?[\w.]*)`{1,2}")
+
+_WITNESS_WINDOW = 400
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _unwitnessed_measurement_shaped_figures(text: str) -> list[str]:
+def _module_prose(text: str) -> str:
+    """Comments and docstrings only -- the parts of a module that make claims.
+
+    Everything else is blanked, newlines included in the blanking so offsets and therefore
+    line numbers survive: a guard that names the wrong line is a guard nobody acts on.
+
+    Code is excluded so that constants (`ROUNDING_DEPTH_BOUND = 128`), provenance tables of
+    digests and byte counts, and a synthetic fixture's `{"CPUExecutionProvider": 8}` are never
+    read as measurements. Non-docstring string literals are excluded for the same reason: a
+    string in an expression is data the module *handles*, not a sentence it asserts.
+    """
+    lines = text.splitlines(keepends=True)
+    starts, pos = [], 0
+    for line in lines:
+        starts.append(pos)
+        pos += len(line)
+
+    def _offset(row: int, col: int) -> int:
+        return starts[row - 1] + col if row - 1 < len(starts) else len(text)
+
+    spans = []
+    readline = io.StringIO(text).readline
+    for tok in tokenize.generate_tokens(readline):
+        if tok.type == tokenize.COMMENT:
+            spans.append((_offset(*tok.start), _offset(*tok.end)))
+    tree = ast.parse(text)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None) or []
+        if not body:
+            continue
+        first = body[0]
+        if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            spans.append((_offset(first.lineno, first.col_offset),
+                          _offset(first.end_lineno, first.end_col_offset)))
+
+    out = ["\n" if ch == "\n" else " " for ch in text]
+    for begin, end in spans:
+        out[begin:end] = list(text[begin:end])
+    blanked = "".join(out)
+    return _NOT_A_MEASUREMENT_RE.sub(lambda m: " " * (m.end() - m.start()), blanked)
+
+
+def _walk_numbers(node, name: "str | None", path: str, sink: dict) -> None:
+    if isinstance(node, dict):
+        for k, v in node.items():
+            _walk_numbers(v, str(k), f"{path}.{k}" if path else str(k), sink)
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            _walk_numbers(v, name, f"{path}[{i}]", sink)
+    elif isinstance(node, (int, float)) and not isinstance(node, bool):
+        if name:
+            sink.setdefault(name.lower(), set()).add(float(node))
+        sink.setdefault(path.lower(), set()).add(float(node))
+
+
+def _artifact_fields(path: Path) -> dict:
+    """``{field name: {numeric values}}`` for a cited artifact, by key and by dotted path."""
+    sink: dict = {}
+    try:
+        raw = path.read_text("utf-8")
+    except OSError:
+        return sink
+    if path.suffix == ".jsonl":
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                _walk_numbers(json.loads(line), None, "", sink)
+            except json.JSONDecodeError:
+                continue
+    elif path.suffix == ".json":
+        try:
+            _walk_numbers(json.loads(raw), None, "", sink)
+        except json.JSONDecodeError:
+            return sink
+    return sink
+
+
+def _named_field_values(window: str, fields: dict) -> "list[float]":
+    values: "list[float]" = []
+    for raw in _CITED_FIELD_RE.findall(window):
+        for key in {raw.lower(), raw.split(".")[-1].lower()}:
+            values.extend(sorted(fields.get(key, ())))
+    return values
+
+
+def _matches_at_precision(candidate: float, printed: str) -> bool:
+    """Does ``candidate`` round to the figure as printed, at the precision printed?
+
+    "2.29 GB" is checked to two decimals and "2.3 GB" to one, so a witness of
+    2,291,238,912 bytes backs both spellings and backs "2.2 GB" under neither.
+    """
+    digits = len(printed.split(".")[1]) if "." in printed else 0
+    try:
+        return round(candidate, digits) == round(float(printed), digits)
+    except (ValueError, OverflowError):
+        return False
+
+
+def _figure_is_witnessed(printed: str, unit: "str | None", window: str,
+                         cited: "list[Path]") -> bool:
+    """Is the printed figure actually *in* one of the cited files?
+
+    For a structured artifact (`.json`/`.jsonl`) the check is at the field named beside the
+    figure — nothing weaker. A verbatim digit search over an artifact is not a witness: these
+    files are tens of thousands of lines of unrelated numbers, and "88.9" occurs in the very
+    artifact that was cited to back it while backing nothing of the kind. The verbatim search
+    is kept only for unstructured witnesses (`.py`, `.rs`, `.md`, logs), where there is no
+    field to name and a pinned literal in a test *is* the record.
+    """
+    plain = printed.replace(",", "")
+    try:
+        numeric = float(plain)
+    except ValueError:
+        return False
+    unit_key = (unit or "").lower()
+    for path in cited:
+        if path.suffix in (".json", ".jsonl"):
+            fields = _artifact_fields(path)
+            named = _named_field_values(window, fields)
+            for value in named:
+                if unit_key in _BYTE_SCALES and any(
+                        _matches_at_precision(value / scale, plain)
+                        for scale in _BYTE_SCALES[unit_key]):
+                    return True
+                if _matches_at_precision(value, plain):
+                    return True
+            if unit_key == "%":
+                for a in named:
+                    for b in named:
+                        if b and _matches_at_precision(100.0 * a / b, plain):
+                            return True
+            continue
+        try:
+            text = path.read_text("utf-8")
+        except OSError:
+            continue
+        if plain in text or printed in text or (numeric.is_integer()
+                                                and str(int(numeric)) in text):
+            return True
+    return False
+
+
+def _unwitnessed_measurement_shaped_figures(text: str, *, prose_only: bool = False) -> list:
+    """Measurement-shaped figures in ``text`` with no usable witness.
+
+    ``text`` is prose. Pass ``prose_only=False`` (the default) for a raw fragment, which is
+    what the mutants below hand it; the module-level scan extracts prose first.
+    """
     offenders = []
-    lowered = text.lower()
-    for m in _MEASUREMENT_SHAPED_RE.finditer(text):
-        window = lowered[max(0, m.start() - 400): m.end() + 400]
-        if not any(marker in window for marker in _NUMERIC_WITNESS_OR_DISCLAIMER_MARKERS):
-            line_no = text.count("\n", 0, m.start()) + 1
-            offenders.append(f"line {line_no}: {m.group()!r}")
+    scanned = text if prose_only else _NOT_A_MEASUREMENT_RE.sub(
+        lambda m: " " * (m.end() - m.start()), text)
+    lowered = scanned.lower()
+    for m in _MEASUREMENT_SHAPED_RE.finditer(scanned):
+        printed, unit = m.group("value"), m.group("unit")
+        bare = unit is None and not m.group("approx")
+        if bare and "," not in printed and len(printed.split(".")[0]) < 3:
+            continue  # a one- or two-digit bare integer is not a measurement-shaped figure
+        window = scanned[max(0, m.start() - _WITNESS_WINDOW): m.end() + _WITNESS_WINDOW]
+        if any(d in lowered[max(0, m.start() - _WITNESS_WINDOW): m.end() + _WITNESS_WINDOW]
+               for d in _WITHHELD_FIGURE_DISCLAIMERS):
+            continue
+        line_no = scanned.count("\n", 0, m.start()) + 1
+        where = f"line {line_no}: {m.group().strip()!r}"
+        raw_paths = _CITED_PATH_RE.findall(window)
+        if not raw_paths:
+            offenders.append(f"{where} — no committed witness cited and no withheld-figure "
+                             f"disclaimer")
+            continue
+        missing = [p for p in raw_paths if not (_REPO_ROOT / p).exists()]
+        if missing:
+            offenders.append(f"{where} — cites {missing}, which does not exist in this tree")
+            continue
+        cited = [_REPO_ROOT / p for p in raw_paths]
+        if not _figure_is_witnessed(printed, unit, window, cited):
+            offenders.append(f"{where} — cited {raw_paths} carries no such value at any "
+                             f"field named beside the figure")
     return offenders
 
 
 def test_production_modules_do_not_quote_unwitnessed_measurement_shaped_figures():
-    """`bench/cuda_profile.py` and `bench/cuda_competition.py` may not bury a bare number.
+    """A production module may not print a number this tree cannot produce.
 
-    Every decimal ms/percent/ratio, bare integer ratio, comma-grouped count or approximate
-    figure in these two modules must sit near either a citation to a committed artifact or
-    this codebase's standard withheld-figure disclaimer. A number with neither is exactly
-    the Fact Checker de-claim finding: a real-looking figure nobody in this tree can back.
+    Every timing, percentage, ratio, count and unit-bearing size in these modules' prose must
+    either sit beside a citation whose path exists *and* whose named field carries the value,
+    or be marked withheld. "Nearby text that looks like a citation" is not enough — that was
+    the hole the second review round found, and the mutants below are its falsifiers.
     """
     root = Path(__file__).resolve().parent
     offenders = {}
     for name in _NUMERIC_WITNESS_SCREENED_MODULES:
-        text = (root / name).read_text("utf-8")
-        found = _unwitnessed_measurement_shaped_figures(text)
+        prose = _module_prose((root / name).read_text("utf-8"))
+        found = _unwitnessed_measurement_shaped_figures(prose, prose_only=True)
         if found:
             offenders[name] = found
     assert not offenders, (
-        "unwitnessed measurement-shaped figures (no nearby citation or disclaimer):\n  "
+        "unwitnessed measurement-shaped figures (no witness that carries the value):\n  "
         + "\n  ".join(f"{k}: {v}" for k, v in offenders.items()))
 
 
-def test_the_numeric_witness_guard_would_notice_a_regression():
-    """Negative control: this guard must actually be able to fail."""
-    naked = "the traced arm was 18,060 ULP off and 40x worse than the untraced one"
-    cited = ("the traced arm was 18,060 ULP off, committed in "
-             "bench/results/_cuda69/example.json")
-    disclaimed = "no magnitude is quoted here for this figure"
-    assert _unwitnessed_measurement_shaped_figures(naked)
-    assert not _unwitnessed_measurement_shaped_figures(cited)
-    assert not _unwitnessed_measurement_shaped_figures(disclaimed)
+# --- the guard's own falsifiers -------------------------------------------------------
+#
+# A guard with no must-fire mutant is decoration, and a guard with no must-not-fire mutant
+# gets deleted the first time it convicts an honest line. Both directions are pinned.
+
+_REAL_MODEL_WITNESS = "bench/results/real_model_gqa_local_size.json"
+
+
+def test_a_size_figure_with_no_witness_is_convicted():
+    """The `2.3 GB` shape: a unit-bearing size, correctly rounded, and backed by nothing.
+
+    Correct rounding is not a witness. This figure happens to be right, and it is still a
+    conviction, because nothing beside it says where it came from.
+    """
+    assert _unwitnessed_measurement_shaped_figures(
+        "a 2.3 GB model left resident from a previous arm changes the allocator state")
+
+
+def test_a_size_figure_whose_witness_disagrees_is_convicted():
+    """The defect the previous guard blessed: a real citation, a real field, a wrong figure.
+
+    The witness says 2,291,238,912 bytes. That backs "2.29 GB" and it backs "2.3 GB"; it does
+    not back "2.2 GB", and the old proximity rule could not tell the difference because it
+    never opened the artifact.
+    """
+    wrong = (f"the weights are 2.2 GB (``model.weights_bytes``, committed in "
+             f"{_REAL_MODEL_WITNESS})")
+    right = (f"the weights are 2.3 GB (``model.weights_bytes`` 2291238912, committed in "
+             f"{_REAL_MODEL_WITNESS})")
+    exact = (f"the weights are 2.29 GB (``model.weights_bytes``, committed in "
+             f"{_REAL_MODEL_WITNESS})")
+    assert _unwitnessed_measurement_shaped_figures(wrong)
+    assert not _unwitnessed_measurement_shaped_figures(right)
+    assert not _unwitnessed_measurement_shaped_figures(exact)
+
+
+def test_a_citation_to_a_path_that_does_not_exist_is_convicted():
+    """A withdrawn artifact is not a witness, however precisely it is named.
+
+    `bench/results/_cuda69/profile_prefill_1.json` is exactly the path this branch cited
+    while deleting: the de-claim scan's original finding.
+    """
+    offenders = _unwitnessed_measurement_shaped_figures(
+        "the warm call spent 355 nodes' worth of time, committed in "
+        "bench/results/_cuda69/profile_prefill_1.json")
+    assert offenders and "does not exist" in offenders[0]
+
+
+def test_a_timing_a_percentage_and_a_count_are_all_convicted_uncited():
+    """The shape half: unit-separated, compact, percentage, ratio, count.
+
+    Each of these was legible to a reader as a measurement and illegible to the previous
+    pattern, which only knew decimal ms, decimal percent, bare integer ratios and
+    comma-grouped counts.
+    """
+    for fragment in (
+        "the warm median was 45 ms",
+        "the warm median was 45ms",
+        "the warm median was 45-ms",
+        "the arm was 12% slower",
+        "the arm was 12x slower",
+        "the run recorded 18,060 ULP of error",
+        "the run recorded 2291238912 bytes of weights",
+        "roughly ~3200 dispatches per inference",
+    ):
+        assert _unwitnessed_measurement_shaped_figures(fragment), fragment
+
+
+def test_a_ratio_of_two_named_fields_is_witnessed_by_the_artifact():
+    """97.8% is not a literal in the artifact; it is `claimed_nodes` over `nodes_probed`.
+
+    A guard that demanded the printed digits appear verbatim would force every derived share
+    to be deleted, so shares are checked against the ratio of the fields actually named. A
+    share whose fields are *not* named, or which no pair of them produces, still convicts.
+    """
+    good = ("`claimed_nodes` 355 of `total_nodes_probed` 363, so 97.8% of the probed graph, "
+            "committed in bench/results/barrier_ab-post-dev0-0.json")
+    bad = ("`claimed_nodes` and `total_nodes_probed` put 88.9% of the graph on the host, "
+           "committed in bench/results/barrier_ab-post-dev0-0.json")
+    assert not _unwitnessed_measurement_shaped_figures(good)
+    assert _unwitnessed_measurement_shaped_figures(bad)
+
+
+def test_methodology_code_constants_and_synthetic_fixtures_do_not_fire():
+    """The three must-not-fire classes, each for a different reason.
+
+    Methodology says the figure is withheld and so claims nothing. Code constants are not
+    prose and never reach the scan. A fixture's numbers are inputs the test constructs, and
+    saying so out loud is what makes them not a claim about a run.
+    """
+    methodology = ("the term collapses to a small fraction of a millisecond; no magnitude is "
+                   "quoted here, since none is witnessed by a committed artifact in this tree")
+    fixture = ("the synthetic fixture below is built with 4000 us of CPU kernel time beside "
+               "10000 us of CUDA, so the gate has something to convict")
+    assert not _unwitnessed_measurement_shaped_figures(methodology)
+    assert not _unwitnessed_measurement_shaped_figures(fixture)
+
+    code_only = (
+        "ROUNDING_DEPTH_BOUND = 128\n"
+        "MANTISSA_BITS = {'float32': 23, 'tf32': 10, 'float16': 10}\n"
+        "PINNED = {'sha256': 'c0c3f7', 'bytes': 2291238912}\n"
+        "PARTITION = {'VulkanExecutionProvider': 1, 'CPUExecutionProvider': 8}\n"
+    )
+    assert _module_prose(code_only).strip() == ""
+    assert not _unwitnessed_measurement_shaped_figures(_module_prose(code_only),
+                                                       prose_only=True)
+
+
+def test_the_prose_extractor_keeps_offsets_so_line_numbers_are_real():
+    """A blanked-out module must still report the line a figure is actually on.
+
+    Deleting non-prose would shift every line number after the first function body, and a
+    guard that names the wrong line is a guard nobody acts on.
+    """
+    module = (
+        "X = 1\n"
+        "def f():\n"
+        "    return 2\n"
+        "# the warm median was 45 ms\n"
+    )
+    offenders = _unwitnessed_measurement_shaped_figures(_module_prose(module), prose_only=True)
+    assert offenders and offenders[0].startswith("line 4:")
 
 
 def test_no_committed_record_calls_itself_admissible_while_refusing():

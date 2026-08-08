@@ -21,10 +21,16 @@ Three refusals are load-bearing:
   disagree, that is ``DIGEST_MISMATCH`` — a finding — not a re-pin.
 
 External data is deliberately not treated as an implementation detail.  The
-Phi-3.5 graph proto is 26 MB; the weights it references are 2.2 GB in a sibling
-``.onnx.data``.  A digest of the proto alone would call two different weight
-sets "the same model", which is exactly the substitution this module exists to
-make impossible.
+Phi-3.5 graph proto is 26 MB and the weights it references are 2,291,238,912
+bytes -- 2.29 GB -- in a sibling ``.onnx.data``.  Both figures are read off a
+committed witness: ``model.bytes`` 26180848 and ``model.weights_bytes``
+2291238912 in ``bench/results/real_model_gqa_local_size.json``, whose
+``model.external_data.files[0]`` names the ``.onnx.data`` blob and its own
+digest.  The rounding matters: a coarser one printed here previously disagreed
+with the witness in the digit it printed, which is how a provenance note stops
+being provenance.  A digest of the proto alone
+would call two different weight sets "the same model", which is exactly the
+substitution this module exists to make impossible.
 """
 
 from __future__ import annotations
@@ -189,7 +195,7 @@ def external_data_files(onnx_path: Path) -> "list[Path]":
     directory: a sibling ``.onnx.data`` that the graph does *not* reference is not
     part of this model, and a referenced file in another directory would be missed
     by a glob.  Falls back to the conventional ``<name>.data`` sibling only when the
-    proto cannot be parsed without loading 2 GB of weights.
+    proto cannot be parsed without loading the whole external weight blob.
     """
     found: "list[Path]" = []
     try:
