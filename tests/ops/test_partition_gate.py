@@ -12,13 +12,19 @@ flops-per-transfer margin produces a [partition] decline code in the CLAIM_LOG.
 
 Model design: two independent Sigmoid branches share no edges. ORT sees them as a graph with
 two disconnected claimed clusters, each a 1-node island with no anchors (Sigmoid is not in
-partition::is_anchor). partition::evaluate fires → TooSmall (1 < min_nodes=4, anchors=0) →
+partition::is_heavy_op_family, so it cannot anchor whatever its operands look like).
+partition::evaluate fires → TooSmall (1 < min_nodes=4, anchors=0) →
 [partition] decline code. CLAIM_LOG records the decline.
 
 Two guard directions (§7.0.2, as formalised by Morpheus):
   Over-declination: the anchor exemption in partition::evaluate ensures any island containing
-    MatMulNBits or GQA always passes (anchors > 0 → Claim). Phi-3.5 bench checks this
-    (353 claimed, 1 island after GQA, MATCH). Falsifier: bench/phi35.py → 0 claimed nodes.
+    a heavy-family node **that presents a resident weight** always passes (anchors > 0 →
+    Claim). For Phi-3.5 that warrant is MatMulNBits, whose `B` and `scales` (inputs 1 and 2)
+    are required initializers by the format's definition; issue #73 withdrew the claim that
+    its GroupQueryAttention nodes also anchor, which was asserted from the op name and never
+    measured. Phi-3.5 bench checks the island (353 claimed, 1 island after GQA, MATCH), and
+    161 MatMulNBits anchors is already more than the `anchors > 0` the branch needs.
+    Falsifier: bench/phi35.py → 0 claimed nodes.
   Under-declination: THIS TEST. A non-anchor two-cluster model must produce [partition]
     declines. Falsifier: claims["Sigmoid"]["code"] != "partition" when CLAIM_LOG is set,
     i.e. the EP claims both Sigmoid nodes instead of declining them.

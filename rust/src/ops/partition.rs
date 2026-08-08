@@ -263,9 +263,26 @@ impl Island {
     /// 2026-08-01, read out of `PartitionStats` in a trace this session (`bench/results/
     /// net_benefit_gate-trace-dev0.json`), not assumed.
     ///
-    /// `nodes` and `anchors` are counts from the CLAIM_LOG of the same run (355 claimed, of which
-    /// 161 `MatMulNBits` + 32 `GroupQueryAttention` are anchors). `flops` and the boundary total
-    /// are the estimator's own numbers.
+    /// `nodes` is the claimed-node count from the CLAIM_LOG of the same run (355 claimed).
+    /// `flops` and the boundary total are the estimator's own numbers.
+    ///
+    /// **`anchors: 193` is a reading taken under the retired name-only predicate (issue #73).**
+    /// It decomposed as 161 `MatMulNBits` + 32 `GroupQueryAttention`, and both halves were
+    /// counted purely because the op name was in a list. Under the weight-aware [`is_anchor`]:
+    ///
+    /// * the 161 `MatMulNBits` nodes still anchor — `B` and `scales` (inputs 1 and 2) are
+    ///   required and are initializers by the format's own definition, so
+    ///   [`WeightOperand::Present`] holds for every one of them without needing a new census;
+    /// * **the 32 `GroupQueryAttention` nodes' anchor status is not established.** It depends on
+    ///   whether that export folds `cos_cache`/`sin_cache` into initializers, and this census
+    ///   recorded op names, not per-input constancy. The claim "32 GQA nodes are anchors" is
+    ///   therefore withdrawn rather than restated; see [`GQA_SCHEMA_NOTE`].
+    ///
+    /// The figure is **kept unedited** because it is a record of what that run counted, not a
+    /// prediction. Recomputing it would need a fresh census with per-input constancy, which no
+    /// artifact in this repository holds. It is also verdict-irrelevant: `evaluate` branches on
+    /// `anchors > 0`, and 161 > 0 from `MatMulNBits` alone, so Phi-3.5's island is claimed on
+    /// the same arm either way.
     ///
     /// The 2026-07-31 estimate of Phi-3.5's island boundary, **which counted internal edges**.
     ///
@@ -321,7 +338,9 @@ impl Island {
     /// Read out of the verbose `PartitionStats` summary on dev0 with the same model and the same
     /// binary that produced the 355 → 0 claim census. The number that changed is the boundary;
     /// nodes, anchors and FLOPs are unaffected because the fix touches only which outputs are
-    /// charged to the boundary.
+    /// charged to the boundary. `anchors` carries the same issue-#73 caveat as
+    /// [`Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED`]: it is a name-only reading, and
+    /// the `GroupQueryAttention` share of it is withdrawn, not restated.
     pub const ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_FIXED: Island = Island {
         nodes: 355,
         anchors: 193,
@@ -374,25 +393,217 @@ impl Island {
     }
 }
 
-/// Ops heavy enough that a single one of them justifies an island.
+/// Op families whose arithmetic is heavy enough to be worth estimating as a matmul-shaped cost.
 ///
-/// A lone `Add` is never worth a round-trip; a single `MatMul` on LLM-sized weights always is.
-/// The list is the §4 inventory's "L/XL, compute-bound" rows.
-pub fn is_anchor(qualified_op: &str) -> bool {
-    matches!(
-        qualified_op,
-        "MatMul"
-            | "Gemm"
-            | "Conv"
-            | "ConvTranspose"
-            | "Attention"
-            | "com.microsoft::MatMulNBits"
-            | "com.microsoft::GroupQueryAttention"
-            | "com.microsoft::MultiHeadAttention"
-            | "com.microsoft::Attention"
-            | "com.microsoft::QMoE"
-            | "com.microsoft::LinearAttention"
-    )
+/// The list is the §4 inventory's "L/XL, compute-bound" rows. **This is a statement about the
+/// op name and nothing else**, and it is used for exactly one thing: choosing the FLOP estimate
+/// for a node in [`crate::ep`]'s island builder. It is *not* the anchor predicate — see
+/// [`is_anchor`], which additionally requires a resident weight.
+///
+/// The set is **bit-identical** to the one the predicate that used to be called `is_anchor`
+/// matched (issue #73); only its name and its consumer changed. The rename is the whole point:
+/// the old name asserted an economic conclusion that the body never checked.
+///
+/// Held as a `const` slice rather than inlined into the `matches!` so that it has exactly one
+/// definition. `rust/tools/probe_island_counterfactual.py` parses this literal to build its own
+/// anchor set, and `tests/ops/test_probe_anchor_mirror.py` fails on any element present in one
+/// and not the other — an omitted family made the counterfactual probe understate the anchor
+/// population once already.
+pub const HEAVY_OP_FAMILIES: &[&str] = &[
+    "MatMul",
+    "Gemm",
+    "Conv",
+    "ConvTranspose",
+    "Attention",
+    "com.microsoft::MatMulNBits",
+    "com.microsoft::GroupQueryAttention",
+    "com.microsoft::MultiHeadAttention",
+    "com.microsoft::Attention",
+    "com.microsoft::QMoE",
+    "com.microsoft::LinearAttention",
+];
+
+/// Whether `qualified_op` is in [`HEAVY_OP_FAMILIES`]. See that constant for what this does and
+/// does not mean.
+pub fn is_heavy_op_family(qualified_op: &str) -> bool {
+    HEAVY_OP_FAMILIES.contains(&qualified_op)
+}
+
+/// Whether a node presents a **resident weight** at one of its family's designated weight sites.
+///
+/// "Resident" means a graph initializer: uploaded once at session build and reused by every
+/// inference, so its bytes are not charged to the per-inference boundary (`ep.rs` already
+/// excludes constant inputs from `Island::input_bytes` for exactly this reason). That residency
+/// is the entire economic warrant for the anchor exemption — a weight amortises the round trip
+/// across inferences; an activation does not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeightOperand {
+    /// At least one designated weight site is present **and** is a graph initializer.
+    Present,
+    /// Every designated weight site was inspected and none holds a resident initializer.
+    ///
+    /// This covers both "the optional weight input is omitted" and "the input is present but is
+    /// a runtime activation". Both are the same economic fact: nothing here is amortised.
+    Absent,
+    /// The question could not be answered at this level, so it must not be answered here.
+    ///
+    /// Real source: `ValueInfo_IsConstantInitializer` answers `false` for every input of a
+    /// *fused* node even when the body nodes report 388 constants (`ep.rs`, measured on Phi-3.5
+    /// 2026-08-02). A `false` from a level that cannot see initializers is not evidence of
+    /// absence, and treating it as such is how a name-only path gets re-introduced by accident.
+    Unknown,
+}
+
+/// The input indices at which a family's schema designates a learned or persistent parameter.
+///
+/// Anchor eligibility consults **only these sites**. Deriving them from the op schema rather
+/// than from "is any input constant?" is what makes the rule schema-aware rather than
+/// coincidental: a constant `attention_mask`, a constant `seqlens_k`, or a folded shape tensor
+/// is a constant that is *not* a weight, and an anchor rule that counted it would re-admit the
+/// exemption through a side door.
+///
+/// # Provenance
+///
+/// Contrib-op indices are read from ONNX Runtime **v1.28.0**, commit
+/// `da9b5e364c465de65c49d91e696cd6485270757f`, the exact revision pinned by
+/// `third_party/onnxruntime/PROVENANCE.md`, file
+/// `onnxruntime/core/graph/contrib_ops/bert_defs.cc` (attention family) and
+/// `onnxruntime/core/graph/contrib_ops/contrib_defs.cc` (`MatMulNBits`, `QMoE`).
+///
+/// | qualified op | schema site(s) designated here | source |
+/// |---|---|---|
+/// | `MatMul` | 1 `B` | ONNX `MatMul`: `A`, `B` |
+/// | `Gemm` | 1 `B` | ONNX `Gemm`: `A`, `B`, optional `C`. `C` is a bias vector — too small to amortise a boundary, so it is deliberately **not** a site |
+/// | `Conv` / `ConvTranspose` | 1 `W` | ONNX: `X`, `W`, optional `B`. Bias excluded for the same reason |
+/// | `Attention` (default domain) | *none* | ONNX `Attention`-23 is `Q`,`K`,`V`,`attn_mask`,`past_key`,`past_value` — every input is an activation or a cache. There is no weight site to cite, so this family can never anchor |
+/// | `com.microsoft::Attention` | 1 `weights`, 2 `bias` | `bert_defs.cc:529-537` — input 1 is the merged Q/K/V projection matrix and is **required** |
+/// | `com.microsoft::MultiHeadAttention` | 3 `bias` | `bert_defs.cc:1126-1130` — the only parameter input; Q/K/V arrive pre-projected |
+/// | `com.microsoft::GroupQueryAttention` | 7 `cos_cache`, 8 `sin_cache`, 12 `k_scale`, 13 `v_scale`, 14 `q_norm_weight`, 15 `k_norm_weight` | `bert_defs.cc:1294-1335`, see [`GQA_SCHEMA_NOTE`] |
+/// | `com.microsoft::MatMulNBits` | 1 `B`, 2 `scales`, 3 `zero_points` | `contrib_defs.cc:3672-3684` — `B` and `scales` are required and are initializers by the format's definition |
+/// | `com.microsoft::QMoE` | 2 `fc1_experts_weights`, 3 `fc1_scales`, 5 `fc2_experts_weights`, 6 `fc2_scales` | `contrib_defs.cc:1538-1560` |
+/// | `com.microsoft::LinearAttention` | 4 `decay`, 5 `beta` | `bert_defs.cc:2417-2431` — the learned per-head parameters; `query`/`key`/`value`/`past_state` are activations |
+///
+/// An op outside [`is_heavy_op_family`] returns an empty slice, as does any family with no
+/// citable weight site. Empty means **never anchors**, which is the fail-closed direction.
+pub fn weight_sites(qualified_op: &str) -> &'static [usize] {
+    match qualified_op {
+        "MatMul" | "Gemm" | "Conv" | "ConvTranspose" => &[1],
+        // ONNX-domain `Attention` has no weight input at all; see the table above.
+        "Attention" => &[],
+        "com.microsoft::Attention" => &[1, 2],
+        "com.microsoft::MultiHeadAttention" => &[3],
+        "com.microsoft::GroupQueryAttention" => &[7, 8, 12, 13, 14, 15],
+        "com.microsoft::MatMulNBits" => &[1, 2, 3],
+        "com.microsoft::QMoE" => &[2, 3, 5, 6],
+        "com.microsoft::LinearAttention" => &[4, 5],
+        _ => &[],
+    }
+}
+
+/// What the `GroupQueryAttention` schema actually says, recorded because the wrong version of it
+/// was asserted twice in this issue's history.
+///
+/// Read from ONNX Runtime v1.28.0 (`da9b5e364c465de65c49d91e696cd6485270757f`),
+/// `onnxruntime/core/graph/contrib_ops/bert_defs.cc`,
+/// `ONNX_MS_OPERATOR_SET_SCHEMA(GroupQueryAttention, 1, ...)` at lines 1216-1335:
+///
+/// | idx | name | optionality | line |
+/// |---|---|---|---|
+/// | 0 | `query` | **required** | 1258 |
+/// | 1 | `key` | `OpSchema::Optional` | 1263-1267 |
+/// | 2 | `value` | `OpSchema::Optional` | 1268-1272 |
+/// | 3 | `past_key` | `OpSchema::Optional` | 1273-1278 |
+/// | 4 | `past_value` | `OpSchema::Optional` | 1279-1284 |
+/// | 5 | `seqlens_k` | **required** | 1285-1288 |
+/// | 6 | `total_sequence_length` | **required** | 1289-1293 |
+/// | 7 | `cos_cache` | `OpSchema::Optional` | 1294-1298 |
+/// | 8 | `sin_cache` | `OpSchema::Optional` | 1299-1303 |
+/// | 9 | `position_ids` | `OpSchema::Optional` | 1304-1309 |
+/// | 10 | `attention_bias` | `OpSchema::Optional` | 1310-1314 |
+/// | 11 | `head_sink` | `OpSchema::Optional` | 1315-1319 |
+/// | 12 | `k_scale` | `OpSchema::Optional` | 1320 |
+/// | 13 | `v_scale` | `OpSchema::Optional` | 1321 |
+/// | 14 | `q_norm_weight` | `OpSchema::Optional` | 1322-1330 |
+/// | 15 | `k_norm_weight` | `OpSchema::Optional` | 1331-1335 |
+///
+/// **Two things this corrects.** First, "GQA's schema minimum is seven inputs, all runtime
+/// tensors" is false in both halves: inputs 1-4 are `OpSchema::Optional`, so the required set is
+/// `{0, 5, 6}`, and packed-QKV GQA omits `key`/`value` entirely (the shape-inference function
+/// branches on `hasInputShape(ctx, 2)` for exactly that case). Second, GQA **does** have weight
+/// inputs — 14 `q_norm_weight` and 15 `k_norm_weight` are 1-D `(head_size)` learned RMS-norm
+/// parameters, added for Qwen3-style graphs. Blanket-classifying the family as weightless was
+/// wrong on the schema, not merely unlucky on one model.
+///
+/// **What this does not establish.** Whether any *particular* Phi-3.5 GQA node presents a
+/// resident weight is a fact about that export, not about the schema. A rotary Phi-3.5 GQA node
+/// carries `cos_cache`/`sin_cache` as folded constant tables and would classify
+/// [`WeightOperand::Present`]; a non-rotary or fully activation-fed one classifies
+/// [`WeightOperand::Absent`] and does not anchor. This module refuses to assert which, because
+/// no census in this repository recorded per-input constancy. See
+/// [`Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED`].
+pub const GQA_SCHEMA_NOTE: &str = "ORT v1.28.0 bert_defs.cc:1216-1335 — GQA inputs 1-4 are \
+     OpSchema::Optional (required set is {0 query, 5 seqlens_k, 6 total_sequence_length}); \
+     weight inputs 14 q_norm_weight and 15 k_norm_weight exist";
+
+/// Classify a node's weight operand from a per-site oracle.
+///
+/// `site` answers, for one input index: `Some(true)` = present and a resident initializer,
+/// `Some(false)` = present-but-not-constant, or absent, and `None` = *unanswerable at this
+/// level*. One `None` with no `Some(true)` yields [`WeightOperand::Unknown`], because a `false`
+/// from a level that cannot see initializers is not evidence of absence.
+///
+/// Shared by `ep.rs` and by the tests deliberately: a second copy of this reasoning at the call
+/// site is RAI-011 reappearing inside the fix for its own sibling (§5.4.1(3)).
+pub fn classify_weight_operand(
+    qualified_op: &str,
+    mut site: impl FnMut(usize) -> Option<bool>,
+) -> WeightOperand {
+    let sites = weight_sites(qualified_op);
+    if sites.is_empty() {
+        // No citable weight site for this family. Nothing to be unsure *about*: the answer is a
+        // definite "no resident weight", which fails closed at `is_anchor`.
+        return WeightOperand::Absent;
+    }
+    let mut unanswerable = false;
+    for &i in sites {
+        match site(i) {
+            Some(true) => return WeightOperand::Present,
+            Some(false) => {}
+            None => unanswerable = true,
+        }
+    }
+    if unanswerable {
+        WeightOperand::Unknown
+    } else {
+        WeightOperand::Absent
+    }
+}
+
+/// Whether one node is an *anchor* — heavy enough that a single one of it justifies an island.
+///
+/// A lone `Add` is never worth a round-trip; a single `MatMul` **on LLM-sized weights** always
+/// is. That second clause is the doc comment this predicate carried since it was written, and
+/// until issue #73 the body never tested it: matching the bare string `"MatMul"` exempted the
+/// attention batched products, whose operands are both runtime activations, from the very
+/// economics gate they should have met.
+///
+/// Anchor status is therefore a property of the **node**, not of the op name:
+///
+/// ```text
+/// is_anchor(op, w)  ==  is_heavy_op_family(op) && w == WeightOperand::Present
+/// ```
+///
+/// Both [`WeightOperand::Absent`] and [`WeightOperand::Unknown`] fail closed — a node that does
+/// not anchor is not thereby rejected, it merely has to satisfy the size and economics gates
+/// like anything else. The failure mode of guessing wrong in this direction is a CPU fallback;
+/// the failure mode of guessing wrong in the other direction is a claim we cannot justify.
+///
+/// **Monotonicity.** `is_anchor(op, w) ⟹ is_heavy_op_family(op)` for every `(op, w)`, so the
+/// anchor set is a strict subset of the retired name-only set and this change can only move a
+/// verdict `Claim → Reject`, never `Reject → Claim`. Pinned end-to-end over constructed islands
+/// by `new_anchor_semantics_never_newly_claim_over_the_production_chain`.
+pub fn is_anchor(qualified_op: &str, weights: WeightOperand) -> bool {
+    is_heavy_op_family(qualified_op) && matches!(weights, WeightOperand::Present)
 }
 
 /// The thresholds the rule is expressed in.
@@ -528,12 +739,20 @@ impl Verdict {
 ///    case: a graph of unsupported ops sprinkled with lone `Add`s.
 /// 2. **Economics.** `compute_ns` must exceed `margin × transfer_ns`. This kills the subtler case:
 ///    a large island of cheap elementwise work whose tensors are bigger than its arithmetic.
-///    **Anchor-containing islands are exempt from gate 2**: an op in `is_anchor` is by definition
-///    heavy enough to justify a boundary on its own — that is the design invariant of `is_anchor`.
-///    The provisional `TransferModel` constants are calibrated against real model execution and
+///    **Anchor-containing islands are exempt from gate 2**: a node that is in [`is_heavy_op_family`]
+///    *and* presents a resident weight is heavy enough to justify a boundary on its own — that is
+///    the design invariant of [`is_anchor`], and since issue #73 the predicate actually tests the
+///    weight half of it rather than asserting it from the op name. The provisional
+///    `TransferModel` constants are calibrated against real model execution and
 ///    may not reflect isolated unit-test input sizes; applying the economic check to anchors
 ///    would reject them when tested in isolation, which contradicts the stated design intent
 ///    ("a single MatMul on LLM-sized weights always is worth it").
+///
+/// **Gate ordering is unchanged by issue #73**, deliberately. A 1-node island that is no longer
+/// an anchor now reaches gate 1 and answers `TooSmall`, which is the honest reason — it *is*
+/// below `min_nodes`. `TransferDominated` is reachable for such a node only once size can no
+/// longer answer (a multi-node activation-only cluster, or `min_nodes` lowered), and it is
+/// proven separately rather than conflated with the size rejection.
 pub fn evaluate(island: &Island, model: &TransferModel, policy: &Policy) -> Verdict {
     if island.nodes < policy.min_nodes && island.anchors == 0 {
         return Verdict::Reject(RejectReason::TooSmall {
@@ -833,6 +1052,41 @@ impl CoverageReport {
 mod tests {
     use super::*;
 
+    /// Build an `Island` the way [`crate::ep`]'s island builder does, from a list of
+    /// `(qualified_op, weight-operand state)` node descriptions.
+    ///
+    /// This exists so the property tests below exercise the **production chain** — the shipped
+    /// `is_anchor` / `is_heavy_op_family` split feeding the shipped `evaluate` — rather than
+    /// comparing two predicates to each other. The two accounting lines mirror `ep.rs:1310-1322`
+    /// exactly: `anchors` from `is_anchor`, `flops` from `is_heavy_op_family`. If those two ever
+    /// get re-merged into one branch, the FLOP invariant asserted in
+    /// `a_weightless_matmul_island_is_rejected_where_a_weighted_one_is_claimed` goes red.
+    fn island_from_nodes(
+        nodes: &[(&str, WeightOperand)],
+        input_bytes: u64,
+        output_bytes: u64,
+    ) -> Island {
+        let mut island = Island {
+            nodes: nodes.len(),
+            anchors: 0,
+            flops: 0,
+            input_bytes,
+            output_bytes,
+            symbolic_boundary_slots: 0,
+        };
+        for &(op, weights) in nodes {
+            if is_anchor(op, weights) {
+                island.anchors += 1;
+            }
+            if is_heavy_op_family(op) {
+                island.flops = island.flops.saturating_add(2 * 3072 * 3072);
+            } else {
+                island.flops = island.flops.saturating_add(output_bytes / 2);
+            }
+        }
+        island
+    }
+
     fn big_matmul_island() -> Island {
         // One 4096x4096 @ 4096x4096 fp16 matmul: ~137 GFLOP against ~67 MB of boundary traffic.
         Island {
@@ -1045,13 +1299,408 @@ mod tests {
     }
 
     #[test]
-    fn anchors_are_the_heavy_ops_only() {
-        assert!(is_anchor("MatMul"));
-        assert!(is_anchor("Conv"));
-        assert!(is_anchor("com.microsoft::MatMulNBits"));
-        assert!(is_anchor("com.microsoft::GroupQueryAttention"));
-        assert!(!is_anchor("Add"));
-        assert!(!is_anchor("Reshape"));
+    fn heavy_families_are_the_heavy_ops_only() {
+        // Family membership is still a pure name question, and still the FLOP estimator's input.
+        assert!(is_heavy_op_family("MatMul"));
+        assert!(is_heavy_op_family("Conv"));
+        assert!(is_heavy_op_family("com.microsoft::MatMulNBits"));
+        assert!(is_heavy_op_family("com.microsoft::GroupQueryAttention"));
+        assert!(!is_heavy_op_family("Add"));
+        assert!(!is_heavy_op_family("Reshape"));
+    }
+
+    /// The name-only path must be *impossible*, not merely unused.
+    ///
+    /// Both polarities on every heavy family: `Present` anchors, `Absent`/`Unknown` do not.
+    /// A rollback of `is_anchor` to op-name-only turns the negative half red.
+    #[test]
+    fn no_heavy_family_anchors_without_a_resident_weight() {
+        for op in HEAVY_OP_FAMILIES {
+            assert!(is_heavy_op_family(op), "{op} must stay in the family list");
+            assert!(
+                !is_anchor(op, WeightOperand::Absent),
+                "{op} anchored with no resident weight — the name-only path is back"
+            );
+            assert!(
+                !is_anchor(op, WeightOperand::Unknown),
+                "{op} anchored on an unanswerable operand fact — it must fail closed"
+            );
+        }
+        // And a non-family op never anchors however weighty its operands look.
+        for op in [
+            "Add",
+            "Reshape",
+            "Softmax",
+            "com.microsoft::SkipLayerNormalization",
+        ] {
+            for w in [
+                WeightOperand::Present,
+                WeightOperand::Absent,
+                WeightOperand::Unknown,
+            ] {
+                assert!(!is_anchor(op, w), "{op} is not a heavy family");
+            }
+        }
+    }
+
+    /// The positive arm, restricted to families for which a weight site is actually citable.
+    ///
+    /// Not "every family anchors when handed `Present`" — that is true by construction and is
+    /// the tautology PR #77 was rejected for. The content here is that `weight_sites` is
+    /// non-empty for exactly the families whose schema has a parameter input, so `Present` is
+    /// *reachable* for them from a real graph rather than only from a hand-built enum value.
+    #[test]
+    fn a_family_can_only_reach_present_if_its_schema_has_a_weight_site() {
+        for op in HEAVY_OP_FAMILIES {
+            let sites = weight_sites(op);
+            let reachable = classify_weight_operand(op, |i| Some(sites.contains(&i)));
+            if sites.is_empty() {
+                assert_eq!(
+                    reachable,
+                    WeightOperand::Absent,
+                    "{op} has no citable weight site, so Present must be unreachable"
+                );
+                assert!(!is_anchor(op, reachable), "{op} must never anchor");
+            } else {
+                assert_eq!(
+                    reachable,
+                    WeightOperand::Present,
+                    "{op} declares weight sites {sites:?} but cannot reach Present"
+                );
+                assert!(is_anchor(op, reachable), "{op} anchors over its own sites");
+            }
+        }
+        // The two families with no citable weight site at the pinned ORT revision.
+        assert!(weight_sites("Attention").is_empty());
+        assert!(!weight_sites("com.microsoft::GroupQueryAttention").is_empty());
+    }
+
+    /// `classify_weight_operand` must not read a constant that is not a *weight*.
+    ///
+    /// A folded shape tensor, a constant `attention_mask`, a constant `seqlens_k` — all are
+    /// initializers, none is amortised parameter data. If eligibility were "any input is
+    /// constant" the exemption would come straight back through a side door.
+    #[test]
+    fn a_constant_at_a_non_weight_site_does_not_confer_anchor_status() {
+        // GQA with a constant `seqlens_k` (5) and `total_sequence_length` (6) and nothing else.
+        let w = classify_weight_operand("com.microsoft::GroupQueryAttention", |i| {
+            Some(matches!(i, 5 | 6))
+        });
+        assert_eq!(w, WeightOperand::Absent, "{w:?}");
+        assert!(!is_anchor("com.microsoft::GroupQueryAttention", w));
+
+        // A `MatMul` whose *A* (input 0) is constant but whose `B` is an activation. Operand
+        // order is load-bearing: only `B` is the reused weight.
+        let w = classify_weight_operand("MatMul", |i| Some(i == 0));
+        assert_eq!(w, WeightOperand::Absent, "{w:?}");
+        assert!(!is_anchor("MatMul", w));
+
+        // Conv's bias (2) is constant, its kernel (1) is not. A bias does not amortise a
+        // boundary, so index 2 is deliberately not a site.
+        let w = classify_weight_operand("Conv", |i| Some(i == 2));
+        assert_eq!(w, WeightOperand::Absent, "{w:?}");
+    }
+
+    /// GQA's schema, asserted against the pinned ORT v1.28.0 source rather than a recollection.
+    ///
+    /// Fails if anyone reinstates "GQA is seven required weightless inputs".
+    #[test]
+    fn group_query_attention_weight_sites_follow_the_pinned_schema() {
+        let gqa = "com.microsoft::GroupQueryAttention";
+        // Inputs 1-4 (key, value, past_key, past_value) are OpSchema::Optional and are
+        // activations or caches — never weight sites, present or not.
+        for i in [0usize, 1, 2, 3, 4, 5, 6, 9, 10, 11] {
+            assert!(
+                !weight_sites(gqa).contains(&i),
+                "GQA input {i} is not a weight site"
+            );
+        }
+        // The weight/persistent-table sites that the schema really does declare.
+        for i in [7usize, 8, 12, 13, 14, 15] {
+            assert!(
+                weight_sites(gqa).contains(&i),
+                "GQA input {i} is a declared weight site at ORT v1.28.0"
+            );
+        }
+        // 14/15 exist and are weights: a GQA node carrying only q_norm_weight/k_norm_weight
+        // anchors. This is the case the "weightless by schema" claim said was impossible.
+        let qwen_style = classify_weight_operand(gqa, |i| Some(matches!(i, 14 | 15)));
+        assert_eq!(qwen_style, WeightOperand::Present);
+        assert!(is_anchor(gqa, qwen_style));
+
+        // A rotary Phi-3.5-shaped node: cos/sin caches folded to initializers, no norm weights.
+        let rotary = classify_weight_operand(gqa, |i| Some(matches!(i, 7 | 8)));
+        assert_eq!(rotary, WeightOperand::Present);
+        assert!(is_anchor(gqa, rotary));
+
+        // Packed-QKV, no rotary, no quantised cache: every optional weight input omitted.
+        // `key`/`value` absent is legal (shape inference branches on `hasInputShape(ctx, 2)`),
+        // and the node correctly does not anchor.
+        let packed_no_rotary = classify_weight_operand(gqa, |_| Some(false));
+        assert_eq!(packed_no_rotary, WeightOperand::Absent);
+        assert!(!is_anchor(gqa, packed_no_rotary));
+
+        // Unanswerable constancy at a real weight site must not be read as absence.
+        let unanswerable =
+            classify_weight_operand(gqa, |i| if i == 7 { None } else { Some(false) });
+        assert_eq!(unanswerable, WeightOperand::Unknown);
+        assert!(!is_anchor(gqa, unanswerable));
+
+        assert!(GQA_SCHEMA_NOTE.contains("q_norm_weight"));
+    }
+
+    /// `MatMulNBits` is the one family whose `Present` needs no fresh census.
+    ///
+    /// Inputs 1 (`B`) and 2 (`scales`) are required and are initializers by the format's
+    /// definition, which is why Phi-3.5's island keeps a non-zero anchor count under the new
+    /// rule without this change having to assert anything about its GQA nodes.
+    #[test]
+    fn matmul_nbits_anchors_on_its_required_quantised_weight() {
+        let op = "com.microsoft::MatMulNBits";
+        assert!(weight_sites(op).contains(&1) && weight_sites(op).contains(&2));
+        let w = classify_weight_operand(op, |i| Some(i == 1));
+        assert_eq!(w, WeightOperand::Present);
+        assert!(is_anchor(op, w));
+        // ...and it still fails closed if a graph somehow presents neither.
+        assert!(!is_anchor(op, classify_weight_operand(op, |_| Some(false))));
+    }
+
+    /// An omitted optional weight and a present-but-runtime one are the same economic fact, and
+    /// both differ from "cannot tell".
+    #[test]
+    fn absent_present_and_unknown_are_three_distinct_answers() {
+        let op = "com.microsoft::Attention";
+        assert_eq!(
+            classify_weight_operand(op, |_| Some(false)),
+            WeightOperand::Absent
+        );
+        assert_eq!(
+            classify_weight_operand(op, |_| Some(true)),
+            WeightOperand::Present
+        );
+        assert_eq!(
+            classify_weight_operand(op, |_| None),
+            WeightOperand::Unknown
+        );
+        // A single Present outweighs any number of unanswerable sites: we have positive
+        // evidence of a resident weight, which is all the exemption ever needed.
+        assert_eq!(
+            classify_weight_operand(op, |i| if i == 1 { Some(true) } else { None }),
+            WeightOperand::Present
+        );
+    }
+
+    /// **The strict Claim → Reject case, over the production chain.**
+    ///
+    /// Not a predicate-vs-predicate comparison: this builds the island the way `ep.rs` builds
+    /// one (count anchors from `is_anchor`, count FLOPs from `is_heavy_op_family`) and runs the
+    /// shipped `evaluate` on it. The MiniLM-shaped attention product — activation ⊗ activation,
+    /// alone in a 1-node island — flips from `Claim` to `Reject`.
+    #[test]
+    fn a_weightless_matmul_island_is_rejected_where_a_weighted_one_is_claimed() {
+        // Identical shape, identical bytes, identical FLOPs. The ONLY difference is whether
+        // operand `B` is a resident initializer.
+        let weighted = island_from_nodes(&[("MatMul", WeightOperand::Present)], 1 << 26, 1 << 24);
+        let weightless = island_from_nodes(&[("MatMul", WeightOperand::Absent)], 1 << 26, 1 << 24);
+        assert_eq!(
+            weighted.flops, weightless.flops,
+            "the FLOP estimate must not move with anchor status"
+        );
+        assert_eq!(weighted.anchors, 1);
+        assert_eq!(weightless.anchors, 0);
+
+        let p = Policy::default();
+        assert_eq!(
+            evaluate(&weighted, &TransferModel::DISCRETE, &p),
+            Verdict::Claim,
+            "a weight matmul must still be claimed"
+        );
+        let v = evaluate(&weightless, &TransferModel::DISCRETE, &p);
+        assert!(
+            matches!(v, Verdict::Reject(RejectReason::TooSmall { nodes: 1, .. })),
+            "a 1-node non-anchor is TooSmall, honestly, not TransferDominated: {v:?}"
+        );
+    }
+
+    /// `TransferDominated` proven **separately**, on the same weightless node, once the size
+    /// gate can no longer answer.
+    ///
+    /// Two independent ways of moving size out of the way, so this does not depend on one knob.
+    #[test]
+    fn the_economics_gate_rejects_a_weightless_cluster_when_size_cannot_answer() {
+        let p_small = Policy {
+            min_nodes: 1,
+            ..Policy::default()
+        };
+        let one = island_from_nodes(&[("MatMul", WeightOperand::Absent)], 1 << 26, 1 << 24);
+        let v = evaluate(&one, &TransferModel::DISCRETE, &p_small);
+        assert!(
+            matches!(v, Verdict::Reject(RejectReason::TransferDominated { .. })),
+            "with min_nodes=1 the size gate is silent and economics must answer: {v:?}"
+        );
+
+        // The same conclusion without touching policy: six activation-only attention products
+        // clustered together clear `min_nodes` on their own.
+        let cluster = island_from_nodes(&[("MatMul", WeightOperand::Absent); 6], 1 << 26, 1 << 24);
+        assert_eq!(cluster.anchors, 0);
+        assert!(cluster.nodes >= Policy::default().min_nodes);
+        let v = evaluate(&cluster, &TransferModel::DISCRETE, &Policy::default());
+        assert!(
+            matches!(v, Verdict::Reject(RejectReason::TransferDominated { .. })),
+            "{v:?}"
+        );
+    }
+
+    /// The rejections must be *visible*, in the same histogram as a dtype or rank decline.
+    #[test]
+    fn the_new_rejections_render_as_partition_declines() {
+        let cluster = island_from_nodes(&[("MatMul", WeightOperand::Absent); 6], 1 << 26, 1 << 24);
+        let Verdict::Reject(reason) =
+            evaluate(&cluster, &TransferModel::DISCRETE, &Policy::default())
+        else {
+            panic!("expected a rejection");
+        };
+        let d = decline_for(&reason);
+        assert!(
+            d.starts_with(&format!("[{}]", DeclineCode::Partition.tag())),
+            "{d}"
+        );
+        assert!(d.contains("transfer-dominated"), "{d}");
+
+        let one = island_from_nodes(&[("MatMul", WeightOperand::Absent)], 1 << 26, 1 << 24);
+        let Verdict::Reject(reason) = evaluate(&one, &TransferModel::DISCRETE, &Policy::default())
+        else {
+            panic!("expected a rejection");
+        };
+        let d = decline_for(&reason);
+        assert!(
+            d.starts_with(&format!("[{}]", DeclineCode::Partition.tag())),
+            "{d}"
+        );
+        assert!(
+            d.contains("no compute-heavy anchor"),
+            "the operator-facing text must say the anchor is missing, not merely that the \
+             subgraph is small: {d}"
+        );
+    }
+
+    /// **Monotonicity, over the production chain rather than over the predicate.**
+    ///
+    /// PR #77/#80's version compared `is_anchor` to `is_heavy_op_family` directly, which is true
+    /// by the definition `is_anchor = family && Present` and therefore proves nothing about what
+    /// ships. This version *constructs an island for every (op, operand-state, size, traffic)
+    /// combination the way `ep.rs` does* and *evaluates the shipped gate on it under both the
+    /// old and the new anchor rule*, asserting:
+    ///
+    /// 1. no combination is `Reject` under the retired name-only rule and `Claim` under the new
+    ///    one — the new semantics can never *newly claim* anything; and
+    /// 2. at least one combination is strictly `Claim → Reject`, so the property is not
+    ///    vacuously satisfied by the two rules agreeing everywhere.
+    ///
+    /// Rolling `is_anchor` back to op-name-only makes assertion 2 fail: the two rules become the
+    /// same function, `strict_tightenings` stays 0, and this test goes red.
+    #[test]
+    fn new_anchor_semantics_never_newly_claim_over_the_production_chain() {
+        let states = [
+            WeightOperand::Present,
+            WeightOperand::Absent,
+            WeightOperand::Unknown,
+        ];
+        let policies = [
+            Policy::default(),
+            Policy {
+                min_nodes: 1,
+                ..Policy::default()
+            },
+            Policy {
+                anchor_exemption: false,
+                ..Policy::default()
+            },
+        ];
+        let mut strict_tightenings = 0usize;
+        let mut compared = 0usize;
+
+        for op in HEAVY_OP_FAMILIES.iter().chain(["Add", "Reshape"].iter()) {
+            for w in states {
+                for count in [1usize, 3, 6] {
+                    for (input_bytes, output_bytes) in
+                        [(1u64 << 26, 1u64 << 24), (1 << 10, 1 << 10), (0, 0)]
+                    {
+                        let nodes: Vec<(&str, WeightOperand)> = vec![(op, w); count];
+                        // New rule: the shipped island builder.
+                        let new = island_from_nodes(&nodes, input_bytes, output_bytes);
+                        // Retired rule: identical in every field except that anchors are
+                        // counted from the op name alone.
+                        let mut old = new.clone();
+                        old.anchors = nodes.iter().filter(|(o, _)| is_heavy_op_family(o)).count();
+                        assert!(
+                            new.anchors <= old.anchors,
+                            "the anchor set must only ever shrink: {op} {w:?}"
+                        );
+
+                        for model in [TransferModel::DISCRETE, TransferModel::UMA] {
+                            for policy in policies {
+                                compared += 1;
+                                let before = evaluate(&old, &model, &policy);
+                                let after = evaluate(&new, &model, &policy);
+                                assert!(
+                                    !(after.is_claim() && !before.is_claim()),
+                                    "NEWLY CLAIMED under the weight-aware rule: op={op} \
+                                     weights={w:?} nodes={count} bytes=({input_bytes},\
+                                     {output_bytes}) before={before:?} after={after:?}"
+                                );
+                                if before.is_claim() && !after.is_claim() {
+                                    strict_tightenings += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(compared > 0);
+        assert!(
+            strict_tightenings > 0,
+            "no combination tightened: the new rule is indistinguishable from the name-only one, \
+             which means this property test is vacuous and the fix is not wired in"
+        );
+    }
+
+    /// Both gates keep their behaviour pinned independently of the anchor change.
+    ///
+    /// The reject gate and the exemption gate are separate mechanisms and a change to either
+    /// should be visible here rather than absorbed by the other.
+    #[test]
+    fn the_reject_gate_and_the_exemption_gate_are_pinned_separately() {
+        let weighted = island_from_nodes(&[("MatMul", WeightOperand::Present)], 1 << 26, 1 << 24);
+
+        // Exemption gate ON: an anchor-bearing island is claimed regardless of economics.
+        assert_eq!(
+            evaluate(&weighted, &TransferModel::DISCRETE, &Policy::default()),
+            Verdict::Claim
+        );
+        // Exemption gate OFF: the same island now has to survive the economics it was exempt
+        // from — and on these bytes it does not. This proves the exemption, not size, is what
+        // claimed it.
+        let no_exempt = Policy {
+            anchor_exemption: false,
+            ..Policy::default()
+        };
+        assert!(matches!(
+            evaluate(&weighted, &TransferModel::DISCRETE, &no_exempt),
+            Verdict::Reject(RejectReason::TransferDominated { .. })
+        ));
+
+        // Reject gate: unchanged for the case it always covered.
+        assert!(matches!(
+            evaluate(
+                &lone_add_island(),
+                &TransferModel::DISCRETE,
+                &Policy::default()
+            ),
+            Verdict::Reject(RejectReason::TooSmall { nodes: 1, .. })
+        ));
     }
 
     #[test]
