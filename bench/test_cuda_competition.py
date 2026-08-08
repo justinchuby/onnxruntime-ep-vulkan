@@ -15,8 +15,10 @@ would not.
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -861,12 +863,14 @@ def test_committed_records_are_readable_and_self_describing(path):
             assert payload.get("rerecord", {}).get("verdict") in {
                 "REPLAYED", "RERECORDED_EVERY_CALL", "PARTIALLY_RERECORDED", "UNKNOWN",
             }
-            # An attribution that cannot see the whole Compute call cannot rule anything
-            # out.  `vulkan.compute_call` is the outer bracket; anchored on the inner
-            # `vulkan.subgraph` the reduction is blind to the region where the
-            # counters-dump artifact was hiding — a region larger than the device time
-            # the trace *did* see.  The magnitude is quoted where its profile is
-            # committed, which is not this branch.
+            # An attribution anchored on the inner span cannot rule anything out beyond
+            # it.  `vulkan.compute_call` is the outer bracket -- the instrumented
+            # success-path region inside `compute_impl`, not ORT's literal `Compute`
+            # entry -- and anchored on the inner `vulkan.subgraph` instead, the
+            # reduction is blind to the region where the counters-dump artifact was
+            # hiding — a region larger than the device time the trace *did* see.  The
+            # magnitude is quoted where its profile is committed, which is not this
+            # branch.
             anchor = payload.get("anchor") or {}
             assert anchor.get("span"), (
                 f"{path.name}: no anchor recorded. A profile that does not say which span "
@@ -877,7 +881,8 @@ def test_committed_records_are_readable_and_self_describing(path):
                 # artifact rather than in whoever remembers the run.
                 assert payload.get("scope_limits"), (
                     f"{path.name}: anchored on {anchor['span']!r}, which cannot see the "
-                    f"whole Compute callback, and carries no scope_limits saying so.")
+                    f"region `vulkan.compute_call` would bucket, and carries no "
+                    f"scope_limits saying so.")
         return
 
     assert schema.startswith("cuda_competition/"), f"{path.name}: unknown schema {schema!r}"
@@ -1056,11 +1061,15 @@ def test_every_committed_vulkan_record_declares_its_counters_scope():
     """A committed Vulkan number must say which instrumentation regime produced it.
 
     The EP rewrites its counters JSON after every `Compute`. With that dump left inside
-    the timed region a Vulkan median is inflated by the harness's own file write, and the
-    resulting record is indistinguishable from a clean one unless it says so. The
-    withdrawn `baseline_main_v2.json` was exactly that: 64 `ADMISSIBLE` results, no
-    refusals, no `counters_scope`, and a Vulkan `prefill_1` median 1.61x the corrected
-    one.
+    the timed region a Vulkan median is measurably inflated by the harness's own file
+    write, and the resulting record is indistinguishable from a clean one unless it says
+    so. The withdrawn `baseline_main_v2.json` was exactly that: 64 `ADMISSIBLE` results,
+    no refusals, no `counters_scope`, and a Vulkan `prefill_1` median well above the
+    corrected one. No ratio is quoted here: `baseline_main_v2.json` and the
+    `baseline_fixed` it was compared against are both withdrawn and committed nowhere on
+    this branch, so any figure computed from them would have no witness -- exactly the
+    defect `test_no_measured_ratio_ships_without_a_committed_witness` below exists to
+    catch structurally, not just for this one pair.
 
     Scoped to Vulkan arms because `counters_scope` describes *our* EP's counters; a CUDA
     or CPU arm has none and carries the field empty rather than absent.
@@ -1081,6 +1090,61 @@ def test_every_committed_vulkan_record_declares_its_counters_scope():
     assert not offenders, (
         "committed Vulkan records without a declared counters scope:\n  "
         + "\n  ".join(offenders))
+
+
+#: A bare "<digits>.<digits>x" literal in this module's own prose reads as a measured
+#: result -- exactly the shape of the withdrawn baseline ratio this guard exists to keep
+#: out. This module carries no committed evidence of its own
+#: (`test_committed_evidence_is_present_and_enumerable` above skips when this branch
+#: publishes none), so any such literal here would be unwitnessed by construction: a
+#: real-looking number backed by nothing in the tree. A qualitative bound ("more than
+#: 2x", "more than twice") is not this shape and is not the thing being guarded against
+#: -- it makes no claim precise enough to need a witness.
+_UNWITNESSED_RATIO_RE = re.compile(r"\b\d+\.\d+x\b")
+
+
+def test_no_measured_ratio_ships_without_a_committed_witness():
+    """This module may state the qualitative finding; it may not quote a magnitude for it.
+
+    The rejected baseline ratio was a real-looking decimal, sourced from
+    `baseline_main_v2.json` / `baseline_fixed`, both withdrawn and committed nowhere on
+    this branch. Citing a number from an artifact nobody can read is the same defect
+    `test_cuda_profile.py`'s citation-pin tests exist to catch for `outside_subgraph_ms`
+    -- but *this* module has no committed artifact to pin a figure to at all, so the only
+    sound fix here is to not state one. If a future run commits real evidence for a
+    counters-dump ratio, it belongs in a JSON artifact under `bench/results/_cuda69/`
+    with a citation pin like `test_cuda_profile.py`'s, not as a bare literal in this
+    module's docstrings or assertion messages.
+
+    The negative control below (`test_the_unwitnessed_ratio_guard_would_notice_a_regression`)
+    necessarily writes an example of the forbidden shape to prove the regex can see it, so
+    its own source -- read via `inspect.getsource`, not a textual marker that could collide
+    with a look-alike string -- is excluded from the scan here rather than escaped in place.
+    """
+    src = Path(__file__).read_text("utf-8")
+    exempt = inspect.getsource(test_the_unwitnessed_ratio_guard_would_notice_a_regression)
+    assert src.count(exempt) == 1, "the exempted negative-control source must appear once"
+    prose = src.replace(exempt, "", 1)
+    offenders = _UNWITNESSED_RATIO_RE.findall(prose)
+    assert not offenders, (
+        f"this module quotes a decimal ratio literal with no committed witness: "
+        f"{offenders}. Either delete the figure and keep the qualitative claim, or "
+        f"commit the artifact that backs it under bench/results/_cuda69/ and cite it "
+        f"through a pin, the way test_cuda_profile.py does for outside_subgraph_ms.")
+
+
+def test_the_unwitnessed_ratio_guard_would_notice_a_regression():
+    """Negative control: a guard that cannot fail is decoration.
+
+    Exempted from the scan in `test_no_measured_ratio_ships_without_a_committed_witness`
+    by source lookup, because this function's whole purpose is to contain the forbidden
+    shape.
+    """
+    example_measured_figure = "a Vulkan prefill_1 median " + "1.61x" + " the corrected one"
+    example_qualitative_bound = ("the median with the dump live was more than "
+                                  "twice the median without it")
+    assert _UNWITNESSED_RATIO_RE.search(example_measured_figure)
+    assert not _UNWITNESSED_RATIO_RE.search(example_qualitative_bound)
 
 
 def test_no_committed_record_calls_itself_admissible_while_refusing():

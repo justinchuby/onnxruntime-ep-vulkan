@@ -158,8 +158,9 @@ def _const(name: str, src: "str | None" = None) -> str:
 def structural_spans(src: "str | None" = None) -> "dict[str, str]":
     """The ``cat == "ep"`` brackets, which are **not** phases and are never summed.
 
-    ``compute_call`` brackets the whole ORT ``Compute`` callback and contains ``subgraph``, which
-    opens inside ``dispatch_ort``. Neither may appear in ``HOST_PHASES`` or in any sibling total:
+    ``compute_call`` brackets the instrumented success-path region opened inside
+    ``compute_impl`` (absent on early-outs before that) and contains ``subgraph``, which opens
+    inside ``dispatch_ort``. Neither may appear in ``HOST_PHASES`` or in any sibling total:
     adding a bracket to the sum of the things it brackets is the `phase_containment` ERROR arm.
     """
     src = source() if src is None else src

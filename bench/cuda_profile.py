@@ -26,9 +26,11 @@ here, so this module measures the split before anything is optimised.
 The Vulkan EP already carries the instrument: `rust/src/trace.rs` emits a Chrome
 Trace with
 
-* `cat == "ep"` **structural** spans — `vulkan.compute_call` (the whole ORT `Compute`
-  callback) containing `vulkan.subgraph` (opened inside `dispatch_ort`). These bracket
-  regions and are never summed into anything;
+* `cat == "ep"` **structural** spans — `vulkan.compute_call` (the instrumented
+  success-path region opened inside `compute_impl`, absent when a call early-outs
+  before that; buckets every EP span the instrumented path emits, not all of ORT's
+  `Compute` entry) containing `vulkan.subgraph` (opened inside `dispatch_ort`). These
+  bracket regions and are never summed into anything;
 * `cat == "ep.phase"` host spans (`vulkan.record`, `vulkan.submit`, `vulkan.fence_wait`,
   `vulkan.upload`, `vulkan.readback`, `vulkan.desc_alloc`, `vulkan.pipeline_lookup`,
   `vulkan.cmd_upload`), each carrying a `nested_in` arg;
@@ -245,8 +247,9 @@ def choose_anchor(events: list) -> dict:
                 "available": available,
                 "sees_whole_compute": name == COMPUTE_CALL_SPAN,
                 "basis": (
-                    "`vulkan.compute_call` brackets the whole ORT Compute callback, so every "
-                    "span the EP emits during the call falls inside a bucket"
+                    "`vulkan.compute_call` brackets the instrumented success-path region inside "
+                    "`compute_impl`, so every span the EP emits on that path during the call "
+                    "falls inside a bucket"
                     if name == COMPUTE_CALL_SPAN else
                     "FALLBACK: this trace has no `vulkan.compute_call` span, so the anchor is "
                     "`vulkan.subgraph`, which opens inside `dispatch_ort`. Anything the Compute "
@@ -905,7 +908,7 @@ def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
     The regions, outermost first::
 
         traced wall
-        └── vulkan.compute_call          the whole ORT Compute callback
+        └── vulkan.compute_call          instrumented success-path region, inside compute_impl
             ├── vulkan.subgraph          opened inside dispatch_ort
             │   ├── sibling phases       record + submit + fence_wait (+ compile/prepack)
             │   └── unattributed         no phase span covers it
@@ -1020,7 +1023,7 @@ def render(report: dict) -> str:
             ("traced wall (one `session.run`)", rec.get("traced_wall_ms"), "—"),
             ("outside `vulkan.compute_call` (ORT + harness)",
              rec.get("outside_compute_call_ms"), "traced wall"),
-            ("`vulkan.compute_call` (whole Compute callback)",
+            ("`vulkan.compute_call` (instrumented success-path region, inside `compute_impl`)",
              rec.get("compute_call_ms"), "traced wall"),
             ("`vulkan.subgraph` (inside `dispatch_ort`)",
              rec.get("subgraph_ms"), "`vulkan.compute_call`"),

@@ -57,7 +57,7 @@
 //!
 //! | Span | cat | Clock | What it means |
 //! |---|---|---|---|
-//! | `vulkan.compute_call` | `ep` | host | The **whole** `Compute` callback, ORT entry to return. Contains `vulkan.subgraph`. |
+//! | `vulkan.compute_call` | `ep` | host | The instrumented success-path region opened inside `compute_impl`; absent when a call early-outs before `compute_impl` runs. Buckets every EP span emitted on that path — not all of ORT's `Compute` entry. Contains `vulkan.subgraph`. |
 //! | `vulkan.subgraph` | `ep` | host | One fused subgraph's dispatch region, opened inside `dispatch_ort`. |
 //!
 //! **Phases** (`cat == "ep.phase"`) are the summable vocabulary; each carries `nested_in`:
@@ -846,12 +846,14 @@ impl VulkanTracer {
 
     // --- Execution view ----------------------------------------------------------------
 
-    /// Span around one fused subgraph's whole `Compute` call.
+    /// Span around one fused subgraph's dispatch region, opened inside `dispatch_ort`.
     ///
-    /// Host wall time. On a Vulkan EP this covers upload, record-or-replay, submit, fence wait
-    /// and readback — i.e. it is the end-to-end latency of the subgraph *as the caller
-    /// experiences it*, which is the number a user pays, and which is deliberately not called
-    /// "GPU time" anywhere.
+    /// Host wall time bounding this subgraph's upload, record-or-replay, submit, fence wait and
+    /// readback. Entry-side work in `compute`/`compute_impl` that runs *before* `dispatch_ort`
+    /// is called, and anything the callback does *after* `dispatch_ort` returns (including a
+    /// benchmark harness's own instrumentation), lies outside this span — the wider bracket that
+    /// contains both sides is [`compute_region`](Self::compute_region). It is deliberately not
+    /// called "GPU time" anywhere.
     pub fn subgraph_region(&self, node_count: usize) -> SpanGuard {
         if !self.is_enabled() {
             return self.ctx.span(SPAN_SUBGRAPH, "ep");
@@ -1984,6 +1986,84 @@ mod tests {
                 "{name} is emitted but not declared in the span vocabulary table"
             );
         }
+    }
+
+    /// The vocabulary table's row for `vulkan.compute_call` must describe the instrumented
+    /// success-path region inside `compute_impl`, never ORT's literal whole `Compute` callback.
+    ///
+    /// This row regressed to "The **whole** `Compute` callback, ORT entry to return" once, which
+    /// contradicts [`SPAN_COMPUTE_CALL`]'s own doc comment a few lines below it in this same
+    /// file, contradicts [`VulkanTracer::compute_region`]'s doc, and is exactly the wording
+    /// `bench/cuda_profile.py`, `bench/phases.py` and `bench/trace_vocabulary.py` were separately
+    /// corrected away from. This is the falsifier for that regression: it reads the row out of
+    /// this file's own header table and fails if the contradictory wording reappears.
+    #[test]
+    fn compute_call_vocabulary_row_does_not_claim_the_literal_whole_callback() {
+        let header = include_str!("trace.rs");
+        let header = &header[..header
+            .find("use std::cell::Cell;")
+            .expect("header ends at `use`")];
+        let row_start = header
+            .find("| `vulkan.compute_call` |")
+            .expect("the vocabulary table must have a vulkan.compute_call row");
+        let row_end =
+            row_start + header[row_start..].find('\n').unwrap_or(header.len() - row_start);
+        let row = &header[row_start..row_end];
+        for banned in ["**whole**", "ORT entry to return"] {
+            assert!(
+                !row.contains(banned),
+                "the vulkan.compute_call vocabulary row reintroduced literal-whole-callback \
+                 wording: {banned:?}. It is the instrumented success-path region inside \
+                 compute_impl, absent on early-outs before it — not ORT's literal Compute entry."
+            );
+        }
+        assert!(
+            row.contains("compute_impl") && row.contains("absent"),
+            "the vulkan.compute_call row must state it opens inside compute_impl and is absent \
+             on early-outs before it"
+        );
+    }
+
+    /// `subgraph_region`'s doc must describe the `dispatch_ort` dispatch bracket for one
+    /// subgraph, never the whole `Compute` callback or the caller's end-to-end latency.
+    ///
+    /// The doc regressed to exactly that once: it called the span "one fused subgraph's whole
+    /// `Compute` call" and "the end-to-end latency of the subgraph *as the caller experiences
+    /// it*, which is the number a user pays" — that is `compute_region`'s territory, not
+    /// `subgraph_region`'s, and it contradicts this module's own vocabulary table, which already
+    /// (correctly) describes `vulkan.subgraph` as "opened inside `dispatch_ort`". This is the
+    /// falsifier for that regression: it reads the doc comment immediately above
+    /// `pub fn subgraph_region` out of this file's own source and fails if the contradictory
+    /// wording reappears.
+    #[test]
+    fn subgraph_region_doc_never_claims_the_whole_compute_call() {
+        let src = include_str!("trace.rs");
+        let fn_pos = src
+            .find("pub fn subgraph_region(")
+            .expect("subgraph_region must exist");
+        let section_start = src
+            .find("// --- Execution view")
+            .expect("the execution-view section marker must exist");
+        assert!(section_start < fn_pos, "the section marker must precede subgraph_region");
+        let doc = &src[section_start..fn_pos];
+        for banned in [
+            "whole `Compute` call",
+            "whole `Compute`",
+            "end-to-end latency",
+            "the number a user pays",
+        ] {
+            assert!(
+                !doc.contains(banned),
+                "subgraph_region's doc reintroduced whole-Compute wording: {banned:?}. \
+                 subgraph_region is the dispatch_ort dispatch bracket for one subgraph, not the \
+                 whole Compute callback -- that is compute_region."
+            );
+        }
+        assert!(
+            doc.contains("dispatch_ort"),
+            "subgraph_region's doc must describe it as the dispatch region opened inside \
+             dispatch_ort"
+        );
     }
 
     /// `compute_region` brackets the callback; it must not be modelled as a phase.

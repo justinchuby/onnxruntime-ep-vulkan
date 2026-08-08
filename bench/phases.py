@@ -94,7 +94,9 @@ HOST_PHASES = ("compile", "prepack", "record", "upload", "desc_alloc", "pipeline
 
 #: ``cat == "ep"`` **structural** spans. Brackets, not phases.
 #:
-#: ``vulkan.compute_call`` wraps the whole ORT ``Compute`` callback; ``vulkan.subgraph`` opens
+#: ``vulkan.compute_call`` wraps the instrumented success-path region opened inside
+#: ``compute_impl`` (absent when a call early-outs before that, and bucketing every EP span the
+#: instrumented path emits -- not all of ORT's ``Compute`` entry); ``vulkan.subgraph`` opens
 #: inside ``dispatch_ort`` and is contained by it. Neither belongs in :data:`HOST_PHASES` and
 #: neither may enter any total: adding a bracket to the sum of the things it brackets is exactly
 #: the arithmetic mistake :func:`phase_containment`'s ``ERROR`` arm exists to catch.
