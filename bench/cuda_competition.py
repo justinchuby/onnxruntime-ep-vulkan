@@ -175,7 +175,13 @@ COUNTERS_SCOPES = frozenset({COUNTERS_SCOPE_FIRST_RUN, COUNTERS_SCOPE_ALL_RUNS})
 #: the probed graph, and `island_count` 1, all committed in
 #: ``bench/results/barrier_ab-post-dev0-0.json``.  A node-counting reader sees that
 #: island as *one* provider node, so the same run reads as overwhelmingly GPU by
-#: claimed nodes and as overwhelmingly host by profile-node share.
+#: claimed nodes -- 355/363, 97.8%, both committed above. That is the one number this
+#: docstring is willing to name, and it says nothing at all about a per-provider
+#: profile-node share: no committed artifact in this tree partitions raw, per-op
+#: profile nodes by provider for this or any arm, so no "overwhelmingly host" (or any
+#: other semantic provider-split) reading is asserted here, even as the mirror image
+#: of the witnessed claimed-node figure. Withholding that characterization is the
+#: point, not an omission to fill in later.
 #:
 #: No profile-node census is quoted here for either arm -- not the fused arm's
 #: Vulkan-vs-host node split, not a percentage derived from it, and not the

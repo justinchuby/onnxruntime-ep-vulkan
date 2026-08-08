@@ -1253,8 +1253,11 @@ _CITED_PATH_RE = re.compile(
     r"\.(?:json|jsonl|md|txt|log|csv|py|rs|toml|yml|yaml))")
 
 #: Field names named beside a figure, in any of this codebase's three backtick spellings.
-#: Dotted paths (`model.weights_bytes`) are kept whole *and* reduced to their last segment,
-#: because artifacts nest and prose cites the reader-friendly path.
+#: A *structured* path -- dotted, and/or carrying an array index, e.g.
+#: `model.external_data.files[0].bytes` -- is looked up at that exact path only; see
+#: `_named_field_values` for why it is no longer also reduced to its last segment. A *bare*,
+#: unstructured citation (`claimed_nodes`) still falls back to a leaf-name lookup, because
+#: there is nothing more precise about it to ask for.
 _CITED_FIELD_RE = re.compile(r"`{1,2}([A-Za-z_][\w.]*(?:\[\d+\])?[\w.]*)`{1,2}")
 
 _WITNESS_WINDOW = 400
@@ -1346,10 +1349,25 @@ def _artifact_fields(path: Path) -> dict:
 
 
 def _named_field_values(window: str, fields: dict) -> "list[float]":
+    """Values in ``fields`` for each field cited in ``window``.
+
+    A citation that names a *structured* path -- dotted and/or carrying an array index,
+    e.g. ``model.external_data.files[0].bytes`` -- is looked up at that exact path only,
+    never widened to its bare leaf key. Widening was the defect: ``model.bytes`` (26,180,848,
+    the graph proto alone) and ``model.external_data.files[0].bytes`` (2,291,238,912, the
+    externalized weights blob) share the leaf name ``bytes`` but name two different fields
+    with two different values, and a citation of the former was being satisfied by the
+    latter's value because both were folded into one ``bytes`` bucket. A *bare* citation
+    with no structure of its own (e.g. `` `claimed_nodes` ``) has no more precise path to ask
+    for, so it keeps the leaf-name lookup.
+    """
     values: "list[float]" = []
     for raw in _CITED_FIELD_RE.findall(window):
-        for key in {raw.lower(), raw.split(".")[-1].lower()}:
-            values.extend(sorted(fields.get(key, ())))
+        key = raw.lower()
+        structured = "." in raw or "[" in raw
+        keys = (key,) if structured else {key, raw.split(".")[-1].lower()}
+        for k in keys:
+            values.extend(sorted(fields.get(k, ())))
     return values
 
 
@@ -1501,6 +1519,40 @@ def test_a_size_figure_whose_witness_disagrees_is_convicted():
     assert _unwitnessed_measurement_shaped_figures(wrong)
     assert not _unwitnessed_measurement_shaped_figures(right)
     assert not _unwitnessed_measurement_shaped_figures(exact)
+
+
+def test_a_dotted_citation_does_not_borrow_a_sibling_fields_same_leaf_key():
+    """Issue #69's second review-round defect: two fields share a leaf name, one value wins.
+
+    ``model.bytes`` (the graph proto alone) is 26,180,848 in the committed witness.
+    ``model.external_data.files[0].bytes`` (the externalized weights blob beside it) is
+    2,291,238,912 -- roughly 88x larger -- and the *only* thing the two fields share is the
+    bare key ``bytes``. A citation of ``model.bytes`` claiming 2.29 GB must be convicted: that
+    figure is not what ``model.bytes`` holds, however loudly a same-named sibling field
+    elsewhere in the same artifact agrees with it. Must-fire mutant for the fix in
+    ``_named_field_values``: before it, this exact wrong claim passed, because the dotted
+    citation was widened to the bare leaf key ``bytes`` and matched against *every* field in
+    the document named ``bytes``, not just the one actually cited.
+    """
+    wrong = (f"the model.onnx graph proto alone is 2291238912 bytes (``model.bytes``, "
+             f"committed in {_REAL_MODEL_WITNESS})")
+    right = (f"the model.onnx graph proto alone is 26180848 bytes (``model.bytes``, "
+             f"committed in {_REAL_MODEL_WITNESS})")
+    assert _unwitnessed_measurement_shaped_figures(wrong)
+    assert not _unwitnessed_measurement_shaped_figures(right)
+
+
+def test_an_array_indexed_citation_is_witnessed_at_its_own_exact_structured_path():
+    """Valid exact-field control: the array-indexed sibling field, cited precisely.
+
+    ``model.external_data.files[0].bytes`` is a different, exact path from ``model.bytes``
+    even though both end in the leaf ``bytes``. Naming it in full -- including the array
+    index selector -- witnesses its own value (2,291,238,912, i.e. 2.29 GB) without needing,
+    and without permitting, any help from the unrelated ``model.bytes`` field.
+    """
+    good = (f"the externalized weights blob is 2.29 GB "
+            f"(``model.external_data.files[0].bytes``, committed in {_REAL_MODEL_WITNESS})")
+    assert not _unwitnessed_measurement_shaped_figures(good)
 
 
 def test_a_citation_to_a_path_that_does_not_exist_is_convicted():
