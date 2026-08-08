@@ -122,3 +122,134 @@ def selects(result: Any, expected: Any, *, because: str = "") -> Any:
             f"the instrument identified a device{ctx} but gave no reason ({why!r})."
         )
     return value
+# ---------------------------------------------------------------------------
+# Verdict-token instruments
+# ---------------------------------------------------------------------------
+#
+# `refuses`/`selects` above are shaped for a `(value, why)` instrument. A verdict gate is
+# total in a different shape: it takes a record and hands back the same record with the
+# verdict either withheld or left standing, because the refusal has to travel WITH the
+# numbers it disqualifies rather than beside them.
+#
+# The alternative was to make `seal_verdict` return `(None, why)` so the existing helpers
+# could see it. That is option 1 from this module's header with the sign flipped -- making
+# the production path worse so the screen goes green -- and the caller genuinely needs the
+# record back: `attribute()` returns it and `render()` prints from it. So the second
+# polarity source gets a second shape, enforced exactly as strictly.
+
+
+def withholds(record: Any, *, because: str = "") -> str:
+    """Assert a verdict gate WITHHELD a green verdict, and return what it withheld.
+
+    The reject polarity. ``record`` must carry ``withheld_from`` (the verdict it took away)
+    and a non-empty ``withheld_because``. A gate that let a refusing record keep its green
+    token makes the test red -- which is the polarity that catches a gate wired to nothing.
+    """
+    ctx = f" ({because})" if because else ""
+    if not isinstance(record, dict):
+        raise PolarityError(
+            f"withholds{ctx}: a verdict gate must return the record it sealed; got "
+            f"{type(record).__name__} {record!r}.")
+    withheld = record.get("withheld_from")
+    if withheld is None:
+        raise PolarityError(
+            f"expected the verdict to be WITHHELD{ctx}, but the record still publishes "
+            f"{record.get('verdict')!r} with refusals {record.get('refusals')!r}. A record "
+            f"that refuses and calls itself measured is the defect this gate exists for.")
+    why = record.get("withheld_because")
+    if not why:
+        raise PolarityError(
+            f"the verdict was withheld{ctx} but the record does not say which refusals cost "
+            f"it ({why!r}). A verdict withdrawn without a reason is indistinguishable from "
+            f"one that was never issued.")
+    return withheld
+
+
+def publishes(record: Any, expected: Any, *, because: str = "") -> Any:
+    """Assert a verdict gate LEFT a clean verdict standing, and return it.
+
+    The accept polarity. A gate that withholds from everything screens nothing, and it would
+    be far worse than no gate: every reader would learn to ignore the token.
+    """
+    ctx = f" ({because})" if because else ""
+    if not isinstance(record, dict):
+        raise PolarityError(
+            f"publishes{ctx}: a verdict gate must return the record it sealed; got "
+            f"{type(record).__name__} {record!r}.")
+    if "withheld_from" in record:
+        raise PolarityError(
+            f"expected the verdict to STAND{ctx}, but the gate withheld "
+            f"{record['withheld_from']!r} citing {record.get('withheld_because')!r}. This is "
+            f"the polarity that catches a gate which fires on everything.")
+    got = record.get("verdict")
+    if got != expected:
+        raise PolarityError(
+            f"the gate left {got!r} standing{ctx}, expected {expected!r}.")
+    return got
+
+
+# ---------------------------------------------------------------------------
+# Third pair: a PROVENANCE instrument, which records a fact or explains its absence
+# ---------------------------------------------------------------------------
+#
+# `cuda_competition.ep_provenance` fits neither pair above.  It is not a selector
+# returning `(value, why)` and it is not a verdict gate returning a sealed record: it
+# returns a dict in which each fact it could take is a key, and each fact it could NOT
+# take is a *different* key saying why.  That shape is deliberate -- a provenance block
+# that raised when the EP library was absent could not be written at all on a machine
+# without one, and a provenance block that silently omitted the field would be
+# indistinguishable from one taken against a library of zero bytes.
+#
+# The polarity that matters for it is therefore: did it record the fact when the fact was
+# available, and did it decline *audibly* when it was not.
+
+
+def omits(record: Any, field: str, *, reason_field: str, because: str = "") -> str:
+    """Assert a provenance instrument DECLINED to record ``field``, and return its reason.
+
+    The reject polarity.  A provenance block that quietly leaves a field out, or leaves it
+    out while claiming no reason, is the failure this watches for: a later reader cannot
+    tell "not measured" from "measured as nothing".
+    """
+    ctx = f" ({because})" if because else ""
+    if not isinstance(record, dict):
+        raise PolarityError(
+            f"omits{ctx}: a provenance instrument must return a record; got "
+            f"{type(record).__name__} {record!r}.")
+    if record.get(field) is not None:
+        raise PolarityError(
+            f"expected {field!r} to be OMITTED{ctx}, but the instrument recorded "
+            f"{record[field]!r}. This is the polarity that catches provenance invented "
+            f"where none was available.")
+    why = record.get(reason_field)
+    if not isinstance(why, str) or not why.strip():
+        raise PolarityError(
+            f"{field!r} was omitted{ctx} but {reason_field!r} does not say why ({why!r}). "
+            f"An unexplained gap in provenance reads as an oversight and gets 'fixed' by "
+            f"deleting the check.")
+    return why
+
+
+def records(record: Any, field: str, expected: Any, *, because: str = "") -> Any:
+    """Assert a provenance instrument RECORDED ``field`` as exactly ``expected``.
+
+    The accept polarity.  An instrument that omits everything documents nothing, and would
+    be worse than absent: every reader would learn the block is always empty and stop
+    reading it.
+    """
+    ctx = f" ({because})" if because else ""
+    if not isinstance(record, dict):
+        raise PolarityError(
+            f"records{ctx}: a provenance instrument must return a record; got "
+            f"{type(record).__name__} {record!r}.")
+    got = record.get(field)
+    if got is None:
+        raise PolarityError(
+            f"expected {field!r} to be RECORDED{ctx}, but the instrument omitted it and "
+            f"said: {record.get('lib_unavailable_because')!r}. This is the polarity that "
+            f"catches an instrument which records nothing.")
+    if got != expected:
+        raise PolarityError(
+            f"the instrument recorded {field!r} as {got!r}{ctx}, expected {expected!r}. "
+            f"Provenance that does not match the thing it describes is worse than none.")
+    return got

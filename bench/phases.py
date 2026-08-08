@@ -82,8 +82,30 @@ import statistics
 from pathlib import Path
 
 #: Host-side phase spans, in the order `rust/src/trace.rs` documents them.
+#:
+#: This tuple must equal ``Phase::as_str``'s arm list in ``trace.rs`` exactly, as a *set*.
+#: ``bench/test_trace_vocabulary.py`` asserts that equality by parsing the Rust source through
+#: :mod:`bench.trace_vocabulary`, because the two drifted once and the drift was silent here:
+#: ``Phase::BindCheck`` was added to ``trace.rs`` and not to this tuple, so :func:`phase_spans`
+#: dropped every one of its spans and the module of record for ``docs/PERF.md``'s phase table
+#: could not see a phase that existed.
 HOST_PHASES = ("compile", "prepack", "record", "upload", "desc_alloc", "pipeline_lookup",
                "cmd_upload", "submit", "fence_wait", "readback")
+
+#: ``cat == "ep"`` **structural** spans. Brackets, not phases.
+#:
+#: ``vulkan.compute_call`` wraps the instrumented success-path region opened inside
+#: ``compute_impl`` (absent when a call early-outs before that, and bucketing every EP span the
+#: instrumented path emits -- not all of ORT's ``Compute`` entry); ``vulkan.subgraph`` opens
+#: inside ``dispatch_ort`` and is contained by it. Neither belongs in :data:`HOST_PHASES` and
+#: neither may enter any total: adding a bracket to the sum of the things it brackets is exactly
+#: the arithmetic mistake :func:`phase_containment`'s ``ERROR`` arm exists to catch.
+#:
+#: They are named here so the distinction is written down rather than implied by absence. The
+#: containment contract below is unchanged by ``vulkan.compute_call`` existing: every *phase*
+#: span still lies inside a ``vulkan.subgraph`` span, because no phase was added outside one.
+#: `Phase::BindCheck` would have been the first, which is why it is not a phase.
+STRUCTURAL_SPANS = ("vulkan.compute_call", "vulkan.subgraph")
 
 #: Phases the EP emits *nested inside* another phase's span.
 #:
@@ -131,6 +153,10 @@ def is_leaf_phase(phase: str) -> bool:
 
 
 #: `X` (complete) events on the host lane that bound one `Compute` call.
+#:
+#: The **inner** bracket, and deliberately so: `phase_containment` checks phases against the
+#: region `dispatch_ort` owns, which is the region every phase span is opened in. See
+#: :data:`STRUCTURAL_SPANS` for the outer one.
 SUBGRAPH = "vulkan.subgraph"
 
 #: Prefix of a device-lane span produced from `VkQueryPool` results.

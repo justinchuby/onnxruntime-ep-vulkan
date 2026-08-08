@@ -54,6 +54,7 @@ for _p in (str(_BENCH), str(_ROOT), str(_ROOT / "rust" / "tools")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import public_paths
 import real_model as rm  # noqa: E402
 
 COUNTERS_ENV = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
@@ -352,14 +353,14 @@ def diagnose_worker(argv) -> int:
         lib = os.environ.get(EP_LIB_ENV)
         if not lib or not Path(lib).is_file():
             rec["error"] = f"{EP_LIB_ENV} unset or missing"
-            Path(a.out).write_text(json.dumps(rec), encoding="utf-8")
+            public_paths.dump_public_json(rec, Path(a.out))
             return 2
         try:
             ort.register_execution_provider_library(rm.EP_NAME, str(Path(lib).resolve()))
         except Exception as exc:
             if "already registered" not in str(exc):
                 rec["error"] = f"registration failed: {exc}"
-                Path(a.out).write_text(json.dumps(rec), encoding="utf-8")
+                public_paths.dump_public_json(rec, Path(a.out))
                 return 2
 
     feeds = rm.build_feeds(case, np)
@@ -371,7 +372,7 @@ def diagnose_worker(argv) -> int:
     rec["profile"] = _profile_provider_counts(sess, ort)
     rec["fallback"] = rm.fallback_diagnosis((rec["profile"] or {}).get("counts"))
     del sess
-    Path(a.out).write_text(json.dumps(rec, indent=2), encoding="utf-8")
+    public_paths.dump_public_json(rec, Path(a.out))
     return 0
 
 
@@ -556,7 +557,7 @@ def main(argv=None) -> int:
             "environment": environment_record(device, args),
             **run_diagnostics(args, keys, device),
         }
-        out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        public_paths.dump_public_json(report, out_path)
         print(f"\n  wrote {out_path}")
         return 0
 
@@ -597,7 +598,7 @@ def main(argv=None) -> int:
                       "than left to inference.",
         },
     }
-    out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    public_paths.dump_public_json(report, out_path)
     _print_tables(report)
     print(f"\n  wrote {out_path}")
     return 1 if failures else 0
