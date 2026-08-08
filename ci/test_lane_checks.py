@@ -6316,7 +6316,7 @@ def test_the_shipped_register_tells_you_to_flip_not_delete():
 # ---------------------------------------------------------------------------
 
 
-def _runs(*rows) -> list:
+def _runs(*rows, event: str = "push", head_branch: str = "main", workflow: str = "CI") -> list:
     out = []
     for i, (status, conclusion) in enumerate(rows):
         out.append({
@@ -6325,7 +6325,9 @@ def _runs(*rows) -> list:
             "headSha": f"{i:040x}",
             "displayTitle": f"run {i}",
             "url": f"https://example.invalid/runs/{i}",
-            "workflowName": "CI",
+            "workflowName": workflow,
+            "event": event,
+            "headBranch": head_branch,
             "createdAt": "2026-08-04T00:00:00Z",
         })
     return out
@@ -6333,7 +6335,14 @@ def _runs(*rows) -> list:
 
 def _main_green(tmp_path, rows, *args: str):
     p = write(tmp_path, "runs.json", rows)
-    r = run_check("check_main_is_green.py", "--from-json", str(p), *args)
+    call_args = list(args)
+    if not any(a == "--limit" for a in call_args):
+        # Most of these tests are about a small, hand-built window; without this the
+        # screen's own default (--limit 10, i.e. 10 APPLICABLE runs) would demand more
+        # rows than the test constructed and fail closed on insufficient history before
+        # ever exercising the behaviour under test.
+        call_args = ["--limit", str(max(len(rows), 1))] + call_args
+    r = run_check("check_main_is_green.py", "--from-json", str(p), *call_args)
     return r.returncode, r.stdout + r.stderr
 
 
@@ -6383,7 +6392,8 @@ def test_main_green_zero_runs_is_unscreened_not_clean(tmp_path):
     """A branch with no runs has not passed; an empty list is a denominator of zero."""
     rc, out = _main_green(tmp_path, [])
     assert rc == EXIT_ERROR_INSTRUMENT, out
-    assert "no_runs_listed" in out
+    assert "insufficient_history" in out
+    assert "0 applicable run(s) of 1 needed" in out
 
 
 def test_main_green_merge_sentence_carries_the_sha_and_url_in_both_colours(tmp_path):
@@ -6395,6 +6405,154 @@ def test_main_green_merge_sentence_carries_the_sha_and_url_in_both_colours(tmp_p
     rc, out = _main_green(tmp_path, _runs(("completed", "failure")), "--for-merge")
     assert rc == EXIT_FAIL_CONDITION and "is RED" in out
     assert "https://example.invalid/runs/0" in out
+
+
+# ---------------------------------------------------------------------------
+# check_main_is_green.py: the APPLICABLE-window fix.
+#
+# Live on 2026-08-08: the naive top-10 `gh run list --branch main` window was found
+# fully occupied by non-CI automation (Squad Triage / Squad Issue Assign / Squad
+# Heartbeat, all `event: issues`, none ever a BAD conclusion), evicting all real `CI`
+# (push-triggered) history and reporting PASS/0 RED while three unresolved CI reds
+# (31178244578, 31169478658, 31164215291) sat just outside the window it actually read.
+# `main_is_green`'s own `ci/open_reds.json` entry stays expect=red, untouched by this
+# fix — this only makes the screen's OWN reading match reality again.
+# ---------------------------------------------------------------------------
+
+
+def _noise(n: int, workflow: str = "Squad Triage", event: str = "issues") -> list:
+    """`n` non-applicable automation runs: never CI, never a push, never BAD — exactly
+    the shape of the runs that displaced real CI history in the live incident."""
+    return [{
+        "status": "completed",
+        "conclusion": "skipped" if i % 3 else "success",
+        "headSha": f"{'noise'}{i:035x}",
+        "displayTitle": f"noise {i}",
+        "url": f"https://example.invalid/noise/{i}",
+        "workflowName": workflow,
+        "event": event,
+        "headBranch": "main",
+        "createdAt": "2026-08-08T20:08:00Z",
+    } for i in range(n)]
+
+
+def test_main_green_bot_noise_cannot_evict_applicable_reds(tmp_path):
+    """The live incident, reproduced: 15 non-applicable bot runs (more than the window
+    size) placed AHEAD of 10 applicable CI-push runs (3 of them red) in the raw list. A
+    naive top-10-of-anything read would see 10/10 bot noise and report 0 RED. This
+    screen must instead look past the noise and find the reds it is supposed to find —
+    if the applicability filter is ever removed or bypassed, this test goes red."""
+    rows = _noise(15) + _runs(
+        ("completed", "failure"), ("completed", "success"), ("completed", "success"),
+        ("completed", "failure"), ("completed", "success"), ("completed", "success"),
+        ("completed", "success"), ("completed", "failure"), ("completed", "success"),
+        ("completed", "success"),
+    )
+    rc, out = _main_green(tmp_path, rows, "--limit", "10")
+    assert rc == EXIT_FAIL_CONDITION, out
+    assert "3 RED" in out, out
+    assert "FAIL(condition=main_is_red)" in out
+    # The reds named must be the applicable CI ones, not any noise row's identity.
+    for i in (0, 3, 7):
+        assert f"https://example.invalid/runs/{i}" in out, out
+    for row in _noise(15):
+        assert row["url"] not in out
+
+
+def test_main_green_ten_applicable_green_pushes_eventually_pass(tmp_path):
+    """Once ten applicable CI-push runs are all green, the screen passes even with a
+    pile of unrelated bot noise still sitting in the raw history ahead of them —
+    exactly the "further real merges clear the window" recovery path issue #24 itself
+    names."""
+    rows = _noise(20) + _runs(*([("completed", "success")] * 10))
+    rc, out = _main_green(tmp_path, rows, "--limit", "10")
+    assert rc == EXIT_PASS, out
+    assert "0 RED" in out
+    assert "PASS: every completed" in out
+
+
+def test_main_green_excludes_wrong_workflow_event_branch_and_skipped(tmp_path):
+    """Each exclusion reason is independent: a red-looking run on the right workflow
+    but the wrong event, the wrong branch, a different workflow entirely, or a
+    `skipped` conclusion (verified nothing) must not be counted applicable — even
+    though every one of these rows would satisfy the OLD, unfiltered screen."""
+    wrong_event = _runs(("completed", "failure"), event="workflow_dispatch")
+    wrong_branch = _runs(("completed", "failure"), head_branch="release/1.0")
+    wrong_workflow = _runs(("completed", "failure"), workflow="conformance (onnx-tests)")
+    skipped_ci = [{
+        "status": "completed", "conclusion": "skipped", "headSha": "s" * 40,
+        "displayTitle": "skipped ci", "url": "https://example.invalid/runs/skipped",
+        "workflowName": "CI", "event": "push", "headBranch": "main",
+        "createdAt": "2026-08-04T00:00:00Z",
+    }]
+    rows = wrong_event + wrong_branch + wrong_workflow + skipped_ci
+    rc, out = _main_green(tmp_path, rows, "--limit", "1")
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "insufficient_history" in out
+    assert "0 applicable run(s) of 1 needed" in out
+
+
+def test_main_green_escalates_the_raw_fetch_when_the_first_page_is_too_small(tmp_path):
+    """A too-small first page (naive top-N) must not be the final answer: if it does
+    not contain enough applicable runs, and it is a FULL page (as many rows as asked
+    for, meaning more history may exist), the search must escalate to a larger raw
+    fetch rather than declare victory or defeat on the truncated page alone."""
+    # Page "50": 45 non-applicable + 5 applicable (green) -- a full 50-row page, but
+    # only 5 of the 10 needed applicable runs are in it.
+    page_50 = _noise(45) + _runs(*([("completed", "success")] * 5))
+    assert len(page_50) == 50
+    # Page "200": 185 non-applicable + 15 applicable (3 red, 12 green) -- enough.
+    page_200 = _noise(185) + _runs(*(
+        [("completed", "failure")] * 3 + [("completed", "success")] * 12
+    ))
+    assert len(page_200) == 200
+    p = write(tmp_path, "pages.json", {"50": page_50, "200": page_200})
+    r = run_check(
+        "check_main_is_green.py", "--from-json-map", str(p), "--limit", "10",
+    )
+    out = r.stdout + r.stderr
+    assert r.returncode == EXIT_FAIL_CONDITION, out
+    assert "3 RED" in out, out
+
+
+def test_main_green_capped_search_fails_closed_not_green(tmp_path):
+    """If escalation runs out of declared pages (the real screen's own RAW_FETCH_STEPS
+    cap) without finding enough applicable runs, that is a declined read — ERROR, never
+    a silent PASS. `I could not fill the window` must never render as `main is green`,
+    the exact substitution this whole screen exists to refuse for an unread badge."""
+    page_50 = _noise(50)
+    page_200 = _noise(200)
+    page_500 = _noise(500)
+    assert len(page_50) == 50 and len(page_200) == 200 and len(page_500) == 500
+    p = write(
+        tmp_path, "pages.json",
+        {"50": page_50, "200": page_200, "500": page_500},
+    )
+    r = run_check(
+        "check_main_is_green.py", "--from-json-map", str(p), "--limit", "10",
+    )
+    out = r.stdout + r.stderr
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, out
+    assert "search_capped" in out
+    assert "0 applicable run(s) of 10 needed" in out
+
+
+def test_main_green_incomplete_history_before_the_cap_also_fails_closed(tmp_path):
+    """History can run out for real (a young branch, a shallow window) before the cap
+    does. That is a *different* declined-read reason (`insufficient_history`, not
+    `search_capped`) and both must be distinguishable in the printed reason, not
+    collapsed into one unexplained ERROR."""
+    # A short page (fewer rows than the 50 asked for) means gh has told us that is
+    # every run there is; a bigger --limit could not find more of them.
+    short_page = _noise(3)
+    p = write(tmp_path, "pages.json", {"50": short_page})
+    r = run_check(
+        "check_main_is_green.py", "--from-json-map", str(p), "--limit", "10",
+    )
+    out = r.stdout + r.stderr
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, out
+    assert "insufficient_history" in out
+    assert "history exhausted" in out
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════

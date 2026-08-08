@@ -23,16 +23,31 @@ an observation with a URL in it.
 
 WHAT IT DOES
 ============
-One `gh` call:
+`gh` call(s), escalating a raw --limit until enough APPLICABLE runs are found:
 
-    gh run list --branch main --limit N --json conclusion,status,headSha,displayTitle,url,workflowName
+    gh run list --branch main --limit N --json conclusion,status,headSha,displayTitle,url,workflowName,event,headBranch
 
-and it rules in R13 vocabulary:
+"Applicable" means: workflow `CI` (the one badge.svg'd in README.md), `event == push`,
+`headBranch == main`, not a `skipped` conclusion — i.e. an actual reading of a push to
+`main`, not issue/PR automation (Squad Triage, Squad Issue Assign, Squad Heartbeat — all
+`event: issues`) or an opt-in workflow (`conformance.yml`, `workflow_dispatch` only) that
+happens to have run recently. A naive top-N window with no such filter can be fully
+evicted by high-volume non-applicable noise, at which point the screen would report green
+having read zero real CI history — that defect (found live 2026-08-08, ref: the issue
+this fix closes) is exactly the "a check whose failure reaches no one" pattern this
+screen was built to name, one level further in.
 
-  every completed run on main succeeded      -> PASS
-  any completed run on main failed/cancelled -> FAIL(condition=main_is_red), exit 1,
-                                                with the run URL and the head sha
-  gh absent / unauthenticated / offline      -> ERROR(instrument=github_unreachable), exit 4
+It rules in R13 vocabulary:
+
+  every completed applicable run on main succeeded  -> PASS
+  any completed applicable run on main failed        -> FAIL(condition=main_is_red), exit 1,
+                                                         with the run URL and the head sha
+  fewer than N applicable runs exist, or the search
+    was capped before finding N                      -> ERROR(instrument=insufficient_history
+                                                         |search_capped), exit 4 — declined,
+                                                         never a silent green
+  gh absent / unauthenticated / offline               -> ERROR(instrument=github_unreachable),
+                                                         exit 4
 
 WHAT IT DELIBERATELY DOES NOT DO
 ================================
@@ -82,7 +97,29 @@ EXIT_USAGE = 2
 EXIT_ERROR_INSTRUMENT = 4
 
 BAD = {"failure", "timed_out", "cancelled", "startup_failure", "action_required"}
-FIELDS = "conclusion,status,headSha,displayTitle,url,workflowName,createdAt"
+SKIPPED = "skipped"
+FIELDS = "conclusion,status,headSha,displayTitle,url,workflowName,createdAt,event,headBranch"
+
+# The window this screen reads is defined over APPLICABLE runs, not the naive top-N of
+# whatever `gh run list` hands back. "Applicable" means: the workflow that actually
+# exercises the tree on a push to the target branch — by default the `CI` workflow
+# (`.github/workflows/ci.yml`, the one badge.svg'd in README.md) triggered by `event ==
+# push` on `headBranch == <branch>`. Every other workflow in this repo's
+# `.github/workflows/` is either issue/PR-bot automation (`Squad Triage`, `Squad Issue
+# Assign`, `Squad Heartbeat (Ralph)` — all `on: issues`/`pull_request`, never a reading of
+# the tree) or opt-in (`conformance.yml`, `workflow_dispatch` only). None of those answer
+# the question this screen exists to answer, and a naive unfiltered window can be fully
+# displaced by them: high-volume bot noise fills all N slots and evicts real CI history,
+# so the screen reports green while unresolved CI reds sit just outside the window it
+# actually looked at. That is not an observation of main's colour; it is a coin flip on
+# how much bot traffic happened to land between two reads.
+DEFAULT_APPLICABLE_WORKFLOW = "CI"
+DEFAULT_APPLICABLE_EVENTS = frozenset({"push"})
+
+# When the naive top window doesn't contain enough applicable runs, fetch progressively
+# more raw history rather than accept a truncated read. Capped, so a noisy repo makes
+# this screen fail closed (ERROR, not a silent green) instead of paginating forever.
+RAW_FETCH_STEPS = (50, 200, 500)
 
 KNOWN_LIMITS = {
     "github_unreachable_is_unobservable_not_green": (
@@ -164,6 +201,132 @@ def fetch(branch: str, limit: int, source: str | None) -> tuple[list[dict] | Non
     return doc, ""
 
 
+def _is_applicable(run: dict, branch: str, workflow: str, events: frozenset[str]) -> bool:
+    """A run answers the question this screen asks only if it is a `workflow` run,
+    triggered by one of `events`, on `branch` itself, and actually ran. `skipped` is
+    excluded even though it is `status: completed`: a skipped run verified nothing about
+    the tree, so counting it toward the window would let a workflow that never executed
+    stand in for a reading of main's colour — the same substitution this screen exists to
+    refuse for an unread badge."""
+    if (run.get("workflowName") or "") != workflow:
+        return False
+    if (run.get("event") or "") not in events:
+        return False
+    if (run.get("headBranch") or "") != branch:
+        return False
+    if (run.get("status") or "") == "completed" and (run.get("conclusion") or "") == SKIPPED:
+        return False
+    return True
+
+
+def fetch_applicable(
+    branch: str,
+    need: int,
+    workflow: str,
+    events: frozenset[str],
+    source: str | None,
+    source_map: str | None,
+) -> tuple[list[dict] | None, str, dict]:
+    """Return (applicable_runs, error, meta). `applicable_runs is None` means the window
+    could not be filled: either the instrument did not reach GitHub (`meta["kind"] ==
+    "unreachable"`, propagated verbatim from `fetch`), or fewer than `need` applicable
+    runs exist in all available history (`meta["kind"] == "insufficient_history"`), or the
+    escalating search was capped before finding `need` (`meta["kind"] ==
+    "search_capped"`). None of those are a green — they are declined reads, reported with
+    an explicit reason, exactly like ERROR(instrument=github_unreachable) already is for
+    this screen.
+    """
+    meta: dict = {"raw_scanned": 0, "steps_tried": 0, "kind": None}
+
+    if source_map:
+        try:
+            with open(source_map, encoding="utf-8") as fh:
+                pages = json.load(fh)
+        except OSError as exc:
+            meta["kind"] = "unreachable"
+            return None, f"cannot read --from-json-map {source_map}: {exc}", meta
+        except json.JSONDecodeError as exc:
+            meta["kind"] = "unreachable"
+            return None, f"--from-json-map {source_map} is not JSON: {exc}", meta
+        if not isinstance(pages, dict):
+            meta["kind"] = "unreachable"
+            return None, f"--from-json-map {source_map} must be a JSON object keyed by limit", meta
+        steps = tuple(s for s in RAW_FETCH_STEPS if s >= need) or (need,)
+        last_raw_len = 0
+        last_applicable = 0
+        for step in steps:
+            meta["steps_tried"] += 1
+            raw = pages.get(str(step), [])
+            if not isinstance(raw, list):
+                meta["kind"] = "unreachable"
+                return None, f"--from-json-map {source_map} key {step!r} is not an array", meta
+            last_raw_len = len(raw)
+            meta["raw_scanned"] = max(meta["raw_scanned"], last_raw_len)
+            applicable = [r for r in raw if _is_applicable(r, branch, workflow, events)]
+            last_applicable = len(applicable)
+            if len(applicable) >= need:
+                return applicable[:need], "", meta
+            if last_raw_len < step:
+                meta["kind"] = "insufficient_history"
+                return None, (
+                    f"only {last_applicable} applicable run(s) of {need} needed found across "
+                    f"all {last_raw_len} run(s) available for `{branch}` (history exhausted)"
+                ), meta
+        meta["kind"] = "search_capped"
+        return None, (
+            f"only {last_applicable} applicable run(s) of {need} needed found through a raw "
+            f"window of {steps[-1]}; the search is capped there rather than paginated "
+            "indefinitely"
+        ), meta
+
+    if source:
+        raw, err = fetch(branch, need, source)
+        if raw is None:
+            meta["kind"] = "unreachable"
+            return None, err, meta
+        meta["raw_scanned"] = len(raw)
+        meta["steps_tried"] = 1
+        applicable = [r for r in raw if _is_applicable(r, branch, workflow, events)]
+        if len(applicable) >= need:
+            return applicable[:need], "", meta
+        meta["kind"] = "insufficient_history"
+        return None, (
+            f"only {len(applicable)} applicable run(s) of {need} needed found in the "
+            f"{len(raw)} run(s) provided by --from-json (a fixed, non-paginating source)"
+        ), meta
+
+    steps = tuple(s for s in RAW_FETCH_STEPS if s >= need) or (need,)
+    last_raw_len = 0
+    last_applicable = 0
+    for step in steps:
+        meta["steps_tried"] += 1
+        raw, err = fetch(branch, step, None)
+        if raw is None:
+            meta["kind"] = "unreachable"
+            return None, err, meta
+        last_raw_len = len(raw)
+        meta["raw_scanned"] = max(meta["raw_scanned"], last_raw_len)
+        applicable = [r for r in raw if _is_applicable(r, branch, workflow, events)]
+        last_applicable = len(applicable)
+        if len(applicable) >= need:
+            return applicable[:need], "", meta
+        if last_raw_len < step:
+            # gh returned fewer runs than asked for: that is every run there is, and a
+            # bigger --limit would not find more of them.
+            meta["kind"] = "insufficient_history"
+            return None, (
+                f"only {last_applicable} applicable run(s) of {need} needed found across "
+                f"all {last_raw_len} run(s) that exist for `{branch}` (history exhausted)"
+            ), meta
+
+    meta["kind"] = "search_capped"
+    return None, (
+        f"only {last_applicable} applicable run(s) of {need} needed found after scanning "
+        f"the last {steps[-1]} run(s) on `{branch}`; declining to search further rather "
+        "than pass a possibly-incomplete read as a colour"
+    ), meta
+
+
 def screen(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--branch", default="main")
@@ -173,6 +336,29 @@ def screen(argv: list[str] | None = None) -> int:
         dest="from_json",
         help="read the run list from a file instead of calling gh; this is how the "
              "two-polarity test drives both colours without a network.",
+    )
+    ap.add_argument(
+        "--from-json-map",
+        dest="from_json_map",
+        help="read escalating raw pages from a JSON object (keyed by the raw --limit "
+             "each page simulates) instead of calling gh; this is how the pagination "
+             "tests drive the applicable-run search past a first, too-small page with "
+             "no network.",
+    )
+    ap.add_argument(
+        "--workflow",
+        default=DEFAULT_APPLICABLE_WORKFLOW,
+        help="the workflow name that answers this question (default: %(default)s, the "
+             "one badge.svg'd in README.md). Runs from any other workflow — including "
+             "issue/PR automation like Squad Triage — are not applicable and are "
+             "excluded from the window regardless of how recent they are.",
+    )
+    ap.add_argument(
+        "--events",
+        default=",".join(sorted(DEFAULT_APPLICABLE_EVENTS)),
+        help="comma-separated GitHub event names that answer this question (default: "
+             "%(default)s). A run triggered by `issues`, `schedule`, or "
+             "`workflow_dispatch` is not a reading of a push to the branch.",
     )
     ap.add_argument(
         "--assert-known-limit",
@@ -194,16 +380,38 @@ def screen(argv: list[str] | None = None) -> int:
         print("MAIN-GREEN: ERROR(instrument=usage) --limit must be >= 1")
         return EXIT_USAGE
 
-    runs, err = fetch(args.branch, args.limit, args.from_json)
+    events = frozenset(e.strip() for e in args.events.split(",") if e.strip())
+    if not events:
+        print("MAIN-GREEN: ERROR(instrument=usage) --events must name at least one event")
+        return EXIT_USAGE
+
+    runs, err, meta = fetch_applicable(
+        args.branch, args.limit, args.workflow, events, args.from_json, args.from_json_map,
+    )
     if runs is None:
-        print("MAIN-GREEN: ERROR(instrument=github_unreachable)")
-        print(f"  {err}")
-        print(
-            f"  The colour of `{args.branch}` was NOT observed. This is UNOBSERVABLE, not "
-            "green: a local gate run says nothing about the branch's CI, and the ten "
-            "consecutive red pushes that made this screen necessary were all made by "
-            "someone holding a green local transcript."
-        )
+        kind = meta.get("kind")
+        if kind in ("insufficient_history", "search_capped"):
+            print(f"MAIN-GREEN: ERROR(instrument={kind})")
+            print(f"  {err}")
+            print(
+                f"  This screen's window is the last {args.limit} run(s) of workflow "
+                f"`{args.workflow}` triggered by event(s) {sorted(events)} on `{args.branch}` "
+                f"— not the last {args.limit} run(s) of any workflow/event. "
+                f"{meta['steps_tried']} raw page(s) were scanned (up to {meta['raw_scanned']} "
+                "run(s) in the largest) and that was not enough to fill it. The colour of "
+                f"`{args.branch}` was NOT observed: an incomplete applicable window must "
+                "never be reported as a clean one, the same way an unreachable GitHub must "
+                "never be reported as a green one."
+            )
+        else:
+            print("MAIN-GREEN: ERROR(instrument=github_unreachable)")
+            print(f"  {err}")
+            print(
+                f"  The colour of `{args.branch}` was NOT observed. This is UNOBSERVABLE, not "
+                "green: a local gate run says nothing about the branch's CI, and the ten "
+                "consecutive red pushes that made this screen necessary were all made by "
+                "someone holding a green local transcript."
+            )
         _annotate("error", "main colour unread", err)
         return EXIT_ERROR_INSTRUMENT
 
@@ -221,7 +429,8 @@ def screen(argv: list[str] | None = None) -> int:
     red = [r for r in completed if (r.get("conclusion") or "") in BAD]
 
     head = runs[0]
-    print(f"MAIN-GREEN census of `{args.branch}`: {len(runs)} run(s) listed, "
+    print(f"MAIN-GREEN census of `{args.branch}` (applicable = workflow `{args.workflow}`, "
+          f"event(s) {sorted(events)}): {len(runs)} run(s) in window, "
           f"{len(completed)} completed, {len(pending)} still running, {len(red)} RED")
     print(f"  latest: {head.get('workflowName', '?')} — {head.get('conclusion') or head.get('status')}")
     print(f"          {head.get('headSha', '')[:12]}  {head.get('displayTitle', '')}")
