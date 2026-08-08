@@ -2,8 +2,8 @@
   "schema": "real_model_diagnostics/1",
   "environment": {
     "onnxruntime": "1.28.0",
-    "onnxruntime_lib": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan\\.venv\\Lib\\site-packages\\onnxruntime\\capi",
-    "ep_library": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-56\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+    "onnxruntime_lib": "<home>/.copilot/repos/onnxruntime-ep-vulkan/<venv>/Lib/site-packages/onnxruntime/capi",
+    "ep_library": "<repo>/rust/target/release/onnxruntime_vulkan_ep.dll",
     "ep_library_sha256": "2c080583a1e295bff28e482de302b020a62e9b316c527bfead263f8ae5f44530",
     "python": "3.12.10",
     "os": "Windows 11 10.0.26200",
@@ -33,7 +33,7 @@
       "tracing_during_timed_pass": false
     },
     "build": {
-      "lib": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-56\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "lib": "<repo>/rust/target/release/onnxruntime_vulkan_ep.dll",
       "present": true,
       "bytes": 2507264,
       "mtime": "2026-08-06T23:56:58",

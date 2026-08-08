@@ -6,7 +6,7 @@
   "model": {
     "key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
     "family": "phi3",
-    "path": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu-2\\v2\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    "path": "<foundry-cache>/Microsoft/Phi-3.5-mini-instruct-cuda-gpu-2/v2/phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
     "sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
     "bytes": 26180848,
     "provenance": "foundry-resolved",
@@ -37,7 +37,7 @@
     64
   ],
   "iters_per_point": 3,
-  "ep_library": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-56\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+  "ep_library": "<repo>/rust/target/release/onnxruntime_vulkan_ep.dll",
   "ep_library_sha256": "2684bb6fea730bc8bbe6980e94fa6d8ae6e5c4600959c9acdc4ba7802eca0dc9",
   "device_index": 0,
   "equivalence": [
