@@ -622,3 +622,450 @@ def test_the_diagnostics_pass_names_its_own_schema():
     assert '"schema": "real_model_diagnostics/1"' in src
     assert '"schema": rm.SCHEMA' in src
     assert rm.SCHEMA != "real_model_diagnostics/1"
+
+
+# =============================================================================================
+# Issue #78 — immutable MiniLM provenance, fail-closed verification, capability contract
+#
+# Every test below is named for the wrong reading it prevents. No network, no downloads, no GPU:
+# the pinned bytes are never fetched, they are *synthesised* to the pinned digest's shape and the
+# pin is pointed at the synthetic file, so the contract is exercised without leaving the box.
+# =============================================================================================
+
+import dataclasses as _dc  # noqa: E402
+import hashlib as _hashlib  # noqa: E402
+import json as _json  # noqa: E402
+
+MINILM_SHA = "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452"
+MINILM_BYTES = 90_405_214
+MINILM_REPO = "sentence-transformers/all-MiniLM-L6-v2"
+MINILM_REV = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+#: The unverified blob that was sitting in the default cache when #78 was filed.
+SUBSTITUTE_SHA = "759c3cd2b7fe7e93933ad23c4c9181b7396442a2ed746ec7c1d46192c469c46e"
+
+
+def _write(path: Path, payload: bytes) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return _hashlib.sha256(payload).hexdigest()
+
+
+def _spec_for(tmp_path, filename="probe.bin", *, sha=None, nbytes=None, **over):
+    """A pinned spec whose repo-cache resolves inside *tmp_path*."""
+    fields = dict(
+        key="pin-probe", family="test", resolver="repo-cache", cache_filename=filename,
+        source_repo=MINILM_REPO, source_revision=MINILM_REV, source_file="onnx/model.onnx",
+        pinned_sha256=sha if sha is not None else MINILM_SHA,
+        pinned_bytes=nbytes if nbytes is not None else MINILM_BYTES,
+        capability=rm.CAP_PROVENANCE_ONLY,
+    )
+    fields.update(over)
+    return rm.ModelSpec(**fields)
+
+
+# --- 1. the pin itself -----------------------------------------------------------------------
+
+def test_the_minilm_pin_is_exactly_the_verified_identity():
+    """The one thing this whole issue is about. Any drift here is the bug returning."""
+    assert rm.MINILM.source_repo == MINILM_REPO
+    assert rm.MINILM.source_revision == MINILM_REV
+    assert rm.MINILM.source_file == "onnx/model.onnx"
+    assert rm.MINILM.pinned_sha256 == MINILM_SHA
+    assert rm.MINILM.pinned_bytes == MINILM_BYTES
+    assert rm.MINILM.pinned_external == ()
+    assert rm.MINILM.is_pinned
+
+
+def test_the_minilm_url_is_immutable_and_names_sentence_transformers():
+    url = rm.pinned_source_url(rm.MINILM)
+    assert url == (f"https://huggingface.co/{MINILM_REPO}/resolve/{MINILM_REV}/onnx/model.onnx")
+    assert "/resolve/main/" not in url
+    assert "Xenova" not in url
+
+
+def test_a_mutable_revision_cannot_construct_a_spec(tmp_path):
+    """`main` is the defect the earlier draft shipped: today's bytes, not tomorrow's."""
+    for bad in ("main", "v1.0", "refs/heads/main", "1110a24"):
+        with pytest.raises(ValueError, match="commit SHA"):
+            _spec_for(tmp_path, source_revision=bad)
+
+
+def test_a_revision_with_a_trailing_newline_is_refused(tmp_path):
+    """`re.match(...$)` accepts a trailing newline; `re.fullmatch` does not. This is why."""
+    with pytest.raises(ValueError, match="commit SHA"):
+        _spec_for(tmp_path, source_revision=MINILM_REV + "\n")
+
+
+def test_a_partial_pin_cannot_construct_a_spec(tmp_path):
+    """No early return on a missing digest: half a pin is not a pin."""
+    with pytest.raises(ValueError, match="partial pin"):
+        _spec_for(tmp_path, pinned_sha256="")
+    with pytest.raises(ValueError, match="partial pin"):
+        _spec_for(tmp_path, pinned_bytes=0)
+    with pytest.raises(ValueError, match="partial pin"):
+        _spec_for(tmp_path, source_repo="")
+    with pytest.raises(ValueError, match="partial pin"):
+        _spec_for(tmp_path, source_file="")
+
+
+def test_a_malformed_repo_or_file_shape_is_refused(tmp_path):
+    for bad in ("https://huggingface.co/a/b", "a/b/c", "../a/b", "a b/c", "onlyname"):
+        with pytest.raises(ValueError, match="source_repo"):
+            _spec_for(tmp_path, source_repo=bad)
+    for bad in ("/onnx/model.onnx", "onnx\\model.onnx", "../model.onnx", "onnx/../../x"):
+        with pytest.raises(ValueError, match="source_file"):
+            _spec_for(tmp_path, source_file=bad)
+
+
+def test_a_malformed_digest_is_refused(tmp_path):
+    for bad in ("ABC", MINILM_SHA.upper(), MINILM_SHA[:-1], MINILM_SHA + "0", MINILM_SHA + "\n"):
+        with pytest.raises(ValueError, match="pinned_sha256"):
+            _spec_for(tmp_path, pinned_sha256=bad)
+
+
+def test_an_unpinned_spec_has_no_url_at_all():
+    """The refusal is the point: there is no mutable fallback to construct."""
+    with pytest.raises(ValueError, match="no immutable pin"):
+        rm.pinned_source_url(rm.MOBILENETV2)
+
+
+# --- 2. resolution fails closed --------------------------------------------------------------
+
+def test_the_exact_pinned_bytes_resolve_and_verify(tmp_path, monkeypatch):
+    payload = b"\0" * 32
+    sha = _write(tmp_path / "probe.bin", payload)
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(tmp_path))
+    monkeypatch.setattr(rm, "external_data_provenance",
+                        lambda p: {"scanned": True, "files": [], "reason": "none",
+                                   "tensors_scanned": 0})
+    spec = _spec_for(tmp_path, sha=sha, nbytes=len(payload))
+    rec = rm.resolve_model(spec)
+    assert rec["provenance_ok"] is True
+    assert rec["sha256"] == sha
+
+
+def test_the_759c_substitute_is_refused_by_name(tmp_path, monkeypatch):
+    """The exact scenario of #78: right filename, wrong bytes, must not read as MODEL_OK.
+
+    The substitute is written at *exactly* the pinned byte count, so the size check cannot
+    acquit or convict and the digest is the only thing that can decide. An earlier version of
+    this test used a short payload and passed even with the hash comparison disabled — it was
+    testing the size guard while claiming to test the digest guard.
+    """
+    payload = b"substitute bytes, same name, same length"
+    _write(tmp_path / "probe.bin", payload)
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(tmp_path))
+    monkeypatch.setattr(rm, "external_data_provenance",
+                        lambda p: {"scanned": True, "files": [], "reason": "none",
+                                   "tensors_scanned": 0})
+    spec = _spec_for(tmp_path, sha=SUBSTITUTE_SHA, nbytes=len(payload))
+    with pytest.raises(rm.ModelProvenanceMismatch, match="resolved sha256"):
+        rm.resolve_model(spec)
+
+
+def test_the_refusal_names_the_immutable_url_so_an_operator_can_act(tmp_path, monkeypatch):
+    _write(tmp_path / "probe.bin", b"wrong")
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(tmp_path))
+    spec = _spec_for(tmp_path)
+    with pytest.raises(rm.ModelProvenanceMismatch) as ei:
+        rm.resolve_model(spec)
+    assert f"https://huggingface.co/{MINILM_REPO}/resolve/{MINILM_REV}/" in str(ei.value)
+
+
+def test_renamed_but_byte_identical_still_verifies(tmp_path, monkeypatch):
+    """Identity is per-file content, not the filename. A rename is not a content change."""
+    payload = b"identical bytes under another name"
+    sha = _write(tmp_path / "renamed.onnx", payload)
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(tmp_path))
+    monkeypatch.setattr(rm, "external_data_provenance",
+                        lambda p: {"scanned": True, "files": [], "reason": "none",
+                                   "tensors_scanned": 0})
+    spec = _spec_for(tmp_path, "renamed.onnx", sha=sha, nbytes=len(payload))
+    assert rm.resolve_model(spec)["provenance_ok"] is True
+
+
+def test_a_wrong_size_with_a_right_hash_is_still_refused(tmp_path, monkeypatch):
+    payload = b"0123456789"
+    sha = _write(tmp_path / "probe.bin", payload)
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(tmp_path))
+    monkeypatch.setattr(rm, "external_data_provenance",
+                        lambda p: {"scanned": True, "files": [], "reason": "none",
+                                   "tensors_scanned": 0})
+    spec = _spec_for(tmp_path, sha=sha, nbytes=len(payload) + 1)
+    with pytest.raises(rm.ModelProvenanceMismatch, match="does not match the pinned"):
+        rm.resolve_model(spec)
+
+
+def test_source_metadata_drift_is_refused_even_when_the_digest_matches():
+    """Xenova metadata may not describe sentence-transformers bytes as provenance_ok."""
+    with pytest.raises(rm.ModelProvenanceMismatch, match="disagrees with the pinned"):
+        rm.verify_source_metadata(rm.MINILM, {"repo": "Xenova/all-MiniLM-L6-v2"})
+    with pytest.raises(rm.ModelProvenanceMismatch, match="disagrees with the pinned"):
+        rm.verify_source_metadata(rm.MINILM, {"revision": "0" * 40})
+    with pytest.raises(rm.ModelProvenanceMismatch, match="disagrees with the pinned"):
+        rm.verify_source_metadata(rm.MINILM, {"file": "onnx/model_quantized.onnx"})
+    rm.verify_source_metadata(rm.MINILM, rm._source_identity(rm.MINILM))  # the matching case
+
+
+def test_an_unscanned_graph_is_refused_rather_than_assumed_clean():
+    rec = {"key": "k", "sha256": rm.MINILM.pinned_sha256, "bytes": rm.MINILM.pinned_bytes,
+           "external_data": {"scanned": False, "files": [], "reason": "onnx missing"},
+           "source": rm._source_identity(rm.MINILM)}
+    with pytest.raises(rm.ModelProvenanceMismatch, match="did not run"):
+        rm.verify_pinned_provenance(rm.MINILM, rec)
+
+
+def test_external_data_disagreement_fails_closed_in_both_directions():
+    base = {"key": "k", "sha256": rm.MINILM.pinned_sha256, "bytes": rm.MINILM.pinned_bytes,
+            "source": rm._source_identity(rm.MINILM)}
+    unexpected = dict(base, external_data={
+        "scanned": True, "reason": None,
+        "files": [{"location": "w.data", "bytes": 4, "sha256": "0" * 64}]})
+    with pytest.raises(rm.ModelProvenanceMismatch, match="declares external data the pin does not"):
+        rm.verify_pinned_provenance(rm.MINILM, unexpected)
+
+    missing = dict(base, external_data={
+        "scanned": True, "reason": None,
+        "files": [{"location": "w.data", "bytes": 0, "sha256": None, "missing": True}]})
+    with pytest.raises(rm.ModelProvenanceMismatch, match="absent on disk"):
+        rm.verify_pinned_provenance(rm.MINILM, missing)
+
+    pinned_ext = _dc.replace(
+        rm.MINILM, key="ext-probe",
+        pinned_external=(rm.ExternalFile("w.data", "1" * 64, 4),))
+    lost = dict(base, external_data={"scanned": True, "reason": None, "files": []})
+    with pytest.raises(rm.ModelProvenanceMismatch, match="does not reference"):
+        rm.verify_pinned_provenance(pinned_ext, lost)
+
+    wrong_hash = dict(base, external_data={
+        "scanned": True, "reason": None,
+        "files": [{"location": "w.data", "bytes": 4, "sha256": "2" * 64}]})
+    with pytest.raises(rm.ModelProvenanceMismatch, match="but the pin says"):
+        rm.verify_pinned_provenance(pinned_ext, wrong_hash)
+
+
+def test_external_tensors_nested_in_subgraphs_and_attributes_are_found(tmp_path):
+    """A `.data` hanging off an `If` branch must not scan clean and then fail at inference."""
+    onnx = pytest.importorskip("onnx")
+    from onnx import TensorProto, helper
+
+    def ext(name):
+        t = helper.make_tensor(name, TensorProto.FLOAT, [1], [0.0])
+        t.ClearField("float_data")
+        t.data_location = TensorProto.EXTERNAL
+        kv = t.external_data.add()
+        kv.key, kv.value = "location", "nested.data"
+        return t
+
+    sub = helper.make_graph([], "sub", [], [helper.make_tensor_value_info(
+        "o", TensorProto.FLOAT, [1])], initializer=[ext("nested_init")])
+    const = helper.make_node("Constant", [], ["c"], value=ext("attr_tensor"))
+    branch = helper.make_node("If", ["cond"], ["o"], then_branch=sub, else_branch=sub)
+    g = helper.make_graph(
+        [const, branch], "g",
+        [helper.make_tensor_value_info("cond", TensorProto.BOOL, [1])],
+        [helper.make_tensor_value_info("o", TensorProto.FLOAT, [1])])
+    model = helper.make_model(g)
+    p = tmp_path / "nested.onnx"
+    p.write_bytes(model.SerializeToString())
+
+    rec = rm.external_data_provenance(p)
+    assert rec["scanned"] is True
+    assert [f["location"] for f in rec["files"]] == ["nested.data"]
+    assert rec["files"][0]["missing"] is True, "the blob does not exist; it must say so"
+    assert rec["tensors_scanned"] >= 3
+
+
+# --- 3. public records may not name the machine ----------------------------------------------
+
+def test_a_planted_absolute_path_does_not_survive_the_real_serializer(tmp_path):
+    """Planted leaks, driven through the production writer — not a re-implementation of it."""
+    home = str(Path.home())
+    planted = {
+        "top": home + "/secret/model.onnx",
+        "nested": {"deep": [home + "\\a\\b.onnx", {"k": "C:\\Users\\someone\\x.onnx"}]},
+        "message": f"failed to open {home}/cache/m.onnx: no such file",
+        rm.RUNTIME_ONLY_KEY: {"path": home + "/private/real.onnx"},
+    }
+    out = tmp_path / "rec.json"
+    text = rm.write_public_json(planted, out)
+    assert rm.RUNTIME_ONLY_KEY not in _json.loads(text)
+    assert home not in text
+    assert "C:\\Users\\someone" not in text
+    assert rm._scan_public(_json.loads(text)) == []
+
+
+def test_the_serializer_refuses_rather_than_writes_when_it_cannot_root(tmp_path, monkeypatch):
+    """A screen that only ever passes has never been seen working."""
+    monkeypatch.setattr(rm, "_public_record", lambda node: node)  # defeat the sanitiser
+    out = tmp_path / "leaky.json"
+    with pytest.raises(ValueError, match="machine-identifying"):
+        rm.write_public_json({"p": str(Path.home() / "x.onnx")}, out)
+    assert not out.exists(), "a refused record must not be written"
+
+
+def test_a_resolved_record_carries_a_rooted_path_and_a_private_runtime_path(tmp_path, monkeypatch):
+    payload = b"abc"
+    sha = _write(tmp_path / "probe.bin", payload)
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(tmp_path))
+    monkeypatch.setattr(rm, "external_data_provenance",
+                        lambda p: {"scanned": True, "files": [], "reason": "none",
+                                   "tensors_scanned": 0})
+    rec = rm.resolve_model(_spec_for(tmp_path, sha=sha, nbytes=len(payload)))
+    assert not Path(rec["path"]).is_absolute() or rec["path"].startswith("<")
+    assert rm.runtime_path(rec).is_file(), "the private path must still open"
+    with pytest.raises(rm.ModelUnavailable, match="no runtime path"):
+        rm.runtime_path(rm._public_record(rec))
+
+
+# --- 4. the capability contract --------------------------------------------------------------
+
+def test_minilm_is_provenance_only_until_the_op_work_lands():
+    assert rm.MINILM.capability == rm.CAP_PROVENANCE_ONLY
+    assert rm.MINILM.key not in rm._CASE_BUILDERS
+
+
+def test_cases_for_refuses_a_provenance_only_model_instead_of_defaulting():
+    """The `else: mobilenet_cases(...)` fallback is the bug; this is the test that forbids it.
+
+    Matched on the phrase unique to the *capability* branch. Matching on "provenance_only" alone
+    was vacuous: the missing-builder branch interpolates ``spec.capability`` into its own message,
+    so both branches contained the word and the test passed with the capability gate removed.
+    """
+    with pytest.raises(rm.ModelNotBenchable, match="no case table for it"):
+        rm.cases_for(rm.MINILM, prefill_m=(1,), decode_past=(0,), batch=(1,))
+
+
+def test_no_case_builder_can_produce_a_case_for_another_models_key():
+    """Every case must belong to the spec it was built from."""
+    for key, spec in rm.MODELS.items():
+        if spec.capability != rm.CAP_BENCHABLE:
+            continue
+        cases = rm.cases_for(spec, prefill_m=(1, 8), decode_past=(0, 128), batch=(1, 16))
+        assert cases, f"{key} is benchable but produced no cases"
+        for c in cases:
+            assert c.model_key == key, f"{key} produced a case for {c.model_key}"
+
+
+def test_an_unknown_model_key_fails_closed():
+    ghost = rm.ModelSpec(key="not-a-model", family="x", resolver="repo-cache",
+                         cache_filename="x.onnx")
+    with pytest.raises(ValueError, match="unknown model key"):
+        rm.cases_for(ghost, batch=(1,))
+
+
+def test_build_feeds_refuses_a_provenance_only_model():
+    case = rm.Case(rm.MINILM.key, "batch", 1, 0)
+    with pytest.raises(rm.ModelNotBenchable, match="no feed builder"):
+        rm.build_feeds(case, np)
+
+
+def test_benchable_keys_excludes_minilm_but_models_still_contains_it():
+    assert rm.MINILM.key in rm.MODELS, "--models all must still resolve and verify it"
+    assert rm.MINILM.key not in rm.benchable_keys()
+    assert set(rm.benchable_keys()) == {rm.PHI35.key, rm.MOBILENETV2.key}
+    # explicit key list, order preserved
+    assert rm.benchable_keys([rm.MOBILENETV2.key, rm.MINILM.key, rm.PHI35.key]) == [
+        rm.MOBILENETV2.key, rm.PHI35.key]
+
+
+def test_benchable_keys_refuses_an_unknown_key_rather_than_dropping_it():
+    """A filter that silently discards a typo reports a narrower run as a complete one."""
+    with pytest.raises(ValueError, match="unknown model key"):
+        rm.benchable_keys([rm.PHI35.key, "not-a-model"])
+
+
+def test_verify_pinned_provenance_accepts_a_record_that_matches_the_pin():
+    """The accept polarity for the guard whose refusals are exercised above."""
+    rec = {"key": rm.MINILM.key, "sha256": rm.MINILM.pinned_sha256,
+           "bytes": rm.MINILM.pinned_bytes,
+           "external_data": {"scanned": True, "files": [], "reason": "no external data",
+                             "tensors_scanned": 7},
+           "source": rm._source_identity(rm.MINILM)}
+    rm.verify_pinned_provenance(rm.MINILM, rec)
+    assert rec["provenance_ok"] is True
+    assert rm.MINILM.source_revision in rec["provenance_detail"]
+
+
+def test_an_unpinned_spec_records_that_it_was_not_checked_rather_than_passing():
+    """`provenance_ok is None` is a third state, and it must not be mistaken for True."""
+    rec = {"key": rm.MOBILENETV2.key, "sha256": "0" * 64, "bytes": 1,
+           "external_data": {"scanned": True, "files": [], "reason": None}}
+    rm.verify_pinned_provenance(rm.MOBILENETV2, rec)
+    assert rec["provenance_ok"] is None
+    assert "not checked" in rec["provenance_detail"]
+
+
+def test_an_unknown_capability_cannot_construct_a_spec():
+    with pytest.raises(ValueError, match="capability"):
+        rm.ModelSpec(key="k", family="f", resolver="repo-cache", cache_filename="x.onnx",
+                     capability="sort-of")
+
+
+# --- 5. every driver entry point honours the contract ----------------------------------------
+
+def _probe_source() -> str:
+    p = _BENCH / "results" / "probe_real_model_latency.py"
+    return p.read_text(encoding="utf-8")
+
+
+def test_no_driver_dispatches_cases_with_an_else_fallback():
+    """The literal shape of the defect, forbidden by reading the driver's source."""
+    src = _probe_source()
+    assert "else rm.mobilenet_cases" not in src
+    assert "rm.cases_for(" in src, "the driver must go through the capability-aware dispatcher"
+
+
+def test_every_driver_entry_point_checks_capability():
+    src = _probe_source()
+    # main(), run_diagnostics() and the worker each gate on capability.
+    assert src.count("capability != rm.CAP_BENCHABLE") >= 3, (
+        "each of main(), run_diagnostics() and _worker_diagnose must refuse a "
+        "non-benchable model on its own; a gate only one entry point honours is not a gate")
+
+
+def test_the_driver_writes_through_the_public_serializer_only():
+    src = _probe_source()
+    assert "rm.write_public_json(" in src
+    assert "write_text(json.dumps(report" not in src
+    assert "write_text(json.dumps(rec" not in src
+
+
+def test_the_driver_opens_the_private_runtime_path_not_the_public_one():
+    src = _probe_source()
+    assert 'model_rec["path"]' not in src, (
+        "the public path is rooted and opens nothing; sessions must use rm.runtime_path()")
+    assert "rm.runtime_path(model_rec)" in src
+
+
+def test_the_unavailable_message_for_a_pinned_model_names_a_route_that_exists(tmp_path):
+    """`ort-model-runner`'s manifest has no MiniLM entry, so it must not be recommended."""
+    msg = rm._unavailable_message(rm.MINILM, tmp_path / "all-MiniLM-L6-v2.onnx")
+    assert "ort-model-runner" not in msg
+    assert rm.pinned_source_url(rm.MINILM) in msg
+    assert rm.MINILM.pinned_sha256 in msg and str(rm.MINILM.pinned_bytes) in msg
+    assert str(Path.home()) not in msg, "the message is user-facing and may still not leak"
+    # the unpinned model keeps the producer that really does produce it
+    assert "ort-model-runner" in rm._unavailable_message(rm.MOBILENETV2, tmp_path / "m.onnx")
+
+
+def test_the_pinned_absent_model_raises_that_exact_message(tmp_path, monkeypatch):
+    """Production call site, not just the helper: resolve_model must use it."""
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(tmp_path))
+    with pytest.raises(rm.ModelUnavailable) as ei:
+        rm.resolve_model(rm.MINILM)
+    assert str(ei.value) == rm._unavailable_message(
+        rm.MINILM, tmp_path / rm.MINILM.cache_filename)
+
+
+def test_nothing_in_this_module_reaches_the_network(monkeypatch):
+    """No test here may download. Proven by breaking the socket, not by reading the code."""
+    import socket
+
+    def boom(*a, **k):
+        raise AssertionError("this lane must never open a socket")
+
+    monkeypatch.setattr(socket.socket, "connect", boom)
+    monkeypatch.setattr(socket, "create_connection", boom)
+    assert rm.pinned_source_url(rm.MINILM).startswith("https://")
+    assert rm.MINILM.is_pinned

@@ -171,7 +171,7 @@ def run_matrix(args, model_rec: dict, cases, arms, device) -> dict:
     import numpy as np
     import onnxruntime as ort
 
-    path = Path(model_rec["path"])
+    path = rm.runtime_path(model_rec)
     feeds_by_case = {}
     digests = {}
     for case in cases:
@@ -339,7 +339,18 @@ def diagnose_worker(argv) -> int:
     import numpy as np
     import onnxruntime as ort
 
-    spec = rm.MODELS[a.model]
+    spec = rm.MODELS.get(a.model)
+    if spec is None:
+        print(f"unknown model key {a.model!r}; known keys are {sorted(rm.MODELS)}",
+              file=sys.stderr)
+        return 2
+    if spec.capability != rm.CAP_BENCHABLE:
+        # The worker is reachable directly (`--worker-diagnose --model ...`), so the capability
+        # contract is enforced here too and not only by the parent that usually spawns it. A
+        # gate that only one of two entry points honours is not a gate.
+        print(f"{a.model} is declared {spec.capability}; this lane has no case table for it "
+              f"and will not invent one. Nothing was run.", file=sys.stderr)
+        return 3
     model_rec = rm.resolve_model(spec)
     arm = {x.name: x for x in rm.ARMS}[a.arm]
     case = rm.Case(a.model, a.phase, a.m, a.past,
@@ -352,18 +363,18 @@ def diagnose_worker(argv) -> int:
         lib = os.environ.get(EP_LIB_ENV)
         if not lib or not Path(lib).is_file():
             rec["error"] = f"{EP_LIB_ENV} unset or missing"
-            Path(a.out).write_text(json.dumps(rec), encoding="utf-8")
+            rm.write_public_json(rec, Path(a.out))
             return 2
         try:
             ort.register_execution_provider_library(rm.EP_NAME, str(Path(lib).resolve()))
         except Exception as exc:
             if "already registered" not in str(exc):
                 rec["error"] = f"registration failed: {exc}"
-                Path(a.out).write_text(json.dumps(rec), encoding="utf-8")
+                rm.write_public_json(rec, Path(a.out))
                 return 2
 
     feeds = rm.build_feeds(case, np)
-    sess = _session(ort, Path(model_rec["path"]), arm, a.device, profiling=True)
+    sess = _session(ort, rm.runtime_path(model_rec), arm, a.device, profiling=True)
     rec["providers"] = list(sess.get_providers())
     for _ in range(a.iters):
         sess.run(None, feeds)
@@ -371,7 +382,7 @@ def diagnose_worker(argv) -> int:
     rec["profile"] = _profile_provider_counts(sess, ort)
     rec["fallback"] = rm.fallback_diagnosis((rec["profile"] or {}).get("counts"))
     del sess
-    Path(a.out).write_text(json.dumps(rec, indent=2), encoding="utf-8")
+    rm.write_public_json(rec, Path(a.out))
     return 0
 
 
@@ -387,11 +398,23 @@ def run_diagnostics(args, models, device) -> dict:
     out: dict = {"device": {"index": device.index, "name": device.name}, "runs": []}
     plan = []
     for key in models:
+        spec = rm.MODELS[key]
+        if spec.capability != rm.CAP_BENCHABLE:
+            print(f"[real] SKIP (provenance-only): {key}", file=sys.stderr)
+            out.setdefault("skipped_models", []).append(
+                {"model": key, "capability": spec.capability,
+                 "reason": f"{key} is declared {spec.capability}; pinned and verified, but this "
+                           f"lane has no case table for it (#74/#75/#76)."})
+            continue
         if key == rm.PHI35.key:
             plan += [(key, "prefill", 1, 0), (key, "prefill", 8, 0), (key, "prefill", 128, 0),
                      (key, "decode", 1, 1024)]
-        else:
+        elif key == rm.MOBILENETV2.key:
             plan += [(key, "batch", 1, 0), (key, "batch", 16, 0)]
+        else:
+            raise ValueError(
+                f"{key} is benchable but run_diagnostics has no plan for it; add one here and "
+                f"a case builder in real_model._CASE_BUILDERS together.")
     for (key, phase, m, past) in plan:
         for arm in rm.ARMS:
             tag = f"{key}_{phase}_{m}_{past}_{arm.name}".replace("/", "_")
@@ -556,7 +579,7 @@ def main(argv=None) -> int:
             "environment": environment_record(device, args),
             **run_diagnostics(args, keys, device),
         }
-        out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        rm.write_public_json(report, out_path)
         print(f"\n  wrote {out_path}")
         return 0
 
@@ -566,8 +589,28 @@ def main(argv=None) -> int:
 
     models_out = []
     failures = []
+    skipped = []
     for key in keys:
         spec = rm.MODELS[key]
+        if spec.capability != rm.CAP_BENCHABLE:
+            # Named, never dropped. `--models all` must still resolve and verify this model's
+            # provenance; what it must not do is invent feeds for it.
+            reason = (f"{key} is declared {spec.capability}: bytes are pinned and verified, but "
+                      f"the Vulkan EP does not yet cover its op set (#74/#75/#76), so this lane "
+                      f"has no case table for it.")
+            print(f"[real] SKIP (provenance-only): {reason}", file=sys.stderr)
+            entry = {"model": key, "capability": spec.capability, "reason": reason}
+            try:
+                rec = rm.resolve_model(spec)
+                entry["provenance"] = {
+                    "sha256": rec["sha256"], "bytes": rec["bytes"],
+                    "provenance_ok": rec.get("provenance_ok"),
+                    "source": rec.get("source"),
+                }
+            except (rm.ModelUnavailable, rm.ModelProvenanceMismatch) as exc:
+                entry["error"] = str(exc)
+            skipped.append(entry)
+            continue
         try:
             model_rec = rm.resolve_model(spec)
         except rm.ModelUnavailable as exc:
@@ -579,8 +622,7 @@ def main(argv=None) -> int:
         print(f"[real] {key}: {model_rec['path']}", flush=True)
         print(f"[real]   sha256 {model_rec['sha256']} ({model_rec['provenance']}, "
               f"agrees_with_recorded={model_rec['agrees_with_recorded_provenance']})", flush=True)
-        cases = (rm.phi35_cases(prefill_m, decode_past) if key == rm.PHI35.key
-                 else rm.mobilenet_cases(batch))
+        cases = rm.cases_for(spec, prefill_m=prefill_m, decode_past=decode_past, batch=batch)
         models_out.append(run_matrix(args, model_rec, cases, rm.ARMS, device))
 
     report = {
@@ -590,6 +632,7 @@ def main(argv=None) -> int:
         "environment": environment_record(device, args),
         "models": models_out,
         "unavailable_models": failures,
+        "skipped_models": skipped,
         "second_device": {
             "present": False,
             "detail": "vulkaninfo reports exactly one Vulkan device on this box; there is no "
@@ -597,7 +640,7 @@ def main(argv=None) -> int:
                       "than left to inference.",
         },
     }
-    out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    rm.write_public_json(report, out_path)
     _print_tables(report)
     print(f"\n  wrote {out_path}")
     return 1 if failures else 0

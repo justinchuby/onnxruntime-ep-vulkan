@@ -340,7 +340,6 @@
     "bench/real_model.py::arm_order",
     "bench/real_model.py::bandwidth_proxy",
     "bench/real_model.py::bitwise_identical",
-    "bench/real_model.py::build_feeds",
     "bench/real_model.py::classify_activation",
     "bench/real_model.py::classify_logits",
     "bench/real_model.py::classify_outputs",
