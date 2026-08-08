@@ -1260,9 +1260,67 @@ _CITED_PATH_RE = re.compile(
 #: there is nothing more precise about it to ask for.
 _CITED_FIELD_RE = re.compile(r"`{1,2}([A-Za-z_][\w.]*(?:\[\d+\])?[\w.]*)`{1,2}")
 
-_WITNESS_WINDOW = 400
+#: An explicit, claim-local escape hatch: ``[witness: `model.external_data.files[0].bytes`]``
+#: anywhere in the figure's own clause binds that clause's figures to exactly that field.
+#: It exists so an author whose sentence is too tangled for the adjacency rule below has a
+#: way to *say* which field backs the figure, rather than a reason to widen the rule.
+_WITNESS_ANNOTATION_RE = re.compile(
+    r"\[witness:\s*`{1,2}([A-Za-z_][\w.]*(?:\[\d+\])?[\w.]*)`{1,2}\s*\]")
+
+#: --- claim segmentation ---------------------------------------------------------------
+#:
+#: There is deliberately no proximity window here any more. A window pools every citation
+#: within N characters and hands the union to every figure in it, so a *false* claim passes
+#: whenever some unrelated neighbour in the same window happens to carry the value: the
+#: exact defect the fourth review round found, where ``model.bytes`` 2291238912 (wrong; that
+#: field is 26,180,848) was blessed by a correct sibling citation of
+#: ``model.external_data.files[0].bytes`` 2291238912 two sentences away. Widening or
+#: narrowing N cannot fix that -- it only moves which false claims get lucky.
+#:
+#: Association is structural instead. Prose is cut into paragraphs (blank-line separated)
+#: and paragraphs into clauses, and a figure binds to the field citation *adjacent to it in
+#: its own clause* -- nearest before or after with no other figure in between, the same
+#: matching discipline as brackets. That is what "``claimed_nodes`` 355" and "2291238912
+#: (``model.weights_bytes``)" already mean to a reader; the guard now reads them the same way.
+_CLAUSE_BREAK_RE = re.compile(r"(?:[.;!?](?=[\s\"')\]]|$)|\s--\s|\s[\u2014\u2013]\s)")
+_PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t]*\n")
+_BACKTICKED_SPAN_RE = re.compile(r"`{1,2}[^`]*`{1,2}")
+_DECIMAL_RE = re.compile(r"\d[\d,]*\.\d+")
+_ABBREVIATION_RE = re.compile(r"\b(?:e\.g|i\.e|cf|vs|etc|Fig|No|approx|Dr|Mr|St)\.", re.I)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _mask_for_segmentation(text: str) -> str:
+    """A same-length copy of ``text`` with everything a period may legally live inside
+    overwritten, so clause splitting cannot cut a decimal, a dotted field path, a
+    repo-relative artifact path or an abbreviation in half. Offsets are preserved exactly:
+    every replacement is one character for one character and whitespace is left alone, so a
+    span found in the mask indexes the real text.
+    """
+    chars = list(text)
+    for rx in (_BACKTICKED_SPAN_RE, _CITED_PATH_RE, _DECIMAL_RE, _ABBREVIATION_RE):
+        for m in rx.finditer(text):
+            for i in range(m.start(), m.end()):
+                if not chars[i].isspace():
+                    chars[i] = "X"
+    return "".join(chars)
+
+
+def _split_spans(masked: str, pattern, lo: int, hi: int) -> "list[tuple]":
+    spans, start = [], lo
+    for m in pattern.finditer(masked, lo, hi):
+        spans.append((start, m.start()))
+        start = m.end()
+    spans.append((start, hi))
+    return [(a, b) for a, b in spans if b > a]
+
+
+def _enclosing_span(spans: "list[tuple]", pos: int, default: tuple) -> tuple:
+    for lo, hi in spans:
+        if lo <= pos < hi:
+            return lo, hi
+    return default
 
 
 def _module_prose(text: str) -> str:
@@ -1348,8 +1406,8 @@ def _artifact_fields(path: Path) -> dict:
     return sink
 
 
-def _named_field_values(window: str, fields: dict) -> "list[float]":
-    """Values in ``fields`` for each field cited in ``window``.
+def _values_for_field(raw: str, fields: dict) -> "list[float]":
+    """Values in ``fields`` for one cited field name.
 
     A citation that names a *structured* path -- dotted and/or carrying an array index,
     e.g. ``model.external_data.files[0].bytes`` -- is looked up at that exact path only,
@@ -1361,14 +1419,63 @@ def _named_field_values(window: str, fields: dict) -> "list[float]":
     with no structure of its own (e.g. `` `claimed_nodes` ``) has no more precise path to ask
     for, so it keeps the leaf-name lookup.
     """
+    key = raw.lower()
+    structured = "." in raw or "[" in raw
+    keys = (key,) if structured else {key, raw.split(".")[-1].lower()}
+    values: "list[float]" = []
+    for k in keys:
+        values.extend(sorted(fields.get(k, ())))
+    return values
+
+
+def _named_field_values(window: str, fields: dict) -> "list[float]":
+    """Values in ``fields`` for every field cited in ``window``.
+
+    Kept for the clause- and paragraph-scoped arms below, where the question really is "does
+    *any* field this clause cites carry the value". It is no longer reachable for a figure
+    that names its own field: see ``_bound_field_citations``.
+    """
     values: "list[float]" = []
     for raw in _CITED_FIELD_RE.findall(window):
-        key = raw.lower()
-        structured = "." in raw or "[" in raw
-        keys = (key,) if structured else {key, raw.split(".")[-1].lower()}
-        for k in keys:
-            values.extend(sorted(fields.get(k, ())))
+        values.extend(_values_for_field(raw, fields))
     return values
+
+
+def _bound_field_citations(scanned: str, clause: tuple, span: tuple,
+                           figures: "list[tuple]") -> "list[str]":
+    """The field citations this figure itself names -- nothing else in the file.
+
+    Adjacency, not distance: a figure binds to the nearest field citation *before* it in its
+    own clause, with no other figure in between, and to the field that follows it only when
+    nothing precedes -- "``claimed_nodes`` 355" and "2291238912 (``model.bytes``)" are the
+    two spellings this codebase uses, and exactly one field is answerable in each. So
+    2291238912 beside ``model.bytes`` is answerable to ``model.bytes`` alone, however many
+    correct sibling citations share the paragraph. An explicit ``[witness: `field`]``
+    annotation anywhere in the clause overrides both, for clauses too tangled to read.
+    """
+    lo, hi = clause
+    start, end = span
+    annotated = _WITNESS_ANNOTATION_RE.findall(scanned[lo:hi])
+    if annotated:
+        return annotated
+    fields = [(m.start(), m.end(), m.group(1))
+              for m in _CITED_FIELD_RE.finditer(scanned, lo, hi)]
+    local = [(a, b) for a, b in figures if lo <= a < hi]
+    before = [f for f in fields if f[1] <= start]
+    if before:
+        f = before[-1]
+        if not any(f[1] <= a and b <= start for a, b in local):
+            #: "``model.bytes`` 2291238912" names ``model.bytes`` and nothing else. The
+            #: field that happens to follow the figure is the *next* claim's field, and
+            #: admitting it too is how a swapped pair passes: each figure finds the other's
+            #: field. The trailing field is consulted only when nothing precedes.
+            return [f[2]]
+    after = [f for f in fields if f[0] >= end]
+    if after:
+        f = after[0]
+        if not any(end <= a and b <= f[0] for a, b in local):
+            return [f[2]]
+    return []
 
 
 def _matches_at_precision(candidate: float, printed: str) -> bool:
@@ -1384,16 +1491,38 @@ def _matches_at_precision(candidate: float, printed: str) -> bool:
         return False
 
 
-def _figure_is_witnessed(printed: str, unit: "str | None", window: str,
-                         cited: "list[Path]") -> bool:
-    """Is the printed figure actually *in* one of the cited files?
+def _pool_carries(pool: "list[float]", plain: str, unit_key: str) -> bool:
+    for value in pool:
+        if unit_key in _BYTE_SCALES and any(
+                _matches_at_precision(value / scale, plain)
+                for scale in _BYTE_SCALES[unit_key]):
+            return True
+        if _matches_at_precision(value, plain):
+            return True
+    return False
 
-    For a structured artifact (`.json`/`.jsonl`) the check is at the field named beside the
-    figure — nothing weaker. A verbatim digit search over an artifact is not a witness: these
-    files are tens of thousands of lines of unrelated numbers, and "88.9" occurs in the very
-    artifact that was cited to back it while backing nothing of the kind. The verbatim search
-    is kept only for unstructured witnesses (`.py`, `.rs`, `.md`, logs), where there is no
-    field to name and a pinned literal in a test *is* the record.
+
+def _figure_is_witnessed(printed: str, unit: "str | None", claim: dict,
+                         cited: "list[Path]") -> bool:
+    """Is the printed figure actually *in* one of the cited files, at its own citation?
+
+    For a structured artifact (`.json`/`.jsonl`) the check runs one rung of a ladder, and
+    only one -- there is no falling through to a wider scope once a narrower one applies:
+
+      1. the figure names its own field (adjacent in its clause): that field must carry the
+         value, and a different field carrying it is not an answer. This is the rung that
+         makes a false ``model.bytes`` 2291238912 fail beside a correct
+         ``model.external_data.files[0].bytes`` 2291238912;
+      2. the figure names no field but its clause cites some: those, and only those;
+      3. the clause cites no resolvable field at all: the enclosing paragraph's, because a
+         paragraph may legitimately state a figure in one sentence and its provenance in the
+         next ("the weights are 2,291,238,912 bytes ... read off ``model.weights_bytes``").
+
+    A verbatim digit search over an artifact is not a witness: these files are tens of
+    thousands of lines of unrelated numbers, and "88.9" occurs in the very artifact that was
+    cited to back it while backing nothing of the kind. The verbatim search is kept only for
+    unstructured witnesses (`.py`, `.rs`, `.md`, logs), where there is no field to name and a
+    pinned literal in a test *is* the record.
     """
     plain = printed.replace(",", "")
     try:
@@ -1404,17 +1533,22 @@ def _figure_is_witnessed(printed: str, unit: "str | None", window: str,
     for path in cited:
         if path.suffix in (".json", ".jsonl"):
             fields = _artifact_fields(path)
-            named = _named_field_values(window, fields)
-            for value in named:
-                if unit_key in _BYTE_SCALES and any(
-                        _matches_at_precision(value / scale, plain)
-                        for scale in _BYTE_SCALES[unit_key]):
-                    return True
-                if _matches_at_precision(value, plain):
-                    return True
+            bound: "list[float]" = []
+            for raw in claim["bound"]:
+                bound.extend(_values_for_field(raw, fields))
+            clause_values = _named_field_values(claim["clause"], fields)
+            paragraph_values = _named_field_values(claim["paragraph"], fields)
+            pool = bound or clause_values or paragraph_values
+            if _pool_carries(pool, plain, unit_key):
+                return True
             if unit_key == "%":
-                for a in named:
-                    for b in named:
+                #: Deliberately weaker than the rungs above and recorded as such: a
+                #: percentage is a *relation* between two fields, so neither one carries it
+                #: and adjacency cannot bind it. Scoped to the figure's own clause (the
+                #: paragraph only when the clause names nothing), never to a window.
+                ratio = clause_values or paragraph_values
+                for a in ratio:
+                    for b in ratio:
                         if b and _matches_at_precision(100.0 * a / b, plain):
                             return True
             continue
@@ -1437,19 +1571,33 @@ def _unwitnessed_measurement_shaped_figures(text: str, *, prose_only: bool = Fal
     offenders = []
     scanned = text if prose_only else _NOT_A_MEASUREMENT_RE.sub(
         lambda m: " " * (m.end() - m.start()), text)
-    lowered = scanned.lower()
+    masked = _mask_for_segmentation(scanned)
+    whole = (0, len(scanned))
+    paragraphs = _split_spans(masked, _PARAGRAPH_BREAK_RE, 0, len(masked))
+    figures = []
+    for m in _MEASUREMENT_SHAPED_RE.finditer(scanned):
+        bare = m.group("unit") is None and not m.group("approx")
+        if bare and "," not in m.group("value") and len(m.group("value").split(".")[0]) < 3:
+            continue  # a one- or two-digit bare integer is not a measurement-shaped figure
+        figures.append((m.start(), m.end()))
     for m in _MEASUREMENT_SHAPED_RE.finditer(scanned):
         printed, unit = m.group("value"), m.group("unit")
-        bare = unit is None and not m.group("approx")
-        if bare and "," not in printed and len(printed.split(".")[0]) < 3:
-            continue  # a one- or two-digit bare integer is not a measurement-shaped figure
-        window = scanned[max(0, m.start() - _WITNESS_WINDOW): m.end() + _WITNESS_WINDOW]
-        if any(d in lowered[max(0, m.start() - _WITNESS_WINDOW): m.end() + _WITNESS_WINDOW]
-               for d in _WITHHELD_FIGURE_DISCLAIMERS):
+        if (m.start(), m.end()) not in figures:
+            continue
+        paragraph = _enclosing_span(paragraphs, m.start(), whole)
+        clause = _enclosing_span(
+            _split_spans(masked, _CLAUSE_BREAK_RE, *paragraph), m.start(), paragraph)
+        paragraph_text = scanned[paragraph[0]:paragraph[1]]
+        clause_text = scanned[clause[0]:clause[1]]
+        if any(d in paragraph_text.lower() for d in _WITHHELD_FIGURE_DISCLAIMERS):
             continue
         line_no = scanned.count("\n", 0, m.start()) + 1
         where = f"line {line_no}: {m.group().strip()!r}"
-        raw_paths = _CITED_PATH_RE.findall(window)
+        #: A figure's citations are read from its own clause; an artifact path may be stated
+        #: once for the paragraph, because that is how these blocks are written. The
+        #: field-to-value binding is what must stay claim-local, and it does.
+        raw_paths = _CITED_PATH_RE.findall(clause_text) or _CITED_PATH_RE.findall(
+            paragraph_text)
         if not raw_paths:
             offenders.append(f"{where} — no committed witness cited and no withheld-figure "
                              f"disclaimer")
@@ -1458,10 +1606,13 @@ def _unwitnessed_measurement_shaped_figures(text: str, *, prose_only: bool = Fal
         if missing:
             offenders.append(f"{where} — cites {missing}, which does not exist in this tree")
             continue
+        claim = {"bound": _bound_field_citations(scanned, clause, (m.start(), m.end()),
+                                                 figures),
+                 "clause": clause_text, "paragraph": paragraph_text}
         cited = [_REPO_ROOT / p for p in raw_paths]
-        if not _figure_is_witnessed(printed, unit, window, cited):
-            offenders.append(f"{where} — cited {raw_paths} carries no such value at any "
-                             f"field named beside the figure")
+        if not _figure_is_witnessed(printed, unit, claim, cited):
+            named = claim["bound"] or "no field named beside it"
+            offenders.append(f"{where} — cited {raw_paths} carries no such value at {named}")
     return offenders
 
 
@@ -1553,6 +1704,120 @@ def test_an_array_indexed_citation_is_witnessed_at_its_own_exact_structured_path
     good = (f"the externalized weights blob is 2.29 GB "
             f"(``model.external_data.files[0].bytes``, committed in {_REAL_MODEL_WITNESS})")
     assert not _unwitnessed_measurement_shaped_figures(good)
+
+
+def test_a_false_claim_is_not_rescued_by_a_correct_sibling_claim_nearby():
+    """Must-fire, mixed window: the fourth review round's blocker, in one paragraph.
+
+    Both sentences quote 2,291,238,912. The second one is *right* -- that is the size of the
+    externalized blob at ``model.external_data.files[0].bytes``. The first one is a lie:
+    ``model.bytes`` is the graph proto, 26,180,848. Under a proximity window the two share a
+    pool of citations and the lie inherits its neighbour's witness; under claim-local binding
+    the first figure names ``model.bytes`` and is answerable only to ``model.bytes``.
+    """
+    mixed = (f"The graph proto alone is 2291238912 bytes (``model.bytes``, committed in "
+             f"{_REAL_MODEL_WITNESS}).  The externalized weights blob is 2291238912 bytes "
+             f"(``model.external_data.files[0].bytes``, committed in {_REAL_MODEL_WITNESS}).")
+    offenders = _unwitnessed_measurement_shaped_figures(mixed)
+    assert offenders and "model.bytes" in offenders[0]
+    #: and not by collapsing the distance: the same two claims inside a single clause, where
+    #: no window however small could separate them, are separated by adjacency alone.
+    one_clause = (f"2291238912 (``model.bytes``) and 2291238912 "
+                  f"(``model.external_data.files[0].bytes``), committed in "
+                  f"{_REAL_MODEL_WITNESS}")
+    assert _unwitnessed_measurement_shaped_figures(one_clause)
+
+
+def test_two_true_values_attached_to_the_wrong_two_fields_are_convicted():
+    """Must-fire, swapped values: every number real, every pairing false.
+
+    26,180,848 and 2,291,238,912 are both genuinely in the witness, and the paragraph cites
+    both fields that hold them -- so a pooled check finds every figure and passes the lot.
+    The claim the prose actually makes is that ``model.bytes`` is the larger, and it is not.
+    """
+    swapped = (f"``model.bytes`` 2291238912 and ``model.weights_bytes`` 26180848, both "
+               f"committed in {_REAL_MODEL_WITNESS}")
+    assert len(_unwitnessed_measurement_shaped_figures(swapped)) == 2
+
+
+def test_a_duplicate_leaf_key_does_not_let_one_path_answer_for_the_other():
+    """Must-fire, duplicate leaf: two exact paths ending in the same leaf, one lying.
+
+    ``model.bytes`` (26,180,848) and ``model.external_data.files[0].bytes`` (2,291,238,912)
+    end in the same leaf ``bytes``. Here the *first* claim is true and the second attaches
+    the proto's size to the blob's path. Exact-path lookup alone does not catch this -- the
+    values still pool -- so it is the claim-local binding that convicts the second sentence
+    and leaves the first alone.
+    """
+    dup = (f"The graph proto is 26180848 bytes (``model.bytes``).  The externalized blob is "
+           f"26180848 bytes (``model.external_data.files[0].bytes``).  Both committed in "
+           f"{_REAL_MODEL_WITNESS}.")
+    offenders = _unwitnessed_measurement_shaped_figures(dup)
+    assert len(offenders) == 1 and "files[0]" in offenders[0]
+
+
+def test_two_exactly_cited_claims_may_share_one_paragraph():
+    """Must-not-fire control: the honest version of all three mutants above.
+
+    Same paragraph, same leaf key, two figures, both bound to the field that actually holds
+    them -- in both orders, because "``field`` 123" and "123 (``field``)" are the two
+    spellings this codebase uses. A guard that cannot pass this convicts the tree's own
+    provenance prose and gets deleted.
+    """
+    field_first = (f"``model.bytes`` 26180848 is the graph proto and "
+                   f"``model.external_data.files[0].bytes`` 2291238912 is the externalized "
+                   f"blob, both committed in {_REAL_MODEL_WITNESS}")
+    figure_first = (f"26180848 (``model.bytes``) is the proto; 2291238912 "
+                    f"(``model.external_data.files[0].bytes``) is the blob.  Both committed "
+                    f"in {_REAL_MODEL_WITNESS}.")
+    assert not _unwitnessed_measurement_shaped_figures(field_first)
+    assert not _unwitnessed_measurement_shaped_figures(figure_first)
+
+
+def test_a_figure_may_take_its_provenance_from_the_next_sentence():
+    """Must-not-fire control: the shape ``bench_models.py`` actually writes.
+
+    A paragraph is allowed to state the figure in one sentence and where it was read in the
+    next. What is *not* allowed is a figure that names its own field and disagrees with it --
+    the rung above. Both live in this one paragraph, and only the honest reading survives if
+    the ladder is right.
+    """
+    real_shape = (f"The Phi-3.5 graph proto is 26 MB and the weights it references are "
+                  f"2,291,238,912 bytes -- 2.29 GB.  Both figures are read off "
+                  f"``model.bytes`` 26180848 and ``model.weights_bytes`` 2291238912 in "
+                  f"{_REAL_MODEL_WITNESS}.")
+    assert not _unwitnessed_measurement_shaped_figures(real_shape)
+
+
+def test_an_explicit_witness_annotation_binds_and_can_itself_be_wrong():
+    """The escape hatch is an annotation, not an exemption.
+
+    ``[witness: `field`]`` lets an author bind a figure in a clause too tangled for
+    adjacency. It binds the same way everything else does: naming a field that does not carry
+    the value is a conviction, not a pass.
+    """
+    truthful = (f"the blob is 2291238912 bytes [witness: ``model.external_data.files[0]"
+                f".bytes``], committed in {_REAL_MODEL_WITNESS}")
+    lying = (f"the proto is 2291238912 bytes [witness: ``model.bytes``], committed in "
+             f"{_REAL_MODEL_WITNESS}")
+    assert not _unwitnessed_measurement_shaped_figures(truthful)
+    assert _unwitnessed_measurement_shaped_figures(lying)
+
+
+def test_clause_segmentation_does_not_cut_decimals_paths_or_dotted_fields():
+    """The segmentation is only sound if a period inside a figure is not a clause end.
+
+    Every one of these would be split mid-token by a naive `.`-splitter, orphaning the figure
+    from its citation and convicting an honest line. Offsets in the mask are checked to line
+    up character-for-character with the real text, because the binding indexes through it.
+    """
+    text = (f"the weights are 2.29 GB (``model.external_data.files[0].bytes``, e.g. as "
+            f"committed in {_REAL_MODEL_WITNESS})")
+    masked = _mask_for_segmentation(text)
+    assert len(masked) == len(text)
+    assert all(a == b for a, b in zip(masked, text) if a.isspace() or b.isspace())
+    assert not _CLAUSE_BREAK_RE.search(masked)
+    assert not _unwitnessed_measurement_shaped_figures(text)
 
 
 def test_a_citation_to_a_path_that_does_not_exist_is_convicted():
