@@ -4,8 +4,8 @@
   "depends_on": "PR #53 (squad/7-tile-matmulnbits-prefill) \u2014 the row tile under test",
   "environment": {
     "onnxruntime": "1.28.0",
-    "onnxruntime_lib": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan\\.venv\\Lib\\site-packages\\onnxruntime\\capi",
-    "ep_library": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-56\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+    "onnxruntime_lib": "<home>/.copilot/repos/onnxruntime-ep-vulkan/<venv>/Lib/site-packages/onnxruntime/capi",
+    "ep_library": "<repo>/rust/target/release/onnxruntime_vulkan_ep.dll",
     "ep_library_sha256": "586e9513cdbe4334c9d100792b589ccc96b465dcdd1cf85164be09b4d1fbb70d",
     "python": "3.12.10",
     "os": "Windows 11 10.0.26200",
@@ -35,7 +35,7 @@
       "tracing_during_timed_pass": false
     },
     "build": {
-      "lib": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-56\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "lib": "<repo>/rust/target/release/onnxruntime_vulkan_ep.dll",
       "present": true,
       "bytes": 2505728,
       "mtime": "2026-08-06T22:04:27",
@@ -48,7 +48,7 @@
       "model": {
         "key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
         "family": "phi3",
-        "path": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu-2\\v2\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+        "path": "<foundry-cache>/Microsoft/Phi-3.5-mini-instruct-cuda-gpu-2/v2/phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
         "sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
         "bytes": 26180848,
         "provenance": "foundry-resolved",
@@ -4498,7 +4498,7 @@
       "model": {
         "key": "mobilenetv2-12",
         "family": "cnn",
-        "path": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\models\\mobilenetv2-12.onnx",
+        "path": "<home>/.cache/onnxruntime-ep-vulkan/models/mobilenetv2-12.onnx",
         "sha256": "c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5",
         "bytes": 13964571,
         "provenance": "pinned-cache",

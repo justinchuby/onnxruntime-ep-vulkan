@@ -56,9 +56,23 @@ try:
 except _foundry_discovery.FoundryDiscoveryError as exc:
     raise SystemExit(f"ERROR(instrument): Phi-3.5 model not resolvable: {exc}")
 
-EP_LIB = pathlib.Path(
-    r"C:\Users\justinchu\dev\ep-vulkan-mouse\rust\target\release\onnxruntime_vulkan_ep.dll"
-)
+#: The EP under test. This used to be a hardcoded absolute path into one
+#: developer's checkout, which made the instrument unrunnable for everyone else
+#: and put an account name into committed source -- the same defect as #69, one
+#: file type away from where the evidence survey looks. `ONNXRUNTIME_VULKAN_EP_LIB`
+#: is the convention the rest of the harness already uses (`bench/exec_census.py`,
+#: `bench/bench.py`, `bench/README.md`), and reading it here is fail-loud in the
+#: sense this module's own header asks for: an unset variable stops the run with
+#: an instruction, rather than resolving to a path that happens to exist on one
+#: desk and silently attributing someone else's binary.
+_EP_LIB_ENV = "ONNXRUNTIME_VULKAN_EP_LIB"
+try:
+    EP_LIB = pathlib.Path(os.environ[_EP_LIB_ENV])
+except KeyError:
+    raise SystemExit(
+        f"ERROR(instrument): {_EP_LIB_ENV} is not set. Point it at the built EP, e.g.\n"
+        r'  $env:ONNXRUNTIME_VULKAN_EP_LIB = "rust\target\release\onnxruntime_vulkan_ep.dll"'
+    )
 
 
 # ---------------------------------------------------------------------------
