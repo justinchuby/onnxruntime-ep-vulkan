@@ -5,9 +5,11 @@
 //! Two censuses, not a taxonomy:
 //!
 //! * MobileNetV2-12, 2026-08-04: with `Conv` and `GlobalAveragePool` claimed, the single `Gemm`
-//!   at the tail is the last node in the model that carries data. It is also an *anchor* in
-//!   `ops::partition::is_anchor`, so a lone `Gemm` island is exempt from the minimum-node gate —
-//!   the row was already written into the partitioner's cost model before any kernel existed.
+//!   at the tail is the last node in the model that carries data. It is also an *anchor* under
+//!   `ops::partition::is_anchor` **when its `B` is a resident initializer**, which it is on that
+//!   export, so a lone `Gemm` island is exempt from the minimum-node gate — the row was already
+//!   written into the partitioner's cost model before any kernel existed. (Before issue #73 the
+//!   exemption keyed on the op *name* alone; it now additionally requires the weight.)
 //! * The registry had no `Gemm` at all, which is why every non-LLM model this project has looked
 //!   at ends on the CPU regardless of how much of its body the EP claims.
 //! * BERT-SQuAD-12, 2026-08-04: `MatMul` ×95 is the largest unregistered op on any censused
@@ -66,6 +68,26 @@
 //! * **f16** — the same packed-`uint` argument as `Gemm`.
 //! * **a `C` whose extents are symbolic** — the broadcast rule needs to know which of `C`'s axes
 //!   are 1, and an axis whose extent is unknown could be either.
+//!
+//! # A claimable `MatMul` is not automatically an anchor (issue #73)
+//!
+//! The two predicates are independent and are measured on different populations. This row claims
+//! a `MatMul` whose `B` is a fully-static rank 2; `ops::partition::is_anchor` additionally
+//! requires `B` to be a **resident initializer**. A node can satisfy the first and not the second.
+//!
+//! Such a node exists, and it is worth naming exactly rather than describing in aggregate.
+//! `bench/results/matmul_shape_space_bert.json` — subject `.scratch-models/bertsquad-12.onnx`,
+//! `op: "MatMul"`, `total: 98` — records **exactly one** node in the class
+//! `rank_b=2 … b_init=False`: the node literally named `MatMul`, `b = [768, 2]`,
+//! `"b_is_initializer": false`, the SQuAD start/end-logit projection. That single node is the
+//! witnessed population of claimable-but-not-anchoring `MatMul` on that artifact. It is not a
+//! regression: it still passes the kernel gate, and it now has to satisfy the size or economics
+//! gate like any other node instead of exempting its island by name.
+//!
+//! **Do not combine that count with the 95-node census cited above.** The two are different
+//! subjects: the shape-space artifact walks a 98-node `MatMul` population on the raw export, the
+//! 95-node figure is a separately optimized census of the same model. Adding, subtracting or
+//! ratioing across them would be arithmetic on two different graphs.
 //!
 //! # `transA`/`transB` are a blind axis, not a key component and not a selector
 //!
@@ -779,12 +801,19 @@ mod tests {
         assert!(spec.blind_axes.contains(&"transB"));
     }
 
-    /// `Gemm` is already an anchor in the partitioner, which is why a lone one at a model's tail
-    /// is claimable at all. If that ever changed, this row would go live and never be used.
+    /// `Gemm` is an anchor in the partitioner **when it carries its weight**, which is why a lone
+    /// one at a model's tail is claimable at all. If that ever changed, this row would go live and
+    /// never be used.
+    ///
+    /// The second half is the issue #73 property and is the reason this test is not a tautology:
+    /// the same op name with no resident `B` does *not* anchor.
     #[test]
-    fn gemm_is_a_partition_anchor() {
-        assert!(crate::ops::partition::is_anchor("Gemm"));
-        assert!(crate::ops::partition::is_anchor("MatMul"));
+    fn gemm_is_a_partition_anchor_when_it_carries_a_weight_and_not_otherwise() {
+        use crate::ops::partition::{WeightOperand, is_anchor};
+        assert!(is_anchor("Gemm", WeightOperand::Present));
+        assert!(is_anchor("MatMul", WeightOperand::Present));
+        assert!(!is_anchor("Gemm", WeightOperand::Absent));
+        assert!(!is_anchor("MatMul", WeightOperand::Absent));
     }
 
     // ---------------------------------------------------------------------------------------

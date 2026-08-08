@@ -263,9 +263,32 @@ impl Island {
     /// 2026-08-01, read out of `PartitionStats` in a trace this session (`bench/results/
     /// net_benefit_gate-trace-dev0.json`), not assumed.
     ///
-    /// `nodes` and `anchors` are counts from the CLAIM_LOG of the same run (355 claimed, of which
-    /// 161 `MatMulNBits` + 32 `GroupQueryAttention` are anchors). `flops` and the boundary total
-    /// are the estimator's own numbers.
+    /// `nodes` is the claimed-node count from the CLAIM_LOG of the same run (355 claimed).
+    /// `flops` and the boundary total are the estimator's own numbers.
+    ///
+    /// # `anchors` is a MODEL, not a measured field (issue #73)
+    ///
+    /// **No artifact in this repository carries an anchor count.**
+    /// `PartitionStats` has no anchor field, the trace cited above has none, and the `anchors`
+    /// key in `bench/results/island_counterfactual_bert*.json` is a *list of op names*, not a
+    /// count. Any number here is therefore a recomputation, and it is labelled as one.
+    ///
+    /// The value is derived, not read: `bench/results/_claim_log_phi35_r15_after.jsonl` records
+    /// one line per node with the artifact fields `op` and `claimed`, and **161** of the 355
+    /// claimed lines carry `op == "com.microsoft::MatMulNBits"`. Those 161 nodes anchor under the
+    /// shipped [`is_anchor`] without a fresh census, because `MatMulNBits` inputs 1 (`B`) and 2
+    /// (`scales`) are required and are initializers by the format's own definition
+    /// (`contrib_defs.cc:3672-3678`). `tests/ops/test_anchor_claims_are_witnessed.py` re-derives
+    /// the 161 from that artifact on every run, so this constant has a falsifier.
+    ///
+    /// **What was withdrawn.** This field previously read `193`, from a retired name-only
+    /// predicate: 161 `MatMulNBits` + 32 `GroupQueryAttention`. The `GroupQueryAttention` share is
+    /// withdrawn rather than restated — whether those 32 nodes present a resident weight depends
+    /// on whether that export folds `cos_cache`/`sin_cache` into initializers, and **no artifact
+    /// in this repository records per-input constancy**, so it is not established either way. 161
+    /// is what can be derived; the remainder was a name-only reading wearing a count's clothes.
+    ///
+    /// The gate's verdict is unaffected: [`evaluate`] branches on `anchors > 0`.
     ///
     /// The 2026-07-31 estimate of Phi-3.5's island boundary, **which counted internal edges**.
     ///
@@ -309,7 +332,8 @@ impl Island {
     /// harder to reach, not easier.
     pub const ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED: Island = Island {
         nodes: 355,
-        anchors: 193,
+        // MODEL, derived from claim-log op names — see the doc block above. Not a measured field.
+        anchors: 161,
         flops: 23_020_437_504,
         input_bytes: 0,
         output_bytes: 89_199_100_032,
@@ -318,13 +342,18 @@ impl Island {
 
     /// The same island as re-estimated on 2026-08-01 after internal edges stopped being counted.
     ///
-    /// Read out of the verbose `PartitionStats` summary on dev0 with the same model and the same
-    /// binary that produced the 355 → 0 claim census. The number that changed is the boundary;
-    /// nodes, anchors and FLOPs are unaffected because the fix touches only which outputs are
-    /// charged to the boundary.
+    /// The boundary bytes and FLOPs are read out of the verbose `PartitionStats` summary on dev0
+    /// with the same model and the same binary that produced the 355 → 0 claim census. The number
+    /// that changed is the boundary; nodes and FLOPs are unaffected because the fix touches only
+    /// which outputs are charged to the boundary.
+    ///
+    /// `anchors` is **not** among the fields `PartitionStats` reports — see the MODEL note on
+    /// [`Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED`]. It is carried here unchanged
+    /// because the internal-edge fix cannot alter it, not because it was re-read.
     pub const ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_FIXED: Island = Island {
         nodes: 355,
-        anchors: 193,
+        // MODEL, derived from claim-log op names — see the doc block above. Not a measured field.
+        anchors: 161,
         flops: 23_020_437_504,
         input_bytes: 0,
         output_bytes: 13_936_509_056,
@@ -339,7 +368,8 @@ impl Island {
     /// Upload 399,376 B + readback 457,344 B = 856,720 B, asymmetric with readback larger.
     pub const MEASURED_PHI35_DEV0_REAL_BYTES: Island = Island {
         nodes: 355,
-        anchors: 193,
+        // MODEL, derived from claim-log op names — see the doc block above. Not a measured field.
+        anchors: 161,
         flops: 23_020_437_504,
         input_bytes: TransferModel::MEASURED_PHI35_UPLOAD_BYTES,
         output_bytes: TransferModel::MEASURED_PHI35_READBACK_BYTES,
@@ -374,25 +404,211 @@ impl Island {
     }
 }
 
-/// Ops heavy enough that a single one of them justifies an island.
+/// Ops whose arithmetic is matmul-shaped — the §4 inventory's "L/XL, compute-bound" rows.
 ///
-/// A lone `Add` is never worth a round-trip; a single `MatMul` on LLM-sized weights always is.
-/// The list is the §4 inventory's "L/XL, compute-bound" rows.
-pub fn is_anchor(qualified_op: &str) -> bool {
-    matches!(
-        qualified_op,
-        "MatMul"
-            | "Gemm"
-            | "Conv"
-            | "ConvTranspose"
-            | "Attention"
-            | "com.microsoft::MatMulNBits"
-            | "com.microsoft::GroupQueryAttention"
-            | "com.microsoft::MultiHeadAttention"
-            | "com.microsoft::Attention"
-            | "com.microsoft::QMoE"
-            | "com.microsoft::LinearAttention"
-    )
+/// This is a statement about an op's *arithmetic*, and its only consumer is the FLOP estimate in
+/// [`crate::ep`]'s island builder. It is **not** the anchor predicate — see [`is_anchor`], which
+/// additionally requires that the node present a resident weight.
+///
+/// The set is **bit-identical** to the one matched by the predicate that used to be called
+/// `is_anchor` (issue #73); only its name and its consumer changed. The rename is the point: the
+/// old name asserted an economic conclusion — *worth a boundary on its own* — that the body never
+/// checked.
+///
+/// Held as a `const` slice rather than inlined into a `matches!` so that it has exactly one
+/// definition. `rust/tools/probe_island_counterfactual.py` parses this literal to build its own
+/// ranking set, and `tests/ops/test_probe_anchor_mirror.py` fails on any element present in one
+/// and not the other.
+pub const HEAVY_OP_FAMILIES: &[&str] = &[
+    "MatMul",
+    "Gemm",
+    "Conv",
+    "ConvTranspose",
+    "Attention",
+    "com.microsoft::MatMulNBits",
+    "com.microsoft::GroupQueryAttention",
+    "com.microsoft::MultiHeadAttention",
+    "com.microsoft::Attention",
+    "com.microsoft::QMoE",
+    "com.microsoft::LinearAttention",
+];
+
+/// Whether `qualified_op` is in [`HEAVY_OP_FAMILIES`]. See that constant for what this does and
+/// does not mean.
+pub fn is_heavy_op_family(qualified_op: &str) -> bool {
+    HEAVY_OP_FAMILIES.contains(&qualified_op)
+}
+
+/// Whether a node presents a **resident weight** at one of its family's designated weight sites.
+///
+/// "Resident" means a graph initializer: uploaded once at session build and reused by every
+/// inference, so its bytes are not charged to the per-inference boundary (`ep.rs` already excludes
+/// constant inputs from `Island::input_bytes` for exactly that reason). That residency is the
+/// whole economic warrant for the anchor exemption — a weight amortises the round trip across
+/// inferences; an activation does not.
+///
+/// # Two states, not three
+///
+/// An earlier draft of this fix carried a third `Unknown` state for "constancy could not be
+/// established". It was removed because **nothing in production could produce it**: the sole
+/// caller inspects body-graph nodes through `NodeView::input_is_constant`, which is total — it
+/// answers `false` for a missing slot, for a null slot, and for an ORT build without
+/// `ValueInfo_IsConstantInitializer`. A state that only tests can reach is a state whose
+/// behaviour is unwitnessed, and this module has been bitten by exactly that before.
+///
+/// The safety property that state was meant to carry is preserved by construction instead:
+/// [`Absent`](Self::Absent) is the answer for *every* case that is not a witnessed initializer at
+/// a designated site — including "could not ask" — and `Absent` does not anchor. The rule fails
+/// closed on ignorance without needing a name for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeightOperand {
+    /// A designated weight site holds a graph initializer, as witnessed at the body node.
+    Present,
+    /// No designated weight site was witnessed to hold a graph initializer.
+    ///
+    /// Covers all of: the family has no citable weight site at all; the optional weight input is
+    /// omitted; the input is present but is a runtime activation; the question could not be put
+    /// to ORT. Every one of those is the same economic fact — nothing here is amortised — and
+    /// every one of them fails closed at [`is_anchor`].
+    Absent,
+}
+
+/// The input indices at which a family's schema designates learned or persistent parameter data.
+///
+/// Anchor eligibility consults **only these sites**. Deriving them from the op schema rather than
+/// from "is any input constant?" is what makes the rule schema-aware rather than coincidental: a
+/// constant `attention_mask`, a constant `seqlens_k` or a folded shape tensor is a constant that
+/// is *not* a weight, and an anchor rule that counted it would re-admit the exemption by a side
+/// door.
+///
+/// # Provenance — SPECIFICATION
+///
+/// Contrib-op indices are read from ONNX Runtime **v1.28.0**, commit
+/// `da9b5e364c465de65c49d91e696cd6485270757f`, the exact revision pinned by
+/// `third_party/onnxruntime/PROVENANCE.md`, files
+/// `onnxruntime/core/graph/contrib_ops/bert_defs.cc` (attention family) and
+/// `onnxruntime/core/graph/contrib_ops/contrib_defs.cc` (`MatMulNBits`, `QMoE`).
+///
+/// | qualified op | designated site(s) | source |
+/// |---|---|---|
+/// | `MatMul` | 1 `B` | ONNX `MatMul`: `A`, `B` |
+/// | `Gemm` | 1 `B` | ONNX `Gemm`: `A`, `B`, optional `C`. `C` is a bias vector — too small to amortise a boundary, so deliberately **not** a site |
+/// | `Conv` / `ConvTranspose` | 1 `W` | ONNX: `X`, `W`, optional `B`. Bias excluded for the same reason |
+/// | `Attention` (default domain) | *none* | ONNX `Attention`-23 takes `Q`, `K`, `V` and optional mask/cache inputs — activations and caches throughout. No weight site to cite, so this family never anchors |
+/// | `com.microsoft::Attention` | 1 `weights` | `bert_defs.cc:529-532` — the **required** merged Q/K/V projection matrix. Input 2 `bias` is a bias vector, excluded as above |
+/// | `com.microsoft::MultiHeadAttention` | *none* | `bert_defs.cc:1126-1130` — its only parameter input is 3 `bias`, a bias vector; Q/K/V arrive pre-projected. Excluded on the same rule that excludes `Gemm`'s `C`, which leaves nothing |
+/// | `com.microsoft::GroupQueryAttention` | 7, 8, 12, 13, 14, 15 | `bert_defs.cc:1294-1335`; see [`GQA_SCHEMA_NOTE`] |
+/// | `com.microsoft::MatMulNBits` | 1 `B`, 2 `scales` | `contrib_defs.cc:3672-3678` — both **required**, and initializers by the format's own definition |
+/// | `com.microsoft::QMoE` | 2 `fc1_experts_weights`, 3 `fc1_scales`, 5 `fc2_experts_weights`, 6 `fc2_scales` | `contrib_defs.cc:1538-1562` |
+/// | `com.microsoft::LinearAttention` | *none* | `bert_defs.cc:2402-2431` — `query`/`key`/`value` are activations, `past_state` is a cache, and `decay` (4) and `beta` (5) are **not** learned parameters: the schema declares them with batch-and-time extents (`(B, T, H_kv * d_k)`, `(B, T, H_kv)`) and describes `beta` as a "sigmoid output". They are per-token gates. Nothing in the pinned schema designates a learned weight for this family |
+///
+/// An op outside [`is_heavy_op_family`] returns an empty slice, as does any family whose pinned
+/// schema designates no weight. Empty means **never anchors**, which is the fail-closed direction.
+///
+/// The rule applied throughout: a site is designated only where the pinned source shows a tensor
+/// whose extents do not carry a batch or sequence dimension. That is what separates a weight from
+/// an activation that happens to be constant-folded on some export.
+pub fn weight_sites(qualified_op: &str) -> &'static [usize] {
+    match qualified_op {
+        "MatMul" | "Gemm" | "Conv" | "ConvTranspose" => &[1],
+        "com.microsoft::Attention" => &[1],
+        "com.microsoft::GroupQueryAttention" => &[7, 8, 12, 13, 14, 15],
+        "com.microsoft::MatMulNBits" => &[1, 2],
+        "com.microsoft::QMoE" => &[2, 3, 5, 6],
+        // Families whose pinned schema designates no weight-bearing input:
+        //   `Attention` (ONNX)                     — activations and caches only
+        //   `com.microsoft::MultiHeadAttention`    — bias only, excluded as a bias vector
+        //   `com.microsoft::LinearAttention`       — `decay`/`beta` are B×T runtime gates
+        // and every op outside the heavy families.
+        _ => &[],
+    }
+}
+
+/// What the `GroupQueryAttention` schema actually says, recorded because a wrong version of it
+/// was asserted more than once in this issue's history.
+///
+/// SPECIFICATION, read from ONNX Runtime v1.28.0 (`da9b5e364c465de65c49d91e696cd6485270757f`),
+/// `onnxruntime/core/graph/contrib_ops/bert_defs.cc`,
+/// `ONNX_MS_OPERATOR_SET_SCHEMA(GroupQueryAttention, 1, ...)` at lines 1216-1335:
+///
+/// | idx | name | optionality | line |
+/// |---|---|---|---|
+/// | 0 | `query` | **required** | 1258 |
+/// | 1 | `key` | `OpSchema::Optional` | 1263-1267 |
+/// | 2 | `value` | `OpSchema::Optional` | 1268-1272 |
+/// | 3 | `past_key` | `OpSchema::Optional` | 1273-1278 |
+/// | 4 | `past_value` | `OpSchema::Optional` | 1279-1284 |
+/// | 5 | `seqlens_k` | **required** | 1285-1288 |
+/// | 6 | `total_sequence_length` | **required** | 1289-1293 |
+/// | 7 | `cos_cache` | `OpSchema::Optional` | 1294-1298 |
+/// | 8 | `sin_cache` | `OpSchema::Optional` | 1299-1303 |
+/// | 9 | `position_ids` | `OpSchema::Optional` | 1304-1309 |
+/// | 10 | `attention_bias` | `OpSchema::Optional` | 1310-1314 |
+/// | 11 | `head_sink` | `OpSchema::Optional` | 1315-1319 |
+/// | 12 | `k_scale` | `OpSchema::Optional` | 1320 |
+/// | 13 | `v_scale` | `OpSchema::Optional` | 1321 |
+/// | 14 | `q_norm_weight` | `OpSchema::Optional` | 1322-1330 |
+/// | 15 | `k_norm_weight` | `OpSchema::Optional` | 1331-1335 |
+///
+/// **Two things this corrects.** First, "GQA's schema minimum is seven inputs, all runtime
+/// tensors" is false in both halves: inputs 1-4 are `OpSchema::Optional`, so the required set is
+/// `{0, 5, 6}`, and a packed-QKV GQA omits `key`/`value` entirely. Second, GQA **does** have
+/// weight inputs — 14 `q_norm_weight` and 15 `k_norm_weight` are 1-D `(head_size)` learned
+/// RMS-norm parameters. Classifying the family as weightless was wrong on the schema, not merely
+/// unlucky on one model.
+///
+/// **What this does not establish.** Whether any *particular* GQA node presents a resident weight
+/// is a fact about that export, not about the schema, and this module asserts nothing about any
+/// model's GQA nodes. See [`Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED`].
+pub const GQA_SCHEMA_NOTE: &str = "ORT v1.28.0 bert_defs.cc:1216-1335 — GQA inputs 1-4 are \
+     OpSchema::Optional (the required set is {0 query, 5 seqlens_k, 6 total_sequence_length}); \
+     weight inputs 14 q_norm_weight and 15 k_norm_weight exist";
+
+/// Classify a node's weight operand from a per-site oracle.
+///
+/// `site` answers, for one input index, whether that input is present **and** is a resident graph
+/// initializer. It is deliberately total: there is no "don't know" reply, because the production
+/// accessor has none to give (see [`WeightOperand`]).
+///
+/// Shared by `ep.rs` and by the tests deliberately — a second copy of this reasoning at the call
+/// site is RAI-011 reappearing inside the fix for its own sibling.
+pub fn classify_weight_operand(
+    qualified_op: &str,
+    mut site_holds_initializer: impl FnMut(usize) -> bool,
+) -> WeightOperand {
+    for &i in weight_sites(qualified_op) {
+        if site_holds_initializer(i) {
+            return WeightOperand::Present;
+        }
+    }
+    WeightOperand::Absent
+}
+
+/// Whether one node is an *anchor* — heavy enough that a single one of it justifies an island.
+///
+/// A lone `Add` is never worth a round-trip; a single `MatMul` **on LLM-sized weights** always is.
+/// That second clause is the doc comment this predicate carried since it was written, and until
+/// issue #73 the body never tested it: matching the bare string `"MatMul"` exempted an attention
+/// block's batched Q·Kᵀ and P·V products — whose operands are both runtime activations — from the
+/// very economics gate they should have met.
+///
+/// Anchor status is therefore a property of the **node**, not of the op name:
+///
+/// ```text
+/// is_anchor(op, w)  ==  is_heavy_op_family(op) && w == WeightOperand::Present
+/// ```
+///
+/// [`WeightOperand::Absent`] fails closed: a node that does not anchor is not thereby rejected, it
+/// merely has to satisfy the size and economics gates like anything else. The failure mode of
+/// guessing wrong in that direction is a CPU fallback; the failure mode of guessing wrong in the
+/// other direction is a claim we cannot justify.
+///
+/// **Monotonicity.** `is_anchor(op, w) ⟹ is_heavy_op_family(op)` for every `(op, w)`, so the
+/// anchor set is a subset of the retired name-only set and this change can only move a verdict
+/// `Claim → Reject`, never `Reject → Claim`. Pinned end-to-end over constructed islands by
+/// `new_anchor_semantics_never_newly_claim_over_the_production_chain`.
+pub fn is_anchor(qualified_op: &str, weights: WeightOperand) -> bool {
+    is_heavy_op_family(qualified_op) && matches!(weights, WeightOperand::Present)
 }
 
 /// The thresholds the rule is expressed in.
@@ -528,8 +744,10 @@ impl Verdict {
 ///    case: a graph of unsupported ops sprinkled with lone `Add`s.
 /// 2. **Economics.** `compute_ns` must exceed `margin × transfer_ns`. This kills the subtler case:
 ///    a large island of cheap elementwise work whose tensors are bigger than its arithmetic.
-///    **Anchor-containing islands are exempt from gate 2**: an op in `is_anchor` is by definition
-///    heavy enough to justify a boundary on its own — that is the design invariant of `is_anchor`.
+///    **Anchor-containing islands are exempt from gate 2**: a node that satisfies [`is_anchor`]
+///    is heavy enough to justify a boundary on its own — that is the design invariant of
+///    [`is_anchor`], and since issue #73 the predicate actually tests it (heavy family **and** a
+///    resident weight) rather than asserting it from the op name.
 ///    The provisional `TransferModel` constants are calibrated against real model execution and
 ///    may not reflect isolated unit-test input sizes; applying the economic check to anchors
 ///    would reject them when tested in isolation, which contradicts the stated design intent
@@ -1044,14 +1262,380 @@ mod tests {
         assert!(TransferModel::fit(&[(1024, 5.0), (1024, 6.0)]).is_none());
     }
 
+    /// The heavy-family set is **exactly** the list the retired name-only `is_anchor` matched.
+    ///
+    /// Pinned by full equality, in order, against a literal transcribed from the base commit
+    /// (`85fbda2`, `rust/src/ops/partition.rs`). Adding or removing a name here changes the FLOP
+    /// estimate for every model, which is a separate decision from the anchor rule and must not
+    /// ride along with it.
     #[test]
-    fn anchors_are_the_heavy_ops_only() {
-        assert!(is_anchor("MatMul"));
-        assert!(is_anchor("Conv"));
-        assert!(is_anchor("com.microsoft::MatMulNBits"));
-        assert!(is_anchor("com.microsoft::GroupQueryAttention"));
-        assert!(!is_anchor("Add"));
-        assert!(!is_anchor("Reshape"));
+    fn heavy_op_family_is_the_old_anchor_list_unchanged() {
+        assert_eq!(
+            HEAVY_OP_FAMILIES,
+            &[
+                "MatMul",
+                "Gemm",
+                "Conv",
+                "ConvTranspose",
+                "Attention",
+                "com.microsoft::MatMulNBits",
+                "com.microsoft::GroupQueryAttention",
+                "com.microsoft::MultiHeadAttention",
+                "com.microsoft::Attention",
+                "com.microsoft::QMoE",
+                "com.microsoft::LinearAttention",
+            ]
+        );
+    }
+
+    /// Anchor status needs the heavy family **and** the weight. Neither alone.
+    ///
+    /// The `Absent` arm is the whole of issue #73: before this change every one of these names
+    /// anchored on sight, including an attention `QKᵀ` whose operands are both activations.
+    #[test]
+    fn anchors_are_heavy_ops_that_carry_a_weight_and_nothing_else() {
+        for &op in HEAVY_OP_FAMILIES {
+            assert!(
+                is_anchor(op, WeightOperand::Present),
+                "{op} with a resident weight must anchor"
+            );
+            assert!(
+                !is_anchor(op, WeightOperand::Absent),
+                "{op} without a resident weight must not anchor"
+            );
+        }
+        for op in [
+            "Add",
+            "Reshape",
+            "Softmax",
+            "com.microsoft::SkipLayerNormalization",
+        ] {
+            assert!(!is_anchor(op, WeightOperand::Present), "{op} is not heavy");
+            assert!(!is_anchor(op, WeightOperand::Absent), "{op} is not heavy");
+        }
+    }
+
+    /// The classifier consults **only** designated sites, so a constant somewhere else — a folded
+    /// shape tensor, a constant `attention_mask`, a baked `seqlens_k` — cannot buy anchor status.
+    ///
+    /// This is the side door that "is any input constant?" would have left open.
+    #[test]
+    fn a_constant_at_a_non_weight_site_does_not_confer_anchor_status() {
+        // `MatMul` designates only 1. Input 0 constant, input 1 not.
+        let w = classify_weight_operand("MatMul", |i| i == 0);
+        assert_eq!(w, WeightOperand::Absent);
+        assert!(!is_anchor("MatMul", w));
+
+        // GQA designates 7, 8, 12, 13, 14, 15. Constants at 5 `seqlens_k` and 6
+        // `total_sequence_length` — both required runtime tensors — must not qualify.
+        let w = classify_weight_operand("com.microsoft::GroupQueryAttention", |i| i == 5 || i == 6);
+        assert_eq!(w, WeightOperand::Absent);
+
+        // ...but a constant at 14 `q_norm_weight` alone does.
+        let w = classify_weight_operand("com.microsoft::GroupQueryAttention", |i| i == 14);
+        assert_eq!(w, WeightOperand::Present);
+    }
+
+    /// A family with no designated site can never reach `Present`, whatever the oracle says.
+    ///
+    /// This is the fail-closed direction stated as a property rather than a comment: an oracle
+    /// that answers `true` for *every* index still yields `Absent` for these families.
+    #[test]
+    fn a_family_with_no_designated_site_can_never_anchor() {
+        for op in [
+            "Attention",
+            "com.microsoft::MultiHeadAttention",
+            "com.microsoft::LinearAttention",
+        ] {
+            assert!(weight_sites(op).is_empty(), "{op} must designate no site");
+            assert_eq!(
+                classify_weight_operand(op, |_| true),
+                WeightOperand::Absent,
+                "{op} must stay Absent under a maximally permissive oracle"
+            );
+        }
+        // And for an op outside the heavy families entirely.
+        assert!(weight_sites("Add").is_empty());
+        assert_eq!(
+            classify_weight_operand("Add", |_| true),
+            WeightOperand::Absent
+        );
+    }
+
+    /// `LinearAttention`'s `decay` and `beta` are runtime gates, not learned weights.
+    ///
+    /// ORT v1.28.0 `bert_defs.cc:2402-2431` declares `decay` (input 4) as
+    /// `(B, T, H_kv * d_k)` or `(B, T, H_kv)` and `beta` (input 5) as `(B, T, H_kv)` or
+    /// `(B, T, 1)`, described as a "sigmoid output". Both carry batch **and** time extents, so
+    /// they are per-token activations; a constant one on some export is a folded activation, not
+    /// a parameter. Designating either would re-admit the exemption this issue closes.
+    ///
+    /// Mutation guard: making `weight_sites` return `&[4]` or `&[4, 5]` for this family turns
+    /// this test red.
+    #[test]
+    fn linear_attention_designates_no_weight_site() {
+        assert_eq!(
+            weight_sites("com.microsoft::LinearAttention"),
+            &[] as &[usize]
+        );
+        for i in 0..8 {
+            assert_eq!(
+                classify_weight_operand("com.microsoft::LinearAttention", |j| j == i),
+                WeightOperand::Absent,
+                "a constant at LinearAttention input {i} must not anchor"
+            );
+        }
+    }
+
+    /// GQA's designated sites are exactly the six the pinned schema shows as parameter data.
+    ///
+    /// Guards against both directions of the history: the family was once called weightless
+    /// (it is not — 14 `q_norm_weight` and 15 `k_norm_weight` are learned RMS-norm parameters),
+    /// and a nearby draft dropped 14/15. See [`GQA_SCHEMA_NOTE`].
+    #[test]
+    fn group_query_attention_weight_sites_follow_the_pinned_schema() {
+        assert_eq!(
+            weight_sites("com.microsoft::GroupQueryAttention"),
+            &[7usize, 8, 12, 13, 14, 15]
+        );
+        // The required inputs — {0 query, 5 seqlens_k, 6 total_sequence_length} — are never sites.
+        for required in [0usize, 5, 6] {
+            assert!(!weight_sites("com.microsoft::GroupQueryAttention").contains(&required));
+        }
+        // Packed-QKV GQA omits 1-4 entirely and has no weight anywhere: fails closed.
+        assert_eq!(
+            classify_weight_operand("com.microsoft::GroupQueryAttention", |_| false),
+            WeightOperand::Absent
+        );
+        assert!(GQA_SCHEMA_NOTE.contains("q_norm_weight"));
+    }
+
+    /// `MatMulNBits` anchors on its packed weight or its scales, both of which the schema makes
+    /// **required**, so a `MatMulNBits` node cannot exist without them.
+    #[test]
+    fn matmulnbits_anchors_on_its_required_packed_weight() {
+        assert_eq!(weight_sites("com.microsoft::MatMulNBits"), &[1usize, 2]);
+        assert_eq!(
+            classify_weight_operand("com.microsoft::MatMulNBits", |i| i == 1 || i == 2),
+            WeightOperand::Present
+        );
+        // Input 0 `A` is the activation and is not a site.
+        assert_eq!(
+            classify_weight_operand("com.microsoft::MatMulNBits", |i| i == 0),
+            WeightOperand::Absent
+        );
+    }
+
+    /// Build an island the way `ep.rs`'s island builder does, from `(qualified_op, weights)` pairs.
+    ///
+    /// This mirrors `crate::ep`: `anchors` counts [`is_anchor`], `flops` adds `2*3072*3072` per
+    /// [`is_heavy_op_family`] node and `out_bytes/2` otherwise. It exists so the monotonicity
+    /// property below is pinned over the *shipped chain* — construct islands, run the shipped
+    /// [`evaluate`] — rather than by comparing two predicates, which would be true by
+    /// construction and prove nothing about verdicts.
+    fn island_from_nodes(
+        nodes: &[(&str, WeightOperand)],
+        light_out_bytes: u64,
+        boundary_bytes: u64,
+    ) -> Island {
+        let mut island = Island {
+            nodes: nodes.len(),
+            output_bytes: boundary_bytes,
+            ..Default::default()
+        };
+        for &(op, w) in nodes {
+            if is_anchor(op, w) {
+                island.anchors += 1;
+            }
+            if is_heavy_op_family(op) {
+                island.flops = island.flops.saturating_add(2 * 3072 * 3072);
+            } else {
+                island.flops = island.flops.saturating_add(light_out_bytes / 2);
+            }
+        }
+        island
+    }
+
+    /// The same island under the retired name-only rule, for the counterfactual arm only.
+    fn island_from_nodes_name_only(
+        nodes: &[(&str, WeightOperand)],
+        light_out_bytes: u64,
+        boundary_bytes: u64,
+    ) -> Island {
+        let mut island = island_from_nodes(nodes, light_out_bytes, boundary_bytes);
+        island.anchors = nodes
+            .iter()
+            .filter(|(op, _)| is_heavy_op_family(op))
+            .count();
+        island
+    }
+
+    /// **The safety property.** Over the production chain, the new rule never claims an island the
+    /// retired name-only rule would have rejected.
+    ///
+    /// Swept over every heavy family × both weight states × several node counts × two transfer
+    /// models × three policies, and — critically — the sweep is required to contain at least one
+    /// **strict** `Claim → Reject` tightening. Without that guard the assertion would pass
+    /// vacuously on a grid where nothing changed, which is how a monotonicity test lies.
+    ///
+    /// Mutation guard: reverting `ep.rs`'s anchor count to the name-only predicate (i.e. making
+    /// `island_from_nodes` count `is_heavy_op_family`) drives `strict_tightenings` to 0 and this
+    /// test red.
+    #[test]
+    fn new_anchor_semantics_never_newly_claim_over_the_production_chain() {
+        let policies = [
+            Policy::default(),
+            Policy {
+                min_nodes: 1,
+                ..Policy::default()
+            },
+            Policy {
+                anchor_exemption: false,
+                ..Policy::default()
+            },
+        ];
+        let models = [TransferModel::UMA, TransferModel::DISCRETE];
+        let mut strict_tightenings = 0usize;
+        let mut evaluated = 0usize;
+
+        for &op in HEAVY_OP_FAMILIES {
+            for w in [WeightOperand::Present, WeightOperand::Absent] {
+                for n_light in [0usize, 1, 5] {
+                    let mut nodes = vec![(op, w)];
+                    for _ in 0..n_light {
+                        nodes.push(("Add", WeightOperand::Absent));
+                    }
+                    for &boundary in &[0u64, 4_096, 64 << 20] {
+                        for &policy in &policies {
+                            for &model in &models {
+                                let now = island_from_nodes(&nodes, 4_096, boundary);
+                                let before = island_from_nodes_name_only(&nodes, 4_096, boundary);
+                                assert_eq!(
+                                    now.flops, before.flops,
+                                    "FLOP estimate must be identical: {op:?} {nodes:?}"
+                                );
+                                let v_now = evaluate(&now, &model, &policy);
+                                let v_before = evaluate(&before, &model, &policy);
+                                evaluated += 1;
+                                if v_now.is_claim() {
+                                    assert!(
+                                        v_before.is_claim(),
+                                        "new rule newly claimed {op} w={w:?} light={n_light} \
+                                         boundary={boundary} policy={policy:?}: \
+                                         before={v_before:?} now={v_now:?}"
+                                    );
+                                } else if v_before.is_claim() {
+                                    strict_tightenings += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(evaluated > 0);
+        assert!(
+            strict_tightenings > 0,
+            "the sweep proved nothing: no island changed verdict, so the monotonicity \
+             assertion above was vacuous"
+        );
+    }
+
+    /// The size gate and the exemption gate are separate branches and are pinned separately.
+    ///
+    /// A weightless lone `MatMul` is rejected by gate 1 (`TooSmall`) at shipping defaults, because
+    /// `min_nodes = 4` is reached first and answers honestly — one node *is* too small. That is
+    /// not the economics gate declining to run; the economics gate is reached, and pinned, by the
+    /// next test. Naming the right gate matters: `decline_for` renders the reason to ORT.
+    #[test]
+    fn the_reject_gate_and_the_exemption_gate_are_pinned_separately() {
+        let model = TransferModel::DISCRETE;
+        let policy = Policy::default();
+
+        let weightless = island_from_nodes(&[("MatMul", WeightOperand::Absent)], 4_096, 8 << 20);
+        assert_eq!(weightless.anchors, 0);
+        assert!(matches!(
+            evaluate(&weightless, &model, &policy),
+            Verdict::Reject(RejectReason::TooSmall { nodes: 1, .. })
+        ));
+
+        let weighted = island_from_nodes(&[("MatMul", WeightOperand::Present)], 4_096, 8 << 20);
+        assert_eq!(weighted.anchors, 1);
+        assert_eq!(evaluate(&weighted, &model, &policy), Verdict::Claim);
+    }
+
+    /// When size cannot answer, economics does: a weightless heavy island is `TransferDominated`.
+    ///
+    /// Two routes to the same branch, so the verdict is not an artifact of one contrivance:
+    /// `min_nodes = 1` on the single-node island, and a six-node island at shipping defaults.
+    /// In both, the identical island *with* a weight is claimed, so the boundary is the weight and
+    /// not the size.
+    #[test]
+    fn the_economics_gate_rejects_a_weightless_cluster_when_size_cannot_answer() {
+        let model = TransferModel::DISCRETE;
+        let big_boundary = 512u64 << 20;
+
+        // Route 1: min_nodes = 1 removes gate 1 entirely.
+        let policy = Policy {
+            min_nodes: 1,
+            ..Policy::default()
+        };
+        let one = island_from_nodes(&[("MatMul", WeightOperand::Absent)], 4_096, big_boundary);
+        assert!(
+            matches!(
+                evaluate(&one, &model, &policy),
+                Verdict::Reject(RejectReason::TransferDominated { .. })
+            ),
+            "{:?}",
+            evaluate(&one, &model, &policy)
+        );
+        let one_weighted =
+            island_from_nodes(&[("MatMul", WeightOperand::Present)], 4_096, big_boundary);
+        assert_eq!(evaluate(&one_weighted, &model, &policy), Verdict::Claim);
+
+        // Route 2: shipping defaults, six nodes — gate 1 passes on size, gate 2 answers.
+        let policy = Policy::default();
+        let six: Vec<(&str, WeightOperand)> =
+            (0..6).map(|_| ("MatMul", WeightOperand::Absent)).collect();
+        let island = island_from_nodes(&six, 4_096, big_boundary);
+        assert!(island.nodes >= policy.min_nodes);
+        assert_eq!(island.anchors, 0);
+        assert!(
+            matches!(
+                evaluate(&island, &model, &policy),
+                Verdict::Reject(RejectReason::TransferDominated { .. })
+            ),
+            "{:?}",
+            evaluate(&island, &model, &policy)
+        );
+        let six_weighted: Vec<(&str, WeightOperand)> =
+            (0..6).map(|_| ("MatMul", WeightOperand::Present)).collect();
+        assert_eq!(
+            evaluate(
+                &island_from_nodes(&six_weighted, 4_096, big_boundary),
+                &model,
+                &policy
+            ),
+            Verdict::Claim
+        );
+    }
+
+    /// The new rejections render to ORT as ordinary partition declines, not as a new failure mode.
+    #[test]
+    fn the_new_rejections_render_as_partition_declines() {
+        let model = TransferModel::DISCRETE;
+        let policy = Policy::default();
+        let weightless = island_from_nodes(&[("MatMul", WeightOperand::Absent)], 4_096, 8 << 20);
+        let Verdict::Reject(reason) = evaluate(&weightless, &model, &policy) else {
+            panic!("expected a rejection");
+        };
+        let decline = decline_for(&reason);
+        assert_eq!(
+            DeclineCode::of_reason(&decline),
+            Some(DeclineCode::Partition)
+        );
+        assert!(decline.contains("no compute-heavy anchor"), "{decline}");
     }
 
     #[test]
@@ -1415,7 +1999,7 @@ mod tests {
         ] {
             let island = Island {
                 nodes: 355,
-                anchors: 193,
+                anchors: 161,
                 flops: 23_020_437_504,
                 input_bytes: 0,
                 output_bytes: bytes,
@@ -1493,7 +2077,7 @@ mod tests {
             (
                 Island {
                     nodes: 355,
-                    anchors: 193,
+                    anchors: 161,
                     flops: 23_020_437_504,
                     input_bytes: 0,
                     output_bytes: SUBSTITUTED * per_slot_bytes,
@@ -1501,7 +2085,7 @@ mod tests {
                 },
                 Island {
                     nodes: 355,
-                    anchors: 193,
+                    anchors: 161,
                     flops: 23_020_437_504,
                     input_bytes: 0,
                     output_bytes: real_extent * per_slot_bytes,

@@ -774,8 +774,11 @@ def _probe_vulkan_device() -> bool:
     """Return True if the registered Vulkan EP claims at least one node in a probe session.
 
     Uses a minimal MatMulNBits (com.microsoft, 4-bit, K=32 N=32) model: MatMulNBits is an
-    anchor op (partition::is_anchor), so it passes the partition economics gate regardless of
-    transfer cost — the anchor exemption unconditionally claims any island containing one.
+    anchor op (partition::is_anchor) **because the probe model supplies `B` (input 1) and
+    `scales` (input 2) as graph initializers**, which is what the anchor rule requires since
+    issue #73 — a heavy op family plus a resident weight at a schema-designated input. It
+    therefore passes the partition economics gate regardless of transfer cost — the anchor
+    exemption unconditionally claims any island containing one.
     Returns False if the EP is registered but advertises zero devices (no Vulkan ICD, or all
     devices fail the capability gate).
 

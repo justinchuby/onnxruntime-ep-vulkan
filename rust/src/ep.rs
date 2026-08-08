@@ -1281,8 +1281,24 @@ unsafe fn get_capability_impl(
             // SAFETY: api live; node is a live graph node.
             let view = unsafe { NodeView::new(api, node) };
             let qual = view.qualified_name();
-            if partition::is_anchor(&qual) {
+
+            // Anchor status: a heavy family **and** a resident weight at a schema-designated
+            // site (issue #73). The oracle is total — `NodeView::input_is_constant` answers
+            // `false` for a missing slot, a null slot, and an ORT build without
+            // `ValueInfo_IsConstantInitializer` — so an unanswerable question reads as
+            // `Absent`, which does not anchor. That is the fail-closed direction.
+            let weights = partition::classify_weight_operand(&qual, |i| {
+                view.has_input(i) && view.input_is_constant(i)
+            });
+            if partition::is_anchor(&qual, weights) {
                 island.anchors += 1;
+            }
+
+            // FLOP estimate is a statement about *arithmetic shape*, not about economics, so it
+            // keys on the heavy-family set and is unchanged by the anchor tightening above. The
+            // two used to be the same predicate; splitting them is what let the anchor rule get
+            // stricter without moving a single FLOP.
+            if partition::is_heavy_op_family(&qual) {
                 // Anchor flop estimate: 2 × K × N for a matmul-family op.
                 // Conservative minimum: 2 × 3072 × 3072 when shapes are unavailable.
                 island.flops = island.flops.saturating_add(2 * 3072 * 3072);

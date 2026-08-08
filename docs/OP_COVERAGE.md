@@ -1969,9 +1969,22 @@ remains 0.0 until Niobe wires VkQueryPool timestamps for calibration.
 
 **Guards against both failure modes (§7.0.2):**
 - *Over-declination* (gate declines everything): the anchor exemption —
-  `if island.anchors > 0 { return Verdict::Claim }` — ensures any island containing MatMulNBits
-  or GQA is always claimed. On Phi-3.5 (353 claimed, 1 island, 225 anchors), the gate never
-  declines. Falsifier: bench/phi35.py → 0 claimed nodes would indicate a broken anchor exemption.
+  `if island.anchors > 0 { return Verdict::Claim }` — ensures any island containing a
+  weight-bearing MatMulNBits or GQA node is always claimed. On Phi-3.5 (353 claimed, 1 island)
+  the gate never declines. Falsifier: bench/phi35.py → 0 claimed nodes would indicate a broken
+  anchor exemption.
+
+  **Correction 2026-08-08 (Morpheus, issue #73).** This bullet previously reported an anchor
+  count of **225** alongside "353 claimed, 1 island". *No artifact in this repository carries an
+  anchor count* — `PartitionStats` has no such field, and the `anchors` key in
+  `bench/results/island_counterfactual_bert*.json` is a list of op names, not a count. That
+  figure had no witness of any kind and is withdrawn rather than restated. What can be derived
+  is **161**: `bench/results/_claim_log_phi35_r15_after.jsonl` records 161 claimed
+  `com.microsoft::MatMulNBits` lines, and that op's inputs 1 `B` and 2 `scales` are required and
+  are initializers by the format's definition. That number is a **MODEL** — a recomputation over
+  artifact fields — not a measurement, and `tests/ops/test_anchor_claims_are_witnessed.py`
+  re-derives it on every run. Since issue #73 the anchor rule is a property of the node (heavy
+  family **and** a resident weight at a schema-designated input), not of the op name.
 - *Under-declination* (gate declines nothing): `test_partition_gate.py`. A non-anchor two-cluster
   model must produce `[partition]` codes. If it does not, the gate is inert. Falsifier: the test
   asserting `claims["Sigmoid"]["code"] == "partition"` goes red.
@@ -3450,11 +3463,20 @@ lands.
 #### (c) The EP's own estimator cannot answer this question, and the artifact shows why
 
 The last column of (a) is the split computed with `ep.rs`'s model reproduced exactly. **It is
-16.58% at every context and does not move at all.** 16.58% is `32 / 193` — the declined anchors
-over the total anchors. The estimator scores every anchor with the constant `2 * 3072 * 3072` and
-everything else with `out_bytes / 2` under a substituted dim, so **its FLOP number is the anchor
-count wearing a FLOP's clothes**, and it is blind to the one axis on which this model's cost
-actually varies.
+16.58% at every context and does not move at all.** 16.58% is `32 / 193` — the declined
+heavy-family nodes over the total heavy-family nodes on this graph. The estimator scores every
+node in a heavy op family with the constant `2 * 3072 * 3072` and everything else with
+`out_bytes / 2` under a substituted dim, so **its FLOP number is the heavy-node count wearing a
+FLOP's clothes**, and it is blind to the one axis on which this model's cost actually varies.
+
+> **Terminology, corrected 2026-08-08 (Morpheus, issue #73).** This paragraph said "anchors"
+> where it meant *heavy op families*. The two were the same predicate until issue #73 split
+> them: `ops::partition::HEAVY_OP_FAMILIES` drives the FLOP estimate (and is bit-identical to
+> what the old `is_anchor` matched, so **this ratio is unchanged**), while
+> `ops::partition::is_anchor` now additionally requires a resident weight and drives only the
+> economics exemption. `193` here is a recomputation over claim-log op names — a **MODEL**, and
+> a model of the heavy set, not of the anchor set. It is not an anchor count and no artifact in
+> this repository carries one.
 
 That is not a call to tighten it. Per R9 amendment 5, a verdict that moves with a constant nobody
 measured is a fabricated input, not an over-broad one. The estimator is adequate for the job it has
@@ -3527,7 +3549,7 @@ Written to `bench/results/roofline_split-prediction.md` before the tool ran.
 | 2 | CPU bytes under 5% at ctx=0 | **held** (0.07%) |
 | 3 | CPU bytes over 40% at ctx=8192 | **held, but I under-predicted** — 73.77% |
 | 4 | the node count (32.8%) predicts neither end | **held** — byte share crosses it between ctx 512 and 2048 |
-| 5 | the EP estimator is flat in ctx | **held** — 16.58% at every ctx, and it is `32/193` exactly |
+| 5 | the EP estimator is flat in ctx | **held** — 16.58% at every ctx, and it is `32/193` exactly (heavy-family nodes, not anchors — see (c)) |
 | 6 | fabricated extents contribute nothing | **held, after I fixed my own instrument** — see (f) |
 
 #### (h) Disagreement with the 60.5% KV figure, left standing

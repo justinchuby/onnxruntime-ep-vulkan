@@ -46,8 +46,10 @@ The baseline is per-node too: a node counts as claimable only if the log says *t
 claimed. The old baseline treated all 364 `Add` nodes as claimable when 182 were.
 
 Islands are connected components over the graph's data edges, restricted to claimable nodes.
-The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; `--anchors` mirrors its
-anchor exemption. Neither is the partitioner -- this is a *ranking* instrument, and it says so:
+The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; `--anchors` mirrors the
+*heavy-family half* of its anchor exemption and is therefore a **ceiling**: since issue #73 the
+shipped rule additionally requires a resident weight at a schema-designated input, which a claim
+log cannot witness. Neither is the partitioner -- this is a *ranking* instrument, and it says so:
 it reports island structure, and the partitioner's cost model is the thing that finally decides.
 The number to read is the **delta**, which is much more robust than either absolute.
 
@@ -65,10 +67,52 @@ import argparse
 import collections
 import json
 import pathlib
+import re
 
-# Mirrors `ops::partition::is_anchor` closely enough to rank with. Not authoritative; the
-# partitioner in the DLL is. Kept short and named so a reader can check it against that list.
-DEFAULT_ANCHORS = ("Conv", "Gemm", "MatMul", "MatMulNBits", "Attention", "GroupQueryAttention")
+def _heavy_op_families() -> tuple[str, ...]:
+    """Parse `HEAVY_OP_FAMILIES` out of `rust/src/ops/partition.rs`. Raise rather than guess.
+
+    The probe compares against ONNX `op_type` strings, which carry no domain, so the
+    domain-qualified Rust names are reduced to their bare op type here (`com.microsoft::X` -> `X`).
+    Both `Attention` entries collapse onto one name, which is correct for this comparison.
+
+    A hand-maintained copy of this list went stale: it was missing `ConvTranspose`,
+    `MultiHeadAttention`, `QMoE` and `LinearAttention`. Deriving it means the next addition to the
+    Rust list cannot silently fail to reach the ranking instrument.
+    """
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "ops" / "partition.rs"
+    text = src.read_text(encoding="utf-8")
+    marker = "pub const HEAVY_OP_FAMILIES: &[&str] = &["
+    start = text.find(marker)
+    if start < 0:
+        raise SystemExit(
+            f"{src}: could not find `{marker}`. This instrument mirrors that list and will not "
+            f"guess at it; fix the parser rather than reinstating a hand-maintained copy."
+        )
+    end = text.find("];", start)
+    if end < 0:
+        raise SystemExit(f"{src}: `HEAVY_OP_FAMILIES` is not terminated by `];`.")
+    names = re.findall(r'"([^"]+)"', text[start + len(marker) : end])
+    if not names:
+        raise SystemExit(f"{src}: `HEAVY_OP_FAMILIES` parsed as empty.")
+    bare = []
+    for n in names:
+        b = n.rsplit("::", 1)[-1]
+        if b not in bare:
+            bare.append(b)
+    return tuple(bare)
+
+
+# The ranking instrument's anchor set, derived from `ops::partition::HEAVY_OP_FAMILIES`.
+#
+# This is the **ceiling** on anchoring, not the partitioner's rule. Since issue #73 the shipped
+# `ops::partition::is_anchor` requires a heavy family *and* a resident weight at a
+# schema-designated input; a claim log carries op names, not per-input constancy, so this
+# instrument cannot evaluate the second half and does not pretend to. Every island it reports as
+# anchor-exempt is one the partitioner may still reject. Read the delta, not the absolute.
+#
+# `tests/ops/test_probe_anchor_mirror.py` fails on any divergence from the Rust list.
+DEFAULT_ANCHORS = _heavy_op_families()
 
 
 def islands(nodes, keepset: set[int], producer) -> list[list[str]]:

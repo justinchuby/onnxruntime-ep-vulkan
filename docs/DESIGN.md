@@ -1309,6 +1309,16 @@ accident and is not a discovered defect — **it is the design, working.** 3c wa
 cheap elementwise scatter whose tensors outweigh its arithmetic, and Phi-3.5's fused island is not
 that. The doc comment at `partition.rs:458` says so in as many words.
 
+> **SUPERSEDED IN PART by §5.4.2 (2026-08-08, issue #73).** The list quoted above is now
+> `partition::HEAVY_OP_FAMILIES` and is no longer the anchor set: `is_anchor` requires that
+> list **and** a resident weight at a schema-designated input. The observation that every
+> non-trivial transformer island contains one of these names survives and is still why 3c does
+> not decide our partition. What does not survive is the inference from the name to the
+> economics — item 1 below called an anchor-bearing island that should be declined "a future
+> exposure rather than a present one", and §5.4.2 shows it was neither: it was a present latent
+> defect in this file's own attention path. The line numbers in this subsection are as of
+> 2026-08-01 and no longer resolve.
+
 **So what is actually wrong is narrower, and I want it stated without inflation.** Three things:
 
 1. **The exemption is load-bearing for a question it was not designed to answer.** Its stated
@@ -1498,7 +1508,97 @@ the same `(kept, dropped)` pair, is what produces `largest_island_flops` for §1
 reporting — the rule and its metric live in one module deliberately, because their drifting apart is
 exactly how a coverage number becomes a lie.
 
-### 5.5 `Compile` — plan build and prepacking
+#### 5.4.2 The anchor exemption requires a weight, not a name — RULING (2026-08-08, issue #73, Morpheus)
+
+**The defect.** `is_anchor` matched a bare op name. Its doc comment said *"a single `MatMul` **on
+LLM-sized weights** always is"* worth a boundary, and the body tested only the first three words.
+An attention block's batched Q·Kᵀ and P·V products are `MatMul` nodes whose operands are **both
+runtime activations**: nothing about them is amortised across inferences, and they were exempted
+from the very economics gate that exists to catch that. Name–content disagreement, which is R11,
+at the predicate level.
+
+**The fix, stated as an equation.**
+
+```text
+is_anchor(op, w)  ==  is_heavy_op_family(op) && w == WeightOperand::Present
+```
+
+`HEAVY_OP_FAMILIES` is the retired predicate's list, **bit-identical and in the same order**, and
+it keeps the FLOP estimate it always drove — no model's FLOP number moves. `WeightOperand` is the
+new term: `Present` iff a **schema-designated** input holds a graph initializer at this node.
+
+**Why designated sites and not "is any input constant?"** A constant `attention_mask`, a baked
+`seqlens_k`, a constant-folded shape tensor are all constants that are not weights. A rule that
+counted them would re-admit the exemption through a side door and would be *coincidental* rather
+than *schema-aware*. The site table is transcribed from ONNX Runtime **v1.28.0**, commit
+`da9b5e364c465de65c49d91e696cd6485270757f` — the revision pinned by
+`third_party/onnxruntime/PROVENANCE.md` — and lives beside the code it governs, in
+`partition::weight_sites`. The rule for admitting a site: *the pinned source shows a tensor whose
+extents carry neither a batch nor a sequence dimension.* Bias vectors are excluded on economics
+(too small to amortise a boundary), which is why `Gemm`'s `C`, `Conv`'s `B`, and hence
+`MultiHeadAttention` — whose only parameter input **is** a bias — designate nothing.
+
+Two schema findings are worth recording because both contradict things asserted earlier in this
+issue's history:
+
+* **`GroupQueryAttention` is not weightless.** Inputs 14 `q_norm_weight` and 15 `k_norm_weight`
+  are 1-D `(head_size)` learned RMS-norm parameters (`bert_defs.cc:1322-1335`), alongside 7
+  `cos_cache`, 8 `sin_cache`, 12 `k_scale`, 13 `v_scale`. Nor is its required set seven inputs:
+  inputs 1-4 are `OpSchema::Optional`, so the minimum is `{0 query, 5 seqlens_k, 6
+  total_sequence_length}` and a packed-QKV GQA is legal — and fails closed, having no weight
+  anywhere.
+* **`LinearAttention`'s `decay` and `beta` are not learned parameters.** The schema declares them
+  `(B, T, H_kv * d_k)` / `(B, T, H_kv)` and describes `beta` as a "sigmoid output"
+  (`bert_defs.cc:2402-2431`). Batch-and-time extents make them per-token gates. The family
+  therefore designates **no** site and never anchors.
+
+**Two states, not three.** A draft carried an `Unknown` state for "constancy could not be
+established". It is removed. The production accessor `NodeView::input_is_constant` is total — it
+answers `false` for a missing slot, a null slot, and an ORT build without
+`ValueInfo_IsConstantInitializer` — so **nothing in production could ever produce `Unknown`**, and
+a state only tests can reach is a state whose behaviour is unwitnessed. The safety property it was
+meant to carry is preserved by construction: `Absent` is the answer for every case that is not a
+witnessed initializer at a designated site, *including "could not ask"*, and `Absent` does not
+anchor. The rule fails closed on ignorance without needing a name for it. **Prefer the simplest
+truthful fail-closed design over a state that exists to be asserted about.**
+
+**Monotonicity is the safety argument, and it is pinned over the production chain.**
+`is_anchor(op, w) ⟹ is_heavy_op_family(op)`, so the anchor set is a **subset** of the retired one
+and no verdict can move `Reject → Claim`. Comparing the two predicates would prove this by
+construction and would prove nothing about verdicts, so
+`new_anchor_semantics_never_newly_claim_over_the_production_chain` instead *constructs islands the
+way `ep.rs` does* — same anchor count, same FLOP arithmetic — sweeps every heavy family × both
+weight states × several node counts × two transfer models × three policies through the shipped
+`evaluate`, and requires at least one **strict** `Claim → Reject` tightening. Without that
+non-vacuity guard a monotonicity assertion passes on a grid where nothing changed, which is how
+this kind of test lies.
+
+**Gate ordering is unchanged, and the deviation from the issue's literal wording is deliberate.**
+The issue expects a weightless activation `MatMul` to be rejected `TransferDominated`. A *one-node*
+such island is rejected `TooSmall` at shipping defaults, because gate 1 (`min_nodes = 4`) is
+reached first — and that is the honest answer: one node **is** too small, and reordering the gates
+to produce the expected token would be fitting the mechanism to the report. `TransferDominated` is
+proven separately, by two routes that both reach gate 2: `min_nodes = 1`, and a six-node
+activation-only cluster at shipping defaults. In both, the identical island *with* a weight is
+claimed, so the boundary is the weight and not the size.
+
+**What this change is warranted by, and what it is not.** The warrant is a **latent defect plus
+monotonicity**: the predicate asserted something it did not check, and the fix can only ever
+decline more. It is **not** warranted by a census of affected models, and none is claimed. On
+MiniLM/BERT the attention Q·Kᵀ and P·V products are declined by `matmul.rs`'s kernel gate — rank
+≥ 3 `B` — *before* clustering, so they never reach the partitioner and this change does not affect
+them. The claimable-but-not-anchoring population that *is* witnessed is one node:
+`bench/results/matmul_shape_space_bert.json`, subject `bertsquad-12.onnx`, the SQuAD logit
+projection `MatMul` with `b = [768, 2]`, `b_is_initializer: false`. Phi-3.5 is preserved because
+its 161 `MatMulNBits` nodes carry required initializer inputs and its island is the sole island.
+
+**No measurement is claimed by this change.** No GPU run, no perf figure, no partition artifact is
+offered as evidence for it, and the anchor counts that appear in `Island` constants are labelled
+**MODEL** — recomputations over claim-log op names — because no artifact in this repository
+carries an anchor field at all. `PartitionStats` has none. The previously-carried `193` (and
+`OP_COVERAGE.md`'s `225`) were name-only recomputations documented as readings; both are
+withdrawn, and what replaces them is 161, derived in a test from artifact fields that exist.
+
 
 For each fused subgraph, in order:
 
