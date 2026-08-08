@@ -444,6 +444,20 @@ BENCH_INSTRUMENT_FILES = [
     # to keep, so it is screened rather than treated as capture.
     "ceiling.py",
     "clock_log.py",
+    # Arrived with the issue #69 CUDA competition harness. All four render a verdict about
+    # a measurement rather than record one, which is the line this list draws:
+    #   `cuda_competition.py`  -- ADMISSIBLE / SPLIT_FRAME / INSTRUMENT_ERROR per arm, plus
+    #                             the numeric-equivalence verdict across arms.
+    #   `cuda_profile.py`      -- GPU_TIME_MEASURED / GPU_TIME_UNAVAILABLE / TRACE_ABSENT,
+    #                             and refuses rather than sums when the phase tree disagrees.
+    #   `cuda_probe.py`        -- decides whether a node partition actually ran on the EP it
+    #                             names, which is a verdict about what was measured.
+    #   `bench_models.py`      -- MODEL_OK / MODEL_ABSENT / MODEL_DIGEST_MISMATCH. The digest
+    #                             mismatch is explicitly "a finding, not a re-pin".
+    "cuda_competition.py",
+    "cuda_profile.py",
+    "cuda_probe.py",
+    "bench_models.py",
     # Arrived with issue #56 (Niobe, the real-model harness). Screened rather than held
     # out because its `classify_*`/`bitwise_identical` functions decide whether two arms
     # of a benchmark agree, and `dispatch_diagnosis`/`fallback_diagnosis` decide whether a
@@ -529,6 +543,42 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_devices_identity.py": (
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."
+    ),
+    # Arrived with the issue #69 CUDA competition harness (2026-08-07, Tank). Declared by
+    # hand rather than left to drift, and each with the reason it is NOT an instrument.
+    "cuda_workloads.py": (
+        "workload table — data. It builds feeds and digests them so two arms can be shown "
+        "the same bytes; it renders no verdict about any measurement taken on them."
+    ),
+    "trace_vocabulary.py": (
+        "parser — reads the span vocabulary declared in rust/src/trace.rs so bench/ can be "
+        "checked against it instead of trusted. `prefix_collisions` reports a list; the "
+        "verdict that a collision is fatal is asserted by bench/test_trace_vocabulary.py "
+        "and by the Rust test `no_trace_name_is_a_prefix_of_another`, in both languages."
+    ),
+    "public_paths.py": (
+        "provenance sanitiser — it renders a verdict about a PAYLOAD (does this artifact "
+        "name a machine?), not about a measurement, which is the line this list draws. It "
+        "refuses by raising `PathLeak`; both polarities of every function it exports are "
+        "screened in bench/test_public_paths.py, including the `sanitise=False` path that "
+        "proves the refusal fires."
+    ),
+    "gen_public_path_legacy.py": (
+        "generator for the checked-in legacy ratchet bench/public_path_legacy.json — the "
+        "same relationship rust/tools/instrument_census.json's generator has to this file. "
+        "It surveys; the ratchet's verdict is asserted in bench/test_public_paths.py."
+    ),
+    "test_cuda_competition.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_cuda_profile.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_trace_vocabulary.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_public_paths.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries both "
+        "polarities of the provenance sanitiser and the repository-wide leak ratchet."
+    ),
+    "test_result_staleness.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries both "
+        "polarities of `cuda_competition.ep_provenance` and the screen that stops a "
+        "committed result outliving the EP build it measured."
     ),
 }
 
@@ -618,8 +668,13 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
 # actually varies the thing under test.  That is earned by mutation —
 # `bench/test_devices_identity.py` for this instrument, `tests/ops/test_guard_d.py` for
 # the harness domain — and it is not claimed by this screen.
-VALUE_REJECT_FN = frozenset({"refuses"})
-VALUE_ACCEPT_FN = frozenset({"selects"})
+# A verdict gate is total in a second shape: it takes a record and returns the same record
+# with its green verdict either withheld or left standing, because the refusal has to travel
+# with the numbers it disqualifies.  `withholds(...)`/`publishes(...)` name those polarities
+# and enforce them at run time exactly as `refuses`/`selects` do — a gate wired to nothing
+# cannot pass `withholds`, and a gate that fires on everything cannot pass `publishes`.
+VALUE_REJECT_FN = frozenset({"refuses", "withholds", "omits"})
+VALUE_ACCEPT_FN = frozenset({"selects", "publishes", "records"})
 
 
 def _polarity_wrapped(fn, wrapper_names: "frozenset[str]") -> "set[int]":
