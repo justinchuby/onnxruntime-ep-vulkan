@@ -47,17 +47,44 @@
 //!
 //! # The span vocabulary
 //!
+//! This table is **load-bearing**: `bench/phases.py` and `bench/cuda_profile.py` cite it as the
+//! declaration of what the artifact contains, and `bench/trace_vocabulary.py` parses this module
+//! so a phase that exists here and not there (or the reverse) is a test failure rather than a
+//! silently dropped row. A span added to this module and not to this table is a defect.
+//!
+//! **Structural spans** (`cat == "ep"`) bracket regions. They are never summed, never enter a
+//! sibling total, and are not [`Phase`]s:
+//!
 //! | Span | cat | Clock | What it means |
 //! |---|---|---|---|
-//! | `vulkan.subgraph` | `ep` | host | One fused subgraph's whole `Compute` call. |
+//! | `vulkan.compute_call` | `ep` | host | The instrumented success-path region opened inside `compute_impl`; absent when a call early-outs before `compute_impl` runs. Buckets every EP span emitted on that path — not all of ORT's `Compute` entry. Contains `vulkan.subgraph`. |
+//! | `vulkan.subgraph` | `ep` | host | One fused subgraph's dispatch region, opened inside `dispatch_ort`. |
+//!
+//! **Phases** (`cat == "ep.phase"`) are the summable vocabulary; each carries `nested_in`:
+//!
+//! | Span | cat | Clock | What it means |
+//! |---|---|---|---|
 //! | `vulkan.compile` | `ep.phase` | host | `Compile`: plan build, pipeline/SPIR-V creation, descriptor layout. Once per subgraph. |
 //! | `vulkan.prepack` | `ep.phase` | host | Weight prepack + upload of block-quantised initializers. Once per `PackKey`. |
 //! | `vulkan.record` | `ep.phase` | host | The `Compute` recording bracket. **Despite the name, dominated by the staging upload it contains (~96-98% on Phi-3.5), not by command recording (1-3%).** See `Phase::Record::caveat`. |
-//! | `vulkan.upload` | `ep.phase` | host | Host→device staging copy of inference inputs. Carries `bytes`. |
+//! | `vulkan.upload` | `ep.phase` | host | Host→device staging copy of inference inputs. Carries `bytes`. **Nested in `record`.** |
+//! | `vulkan.cmd_upload` | `ep.phase` | host | The command-buffer-side bracket around the same memcpy as `upload`. **Nested in `record`; overlaps `upload` — take the larger, never the sum.** |
+//! | `vulkan.desc_alloc` | `ep.phase` | host | Descriptor-set allocation, once per dispatch while recording. **Nested in `record`.** |
+//! | `vulkan.pipeline_lookup` | `ep.phase` | host | Pipeline cache lookup, once per dispatch while recording. **Nested in `record`.** |
 //! | `vulkan.submit` | `ep.phase` | host | **`vkQueueSubmit` only.** Host bookkeeping. Measures no GPU work. |
 //! | `vulkan.fence_wait` | `ep.phase` | host | CPU blocked on the fence. Upper bound on GPU time, not GPU time. |
-//! | `vulkan.readback` | `ep.phase` | host | Device→host copy of outputs. Carries `bytes`. |
-//! | `vulkan.gpu.*` | `gpu` | **device** | GPU execution, from `VkQueryPool` timestamp queries only. Emitted on a separate device lane. |
+//! | `vulkan.readback` | `ep.phase` | host | Device→host copy of outputs. Carries `bytes`. **Nested in `record`.** |
+//!
+//! **Other events:**
+//!
+//! | Event | cat | ph | What it means |
+//! |---|---|---|---|
+//! | `vulkan.gpu.*` | `gpu` | `X` | GPU execution, from `VkQueryPool` timestamp queries only. Emitted on a separate device lane. |
+//! | `vulkan.path[FIRST_RECORD\|REPLAY\|RERECORD]` | `ep.path` | `i` | Instant: did this call reuse the command buffer? Carries `path`, `nodes`, `subgraph`, `shape_key`. |
+//! | `vulkan.transfer_bytes`, `vulkan.transfer_gib_s` | `counter` | `C` | Explicit host↔device transfer volume and rate. |
+//! | `vulkan.island_count`, `vulkan.largest_island_flops`, `vulkan.concentration`, `vulkan.boundary_bytes` | `counter` | `C` | Partition shape, once per session. |
+//! | `vulkan.getcapability` | `ep.claim` | `i` | What the EP claimed at partitioning time. |
+//! | `vulkan.session_summary` | `summary` | `i` | End-of-session fold. |
 //!
 //! # GPU timing
 //!
@@ -125,6 +152,34 @@ pub const ARG_BYTES: &str = "bytes";
 pub const ARG_FLOPS: &str = "flops";
 /// Trace arg key: selected shader variant.
 pub const ARG_VARIANT: &str = "kernel_variant";
+
+// --- Structural span names ------------------------------------------------------------------
+//
+// These are `cat == "ep"` *structural* spans, not [`Phase`]s. They bracket regions; they are
+// never summed into a sibling total and they are not part of the phase tree. They are named as
+// constants because three Python modules match on these strings and a name that is a prefix of
+// another name is a defect, not a style question:
+//
+// `record_path()` emits **instants** whose names used to be `vulkan.compute[REPLAY]` and friends.
+// Every subgraph matcher in `bench/` matched with `startswith`, so a compute-call bracket span
+// named `vulkan.compute` would have been captured by the same matcher as those instants and the
+// reduction would have silently mixed a span vocabulary with an instant vocabulary. The instants
+// are now `vulkan.path[...]`. `vulkan.record_path[...]` was tried first and rejected by
+// `no_trace_name_is_a_prefix_of_another`, because `vulkan.record` is a phase and prefixes it —
+// which is the point of having the invariant as a test rather than as a naming habit.
+
+/// The instrumented success-path region inside `compute_impl` — **not** ORT's literal `Compute`
+/// entry, which additionally covers the null check, `this_info`, the `guard_ffi_status` wrapper
+/// and `disclose_broken_commitment`. See [`VulkanTracer::compute_region`].
+pub const SPAN_COMPUTE_CALL: &str = "vulkan.compute_call";
+/// One fused subgraph's dispatch region, opened inside `dispatch_ort`. See
+/// [`VulkanTracer::subgraph_region`].
+pub const SPAN_SUBGRAPH: &str = "vulkan.subgraph";
+/// Name prefix of the `cat == "ep.path"` **instants** emitted by
+/// [`VulkanTracer::record_path`] — `vulkan.path[FIRST_RECORD|REPLAY|RERECORD]`.
+///
+/// Deliberately shares no prefix with [`SPAN_COMPUTE_CALL`] or [`SPAN_SUBGRAPH`].
+pub const INSTANT_RECORD_PATH: &str = "vulkan.path";
 
 /// The `device` arg value for host-side spans. Deliberately not `"gpu"`: a host span that claims
 /// to be GPU work is how a trace starts lying.
@@ -791,21 +846,65 @@ impl VulkanTracer {
 
     // --- Execution view ----------------------------------------------------------------
 
-    /// Span around one fused subgraph's whole `Compute` call.
+    /// Span around one fused subgraph's dispatch region, opened inside `dispatch_ort`.
     ///
-    /// Host wall time. On a Vulkan EP this covers upload, record-or-replay, submit, fence wait
-    /// and readback — i.e. it is the end-to-end latency of the subgraph *as the caller
-    /// experiences it*, which is the number a user pays, and which is deliberately not called
-    /// "GPU time" anywhere.
+    /// Host wall time bounding this subgraph's upload, record-or-replay, submit, fence wait and
+    /// readback. Entry-side work in `compute`/`compute_impl` that runs *before* `dispatch_ort`
+    /// is called, and anything the callback does *after* `dispatch_ort` returns (including a
+    /// benchmark harness's own instrumentation), lies outside this span — the wider bracket that
+    /// contains both sides is [`compute_region`](Self::compute_region). It is deliberately not
+    /// called "GPU time" anywhere.
     pub fn subgraph_region(&self, node_count: usize) -> SpanGuard {
         if !self.is_enabled() {
-            return self.ctx.span("vulkan.subgraph", "ep");
+            return self.ctx.span(SPAN_SUBGRAPH, "ep");
         }
-        self.ctx.span("vulkan.subgraph", "ep").with_args(
+        self.ctx.span(SPAN_SUBGRAPH, "ep").with_args(
             Args::new()
                 .with("nodes", node_count as u64)
                 .with(ARG_DEVICE, DEVICE_HOST),
         )
+    }
+
+    /// Span around the instrumented success path of the `Compute` callback.
+    ///
+    /// It is **not** ORT's literal `Compute` entry: `compute` does the null check, resolves
+    /// `this_info`, and calls `compute_impl` through `guard_ffi_status`; this span opens inside
+    /// `compute_impl` and closes before `disclose_broken_commitment` runs. So the FFI guard, the
+    /// null check and the post-call disclosure are outside it, and a call that early-outs before
+    /// `compute_impl` emits no span at all. Read it as *the widest bracket the EP instruments on
+    /// the success path*, not as the callback's true wall time.
+    ///
+    /// [`subgraph_region`](Self::subgraph_region) opens inside `dispatch_ort`, deeper still, so it
+    /// cannot see anything the instrumented region does on either side of that call. Measured on
+    /// Phi-3.5 `prefill_1`, the two spans differed by a large term, nearly all of it landing
+    /// *after* `vulkan.subgraph` closed rather than before it.
+    ///
+    /// That term was **not the EP**. Re-measured on the same workload with the benchmark
+    /// harness's counters-file dump moved out of the timed region, it collapses to a small
+    /// fraction of a millisecond. No magnitude is quoted here: this branch carries the
+    /// instrument and none of its output, so there is no committed artifact to cite, and
+    /// `bench/test_cuda_profile.py`'s citation pin reads the figure out of the committed
+    /// profile wherever one exists. The dump ran on every
+    /// timed inference, from `counters::record_dispatches` after `dispatch_ort` returns — which
+    /// is the side the region was on. The span is kept because that is the finding: without an
+    /// outer bracket the harness's own cost was inside the EP's numbers and nothing could see it.
+    ///
+    /// This span is **structural, not a [`Phase`]**: it is `cat == "ep"` like `vulkan.subgraph`,
+    /// it is never summed into any sibling total, and it adds no level to the phase tree. It
+    /// exists so a reduction has an anchor *outside* `dispatch_ort` — one bracket wider than
+    /// `vulkan.subgraph`, and still strictly inside the instrumented success path that opens in
+    /// `compute_impl` — and can therefore measure how much time inside that instrumented region
+    /// no phase covers, instead of charging that time to whatever span it can see. The anchor is
+    /// not ORT's literal `Compute` extern callback and not its entry-to-return wall: work before
+    /// `compute_impl` opens the span, work after `disclose_broken_commitment`, and every call
+    /// that early-outs before `compute_impl` are all outside what this anchor can measure, so the
+    /// uncovered time it reports is uncovered time *within the instrumented region only*.
+    ///
+    /// It does not by itself explain the region it exposes. What is measured is the size and the
+    /// side of the region; naming its cause needs a separate instrument, and
+    /// `bench/cuda_profile.py` reports it as `outside_subgraph_us` — measured and unattributed.
+    pub fn compute_region(&self) -> SpanGuard {
+        self.ctx.span(SPAN_COMPUTE_CALL, "ep")
     }
 
     /// Start a timing phase: a span plus a summary fold on drop. `None` (zero cost) when nothing
@@ -906,7 +1005,7 @@ impl VulkanTracer {
                 args = args.with("shape_key", shape_key.to_string());
             }
             self.ctx.instant(
-                format!("vulkan.compute[{}]", resolved.as_str()),
+                format!("{}[{}]", INSTANT_RECORD_PATH, resolved.as_str()),
                 "ep.path",
                 Some(args),
             );
@@ -1834,6 +1933,297 @@ mod tests {
             );
         }
         assert_eq!(Phase::FenceWait.as_str(), "fence_wait");
+    }
+
+    /// No structural span name may be a prefix of another trace name.
+    ///
+    /// Every subgraph matcher in `bench/` matched with `startswith`. A compute-call bracket span
+    /// named `vulkan.compute` was therefore captured by the same matcher as the `record_path()`
+    /// instants
+    /// `vulkan.compute[REPLAY]` — separable only by `cat`/`ph`, which the matchers did not read.
+    /// The two vocabularies would have been mixed inside one reduction with nothing raising.
+    ///
+    /// This is the falsifier for the whole class, not for that one pair: it fails if any future
+    /// span, phase or instant name is a prefix of any other.
+    #[test]
+    fn no_trace_name_is_a_prefix_of_another() {
+        let mut names: Vec<String> = vec![
+            SPAN_COMPUTE_CALL.to_string(),
+            SPAN_SUBGRAPH.to_string(),
+            format!("{INSTANT_RECORD_PATH}["),
+            "vulkan.gpu.".to_string(),
+        ];
+        names.extend(Phase::ALL.iter().map(|p| format!("vulkan.{}", p.as_str())));
+        for a in &names {
+            for b in &names {
+                if std::ptr::eq(a, b) {
+                    continue;
+                }
+                assert!(
+                    !(a != b && b.starts_with(a.as_str())),
+                    "{b:?} starts with {a:?}; a prefix matcher cannot tell them apart"
+                );
+            }
+        }
+    }
+
+    /// The span-vocabulary table in this module's header must list every name the module emits.
+    ///
+    /// `bench/phases.py` cites that table as "the artifact declares its own structure" and
+    /// `bench/trace_vocabulary.py` parses it. A span added to the code and not to the table is a
+    /// module of record that cannot see the phase — which is exactly how a phase reached a
+    /// committed profile that no consumer could read.
+    #[test]
+    fn every_emitted_span_name_appears_in_the_header_vocabulary_table() {
+        let header = include_str!("trace.rs");
+        let header = &header[..header
+            .find("use std::cell::Cell;")
+            .expect("header ends at `use`")];
+        for name in [SPAN_COMPUTE_CALL, SPAN_SUBGRAPH, INSTANT_RECORD_PATH] {
+            assert!(
+                header.contains(name),
+                "{name} is emitted but not declared in the span vocabulary table"
+            );
+        }
+        for p in Phase::ALL {
+            let name = format!("vulkan.{}", p.as_str());
+            assert!(
+                header.contains(&name),
+                "{name} is emitted but not declared in the span vocabulary table"
+            );
+        }
+    }
+
+    /// The vocabulary table's row for `vulkan.compute_call` must describe the instrumented
+    /// success-path region inside `compute_impl`, never ORT's literal whole `Compute` callback.
+    ///
+    /// This row regressed to "The **whole** `Compute` callback, ORT entry to return" once, which
+    /// contradicts [`SPAN_COMPUTE_CALL`]'s own doc comment a few lines below it in this same
+    /// file, contradicts [`VulkanTracer::compute_region`]'s doc, and is exactly the wording
+    /// `bench/cuda_profile.py`, `bench/phases.py` and `bench/trace_vocabulary.py` were separately
+    /// corrected away from. This is the falsifier for that regression: it reads the row out of
+    /// this file's own header table and fails if the contradictory wording reappears.
+    #[test]
+    fn compute_call_vocabulary_row_does_not_claim_the_literal_whole_callback() {
+        let header = include_str!("trace.rs");
+        let header = &header[..header
+            .find("use std::cell::Cell;")
+            .expect("header ends at `use`")];
+        let row_start = header
+            .find("| `vulkan.compute_call` |")
+            .expect("the vocabulary table must have a vulkan.compute_call row");
+        let row_end = row_start
+            + header[row_start..]
+                .find('\n')
+                .unwrap_or(header.len() - row_start);
+        let row = &header[row_start..row_end];
+        for banned in ["**whole**", "ORT entry to return"] {
+            assert!(
+                !row.contains(banned),
+                "the vulkan.compute_call vocabulary row reintroduced literal-whole-callback \
+                 wording: {banned:?}. It is the instrumented success-path region inside \
+                 compute_impl, absent on early-outs before it — not ORT's literal Compute entry."
+            );
+        }
+        assert!(
+            row.contains("compute_impl") && row.contains("absent"),
+            "the vulkan.compute_call row must state it opens inside compute_impl and is absent \
+             on early-outs before it"
+        );
+    }
+
+    /// `subgraph_region`'s doc must describe the `dispatch_ort` dispatch bracket for one
+    /// subgraph, never the whole `Compute` callback or the caller's end-to-end latency.
+    ///
+    /// The doc regressed to exactly that once: it called the span "one fused subgraph's whole
+    /// `Compute` call" and "the end-to-end latency of the subgraph *as the caller experiences
+    /// it*, which is the number a user pays" — that is `compute_region`'s territory, not
+    /// `subgraph_region`'s, and it contradicts this module's own vocabulary table, which already
+    /// (correctly) describes `vulkan.subgraph` as "opened inside `dispatch_ort`". This is the
+    /// falsifier for that regression: it reads the doc comment immediately above
+    /// `pub fn subgraph_region` out of this file's own source and fails if the contradictory
+    /// wording reappears.
+    #[test]
+    fn subgraph_region_doc_never_claims_the_whole_compute_call() {
+        let src = include_str!("trace.rs");
+        let fn_pos = src
+            .find("pub fn subgraph_region(")
+            .expect("subgraph_region must exist");
+        let section_start = src
+            .find("// --- Execution view")
+            .expect("the execution-view section marker must exist");
+        assert!(
+            section_start < fn_pos,
+            "the section marker must precede subgraph_region"
+        );
+        let doc = &src[section_start..fn_pos];
+        for banned in [
+            "whole `Compute` call",
+            "whole `Compute`",
+            "end-to-end latency",
+            "the number a user pays",
+        ] {
+            assert!(
+                !doc.contains(banned),
+                "subgraph_region's doc reintroduced whole-Compute wording: {banned:?}. \
+                 subgraph_region is the dispatch_ort dispatch bracket for one subgraph, not the \
+                 wider compute-call bracket -- that is compute_region, which is itself the \
+                 instrumented success-path region inside compute_impl and not ORT's literal \
+                 Compute callback either."
+            );
+        }
+        assert!(
+            doc.contains("dispatch_ort"),
+            "subgraph_region's doc must describe it as the dispatch region opened inside \
+             dispatch_ort"
+        );
+    }
+
+    /// The full doc comment above `pub fn compute_region`, extracted from this file's own source.
+    ///
+    /// The header vocabulary row is guarded separately by
+    /// [`compute_call_vocabulary_row_does_not_claim_the_literal_whole_callback`], but a row guard
+    /// is not sufficient: the row and the doc sit in different parts of this file and the doc is
+    /// what a reader of
+    /// the API sees. This reads every `///` line immediately preceding the function so a claim
+    /// reintroduced anywhere in the doc -- not just in its first paragraph -- is in scope.
+    fn compute_region_doc() -> String {
+        let src = include_str!("trace.rs");
+        let fn_pos = src
+            .find("pub fn compute_region(")
+            .expect("compute_region must exist");
+        let mut doc: Vec<&str> = Vec::new();
+        for line in src[..fn_pos].lines().rev() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("///") {
+                doc.push(trimmed);
+            } else if trimmed.is_empty() && doc.is_empty() {
+                continue;
+            } else {
+                break;
+            }
+        }
+        assert!(
+            doc.len() > 10,
+            "compute_region's doc comment did not extract; the guard would pass vacuously"
+        );
+        doc.reverse();
+        doc.join("\n")
+    }
+
+    /// Affirmative literal-whole-callback claims. Negations ("not the callback's true wall time")
+    /// are the correct wording and are deliberately not matched.
+    const WHOLE_CALLBACK_CLAIMS: [&str; 6] = [
+        "*whole* callback",
+        "whole callback",
+        "whole `Compute`",
+        "entire callback",
+        "entire `Compute`",
+        "ORT entry to return",
+    ];
+
+    fn whole_callback_offences(doc: &str) -> Vec<&'static str> {
+        WHOLE_CALLBACK_CLAIMS
+            .iter()
+            .copied()
+            .filter(|banned| doc.contains(banned))
+            .collect()
+    }
+
+    /// `compute_region`'s **whole doc comment** must describe an anchor outside `dispatch_ort` that
+    /// measures uncovered time within the instrumented region -- never the literal whole callback.
+    ///
+    /// The doc said the span "brackets the *whole* callback" and that the reduction could state
+    /// "how much of it no phase covers". Both halves were wrong in the same way: the anchor opens
+    /// inside `compute_impl`, closes before `disclose_broken_commitment`, and is absent entirely on
+    /// an early-out, so what it can measure is uncovered time *within the instrumented region*, not
+    /// within ORT's `Compute` callback. Guarding only the header vocabulary row left this
+    /// contradiction live in the doc a reader of the API actually reads, which is why this test
+    /// scans the doc comment in full.
+    #[test]
+    fn compute_region_doc_never_claims_the_literal_whole_callback() {
+        let doc = compute_region_doc();
+        let offences = whole_callback_offences(&doc);
+        assert!(
+            offences.is_empty(),
+            "compute_region's doc reintroduced literal-whole-callback wording: {offences:?}. \
+             The span is the instrumented success-path bracket opened inside compute_impl and \
+             absent on early-outs -- an anchor outside dispatch_ort that measures how much time \
+             inside that instrumented region no phase covers. It is never the literal extern \
+             Compute callback and never ORT's entry-to-return wall."
+        );
+        for required in ["compute_impl", "dispatch_ort", "outside", "early-out"] {
+            assert!(
+                doc.contains(required),
+                "compute_region's doc must still say it is an anchor outside `dispatch_ort`, \
+                 opened inside `compute_impl`, absent on early-outs; missing: {required:?}"
+            );
+        }
+    }
+
+    /// The negative control for the test above: restoring the rejected wording must turn it red.
+    ///
+    /// A guard that reads a doc comment is only worth its line count if it fails when the claim
+    /// comes back. This mutates the real doc the same way the regression did -- and also deletes
+    /// the corrected framing -- and asserts both arms of the screen fire.
+    #[test]
+    fn the_compute_region_doc_guard_fires_on_a_restored_whole_callback_claim() {
+        let doc = compute_region_doc();
+        assert!(
+            whole_callback_offences(&doc).is_empty(),
+            "precondition: doc is clean"
+        );
+
+        let mutated = doc.replace(
+            "an anchor *outside* `dispatch_ort`",
+            "an anchor that brackets the *whole* callback",
+        );
+        assert_ne!(mutated, doc, "the mutation must actually change the doc");
+        assert!(
+            whole_callback_offences(&mutated).contains(&"*whole* callback"),
+            "restoring `*whole* callback` must be convicted, or the guard is decorative"
+        );
+
+        for restored in [
+            "the whole callback",
+            "ORT entry to return",
+            "the entire `Compute` call",
+        ] {
+            let mutated = format!("{doc}\n/// {restored}");
+            assert!(
+                !whole_callback_offences(&mutated).is_empty(),
+                "restoring {restored:?} anywhere in the doc must be convicted"
+            );
+        }
+
+        let stripped = doc.replace("compute_impl", "the callee");
+        assert!(
+            !stripped.contains("compute_impl"),
+            "deleting the compute_impl framing must be visible to the required-phrase arm"
+        );
+    }
+
+    /// `compute_region` brackets the instrumented success path inside `compute_impl`; it must not
+    /// be modelled as a phase.
+    ///
+    /// `Phase::BindCheck` was added to this enum to close a large blind spot and accounted for a
+    /// tiny fraction of the region it was documented as explaining — the exact figures came from
+    /// a run that is not a committed artifact, so they are not quoted here. It was also the first
+    /// sibling phase structurally *outside* `vulkan.subgraph`, which the containment contract in
+    /// `docs/PERF.md` and `bench/phases.py` does not admit, so every traced run self-reported a
+    /// phase-tree disagreement. The region is now bracketed by a structural span instead, which
+    /// needs no place in the phase tree.
+    #[test]
+    fn the_compute_call_bracket_is_not_a_phase() {
+        for p in Phase::ALL {
+            assert_ne!(
+                format!("vulkan.{}", p.as_str()),
+                SPAN_COMPUTE_CALL,
+                "the compute-call bracket must not be a summable phase"
+            );
+            assert_ne!(format!("vulkan.{}", p.as_str()), SPAN_SUBGRAPH);
+        }
+        assert_eq!(Phase::ALL.len(), 10);
     }
 
     #[test]

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -446,3 +447,664 @@ def test_new_harness_instrument_without_a_self_test_goes_red(tmp_path: Path) -> 
         "a new unfalsified harness instrument was not reported as drift — the gate that "
         "would have caught Guard D's successor is itself inert"
     )
+
+
+# ---------------------------------------------------------------------------
+# NAME COLLISIONS ACROSS MODULES (added 2026-08-07)
+#
+# The screen keyed `instruments` and `stats` by BARE FUNCTION NAME. Eight names are
+# defined by two or more screened bench modules, and a dict keyed on a bare name keeps
+# only the last one: `phases.py::attribute`, `devices.py::probe`,
+# `win_gpu_counters.py::summarise` and `real_model.py::build_feeds` were not in the
+# census at all, while it printed PASS. Worse than the missing rows was the credit:
+# `bench/test_cuda_competition.py` wraps `cuda_workloads.build_feeds` in
+# `pytest.raises`, and that reject polarity was recorded against `real_model.py`'s
+# unrelated `build_feeds` — a `screened` verdict for an instrument that test has never
+# called.
+#
+# Synthetic trees, differing in one thing, and the screen must disagree about them.
+# ---------------------------------------------------------------------------
+
+_COLLIDING_A = '''
+def check_thing(x):
+    if x > 0:
+        return x
+    raise ValueError("a refused it")
+'''
+
+_COLLIDING_B = '''
+def check_thing(x):
+    return x
+'''
+
+# Both polarities, aimed unambiguously at module A through its import.
+_COLLISION_TEST_A = '''
+import pytest
+import _models as a
+
+def test_accepts():
+    assert a.check_thing(1) == 1
+
+def test_refuses():
+    with pytest.raises(ValueError):
+        a.check_thing(-1)
+'''
+
+# The same two polarities aimed at module B, which is NOT screened here.
+_COLLISION_TEST_B = '''
+import pytest
+import _other as b
+
+def test_accepts():
+    assert b.check_thing(1) == 1
+
+def test_refuses():
+    with pytest.raises(ValueError):
+        b.check_thing(-1)
+'''
+
+# A bare call to the name: the file imports the module but calls the name unqualified, so
+# nothing in it says whether this is the instrument or a local of the same name.
+_COLLISION_TEST_BARE = '''
+import pytest
+import _models  # noqa: F401
+
+def test_refuses():
+    with pytest.raises(ValueError):
+        check_thing(-1)
+'''
+
+
+def _build_collision_tree(root: Path, test_src: str) -> Path:
+    ops = root / "ops"
+    ops.mkdir(parents=True, exist_ok=True)
+    (ops / "_models.py").write_text(_COLLIDING_A, encoding="utf-8")
+    (ops / "_other.py").write_text(_COLLIDING_B, encoding="utf-8")
+    (ops / "test_it.py").write_text(test_src, encoding="utf-8")
+    return root
+
+
+def _collision_rows(audit, root: Path) -> "dict[str, dict]":
+    rows = audit.harness_survey(
+        tests_root=root, files=["ops/_models.py", "ops/_other.py"])
+    return {r["id"]: r for r in rows}
+
+
+def test_two_modules_with_the_same_function_name_both_get_a_row(tmp_path: Path) -> None:
+    """One row per (file, function). A dict keyed by name would have kept one of these."""
+    audit = _load_audit()
+    root = _build_collision_tree(tmp_path / "t_collide_rows", _COLLISION_TEST_A)
+    rows = _collision_rows(audit, root)
+    assert set(rows) == {"tests/ops/_models.py::check_thing",
+                         "tests/ops/_other.py::check_thing"}, sorted(rows)
+
+
+def test_polarity_lands_on_the_module_the_test_actually_imported(tmp_path: Path) -> None:
+    """POSITIVE POLARITY: the credited row is the imported one, and only it."""
+    audit = _load_audit()
+    root = _build_collision_tree(tmp_path / "t_collide_a", _COLLISION_TEST_A)
+    rows = _collision_rows(audit, root)
+    assert rows["tests/ops/_models.py::check_thing"]["state"] == "screened", rows
+    assert rows["tests/ops/_other.py::check_thing"]["state"] == "uninvoked", rows
+
+
+def test_the_other_modules_row_is_not_credited_by_a_same_named_call(tmp_path: Path) -> None:
+    """NEGATIVE POLARITY, and the specimen defect: `cw.build_feeds` credited `real_model`.
+
+    The two trees here differ only in which module the test imports, and the screen's
+    verdict must move with it. Under the bare-name model both trees produced the same
+    answer, which is what made the census unable to tell a screened instrument from an
+    unwatched one with a popular name.
+    """
+    audit = _load_audit()
+    root = _build_collision_tree(tmp_path / "t_collide_b", _COLLISION_TEST_B)
+    rows = _collision_rows(audit, root)
+    assert rows["tests/ops/_other.py::check_thing"]["state"] == "screened", rows
+    assert rows["tests/ops/_models.py::check_thing"]["state"] == "uninvoked", (
+        "a call to another module's function credited this one; that is a borrowed "
+        "polarity, and it reads exactly like coverage")
+
+
+def test_an_unattributable_call_earns_nobody_anything(tmp_path: Path) -> None:
+    """Fail closed on an unresolved name, and say so rather than dropping it silently."""
+    audit = _load_audit()
+    root = _build_collision_tree(tmp_path / "t_collide_bare", _COLLISION_TEST_BARE)
+    unresolved: list = []
+    rows = {r["id"]: r for r in audit.harness_survey(
+        tests_root=root, files=["ops/_models.py", "ops/_other.py"],
+        unresolved_out=unresolved)}
+    assert rows["tests/ops/_models.py::check_thing"]["state"] == "uninvoked", rows
+    assert rows["tests/ops/_other.py::check_thing"]["state"] == "uninvoked", rows
+    assert [u["name"] for u in unresolved] == ["check_thing"], unresolved
+    assert len(unresolved[0]["candidates"]) == 2, unresolved
+
+
+def test_the_colliding_bench_instruments_are_in_the_census(tmp_path: Path) -> None:
+    """The fact the discrimination above was built to establish, on the files on disk.
+
+    Every one of these was missing from the bench screen because another module defines a
+    function with the same name.
+    """
+    audit = _load_audit()
+    rows = {r["id"]: r for r in audit.harness_survey(
+        tests_root=audit.BENCH, files=audit.BENCH_INSTRUMENT_FILES,
+        fn_re=audit.BENCH_FN, prefix="bench")}
+    for want in ("bench/phases.py::attribute", "bench/cuda_profile.py::attribute",
+                 "bench/devices.py::probe", "bench/cuda_probe.py::probe",
+                 "bench/win_gpu_counters.py::summarise",
+                 "bench/cuda_competition.py::summarise",
+                 "bench/real_model.py::sha256_file",
+                 "bench/bench_models.py::sha256_file",
+                 "bench/real_model.py::build_feeds"):
+        assert want in rows, f"{want} is not in the bench census at all"
+        assert rows[want]["state"] != "uninvoked", (
+            f"{want} reads UNINVOKED; every one of these has a production caller, and a "
+            f"fabricated detection is worse than a missing row: {rows[want]}")
+
+
+def test_real_model_build_feeds_is_not_credited_by_the_cuda_workloads_test() -> None:
+    """The exact borrowed polarity that was in the tree, named.
+
+    `bench/test_cuda_competition.py` does `with pytest.raises(ValueError): cw.build_feeds(...)`
+    where `cw` is `cuda_workloads`, a module this census does not screen. `real_model.py`
+    also defines `build_feeds`, and it was the row that collected the reject.
+    """
+    audit = _load_audit()
+    rows = {r["id"]: r for r in audit.harness_survey(
+        tests_root=audit.BENCH, files=audit.BENCH_INSTRUMENT_FILES,
+        fn_re=audit.BENCH_FN, prefix="bench")}
+    row = rows["bench/real_model.py::build_feeds"]
+    assert row["reject"] == 0, (
+        "real_model.build_feeds has reject polarity, but the only `pytest.raises` around a "
+        f"`build_feeds` in bench/ is aimed at cuda_workloads: {row}")
+    assert row["state"] == "unfalsified", row
+
+
+# ---------------------------------------------------------------------------
+# THE BASELINE MAY NOT CARRY A COUNT NOBODY DERIVED (added 2026-08-08)
+#
+# `instrument_census.json` carried a hand-typed bench row count — the sentence is
+# `audit.STALE_SPECIMENS["bare_row"]`, quoted from there and not retyped here — beside a
+# MACHINE-GENERATED `bench_unfalsified` array that had long outgrown it, and a
+# hand-classified entry that stated its own row count three times and was wrong all three.
+# Every array matched the tree, so all four drift comparisons passed: the census cannot
+# see a summary that disagrees with the collection it summarises, because the summary was
+# never an output of the census.
+#
+# It is one now. `counts` is derived at --write-baseline time and re-derived on every
+# --check, and prose may quote a row count only if `counts` contains it. Both polarities,
+# because "no offenders" is what a clean baseline looks like AND what a dead arm looks like.
+#
+# NO NUMERAL APPEARS IN THIS MODULE'S PROSE, and that is not stylistic. This file is in
+# `audit.SOURCE_CLAIM_CORPUS`: its comments and docstrings are screened by the same
+# binding rule as the artifact's, because the first repair screened the artifact alone
+# and the stale figures went on living in the sentences describing them — here.
+# ---------------------------------------------------------------------------
+
+def _baseline(audit) -> dict:
+    import json
+
+    return json.loads(audit.BASELINE.read_text(encoding="utf-8"))
+
+
+def test_the_committed_baseline_publishes_counts_it_derives() -> None:
+    """POSITIVE POLARITY: the file on disk agrees with itself today."""
+    audit = _load_audit()
+    base = _baseline(audit)
+    assert "counts" in base, (
+        "the baseline publishes no derived `counts`; a census with no summary of its own "
+        "invites a hand-typed one, which is the defect this arm exists for")
+    assert base["counts"] == audit.baseline_counts(base)
+    assert base["counts"]["bench_unfalsified"] == len(base["bench_unfalsified"])
+    per_module = base["counts"]["bench_unfalsified_by_module"]
+    assert sum(per_module.values()) == len(base["bench_unfalsified"])
+
+
+def test_a_hand_edited_summary_count_is_drift() -> None:
+    """NEGATIVE POLARITY: mutate the published count, and the derivation must disagree.
+
+    This is the mutation the review actually found, applied to the mechanism that now
+    stops it: a number edited in place beside an array nobody re-read.
+    """
+    audit = _load_audit()
+    base = _baseline(audit)
+    mutated = dict(base["counts"],
+                   bench_unfalsified=base["counts"]["bench_unfalsified"] + 1)
+    assert mutated != audit.baseline_counts(base), (
+        "a summary count was changed by hand and the derivation still agreed with it; "
+        "the self-count arm is inert")
+
+
+def test_prose_may_quote_a_derived_row_count_and_only_that() -> None:
+    """Both polarities of the prose screen, on the committed baseline."""
+    audit = _load_audit()
+    base = _baseline(audit)
+    counts = audit.baseline_counts(base)
+
+    assert audit.prose_row_claims(base, counts) == [], (
+        "the baseline quotes a row count nothing derives")
+
+    planted = dict(base, planted_note=f"{max(counts['bench_unfalsified'] + 1, 999)} rows")
+    assert audit.prose_row_claims(planted, counts), (
+        "a planted prose row count that no derived number matches was not caught")
+
+    honest = dict(base, planted_note=f"{counts['bench_unfalsified']} rows")
+    assert audit.prose_row_claims(honest, counts) == [], (
+        "a row count that IS derived was reported as stale; a screen that fires on "
+        "everything is no more use than one that never fires")
+
+
+def test_the_census_self_test_covers_the_self_count_arm() -> None:
+    """The arm is wired into `self_test`, so a broken one is ERROR(instrument), not a pass."""
+    audit = _load_audit()
+    assert audit.self_test() == 0
+
+
+# ---------------------------------------------------------------------------
+# A COUNT MUST BE BOUND TO THE COLLECTION ITS OWN SENTENCE NAMES (added 2026-08-08)
+#
+# The arm above asks "does SOME derived number equal this integer?", and this census
+# derives one number per counted array plus one per screened bench module. That is a
+# large enough bag that a wrong sentence can nearly always find a witness in it. The
+# specimen the review found is `audit.STALE_SPECIMENS["module_set"]`: its number is real —
+# it is one of the four modules on its own — and the set it claims to count is larger.
+#
+# So a claim that names a scope is bound to that scope. A module-set claim must equal the
+# sum over the modules ITS OWN SCOPE declares, and its cardinality word must equal how
+# many that is; a claim that names a collection must equal that collection. Only a bare
+# `<n> rows`, with nothing in the sentence to bind it to, still falls back to the bag.
+#
+# Both polarities on every arm, and every figure below is read from the census rather
+# than written out, so these tests cannot themselves become the stale figure — which is
+# exactly what the sentences that used to sit here had become.
+# ---------------------------------------------------------------------------
+
+def _four_module_entry(audit, base) -> "tuple[str, dict, list[str], int]":
+    """The census entry that names four bench modules, its modules, and their true sum."""
+    counts = audit.baseline_counts(base)
+    by_module = counts["bench_unfalsified_by_module"]
+    for path, entry in audit._entries(base):
+        modules = audit.entry_modules(entry)
+        if len(modules) == 4 and all(m in by_module for m in modules):
+            return path, entry, modules, sum(by_module[m] for m in modules)
+    pytest.skip("no census entry declares four screened bench modules")
+
+
+def _with_claim(audit, base, claim: str) -> dict:
+    """The committed baseline with ``claim`` planted in the four-module entry."""
+    import copy
+
+    mutated = copy.deepcopy(base)
+    path, _, _, _ = _four_module_entry(audit, base)
+    for path2, entry in audit._entries(mutated):
+        if path2 == path:
+            entry["planted_claim"] = claim
+            return mutated
+    raise AssertionError("the planted entry could not be found in the copy")
+
+
+def test_a_module_set_claim_may_not_borrow_another_modules_count() -> None:
+    """THE MUTATION THE REVIEW FOUND. One module's count, wearing four modules' clothes."""
+    audit = _load_audit()
+    base = _baseline(audit)
+    counts = audit.baseline_counts(base)
+    _, _, modules, total = _four_module_entry(audit, base)
+    borrowed = counts["bench_unfalsified_by_module"][modules[0]]
+    assert borrowed != total, "the fixture needs a per-module count that is not the sum"
+
+    offenders = audit.prose_row_claims(
+        _with_claim(audit, base, f"{borrowed} rows across these four modules"), counts)
+
+    assert offenders, (
+        f"{borrowed} is a real count of one module and was accepted as a count of four")
+    assert str(total) in offenders[0]
+
+
+def test_the_true_module_set_sum_is_accepted() -> None:
+    """BOTH POLARITIES. A binding that rejects the true sentence binds nothing usable."""
+    audit = _load_audit()
+    base = _baseline(audit)
+    counts = audit.baseline_counts(base)
+    _, _, _, total = _four_module_entry(audit, base)
+
+    assert audit.prose_row_claims(
+        _with_claim(audit, base, f"{total} rows across these four modules"), counts) == []
+
+
+def test_a_module_set_claim_is_bound_to_the_modules_the_entry_names() -> None:
+    """Mutate the SET, not the number: the same true sum stops being true.
+
+    This is what makes the binding a binding rather than a second constant. Drop one
+    module from the entry's `instrument` field and the sentence that was exact becomes an
+    offender, with no digit changed anywhere.
+    """
+    import copy
+
+    audit = _load_audit()
+    base = _baseline(audit)
+    counts = audit.baseline_counts(base)
+    path, entry, modules, total = _four_module_entry(audit, base)
+
+    mutated = copy.deepcopy(_with_claim(audit, base, f"{total} rows across these four modules"))
+    for path2, ent in audit._entries(mutated):
+        if path2 == path:
+            ent["instrument"] = ent["instrument"].replace(modules[-1] + ", ", "")
+            ent["instrument"] = ent["instrument"].replace(", " + modules[-1], "")
+            break
+
+    assert audit.entry_modules(ent) == modules[:-1]
+    offenders = audit.prose_row_claims(mutated, counts)
+    assert offenders, "the claim survived the module set it was a count of changing"
+
+
+def test_the_cardinality_word_is_bound_too() -> None:
+    """A cardinality word that miscounts the modules beside it is false with a true sum."""
+    audit = _load_audit()
+    base = _baseline(audit)
+    counts = audit.baseline_counts(base)
+    _, _, modules, total = _four_module_entry(audit, base)
+    wrong = len(modules) - 1
+    spelled = {v: k for k, v in audit.CARDINALS.items()}[wrong]
+
+    offenders = audit.prose_row_claims(
+        _with_claim(audit, base, f"{total} rows across these {spelled} modules"), counts)
+
+    assert offenders and f"module(s), not {wrong}" in offenders[-1]
+
+
+def test_a_labelled_row_count_is_checked_against_the_collection_it_names() -> None:
+    """Wrong label / right number, and right label / wrong number, in both polarities."""
+    audit = _load_audit()
+    base = _baseline(audit)
+    counts = audit.baseline_counts(base)
+    bench = counts["bench_unfalsified"]
+    uninvoked = counts["uninvoked"]
+    assert bench != uninvoked, "the fixture needs two collections of different size"
+
+    # Right number, wrong label: `bench` is real, and it is not how many `uninvoked` are.
+    assert audit.prose_row_claims(dict(base, note=f"{bench} uninvoked rows"), counts)
+    # Right label, wrong number.
+    assert audit.prose_row_claims(dict(base, note=f"{bench + 1} bench unfalsified rows"),
+                                  counts)
+    # Both right, in each of the spellings the census actually uses.
+    for honest in (f"{bench} bench unfalsified rows",
+                   f"{bench} `counts.bench_unfalsified` rows",
+                   f"{uninvoked} uninvoked rows"):
+        assert audit.prose_row_claims(dict(base, note=honest), counts) == [], honest
+
+
+def test_a_duplicate_number_in_another_collection_cannot_witness_a_label() -> None:
+    """Two collections of the same size is exactly when a bag check has no power left.
+
+    The census derives several per-module counts that coincide. A labelled claim that
+    quotes one of them for a differently-named collection is still false, and the bag it
+    used to be checked against contains it.
+    """
+    audit = _load_audit()
+    base = _baseline(audit)
+    counts = audit.baseline_counts(base)
+    duplicated = sorted(
+        v for v in counts["bench_unfalsified_by_module"].values()
+        if list(counts["bench_unfalsified_by_module"].values()).count(v) > 1)
+    if not duplicated:
+        pytest.skip("no two screened modules currently hold the same row count")
+    borrowed = duplicated[0]
+    assert borrowed in audit.derived_numbers(counts), "the fixture must be in the old bag"
+    assert borrowed != counts["harness_unfalsified"]
+
+    offenders = audit.prose_row_claims(
+        dict(base, note=f"{borrowed} harness unfalsified rows"), counts)
+
+    assert offenders, (
+        f"{borrowed} is a real per-module count and was accepted as a harness count")
+
+
+def test_a_bare_row_count_with_nothing_to_bind_to_still_falls_back() -> None:
+    """The scope of the change, stated: an unlabelled count keeps the old, weaker rule."""
+    audit = _load_audit()
+    base = _baseline(audit)
+    counts = audit.baseline_counts(base)
+
+    assert audit.prose_row_claims(
+        dict(base, note=f"{counts['bench_unfalsified']} rows"), counts) == []
+    assert audit.prose_row_claims(
+        dict(base, note=f"{max(audit.derived_numbers(counts)) + 1000} rows"), counts)
+
+
+# ---------------------------------------------------------------------------
+# THE SCREEN'S CORPUS IS THE CENSUS'S WHOLE SURFACE, NOT ONE FILE (added 2026-08-08)
+#
+# The arms above screen the GENERATED DOCUMENT. That was the whole corpus, and it was not
+# enough: at the moment those arms were written and green, the stale figures they exist to
+# remove were sitting in `rust/tools/audit_instruments.py`'s own comments and in this
+# module's prose, describing the defect in the spelling of the defect. `--check` passed and
+# every census test passed, because neither file was ever read.
+#
+# So the corpus is declared (`audit.SOURCE_CLAIM_CORPUS`), the same binding rule runs over
+# each declared file's comments, docstrings and string constants, and an in-frame file that
+# starts making census count claims without being declared is drift in the corpus itself.
+#
+# The controls below plant `audit.STALE_SPECIMENS` — the exact sentences that shipped — into
+# each previously-missed location, and require the screen to convict every one. The
+# specimens are READ from the census script rather than retyped, which is why no numeral
+# appears anywhere in this module: a control that spells the stale figure out is a fresh
+# copy of it, sitting in a file this screen reads.
+# ---------------------------------------------------------------------------
+
+def _corpus_text(audit, rel: str) -> str:
+    return (audit.REPO / rel).read_text(encoding="utf-8")
+
+
+def test_every_stale_specimen_is_convicted_in_every_missed_location() -> None:
+    """NEGATIVE POLARITY, planted into the real files that carried them.
+
+    Cross-product on purpose: each specimen shape against each declared corpus file, in a
+    comment and in a docstring, appended to that file's REAL text so the screen is judged
+    on the document it actually reads. `--check` was green with these sentences in the
+    tree; every cell here has to be red.
+    """
+    audit = _load_audit()
+    counts = audit.baseline_counts(_baseline(audit))
+    modules = audit.four_module_scope(_baseline(audit), counts)
+    assert modules, "the census must declare a multi-module entry for the scoped specimens"
+    named = " ".join(f"`{m}`" for m in modules)
+
+    for rel in audit.SOURCE_CLAIM_CORPUS:
+        real = _corpus_text(audit, rel)
+        assert audit.source_claim_offenders(
+            real, counts, rel,
+            exempt_specimen_table=rel == audit.HERE.relative_to(audit.REPO).as_posix()) == [], (
+            f"{rel} carries an unwitnessed census count claim today")
+        for key, specimen in audit.STALE_SPECIMENS.items():
+            for shape in (f"\n# {named} {specimen}\n",
+                          f'\ndef _planted_{key}():\n    """{named} {specimen}."""\n'):
+                offenders = audit.source_claim_offenders(
+                    real + shape, counts, rel,
+                    exempt_specimen_table=(
+                        rel == audit.HERE.relative_to(audit.REPO).as_posix()))
+                assert offenders, (
+                    f"{rel}: the screen acquitted {specimen!r} planted as {shape!r}; this "
+                    f"is the exact sentence that was in the tree while the gate was green")
+
+
+def test_the_planted_specimen_reaches_the_real_gate_through_the_corpus_loop() -> None:
+    """The same plant, on disk, through the function `--check` calls.
+
+    `source_claim_offenders` is a text screen; `corpus_claim_offenders` is what the census
+    actually runs, and it is the layer that decides WHICH files get read. A control that
+    only exercises the first proves the screen works on a document nobody opens.
+    """
+    import shutil
+
+    audit = _load_audit()
+    counts = audit.baseline_counts(_baseline(audit))
+    modules = audit.four_module_scope(_baseline(audit), counts)
+    named = " ".join(f"`{m}`" for m in modules)
+    root = Path(tempfile.mkdtemp(prefix="census_corpus_"))
+    try:
+        for rel in audit.SOURCE_CLAIM_CORPUS:
+            dst = root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(audit.REPO / rel, dst)
+
+        assert audit.corpus_claim_offenders(counts, repo=root) == [], (
+            "an unmutated copy of the declared corpus is already red; the control below "
+            "would prove nothing")
+
+        for rel in audit.SOURCE_CLAIM_CORPUS:
+            target = root / rel
+            clean = target.read_text(encoding="utf-8")
+            target.write_text(
+                clean + f"\n# {named} {audit.STALE_SPECIMENS['module_sum']}\n",
+                encoding="utf-8")
+            offenders = audit.corpus_claim_offenders(counts, repo=root)
+            assert any(rel in o for o in offenders), (
+                f"the corpus loop did not read {rel}; a declared file nobody opens is a "
+                f"declaration, not a screen")
+            target.write_text(clean, encoding="utf-8")
+
+        assert audit.corpus_claim_offenders(counts, repo=root) == [], (
+            "reverting every plant did not return the corpus to green; the screen is "
+            "reporting something other than what was planted")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_a_derived_or_current_sentence_survives_the_source_screen() -> None:
+    """MUST-PASS POLARITY. A screen that convicts the fix is a screen nobody can satisfy.
+
+    Three shapes a source file is allowed to state a census figure in: derived at runtime
+    (no digit in the source at all), spelled out and correctly bound, and cited by field
+    name. All three have to pass, or the only way to be green is to say nothing.
+    """
+    audit = _load_audit()
+    counts = audit.baseline_counts(_baseline(audit))
+    modules = audit.four_module_scope(_baseline(audit), counts)
+    by_module = counts["bench_unfalsified_by_module"]
+    named = " ".join(f"`{m}`" for m in modules)
+    total = sum(by_module[m] for m in modules)
+    spelled = {v: k for k, v in audit.CARDINALS.items()}[len(modules)]
+
+    honest = (
+        '\nX = f"{counts[\'bench_unfalsified\']} bench unfalsified rows"\n'
+        f"\n# {counts['bench_unfalsified']} bench unfalsified rows\n"
+        f"\n# {counts['harness_unfalsified']} harness unfalsified rows\n"
+        f"\n# {named}: {total} rows across these {spelled} modules\n"
+        "\n# Read `counts.bench_unfalsified` for the whole bench domain.\n"
+    )
+
+    assert audit.source_claim_offenders(honest, counts, "<honest>") == [], (
+        "a derived or currently-true census sentence was reported as stale")
+
+
+def test_a_delta_line_is_not_read_as_a_collection_size() -> None:
+    """The other way this screen could have become useless: convicting a correct sentence.
+
+    `--check` prints a count of what CHANGED in one run. That is not the size of a
+    collection, and binding it to one would fail the census's own drift line — the string
+    `ci/open_reds.json` holds as an accepted red's signature — for disagreeing with a
+    number it was never about.
+    """
+    audit = _load_audit()
+    counts = audit.baseline_counts(_baseline(audit))
+    delta = counts["uninvoked"] + 1
+
+    assert audit.source_claim_offenders(
+        f"\n# never printed `{delta} NEW uninvoked instrument(s)`\n",
+        counts, "<delta>") == []
+    assert audit.source_claim_offenders(
+        f"\n# {delta} bench unfalsified rows\n", counts, "<total>"), (
+        "the delta exemption swallowed a plain labelled claim; it must apply only to the "
+        "delta wording")
+
+
+def test_the_specimen_table_is_still_stale_and_is_the_only_exempt_span() -> None:
+    """`STALE_SPECIMENS` is the one place a stale figure may be spelled, so it owes proof.
+
+    Two halves. Every entry must STILL be convicted by the live screen — a specimen that
+    has quietly become true is a claim wearing a historical label. And the exemption is
+    the assignment's own source span, found by parsing the file, so it cannot be moved
+    onto a live sentence by copying a marker comment.
+    """
+    audit = _load_audit()
+    base = _baseline(audit)
+    counts = audit.baseline_counts(base)
+
+    assert audit.specimen_offenders(base, counts) == []
+
+    text = _corpus_text(audit, "rust/tools/audit_instruments.py")
+    assert audit.source_claim_offenders(
+        text, counts, "audit_instruments.py", exempt_specimen_table=False), (
+        "with the specimen table unexempted the census script must be red; if it is not, "
+        "the table has stopped holding the specimens and the exemption is inert")
+    assert audit.source_claim_offenders(
+        text, counts, "audit_instruments.py", exempt_specimen_table=True) == []
+
+
+def test_the_corpus_grows_with_the_claims() -> None:
+    """An in-frame file that starts making census claims must be declared, or it is drift.
+
+    Non-vacuity in the other direction: the candidate scan has to actually nominate a real
+    file, or "no undeclared candidates" would be what a dead scan says too. A DECLARED file
+    is not required to be a candidate — this module states no figure at all, which is the
+    outcome the screen is for — but every candidate must be declared.
+    """
+    audit = _load_audit()
+    counts = audit.baseline_counts(_baseline(audit))
+    candidates = audit.claim_corpus_candidates()
+
+    assert candidates, (
+        "the candidate scan nominates nothing anywhere in the tree; a scan that never "
+        "fires cannot notice a file that starts making census claims")
+    assert set(candidates) <= set(audit.SOURCE_CLAIM_CORPUS), (
+        f"undeclared census claim candidates in the tree: "
+        f"{sorted(set(candidates) - set(audit.SOURCE_CLAIM_CORPUS))}")
+
+    root = Path(tempfile.mkdtemp(prefix="census_candidates_"))
+    try:
+        undeclared = root / "ci" / "check_planted_claim.py"
+        undeclared.parent.mkdir(parents=True, exist_ok=True)
+        undeclared.write_text(
+            f"# bench_unfalsified: {audit.STALE_SPECIMENS['labelled_row']}\n",
+            encoding="utf-8")
+        for rel in audit.SOURCE_CLAIM_CORPUS:
+            dst = root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text((audit.REPO / rel).read_text(encoding="utf-8"), encoding="utf-8")
+
+        assert "ci/check_planted_claim.py" in audit.claim_corpus_candidates(root)
+        offenders = audit.corpus_claim_offenders(counts, repo=root)
+        assert any("check_planted_claim.py" in o for o in offenders)
+
+        undeclared.write_text(
+            "# a lane gate with no census claim in it at all\n", encoding="utf-8")
+        assert "ci/check_planted_claim.py" not in audit.claim_corpus_candidates(root), (
+            "the candidate scan nominates a file that makes no census claim; a rule that "
+            "demands a declaration from every file is the reject-all failure mode")
+    finally:
+        import shutil
+
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_the_check_path_still_runs_the_source_and_specimen_screens() -> None:
+    """Source-reading wiring guard, for the reason the first repair needed a second.
+
+    A screen that is written and not called is exactly what shipped: the binding rule
+    existed, the corpus did not include the files carrying the claims, and nothing said
+    so. This reads `main`'s own source and fails if either call is removed, so unwiring
+    the screen cannot be a silent edit.
+    """
+    import ast
+
+    audit = _load_audit()
+    tree = ast.parse(_corpus_text(audit, "rust/tools/audit_instruments.py"))
+    main_fn = next(n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "main")
+    called = {n.func.id for n in ast.walk(main_fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+
+    for name in ("prose_row_claims", "corpus_claim_offenders", "specimen_offenders"):
+        assert name in called, (
+            f"`main` no longer calls `{name}`; the screen exists and the census does not "
+            f"run it, which is the state this whole section was written for")

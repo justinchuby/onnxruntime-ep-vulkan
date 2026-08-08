@@ -58,6 +58,66 @@ So our span vocabulary is different, and the difference is the whole point:
 | `fence_wait` | Waiting for the submission's fence. | An **upper bound** on GPU execution, inflated by queue contention, other clients' work, and driver scheduling. Not kernel time. |
 | `readback` | Device→host transfer of outputs. | Host time plus a real transfer. Bytes + GiB/s counters. |
 
+Those seven are *phases* (`cat == "ep.phase"`), plus three sub-`record` phases — `desc_alloc`,
+`pipeline_lookup`, `cmd_upload` — that are nested inside `record` and therefore must never be
+added to it. Ten in total; `Phase::ALL` is the list of record, and a Rust test asserts its length.
+
+**Two structural spans (`cat == "ep"`) are not phases and never enter a total:**
+
+| Span | Brackets | Why it exists |
+|---|---|---|
+| `vulkan.compute_call` | The **instrumented success path** of the ORT `Compute` callback: opened inside `compute_impl`, after the null check / `this_info` / `guard_ffi_status` entry, and closed before `disclose_broken_commitment`. Not the literal extern entry, and absent entirely on an early-out. | It is the only span that can tell you whether the phases account for that instrumented region. Without it the reduction can only see its own inner bracket and cannot notice work that happens on either side of it. Read it as the widest bracket the EP instruments, not as ORT's true wall time for the call. |
+| `vulkan.subgraph` | The `dispatch_ort` dispatch region for one fused subgraph, opened inside `dispatch_ort`. | The bracket every phase lies inside, and **the denominator for every phase share in this document**. Phase shares are shares of the summed `vulkan.subgraph` spans — written "inside `vulkan.subgraph`" from here on, never "inside `Compute`". They are not shares of `vulkan.compute_call` (which is wider), and they are certainly not shares of ORT's literal `Compute` entry-to-return wall (wider still, and not instrumented anywhere in this repository). |
+
+Neither structural span is ORT's `Compute` callback. `vulkan.compute_call` is the instrumented
+success-path bracket opened inside `compute_impl` and absent on early-outs; `vulkan.subgraph` is
+narrower again. **No number in this document is a share of ORT's entry-to-return wall**, and the
+phrase "inside `Compute`" is not used for one: where an older revision of this document wrote it,
+it meant the summed `vulkan.subgraph` spans, and it now says so.
+
+The distinction is load-bearing, and was learned the expensive way. In the 2026-08-07 CUDA
+competition work the gap between the two brackets measured a warm-call median far larger than the
+device time the same trace saw, and a `bind_check` *phase* was added outside `vulkan.subgraph` to
+try to explain it. It explained a negligible fraction of it, and being the first phase outside the
+subgraph bracket it broke `phase_containment`'s standing contract that every phase span lies
+inside its `vulkan.subgraph` span. That phase has been removed. The outer bracket stays, as a
+*structural* span: it exposes the region without claiming to explain it, and the phase tree is
+untouched. No figure is quoted for that pre-fix run: it is **not a committed artifact**, and this
+document does not cite numbers it cannot point at.
+
+The region itself turned out not to be the EP at all. Re-measured with the counters-file dump
+moved out of the timed region, the term collapses to a small fraction of a millisecond. **The
+magnitude is deliberately not quoted on this branch**: the instrumentation head carries the
+harness and none of its output, so there is no committed artifact here to point at, and a
+number whose witness is on another branch is exactly the kind of claim this document says it
+does not make. The figure is published, with its artifact, on the branch that publishes results.
+
+The mechanism that keeps it honest ships here, but is not live yet on this branch:
+`bench/test_cuda_profile.py::test_every_documented_outside_subgraph_citation_matches_the_artifact`
+reads `outside_subgraph_ms` (equivalently `steady.median_outside_subgraph_us`) out of the
+committed profile and fails this document if the two ever drift apart -- once an artifact is
+committed. Today, with no such artifact in the tree, that test **skips**: it grants this
+document no protection yet, and a skip must not be read as a pass. The pin becomes load-bearing
+the moment a profile is committed, and not before. The region was the benchmark harness's own
+counters dump running inside
+every timed inference, which is what
+`bench/test_cuda_competition.py::test_counters_dump_is_not_left_inside_the_timed_region`
+now forbids. An instrument that can see a region is worth having even when the answer is "this
+was never ours".
+
+**No emitted name may be a prefix of another.** Reducers match span names, and Python's
+`str.startswith` on `vulkan.compute` silently captured the `RecordPath` instants, which were then
+named `vulkan.compute[FIRST_RECORD|REPLAY|RERECORD]` — a `vulkan.compute[REPLAY]` instant was
+swept into a matcher looking for the compute span. Those instants are now `vulkan.path[...]`;
+`vulkan.record_path[...]` was rejected as the replacement because `vulkan.record` is itself a
+phase and would have recreated the same collision one level down. Both the Rust test
+`no_trace_name_is_a_prefix_of_another` and `bench/test_trace_vocabulary.py` enforce it now, in
+both languages.
+
+The vocabulary is declared once, in the module header of `rust/src/trace.rs`, and
+`bench/trace_vocabulary.py` parses it so that `bench/phases.py` and `bench/cuda_profile.py` can
+be checked against it rather than trusted to have been updated.
+
 Two further span-adjacent facts we record because they are the ones that mislead people:
 
 * **`RecordPath`** — `first_record` / `replay` / `rerecord`. This is our analogue of MLX's cache
@@ -461,6 +521,202 @@ in a hurry.
 
 `bench/test_plausible_but_wrong.py` tests each of these against the shape of the wrong answer it
 prevents, using the real device values from §1.4 as fixtures.
+
+### 4.0.1 A committed artifact may not name the machine that produced it
+
+Added 2026-08-07 after eight evidence JSONs from the issue #69 CUDA competition were rejected in
+review for carrying the operator's account name, private checkout directory and model-cache
+location in `profile_path`, `outputs_dir`, `outputs_manifest[].file`, `models.*.path`,
+`models.*.detail` and `cache_root`.
+
+The repair is a **write boundary**, not a cleanup pass. `bench/public_paths.py` is the only place
+the CUDA harness serialises evidence:
+
+| Function | Guarantee |
+|---|---|
+| `dump_public_json(payload, path)` | roots every path, scrubs every string, then **re-scans the serialised text** and raises `PathLeak` rather than write. |
+| `write_public_text(text, path)` | the same, for the `.md` reports and captured logs. |
+| `public_path(p)` | one path → `<root>/relative/posix/path`. |
+| `sanitise_file(p)` | repairs an artifact produced before the boundary existed. |
+
+Paths are **rooted, not redacted**. Which root a file came from is provenance a reader needs;
+the account name is not:
+
+| Token | Root |
+|---|---|
+| `<repo>` | **this** checkout — the tree the process serialising the record is running in |
+| `<foreign-repo>` | a *different* checkout of this project, so an artifact repaired from another worktree still reads repo-relative without claiming to be this tree |
+| `<model-cache>` | `$ONNXRUNTIME_EP_VULKAN_BENCH_MODEL_CACHE`, else `~/.cache/onnxruntime-ep-vulkan/bench-models` |
+| `<foundry-cache>` | `~/.foundry/cache/models` — where `bench_models._resolve_foundry` resolves Phi-3.5 by identity |
+| `<tmp>` | the platform temp directory |
+| `<program-files>`, `<program-files-x86>`, `<program-data>` | Windows system roots, as they appear in DLL-load errors: the role is kept, the drive letter dropped |
+| `<home>`, `<elsewhere>` | a home-rooted path under no declared root; `<elsewhere>` keeps only the basename |
+
+`<repo>` and `<foreign-repo>` were one token until this landed, and the artifacts under
+`bench/results/` that were repaired from the `-56` worktree still carry the old reading: they say
+`<repo>` where they mean *that* checkout, and `<home>/.copilot/repos/onnxruntime-ep-vulkan/...`
+where they mean this one. They are **not** rewritten here — re-rooting a committed measurement
+record to satisfy a vocabulary change is a silent edit of evidence — so read those files with
+their commit date in hand; anything written after this reads `<repo>` for the writing checkout
+only.
+
+Three things are load-bearing and were each learned from a wrong first cut:
+
+* **The screen runs on the serialised text, not the object.** `json.dumps(..., default=str)`
+  stringifies a `Path` *after* an object-level walk would have skipped it, so an object-level
+  screen passes and the file leaks. `bench/test_public_paths.py` plants exactly that.
+* **Containment is decided by path parts, never by string prefix.** `str.startswith` says a
+  home directory named `ann-backup` is inside one named `ann`; a path rewritten under the wrong
+  root is worse than one left alone, because it looks sanitised.
+* **The in-memory record keeps real, openable paths.** *Superseded 2026-08-08 — see §4.0.2.*
+  This was true of `cuda_profile`, which read `profile_path` back out of the very record it was
+  about to write, and it is the sentence that hid a fail-open: the field a later process opened
+  and the field a reader was shown were **one field**, so the sanitiser could not be right
+  without the harness being wrong. Rooting it in place produced a clean file and a broken
+  harness; leaving it absolute produced a working harness and a leaking file. The answer was
+  neither — it was two fields.
+
+And two the second review added:
+
+* **The write boundary must be satisfiable for every shape the scanner knows.** `scan` and
+  `scrub_text` are one contract: `dump_public_json` scrubs, re-scans, and refuses. A pattern the
+  detector matched and the scrubber stepped over (`windows_drive_abs` — the scrubber hand-indexed
+  `LEAK_PATTERNS[:3]` and `[4]`) makes that contract impossible to satisfy, so the first Windows
+  DLL-load error quoted into a record was unwritable. `LEAK_SCRUB` now names a rewrite for every
+  pattern and a missing one fails at **import**; `bench/test_public_paths.py` asserts
+  `scan(scrub_text(x)) == []` for a specimen of each, at line start and embedded.
+* **A checked-in survey may not be a fact about the account that generated it.** The repo-wide
+  ratchet is produced with `public_paths.scan_structural` — every structural shape, no
+  account-name screen. The account screen belongs at the *write* boundary, where the payload was
+  produced by this process; run over the whole tree it made the committed answer depend on whose
+  machine ran the generator, so the same tree surveyed under a CI account called `runner` would
+  read as undeclared-or-stale. A short account name is also not a word: `dev` matches inside
+  `devices.py` unless the match is word-bounded. Account matching is word-bounded now, and the
+  structural patterns tolerate JSON-escaped separators, so a home directory is still counted
+  whoever lives in it. `bench/test_public_paths.py` surveys the same corpus under four simulated
+  accounts and requires one identical answer.
+
+Repository-wide, this is a **ratchet, not a gate**: 293 committed evidence files carry a
+structural leak that predates any of this, and a screen that is red on the day it lands is a
+screen that gets skipped. `bench/public_path_legacy.json` declares every one of them with its
+leak count;
+`bench/test_public_paths.py` fails on an undeclared leak, on a declared file that leaks *more*
+than declared, and — the half that keeps it honest — on a declaration whose file has stopped
+leaking or stopped existing. `bench/results/_cuda69/` is declared `never_legacy`: its writers
+were fixed, so a leak there is a regression, not an inheritance. The figure quoted above is
+the entry count of that artifact and is checked against it: `bench/gen_public_path_legacy.py`
+reads the totals back out of the file it generates, and
+`test_no_prose_quotes_a_file_count_the_ratchet_does_not_carry` fails on any file/leak count in
+this document that the ratchet does not declare — a number in prose beside the collection it
+summarises is exactly how a screen quietly stops describing the tree.
+
+### 4.0.2 The internal channel and the public artifact are two different things
+
+Added 2026-08-08 after independent review of the issue #69 branch found **Gate 4 (output
+equivalence) failing open**. The chain, in full, because every link was working:
+
+1. The worker wrote its output tensor and put `outputs_manifest[0].file = <absolute path>` in
+   its record.
+2. `dump_public_json` did exactly its job and rewrote that field `<repo>/…`, per §4.0.1.
+3. The parent asked `Path("<repo>/…").is_file()`, got `False`, and reported *reference output
+   file missing* — returning `{"arms": {}}`.
+4. `compare_workload` asked one question — *which arms did equivalence disqualify?* — got the
+   empty set, and read it as **nobody**.
+
+A Vulkan arm returning logits a thousand times the CPU reference's therefore published
+`VULKAN_FASTER`. No gate was disabled and no check was skipped; the wiring between two of them
+carried "could not be compared" in the same shape as "compared and agreed".
+
+Two changes, and both are needed — either alone leaves the other half of the defect standing.
+
+**The separation.** A path in a record now answers exactly one question, and the two answers
+live in different fields. The third column is what a *reader* is being pointed at, and it is
+checked against the code rather than maintained by hand — see the guard note below the table:
+
+| Field | Kind | Who reads it | Serialised? |
+|---|---|---|---|
+| `outputs_manifest[].file_rel`, `profile_rel`, `trace_rel` | *handle* — a relative name inside one declared directory | the parent, through `resolve_arm_output` / `resolve_scratch_file` | yes; there is nothing in it to sanitise |
+| `outputs_dir`, `scratch_dir` | *base* — the rooted directory a handle is resolved against | `_handle_base`, and so `--reanalyse`, via `public_paths.resolve_public_path` | yes, rooted |
+| `profile_path`, `trace_path` | *evidence* — a rooted path per §4.0.1, answering "which file was this?" | nothing opens them | yes, rooted |
+| `_runtime` (`public_paths.RUNTIME_ONLY_KEY`) | *channel* — absolute directories the parent passed the worker | the parent, in-process only | **never** — dropped by `public_payload`, and `assert_public` refuses a payload that still carries one |
+
+`profile_path` and `trace_path` were in the *base* row until 2026-08-08, described as evidence
+`--reanalyse` reads back through `resolve_public_path`. It does not and never did: reanalysis
+resolves `profile_rel` and `trace_rel` through `resolve_scratch_file`, rooted at `scratch_dir`.
+Naming the wrong field is the §4.0.2 defect written into the document that explains it — this
+table is the thing a reader consults to find out which channel is load-bearing, and it was
+pointing at the two fields the fix made inert. `bench/test_public_paths.py` now screens **this
+table** as well as the module docstrings: every field a row claims a reader for must be a field
+some module takes off a record, and every field a row says nothing opens must be a field no
+module takes off a record. The exact stale row above is planted as the falsifier.
+
+Resolution goes through `public_paths.contained_child`, which decides containment on the
+**resolved** parts and not on the text, so a handle that escapes its directory — `..`, an
+absolute path, a drive-relative `C:out0.npy`, a symlink pointing outside — is refused rather than
+repaired. `resolve_public_path` is the inverse of `public_path` and is what makes a rooted
+directory *evidence a second machine can act on*: `--reanalyse` re-derives equivalence from a
+committed record whose tensors sit under the reader's own checkout.
+
+The writer's half obeys the same rule as the reader's, which it did not: `relative_handle`
+resolved an empty base to whatever directory the process happened to be running in and wrote a
+handle against it, while `contained_child` refuses an empty base outright. A writer that can
+produce a name no reader will accept puts an unopenable handle in a committed record and spells
+it exactly like an openable one. Both halves now ask one predicate,
+`public_paths.unusable_base`, and `bench/test_public_paths.py` asserts both polarities of both
+halves over the same table of bases.
+
+**The closure.** `cross_arm_equivalence` now fails closed. Every arm it was asked about appears
+in `arms` with a verdict whatever happened — an unreadable reference, an unresolvable handle, a
+manifest naming no file, a comparison that examined zero tensors — and it carries a top-level
+`verdict` of `COMPARED` or `REFUSED`. `compare_workload` refuses an arm that carries no
+equivalence verdict *by name*, so an empty map is now the loudest possible input rather than the
+quietest.
+
+The controls are in `bench/test_cuda_competition.py` and each plants one defect end-to-end,
+through the real serialisation boundary: logits wrong by 1000× are disqualified; a serialised
+path where a handle belongs is refused; a tokenised directory this machine cannot resolve is
+refused; a missing CPU reference disqualifies every other arm; a comparison of zero tensors is an
+instrument error; a traversal or outside handle is refused; an arm with timings and no verdict is
+refused. Two are the must-pass polarity — a correct arm still compares, and a correct arm is
+still allowed to win — because a screen that refuses everything protects nothing. The four handle
+instruments are total, so their reject polarity is asserted through `bench/_polarity.py`, and the
+census screens all four as `SCREENED` rather than `unfalsified`.
+
+#### 4.0.2.1 The unit of Gate 4 is (arm, repeat), and the repeat identity survives the fold
+
+This repository's reproducibility protocol (§6.6, "the number is reproducible") is **three
+whole-process runs**, and `cuda_competition.run_suite` takes `--repeats` for exactly that: three
+processes per arm, whose `steady_ms` samples are **pooled** into the one distribution
+`compare_workload` bootstraps. Gate 4 compared repeat 0 and nothing else. An arm that returned
+correct logits on repeat 0 and wrong ones on repeat 1 therefore contributed *both* repeats'
+timings to a `VULKAN_FASTER` verdict, and the second repeat's tensors were never opened. Correct
+once, counted three times.
+
+So equivalence is evaluated **per (arm, repeat)**, and the repeat identity is kept rather than
+collapsed:
+
+| Field | What it holds | Why it is not folded away |
+|---|---|---|
+| `equivalence.repeats["0"]`, `["1"]`, … | a full `cross_arm_equivalence` result for that repeat's records | each repeat wrote its own output tensors; one comparison cannot speak for another's |
+| `equivalence.arms[arm].repeats` | `{repeat: verdict}` for that arm | `arms[arm] = verdict` assigned inside a loop over repeats keeps whichever repeat ran last, which is how a divergent repeat disappears without anybody deciding it should |
+| `equivalence.arms[arm].verdict` | `MATCH` **only if every repeat it appears in says `MATCH`** | one divergent, unresolvable or missing repeat makes the arm's workload verdict that refusal, and the workload verdict `REFUSED` |
+| `contributing_repeats` | `{arm: {repeat: n_samples}}` — the index the ratio is actually built from | the check has to be made against the same index the samples come from, or it is checking a different run |
+| `equivalence_unchecked_repeats` | `arm@repeatN` for every contributing repeat nothing spoke for | an unchecked repeat is refused **by name**; `INSTRUMENT_ERROR`, not a quiet exclusion |
+| `equivalence_divergent_repeats` | `arm@repeatN=VERDICT` for every repeat that disagreed | the arm is disqualified and the reader is told which repeat did it |
+
+Records with no `repeat` field are repeat `0` (`repeat_key`): `run_suite` stamps every record it
+dispatches, and a record predating the field came from a single-repeat run.
+
+**A repeat-blind equivalence map may speak for at most one repeat.** A flat `{arm: verdict}`
+result — a single-repeat run, or any suite stored before this contract — is honoured only for an
+arm that contributes exactly *one* repeat, which is the case it was produced by. An arm
+contributing more than one repeat under a flat map is refused by name: one comparison of one
+output set standing in for three is the same defect with a compatibility label on it, and under
+the three-repeat protocol it is the *normal* case rather than an edge one. Both polarities are
+asserted in `bench/test_cuda_competition.py` — the single-repeat flat map still compares and can
+still win, the multi-repeat flat map refuses — and `bench/test_public_paths.py` ties the prose
+above to the fields the code actually publishes, so a repeat-0-only description cannot return to
+this document while the mechanism says otherwise.
 
 ### 4.1 OQ-12
 
@@ -867,7 +1123,7 @@ lavapipe CI runner, the arithmetic is a no-op and the check cannot fail. It is r
 `decisive: false` and surfaced by `red_flags()` as "NOT DECISIVE", never as a pass.
 
 **Why this matters more now, not less.** GPU kernel time is 12.6% (NVIDIA) / 43.9% (Intel) of
-time inside `Compute` (§9.3). A 52× under-report of the Intel GPU column would move the *wall
+time inside `vulkan.subgraph` (§9.3). A 52× under-report of the Intel GPU column would move the *wall
 clock* not at all — the wall clock is dominated by host staging — so it is invisible to every
 end-to-end benchmark on the project. Only the integrality check sees it.
 
@@ -949,7 +1205,7 @@ python bench\phi35.py --iters 20 --warmup 10 --repeats 3 --trace-iters 6
 A fixed per-submission cost was proposed and deliberately **not** designed around until an
 instrument existed. The instrument now exists, and the hypothesis is dead:
 
-| | share of time inside `Compute` |
+| | share of time inside `vulkan.subgraph` |
 |---|---|
 | `vulkan.submit` | **0.6%** (NVIDIA) / **16.4%** (Intel) |
 
@@ -1006,8 +1262,10 @@ comparison and that refusal stands.
 
 ### 9.3 The phase split
 
-Shares are of **time inside `Compute`** — the sum of `vulkan.subgraph` spans. That is the EP's
-own view of its execution and is **not** process wall time; ORT's graph execution, the CPU EP's
+Shares are of **time inside `vulkan.subgraph`** — the sum of those spans, which is the
+`dispatch_ort` dispatch region for each fused subgraph. It is **not** ORT's `Compute` callback
+(that is wider than even the `vulkan.compute_call` bracket, and nothing here instruments it) and
+it is **not** process wall time; ORT's graph execution, the CPU EP's
 nodes between islands and session setup are all outside it. These shares may not be restated as
 shares of the benchmark's wall clock.
 
@@ -1016,7 +1274,7 @@ The timed pass runs with tracing **off**; the split comes from a separate instru
 1.0207× on NVIDIA, 0.8659× on Intel. The Intel figure being below 1.0 is not negative overhead —
 it means the machine state moved between the two passes, and it is reported for that reason.
 
-**NVIDIA RTX 4060 Laptop** — 48563.24 ms inside `Compute`, 561 subgraph invocations:
+**NVIDIA RTX 4060 Laptop** — 48563.24 ms inside `vulkan.subgraph`, 561 subgraph invocations:
 
 | phase | total | share | n | median |
 |---|---|---|---|---|
@@ -1025,10 +1283,10 @@ it means the machine state moved between the two passes, and it is reported for 
 | └ of which: command construction | **414.10 ms** | 1.2% of record | 561 | 0.459 ms |
 | `vulkan.submit` | 308.18 ms | 0.6% | 561 | 0.452 ms |
 | `vulkan.fence_wait` | 13980.26 ms | 28.8% | 561 | 27.776 ms |
-| unattributed inside `Compute` | 818.63 ms | 1.7% | — | — |
+| unattributed inside `vulkan.subgraph` | 818.63 ms | 1.7% | — | — |
 | **GPU kernels (sum)** | **6110.00 ms** | **12.6%** | 5457 | — |
 
-**Intel Iris Xe** — 72148.67 ms inside `Compute`, 561 subgraph invocations:
+**Intel Iris Xe** — 72148.67 ms inside `vulkan.subgraph`, 561 subgraph invocations:
 
 | phase | total | share | n | median |
 |---|---|---|---|---|
@@ -1037,7 +1295,7 @@ it means the machine state moved between the two passes, and it is reported for 
 | └ of which: command construction | 6714.48 ms | 28.0% of record | 561 | 1.393 ms |
 | `vulkan.submit` | 11830.53 ms | 16.4% | 561 | 0.349 ms |
 | `vulkan.fence_wait` | 34978.91 ms | 48.5% | 561 | 56.652 ms |
-| unattributed inside `Compute` | 1393.01 ms | 1.9% | — | — |
+| unattributed inside `vulkan.subgraph` | 1393.01 ms | 1.9% | — | — |
 | **GPU kernels (sum)** | **31652.94 ms** | **43.9%** | 5457 | — |
 
 Per-kernel GPU time (summed from the per-span `gpu_ns` float, **not** from the integer-µs `dur`
@@ -1255,12 +1513,15 @@ Per R9: *confidence scales with agreeing instruments; evidence scales only with 
 | every island executed on every inference | `dispatch_accounting`: `compute_calls == islands × inferences`, **integer equality, no tolerance**. Caught a subgraph never invoked — which raises nothing and leaves `compute_failures` at 0. |
 | every dispatch produced GPU time | `gpu_span_accounting`: `sum(subgraph.nodes) == len(gpu_spans) == dispatches_executed`, integer equality. 5457 on both. |
 | the row names the device that ran | `devices.device_identity_check` — trace's own `timestampPeriod`/`validBits` vs the label. Caught the entire table naming the wrong GPU. |
-| the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span; `unattributed_in_compute_ms` reported, never folded away. |
+| the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span (the **inner** bracket, around `dispatch_ort`, not the outer `vulkan.compute_call`); `unattributed_in_compute_ms` reported, never folded away. |
+| the reconciliation's terms are not mistaken for a sum | `cuda_profile.compute_reconciliation.partition_note` — states the arithmetic it is explaining: `sibling_phases_ms + unattributed_in_subgraph_ms` does not equal `subgraph_ms`. Each is an **independently-taken median** over the warm calls, and the median of a sum is not the sum of the medians unless every call splits identically, so the residual is a property of the statistic, **not** unaccounted-for time. Do not report it as a gap. The figures are quoted with the committed profile, which this instrumentation head does not carry; `partition_note` computes them from the run in hand. Pinned by `test_the_reconciliation_says_out_loud_that_medians_do_not_partition`. |
+| the compute-call bracket is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` (the instrumented success-path region opened inside `compute_impl` and absent on early-outs, not the literal extern callback and not ORT's entry-to-return wall) and reports the region *outside* `vulkan.subgraph` but inside that bracket as its own term. Measured, and explicitly not attributed. No magnitude is quoted on this branch: the instrumentation head carries no committed profile to point at, and the citation pin reads the figure out of the artifact wherever one exists. It was far larger before the harness's counters dump was moved out of the timed region, but that pre-fix run is not a committed artifact either. |
 | GPU time is not over-scaled | `gpu_containment` — per-submission GPU busy ≤ `submit + fence_wait`, **ordinal attribution**, immune to the 314 ms anchor error. |
 | the 52× conversion is applied | `timestamp_conversion_integrality` — `gpu_ns ÷ period` must be a whole integer. **Decisive only where period ≠ 1.0**; reports `VACUOUS`, never "pass", on NVIDIA and lavapipe. `bench/timestamp_audit.py` exits non-zero when no local device can falsify it. |
 | valid bits are masked | `valid_bits_applied` — green on both. |
 | the trace describes the run that was timed | `trace_matches_counters` — trace span counts vs the EP's own counter file. |
 | the ratio describes a steady state | `stats.drift` → `ratio_refusal`. **Refuses**, does not warn. |
+| a green verdict cannot ship beside a refusal | `cuda_profile.seal_verdict` — applied on **every** exit from `attribute()` and again in `render()`, before the numbers. `GPU_TIME_MEASURED` with a non-empty `refusals` list becomes `GPU_TIME_WITHHELD`, carrying `withheld_from` and `withheld_because`. Structural rather than per-site, so a refusal added at a fifth site cannot forget to downgrade; `test_every_exit_from_attribute_is_sealed` reads the source and enforces it. |
 | the CPU baseline is trustworthy | `baseline_disagreement` — **fired on this run at 2.4×**. |
 | tracing did not distort the measurement | `tracing_overhead_ratio` from a separate untraced timed pass — 1.0207× / 0.8659×, measured not assumed. |
 | the number is about the EP and not about staging | `memory_configuration` — reports `staging-bound` and forbids quoting the result as "what the Vulkan EP does". |
@@ -2114,7 +2375,7 @@ on both devices. Warm inferences only, cold excluded.
 
 **Shares are printed. The milliseconds they are shares *of* are not** — see §13.5.
 
-| share of time inside `Compute`, warm | NVIDIA RTX 4060 | Intel Iris Xe |
+| share of time inside `vulkan.subgraph`, warm | NVIDIA RTX 4060 | Intel Iris Xe |
 |---|---|---|
 | `fence_wait` | 68.7% | 97.9% |
 | ├ **GPU actually busy** | **67.7%** | **97.7%** |
@@ -2125,7 +2386,7 @@ on both devices. Warm inferences only, cold excluded.
 | ├ `pipeline_lookup` | 0.18% | 0.01% |
 | └ `cmd_upload` (the feeds) | 0.14% | 0.03% |
 | `submit` | 0.27% | 0.01% |
-| unattributed inside `Compute` | 5.97% | 0.90% |
+| unattributed inside `vulkan.subgraph` | 5.97% | 0.90% |
 
 `gpu_busy` is **not** a sibling of the host phases — it overlaps `submit` + `fence_wait`. It is
 printed against the same denominator so the two can be compared, never so they can be added.
@@ -2144,9 +2405,9 @@ described a run in which this EP did not execute. Re-ranked against a run in whi
 
 | # | lever | evidence | owner | was |
 |---|---|---|---|---|
-| **1** | **`q_gemv_matmul_nbits_f16` — one kernel, see §13.4.2** | GPU is busy **67.7%** (NVIDIA) and **97.7%** (Intel) of time inside `Compute`, and **95.11% / 98.28%** of that GPU time is a single kernel. Everything else in the EP sums to 4.9% / 1.7%. | Switch / Mouse | rank 4 |
-| **2** | **Command-buffer reuse — stop re-recording every inference** | `record` is paid on **every** `Compute` call (15 spans, 15 inferences, 353 `desc_alloc` + 353 `pipeline_lookup` each time). 23.5% of NVIDIA in-`Compute` time is host `vkCmd*` construction the GPU waits through. **NVIDIA-only: 1.0% on Intel.** | Switch | not ranked |
-| **3** | **The 5.97% unattributed inside `Compute` (NVIDIA)** | Time inside `vulkan.subgraph` that **no phase span covers** — input pointer reads, buffer/descriptor work before recording, output tensor writes after the fence. It is larger than every sub-record phase combined and it is currently *invisible*. Needs spans before it can be ranked properly. | Switch (spans), me (analysis) | not ranked |
+| **1** | **`q_gemv_matmul_nbits_f16` — one kernel, see §13.4.2** | GPU is busy **67.7%** (NVIDIA) and **97.7%** (Intel) of time inside `vulkan.subgraph`, and **95.11% / 98.28%** of that GPU time is a single kernel. Everything else in the EP sums to 4.9% / 1.7%. | Switch / Mouse | rank 4 |
+| **2** | **Command-buffer reuse — stop re-recording every inference** | `record` is paid on **every** `Compute` call (15 spans, 15 inferences, 353 `desc_alloc` + 353 `pipeline_lookup` each time). 23.5% of NVIDIA in-`vulkan.subgraph` time is host `vkCmd*` construction the GPU waits through. **NVIDIA-only: 1.0% on Intel.** | Switch | not ranked |
+| **3** | **The 5.97% unattributed inside `vulkan.subgraph` (NVIDIA)** | Time inside `vulkan.subgraph` that **no phase span covers** — input pointer reads, buffer/descriptor work before recording, output tensor writes after the fence. It is larger than every sub-record phase combined and it is currently *invisible*. Needs spans before it can be ranked properly. | Switch (spans), me (analysis) | not ranked |
 | **4** | **Device-backed allocation** | `memory configuration: staging-bound`; `alloc_device_authoritative_spans` is `UNOBSERVABLE` (R12) until `offer_shared_device` is called — still `UNINVOKED`, red in Tank's census. Cannot be measured, so cannot be ranked higher than a hypothesis. | Tank / Switch | rank 1 (as residency) |
 | ~~5~~ | ~~fence-wait GPU idle~~ | **Effectively dead: 0.99% NVIDIA, 0.18% Intel.** The fence wait is almost entirely the GPU working. Submission is not the problem. | — | **was rank 3** |
 | ✅ | persistent weight residency | **LANDED.** 1997.977 → 0.387 MiB per inference. | Tank / Switch | was rank 1 |
@@ -2155,7 +2416,7 @@ described a run in which this EP did not execute. Re-ranked against a run in whi
 **The one-line version for the team: we are now GPU-bound, and on the Intel part we are*
 ***only*** *GPU-bound. Kernel work is the top lever for the first time in this project's history.**
 
-Two caveats I will not let travel without the ranking. First, `record` at 23.5% of NVIDIA in-`Compute`
+Two caveats I will not let travel without the ranking. First, `record` at 23.5% of NVIDIA in-`vulkan.subgraph`
 time is a *host* cost measured on a contended machine, so its true share is at or below 23.5% —
 which only strengthens the case for putting kernels first. Second, the Intel figure is not a
 compliment: 97.7% GPU-busy with a per-inference time far above the CPU EP's means the kernels are

@@ -59,6 +59,7 @@ for _p in (str(_BENCH), str(_ROOT), str(_ROOT / "rust" / "tools")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import public_paths
 import real_model as rm  # noqa: E402
 
 SCHEMA = "real_model_gqa_local_size/1"
@@ -142,8 +143,9 @@ def outputs_worker(argv) -> int:
     providers = list(sess.get_providers())
     outs = sess.run(None, feeds)
     np.savez(a.out, **{f"o{i}": o for i, o in enumerate(outs)})
-    Path(a.out).with_suffix(".meta.json").write_text(
-        json.dumps({"providers": providers, "count": len(outs)}), encoding="utf-8")
+    public_paths.dump_public_json(
+        {"providers": providers, "count": len(outs)},
+        Path(a.out).with_suffix(".meta.json"))
     return 0
 
 
@@ -354,7 +356,7 @@ def main(argv=None) -> int:
             "property of the machine — hence the environment kill switch.",
         ],
     }
-    Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    public_paths.dump_public_json(report, Path(args.out))
     print(f"\n  wrote {args.out}")
     if equivalence and not report["equivalence_complete"]:
         print("[gqa-ls] EQUIVALENCE FAILED — the packing is not inert", file=sys.stderr)

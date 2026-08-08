@@ -282,8 +282,9 @@ def phase_share_admissibility(rec: dict) -> dict:
 #: it happens to be the one that runs.
 #:
 #: 25% and not tighter: the CPU EP baseline is a control, re-measured minutes apart on a machine
-#: that has just paged a 2.2 GB model, so some movement is honest. 25% and not looser: 27.6% is
-#: larger than most of the effects anyone here is trying to measure.
+#: that has just paged a 2.29 GB model (`model.weights_bytes` 2291238912, committed in
+#: `bench/results/real_model_gqa_local_size.json`), so some movement is honest. 25% and not
+#: looser: 27.6% is larger than most of the effects anyone here is trying to measure.
 BASELINE_TOL = 0.25
 
 

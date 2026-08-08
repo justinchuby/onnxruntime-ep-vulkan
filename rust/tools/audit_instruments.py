@@ -92,9 +92,12 @@ Usage:
 
 from __future__ import annotations
 
+import ast
+import io
 import json
 import re
 import sys
+import tokenize
 from pathlib import Path
 
 HERE = Path(__file__).resolve()
@@ -103,6 +106,598 @@ REPO = HERE.parents[2]
 TESTS = REPO / "tests"
 BENCH = REPO / "bench"
 BASELINE = HERE.parent / "instrument_census.json"
+
+# ---------------------------------------------------------------------------
+# SUMMARY COUNTS ARE DERIVED, NEVER TYPED — IN THE BASELINE *AND* IN THE SOURCE.
+#
+# Found on review of the issue #69 branch: `instrument_census.json` carried a sentence
+# quoting a bench row count beside a MACHINE-GENERATED `bench_unfalsified` array that had
+# long since grown past it. Nothing was wrong with the array. The defect was the second
+# copy — a number a human typed once, sitting next to the collection it claims to
+# summarise, with no mechanism that makes the two disagree out loud. That is a stale figure
+# quoted as a finding, which is the exact defect class this branch exists to remove, applied
+# to the census itself.
+#
+# So every summary number the baseline publishes lives in `counts`, is DERIVED from the
+# arrays at `--write-baseline` time, and is RE-DERIVED and compared on every `--check`.
+# Editing a count by hand is drift, and drift is red.
+#
+# FOUND AGAIN, ONE LAYER OUT, AND THIS IS THE PART THAT MATTERS.  The first cut of that
+# repair screened the GENERATED DOCUMENT and nothing else. The stale figures it was written
+# to remove survived, verbatim, in the `#` comments of THIS FILE and in the prose of the
+# always-on test module — where they read exactly like findings, and where `--check` and
+# every census test stayed green. A screen whose corpus is one file cannot see the copy of
+# the number that lives beside it.
+#
+# The corpus is therefore the census's whole surface: the baseline, this script's comments
+# and docstrings, and the test module's prose (:data:`SOURCE_CLAIM_CORPUS`), and the
+# candidate scan below fails on any in-frame file that starts making census count claims
+# without being declared. Every claim is bound to the collection its own sentence names —
+# `bind`, never "does some derived number equal this integer?" — because this census
+# derives enough numbers that a wrong sentence can nearly always find a witness among them.
+COUNTED_ARRAYS = (
+    "uninvoked",
+    "ambiguous",
+    "harness_uninvoked",
+    "harness_unfalsified",
+    "bench_uninvoked",
+    "bench_unfalsified",
+)
+
+#: The quotable shapes: "<n> rows", "<n> bench rows", "<n> UNFALSIFIED rows". Deliberately
+#: narrow — it screens claims about THIS census's rows, not every integer in the file. The
+#: shapes are spelled without an example number for the reason this block exists.
+#:
+#: ``(?<![\w.])`` and not ``(?<![\d.])``: the looser guard read the ``13`` of ``R13 applies
+#: to every row of this census`` as a row count, and a screen that convicts its own prose
+#: for containing a rule name gets switched off.
+#:
+#: The label between the number and `rows` is CAPTURED, not skipped: see
+#: :func:`_bound_count_key`. A number that is a real count of something else is not a
+#: witness for the collection a sentence actually names.
+ROW_CLAIM = re.compile(r"(?<![\w.])(\d[\d,]*)\s+((?:[A-Za-z_/.`-]+\s+){0,3})rows?\b")
+
+#: The same claim with the noun ``rows`` left out: "<n> bench unfalsified", "<n>
+#: uninvoked". This is the shape the review found in this file's own docstring — an
+#: example spelled ``"<n> bench unfalsified "`` — which the row-shaped screen could not
+#: see because the word it keys on was not in it. A count of a labelled collection is a
+#: claim about that collection whether or not the sentence spells the noun.
+ARRAY_CLAIM = re.compile(
+    r"(?<![\w.])(\d[\d,]*)\s+((?:[A-Za-z_`.-]+\s+){0,2}"
+    r"(?:uninvoked|unfalsified|ambiguous))(?![\w-])",
+    re.IGNORECASE,
+)
+
+#: A row claim scoped to A SET OF MODULES: "<n> rows across these four modules",
+#: "<n> rows in the four modules above", "<n> rows over these modules".
+#:
+#: WHY THIS NEEDED ITS OWN SHAPE.  A module-scoped claim passed the screen because its
+#: number was a real derived count — of ONE of the modules named, not of the set. A screen
+#: that asks only "does some derived count equal this integer?" cannot convict a sentence
+#: whose number belongs to a different collection than its subject, and this census derives
+#: a per-module count for every bench module for it to borrow from. So a module-scoped
+#: claim is bound to the sum over the modules ITS OWN SCOPE NAMES, and the cardinality word
+#: is bound to how many it names. The specimens are in :data:`STALE_SPECIMENS`, not here.
+MODULE_SET_CLAIM = re.compile(
+    r"(?<![\w.])(\d[\d,]*)\s+(?:[A-Za-z_/.`-]+\s+){0,3}rows?\s+"
+    r"(?:across|in|over|for|among|between)\s+"
+    r"(?:all\s+|both\s+)?(?:these|those|the)\s+"
+    r"(?:([A-Za-z]+|\d+)\s+)?modules?\b",
+    re.IGNORECASE,
+)
+
+#: The arithmetic form of the same claim: "the four modules … sum to <n>", "the sum over
+#: these modules … is <n>". Its own shape because the sentence that shipped stale said the
+#: sum rather than the rows, and a screen keyed on ``rows`` read straight past it.
+MODULE_SUM_CLAIM = re.compile(
+    r"(?:(?:these|those|the)\s+(?:(?P<card_a>[A-Za-z]+|\d+)\s+)?modules?\b"
+    r".{0,160}?\bsums?\s+to\s+(?P<sum_a>\d[\d,]*)"
+    r"|\bsum\s+(?:over|of|across)\s+(?:all\s+)?(?:these|those|the)\s+"
+    r"(?:(?P<card_b>[A-Za-z]+|\d+)\s+)?modules?\b.{0,160}?\bis\s+(?P<sum_b>\d[\d,]*))",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: Cardinality words a module-set claim may spell its module count with.
+CARDINALS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+             "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+
+#: A module path as the census spells one, so a claim can be bound to the modules named
+#: beside it rather than to whatever modules a reader assumes.
+MODULE_NAME = re.compile(r"\b((?:bench|rust|tests|ci)/[A-Za-z0-9_./-]+\.py)\b")
+
+#: Words that bind a plain row claim to one named collection. A claim that says which
+#: collection it is counting is checked against THAT collection; a bare "<n> rows" with no
+#: label still falls back to "some derived count equals it", because there is nothing in
+#: the sentence to bind it to.
+_ROW_DOMAINS = ("harness", "bench")
+_ROW_STATES = ("uninvoked", "unfalsified", "ambiguous")
+
+#: Words that make a labelled claim a DELTA rather than a total. `1 NEW uninvoked
+#: instrument(s)` is this census's own drift line — a count of what changed in one run —
+#: and `counts.uninvoked` is the size of the collection. Binding one to the other is the
+#: borrowing this screen exists to stop, with the sign reversed: it would convict a
+#: correct sentence for disagreeing with a collection it was never about. This census
+#: derives totals and not deltas, so a delta-qualified claim is OUT OF SCOPE and is said
+#: to be, rather than silently bound to the nearest number of the right shape.
+_DELTA_WORDS = frozenset({"new", "fewer", "more", "additional", "extra", "remaining"})
+
+#: Sentinel returned by :func:`_bound_count_key` for a delta-qualified claim.
+_DELTA = "<delta>"
+
+#: The qualified names of this census's own collections. A file that mentions one of
+#: these is talking about THIS census; the bare state words (`uninvoked`, `ambiguous`)
+#: are ordinary English in half the tree and are not evidence of subject.
+_CENSUS_COLLECTION_NAMES = tuple(n for n in COUNTED_ARRAYS if "_" in n)
+
+# ---------------------------------------------------------------------------
+# THE STALE SENTENCES, AS DATA — SO NO PROSE HAS TO SPELL ONE AGAIN.
+#
+# Naming a defect means quoting it, and quoting a stale count means typing that number
+# into a file this screen reads. The review's finding was exactly that: the sentences
+# describing the defect had become fresh instances of it.
+#
+# So the specimens live here once, as strings, and nowhere else. Prose refers to them by
+# KEY (`STALE_SPECIMENS["module_sum"]`) and never by digit; the tests plant them by
+# reading this table rather than by retyping it, which is why the always-on test module
+# contains no census numeral at all.
+#
+# `specimen_offenders` is the witness that keeps this table from becoming the loophole:
+# every entry must STILL be convicted by the live screen, evaluated in the most favourable
+# scope there is — the very module set the original entry named. A specimen that stops
+# being stale is red, because it is then a live claim wearing a historical label.
+STALE_SPECIMENS: "dict[str, str]" = {
+    "bare_row": "85 bench rows read `unfalsified`",
+    "labelled_row": "162 bench unfalsified rows",
+    "labelled_array": "162 bench unfalsified",
+    "module_set": "18 rows across these four modules",
+    "module_sum": "the four modules the entry names sum to 43",
+}
+
+
+def _bound_count_key(label: str) -> "str | None":
+    """The one count in ``counts`` a labelled row claim is about.
+
+    ``STALE_SPECIMENS["labelled_array"]``'s label → ``bench_unfalsified``;
+    ``"`counts.uninvoked` "`` → ``uninvoked``; ``"warm "`` → ``None`` (unbound, judged
+    against every derived number); ``"NEW uninvoked "`` → :data:`_DELTA` (a count of what
+    changed in one run, which this census does not derive at all). Domains and states are
+    read separately so ``counts.bench_unfalsified``, ``bench-unfalsified`` and
+    ``bench UNFALSIFIED`` all bind to the same collection — the point is the collection,
+    not the punctuation.
+    """
+    words = {w for w in re.split(r"[^A-Za-z]+", label.lower()) if w}
+    if words & _DELTA_WORDS:
+        return _DELTA
+    state = next((s for s in _ROW_STATES if s in words), None)
+    if state is None:
+        return None
+    domain = next((d for d in _ROW_DOMAINS if d in words), None)
+    key = f"{domain}_{state}" if domain else state
+    return key if key in COUNTED_ARRAYS else None
+
+
+def baseline_counts(base: dict) -> dict:
+    """Every summary number the census publishes, derived from the arrays it summarises."""
+    counts: dict = {k: len(base.get(k, [])) for k in COUNTED_ARRAYS}
+    by_module: dict[str, int] = {}
+    for row in base.get("bench_unfalsified", []):
+        module = row.split("::")[0]
+        by_module[module] = by_module.get(module, 0) + 1
+    counts["bench_unfalsified_by_module"] = dict(sorted(by_module.items()))
+    return counts
+
+
+def derived_numbers(counts: dict) -> "set[int]":
+    """The integers prose is allowed to quote as a row count."""
+    out = {v for v in counts.values() if isinstance(v, int)}
+    out |= set(counts.get("bench_unfalsified_by_module", {}).values())
+    return out
+
+
+def _strings(node, path="") -> "list[tuple[str, str]]":
+    if isinstance(node, str):
+        return [(path, node)]
+    if isinstance(node, dict):
+        return [x for k, v in node.items() for x in _strings(v, f"{path}.{k}" if path else k)]
+    if isinstance(node, list):
+        return [x for i, v in enumerate(node) for x in _strings(v, f"{path}[{i}]")]
+    return []
+
+
+def _entries(node, path=""):
+    """Every dict in ``node``, with its key path. A hand entry is the scope a claim binds in."""
+    if isinstance(node, dict):
+        yield path, node
+        for k, v in node.items():
+            yield from _entries(v, f"{path}.{k}" if path else k)
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from _entries(v, f"{path}[{i}]")
+
+
+def entry_modules(entry: dict) -> "list[str]":
+    """The modules a census entry declares itself to be about, in declaration order.
+
+    Read from ``instrument`` when the entry has one, because that is the field that says
+    what the entry IS about; anything else in the entry may name a module in passing (the
+    test file that screens it, a module it is contrasted with) and binding to those would
+    let the subject of a claim drift with its prose.
+    """
+    subject = entry.get("instrument")
+    if not isinstance(subject, str):
+        return []
+    seen: "list[str]" = []
+    for name in MODULE_NAME.findall(subject):
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def module_set_claims(base: dict, counts: dict) -> "list[str]":
+    """Module-scoped row claims that the named modules' own rows do not add up to."""
+    offenders: "list[str]" = []
+    for path, entry in _entries(base):
+        if path == "counts" or path.startswith("counts."):
+            continue
+        modules = entry_modules(entry)
+        for key, value in entry.items():
+            if not isinstance(value, str):
+                continue
+            where = f"{path}.{key}" if path else key
+            offenders += _module_scope_claims(value, modules, counts, where)
+    return offenders
+
+
+def _module_scope_claims(text: str, modules: "list[str]", counts: dict,
+                         where: str) -> "list[str]":
+    """The module-scoped claims in *text*, bound to *modules*. Also returns their spans."""
+    return [msg for msg, _span in _module_scope_claims_spanned(text, modules, counts, where)]
+
+
+def _module_scope_claims_spanned(text: str, modules: "list[str]", counts: dict,
+                                 where: str) -> "list[tuple[str, tuple[int, int]]]":
+    by_module = counts.get("bench_unfalsified_by_module", {})
+    out: "list[tuple[str, tuple[int, int]]]" = []
+    for rx, take in ((MODULE_SET_CLAIM, "set"), (MODULE_SUM_CLAIM, "sum")):
+        for m in rx.finditer(text):
+            if take == "set":
+                raw, spelled = m.group(1), m.group(2)
+            else:
+                raw = m.group("sum_a") or m.group("sum_b")
+                spelled = m.group("card_a") or m.group("card_b")
+            n = int(str(raw).replace(",", ""))
+            span = (m.start(), m.end())
+            quote = " ".join(m.group(0).split())
+            if not modules:
+                out.append((
+                    f"{where}: {quote!r} — nothing in the scope of this claim names a "
+                    f"module, so there is no module set for it to be a count of. A "
+                    f"module-scoped figure with no module set is unwitnessable by "
+                    f"construction", span))
+                continue
+            total = sum(by_module.get(mod, 0) for mod in modules)
+            if n != total:
+                out.append((
+                    f"{where}: {quote!r} — the rows of {modules} sum to {total}, not {n}. "
+                    f"A module-set claim is bound to the modules its own scope names, so "
+                    f"another collection's count cannot witness it", span))
+            spelled = (spelled or "").lower()
+            if spelled:
+                want = CARDINALS.get(spelled)
+                if want is None and spelled.isdigit():
+                    want = int(spelled)
+                if want is not None and want != len(modules):
+                    out.append((
+                        f"{where}: {quote!r} — this scope names {len(modules)} module(s), "
+                        f"not {want}", span))
+    return out
+
+
+def claim_offenders(text: str, modules: "list[str]", counts: dict,
+                    where: str = "<text>") -> "list[str]":
+    """Every numeric census claim in *text* that its own subject does not witness.
+
+    THE ONE BINDING RULE, USED BY EVERY CORPUS.  Three bindings, tightest first:
+
+    1. A module-scoped claim (:data:`MODULE_SET_CLAIM`, :data:`MODULE_SUM_CLAIM`) must
+       equal the sum over the modules *its own scope* names, and its cardinality word must
+       equal how many that is. A scope naming none is refused rather than waved through.
+    2. A labelled claim (:data:`ROW_CLAIM`, :data:`ARRAY_CLAIM`) must equal the collection
+       its label names — ``counts[key]``, not "any number this census derives".
+    3. Only a claim with neither — a bare ``<n> rows`` with nothing in the sentence to bind
+       it to — falls back to "some derived count equals it".
+
+    Tightest-first is the point. A number bound by (1) is not re-judged by (2) or (3), so a
+    module-set figure cannot be acquitted by a per-module count that happens to match it,
+    and a labelled figure cannot be acquitted by an adjacent field's number.
+    """
+    allowed = derived_numbers(counts)
+    offenders: "list[str]" = []
+    consumed: "list[tuple[int, int]]" = []
+    for msg, span in _module_scope_claims_spanned(text, modules, counts, where):
+        offenders.append(msg)
+        consumed.append(span)
+    for m in MODULE_SET_CLAIM.finditer(text):
+        consumed.append((m.start(), m.end()))
+    for m in MODULE_SUM_CLAIM.finditer(text):
+        consumed.append((m.start(), m.end()))
+
+    def _already_bound(start: int) -> bool:
+        return any(a <= start < b for a, b in consumed)
+
+    for rx in (ROW_CLAIM, ARRAY_CLAIM):
+        for m in rx.finditer(text):
+            if _already_bound(m.start()):
+                continue
+            consumed.append((m.start(), m.end()))
+            n = int(m.group(1).replace(",", ""))
+            quote = " ".join(m.group(0).split())
+            key = _bound_count_key(m.group(2) or "")
+            if key is _DELTA or key == _DELTA:
+                continue  # a count of what changed in one run; not a collection size
+            if key is not None:
+                if n != counts.get(key):
+                    offenders.append(
+                        f"{where}: {quote!r} — `counts.{key}` is {counts.get(key)}, not "
+                        f"{n}. A claim that names a collection is checked against that "
+                        f"collection, not against every number this census derives")
+            elif n not in allowed:
+                offenders.append(f"{where}: {quote!r} — no derived count equals {n}")
+    return offenders
+
+
+def prose_row_claims(base: dict, counts: dict) -> "list[str]":
+    """Prose census claims in ``base`` that the collections they name do not witness.
+
+    Entry-scoped: a claim binds to the modules the entry it lives in declares, because the
+    entry is the unit a reader reads it in. See :func:`claim_offenders` for the rule.
+    """
+    scoped = {k: v for k, v in base.items() if k != "counts"}
+    offenders: "list[str]" = []
+    for path, entry in _entries(scoped):
+        modules = entry_modules(entry)
+        for key, value in entry.items():
+            if not isinstance(value, str):
+                continue
+            offenders += claim_offenders(value, modules, counts,
+                                         f"{path}.{key}" if path else key)
+    return offenders
+
+
+# ---------------------------------------------------------------------------
+# THE SOURCE CORPUS. Comments, docstrings and test prose are claims too.
+#
+# The screen above reads the generated document. The stale figures it was written to
+# remove were, at the same moment, sitting in this file's own `#` comments and in the
+# always-on test module's prose — described there as the defect, spelled there as a fresh
+# instance of it, and invisible because the corpus was one file.
+#
+# A comment is where a reader looks to find out what a mechanism means, so a count typed
+# into one is quoted exactly as readily as a count in the artifact. These files are
+# therefore screened with the SAME binding rule, over their comments, docstrings and
+# string constants — the surfaces a number can be written on without the interpreter ever
+# reading it back.
+SOURCE_CLAIM_CORPUS: "dict[str, str]" = {
+    "rust/tools/audit_instruments.py": (
+        "this screen's own comments and docstrings. It explains the defect, so it is the "
+        "one file most likely to quote a stale figure while describing one."
+    ),
+    "tests/ops/test_harness_census.py": (
+        "the always-on test module for this census. Its prose states what each arm is "
+        "for, in numbers, which is what makes it prose a reader trusts."
+    ),
+}
+
+#: Where the census's numbers may legitimately appear as digits in a screened source file:
+#: nowhere. A source file can always DERIVE the figure — `f\"{counts['bench_unfalsified']}\"`
+#: — so the only hand-typed numerals left are the historical specimens, and those live in
+#: :data:`STALE_SPECIMENS` where :func:`specimen_offenders` proves they are still stale.
+#: The assignment's own source span is exempted structurally, by parsing this file, rather
+#: than by a comment marker a future edit could copy onto a live claim.
+_SPECIMEN_TABLE = "STALE_SPECIMENS"
+
+
+def _specimen_span(text: str) -> "tuple[int, int]":
+    """Character span of the :data:`STALE_SPECIMENS` assignment in *text*, or ``(-1, -1)``."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:  # pragma: no cover - a corpus file that will not parse
+        return (-1, -1)
+    starts = [0]
+    for line in text.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    for node in tree.body:
+        targets = getattr(node, "targets", []) or ([node.target] if
+                                                   isinstance(node, ast.AnnAssign) else [])
+        names = [t.id for t in targets if isinstance(t, ast.Name)]
+        if _SPECIMEN_TABLE in names and node.end_lineno is not None:
+            return (starts[node.lineno - 1], starts[node.end_lineno])
+    return (-1, -1)
+
+
+def source_prose(text: str) -> "list[tuple[int, str]]":
+    """Every comment block and string constant in Python *text*, as ``(line, block)``.
+
+    Comment runs are joined into one block so a claim and the module names it is about can
+    be bound together across the line wrap that separates them — the specimen the review
+    found spanned three comment lines, and a line-at-a-time screen would have read the
+    number and the module names as unrelated.
+
+    F-strings contribute only their literal parts, which is the whole point: a figure
+    written as ``f"{counts['bench_unfalsified']} rows"`` has no digits in the source and
+    cannot go stale, and this screen must not stand in the way of the fix it is asking for.
+    """
+    blocks: "list[tuple[int, str]]" = []
+    pending: "list[str]" = []
+    start = 0
+    prev = -2
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):  # pragma: no cover
+        toks = []
+    for tok in toks:
+        if tok.type != tokenize.COMMENT:
+            continue
+        line = tok.start[0]
+        if line != prev + 1 and pending:
+            blocks.append((start, " ".join(pending)))
+            pending = []
+        if not pending:
+            start = line
+        pending.append(tok.string.lstrip("#: ").rstrip())
+        prev = line
+    if pending:
+        blocks.append((start, " ".join(pending)))
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:  # pragma: no cover
+        tree = None
+    if tree is not None:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                blocks.append((node.lineno, " ".join(node.value.split())))
+    return blocks
+
+
+def source_claim_offenders(text: str, counts: dict, name: str = "<source>",
+                           *, exempt_specimen_table: bool = False) -> "list[str]":
+    """Census count claims in one source file's comments, docstrings and string constants.
+
+    Same binding rule as the baseline's prose (:func:`claim_offenders`); the scope a claim
+    binds in is the comment block or the string it lives in, because that is the unit a
+    reader reads.
+    """
+    skip = _specimen_span(text) if exempt_specimen_table else (-1, -1)
+    exempt = set()
+    if skip != (-1, -1):
+        head = text[:skip[0]].count("\n") + 1
+        tail = text[:skip[1]].count("\n") + 1
+        exempt = set(range(head, tail + 1))
+    offenders: "list[str]" = []
+    for line, block in source_prose(text):
+        if line in exempt:
+            continue
+        seen: "list[str]" = []
+        for mod in MODULE_NAME.findall(block):
+            if mod not in seen:
+                seen.append(mod)
+        offenders += claim_offenders(block, seen, counts, f"{name}:{line}")
+    return offenders
+
+
+def specimen_offenders(base: dict, counts: dict) -> "list[str]":
+    """Every entry of :data:`STALE_SPECIMENS` that the live census would NOT convict.
+
+    The witness that keeps the specimen table from becoming the loophole in the screen it
+    exempts. Each specimen is judged in the most favourable scope available — the very
+    module set the census entry it came from names — so a specimen that survives here has
+    stopped being stale and is a live claim wearing a historical label.
+
+    Both polarities in one arm: the table cannot quietly hold a true statement, and the
+    screen cannot quietly stop firing on the sentences it was built for.
+    """
+    modules = four_module_scope(base, counts)
+    out: "list[str]" = []
+    for key, text in STALE_SPECIMENS.items():
+        if not claim_offenders(text, modules, counts, f"STALE_SPECIMENS[{key!r}]"):
+            out.append(
+                f"STALE_SPECIMENS[{key!r}] = {text!r} is no longer stale: the live screen "
+                f"acquits it against the census as it stands (modules {modules}). A "
+                f"specimen that has become true is a claim, not a historical quotation, "
+                f"and prose citing it now cites a figure nothing derives")
+    return out
+
+
+def four_module_scope(base: dict, counts: dict) -> "list[str]":
+    """The bench modules of the census entry the module-set specimens came from.
+
+    Read from the baseline rather than listed here, so the specimen witness is judged
+    against the module set the census actually declares and not against one this file
+    remembers.
+    """
+    by_module = counts.get("bench_unfalsified_by_module", {})
+    best: "list[str]" = []
+    for _path, entry in _entries(base):
+        modules = entry_modules(entry)
+        if len(modules) > len(best) and all(m in by_module for m in modules):
+            best = modules
+    return best
+
+
+def claim_corpus_candidates(repo=None) -> "list[str]":
+    """In-frame files that make a census count claim, as repo-relative posix paths.
+
+    The arm that stops :data:`SOURCE_CLAIM_CORPUS` from silently going out of date. A file
+    qualifies when it makes a claim THIS census could witness: a module-scoped shape (which
+    is census-specific by construction), or a claim whose label binds to one of this
+    census's collections in a file that names one of them by its qualified name.
+
+    The qualified names matter. ``uninvoked`` and ``ambiguous`` are ordinary English in
+    half this tree, and a candidate rule keyed on the bare words nominated every design
+    document in ``docs/`` — a screen that demands a declaration for every file that uses a
+    common word is the reject-all failure mode, and it gets switched off within a week.
+    """
+    root = REPO if repo is None else Path(repo)
+    found: "list[str]" = []
+    for sub in ("rust/tools", "tests", "bench", "ci", "docs"):
+        base = root / sub
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if path.suffix.lower() not in (".py", ".json", ".md"):
+                continue
+            if set(path.relative_to(root).parts) & FRAME_IGNORE_DIRS:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:  # pragma: no cover
+                continue
+            if MODULE_SET_CLAIM.search(text) or MODULE_SUM_CLAIM.search(text):
+                found.append(path.relative_to(root).as_posix())
+                continue
+            if not any(name in text for name in _CENSUS_COLLECTION_NAMES):
+                continue
+            bound = False
+            for rx in (ROW_CLAIM, ARRAY_CLAIM):
+                for m in rx.finditer(text):
+                    key = _bound_count_key(m.group(2) or "")
+                    if key is not None and key != _DELTA:
+                        bound = True
+                        break
+                if bound:
+                    break
+            if bound:
+                found.append(path.relative_to(root).as_posix())
+    return found
+
+
+def corpus_claim_offenders(counts: dict, repo=None) -> "list[str]":
+    """Run the source screen over every declared file, and check the corpus is complete."""
+    root = REPO if repo is None else Path(repo)
+    self_rel = HERE.relative_to(REPO).as_posix()
+    offenders: "list[str]" = []
+    for rel in SOURCE_CLAIM_CORPUS:
+        path = root / rel
+        if not path.is_file():
+            raise CensusInstrumentError(
+                f"{rel} is declared in SOURCE_CLAIM_CORPUS and is not in the tree; the "
+                f"claim screen did not read it, so it observed nothing there")
+        offenders += source_claim_offenders(
+            path.read_text(encoding="utf-8"), counts, rel,
+            exempt_specimen_table=rel == self_rel)
+    declared = set(SOURCE_CLAIM_CORPUS) | {
+        BASELINE.relative_to(root).as_posix() if BASELINE.is_relative_to(root)
+        else BASELINE.name}
+    for rel in claim_corpus_candidates(root):
+        if rel not in declared:
+            offenders.append(
+                f"{rel}: makes a census count claim and is not declared in "
+                f"SOURCE_CLAIM_CORPUS. Add it with a reason, or remove the claim — a "
+                f"corpus that does not grow with the claims is how this screen went "
+                f"blind the first time")
+    return offenders
+
 
 # ---------------------------------------------------------------------------
 # THE FRAME. Declared here, printed on every path, and checked.
@@ -420,10 +1015,13 @@ HARNESS_GATE = re.compile(r"require_vulkan|skipif|\bskip\b|xfail|slow|gpu|requir
 # author the vocabulary was read off, and the vocabularies here genuinely differ: Niobe
 # writes `certify`/`grade`/`quiescence`, Trinity writes `assert_`/`require_`.
 #
-# Consequence, stated up front so it is not read as a regression: this admits ~90 rows,
-# most of them `unfalsified`. `unfalsified` is the honest state of an instrument nothing
-# has watched disagree. It was always the state of these; the census simply could not say
-# so, because it had never looked.
+# Consequence, stated up front so it is not read as a regression: this admits most of
+# bench/ as rows, most of them `unfalsified` (the current tally is derived into
+# `instrument_census.json`'s `counts`, and is deliberately not restated here — a figure
+# typed into a comment beside the collection it summarises goes stale in silence, which is
+# what the self-count arm above exists to stop). `unfalsified` is the honest state of an
+# instrument nothing has watched disagree. It was always the state of these; the census
+# simply could not say so, because it had never looked.
 BENCH_FN = re.compile(r"^(?!main$)(?!_)")
 
 # Screened modules: those that render a verdict about a measurement.
@@ -444,6 +1042,20 @@ BENCH_INSTRUMENT_FILES = [
     # to keep, so it is screened rather than treated as capture.
     "ceiling.py",
     "clock_log.py",
+    # Arrived with the issue #69 CUDA competition harness. All four render a verdict about
+    # a measurement rather than record one, which is the line this list draws:
+    #   `cuda_competition.py`  -- ADMISSIBLE / SPLIT_FRAME / INSTRUMENT_ERROR per arm, plus
+    #                             the numeric-equivalence verdict across arms.
+    #   `cuda_profile.py`      -- GPU_TIME_MEASURED / GPU_TIME_UNAVAILABLE / TRACE_ABSENT,
+    #                             and refuses rather than sums when the phase tree disagrees.
+    #   `cuda_probe.py`        -- decides whether a node partition actually ran on the EP it
+    #                             names, which is a verdict about what was measured.
+    #   `bench_models.py`      -- MODEL_OK / MODEL_ABSENT / MODEL_DIGEST_MISMATCH. The digest
+    #                             mismatch is explicitly "a finding, not a re-pin".
+    "cuda_competition.py",
+    "cuda_profile.py",
+    "cuda_probe.py",
+    "bench_models.py",
     # Arrived with issue #56 (Niobe, the real-model harness). Screened rather than held
     # out because its `classify_*`/`bitwise_identical` functions decide whether two arms
     # of a benchmark agree, and `dispatch_diagnosis`/`fallback_diagnosis` decide whether a
@@ -530,29 +1142,87 @@ BENCH_HELD_OUT: dict[str, str] = {
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."
     ),
+    # Arrived with the issue #69 CUDA competition harness (2026-08-07, Tank). Declared by
+    # hand rather than left to drift, and each with the reason it is NOT an instrument.
+    "cuda_workloads.py": (
+        "workload table — data. It builds feeds and digests them so two arms can be shown "
+        "the same bytes; it renders no verdict about any measurement taken on them."
+    ),
+    "trace_vocabulary.py": (
+        "parser — reads the span vocabulary declared in rust/src/trace.rs so bench/ can be "
+        "checked against it instead of trusted. `prefix_collisions` reports a list; the "
+        "verdict that a collision is fatal is asserted by bench/test_trace_vocabulary.py "
+        "and by the Rust test `no_trace_name_is_a_prefix_of_another`, in both languages."
+    ),
+    "public_paths.py": (
+        "provenance sanitiser — it renders a verdict about a PAYLOAD (does this artifact "
+        "name a machine?), not about a measurement, which is the line this list draws. It "
+        "refuses in TWO shapes, and saying only the first is what made the previous "
+        "version of this note wrong: `dump_public_json`/`assert_public`/`write_public_text` "
+        "raise `PathLeak`, and `contained_child`/`resolve_public_path` are TOTAL — they "
+        "return `None` for a handle they will not stand behind, because their callers "
+        "record the refusal beside the absent file rather than propagating an exception. "
+        "Both shapes are screened in bench/test_public_paths.py: the raising ones through "
+        "the `sanitise=False` path that proves the refusal fires, and the total ones "
+        "through a specimen table of malformed handles asserted to be refused AND a "
+        "legitimate contained handle asserted to resolve. `contained_child`'s totality is "
+        "asserted as such — `test_contained_child_never_raises_whatever_it_is_handed` "
+        "feeds it every specimen plus a non-path object, because a resolver that raises is "
+        "one whose `is None` callers are bypassed rather than told no."
+    ),
+    "gen_public_path_legacy.py": (
+        "generator for the checked-in legacy ratchet bench/public_path_legacy.json — the "
+        "same relationship rust/tools/instrument_census.json's generator has to this file. "
+        "It surveys; the ratchet's verdict is asserted in bench/test_public_paths.py."
+    ),
+    "test_cuda_competition.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_cuda_profile.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_trace_vocabulary.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_public_paths.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries both "
+        "polarities of the provenance sanitiser and the repository-wide leak ratchet."
+    ),
+    "test_result_staleness.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries both "
+        "polarities of `cuda_competition.ep_provenance` and the screen that stops a "
+        "committed result outliving the EP build it measured."
+    ),
 }
 
 
-def _harness_instruments(tests_root=None, files=None, fn_re=None, prefix="tests") -> dict[str, str]:
-    """Return {fn_name: "file::fn"} for every harness instrument."""
+def _harness_instruments(tests_root=None, files=None, fn_re=None, prefix="tests") -> dict[str, dict]:
+    """Return ``{"<prefix>/<rel>::<fn>": {...}}`` for every harness instrument.
+
+    KEYED BY FILE AND FUNCTION, NEVER BY FUNCTION ALONE.  The first version of this
+    returned ``{fn_name: qualified_id}``, and a dict keyed on a bare name silently keeps
+    the LAST module that defines it.  Eight names collide across the screened bench
+    modules — ``attribute``, ``audit``, ``describe``, ``load``, ``probe``, ``render``,
+    ``sha256_file``, ``summarise`` — so ``phases.py::attribute``, ``devices.py::probe`` and
+    ``win_gpu_counters.py::summarise`` were not merely mis-scored: they were absent from
+    the census, which printed ``PASS`` over a list they were never in.  A screen whose
+    frame is decided by dict-insertion order is the ``out-of-frame`` state applied to
+    itself.
+    """
     import ast as _ast
 
     tests_root = TESTS if tests_root is None else Path(tests_root)
     files = HARNESS_INSTRUMENT_FILES if files is None else files
     fn_re = HARNESS_FN if fn_re is None else fn_re
-    out: dict[str, str] = {}
+    out: dict[str, dict] = {}
     for rel in files:
         path = tests_root / rel
         tree = _ast.parse(path.read_text(encoding="utf-8"))
         for node in tree.body:
             if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
                 if fn_re.search(node.name):
-                    out[node.name] = f"{prefix}/{rel}::{node.name}"
+                    qual = f"{prefix}/{rel}::{node.name}"
+                    out[qual] = {"id": qual, "fn": node.name, "rel": rel,
+                                 "module": Path(rel).stem, "path": path.resolve()}
     return out
 
 
-def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
-    """Return the subset of harness instruments that are pytest fixtures.
+def _fixture_instruments(tests_root=None, files=None, fn_re=None, prefix="tests") -> set[str]:
+    """Return the subset of harness instruments that are pytest fixtures, by qualified id.
 
     A fixture is invoked by **parameter name**, never by a call expression, so the
     call-shaped caller model that screens every other instrument scores one as
@@ -582,7 +1252,7 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
                 continue
             for dec in node.decorator_list:
                 if "fixture" in _ast.dump(dec):
-                    out.add(node.name)
+                    out.add(f"{prefix}/{rel}::{node.name}")
                     break
     return out
 
@@ -618,8 +1288,13 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
 # actually varies the thing under test.  That is earned by mutation —
 # `bench/test_devices_identity.py` for this instrument, `tests/ops/test_guard_d.py` for
 # the harness domain — and it is not claimed by this screen.
-VALUE_REJECT_FN = frozenset({"refuses"})
-VALUE_ACCEPT_FN = frozenset({"selects"})
+# A verdict gate is total in a second shape: it takes a record and returns the same record
+# with its green verdict either withheld or left standing, because the refusal has to travel
+# with the numbers it disqualifies.  `withholds(...)`/`publishes(...)` name those polarities
+# and enforce them at run time exactly as `refuses`/`selects` do — a gate wired to nothing
+# cannot pass `withholds`, and a gate that fires on everything cannot pass `publishes`.
+VALUE_REJECT_FN = frozenset({"refuses", "withholds", "omits"})
+VALUE_ACCEPT_FN = frozenset({"selects", "publishes", "records"})
 
 
 def _polarity_wrapped(fn, wrapper_names: "frozenset[str]") -> "set[int]":
@@ -659,7 +1334,188 @@ def _is_gated(fn) -> bool:
     return False
 
 
-def harness_survey(tests_root=None, files=None, fn_re=None, prefix="tests") -> list[dict]:
+def _dotted(node) -> "str | None":
+    """``self._mod`` / ``mod`` / ``a.b.c`` as a string; anything else is None."""
+    import ast as _ast
+
+    parts: list[str] = []
+    while isinstance(node, _ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, _ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _module_bindings(tree, self_module: str) -> dict:
+    """What every name in one file is bound to, as far as its own imports declare it.
+
+    Returns ``{"aliases": {local: module}, "names": {local: (module, original_fn)},
+    "stars": [module], "self": self_module, "shadowed": {name}}``.
+
+    This is deliberately a *declaration* reader and not an import graph: it believes what
+    the file says about itself and nothing else.  `import cuda_workloads as cw` binds
+    ``cw`` to the module ``cuda_workloads``; `from real_model import build_feeds` binds the
+    bare name; `from x import *` binds nothing this screen can name, and a module-level
+    ``def``/assignment of the same name shadows the import.  Everything else is unresolved,
+    and unresolved is not credit.
+
+    ONE INFERENCE BEYOND THE IMPORT STATEMENTS, AND WHY IT IS NOT A SLIPPERY SLOPE.  A
+    module that may be absent is imported inside an accessor
+    (``def _windows_module(): import win_gpu_counters; return win_gpu_counters``) and used
+    through the value it returns — ``mod = _windows_module()``, then ``mod.observe(...)``.
+    That is a real call to a real instrument, and refusing to see it would have printed
+    ``UNINVOKED win_gpu_counters.py::observe``: a *fabricated detection*, which this file
+    already records (``instrument_census.json``, the ``require_vulkan`` row) as worse than
+    a missing row, because someone will act on it.  So an assignment from a function whose
+    every ``return`` is a module this file imported binds its target — including
+    ``self._mod`` — to that module.  Nothing else infers anything.
+    """
+    import ast as _ast
+
+    aliases: dict[str, str] = {}
+    names: dict[str, tuple[str, str]] = {}
+    stars: list[str] = []
+    shadowed: set[str] = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Import):
+            for a in node.names:
+                mod = a.name.split(".")[-1]
+                aliases[a.asname or a.name.split(".")[0]] = mod
+                if a.asname is None and "." not in a.name:
+                    aliases[a.name] = mod
+        elif isinstance(node, _ast.ImportFrom):
+            mod = (node.module or "").split(".")[-1]
+            for a in node.names:
+                if a.name == "*":
+                    stars.append(mod)
+                    continue
+                # `from bench import devices` binds a MODULE under a local name; the two
+                # cases are told apart at resolution time by which table matches.
+                aliases.setdefault(a.asname or a.name, a.name)
+                names[a.asname or a.name] = (mod, a.name)
+        elif isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            if node.name not in names:
+                shadowed.add(node.name)
+        elif isinstance(node, _ast.Assign):
+            for t in node.targets:
+                if isinstance(t, _ast.Name):
+                    shadowed.add(t.id)
+
+    # Accessor functions: every return statement hands back a module imported above.
+    accessors: dict[str, str] = {}
+    for node in _ast.walk(tree):
+        if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        returned = {r.value.id for r in _ast.walk(node)
+                    if isinstance(r, _ast.Return) and isinstance(r.value, _ast.Name)}
+        mods = {aliases[n] for n in returned if n in aliases}
+        if len(mods) == 1 and len(returned) == len(mods):
+            accessors[node.name] = mods.pop()
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Assign):
+            continue
+        mod = None
+        value = node.value
+        if isinstance(value, _ast.Call) and isinstance(value.func, _ast.Name):
+            mod = accessors.get(value.func.id)
+        elif isinstance(value, _ast.Name):
+            mod = aliases.get(value.id)
+        if mod is None:
+            continue
+        for t in node.targets:
+            dotted = _dotted(t)
+            if dotted:
+                aliases[dotted] = mod
+    return {"aliases": aliases, "names": names, "stars": stars,
+            "self": self_module, "shadowed": shadowed}
+
+
+def _call_target(node, binds: dict, by_module: dict, by_fn: dict):
+    """Which instrument, if any, this call expression names. Fails closed.
+
+    Returns ``(qualified_id, None)`` when the caller's own imports decide it, and
+    ``(None, (why, fn_name))`` when a call *looks* like an instrument by name and the file
+    does not say which module it came from.  ``(None, None)`` is the ordinary case: a call
+    to something that is not an instrument at all.
+
+    The three resolvable shapes, and nothing else:
+
+    * ``mod.fn()`` where ``mod`` is a module this file imported;
+    * ``fn()`` where ``fn`` was imported from a module by name;
+    * ``fn()`` inside the module that defines it.
+
+    `obj.summarise()` on an instance is NOT resolvable — ``win_gpu_counters.summarise`` and
+    ``cuda_competition.summarise`` are both real, and picking one by name is how a census
+    ends up crediting a module that was never called.
+    """
+    import ast as _ast
+
+    def _plausible(name: str) -> bool:
+        """Does this file import any module that defines an instrument of this name?
+
+        The unresolved list is meant to be read, so it reports the sites where a reader
+        could reasonably think an instrument was called: ones whose owning module this
+        file actually imports.  ``Path(x).resolve()`` in a file that has never heard of
+        ``bench_models`` is not an ambiguity about ``bench_models.resolve``; listing it
+        would bury the real cases under a hundred method calls.  Nothing is credited
+        either way — this only decides what gets printed.
+        """
+        owners = {q.split("::")[0].rsplit("/", 1)[-1][:-3] for q in by_fn.get(name, [])}
+        seen = set(binds["aliases"].values()) | {m for m, _ in binds["names"].values()}
+        seen |= set(binds["stars"]) | {binds["self"]}
+        return bool(owners & seen)
+
+    func = node.func
+    if isinstance(func, _ast.Attribute):
+        name = func.attr
+        if name not in by_fn:
+            return None, None
+        value = func.value
+        if isinstance(value, _ast.Name) or isinstance(value, _ast.Attribute):
+            dotted = _dotted(value)
+            mod = binds["aliases"].get(dotted) if dotted else None
+            if mod is not None and (mod, name) in by_module:
+                return by_module[(mod, name)], None
+            if mod is not None:
+                return None, None  # a real module, just not one with this instrument
+        if not _plausible(name):
+            return None, None
+        return None, ("attribute call on a value this file does not bind to a module",
+                      name)
+    if isinstance(func, _ast.Name):
+        name = func.id
+        if name not in by_fn:
+            return None, None
+        bound = binds["names"].get(name)
+        if bound is not None:
+            key = (bound[0], bound[1])
+            if key in by_module:
+                return by_module[key], None
+            return None, None  # imported from somewhere that is not a screened module
+        if name in binds["shadowed"]:
+            # This file defines the name itself, so the call is to its own function. Not
+            # an instrument call, and not an ambiguity either.
+            if (binds["self"], name) in by_module:
+                return by_module[(binds["self"], name)], None
+            return None, None
+        if (binds["self"], name) in by_module:
+            return by_module[(binds["self"], name)], None
+        if binds["stars"]:
+            owners = [q for m in binds["stars"] if (m, name) in by_module
+                      for q in [by_module[(m, name)]]]
+            if len(owners) == 1:
+                return owners[0], None
+            return None, ("star import makes the origin of this name undecidable", name)
+        if not _plausible(name):
+            return None, None
+        return None, ("bare call to an instrument name this file never imported", name)
+    return None, None
+
+
+def harness_survey(tests_root=None, files=None, fn_re=None, prefix="tests",
+                   unresolved_out=None) -> list[dict]:
     """Screen every harness instrument for callers and for two-polarity coverage.
 
     *tests_root* and *files* are parameters rather than constants so this screen can be
@@ -667,52 +1523,82 @@ def harness_survey(tests_root=None, files=None, fn_re=None, prefix="tests") -> l
     ``tests/ops/test_harness_census.py``.  A screen that has only ever been run against the
     real repository, where it happens to print a plausible answer, is precisely the Guard D
     shape it exists to catch.
+
+    CALL SITES ARE RESOLVED MODULE-AWARE (2026-08-07).  A call is credited to an instrument
+    only when the caller file's own imports say which module the name came from — see
+    :func:`_call_target`.  Before this, ``stats`` was keyed by bare function name, so
+    ``bench/test_cuda_workloads.py``'s ``pytest.raises(...)`` around
+    ``cuda_workloads.build_feeds`` was recorded as reject polarity for
+    ``real_model.py::build_feeds``, an instrument that test has never called.  A polarity
+    credit that arrives from another module is worse than a missing one: `unfalsified` is
+    an honest "nobody has watched this", and a borrowed `screened` is a claim that somebody
+    has.
+
+    Unresolved and ambiguous sites are **failed closed** — no credit to anybody — and
+    appended to *unresolved_out* when one is supplied, because a screen that silently drops
+    evidence it could not attribute is reporting a smaller world than it looked at.
     """
     import ast as _ast
 
     tests_root = TESTS if tests_root is None else Path(tests_root)
     files = HARNESS_INSTRUMENT_FILES if files is None else files
     fn_re = HARNESS_FN if fn_re is None else fn_re
-    names = _harness_instruments(tests_root, files, fn_re, prefix)
-    fixtures = _fixture_instruments(tests_root, files, fn_re)
-    stats = {n: {"calls": 0, "reject": 0, "accept": 0} for n in names}
+    instruments = _harness_instruments(tests_root, files, fn_re, prefix)
+    fixtures = _fixture_instruments(tests_root, files, fn_re, prefix)
+    by_module: dict[tuple[str, str], str] = {
+        (rec["module"], rec["fn"]): qual for qual, rec in instruments.items()}
+    by_fn: dict[str, list[str]] = {}
+    for qual, rec in instruments.items():
+        by_fn.setdefault(rec["fn"], []).append(qual)
+    stats = {qual: {"calls": 0, "reject": 0, "accept": 0} for qual in instruments}
+    unresolved: list[dict] = [] if unresolved_out is None else unresolved_out
 
-    owner_files = {tests_root / rel for rel in files}
+    def _record_unresolved(path, node, name, why) -> None:
+        unresolved.append({"file": str(path), "line": getattr(node, "lineno", 0),
+                           "name": name, "why": why,
+                           "candidates": sorted(by_fn.get(name, []))})
+
+    owner_files = {(tests_root / rel).resolve() for rel in files}
     # Calls from inside the owner module count as callers (an instrument invoked at import
     # time, like the Q/DQ oracle probe, is wired) but can never supply a polarity: polarity
     # is a property of a test that was written to watch it disagree.
-    for path in sorted(owner_files):
+    for rel in files:
+        path = (tests_root / rel).resolve()
         tree = _ast.parse(path.read_text(encoding="utf-8"))
+        binds = _module_bindings(tree, Path(rel).stem)
         for node in _ast.walk(tree):
             if not isinstance(node, _ast.Call):
                 continue
-            func = node.func
-            name = (
-                func.attr
-                if isinstance(func, _ast.Attribute)
-                else func.id
-                if isinstance(func, _ast.Name)
-                else None
-            )
-            if name in stats:
-                stats[name]["calls"] += 1
+            target, why = _call_target(node, binds, by_module, by_fn)
+            if target is not None:
+                stats[target]["calls"] += 1
+            elif why:
+                _record_unresolved(path, node, why[1], why[0])
 
     for path in sorted(tests_root.rglob("*.py")):
-        if path in owner_files:
+        if path.resolve() in owner_files:
             continue
         try:
             tree = _ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
+        binds = _module_bindings(tree, path.stem)
         for fn in [n for n in _ast.walk(tree) if isinstance(n, _ast.FunctionDef)]:
             gated = _is_gated(fn)
             # A fixture is depended on by naming it as a parameter.  This is the only
             # invocation it ever gets, so it is counted here and nowhere else.  It never
             # supplies a polarity: nothing in the parameter list says which answer the
-            # fixture gave.
+            # fixture gave.  A fixture name defined by two modules is ambiguous — pytest
+            # would resolve it by conftest scope, which is not visible here — so it is
+            # failed closed rather than credited to whichever one sorts first.
             for arg in fn.args.args:
-                if arg.arg in fixtures:
-                    stats[arg.arg]["calls"] += 1
+                owners = [q for q in by_fn.get(arg.arg, []) if q in fixtures]
+                if len(owners) == 1:
+                    stats[owners[0]]["calls"] += 1
+                elif len(owners) > 1:
+                    _record_unresolved(path, fn, arg.arg,
+                                       "fixture parameter names an instrument defined in "
+                                       "more than one screened module")
             # Map every node in this function to whether it sits inside `pytest.raises`.
             raising: set[int] = set()
             for node in _ast.walk(fn):
@@ -736,39 +1622,35 @@ def harness_survey(tests_root=None, files=None, fn_re=None, prefix="tests") -> l
             for node in _ast.walk(fn):
                 if not isinstance(node, _ast.Call):
                     continue
-                func = node.func
-                name = (
-                    func.attr
-                    if isinstance(func, _ast.Attribute)
-                    else func.id
-                    if isinstance(func, _ast.Name)
-                    else None
-                )
-                if name not in stats:
+                target, why = _call_target(node, binds, by_module, by_fn)
+                if target is None:
+                    if why:
+                        _record_unresolved(path, node, why[1], why[0])
                     continue
-                stats[name]["calls"] += 1
+                stats[target]["calls"] += 1
                 if gated:
                     continue
                 if id(node) in raising or id(node) in value_reject:
-                    stats[name]["reject"] += 1
+                    stats[target]["reject"] += 1
                 else:
-                    stats[name]["accept"] += 1
+                    stats[target]["accept"] += 1
 
     rows: list[dict] = []
-    for name, qual in sorted(names.items()):
-        s = stats[name]
+    for qual, rec in sorted(instruments.items()):
+        s = stats[qual]
         if s["calls"] == 0:
             state = "uninvoked"
         elif s["reject"] and s["accept"]:
             state = "screened"
         else:
             state = "unfalsified"
-        rows.append({"id": qual, "fn": name, "state": state, **s})
+        rows.append({"id": qual, "fn": rec["fn"], "state": state, **s})
     return rows
 
 
 def harness_report(
-    rows: list[dict], title: str | None = None, files=None, note: str | None = None
+    rows: list[dict], title: str | None = None, files=None, note: str | None = None,
+    unresolved: "list[dict] | None" = None
 ) -> tuple[list[str], list[str]]:
     """Print the harness screen; return (uninvoked, unfalsified) id lists."""
     title = (
@@ -803,6 +1685,19 @@ def harness_report(
     print("  nothing in the always-on lane has ever watched this instrument disagree, so a")
     print("  broken one and a working one would look the same. Guard D lived here for its")
     print("  whole life while the Rust screen's question ('has it got a caller?') said WIRED.")
+    if unresolved is not None:
+        print()
+        print(f"  CALL SITES THIS SCREEN COULD NOT ATTRIBUTE ({len(unresolved)}), credited to")
+        print("  nobody. Each names a function this census screens under a module it cannot")
+        print("  decide from the caller's imports — a method on a value, or a bare name the")
+        print("  file never imported. Fail-closed is the rule: a call that MIGHT be an")
+        print("  instrument's earns it nothing, because the alternative is polarity credit")
+        print("  borrowed from another module, which reads exactly like coverage.")
+        for u in unresolved[:12]:
+            where = f"{Path(u['file']).name}:{u['line']}"
+            print(f"    {where:<44} {u['name']:<24} {u['why']}")
+        if len(unresolved) > 12:
+            print(f"    ... and {len(unresolved) - 12} more")
     if note:
         print()
         for line in note.strip("\n").splitlines():
@@ -950,7 +1845,77 @@ def self_test() -> int:
             frame_bad += 1
             print(f"  SELF-TEST FAIL: undeclared({present}, {sorted(declared)}) -> {got} != {want}")
     print(f"  frame-declaration self-test: {len(frame_cases) - frame_bad}/{len(frame_cases)} cases pass")
-    return 1 if (bad or frame_bad) else 0
+
+    # The self-count arm's own falsifier, for the same reason the frame screen has one:
+    # `counts == derived` and `no stale prose` are what a healthy baseline looks like AND
+    # what an inert screen looks like. Both polarities, on synthetic baselines.
+    #
+    # The fixtures below DERIVE their own prose from the synthetic array beside them. A
+    # literal would have been the defect this arm is for, written into the arm that
+    # detects it, and this file is one of the files the source screen reads.
+    _rows = ["a.py::f", "a.py::g", "b.py::h"]
+    _in_a = sum(1 for r in _rows if r.startswith("a.py"))
+    _agrees = {"bench_unfalsified": list(_rows),
+               "note": f"{len(_rows)} rows here, {_in_a} rows in a.py"}
+    _mutated = dict(_agrees, note=f"{len(_rows) + 1} rows here")
+    count_cases = [
+        # (baseline, hand-written `counts`, want counts-disagree, want stale prose)
+        (_agrees, baseline_counts(_agrees), False, False),
+        (_agrees, dict(baseline_counts(_agrees), bench_unfalsified=len(_rows) + 2),
+         True, False),
+        (_mutated, baseline_counts(_mutated), False, True),
+    ]
+    count_bad = 0
+    for base_doc, published, want_mismatch, want_stale in count_cases:
+        derived = baseline_counts(base_doc)
+        got_mismatch = published != derived
+        got_stale = bool(prose_row_claims(base_doc, derived))
+        if (got_mismatch, got_stale) != (want_mismatch, want_stale):
+            count_bad += 1
+            print(f"  SELF-TEST FAIL: self-count arm on {base_doc!r}/{published!r} -> "
+                  f"mismatch={got_mismatch} stale={got_stale}, "
+                  f"want mismatch={want_mismatch} stale={want_stale}")
+    print(f"  self-count self-test: {len(count_cases) - count_bad}/{len(count_cases)} cases pass")
+
+    # The SOURCE claim screen's own falsifier. Its failure mode is the one that shipped:
+    # a screen whose corpus is one file is green about every file it never opened, and
+    # "no offenders" is indistinguishable from "nothing was read".
+    #
+    # Every specimen below is planted from `STALE_SPECIMENS` rather than retyped, in the
+    # comment/docstring shapes that were actually missed, and the last two cases are the
+    # must-pass polarity: a DERIVED sentence and a CURRENT one both survive the screen.
+    _synth = {"bench_unfalsified": ["bench/synth_a.py::f", "bench/synth_a.py::g",
+                                    "bench/synth_b.py::h"]}
+    _synth_counts = baseline_counts(_synth)
+    _mods = sorted(_synth_counts["bench_unfalsified_by_module"])
+    _sum = sum(_synth_counts["bench_unfalsified_by_module"].values())
+    _named = " and ".join(f"`{m}`" for m in _mods)
+    source_cases = [
+        (f"# {STALE_SPECIMENS['labelled_row']}\n", True),
+        (f"# {STALE_SPECIMENS['labelled_array']}\n", True),
+        (f"# {STALE_SPECIMENS['bare_row']}\n", True),
+        (f"# {_named}: {STALE_SPECIMENS['module_set']}\n", True),
+        (f"# {_named}: {STALE_SPECIMENS['module_sum']}\n", True),
+        (f'def f():\n    """{STALE_SPECIMENS["labelled_row"]}."""\n', True),
+        (f'x = "{STALE_SPECIMENS["labelled_row"]}"\n', True),
+        # Must-pass polarity 1: the figure is derived, so the source carries no digit.
+        ('x = f"{counts[\'bench_unfalsified\']} bench unfalsified rows"\n', False),
+        # Must-pass polarity 2: the figure is current, spelled out, and correctly bound.
+        (f"# {_synth_counts['bench_unfalsified']} bench unfalsified rows\n", False),
+        (f"# {_named}: {_sum} rows across these {len(_mods)} modules\n", False),
+        # ...and a screen that fired on prose with no claim in it would be useless.
+        ("# R13 applies to every row of this census at once.\n", False),
+    ]
+    source_bad = 0
+    for src, want_offender in source_cases:
+        got = bool(source_claim_offenders(src, _synth_counts, "<self-test>"))
+        if got != want_offender:
+            source_bad += 1
+            print(f"  SELF-TEST FAIL: source claim screen on {src!r} -> "
+                  f"offender={got}, want {want_offender}")
+    print(f"  source-claim self-test: {len(source_cases) - source_bad}/"
+          f"{len(source_cases)} cases pass")
+    return 1 if (bad or frame_bad or count_bad or source_bad) else 0
 
 
 class CensusInstrumentError(RuntimeError):
@@ -998,16 +1963,20 @@ def main(argv: list[str]) -> int:
     print("  NOTE: this screen cannot see whether a WIRED instrument reports the right thing.")
     print("  Phase::Record passed it cleanly while 96% of its time was a memcpy nested inside it.")
 
-    h_rows = harness_survey()
-    h_uninvoked, h_unfalsified = harness_report(h_rows)
+    h_unresolved: "list[dict]" = []
+    h_rows = harness_survey(unresolved_out=h_unresolved)
+    h_uninvoked, h_unfalsified = harness_report(h_rows, unresolved=h_unresolved)
 
+    b_unresolved: "list[dict]" = []
     b_rows = harness_survey(
-        tests_root=BENCH, files=BENCH_INSTRUMENT_FILES, fn_re=BENCH_FN, prefix="bench"
+        tests_root=BENCH, files=BENCH_INSTRUMENT_FILES, fn_re=BENCH_FN, prefix="bench",
+        unresolved_out=b_unresolved,
     )
     b_uninvoked, b_unfalsified = harness_report(
         b_rows,
         title="BENCH INSTRUMENT SCREEN (bench/ — the certification apparatus, in frame since 2026-08-02)",
         files=BENCH_INSTRUMENT_FILES,
+        unresolved=b_unresolved,
         note=(
             "READ THE UNFALSIFIED COUNT HERE AS A PROPERTY OF THIS SCREEN, NOT AS A VERDICT ON\n"
             "bench/'s TESTS. Most bench instruments are TOTAL functions: they return a token\n"
@@ -1046,8 +2015,22 @@ def main(argv: list[str]) -> int:
         base["harness_unfalsified"] = keep(h_unfalsified)
         base["bench_uninvoked"] = keep(b_uninvoked)
         base["bench_unfalsified"] = keep(b_unfalsified)
+        base["counts"] = baseline_counts(base)
+        stale = prose_row_claims(base, base["counts"])
+        stale += corpus_claim_offenders(base["counts"])
+        stale += specimen_offenders(base, base["counts"])
         BASELINE.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
         print(f"\nwrote {BASELINE} ({len(found)} uninvoked, {len(h_unfalsified)} unfalsified)")
+        if stale:
+            # Written first, then reported: the arrays and `counts` are now right, and the
+            # prose that disagrees with them is a finding the writer must not walk past.
+            print(
+                "\nFAIL: a census count claim is not witnessed by the collection it "
+                "names:", file=sys.stderr)
+            for x in stale:
+                print(f"  ! {x}", file=sys.stderr)
+            print("\nCENSUS VERDICT: FAIL(drift)")
+            return 1
         if held:
             print(f"held out of the baseline on purpose ({len(held)}): {sorted(held)}")
         return 0
@@ -1129,7 +2112,78 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
 
-    if new or gone or h_bad or frame_bad:
+    # The self-count arm. A summary that disagrees with the collection it summarises is
+    # drift of a kind the four array comparisons above cannot see: they compare the
+    # baseline's arrays against the tree, and both copies of a count can be wrong together
+    # while every array matches. `counts` is re-derived here from the arrays that were just
+    # confirmed, so a hand-edited summary, or prose quoting a number nothing derives, is red.
+    counts_bad = False
+    want_counts = baseline_counts(base)
+    have_counts = base.get("counts")
+    if have_counts is None:
+        counts_bad = True
+        print(
+            "\nFAIL: baseline has no `counts`; run --write-baseline. A census that publishes "
+            "no derived summary invites a hand-typed one.",
+            file=sys.stderr,
+        )
+    elif have_counts != want_counts:
+        counts_bad = True
+        print("\nFAIL: the baseline's `counts` disagree with the arrays they summarise:",
+              file=sys.stderr)
+        for key in sorted(set(want_counts) | set(have_counts)):
+            if have_counts.get(key) != want_counts.get(key):
+                print(f"  ! {key}: baseline says {have_counts.get(key)!r}, "
+                      f"the array has {want_counts.get(key)!r}", file=sys.stderr)
+        print(
+            "  Counts are derived, never typed: re-run --write-baseline rather than "
+            "editing the number.",
+            file=sys.stderr,
+        )
+    stale_prose = prose_row_claims(base, want_counts)
+    if stale_prose:
+        counts_bad = True
+        print("\nFAIL: the baseline's prose quotes a row count this census does not derive:",
+              file=sys.stderr)
+        for x in stale_prose:
+            print(f"  ! {x}", file=sys.stderr)
+        print(
+            "  Cite `counts` instead of restating a number. A figure a reader cannot "
+            "re-derive is the defect this arm was added for.",
+            file=sys.stderr,
+        )
+
+    # The SOURCE corpus arm. The screen above reads the generated document; this one reads
+    # the comments, docstrings and test prose beside it, where the same stale figures
+    # survived the first repair verbatim. It also fails on an in-frame file that starts
+    # making census count claims without being declared, so the corpus cannot go blind by
+    # standing still while the tree moves.
+    source_stale = corpus_claim_offenders(want_counts)
+    if source_stale:
+        counts_bad = True
+        print("\nFAIL: a census count claim in source or test prose is not witnessed by "
+              "the collection it names:", file=sys.stderr)
+        for x in source_stale:
+            print(f"  ! {x}", file=sys.stderr)
+        print(
+            "  Derive the figure (`f\"{counts['bench_unfalsified']} rows\"`), cite the "
+            "field by name, or drop the number. A comment is where a reader goes to find "
+            "out what a mechanism means, so a stale count in one is quoted as readily as "
+            "a stale count in the artifact.",
+            file=sys.stderr,
+        )
+
+    # The specimen arm. `STALE_SPECIMENS` is the one place a stale figure may still be
+    # spelled, so it owes the opposite witness: every entry must STILL be convicted by the
+    # live screen. A specimen that has quietly become true is a claim, not a quotation.
+    specimen_stale = specimen_offenders(base, want_counts)
+    if specimen_stale:
+        counts_bad = True
+        print("\nFAIL: a historical specimen is no longer stale:", file=sys.stderr)
+        for x in specimen_stale:
+            print(f"  ! {x}", file=sys.stderr)
+
+    if new or gone or h_bad or frame_bad or counts_bad:
         print("\nCENSUS VERDICT: FAIL(drift)")
         return 1
     print(f"\nOK: uninvoked set matches the baseline ({len(found)} known).")
@@ -1142,6 +2196,12 @@ def main(argv: list[str]) -> int:
         f"({len(b_uninvoked)} uninvoked, {len(b_unfalsified)} unfalsified)."
     )
     print("OK: every source directory and every bench/ module has a frame decision on record.")
+    print("OK: every summary count in the baseline was re-derived from the array it summarises.")
+    print(
+        f"OK: no unwitnessed census count claim in the baseline or in the "
+        f"{len(SOURCE_CLAIM_CORPUS)} declared source file(s), and every historical "
+        f"specimen is still stale."
+    )
     print("\nCENSUS VERDICT: PASS")
     return 0
 

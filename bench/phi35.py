@@ -1062,7 +1062,9 @@ def baseline_disagreement(results: "list[dict]",
 
     Each worker times its Vulkan session and a CPU-only session back to back in one process, so
     each device's *delta* is internally consistent. But the CPU baselines from two workers are
-    measured minutes apart on a machine that has just paged a 2.2 GB model, and if they disagree
+    measured minutes apart on a machine that has just paged a 2.29 GB model
+    (``model.weights_bytes`` 2291238912, committed in
+    ``bench/results/real_model_gqa_local_size.json``), and if they disagree
     by more than ``factor`` then the machine's state changed between them. The per-device deltas
     remain valid; what is not valid is reading anything into how they compare — which the
     cross-device refusal already forbids, and this says out loud rather than leaving to be
