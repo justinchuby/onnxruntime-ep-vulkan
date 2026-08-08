@@ -79,13 +79,20 @@ inside its `vulkan.subgraph` span. That phase has been removed. The outer bracke
 untouched. No figure is quoted for that pre-fix run: it is **not a committed artifact**, and this
 document does not cite numbers it cannot point at.
 
-The region itself turned out not to be the EP at all. Re-measured on 2026-08-07 with the
-counters-file dump moved out of the timed region, the same term is **0.056 ms** — the source of
-truth is `outside_subgraph_ms` (equivalently `steady.median_outside_subgraph_us = 56.0`) in
-`bench/results/_cuda69/profile_prefill_1.json`, and
+The region itself turned out not to be the EP at all. Re-measured with the counters-file dump
+moved out of the timed region, the term collapses to a small fraction of a millisecond. **The
+magnitude is deliberately not quoted on this branch**: the instrumentation head carries the
+harness and none of its output, so there is no committed artifact here to point at, and a
+number whose witness is on another branch is exactly the kind of claim this document says it
+does not make. The figure is published, with its artifact, on the branch that publishes results.
+
+The mechanism that keeps it honest ships here regardless:
 `bench/test_cuda_profile.py::test_every_documented_outside_subgraph_citation_matches_the_artifact`
-reads that artifact and fails this document if the two ever drift apart again. The region was the
-benchmark harness's own counters dump running inside every timed inference, which is exactly what
+reads `outside_subgraph_ms` (equivalently `steady.median_outside_subgraph_us`) out of the
+committed profile and fails this document if the two ever drift apart. It skips while no
+artifact is committed and goes live the moment one is, so the pin cannot be satisfied by the
+absence of evidence. The region was the benchmark harness's own counters dump running inside
+every timed inference, which is what
 `bench/test_cuda_competition.py::test_counters_dump_is_not_left_inside_the_timed_region`
 now forbids. An instrument that can see a region is worth having even when the answer is "this
 was never ours".
@@ -1349,8 +1356,8 @@ Per R9: *confidence scales with agreeing instruments; evidence scales only with 
 | every dispatch produced GPU time | `gpu_span_accounting`: `sum(subgraph.nodes) == len(gpu_spans) == dispatches_executed`, integer equality. 5457 on both. |
 | the row names the device that ran | `devices.device_identity_check` — trace's own `timestampPeriod`/`validBits` vs the label. Caught the entire table naming the wrong GPU. |
 | the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span (the **inner** bracket, around `dispatch_ort`, not the outer `vulkan.compute_call`); `unattributed_in_compute_ms` reported, never folded away. |
-| the reconciliation's terms are not mistaken for a sum | `cuda_profile.compute_reconciliation.partition_note` — states the arithmetic it is explaining. In the committed profile `sibling_phases_ms + unattributed_in_subgraph_ms = 32.145 ms` against `subgraph_ms = 32.627 ms`. Each is an **independently-taken median** over the warm calls, and the median of a sum is not the sum of the medians unless every call splits identically, so the **+0.482 ms** residual is a property of the statistic, **not** unaccounted-for time. Do not report it as a gap. Pinned by `test_the_reconciliation_says_out_loud_that_medians_do_not_partition`. |
-| the callback is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` (the instrumented success-path region, not the literal extern entry) and reports the region *outside* `vulkan.subgraph` but inside that bracket as its own term. Measured, and explicitly not attributed. It reads **0.056 ms** in the committed `bench/results/_cuda69/profile_prefill_1.json`; it was far larger before the harness's counters dump was moved out of the timed region, but that pre-fix run is not a committed artifact so no figure is quoted for it. |
+| the reconciliation's terms are not mistaken for a sum | `cuda_profile.compute_reconciliation.partition_note` — states the arithmetic it is explaining: `sibling_phases_ms + unattributed_in_subgraph_ms` does not equal `subgraph_ms`. Each is an **independently-taken median** over the warm calls, and the median of a sum is not the sum of the medians unless every call splits identically, so the residual is a property of the statistic, **not** unaccounted-for time. Do not report it as a gap. The figures are quoted with the committed profile, which this instrumentation head does not carry; `partition_note` computes them from the run in hand. Pinned by `test_the_reconciliation_says_out_loud_that_medians_do_not_partition`. |
+| the callback is accounted for, not just the subgraph | `cuda_profile.compute_reconciliation` — anchors on `vulkan.compute_call` (the instrumented success-path region, not the literal extern entry) and reports the region *outside* `vulkan.subgraph` but inside that bracket as its own term. Measured, and explicitly not attributed. No magnitude is quoted on this branch: the instrumentation head carries no committed profile to point at, and the citation pin reads the figure out of the artifact wherever one exists. It was far larger before the harness's counters dump was moved out of the timed region, but that pre-fix run is not a committed artifact either. |
 | GPU time is not over-scaled | `gpu_containment` — per-submission GPU busy ≤ `submit + fence_wait`, **ordinal attribution**, immune to the 314 ms anchor error. |
 | the 52× conversion is applied | `timestamp_conversion_integrality` — `gpu_ns ÷ period` must be a whole integer. **Decisive only where period ≠ 1.0**; reports `VACUOUS`, never "pass", on NVIDIA and lavapipe. `bench/timestamp_audit.py` exits non-zero when no local device can falsify it. |
 | valid bits are masked | `valid_bits_applied` — green on both. |

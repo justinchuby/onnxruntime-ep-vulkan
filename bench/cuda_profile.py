@@ -47,9 +47,11 @@ per-call total and no steady-state median can reach it.  On Phi-3.5 `prefill_1` 
 term was this harness's own counters-file dump running inside every timed inference, and it
 was the same order of magnitude as the inference itself.  The pre-fix run is *not* a
 committed artifact, so no figure is quoted for it here.  With the dump scoped to the first
-run the same term reads **0.056 ms** — `outside_subgraph_ms` in
-`bench/results/_cuda69/profile_prefill_1.json`, pinned by
-`test_cuda_profile.py::test_every_documented_outside_subgraph_citation_matches_the_artifact`.
+run the same term collapses to a small fraction of a millisecond.  No magnitude is quoted
+on this branch either: this head carries the instrument and none of its output, so there is
+no committed profile to point at, and
+`test_cuda_profile.py::test_every_documented_outside_subgraph_citation_matches_the_artifact`
+reads the figure out of the artifact wherever one is committed.
 The anchor stays, because the region was invisible for as long as nothing bracketed it.
 :func:`choose_anchor` picks the outermost available span and records which one it used;
 matching is by **exact name**, never `startswith`.
@@ -75,7 +77,7 @@ dispatch.  With ~3200 dispatches per inference that is not negligible.  So this 
 reports **shares, not absolute times**, and it reports the traced total alongside the
 untraced baseline total so the observer effect is visible rather than assumed away.
 The `overhead_ratio` field is exactly that: traced wall / untraced wall.  A share
-computed from a run that is 1.3x slower than the run being explained is still the right
+computed from a run measurably slower than the run being explained is still the right
 share as long as the inflation is spread over the phases proportionally — and where it
 is not (it inflates host phases, not GPU ones), the direction of the bias is *toward*
 host overhead, which is the hypothesis being tested.
@@ -154,10 +156,10 @@ NESTED_PHASES = ("upload", "readback", "desc_alloc", "pipeline_lookup", "cmd_upl
 #: however large — lands in the ``None`` bucket and appears in no per-call or steady-state
 #: total.  On Phi-3.5 ``prefill_1`` that region was the harness's own counters dump, not the
 #: EP, and it was the same order of magnitude as the inference; the pre-fix run is not a
-#: committed artifact, so no figure for it is quoted here.  It reads **0.056 ms** once the
-#: dump is scoped to the first run (``outside_subgraph_ms``,
-#: ``bench/results/_cuda69/profile_prefill_1.json``).  The bracket is what made the number
-#: sayable at all.
+#: committed artifact, so no figure for it is quoted here.  Once the dump is scoped to the
+#: first run the term collapses to a small fraction of a millisecond
+#: (``outside_subgraph_ms``); the magnitude is quoted only where a committed profile backs
+#: it, which is not this branch.  The bracket is what made the number sayable at all.
 COMPUTE_CALL_SPAN = "vulkan.compute_call"
 SUBGRAPH_SPAN = "vulkan.subgraph"
 
@@ -261,10 +263,11 @@ def compute_calls(events: list, anchor: "str | None" = None) -> list:
     These are the bucketing anchors for everything else.  Without them a reduction
     can only report cumulative totals, and cumulative totals on this EP are
     actively misleading: the first ``Compute`` uploads the whole int4 weight set
-    (measured **980 ms of the 983 ms** total ``cmd_upload`` on Phi-3.5 ``prefill_1``,
-    i.e. 99.7% of it in one of fourteen calls).  Dividing that total by the call
-    count attributes 70 ms/run of staging to a steady state that pays none, which
+    (on Phi-3.5 ``prefill_1``, almost the entire ``cmd_upload`` total lands in one
+    of fourteen calls).  Dividing that total by the call
+    count attributes a large per-run staging cost to a steady state that pays none, which
     inverts the conclusion: it makes a warm run look transfer-bound when it is not.
+    The magnitudes are quoted with the committed profile, which is not on this branch.
 
     ``rust/src/trace.rs`` warns about exactly this in ``Phase::Record``'s caveat —
     "the summary prints that residual CUMULATIVELY over all calls, so it mixes the
@@ -918,10 +921,11 @@ def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
     **These medians do not algebraically partition.**  ``sibling_phases_ms`` +
     ``unattributed_in_subgraph_ms`` does not equal ``subgraph_ms``, and it is not meant to:
     each is an independently-taken median over the warm calls, and the median of a sum is not
-    the sum of the medians unless every call splits the same way.  In the committed artifact
-    that is 25.708 + 6.437 = 32.145 against a ``subgraph_ms`` of 32.627 — a 0.482 ms residual
-    that is an artefact of the statistic, not unaccounted time.  ``partition_note`` on the
-    returned dict carries this so a reader of the JSON alone cannot mistake the gap for a leak.
+    the sum of the medians unless every call splits the same way.  The residual is small and
+    is an artefact of the statistic, not unaccounted time; the arithmetic is quoted with the
+    committed profile that exhibits it, which is not on this branch.  ``partition_note`` on
+    the returned dict carries the same statement computed from the run in hand, so a reader
+    of the JSON alone cannot mistake the gap for a leak.
     """
     if not steady or not steady.get("warm_calls"):
         return {"available": False,

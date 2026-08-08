@@ -7,10 +7,11 @@ table, with no internal inconsistency to notice.
 The four defects that motivated these tests, in the order they were found:
 
 1. **Cumulative totals read as per-run.** ``total_us / call_count`` on this EP is dominated
-   by the cold first ``Compute``, which uploads the whole weight set — measured 980 ms of
-   the 983 ms total ``cmd_upload`` on Phi-3.5 ``prefill_1``. The naive average reported
-   70 ms/run of staging for a steady state that pays 0.15 ms, which made a host-bound
-   workload look transfer-bound.
+   by the cold first ``Compute``, which uploads the whole weight set — nearly the entire
+   ``cmd_upload`` total on Phi-3.5 ``prefill_1`` lands in that one call. The naive average
+   charged a large per-run staging cost to a steady state that pays almost none, which made
+   a host-bound workload look transfer-bound. (Magnitudes are quoted with the committed
+   profile, which this instrumentation head does not carry.)
 
 2. **An absent marker read as a negative result.** ``record_paths`` returns ``{}`` on this
    EP build because it emits no ``ep.path`` instants. ``{}`` was being read as "no
@@ -20,9 +21,10 @@ The four defects that motivated these tests, in the order they were found:
 
 3. **A blind spot charged to whatever was visible.** The trace's outermost span opened
    inside ``dispatch_ort``, not at the ``Compute`` entry point, so a large per-inference
-   term had no row. It turned out to be the harness's own counters-file dump. (The pre-fix
-   run is not a committed artifact; the corrected term is ``outside_subgraph_ms`` =
-   **0.056 ms** in ``bench/results/_cuda69/profile_prefill_1.json``.)
+   term had no row. It turned out to be the harness's own counters-file dump. (Neither the
+   pre-fix run nor the corrected one is a committed artifact on this branch, so no figure
+   is quoted; the corrected term is ``outside_subgraph_ms``, read out of the committed
+   profile by the citation pin below wherever one exists.)
 
 4. **The instrument that saw it was emitted and never read.** ``vulkan.compute_call`` was
    added to close (3) and ``compute_calls()`` went on anchoring on ``vulkan.subgraph``, so
@@ -606,9 +608,15 @@ _OUTSIDE_SUBGRAPH_CITATION_SITES = (
     "bench/cuda_profile.py",
 )
 
-#: The value this figure used to be documented as, from a run that was superseded. It must
-#: appear nowhere, or the docs are quoting a number the committed artifact does not contain.
-_SUPERSEDED_OUTSIDE_SUBGRAPH_MS = "0.053"
+#: Figures this term used to be documented as, from runs that were superseded. Each must
+#: appear nowhere in the citation sites, or the docs are quoting a number no committed
+#: artifact contains.
+#:
+#: `0.053` was the original rejection: prose drifted from a committed 0.056. `0.056` was
+#: itself measured *before* PR #72 landed GQA; the re-measurement on the landed code moved
+#: the term again, so it is superseded in turn. A superseded figure does not become
+#: acceptable by having once been correct -- that is precisely how the first one survived.
+_SUPERSEDED_OUTSIDE_SUBGRAPH_MS = ("0.053", "0.056")
 
 
 def _committed_profile():
@@ -642,15 +650,19 @@ def _committed_outside_subgraph_ms():
 
 
 def test_the_committed_artifact_agrees_with_itself_about_outside_subgraph():
-    """`outside_subgraph_ms` and `steady.median_outside_subgraph_us` are the same measurement."""
+    """`outside_subgraph_ms` and `steady.median_outside_subgraph_us` are the same measurement.
+
+    No magnitude is asserted here. The results branch pins one, because it documents one;
+    this head documents no figure at all, so hardcoding an expected value would be asserting
+    a number that nothing on this branch publishes and no artifact here backs -- the exact
+    defect the pin exists to catch, committed inside the pin. The two-units agreement is the
+    part that is true of any profile, and it is what this test is named for.
+    """
     doc = _committed_profile()
     ms = _committed_outside_subgraph_ms()
     us = doc["steady"]["median_outside_subgraph_us"]
     assert us / 1000.0 == pytest.approx(ms), (
         f"the artifact publishes {ms} ms and {us} us; they are one number in two units")
-    assert round(ms, 3) == pytest.approx(0.056), (
-        "the pin below is written against 0.056 ms; if the artifact legitimately changed, "
-        "update the artifact, the prose and this pin together -- never the prose alone")
 
 
 def test_every_documented_outside_subgraph_citation_matches_the_artifact():
@@ -669,18 +681,20 @@ def test_every_documented_outside_subgraph_citation_matches_the_artifact():
         assert expected in text, (
             f"{rel} cites the outside-subgraph figure but not as {expected} ms, which is "
             f"what {doc.get('workload')}'s committed profile actually measured")
-        assert _SUPERSEDED_OUTSIDE_SUBGRAPH_MS not in text, (
-            f"{rel} still quotes the superseded {_SUPERSEDED_OUTSIDE_SUBGRAPH_MS} ms figure; "
-            f"the committed artifact says {expected} ms")
+        for stale in _SUPERSEDED_OUTSIDE_SUBGRAPH_MS:
+            assert stale not in text, (
+                f"{rel} still quotes the superseded {stale} ms figure; "
+                f"the committed artifact says {expected} ms")
 
 
 def test_the_pin_would_notice_a_drifting_document():
     """Negative control: a pin that cannot fail is decoration."""
     ms = _committed_outside_subgraph_ms()
     expected = f"{ms:.3f}".rstrip("0")
-    drifted = f"the term reads {_SUPERSEDED_OUTSIDE_SUBGRAPH_MS} ms"
-    assert expected not in drifted
-    assert _SUPERSEDED_OUTSIDE_SUBGRAPH_MS in drifted
+    for stale in _SUPERSEDED_OUTSIDE_SUBGRAPH_MS:
+        drifted = f"the term reads {stale} ms"
+        assert expected not in drifted
+        assert stale in drifted
 
 
 # ---------------------------------------------------------------------------
@@ -688,11 +702,13 @@ def test_the_pin_would_notice_a_drifting_document():
 # ---------------------------------------------------------------------------
 
 def test_the_reconciliation_says_out_loud_that_medians_do_not_partition():
-    """`sibling + unattributed != subgraph` in the committed artifact, by 0.482 ms.
+    """`sibling + unattributed != subgraph` in the committed artifact, by a small residual.
 
     Not a leak: each term is an independently-taken median over the warm calls, and the
     median of a sum is not the sum of the medians. A reader of the JSON alone has no way
-    to know that, so the record has to say it.
+    to know that, so the record has to say it. The residual is read out of whatever
+    profile is committed rather than quoted here, so this test does not itself become a
+    place where a stale figure survives.
     """
     doc = _committed_profile()
     rec = doc["compute_reconciliation"]

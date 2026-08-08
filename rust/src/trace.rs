@@ -874,13 +874,15 @@ impl VulkanTracer {
     ///
     /// [`subgraph_region`](Self::subgraph_region) opens inside `dispatch_ort`, deeper still, so it
     /// cannot see anything the callback does on either side of that call. Measured on Phi-3.5
-    /// `prefill_1` (`bench/results/_cuda69/`), the two spans differed by a large term, nearly all
-    /// of it landing *after* `vulkan.subgraph` closed rather than before it.
+    /// `prefill_1`, the two spans differed by a large term, nearly all of it landing *after*
+    /// `vulkan.subgraph` closed rather than before it.
     ///
     /// That term was **not the EP**. Re-measured on the same workload with the benchmark
-    /// harness's counters-file dump moved out of the timed region, it reads **0.056 ms**
-    /// (`outside_subgraph_ms` in `bench/results/_cuda69/profile_prefill_1.json`; the pre-fix run
-    /// is not a committed artifact, so its magnitude is not quoted here). The dump ran on every
+    /// harness's counters-file dump moved out of the timed region, it collapses to a small
+    /// fraction of a millisecond. No magnitude is quoted here: this branch carries the
+    /// instrument and none of its output, so there is no committed artifact to cite, and
+    /// `bench/test_cuda_profile.py`'s citation pin reads the figure out of the committed
+    /// profile wherever one exists. The dump ran on every
     /// timed inference, from `counters::record_dispatches` after `dispatch_ort` returns — which
     /// is the side the region was on. The span is kept because that is the finding: without an
     /// outer bracket the harness's own cost was inside the EP's numbers and nothing could see it.

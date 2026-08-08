@@ -584,14 +584,33 @@ def test_the_survey_covers_the_extensions_a_reader_reads():
     Issue #69's leaks were in `.json`, but `profile_prefill_1.log` leaked too,
     and the reports a reviewer actually opens are `.md`. Enumerating the
     suffixes here means adding a new evidence format is a visible decision.
+
+    The `_cuda69` half is asserted as a *rule* rather than as a tracked file.
+    Asserting the file is tracked makes the test a statement about which branch
+    it is running on -- it fails on an instrumentation-only head for a reason
+    that has nothing to do with the survey. The rule ("a `_cuda69` artifact is in
+    scope and can never be grandfathered") is what the test is actually for, it
+    holds on every branch, and it is the thing that would have to break for the
+    directory to fall out of the survey.
     """
     assert gen.EVIDENCE_SUFFIXES == frozenset(
         {".json", ".jsonl", ".md", ".log", ".txt", ".csv"})
     tracked = gen.tracked_evidence(pp.REPO)
     assert any(f.endswith(".md") for f in tracked)
     assert any(f.endswith(".log") for f in tracked)
-    assert any(f.startswith("bench/results/_cuda69/") for f in tracked), (
-        "the artifacts this change repaired must be inside the survey's scope")
+
+    assert "bench/results/_cuda69/" in gen.NEVER_LEGACY, (
+        "the directory this issue was about must never be grandfathered")
+    for suffix in (".json", ".md", ".log"):
+        probe = f"bench/results/_cuda69/probe{suffix}"
+        assert Path(probe).suffix in gen.EVIDENCE_SUFFIXES, (
+            f"a {suffix} artifact under _cuda69 would fall outside the survey")
+
+    # Where the artifacts are actually present, the original, stronger form still
+    # applies: they must really be enumerated, not merely eligible.
+    cuda69 = [f for f in tracked if f.startswith("bench/results/_cuda69/")]
+    if any(Path(pp.REPO / "bench" / "results" / "_cuda69").glob("*")):
+        assert cuda69, "_cuda69 holds artifacts but the survey enumerated none of them"
 
 
 def test_the_scanner_cli_accepts_a_directory():
