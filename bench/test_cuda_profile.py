@@ -85,7 +85,7 @@ def test_the_outer_bracket_is_preferred_over_the_inner_one():
     events = _call(0, 100_000, 1_000, 40_000)
     anchor = cp.choose_anchor(events)
     assert anchor["span"] == cp.COMPUTE_CALL_SPAN
-    assert anchor["sees_whole_compute"] is True
+    assert anchor["sees_compute_call_bracket"] is True
     calls = cp.compute_calls(events)
     assert len(calls) == 1
     assert calls[0]["dur"] == 100_000, "the anchor must be the outer bracket, not the inner"
@@ -102,7 +102,7 @@ def test_a_trace_without_the_outer_bracket_still_reduces_and_says_it_is_bounded(
               _phase("record", 1_010, 5_000)]
     anchor = cp.choose_anchor(events)
     assert anchor["span"] == cp.SUBGRAPH_SPAN
-    assert anchor["sees_whole_compute"] is False
+    assert anchor["sees_compute_call_bracket"] is False
     assert "FALLBACK" in anchor["basis"]
     traced = {"workload": "w", "median_ms": 50.0, "warmup_ms": [], "steady_ms": [50.0]}
     tmp = Path(__file__).resolve().parent / "results" / "_cuda69"
@@ -608,15 +608,14 @@ _OUTSIDE_SUBGRAPH_CITATION_SITES = (
     "bench/cuda_profile.py",
 )
 
-#: Figures this term used to be documented as, from runs that were superseded. Each must
-#: appear nowhere in the citation sites, or the docs are quoting a number no committed
-#: artifact contains.
-#:
-#: `0.053` was the original rejection: prose drifted from a committed 0.056. `0.056` was
-#: itself measured *before* PR #72 landed GQA; the re-measurement on the landed code moved
-#: the term again, so it is superseded in turn. A superseded figure does not become
-#: acceptable by having once been correct -- that is precisely how the first one survived.
-_SUPERSEDED_OUTSIDE_SUBGRAPH_MS = ("0.053", "0.056")
+#: Synthetic fixture values only -- not a record of any real historical measurement.
+#: These are not witnessed by any artifact committed on this branch, so no specific past
+#: figure is asserted here; the tuple exists solely to exercise the "no stale value" scan
+#: below (`test_every_documented_outside_subgraph_citation_matches_the_artifact` and its
+#: negative control) with a shape that looks like a plausible drifted figure. If a real
+#: superseded figure is ever discovered with a committed witness for both the stale and
+#: the corrected value, it belongs here as a *cited* pair, not a bare literal.
+_SUPERSEDED_OUTSIDE_SUBGRAPH_MS = ("9.999",)
 
 
 def _committed_profile():
@@ -668,9 +667,12 @@ def test_the_committed_artifact_agrees_with_itself_about_outside_subgraph():
 def test_every_documented_outside_subgraph_citation_matches_the_artifact():
     """The provenance pin. Prose may not drift from the artifact it claims to cite.
 
-    The rejection that produced this test was documents citing **0.053 ms** while the
-    committed profile said 0.056. Both were plausible; only one was in the tree. So the
-    figure is read *out of the artifact* here and required to be the one the prose says.
+    The rejection that produced this test was documents quoting a figure that had
+    drifted from the committed profile -- a plausible-looking number that was not the
+    one in the tree. No specific historical figures are asserted here, since neither
+    side of that drift is witnessed by a committed artifact on this branch; the figure
+    is read *out of the artifact* here and required to be the one the prose says,
+    whatever it currently is.
     """
     doc = _committed_profile()
     ms = _committed_outside_subgraph_ms()

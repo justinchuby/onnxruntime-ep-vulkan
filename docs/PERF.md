@@ -67,7 +67,7 @@ added to it. Ten in total; `Phase::ALL` is the list of record, and a Rust test a
 | Span | Brackets | Why it exists |
 |---|---|---|
 | `vulkan.compute_call` | The **instrumented success path** of the ORT `Compute` callback: opened inside `compute_impl`, after the null check / `this_info` / `guard_ffi_status` entry, and closed before `disclose_broken_commitment`. Not the literal extern entry, and absent entirely on an early-out. | It is the only span that can tell you whether the phases account for the callback. Without it the reduction can only see its own inner bracket and cannot notice work that happens on either side of it. Read it as the widest bracket the EP instruments, not as ORT's true wall time for the call. |
-| `vulkan.subgraph` | The `dispatch_ort` call inside `Compute`. | The bracket every phase lies inside. This is the denominator for "share of time inside `Compute`" throughout this document. |
+| `vulkan.subgraph` | The `dispatch_ort` call inside `Compute`. | The bracket every phase lies inside. This is the denominator for "share of time inside the `vulkan.compute_call` bracket" throughout this document — that bracket is the instrumented success-path region, not ORT's literal `Compute` entry, so the denominator is bounded by what this EP instruments, never claimed as a share of the true extern-to-extern call. |
 
 The distinction is load-bearing, and was learned the expensive way. In the 2026-08-07 CUDA
 competition work the gap between the two brackets measured a warm-call median far larger than the
@@ -86,12 +86,14 @@ harness and none of its output, so there is no committed artifact here to point 
 number whose witness is on another branch is exactly the kind of claim this document says it
 does not make. The figure is published, with its artifact, on the branch that publishes results.
 
-The mechanism that keeps it honest ships here regardless:
+The mechanism that keeps it honest ships here, but is not live yet on this branch:
 `bench/test_cuda_profile.py::test_every_documented_outside_subgraph_citation_matches_the_artifact`
 reads `outside_subgraph_ms` (equivalently `steady.median_outside_subgraph_us`) out of the
-committed profile and fails this document if the two ever drift apart. It skips while no
-artifact is committed and goes live the moment one is, so the pin cannot be satisfied by the
-absence of evidence. The region was the benchmark harness's own counters dump running inside
+committed profile and fails this document if the two ever drift apart -- once an artifact is
+committed. Today, with no such artifact in the tree, that test **skips**: it grants this
+document no protection yet, and a skip must not be read as a pass. The pin becomes load-bearing
+the moment a profile is committed, and not before. The region was the benchmark harness's own
+counters dump running inside
 every timed inference, which is what
 `bench/test_cuda_competition.py::test_counters_dump_is_not_left_inside_the_timed_region`
 now forbids. An instrument that can see a region is worth having even when the answer is "this

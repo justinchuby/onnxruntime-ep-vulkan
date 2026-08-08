@@ -171,9 +171,12 @@ COUNTERS_SCOPES = frozenset({COUNTERS_SCOPE_FIRST_RUN, COUNTERS_SCOPE_ALL_RUNS})
 #: whole island with one fused node.  On Phi-3.5 it claimed 355 of 363 nodes and the
 #: profile showed **one** ``VulkanExecutionProvider_..._0`` node beside 8 residual
 #: host nodes — a node-count reading of 8/9 = 88.9% "CPU fallback" for a graph that
-#: is 97.8% on the GPU.  The CUDA EP does not fuse, so the same metric read 0.9% for
-#: it.  A metric that reports a 40x different fallback for two arms doing the same
-#: thing is measuring fusion, not fallback.
+#: is 97.8% on the GPU (`claimed_nodes`/`total_nodes_probed`, committed in
+#: ``bench/results/barrier_ab-post-dev0-0.json``).  The CUDA EP does not fuse, so the
+#: same metric reads a small single-digit percentage for it instead — a much higher
+#: node-count "fallback" reading for the fusing arm than for the non-fusing one, on
+#: the same underlying work.  A metric that disagrees this much between two arms
+#: doing the same thing is measuring fusion, not fallback.
 #:
 #: Kernel-time share is fusion-invariant and is what the word "fallback" is actually
 #: reaching for: how much of the run happened somewhere other than the named
@@ -193,27 +196,29 @@ FALLBACK_SPLIT_THRESHOLD = 0.05
 #: correct until it is run.
 #:
 #: **Attempt 1 — absolute/relative tolerance.** Unusable: on Phi-3.5 the CUDA EP's
-#: logits differ from the CPU EP's by 0.078 absolute and the Vulkan EP's by 0.039.
-#: Any absolute budget tight enough to be meaningful rejects *the production
-#: provider we are competing against*; any budget loose enough to admit it was
-#: chosen by looking at it, which is fitting the instrument to the result.
+#: logits differ from the CPU EP's by a nontrivial absolute amount, and so do the
+#: Vulkan EP's -- no specific magnitude is quoted here, since none is witnessed by a
+#: committed artifact in this tree.  Any absolute budget tight enough to be
+#: meaningful rejects *the production provider we are competing against*; any budget
+#: loose enough to admit it was chosen by looking at it, which is fitting the
+#: instrument to the result.
 #:
-#: **Attempt 2 — raw bit-pattern ULP.** Rejected every GPU arm at ~18,000 ULP
-#: against a 32-ULP budget, and the reason is instructive: *every* worst-case
-#: element was a near-zero logit that changed sign (``ref=-0.0245``,
-#: ``sub=+0.0170`` — 0.04 absolute, on a tensor whose peak is 14.77).  Raw ULP
-#: measures distance in units of the *local* spacing, which near zero is
-#: vanishingly small, so a physically irrelevant difference reads as an enormous
-#: one.  The metric was not wrong about the bits; it was wrong about what a logit
-#: tensor's consumer cares about.
+#: **Attempt 2 — raw bit-pattern ULP.** Rejected every GPU arm at an ULP count far
+#: beyond a tight budget, and the reason is instructive: *every* worst-case element
+#: was a near-zero logit that changed sign, a small absolute difference on a tensor
+#: whose peak magnitude is far larger.  Raw ULP measures distance in units of the
+#: *local* spacing, which near zero is vanishingly small, so a physically irrelevant
+#: difference reads as an enormous one.  The metric was not wrong about the bits; it
+#: was wrong about what a logit tensor's consumer cares about.  (No specific ULP or
+#: value figures are quoted here; none is witnessed by a committed artifact.)
 #:
 #: **What is used — ULP at the tensor's peak.**  The consumer of a logit tensor is
 #: softmax/argmax, and of an embedding is a dot product.  Both are sensitive to
 #: differences *relative to the tensor's scale*, not relative to each element's own
 #: magnitude.  So the unit is ``spacing(max|reference|)`` in the output dtype: the
 #: same physical difference gets the same score wherever in the tensor it lands.
-#: Under this unit the observed numbers become legible — Vulkan 4.5-36, CUDA 6-113
-#: on Phi-3.5 — instead of a uniform five-digit rejection.
+#: Under this unit the observed numbers become legible instead of a uniform
+#: rejection; no specific per-arm range is quoted here without a committed witness.
 #:
 #: The budget itself is ``ROUNDING_DEPTH_BOUND x 2^(out_mantissa - compute_mantissa)``
 #: and is computed per arm from the precision that arm declares it computes in.
@@ -222,13 +227,15 @@ FALLBACK_SPLIT_THRESHOLD = 0.05
 #:
 #: **This makes the TF32 arm's budget loose, on purpose and in the open.**  The CUDA
 #: EP defaults to TF32 for fp32 MatMul/Conv, i.e. a 10-bit mantissa where the graph
-#: says 23.  Measured on MobileNetV2 that is 18,060 peak-ULP of error against the CPU
-#: reference where the Vulkan EP has 23 — a 785x precision difference on identical
-#: model bytes, and *not* an ORT-version artifact (``cpu_cuda_rt``, the same ORT
-#: build's CPU EP, reads 0).  Granting CUDA a budget that matches TF32 is the only
-#: way to compare it at all; pretending the budget is the same for both would either
-#: disqualify the competitor or silently license a precision loss the Vulkan EP does
-#: not take.  The regime is recorded per arm and printed beside every result.
+#: says 23.  That is a large precision difference against the CPU reference by
+#: construction of the format, and *not* an ORT-version artifact (``cpu_cuda_rt``,
+#: the same ORT build's CPU EP, reads clean).  No specific peak-ULP or ratio figure
+#: is quoted here; none is witnessed by a committed artifact in this tree, and the
+#: methodology holds regardless of the magnitude.  Granting CUDA a budget that
+#: matches TF32 is the only way to compare it at all; pretending the budget is the
+#: same for both would either disqualify the competitor or silently license a
+#: precision loss the Vulkan EP does not take.  The regime is recorded per arm and
+#: printed beside every result.
 ROUNDING_DEPTH_BOUND = 128
 
 #: Explicit mantissa bits per compute regime.  ``tf32`` is NVIDIA's 19-bit format
@@ -538,10 +545,11 @@ def peak_ulp_spacing(reference) -> "float | None":
     rather than each element's own magnitude is the whole point: a logit tensor is
     consumed by softmax/argmax and an embedding by a dot product, and both are
     sensitive to differences relative to the tensor's scale.  Per-element spacing
-    makes a 0.04 difference on a 0.02-magnitude logit look like 19,000 ULP while the
-    same 0.04 on the tensor's 14.77 peak looks like 5 — same physical error, two
-    answers differing by four orders of magnitude, and only one of them predicts
-    whether the model's output changed.
+    makes the same absolute difference read as an enormous ULP count near a
+    near-zero element and a small one at the tensor's peak — same physical error,
+    two readings differing by orders of magnitude, and only one of them predicts
+    whether the model's output changed.  (No specific figures are quoted here; none
+    is witnessed by a committed artifact in this tree.)
 
     Computed by hand from ``frexp`` rather than via ``np.spacing``: Trinity found
     (2026-08-04) that ``np.spacing`` returns ``inf`` at fp16's largest finite value,
@@ -625,10 +633,12 @@ def conditioned_top_k(subject_f64, reference_f64, *, k: int, resolution: float) 
     **Why conditioning is necessary here, and what it costs.**  The feeds are
     pseudo-random token ids over a random KV cache, so the model has no coherent
     context and emits a near-flat distribution: on ``phi35_prefill_1`` the reference's
-    top-1 to top-2 gap is **0.031**, smaller than either GPU arm's own worst-case
-    error (0.039 Vulkan, 0.078 CUDA).  Which of those two tokens comes first is
-    genuinely undecidable at this precision.  The unconditioned check scored 0.0
-    agreement for *both* GPU arms on ``decode_past128``, which is a fact about the
+    top-1 to top-2 gap is small enough to be comparable to either GPU arm's own
+    worst-case error -- no specific magnitude for either is quoted here, since neither
+    is witnessed by a committed artifact in this tree.  Which of those two tokens
+    comes first is genuinely undecidable at this precision.  The unconditioned check
+    scored 0.0 agreement for *both* GPU arms on ``decode_past128``, which is a fact
+    about the
     random number generator and not about either provider.
 
     The cost is real and is reported rather than hidden: where no row resolves, this

@@ -876,7 +876,7 @@ def test_committed_records_are_readable_and_self_describing(path):
                 f"{path.name}: no anchor recorded. A profile that does not say which span "
                 f"it bucketed against cannot be audited: the same numbers mean different "
                 f"things depending on whether the outer bracket was used.")
-            if not anchor.get("sees_whole_compute"):
+            if not anchor.get("sees_compute_call_bracket"):
                 # Admissible, but only as a bounded claim, and the bound must be on the
                 # artifact rather than in whoever remembers the run.
                 assert payload.get("scope_limits"), (
@@ -915,19 +915,18 @@ def test_committed_records_are_readable_and_self_describing(path):
 # JSON document. So every timed Vulkan inference carried a file read, a JSON rebuild and
 # a file write that the CUDA arm had no equivalent of.
 #
-# Measured on Phi-3.5 `prefill_1`: the median with the dump live was more than twice the
-# median without it — all of it this harness measuring itself, and all of it charged
-# to the Vulkan EP in a report whose entire purpose is to compare the Vulkan EP against
-# CUDA. The first baseline concluded that CUDA was several times faster on `prefill_1`;
-# over half of that gap was the instrument. **The magnitudes are not quoted on this
-# branch**: the A/B artifact that demonstrates them is committed with the results, not
-# with the instrument, and a ratio whose witness lives elsewhere is the kind of claim
-# this harness exists to refuse.
+# The median with the dump live was well above the median without it — all of it this
+# harness measuring itself, and all of it charged to the Vulkan EP in a report whose
+# entire purpose is to compare the Vulkan EP against CUDA. A meaningful share of the
+# gap the first baseline attributed to CUDA being faster was, instead, the instrument.
+# **No magnitude is quoted on this branch**: the A/B artifact that would demonstrate one
+# is not committed here, and a ratio whose witness lives elsewhere (or nowhere) is the
+# kind of claim this harness exists to refuse.
 #
 # The trap is that nothing looked wrong. Every gate passed, every arm read ADMISSIBLE,
-# equivalence read MATCH, and the numbers were stable across 20 iterations with a tight
-# confidence interval — a precisely reproducible measurement of the wrong thing. It was
-# only found by asking where a large block of untraced host time went.
+# equivalence read MATCH, and the numbers were stable across repeated iterations with a
+# tight confidence interval — a precisely reproducible measurement of the wrong thing.
+# It was only found by asking where a large block of untraced host time went.
 #
 # So the invariant is not "remember to unset the variable". It is that evidence
 # collection and timing are separate regions, and the code says which is which.
@@ -938,7 +937,7 @@ def test_counters_dump_is_not_left_inside_the_timed_region():
 
     Asserted on the source rather than by running a session, because the failure is a
     *timing* artifact: a functional test passes cheerfully while the number it produces
-    is inflated by more than a factor of two. What can be checked cheaply and
+    is measurably inflated. What can be checked cheaply and
     deterministically is the ordering
     — the pop must appear after the first run and before the warmup loop.
     """
@@ -950,8 +949,10 @@ def test_counters_dump_is_not_left_inside_the_timed_region():
     assert first_run < pop < warmup < steady, (
         "the counters-file env var must be unset after the first run and before the "
         "warmup/steady loops. The EP rewrites that JSON after every Compute, so leaving "
-        "it set puts a file write inside every timed inference — measured at more than "
-        "2x on Phi-3.5 prefill_1.")
+        "it set puts a file write inside every timed inference — measurably inflating "
+        "the result. No magnitude is quoted here; see the module-level comment above "
+        "for why.")
+
 
 
 def test_counters_scope_is_recorded_on_every_vulkan_arm():
@@ -1038,12 +1039,15 @@ def test_committed_evidence_is_present_and_enumerable():
     output, so demanding evidence there would be demanding the thing under review
     not exist.
 
-    The teeth are not lost. `bench/test_result_staleness.py` ships
-    `test_there_is_at_least_one_committed_suite_to_screen`, a hard assertion, on
-    the branch that actually publishes evidence -- so "the evidence vanished"
-    still fails loudly exactly where evidence is supposed to be. And the moment
-    *any* evidence is present here, every assertion below runs unchanged: this is
-    a skip on an empty tree, not a skip on an inconvenient result.
+    That skip is not itself a hard guarantee against "the evidence vanished" on a
+    branch that is supposed to publish results -- this module does not name or
+    assert the existence of such a guard elsewhere, because doing so without
+    verifying it in the tree that carries it would be exactly the kind of claim
+    this branch exists to refuse. A results-publishing branch is responsible for
+    its own hard assertion over its own committed evidence. What this test does
+    guarantee is narrower and local: the moment *any* evidence is present here,
+    every assertion below runs unchanged -- this is a skip on an empty tree, not
+    a skip on an inconvenient result.
     """
     files = _committed_evidence_json()
     if not files:
@@ -1145,6 +1149,89 @@ def test_the_unwitnessed_ratio_guard_would_notice_a_regression():
                                   "twice the median without it")
     assert _UNWITNESSED_RATIO_RE.search(example_measured_figure)
     assert not _UNWITNESSED_RATIO_RE.search(example_qualitative_bound)
+
+
+# ---------------------------------------------------------------------------
+# Fact Checker's de-claim scan: a general numeric-witness guard
+# ---------------------------------------------------------------------------
+#
+# `_UNWITNESSED_RATIO_RE` above catches one shape (a bare decimal ratio). The de-claim
+# scan found the same underlying defect in several other shapes across bench/cuda_profile.py
+# and bench/cuda_competition.py: decimal millisecond figures, decimal percentages, bare
+# integer ratios ("40x", "785x"), comma-grouped counts ("18,060"), and approximate counts
+# ("~3200 dispatches"). Rather than adding a narrower regex per shape forever, this test
+# scans both production modules for any of those shapes and requires each match to sit near
+# either (a) an explicit citation to a committed artifact, or (b) the standard disclaimer
+# this codebase already uses when a figure is deliberately withheld ("no magnitude is quoted
+# here", "not witnessed by", etc.). Neither a synthetic test fixture nor a code constant
+# (`ROUNDING_DEPTH_BOUND = 128`, `MANTISSA_BITS`, a `sha256`/byte-count table pinned to a
+# resolver) matches these shapes, so this is additive to, not a replacement for, the
+# citation-pin tests in `test_cuda_profile.py` and the ratio guard above.
+_MEASUREMENT_SHAPED_RE = re.compile(
+    r"\b\d+\.\d+x\b"                          # decimal ratio (same shape as _UNWITNESSED_RATIO_RE)
+    r"|\b\d+\.\d+\s?ms\b"                     # decimal ms figure
+    r"|\b\d+\.\d+%"                            # decimal percent figure
+    r"|\b\d{2,}x\b"                            # bare integer ratio: 40x, 785x
+    r"|\b\d{1,3}(?:,\d{3})+\b"                 # comma-grouped count: 18,060
+    r"|~\s?\d+(?:\.\d+)?\s?(?:ms|dispatches|MB|GB)?\b"  # approximate figure: ~45 ms
+)
+
+#: Phrases this codebase already uses to mark a citation to committed evidence, or to mark
+#: a figure as deliberately withheld. Either kind of neighbour makes a numeric-shaped match
+#: acceptable; neither is itself a measurement.
+_NUMERIC_WITNESS_OR_DISCLAIMER_MARKERS = (
+    "bench/results/", "committed in", "cited to", "committed artifact",
+    "no specific", "no magnitude is quoted", "no figure is quoted", "no ratio is quoted",
+    "not quoted here", "no dispatch count is quoted", "not witnessed by", "no committed artifact",
+    "none is quoted", "none is witnessed",
+)
+
+#: Production modules this guard screens. Deliberately narrow: docs like docs/PERF.md carry
+#: real, individually cited measurements throughout (see its own §26.1 provenance table) and
+#: a blanket scan there would flag legitimate witnessed figures, not catch unwitnessed ones.
+_NUMERIC_WITNESS_SCREENED_MODULES = ("cuda_profile.py", "cuda_competition.py")
+
+
+def _unwitnessed_measurement_shaped_figures(text: str) -> list[str]:
+    offenders = []
+    lowered = text.lower()
+    for m in _MEASUREMENT_SHAPED_RE.finditer(text):
+        window = lowered[max(0, m.start() - 400): m.end() + 400]
+        if not any(marker in window for marker in _NUMERIC_WITNESS_OR_DISCLAIMER_MARKERS):
+            line_no = text.count("\n", 0, m.start()) + 1
+            offenders.append(f"line {line_no}: {m.group()!r}")
+    return offenders
+
+
+def test_production_modules_do_not_quote_unwitnessed_measurement_shaped_figures():
+    """`bench/cuda_profile.py` and `bench/cuda_competition.py` may not bury a bare number.
+
+    Every decimal ms/percent/ratio, bare integer ratio, comma-grouped count or approximate
+    figure in these two modules must sit near either a citation to a committed artifact or
+    this codebase's standard withheld-figure disclaimer. A number with neither is exactly
+    the Fact Checker de-claim finding: a real-looking figure nobody in this tree can back.
+    """
+    root = Path(__file__).resolve().parent
+    offenders = {}
+    for name in _NUMERIC_WITNESS_SCREENED_MODULES:
+        text = (root / name).read_text("utf-8")
+        found = _unwitnessed_measurement_shaped_figures(text)
+        if found:
+            offenders[name] = found
+    assert not offenders, (
+        "unwitnessed measurement-shaped figures (no nearby citation or disclaimer):\n  "
+        + "\n  ".join(f"{k}: {v}" for k, v in offenders.items()))
+
+
+def test_the_numeric_witness_guard_would_notice_a_regression():
+    """Negative control: this guard must actually be able to fail."""
+    naked = "the traced arm was 18,060 ULP off and 40x worse than the untraced one"
+    cited = ("the traced arm was 18,060 ULP off, committed in "
+             "bench/results/_cuda69/example.json")
+    disclaimed = "no magnitude is quoted here for this figure"
+    assert _unwitnessed_measurement_shaped_figures(naked)
+    assert not _unwitnessed_measurement_shaped_figures(cited)
+    assert not _unwitnessed_measurement_shaped_figures(disclaimed)
 
 
 def test_no_committed_record_calls_itself_admissible_while_refusing():

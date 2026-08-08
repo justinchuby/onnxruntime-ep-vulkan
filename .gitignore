@@ -101,13 +101,16 @@ bench/results/**/*.npz
 # ---------------------------------------------------------------------------
 # CUDA competition harness (issue #69). Mouse 2026-08-07.
 #
-# `git add -A` in this worktree would otherwise stage 13,629 paths and 3.9 GB.
+# `git add -A` in this worktree would otherwise stage a large number of local paths and
+# a large volume of data -- neither figure is witnessed by anything committed, and the
+# exact counts are machine- and run-specific, so none is quoted here.
 # Every rule below names a thing that is *regenerable from a committed record*;
 # nothing here is evidence. The evidence is the small JSON/MD pair each run
 # writes at the top of bench/results/<record>/, and those stay committed.
 # ---------------------------------------------------------------------------
 
-# The local CUDA-12 virtualenv the harness runs onnxruntime-gpu from (~2.7 GB).
+# The local CUDA-12 virtualenv the harness runs onnxruntime-gpu from -- a large local
+# artifact, not witnessed by anything committed, so no specific size is quoted here.
 # It is a machine-local toolchain, not a source artifact: bench/cuda_competition.py
 # records the interpreter, the ORT version and the CUDA build flags into every
 # result record, which is what makes a run reproducible. A committed venv would
@@ -116,8 +119,9 @@ bench/results/**/*.npz
 
 # Per-run worker scratch. cuda_competition.py gives each arm/repeat its own
 # directory under the record dir and reduces it to JSON before returning, so the
-# directory is an intermediate. bench/results/_cuda69/scratch alone is 1.14 GB
-# across 336 files (claim logs, counters dumps, ORT profiles, output tensors).
+# directory is an intermediate: a large local artifact (claim logs, counters
+# dumps, ORT profiles, output tensors), not witnessed by anything committed, so
+# no specific size or file count is quoted here.
 bench/results/**/scratch/
 bench/results/**/scratch_*/
 

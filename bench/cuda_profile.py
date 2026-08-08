@@ -7,8 +7,10 @@ module is the "why".
 
 # The question this module exists to answer
 
-The baseline says Vulkan takes ~45 ms where CUDA takes ~16 ms on Phi-3.5 `prefill_1`.
-There are only a few places 30 ms can be:
+The baseline says Vulkan is slower than CUDA on Phi-3.5 `prefill_1`; no magnitude is
+quoted here because this module carries no committed measurement of its own to back
+one — see `bench/cuda_competition.py` for the witnessed comparison, cited to its own
+committed artifacts.  There are only a few places that gap can be:
 
 1. **Kernel time** — our shaders are slower than cuBLAS/cuDNN's at the same work.
 2. **Host overhead** — descriptor allocation, pipeline lookup, command recording,
@@ -75,7 +77,9 @@ never silently replaced by `fence_wait`.  A run that cannot see the device says 
 # Why tracing changes the number it measures
 
 Enabling the tracer costs host time: a clock read and a span allocation per phase, per
-dispatch.  With ~3200 dispatches per inference that is not negligible.  So this module
+dispatch, over the many dispatches a single inference issues.  No dispatch count is
+quoted here — it varies by model and graph and is not a committed figure this module
+carries — but the cost is not negligible.  So this module
 reports **shares, not absolute times**, and it reports the traced total alongside the
 untraced baseline total so the observer effect is visible rather than assumed away.
 The `overhead_ratio` field is exactly that: traced wall / untraced wall.  A share
@@ -230,11 +234,11 @@ def _ep_spans(events: list, name: str) -> list:
 def choose_anchor(events: list) -> dict:
     """Which span brackets one ORT ``Compute`` call in *this* trace, and what it can see.
 
-    Returns ``span``, ``basis``, ``count``, ``sees_whole_compute`` and ``available``.
+    Returns ``span``, ``basis``, ``count``, ``sees_compute_call_bracket`` and ``available``.
 
     A trace written by an EP built before ``vulkan.compute_call`` existed has only the inner
     span, and refusing to reduce it would discard every stored artifact.  So the fallback is
-    taken — and *recorded*, with ``sees_whole_compute = False``, because a reduction anchored on
+    taken — and *recorded*, with ``sees_compute_call_bracket = False``, because a reduction anchored on
     the inner span cannot make any statement about the region outside it and must not be read as
     though it had.
     """
@@ -245,7 +249,7 @@ def choose_anchor(events: list) -> dict:
                 "span": name,
                 "count": available[name],
                 "available": available,
-                "sees_whole_compute": name == COMPUTE_CALL_SPAN,
+                "sees_compute_call_bracket": name == COMPUTE_CALL_SPAN,
                 "basis": (
                     "`vulkan.compute_call` brackets the instrumented success-path region inside "
                     "`compute_impl`, so every span the EP emits on that path during the call "
@@ -256,7 +260,7 @@ def choose_anchor(events: list) -> dict:
                     "callback does outside `dispatch_ort` is invisible to this reduction and is "
                     "NOT included in any per-call or steady-state total below."),
             }
-    return {"span": None, "count": 0, "available": available, "sees_whole_compute": False,
+    return {"span": None, "count": 0, "available": available, "sees_compute_call_bracket": False,
             "basis": "no anchor span of any kind in this trace"}
 
 
@@ -757,10 +761,10 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
         "instrument_errors": list(traced.get("instrument_errors") or []),
     }
     # This reduction is itself a Vulkan record, and the regime its inputs were measured
-    # under is the difference between a clean median and a counter-inflated one, which on
-    # the measured build was close to a factor of two.  No figure is quoted: the artifact
-    # that carried the inflated side is no longer committed, and a number the tree cannot
-    # back is the defect this branch removes.  Inheriting it
+    # under is the difference between a clean median and a counter-inflated one — the
+    # two are not interchangeable.  No figure is quoted: the artifact that carried the
+    # inflated side is no longer committed, and a number the tree cannot back is the
+    # defect this branch removes.  Inheriting the counters_scope tag
     # rather than leaving it absent is what stops the reduction from being the one Vulkan
     # artifact in the tree that does not say which regime it describes.
     out["counters_scope"] = traced.get("counters_scope")
@@ -789,9 +793,11 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
     out["record_paths"] = record_paths(events)
     out["refusals"].extend(phases["phase_tree_disagreements"])
 
-    # Per-call split.  Cumulative phase totals on this EP are dominated by the cold
-    # first Compute (99.7% of cmd_upload lands there), so a steady-state claim built
-    # from them is wrong by more than the gap being chased.
+    # Per-call split.  Cumulative phase totals on this EP can be dominated by the cold
+    # first Compute, where most of a phase like cmd_upload lands, so a steady-state claim
+    # built from them without isolating the first call is wrong by more than the gap being
+    # chased.  No fraction is quoted here — it is workload- and build-dependent and not a
+    # committed figure this module carries.
     anchor = choose_anchor(events)
     out["anchor"] = anchor
     calls = compute_calls(events, anchor["span"])
@@ -802,7 +808,7 @@ def attribute(traced: dict, untraced: dict | None, trace_path: Path) -> dict:
         out["per_call"] = per_call
         out["steady"] = steady_state(per_call)
         out["rerecord"] = rerecord_evidence(per_call)
-        if not anchor["sees_whole_compute"]:
+        if not anchor["sees_compute_call_bracket"]:
             # Not a refusal: the reduction below is sound about the region it can see. It is a
             # bounded claim, and the bound is stated on the artifact rather than left to the
             # reader to infer from a missing field.
@@ -957,7 +963,7 @@ def compute_reconciliation(steady: dict, traced_median_ms, overhead_ratio,
         "available": True,
         "axis": "traced-run warm-call medians, in milliseconds",
         "anchor": anchor.get("span"),
-        "sees_whole_compute": anchor.get("sees_whole_compute"),
+        "sees_compute_call_bracket": anchor.get("sees_compute_call_bracket"),
         "traced_wall_ms": traced_median_ms,
         "compute_call_ms": call,
         "subgraph_ms": sub,
@@ -1014,7 +1020,7 @@ def render(report: dict) -> str:
         lines.append("## Where one warm inference goes")
         lines.append("")
         lines.append(f"Anchor: `{rec.get('anchor')}`"
-                     + ("" if rec.get("sees_whole_compute")
+                     + ("" if rec.get("sees_compute_call_bracket")
                         else " — **inner span only; the region outside it is invisible here**"))
         lines.append("")
         lines.append("| region | ms | inside |")
