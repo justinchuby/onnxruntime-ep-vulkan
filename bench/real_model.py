@@ -46,6 +46,7 @@ import dataclasses
 import hashlib
 import math
 import os
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -80,6 +81,61 @@ class ModelUnavailable(RuntimeError):
     """
 
 
+class ModelProvenanceMismatch(RuntimeError):
+    """Resolved bytes are not the pinned bytes, and the run must not continue.
+
+    Separate from :class:`ModelUnavailable` on purpose. "Absent" is a fact about this machine
+    and a caller may reasonably record it and move on; "present but not the model you pinned"
+    is a fact about *identity*, and continuing past it produces numbers attributed to a model
+    that never ran. Issue #78 exists because a same-named substitute
+    (``759c3cd2…``, 90,387,606 B) sat in the default cache and nothing would have caught it.
+    """
+
+
+class ModelNotBenchable(RuntimeError):
+    """A model is declared for provenance only and has no case table yet.
+
+    Raised rather than defaulted. The defect this replaces was an ``else`` branch: every model
+    that was not Phi-3.5 fell through to ``mobilenet_cases``, so a newly-onboarded encoder would
+    have been fed ImageNet-shaped ``(N, 3, 224, 224)`` float32 tensors and either crashed or —
+    worse — produced timings labelled with its own name.
+    """
+
+
+#: A model key may be exercised end-to-end, or may exist only to have its bytes pinned.
+#:
+#: ``provenance_only`` is not a lesser status, it is a *different* one, and it is declared on the
+#: spec rather than inferred from "do we have a feed builder?". Inferring it is how a missing
+#: branch becomes a silent fallback. MiniLM is ``provenance_only`` until the op-coverage work in
+#: #74/#75/#76 lands; until then no driver may build feeds for it, and every driver must say so
+#: out loud instead of skipping it.
+CAP_BENCHABLE = "benchable"
+CAP_PROVENANCE_ONLY = "provenance_only"
+CAPABILITIES = frozenset({CAP_BENCHABLE, CAP_PROVENANCE_ONLY})
+
+#: A Hugging Face commit SHA, and nothing that merely looks like one.
+#:
+#: ``re.fullmatch`` and not ``re.match(... + "$")``: ``$`` matches before a trailing newline, so
+#: ``"1110a2…41\n"`` would pass a ``$``-anchored check and then be pasted into a URL. That is not
+#: hypothetical pedantry — a revision read from a file or a shell capture carries the newline.
+#: `test_a_revision_with_a_trailing_newline_is_refused` holds this.
+_SHA1_HEX = re.compile(r"[0-9a-f]{40}")
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+#: ``owner/name``: one slash, no scheme, no traversal, no whitespace.
+_HF_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
+#: A repo-relative POSIX path: no leading slash, no ``..`` segment, no backslash, no scheme.
+_HF_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*")
+
+
+@dataclasses.dataclass(frozen=True)
+class ExternalFile:
+    """One external-data blob a pinned graph is expected to reference, by content."""
+
+    location: str
+    sha256: str
+    bytes: int
+
+
 @dataclasses.dataclass(frozen=True)
 class ModelSpec:
     """One real model this lane benchmarks, and how to find it without guessing.
@@ -88,6 +144,19 @@ class ModelSpec:
     ``"repo-cache"`` (the pinned download cache `rust/modelrunner` already uses, whose sha256 is
     recorded in `bench/results/rust-model-runner/<key>.json`). No other resolution exists — a
     literal path in a benchmark is a guess about a version.
+
+    IMMUTABLE PROVENANCE (issue #78). A spec may additionally carry a *complete* pin:
+    ``source_repo``/``source_revision``/``source_file`` plus ``pinned_sha256``/``pinned_bytes``
+    and the expected ``pinned_external`` manifest. The pin is validated **at construction**, so
+    a mutable revision or a half-filled pin cannot exist as an object, let alone reach a
+    download. There is deliberately **no partial-pin path**: the rejected first attempt at this
+    returned early when the digest was absent, which meant "no digest recorded" and "digest
+    matches" took the same branch and produced the same ``provenance_ok``.
+
+    The source triple is bound to the digest by construction: ``pinned_source_url`` is built
+    from these fields and nothing else, so a record cannot describe ``sentence-transformers``
+    bytes with ``Xenova`` metadata — the two cannot be separated without editing the spec, and
+    :func:`verify_source_metadata` refuses a manifest whose source triple disagrees.
     """
 
     key: str
@@ -103,6 +172,112 @@ class ModelSpec:
     #: Where the recorded provenance for this model lives, relative to `bench/results/`.
     recorded_provenance: str = ""
     note: str = ""
+    #: --- immutable pin (issue #78); all-or-nothing ---
+    source_repo: str = ""
+    source_revision: str = ""
+    source_file: str = ""
+    pinned_sha256: str = ""
+    pinned_bytes: int = 0
+    pinned_external: "tuple[ExternalFile, ...]" = ()
+    #: What a driver is allowed to do with this model.
+    capability: str = CAP_BENCHABLE
+
+    def __post_init__(self) -> None:
+        if self.capability not in CAPABILITIES:
+            raise ValueError(
+                f"{self.key}: capability {self.capability!r} is not one of "
+                f"{sorted(CAPABILITIES)}. A driver dispatches on this field, so an unknown "
+                f"value would be an unhandled branch rather than a typo.")
+
+        parts = {
+            "source_repo": self.source_repo, "source_revision": self.source_revision,
+            "source_file": self.source_file, "pinned_sha256": self.pinned_sha256,
+            "pinned_bytes": str(self.pinned_bytes) if self.pinned_bytes else "",
+        }
+        present = {k for k, v in parts.items() if v}
+        if not present:
+            if self.pinned_external:
+                raise ValueError(
+                    f"{self.key}: pinned_external was declared without any of "
+                    f"{sorted(parts)}. An external-data manifest with nothing pinning the graph "
+                    f"it belongs to describes no model.")
+            return
+        missing = sorted(set(parts) - present)
+        if missing:
+            raise ValueError(
+                f"{self.key}: partial pin — missing {missing}. A pin is all-or-nothing: a spec "
+                f"that names a source but no digest can construct a URL and accept whatever "
+                f"bytes come back, which is exactly the hole issue #78 is about.")
+
+        if not _HF_REPO.fullmatch(self.source_repo):
+            raise ValueError(
+                f"{self.key}: source_repo {self.source_repo!r} is not a bare `owner/name`. "
+                f"A repo field that can hold a scheme, a host or a traversal segment is a URL "
+                f"builder wearing a different name.")
+        if not _SHA1_HEX.fullmatch(self.source_revision):
+            raise ValueError(
+                f"{self.key}: source_revision {self.source_revision!r} is not a 40-hex-char "
+                f"commit SHA. A branch or tag (`main`, `v1.0`) is mutable: the bytes it names "
+                f"today are not the bytes it names tomorrow, and the pin would be decorative.")
+        if not _HF_FILE.fullmatch(self.source_file) or ".." in self.source_file.split("/"):
+            raise ValueError(
+                f"{self.key}: source_file {self.source_file!r} is not a repo-relative POSIX "
+                f"path.")
+        if not _SHA256_HEX.fullmatch(self.pinned_sha256):
+            raise ValueError(
+                f"{self.key}: pinned_sha256 {self.pinned_sha256!r} is not 64 lowercase hex "
+                f"characters.")
+        if not isinstance(self.pinned_bytes, int) or self.pinned_bytes <= 0:
+            raise ValueError(
+                f"{self.key}: pinned_bytes must be a positive int, got "
+                f"{self.pinned_bytes!r}.")
+        for ext in self.pinned_external:
+            if not _SHA256_HEX.fullmatch(ext.sha256) or ext.bytes <= 0 or not ext.location:
+                raise ValueError(
+                    f"{self.key}: external pin {ext!r} is incomplete; an external blob is part "
+                    f"of the model's identity and is pinned exactly as the graph is.")
+
+    @property
+    def is_pinned(self) -> bool:
+        """True when this spec carries a complete immutable pin.
+
+        A property and not a stored flag: the fields are validated all-or-nothing in
+        ``__post_init__``, so any one of them is a faithful witness for all of them, and there
+        is no way to construct an object where this disagrees with reality.
+        """
+        return bool(self.pinned_sha256)
+
+
+def pinned_source_url(spec: ModelSpec) -> str:
+    """The immutable download URL for a pinned spec, built only at point of use.
+
+    Not a ``ModelSpec`` field, for two reasons that pull the same way: a stored URL is a second
+    place the source can drift from the digest, and `test_no_model_spec_carries_a_literal_path`
+    forbids specs from carrying resolved locations. Built from the validated triple, so it
+    cannot name a repo the pin does not, and the revision is a commit SHA by construction —
+    ``/resolve/main/`` cannot be produced by this function.
+    """
+    if not spec.is_pinned:
+        raise ValueError(
+            f"{spec.key} carries no immutable pin, so no immutable URL exists for it. "
+            f"Refusing to construct a mutable one.")
+    return (f"https://huggingface.co/{spec.source_repo}/resolve/"
+            f"{spec.source_revision}/{spec.source_file}")
+
+
+def _source_identity(spec: ModelSpec) -> dict:
+    """The source triple, as it must appear on every record about this model."""
+    if not spec.is_pinned:
+        return {"pinned": False}
+    return {
+        "pinned": True,
+        "repo": spec.source_repo,
+        "revision": spec.source_revision,
+        "file": spec.source_file,
+        "url": pinned_source_url(spec),
+        "sha256": spec.pinned_sha256,
+        "bytes": spec.pinned_bytes,
+    }
 
 
 PHI35 = ModelSpec(
@@ -129,7 +304,35 @@ MOBILENETV2 = ModelSpec(
          "whose arithmetic has nothing to do with MatMulNBits.",
 )
 
-MODELS = {m.key: m for m in (PHI35, MOBILENETV2)}
+#: The pin issue #78 exists to install.
+#:
+#: Every field here is the independently verified identity recorded on the issue: the
+#: ``sentence-transformers`` export, at an immutable commit, with the digest and size that were
+#: checked. It is deliberately NOT the ``Xenova/all-MiniLM-L6-v2`` re-export at ``main`` that an
+#: earlier unmerged draft used — a different repo, a mutable ref, and different bytes.
+#:
+#: ``capability=CAP_PROVENANCE_ONLY``: the Vulkan EP cannot yet run this graph's op set (#74/#75/
+#: #76). Pinning the bytes and benchmarking them are separate jobs, and this lands the first
+#: without pretending to the second.
+MINILM = ModelSpec(
+    key="all-MiniLM-L6-v2",
+    family="bert",
+    resolver="repo-cache",
+    cache_filename="all-MiniLM-L6-v2.onnx",
+    recorded_provenance="",
+    source_repo="sentence-transformers/all-MiniLM-L6-v2",
+    source_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    source_file="onnx/model.onnx",
+    pinned_sha256="6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+    pinned_bytes=90_405_214,
+    pinned_external=(),
+    capability=CAP_PROVENANCE_ONLY,
+    note="sentence-transformers/all-MiniLM-L6-v2 ONNX export, f32 BERT encoder, no external "
+         "data. Provenance-only until the op coverage in #74/#75/#76 lands: pinned so a "
+         "substitute cannot be measured, not yet benched.",
+)
+
+MODELS = {m.key: m for m in (PHI35, MOBILENETV2, MINILM)}
 
 #: Where `rust/modelrunner` puts pinned downloads. Read from the environment first so a machine
 #: that keeps its cache elsewhere is not silently missed.
@@ -151,6 +354,139 @@ def sha256_file(path: "Path | str") -> str:
     return h.hexdigest()
 
 
+# --------------------------------------------------------------------------------------------
+# Public paths — what a serialized record is allowed to say about this machine
+# --------------------------------------------------------------------------------------------
+
+#: The key under which a record carries values that must never be serialized.
+#:
+#: A record needs the real, openable path while it is in memory — the driver hands it to
+#: `ort.InferenceSession` — and must not carry it once written. Two spellings of the same
+#: directory, and the difference is the whole point: everything outside this key is public.
+#: :func:`public_record` drops it, and it is the *serializer* that drops it, so a caller cannot
+#: forget. `test_a_planted_absolute_path_does_not_survive_the_real_serializer` plants a leak in
+#: every string field and drives the production writer over it.
+RUNTIME_ONLY_KEY = "_runtime_only"
+
+
+def _public_roots() -> "list[tuple[str, Path]]":
+    """Declared roots, longest path first so a nested root wins over its parent.
+
+    ``<model-cache>`` lives under ``<home>`` on every machine this runs on. Rewriting it as
+    ``<home>/...`` would keep the account name out and throw the *role* away, which is the part
+    a reader needs to reproduce anything.
+    """
+    roots = [
+        ("<repo>", _ROOT),
+        ("<model-cache>", repo_cache_dir()),
+        ("<foundry-cache>", Path.home() / ".foundry" / "cache" / "models"),
+        ("<home>", Path.home()),
+    ]
+    out = []
+    for token, p in roots:
+        try:
+            out.append((token, p.resolve()))
+        except OSError:  # pragma: no cover - an unstattable root is simply not a root
+            continue
+    out.sort(key=lambda kv: len(str(kv[1])), reverse=True)
+    return out
+
+
+def _public_path(value) -> str:
+    """Rewrite one path as ``<root>/relative/posix/path``, or as ``<elsewhere>``.
+
+    Containment is decided on resolved path *parts*, never on ``str.startswith``: that would
+    call ``C:\\Users\\ann-backup`` a child of ``C:\\Users\\ann`` and rewrite it under the wrong
+    root, which is worse than leaving it alone because it looks sanitized.
+    """
+    if value is None:
+        return ""
+    raw = Path(str(value))
+    try:
+        resolved = raw.resolve()
+    except OSError:  # pragma: no cover
+        resolved = raw
+    for token, root in _public_roots():
+        rp, cp = list(root.parts), list(resolved.parts)
+        if os.name == "nt":
+            rp = [x.lower() for x in rp]
+            cp_cmp = [x.lower() for x in cp]
+        else:
+            cp_cmp = cp
+        if len(cp_cmp) >= len(rp) and cp_cmp[:len(rp)] == rp:
+            rel = "/".join(resolved.parts[len(rp):])
+            return f"{token}/{rel}" if rel else token
+    # Not under any declared root: name the fact, never the path.
+    return "<elsewhere>"
+
+
+def _public_record(node):
+    """A deep copy of *node* with every path rooted and every runtime-only key dropped.
+
+    Applied by the writer, not by each caller. The rejected first attempt sanitized at the call
+    sites that were remembered, which is a policy that holds until someone adds a field.
+    """
+    if isinstance(node, dict):
+        return {k: _public_record(v) for k, v in node.items() if k != RUNTIME_ONLY_KEY}
+    if isinstance(node, (list, tuple)):
+        return [_public_record(v) for v in node]
+    if isinstance(node, Path):
+        return _public_path(node)
+    if isinstance(node, str):
+        return _scrub_text(node)
+    return node
+
+
+#: Anything that looks like an absolute location on the platforms this runs on.
+_ABS_PATH_TEXT = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\|(?<![\w.])/(?:home|Users|root|mnt)/)[^\s\"']*")
+
+
+def _scrub_text(text: str) -> str:
+    """Root absolute paths embedded in free text (error messages, notes, details)."""
+    return _ABS_PATH_TEXT.sub(lambda m: _public_path(m.group(0)), text)
+
+
+def _scan_public(node, *, where: str = "") -> "list[str]":
+    """Every machine-identifying value still present in *node*. Empty means clean."""
+    found: "list[str]" = []
+
+    def walk(n, path):
+        if isinstance(n, dict):
+            for k, v in n.items():
+                walk(v, f"{path}.{k}")
+        elif isinstance(n, (list, tuple)):
+            for i, v in enumerate(n):
+                walk(v, f"{path}[{i}]")
+        elif isinstance(n, str):
+            for m in _ABS_PATH_TEXT.finditer(n):
+                found.append(f"{where}{path}: {m.group(0)[:80]}")
+    walk(node, "")
+    return found
+
+
+def write_public_json(payload, path: "Path | str", *, indent: int = 2) -> str:
+    """The one writer this lane serializes records through. Refuses to publish a leak.
+
+    The screen runs on the **serialized text**, not on the object: ``json.dumps(default=str)``
+    stringifies a ``Path`` *after* any object-level walk would have passed it, so an
+    object-level-only check is invisible to exactly the case that leaks.
+    """
+    import json
+
+    public = _public_record(json.loads(json.dumps(payload, default=str)))
+    text = json.dumps(public, indent=indent)
+    problems = _scan_public(json.loads(text), where=str(path))
+    if problems:
+        head = "\n  ".join(problems[:8])
+        raise ValueError(
+            f"{len(problems)} machine-identifying value(s) in a record bound for "
+            f"{path}. Route paths through _public_path():\n  {head}")
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return text
+
+
 def recorded_sha256(spec: ModelSpec, results_dir: "Path | None" = None) -> "str | None":
     """The sha256 a previous, independent tool recorded for this model, or ``None``.
 
@@ -167,6 +503,49 @@ def recorded_sha256(spec: ModelSpec, results_dir: "Path | None" = None) -> "str 
         return json.loads(p.read_text(encoding="utf-8")).get("onnx_sha256")
     except Exception:
         return None
+
+
+def runtime_path(rec: dict) -> Path:
+    """The real, openable path for a resolved record — for this process only.
+
+    The public ``rec["path"]`` is rooted (``<model-cache>/...``) and opens nothing. Callers that
+    need to load the model ask for it here, which makes every such call site greppable and keeps
+    "what a reader sees" and "what a session opens" from ever being the same string.
+    """
+    real = (rec.get(RUNTIME_ONLY_KEY) or {}).get("path")
+    if not real:
+        raise ModelUnavailable(
+            f"{rec.get('key')}: this record carries no runtime path. It was almost certainly "
+            f"round-tripped through a serializer, which drops {RUNTIME_ONLY_KEY!r} by design — "
+            f"re-resolve the model rather than reconstructing a path from the public form.")
+    return Path(real)
+
+
+def _unavailable_message(spec: ModelSpec, path: Path) -> str:
+    """What to tell an operator whose cache does not hold this model.
+
+    THE ROUTE MUST EXIST. The message this replaces told everyone to run
+    ``cargo run -p ort-model-runner -- --model <key>``. That producer resolves names against its
+    own pinned-provenance manifest, which has no MiniLM entry — so for the model issue #78 is
+    about, the instruction named a route that cannot work, and an operator following it would
+    conclude the tool was broken rather than that the model was missing.
+
+    A pinned spec therefore names its own immutable URL, which is the thing that is actually
+    true and actually fetchable. An unpinned spec keeps the model-runner route, because for
+    those keys the manifest really is the producer.
+    """
+    where = _public_path(path)
+    if spec.is_pinned:
+        return (
+            f"{spec.key}: {where} is absent. Fetch the pinned bytes from "
+            f"{pinned_source_url(spec)} "
+            f"(sha256 {spec.pinned_sha256}, {spec.pinned_bytes} bytes) and place them at "
+            f"{where}, or set {REPO_CACHE_ENV} to the directory that holds them. "
+            f"This lane will refuse any other bytes under that name.")
+    return (
+        f"{spec.key}: {where} is absent. Fetch it with "
+        f"`cargo run -p ort-model-runner -- --model {spec.key}` (which pins and hashes it), "
+        f"or set {REPO_CACHE_ENV} to the directory that holds it.")
 
 
 def resolve_model(spec: ModelSpec, *, results_dir: "Path | None" = None) -> dict:
@@ -198,11 +577,7 @@ def resolve_model(spec: ModelSpec, *, results_dir: "Path | None" = None) -> dict
     elif spec.resolver == "repo-cache":
         path = repo_cache_dir() / spec.cache_filename
         if not path.is_file():
-            raise ModelUnavailable(
-                f"{spec.key}: {path} is absent. Fetch it with "
-                f"`cargo run -p ort-model-runner -- --model {spec.key}` (which pins and hashes "
-                f"it), or set {REPO_CACHE_ENV} to the directory that holds it."
-            )
+            raise ModelUnavailable(_unavailable_message(spec, path))
         provenance = "pinned-cache"
     else:  # pragma: no cover - guarded by MODELS
         raise ValueError(f"unknown resolver {spec.resolver!r}")
@@ -213,20 +588,167 @@ def resolve_model(spec: ModelSpec, *, results_dir: "Path | None" = None) -> dict
     digest = sha256_file(path)
     recorded = recorded_sha256(spec, results_dir)
     external = external_data_provenance(path)
-    return {
+    rec = {
         "key": spec.key,
         "family": spec.family,
-        "path": str(path),
+        "path": _public_path(path),
         "sha256": digest,
         "bytes": path.stat().st_size,
         "provenance": provenance,
         "resolver": spec.resolver,
+        "capability": spec.capability,
+        "source": _source_identity(spec),
         "recorded_sha256": recorded,
         "agrees_with_recorded_provenance": (recorded == digest) if recorded else None,
         "external_data": external,
         "weights_bytes": sum(f["bytes"] for f in external["files"]),
         "note": spec.note,
+        # The real, openable path — for this process only. `public_record` drops this key, so
+        # the driver can open the model and the artifact still cannot name the machine.
+        RUNTIME_ONLY_KEY: {"path": str(path)},
     }
+    verify_pinned_provenance(spec, rec)
+    return rec
+
+
+def verify_source_metadata(spec: ModelSpec, manifest: "dict | None") -> None:
+    """Refuse a manifest whose source triple disagrees with the spec's pin.
+
+    THE HOLE THIS CLOSES. A record can carry a digest that matches and a *source* that does not:
+    the ``Xenova/all-MiniLM-L6-v2`` re-export and the ``sentence-transformers`` original share a
+    name, and an earlier draft's manifest described one while the bytes on disk were the other.
+    Digest agreement alone would have read ``provenance_ok``. Identity is the pair — these bytes,
+    from that immutable source — so a drift in either half is a refusal.
+    """
+    if not spec.is_pinned or not manifest:
+        return
+    for field, expected in (("repo", spec.source_repo),
+                            ("revision", spec.source_revision),
+                            ("file", spec.source_file)):
+        actual = manifest.get(field)
+        if actual is not None and actual != expected:
+            raise ModelProvenanceMismatch(
+                f"{spec.key}: recorded source {field}={actual!r} disagrees with the pinned "
+                f"{field}={expected!r}. The bytes may still hash correctly, but a record that "
+                f"describes them with another repository's metadata is not provenance — it is "
+                f"the substitution this pin exists to refuse, one level up.")
+
+
+def verify_pinned_provenance(spec: ModelSpec, rec: dict) -> None:
+    """Fail closed if the resolved model is not the pinned model. No early return.
+
+    THERE IS NO "NO DIGEST RECORDED" BRANCH. The rejected first attempt returned early when the
+    pin was absent, so "nothing to check" and "checked and fine" left the record in the same
+    state. A spec either carries a complete pin — validated in ``ModelSpec.__post_init__``, so an
+    incomplete one cannot exist — or it is unpinned and this function says so on the record
+    rather than passing silently.
+    """
+    if not spec.is_pinned:
+        rec["provenance_ok"] = None
+        rec["provenance_detail"] = (
+            "no immutable pin declared for this model; bytes were not checked against one")
+        return
+
+    if rec["sha256"] != spec.pinned_sha256:
+        raise ModelProvenanceMismatch(
+            f"{spec.key}: resolved sha256 {rec['sha256']} does not match the pinned "
+            f"{spec.pinned_sha256} ({rec['bytes']} B on disk vs {spec.pinned_bytes} B pinned). "
+            f"The pinned bytes are {pinned_source_url(spec)}. This refuses rather than "
+            f"re-pins: a same-named file from another export is not this model.")
+    if rec["bytes"] != spec.pinned_bytes:
+        raise ModelProvenanceMismatch(
+            f"{spec.key}: resolved size {rec['bytes']} B does not match the pinned "
+            f"{spec.pinned_bytes} B, though the sha256 matched. Two disagreeing identity "
+            f"fields mean the instrument is wrong, not the model.")
+
+    ext = rec.get("external_data") or {}
+    if not ext.get("scanned"):
+        raise ModelProvenanceMismatch(
+            f"{spec.key}: external-data scan did not run ({ext.get('reason')!r}), so whether "
+            f"this graph references weights outside itself is unknown. A pinned model may not "
+            f"proceed to inference on an unscanned graph — unmeasured is not zero.")
+
+    actual = {f["location"]: f for f in ext.get("files", [])}
+    expected = {e.location: e for e in spec.pinned_external}
+    missing_files = [f["location"] for f in ext.get("files", []) if f.get("missing")]
+    if missing_files:
+        raise ModelProvenanceMismatch(
+            f"{spec.key}: external data referenced by the graph is absent on disk: "
+            f"{sorted(missing_files)}. Refusing before inference — a graph whose weights cannot "
+            f"be read does not produce a partial result, it produces a wrong one.")
+    unexpected = sorted(set(actual) - set(expected))
+    if unexpected:
+        raise ModelProvenanceMismatch(
+            f"{spec.key}: graph declares external data the pin does not: {unexpected}. The "
+            f"pinned graph carried {sorted(expected) or 'no external files'}; a graph that has "
+            f"acquired external weights is not the graph that was pinned.")
+    absent = sorted(set(expected) - set(actual))
+    if absent:
+        raise ModelProvenanceMismatch(
+            f"{spec.key}: the pin declares external data the graph does not reference: "
+            f"{absent}. A graph that has lost its external weights is not the pinned graph.")
+    for loc, want in expected.items():
+        got = actual[loc]
+        if got.get("sha256") != want.sha256 or got.get("bytes") != want.bytes:
+            raise ModelProvenanceMismatch(
+                f"{spec.key}: external blob {loc!r} is sha256 {got.get('sha256')} "
+                f"({got.get('bytes')} B) but the pin says {want.sha256} ({want.bytes} B).")
+
+    verify_source_metadata(spec, (rec.get("source") or {}))
+    rec["provenance_ok"] = True
+    rec["provenance_detail"] = (
+        f"bytes match the immutable pin {spec.source_repo}@{spec.source_revision}:"
+        f"{spec.source_file}")
+
+
+def _iter_tensors(model, onnx):
+    """Every ``TensorProto`` the model carries, wherever it is nested.
+
+    Top-level ``graph.initializer`` is the common case and was the only case the previous
+    version looked at. It is not the only place a ``TensorProto`` lives, and each of the others
+    is reachable in a real export:
+
+    * ``AttributeProto.t`` / ``.tensors`` — a ``Constant`` node's value, and the tensor lists
+      some contrib ops take;
+    * ``AttributeProto.g`` / ``.graphs`` — ``If``/``Loop``/``Scan`` bodies, which carry their own
+      initializers and their own nested attributes;
+    * ``model.functions`` — local function bodies, whose nodes carry attributes too;
+    * ``graph.sparse_initializer`` — its ``values``/``indices`` are ``TensorProto``s.
+
+    A graph whose external weights hang off a subgraph would have scanned clean under the old
+    walk and then failed at inference, which is precisely the direction this contract forbids.
+    Written iteratively with an explicit stack: a deep ``Loop`` nest is a data structure, not a
+    reason to blow the interpreter stack.
+    """
+    stack = [("graph", model.graph)]
+    if hasattr(model, "functions"):
+        stack += [("function", f) for f in model.functions]
+    seen = 0
+    while stack:
+        kind, obj = stack.pop()
+        seen += 1
+        if seen > 100_000:  # pragma: no cover - a cycle is impossible in a valid proto
+            raise ValueError("external-data scan exceeded 100k nodes; refusing to loop")
+        if kind == "graph":
+            for init in obj.initializer:
+                yield init
+            for sp in getattr(obj, "sparse_initializer", []):
+                for t in (getattr(sp, "values", None), getattr(sp, "indices", None)):
+                    if t is not None:
+                        yield t
+            stack += [("node", n) for n in obj.node]
+        elif kind == "function":
+            stack += [("node", n) for n in obj.node]
+        else:  # node
+            for attr in obj.attribute:
+                if attr.HasField("t"):
+                    yield attr.t
+                for t in attr.tensors:
+                    yield t
+                if attr.HasField("g"):
+                    stack.append(("graph", attr.g))
+                for g in attr.graphs:
+                    stack.append(("graph", g))
 
 
 def external_data_provenance(path: Path) -> dict:
@@ -239,9 +761,16 @@ def external_data_provenance(path: Path) -> dict:
     downloader that can re-materialise weights independently of the graph.
 
     The file list comes from the graph's own `external_data` locations, not from a `.data`
-    suffix guess, so a model that names its blob something else is still covered.
+    suffix guess, so a model that names its blob something else is still covered — and it is
+    gathered by :func:`_iter_tensors`, which reaches subgraphs, node attributes and function
+    bodies rather than top-level initializers alone.
+
+    ``scanned`` / ``reason`` are a contract, not decoration: ``scanned`` is ``True`` only when
+    the whole walk completed. A caller may not read ``files == []`` as "no external data" unless
+    ``scanned`` is ``True`` — :func:`verify_pinned_provenance` refuses an unscanned graph rather
+    than treating an absent instrument as a zero.
     """
-    rec = {"scanned": False, "files": [], "reason": None}
+    rec = {"scanned": False, "files": [], "reason": None, "tensors_scanned": 0}
     try:
         import onnx
     except ImportError:  # pragma: no cover - onnx is present in this repo's venv
@@ -253,12 +782,20 @@ def external_data_provenance(path: Path) -> dict:
         rec["reason"] = f"could not parse graph: {exc}; external weights are UNHASHED"
         return rec
     locations = set()
-    for init in model.graph.initializer:
-        if init.HasField("data_location") and init.data_location == onnx.TensorProto.EXTERNAL:
-            for kv in init.external_data:
-                if kv.key == "location":
-                    locations.add(kv.value)
+    count = 0
+    try:
+        for tensor in _iter_tensors(model, onnx):
+            count += 1
+            if tensor.HasField("data_location") and \
+                    tensor.data_location == onnx.TensorProto.EXTERNAL:
+                for kv in tensor.external_data:
+                    if kv.key == "location":
+                        locations.add(kv.value)
+    except Exception as exc:
+        rec["reason"] = f"external-data walk failed: {exc}; external weights are UNHASHED"
+        return rec
     rec["scanned"] = True
+    rec["tensors_scanned"] = count
     for loc in sorted(locations):
         blob = path.parent / loc
         if not blob.is_file():
@@ -333,6 +870,66 @@ def mobilenet_cases(batch) -> "list[Case]":
             for b in batch]
 
 
+#: Model key -> the function that builds its case table. An explicit table, not an if/else
+#: chain with a fallback.
+#:
+#: THE DEFECT THIS REPLACES. Every driver dispatched as
+#: ``phi35_cases(...) if key == PHI35.key else mobilenet_cases(...)``. The ``else`` is the bug:
+#: it is not "the other model", it is "every other model, forever". Onboarding MiniLM under that
+#: shape would have fed a BERT encoder ImageNet-shaped ``(N, 3, 224, 224)`` float32 tensors —
+#: crashing if we were lucky, and if we were not, producing timings labelled ``all-MiniLM-L6-v2``
+#: for a graph that never saw a token. A key absent from this table raises; it does not default.
+_CASE_BUILDERS = {
+    PHI35.key: lambda prefill_m, decode_past, batch: phi35_cases(prefill_m, decode_past),
+    MOBILENETV2.key: lambda prefill_m, decode_past, batch: mobilenet_cases(batch),
+}
+
+
+def cases_for(spec: ModelSpec, *, prefill_m=(), decode_past=(), batch=()) -> "list[Case]":
+    """The case table for one model, or a refusal naming which contract stopped it.
+
+    Two different refusals, because they are two different facts and a caller may want to treat
+    them differently: a ``provenance_only`` model is *declared* not to be benchable yet and a
+    driver should say so and continue; an unknown key is a programming error and must not be
+    reachable at all.
+    """
+    if spec.key not in MODELS:
+        raise ValueError(
+            f"unknown model key {spec.key!r}; known keys are {sorted(MODELS)}. "
+            f"Refusing to guess a case table.")
+    if spec.capability == CAP_PROVENANCE_ONLY:
+        raise ModelNotBenchable(
+            f"{spec.key} is declared {CAP_PROVENANCE_ONLY}: its bytes are pinned and verified, "
+            f"but the Vulkan EP does not yet cover its op set (#74/#75/#76), so this lane has "
+            f"no case table for it. It is skipped by name, with this reason on the record — "
+            f"never routed through another model's feeds.")
+    builder = _CASE_BUILDERS.get(spec.key)
+    if builder is None:
+        raise ModelNotBenchable(
+            f"{spec.key} is declared {spec.capability} but has no case builder. A capability "
+            f"and a builder must be added together; declaring one without the other is how a "
+            f"model reaches a driver with nothing to feed it.")
+    return builder(prefill_m, decode_past, batch)
+
+
+def benchable_keys(keys=None) -> "list[str]":
+    """The subset of *keys* a driver may actually run, order preserved.
+
+    Unknown keys raise rather than being dropped. A filter that silently discards what it does
+    not recognise turns a typo on the command line into a shorter benchmark that still reports
+    success — the same shape as the ``else`` fallback this contract removed, one level up.
+    """
+    if keys is None:
+        return [k for k, s in MODELS.items() if s.capability == CAP_BENCHABLE]
+    unknown = [k for k in keys if k not in MODELS]
+    if unknown:
+        raise ValueError(
+            f"unknown model key(s) {unknown}; known keys are {sorted(MODELS)}. Refusing to "
+            f"silently drop them: a filter that discards what it cannot name reports a "
+            f"narrower run as a complete one.")
+    return [k for k in keys if MODELS[k].capability == CAP_BENCHABLE]
+
+
 def phi35_feeds(case: Case, np):
     """Build one feed dict. Pure given ``KV_SEED``; identical bytes for every arm."""
     if case.model_key != PHI35.key:
@@ -368,6 +965,12 @@ def build_feeds(case: Case, np):
         return phi35_feeds(case, np)
     if case.model_key == MOBILENETV2.key:
         return mobilenet_feeds(case, np)
+    spec = MODELS.get(case.model_key)
+    if spec is not None and spec.capability == CAP_PROVENANCE_ONLY:
+        raise ModelNotBenchable(
+            f"{case.model_key} is {CAP_PROVENANCE_ONLY}; there is no feed builder for it and "
+            f"there must not be a default one. A case for it should never have been built — "
+            f"see cases_for().")
     raise ValueError(f"no feed builder for {case.model_key}")
 
 
