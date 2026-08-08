@@ -270,7 +270,11 @@ def _resolve_foundry(spec: ModelSpec) -> ResolvedModel:
 def _download(url: str, dest: Path, *, timeout: int = 600) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".partial")
-    req = urllib.request.Request(url, headers={"User-Agent": "onnxruntime-ep-vulkan-bench/1"})
+    # The product token deliberately avoids the "<repo>-<suffix>" shape: that is
+    # what a sibling worktree directory looks like, and the leak scanner flags it.
+    # It is a false positive here -- this is a constant, not a path -- but the
+    # remedy is to stop colliding, never to narrow a leak pattern.
+    req = urllib.request.Request(url, headers={"User-Agent": "ort-ep-vulkan-bench/1"})
     with urllib.request.urlopen(req, timeout=timeout) as resp, tmp.open("wb") as fh:
         while True:
             chunk = resp.read(1 << 20)

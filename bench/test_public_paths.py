@@ -613,6 +613,59 @@ def test_the_survey_covers_the_extensions_a_reader_reads():
         assert cuda69, "_cuda69 holds artifacts but the survey enumerated none of them"
 
 
+def test_the_harness_source_itself_names_no_local_path():
+    """The survey screens what the harness *writes*, never what the harness *is*.
+
+    That gap is real: a hardcoded `C:\\Users\\...` default, a developer's model
+    directory left in a constant, or a cache path baked into an argument default
+    would all sail through, because `EVIDENCE_SUFFIXES` has no `.py` in it and
+    never will -- source is not evidence. The producers are exactly the files
+    with the opportunity to hardcode a path, so they get their own screen.
+
+    It caught one thing on the way in, and the shape is worth recording: a
+    `User-Agent: "onnxruntime-ep-vulkan-bench/1"` matched `worktree_name`,
+    because `<repo>-<suffix>` is precisely what a sibling worktree looks like.
+    A constant is not a leak, so the honest options were to narrow the pattern or
+    to stop colliding with it. Narrowing is how a scanner starts reporting clean
+    while being wrong -- this repo has already been bitten by four patterns that
+    were too permissive -- so the token changed instead. An over-broad leak
+    pattern costs a rename; an under-broad one costs a disclosure.
+    """
+    import public_paths as boundary
+
+    # The modules that define, test, or record the patterns necessarily contain
+    # them. Each is here because quoting a leak is its job, not an oversight.
+    # `gen_public_path_legacy.py` is deliberately *not* here: it re-exports the
+    # patterns from the boundary rather than restating them, so it has nothing to
+    # be exempt for -- and the staleness check below is what established that.
+    DEFINES_THE_PATTERNS = {
+        "public_paths.py": "defines LEAK_PATTERNS",
+        "test_public_paths.py": "plants leaks to prove the scanner sees them",
+    }
+
+    here = Path(__file__).resolve().parent
+    offenders = {}
+    for src in sorted(here.glob("*.py")):
+        if src.name in DEFINES_THE_PATTERNS:
+            continue
+        hits = boundary.scan(src.read_text(encoding="utf-8", errors="replace"))
+        if hits:
+            offenders[src.name] = sorted({kind for kind, _ in hits})
+
+    assert not offenders, (
+        "harness source names a local path; a constant that merely collides with a "
+        f"leak pattern should be renamed, not exempted: {offenders}")
+
+    # The exemptions are not a hole: each exempt file must still be one that
+    # really does quote leaks, or it has been left on the list after being fixed.
+    for name in DEFINES_THE_PATTERNS:
+        target = here / name
+        if target.is_file():
+            assert boundary.scan(target.read_text(encoding="utf-8", errors="replace")), (
+                f"{name} is exempt from the source screen but contains no leak "
+                "pattern -- the exemption is stale and should be dropped")
+
+
 def test_the_scanner_cli_accepts_a_directory():
     """A run writes a directory, so "did this run leak?" is asked about a directory.
 
