@@ -1281,8 +1281,22 @@ unsafe fn get_capability_impl(
             // SAFETY: api live; node is a live graph node.
             let view = unsafe { NodeView::new(api, node) };
             let qual = view.qualified_name();
-            if partition::is_anchor(&qual) {
-                island.anchors += 1;
+
+            // Two different questions, deliberately asked separately (issue #73).
+            //
+            // *How much arithmetic is this?* follows from the operator, so the FLOP estimate stays
+            // keyed on `is_heavy_op_family`. Demoting a weightless `MatMul` to the elementwise
+            // branch would under-count a real batched matmul by two orders of magnitude and could
+            // sink an island the gate should keep — the fix must not buy its correctness with a
+            // worse estimator.
+            //
+            // *Is this worth a boundary on its own?* is `is_anchor`, and it now requires a
+            // resident weight operand. The constancy fact comes from the body node, which is the
+            // only level that answers it: the fused node reports `false` for every input (see the
+            // `const_names` recovery in `compile_plan`), whereas body nodes reported 388 constant
+            // inputs on the same Phi-3.5 island. That is the same source the boundary-byte
+            // accounting a few lines below already trusts.
+            if partition::is_heavy_op_family(&qual) {
                 // Anchor flop estimate: 2 × K × N for a matmul-family op.
                 // Conservative minimum: 2 × 3072 × 3072 when shapes are unavailable.
                 island.flops = island.flops.saturating_add(2 * 3072 * 3072);
@@ -1292,6 +1306,9 @@ unsafe fn get_capability_impl(
                 let out_slots = unsafe { node_slots(api, node, Slots::Outputs) };
                 let out_bytes: u64 = out_slots.iter().map(|&s| slot_bytes(s)).sum();
                 island.flops = island.flops.saturating_add(out_bytes / 2);
+            }
+            if partition::is_anchor(&qual, weight_operand(&view)) {
+                island.anchors += 1;
             }
 
             // Boundary activation bytes: only non-constant inputs that cross the island edge.
@@ -1624,6 +1641,50 @@ unsafe fn node_slots(
 enum Slots {
     Inputs,
     Outputs,
+}
+
+/// The operand rule of [`partition::is_anchor`], separated from the ORT reads that feed it.
+///
+/// Takes one entry per declared input: `None` for an omitted optional input, `Some(true)` for a
+/// present constant initializer, `Some(false)` for a present non-constant one. Pure, so the rule
+/// is testable without a graph, a driver or a device — the same separation `shape_infer` makes.
+fn weight_operand_of(inputs: impl IntoIterator<Item = Option<bool>>) -> partition::WeightOperand {
+    let mut any_present = false;
+    for input in inputs {
+        match input {
+            Some(true) => return partition::WeightOperand::Present,
+            Some(false) => any_present = true,
+            None => {}
+        }
+    }
+    if any_present {
+        partition::WeightOperand::Absent
+    } else {
+        // No inspectable operand at all. A heavy op with nothing to read is a graph we do not
+        // understand, and "no weights" would be a fact invented from an absence.
+        partition::WeightOperand::Unknown
+    }
+}
+
+/// Whether this node consumes a resident weight, as [`partition::is_anchor`] requires.
+///
+/// Reads the *body* node, which is the only level that answers the question: ORT surfaces an
+/// island's initializers as fused-node inputs without re-marking them constant on the boundary
+/// value_info, so asking a fused node yields `false` for everything (see the `const_names`
+/// recovery in `compile_plan`). This is the same source, and the same accessor, that the
+/// boundary-byte accounting in `get_capability` already relies on.
+///
+/// **What unavailability degrades to.** `NodeView::input_is_constant` cannot distinguish "ORT says
+/// not constant" from "ORT could not be asked" — both are `false`. If
+/// `ValueInfo_IsConstantInitializer` were missing entirely, every node would read
+/// [`partition::WeightOperand::Absent`], no island would be exempted, and the economics gate would
+/// decide on bytes and FLOPs. That is the direction this rule is supposed to fail in, so the
+/// degradation is safe; it is stated here rather than detected, because it is not detectable at
+/// this level.
+fn weight_operand(view: &NodeView<'_>) -> partition::WeightOperand {
+    weight_operand_of(
+        (0..view.num_inputs()).map(|i| view.has_input(i).then(|| view.input_is_constant(i))),
+    )
 }
 
 /// Turn an `EdgeType` into a fully-known `TensorDesc`, or `None`.
@@ -2897,6 +2958,74 @@ unsafe fn check_bound_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ------------------------------------------------------------------------------------------
+    // Issue #73 — the operand rule that decides anchor status
+    // ------------------------------------------------------------------------------------------
+    //
+    // `weight_operand` itself needs a live ORT graph, so the *rule* is factored out into
+    // `weight_operand_of` and tested here against the input patterns the real models present. The
+    // ORT read is then a two-line adapter with nothing to get wrong beyond the accessor choice,
+    // which is pinned by the doc comment naming the fused-node caveat.
+    mod anchor_weight_operand {
+        use super::*;
+        use crate::ops::partition::{WeightOperand, is_anchor};
+
+        #[test]
+        fn a_present_constant_operand_is_the_only_thing_that_yields_present() {
+            // `MatMul` against a weight: B is an initializer. (36 of MiniLM's 48 MatMul nodes.)
+            assert_eq!(
+                weight_operand_of([Some(false), Some(true)]),
+                WeightOperand::Present
+            );
+            // Attention batched matmul: both operands are runtime activations. (The other 12.)
+            assert_eq!(
+                weight_operand_of([Some(false), Some(false)]),
+                WeightOperand::Absent
+            );
+            // Constancy in any position counts, not just operand 1 — `Gemm`'s C, `Conv`'s bias.
+            assert_eq!(
+                weight_operand_of([Some(true), Some(false), Some(false)]),
+                WeightOperand::Present
+            );
+        }
+
+        #[test]
+        fn omitted_optional_inputs_are_skipped_and_never_mistaken_for_weights() {
+            // A contrib op with interior optional inputs present-but-omitted, plus a real weight.
+            assert_eq!(
+                weight_operand_of([Some(false), None, None, Some(true)]),
+                WeightOperand::Present
+            );
+            // The same arity with the weight removed must not inherit the earlier answer.
+            assert_eq!(
+                weight_operand_of([Some(false), None, None, Some(false)]),
+                WeightOperand::Absent
+            );
+        }
+
+        #[test]
+        fn no_inspectable_operand_fails_closed_to_unknown() {
+            assert_eq!(weight_operand_of([]), WeightOperand::Unknown);
+            assert_eq!(weight_operand_of([None, None]), WeightOperand::Unknown);
+            // And `Unknown` must not earn an anchor.
+            assert!(!is_anchor("MatMul", weight_operand_of([])));
+            assert!(!is_anchor("Conv", weight_operand_of([None])));
+        }
+
+        /// End-to-end over the rule the counting loop in `get_capability` applies: the operand
+        /// pattern decides anchor status, and the two MiniLM `MatMul` populations land on opposite
+        /// sides of it.
+        #[test]
+        fn the_two_matmul_populations_get_opposite_anchor_answers() {
+            let weighted = weight_operand_of([Some(false), Some(true)]);
+            let activations_only = weight_operand_of([Some(false), Some(false)]);
+            assert!(is_anchor("MatMul", weighted));
+            assert!(!is_anchor("MatMul", activations_only));
+            // A light op is unaffected by either, which keeps this from being a test of `matches!`.
+            assert!(!is_anchor("Add", weighted));
+        }
+    }
 
     // ------------------------------------------------------------------------------------------
     // Session-creation disclosure — the two-arm control (DESIGN.md §8.9.7, RAI-009)

@@ -781,10 +781,19 @@ mod tests {
 
     /// `Gemm` is already an anchor in the partitioner, which is why a lone one at a model's tail
     /// is claimable at all. If that ever changed, this row would go live and never be used.
+    ///
+    /// Since issue #73 anchor status also requires a resident weight operand, which a `Gemm` at a
+    /// model's tail has (`B`, and usually `C`) — so the guarantee this test exists to protect is
+    /// unchanged, but it is now stated with the operand fact it always implicitly assumed.
     #[test]
     fn gemm_is_a_partition_anchor() {
-        assert!(crate::ops::partition::is_anchor("Gemm"));
-        assert!(crate::ops::partition::is_anchor("MatMul"));
+        use crate::ops::partition::{WeightOperand, is_anchor};
+        assert!(is_anchor("Gemm", WeightOperand::Present));
+        assert!(is_anchor("MatMul", WeightOperand::Present));
+        // The negative polarity: without a weight operand neither is an anchor, which is the
+        // whole of issue #73 and is what keeps the assertions above from being vacuous.
+        assert!(!is_anchor("Gemm", WeightOperand::Absent));
+        assert!(!is_anchor("MatMul", WeightOperand::Absent));
     }
 
     // ---------------------------------------------------------------------------------------

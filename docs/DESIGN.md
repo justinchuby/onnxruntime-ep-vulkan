@@ -1309,6 +1309,13 @@ accident and is not a discovered defect — **it is the design, working.** 3c wa
 cheap elementwise scatter whose tensors outweigh its arithmetic, and Phi-3.5's fused island is not
 that. The doc comment at `partition.rs:458` says so in as many words.
 
+> **Superseded in part by §5.4.2 (issue #73).** Membership of that set is no longer *sufficient* for
+> anchor status: `partition::is_anchor` now also requires that the node read at least one graph
+> initializer. The op-type list survives unchanged as `partition::is_heavy_op_family`, which is what
+> the FLOP estimator consults. The paragraph above remains an accurate account of the reasoning as
+> of 2026-08-01 and of why the exemption is load-bearing; item 1 below names the falsifier that
+> later fired.
+
 **So what is actually wrong is narrower, and I want it stated without inflation.** Three things:
 
 1. **The exemption is load-bearing for a question it was not designed to answer.** Its stated
@@ -1490,6 +1497,56 @@ and any citation found stale is converted rather than repaired.
 
 **Unchanged by all of the above: 355 of 363 nodes in one fused island, `MATCH` on both devices.**
 A count and a verdict, both observed, and neither depends on which term retained the island.
+
+#### 5.4.2 The falsifier §5.4.1 named has fired: anchor status is a property of the node, not of the op type — issue #73
+
+§5.4.1 item 1 recorded the exposure and predicted where it would bite:
+
+> **an anchor-bearing island that genuinely should be declined** — one small `MatMul` surrounded by
+> large boundary traffic, which is a small-model or edge-shape graph, not ours.
+
+That graph arrived. On the MiniLM-L6-v2 encoder (`sentence-transformers/all-MiniLM-L6-v2`
+`onnx/model.onnx`, revision `1110a243fdf4706b3f48f1d95db1a4f5529b4d41`, sha256 `6fd5d72f…6452`,
+opset 14), six of the eight islands were **single attention batched-matmul nodes**: 983,040 boundary
+input bytes and 196,608 boundary output bytes each, at batch=1 sequence=128, for an op whose
+arithmetic is ~11 FLOP per boundary byte. Every one of them was exempted by its op type.
+
+**The correction is to the warrant, not to the exemption.** §5.4.1 says *do not remove the exemption
+"so the model decides"*, and this does not: the exemption still fires, still short-circuits above the
+economics arithmetic, and still retains every island it retained before. What changed is **who earns
+it**. `is_anchor` now takes the node's operand fact alongside its op type, and grants anchor status
+only when at least one operand is a graph initializer:
+
+- a `MatMul` reading a resident weight is amortising its arithmetic against a boundary it does not
+  pay for — the stated warrant, *a single `MatMul` on LLM-sized weights*, holds of it;
+- a `MatMul` over two runtime activations has no such amortisation. Every byte it reads crossed the
+  boundary. It is exactly the case gate 3c exists to reject, and it was reaching `Claim` without 3c
+  ever running.
+
+**Two questions that were one, now separated.** The FLOP estimator in `ep.rs` remains keyed on the
+op *family* (`partition::is_heavy_op_family`), because *how much arithmetic is this* follows from the
+operator. Only *is this worth a boundary on its own* consults the operands. Collapsing the two would
+have demoted a weightless `MatMul` to the elementwise FLOP branch and under-counted a real batched
+matmul by roughly two orders of magnitude — buying the fix with a worse estimator, which §5.4.1's
+second prohibition (*do not fix the estimator in the commit that makes the partitioner observable*)
+applies to in reverse.
+
+**Fail-closed.** `WeightOperand::Unknown` is never an anchor. `NodeView::input_is_constant` cannot
+distinguish "ORT says not constant" from "ORT could not be asked", so if
+`ValueInfo_IsConstantInitializer` were unavailable every node would read `Absent`, no island would be
+exempted, and the gate would decide on bytes and FLOPs — the direction that fails towards the CPU.
+That degradation is stated rather than detected, because it is not detectable at this level. The
+constancy fact is read from the **body** node, which is the only level that answers it: the fused
+node reports `false` for all 457 of its inputs on Phi-3.5 while the same island's body nodes report
+388 constant ones (§5.5).
+
+**What this does not establish.** No census, benchmark or GPU run was taken for this change. The
+island counts above are a static model of the claim predicates evaluated against the post-Level-1
+graph, not a `GetCapability` reading, and the standing falsifier is a real census disagreeing with
+them. The behaviour-preservation argument for Phi-3.5-mini-int4 and MobileNetV2 is likewise a
+statement about the *rule* — `MatMulNBits`, `GroupQueryAttention` and `Conv` always carry an
+initializer operand — pinned by unit tests over every anchor family, and **is not a measured
+before/after**. Both remain owed.
 
 The `TransferModel` handed to it is the one calibrated at device init (`OP_COVERAGE.md` §7.2;
 §8.4 A3), not a constant — with `TransferModel::UMA` / `DISCRETE` as the pre-calibration defaults so
