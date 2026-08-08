@@ -32,6 +32,15 @@ actually produced:
   distribution, and `tokens_per_second` is derived from the median rather than from a best run.
 * **No unlabelled arm ordering.** Arms alternate per repeat. A fixed order produced a spurious
   0.905x at M=1 in `ab_row_tile.py`, on a shape where both arms bind *identical* SPIR-V.
+* **No unpinned model source.** (issue #78) A `ModelSpec` may declare an immutable pin — an
+  exact SHA-256, byte size, and a source revision that is a git commit SHA, never a branch or
+  tag — and `resolve_model` refuses (raises `ModelProvenanceMismatch`) rather than proceeding to
+  inference when the resolved bytes disagree, when a pinned model's external data is missing, or
+  when a pinned model unexpectedly gains external data it did not declare. This was found live:
+  a default-cache MiniLM file did not match the one `all-MiniLM-L6-v2` export this project has
+  actually verified, and an earlier unmerged draft harness would have called both `MODEL_OK`.
+  Identity here is **per-file content digest**, never a single hash that folds a filename in —
+  the same bytes staged under a different name are still the same model.
 
 WHAT IT WILL NOT LET YOU CONCLUDE
 =================================
@@ -46,6 +55,7 @@ import dataclasses
 import hashlib
 import math
 import os
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -80,6 +90,23 @@ class ModelUnavailable(RuntimeError):
     """
 
 
+class ModelProvenanceMismatch(RuntimeError):
+    """A model declares an immutable pin, and the bytes/files that resolved do not match it.
+
+    Raised rather than reported (issue #78): a caller must not proceed to inference on
+    unverified bytes. This is a finding about *what is on disk right now*, never a re-pin — the
+    remedy is to fetch the exact pinned bytes from the recorded source revision, not to accept
+    whatever resolved and update the pin to match it.
+    """
+
+
+#: A source revision must be an immutable commit SHA (full, lowercase hex), never a branch or
+#: tag such as ``"main"``/``"latest"`` — those can move underneath a pin without any code change
+#: here, which is exactly how an unpinned MiniLM source (issue #78) went undetected.
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
 @dataclasses.dataclass(frozen=True)
 class ModelSpec:
     """One real model this lane benchmarks, and how to find it without guessing.
@@ -88,6 +115,22 @@ class ModelSpec:
     ``"repo-cache"`` (the pinned download cache `rust/modelrunner` already uses, whose sha256 is
     recorded in `bench/results/rust-model-runner/<key>.json`). No other resolution exists — a
     literal path in a benchmark is a guess about a version.
+
+    A model may additionally declare an **immutable provenance pin**
+    (``pinned_sha256``/``pinned_bytes``/``source_repo``/``source_revision``/``source_file``).
+    When ``pinned_sha256`` is set, all of the pin fields are validated at construction time
+    (``__post_init__``) — a mutable-looking revision or a partial digest makes the spec refuse
+    to construct at all, with no file I/O or download involved. ``pinned_external`` declares the
+    external-data files (if any) the pinned graph is expected to reference, as
+    ``{location: (sha256, bytes)}``; an empty mapping is itself a claim — "this pinned graph
+    carries no external data" — and a resolved graph that disagrees (in either direction) is a
+    mismatch, not a detail.
+
+    Deliberately absent: a stored URL. Constructing one is a job for
+    ``pinned_source_url()`` at the point of use (an error message, a download hint) — not a
+    dataclass field, so that ``repr(spec)`` (checked by
+    ``test_no_model_spec_carries_a_literal_path``) never contains ``"://"`` and a reader cannot
+    mistake a public identity string for a private path.
     """
 
     key: str
@@ -103,6 +146,37 @@ class ModelSpec:
     #: Where the recorded provenance for this model lives, relative to `bench/results/`.
     recorded_provenance: str = ""
     note: str = ""
+    #: Immutable-provenance pin. All of ``pinned_sha256``/``pinned_bytes``/``source_repo``/
+    #: ``source_revision``/``source_file`` must be set together, or none of them.
+    pinned_sha256: str = ""
+    pinned_bytes: int = 0
+    #: Expected external-data files declared by the pinned graph: ``{location: (sha256, bytes)}``.
+    pinned_external: "dict[str, tuple[str, int]]" = dataclasses.field(default_factory=dict)
+    source_repo: str = ""
+    source_revision: str = ""
+    source_file: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.pinned_sha256:
+            return
+        problems = []
+        if not _SHA256_RE.match(self.pinned_sha256):
+            problems.append(
+                f"pinned_sha256 {self.pinned_sha256!r} is not a full 64-hex-char SHA-256")
+        if self.pinned_bytes <= 0:
+            problems.append(f"pinned_bytes {self.pinned_bytes!r} must be a positive byte count")
+        if not self.source_repo:
+            problems.append("source_repo is required when pinned_sha256 is set")
+        if not self.source_file:
+            problems.append("source_file is required when pinned_sha256 is set")
+        if not _COMMIT_SHA_RE.match(self.source_revision):
+            problems.append(
+                f"source_revision {self.source_revision!r} is not a full 40-hex-char commit "
+                "SHA — a branch or tag name (e.g. 'main') is a mutable reference and cannot "
+                "back an immutable pin")
+        if problems:
+            raise ValueError(
+                f"{self.key}: cannot construct a pinned ModelSpec — " + "; ".join(problems))
 
 
 PHI35 = ModelSpec(
@@ -129,7 +203,30 @@ MOBILENETV2 = ModelSpec(
          "whose arithmetic has nothing to do with MatMulNBits.",
 )
 
-MODELS = {m.key: m for m in (PHI35, MOBILENETV2)}
+MINILM = ModelSpec(
+    key="all-minilm-l6-v2",
+    family="bert",
+    resolver="repo-cache",
+    cache_filename="all-MiniLM-L6-v2.onnx",
+    # No `recorded_provenance` side-channel file for this model (issue #78): the pin below is
+    # the record, carried on the spec itself rather than in a JSON artifact a different tool
+    # writes, because there is no independent modelrunner download for this model yet.
+    pinned_sha256="6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+    pinned_bytes=90405214,
+    pinned_external={},  # this graph carries no external data; an empty mapping is the claim
+    source_repo="sentence-transformers/all-MiniLM-L6-v2",
+    source_revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    source_file="onnx/model.onnx",
+    note="sentence-transformers/all-MiniLM-L6-v2, fp32 BERT-family transformer encoder, pinned "
+         "to an immutable revision (issue #78 superseded an unpinned Xenova/main draft source "
+         "that could not distinguish this model from a same-named substitute). Outputs "
+         "last_hidden_state pre-pooling; dynamic batch/sequence axes require a fixed shape "
+         "choice for benchmarking. BERT-family attention/LayerNorm ops (Shape/Unsqueeze/Concat/"
+         "Transpose/Softmax/ReduceMean) are not yet in the Vulkan EP's op registry — this entry "
+         "is provenance-only pending #74/#75/#76.",
+)
+
+MODELS = {m.key: m for m in (PHI35, MOBILENETV2, MINILM)}
 
 #: Where `rust/modelrunner` puts pinned downloads. Read from the environment first so a machine
 #: that keeps its cache elsewhere is not silently missed.
@@ -149,6 +246,67 @@ def sha256_file(path: "Path | str") -> str:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def pinned_source_url(spec: ModelSpec) -> str:
+    """Build the download URL for a pinned model, at the point of use only.
+
+    Deliberately not a field on `ModelSpec`: `test_no_model_spec_carries_a_literal_path` asserts
+    no spec's repr contains a literal path or URL, and a stored `https://...` field would defeat
+    that check just as surely as a local filesystem path would.
+    """
+    if not spec.source_repo or not spec.source_revision or not spec.source_file:
+        raise ValueError(f"{spec.key}: not a pinned model spec (missing source_repo/revision/file)")
+    return f"https://huggingface.co/{spec.source_repo}/resolve/{spec.source_revision}/{spec.source_file}"
+
+
+def _verify_pinned_provenance(
+    spec: ModelSpec, path: Path, digest: str, size: int, external: dict
+) -> None:
+    """Fail closed when a pinned model's resolved bytes disagree with its pin.
+
+    Unlike `agrees_with_recorded_provenance` (which only *reports* a mismatch against another
+    tool's artifact, because a model legitimately moving forward is not a bug), a mismatch here
+    against this module's own declared pin is always a bug: either the cache holds the wrong
+    file, or the pin itself is stale, and either way a benchmark run must not silently proceed
+    to inference on undetermined bytes (issue #78 — a same-named, unpinned substitute is exactly
+    what let an unverified 759c3cd2... blob pass as this model before).
+    """
+    if not spec.pinned_sha256:
+        return  # nothing pinned to check; not every ModelSpec has one yet
+
+    problems = []
+    if digest != spec.pinned_sha256:
+        problems.append(
+            f"onnx sha256 {digest} does not match the pinned {spec.pinned_sha256} "
+            f"for {spec.source_repo}@{spec.source_revision}:{spec.source_file}"
+        )
+    if size != spec.pinned_bytes:
+        problems.append(f"onnx byte size {size} does not match the pinned {spec.pinned_bytes}")
+
+    seen = {f["location"]: f for f in external.get("files", [])}
+    expected_names = set(spec.pinned_external)
+    seen_names = set(seen)
+    for missing in sorted(expected_names - seen_names):
+        problems.append(f"external data file {missing!r} is declared in the pin but absent")
+    for extra in sorted(seen_names - expected_names):
+        problems.append(
+            f"external data file {extra!r} is present but not declared in the pin — "
+            "an unexpected/unmanifested file is treated as a mismatch, not ignored"
+        )
+    for name in sorted(expected_names & seen_names):
+        exp_sha, exp_bytes = spec.pinned_external[name]
+        got = seen[name]
+        if got.get("sha256") != exp_sha or got.get("bytes") != exp_bytes:
+            problems.append(
+                f"external data file {name!r} does not match its pinned digest/size"
+            )
+
+    if problems:
+        raise ModelProvenanceMismatch(
+            f"{spec.key}: resolved file at {path} does not match its pinned provenance — "
+            + "; ".join(problems)
+        )
 
 
 def recorded_sha256(spec: ModelSpec, results_dir: "Path | None" = None) -> "str | None":
@@ -211,14 +369,19 @@ def resolve_model(spec: ModelSpec, *, results_dir: "Path | None" = None) -> dict
         raise ModelUnavailable(f"{spec.key}: resolver returned {path}, which does not exist")
 
     digest = sha256_file(path)
+    size = path.stat().st_size
     recorded = recorded_sha256(spec, results_dir)
     external = external_data_provenance(path)
+    # Fail closed before any consumer of this dict could proceed to load/run the model: a
+    # pin mismatch raises here, unlike `agrees_with_recorded_provenance` below which only
+    # reports.
+    _verify_pinned_provenance(spec, path, digest, size, external)
     return {
         "key": spec.key,
         "family": spec.family,
         "path": str(path),
         "sha256": digest,
-        "bytes": path.stat().st_size,
+        "bytes": size,
         "provenance": provenance,
         "resolver": spec.resolver,
         "recorded_sha256": recorded,
@@ -226,6 +389,10 @@ def resolve_model(spec: ModelSpec, *, results_dir: "Path | None" = None) -> dict
         "external_data": external,
         "weights_bytes": sum(f["bytes"] for f in external["files"]),
         "note": spec.note,
+        "pinned_provenance_ok": bool(spec.pinned_sha256) or None,
+        "source_repo": spec.source_repo or None,
+        "source_revision": spec.source_revision or None,
+        "source_file": spec.source_file or None,
     }
 
 

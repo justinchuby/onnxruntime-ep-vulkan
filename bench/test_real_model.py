@@ -138,6 +138,200 @@ def test_resolve_model_reports_provenance_disagreement_rather_than_crashing(tmp_
 
 
 # ---------------------------------------------------------------------------
+# Immutable-pin provenance (issue #78) — no network, no download; synthetic bytes only.
+# ---------------------------------------------------------------------------
+
+def _pinned_spec_with_bytes(tmp_path, content, *, cache_filename="pinned-model.onnx",
+                             key="test-pinned-model", pinned_external=None):
+    """A small, synthetic stand-in for MINILM: same pin machinery, no 90 MB download."""
+    cache = tmp_path / "models"
+    cache.mkdir(exist_ok=True)
+    (cache / cache_filename).write_bytes(content)
+    digest = rm.sha256_file(cache / cache_filename)
+    spec = rm.ModelSpec(
+        key=key,
+        family="bert",
+        resolver="repo-cache",
+        cache_filename=cache_filename,
+        pinned_sha256=digest,
+        pinned_bytes=len(content),
+        pinned_external=pinned_external or {},
+        source_repo="example-org/example-model",
+        source_revision="a" * 40,
+        source_file="onnx/model.onnx",
+    )
+    return spec, cache
+
+
+def test_minilm_is_pinned_to_a_commit_sha_with_a_full_digest_and_size():
+    """The entry this issue exists to add: no mutable ref, no partial pin."""
+    assert rm.MINILM.key in rm.MODELS
+    assert rm._COMMIT_SHA_RE.match(rm.MINILM.source_revision)
+    assert rm._SHA256_RE.match(rm.MINILM.pinned_sha256)
+    assert rm.MINILM.pinned_bytes > 0
+    assert rm.MINILM.source_repo and rm.MINILM.source_file
+
+
+def test_pinned_source_url_is_built_at_use_not_stored_on_the_spec():
+    """A stored URL field would defeat `test_no_model_spec_carries_a_literal_path`."""
+    url = rm.pinned_source_url(rm.MINILM)
+    assert url.startswith("https://huggingface.co/")
+    assert rm.MINILM.source_revision in url
+    assert rm.MINILM.source_file in url
+    assert "://" not in repr(rm.MINILM)
+
+
+def test_pinned_source_url_refuses_a_spec_with_no_pin_to_build_from():
+    """An unpinned spec has no immutable revision/file to build a URL from — this must raise
+    rather than return a URL that names nothing, or a caller could mistake it for real
+    provenance."""
+    with pytest.raises(ValueError):
+        rm.pinned_source_url(rm.MOBILENETV2)
+
+
+def test_exact_pinned_bytes_resolve_without_raising(tmp_path, monkeypatch):
+    """The positive control: the file that actually matches its pin must not be refused."""
+    spec, cache = _pinned_spec_with_bytes(tmp_path, b"the exact pinned model bytes")
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(cache))
+    rec = rm.resolve_model(spec)
+    assert rec["sha256"] == spec.pinned_sha256
+    assert rec["pinned_provenance_ok"] is True
+
+
+def test_a_substitute_blob_at_the_pinned_filename_is_refused_not_accepted(tmp_path, monkeypatch):
+    """This is the #78 defect itself: a same-named, different-content cache blob (the
+    unverified 759c3cd2... file) must not resolve as if it were the pinned model."""
+    spec, cache = _pinned_spec_with_bytes(tmp_path, b"the exact pinned model bytes")
+    # Overwrite with different bytes at the same cache filename/key, as an unpinned resolver
+    # would have accepted silently.
+    (cache / spec.cache_filename).write_bytes(b"a different, unverified substitute blob")
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(cache))
+    with pytest.raises(rm.ModelProvenanceMismatch):
+        rm.resolve_model(spec)
+
+
+def test_a_mutable_revision_cannot_construct_a_pinned_spec():
+    """"main"/"latest" can move underneath a pin with no code change here — refuse at
+    construction time, before any file is even looked at."""
+    with pytest.raises(ValueError):
+        rm.ModelSpec(
+            key="unpinnable",
+            family="bert",
+            resolver="repo-cache",
+            cache_filename="x.onnx",
+            pinned_sha256="a" * 64,
+            pinned_bytes=123,
+            source_repo="example-org/example-model",
+            source_revision="main",
+            source_file="onnx/model.onnx",
+        )
+
+
+def test_a_pin_missing_its_digest_cannot_construct_either():
+    """A partial pin (revision without a digest) is exactly as unenforceable as no pin —
+    refuse it rather than silently treating it as verified."""
+    with pytest.raises(ValueError):
+        rm.ModelSpec(
+            key="half-pinned",
+            family="bert",
+            resolver="repo-cache",
+            cache_filename="x.onnx",
+            pinned_sha256="a" * 64,
+            pinned_bytes=0,  # missing/invalid byte count alongside a "full" hex digest
+            source_repo="example-org/example-model",
+            source_revision="a" * 40,
+            source_file="onnx/model.onnx",
+        )
+
+
+def test_an_unpinned_model_never_reports_pinned_provenance_ok():
+    """A model with no pin at all (e.g. MOBILENETV2 today) must read as "not applicable", never
+    as `True` — `None` cannot be mistaken for a passed check the way `True` could."""
+    assert rm.MOBILENETV2.pinned_sha256 == ""
+
+
+def test_renamed_but_byte_identical_cache_file_still_verifies(tmp_path, monkeypatch):
+    """Staging under a new filename must not break identity: it is the content digest that is
+    the contract, not the name a file happens to be staged under."""
+    content = b"identical bytes staged under two different names"
+    spec_a, cache = _pinned_spec_with_bytes(
+        content=content, tmp_path=tmp_path, cache_filename="original-name.onnx", key="k-a")
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(cache))
+    rec_a = rm.resolve_model(spec_a)
+
+    # Re-stage the exact same bytes under a different filename (a rename during staging).
+    renamed = cache / "renamed-during-staging.onnx"
+    renamed.write_bytes(content)
+    spec_b = rm.ModelSpec(
+        key="k-b",
+        family="bert",
+        resolver="repo-cache",
+        cache_filename=renamed.name,
+        pinned_sha256=spec_a.pinned_sha256,
+        pinned_bytes=spec_a.pinned_bytes,
+        source_repo=spec_a.source_repo,
+        source_revision=spec_a.source_revision,
+        source_file=spec_a.source_file,
+    )
+    rec_b = rm.resolve_model(spec_b)
+    assert rec_b["sha256"] == rec_a["sha256"] == spec_a.pinned_sha256
+    assert rec_b["pinned_provenance_ok"] is True
+
+
+def test_an_undeclared_external_data_file_is_a_mismatch_not_a_bonus(tmp_path, monkeypatch):
+    """A pin's `pinned_external` mapping is the manifest of what the graph is expected to
+    reference; a graph that shows up with an extra, undeclared blob is not free extra data — it
+    is a graph that does not match what was verified."""
+    onnx = pytest.importorskip("onnx")
+    from onnx import helper, numpy_helper
+
+    cache = tmp_path / "models"
+    cache.mkdir()
+    payload = np.arange(4, dtype=np.float32)
+    (cache / "weights.bin").write_bytes(payload.tobytes())
+    t = numpy_helper.from_array(payload.reshape(2, 2), name="W")
+    t.ClearField("raw_data")
+    t.data_location = onnx.TensorProto.EXTERNAL
+    t.external_data.extend([
+        onnx.StringStringEntryProto(key="location", value="weights.bin"),
+        onnx.StringStringEntryProto(key="offset", value="0"),
+        onnx.StringStringEntryProto(key="length", value=str(payload.nbytes)),
+    ])
+    model = helper.make_model(helper.make_graph([], "g", [], [], initializer=[t]))
+    mpath = cache / "with-extra-data.onnx"
+    mpath.write_bytes(model.SerializeToString())
+
+    spec = rm.ModelSpec(
+        key="declares-no-external-data",
+        family="bert",
+        resolver="repo-cache",
+        cache_filename=mpath.name,
+        pinned_sha256=rm.sha256_file(mpath),
+        pinned_bytes=mpath.stat().st_size,
+        pinned_external={},  # the pin claims this graph has no external data
+        source_repo="example-org/example-model",
+        source_revision="a" * 40,
+        source_file="onnx/model.onnx",
+    )
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(cache))
+    with pytest.raises(rm.ModelProvenanceMismatch):
+        rm.resolve_model(spec)
+
+
+def test_a_missing_declared_external_data_file_is_a_mismatch_not_silently_absent(tmp_path,
+                                                                                  monkeypatch):
+    """The opposite direction of the manifest check: a declared external file that is not
+    actually present must fail closed rather than resolve as if the pin were satisfied."""
+    spec, cache = _pinned_spec_with_bytes(
+        tmp_path, b"a graph with no real external data on disk",
+        pinned_external={"weights.bin": ("b" * 64, 999)},
+    )
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(cache))
+    with pytest.raises(rm.ModelProvenanceMismatch):
+        rm.resolve_model(spec)
+
+
+# ---------------------------------------------------------------------------
 # Feeds
 # ---------------------------------------------------------------------------
 
