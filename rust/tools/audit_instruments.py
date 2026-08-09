@@ -450,6 +450,12 @@ BENCH_INSTRUMENT_FILES = [
     # run is admissible as evidence about device utilisation. Those are verdicts about a
     # measurement, which is this list's criterion.
     "real_model.py",
+    # Arrived with issue #88 v2, after the Fact Checker's findings on the rejected PR #94
+    # artifact. Every function in it renders a verdict about whether a stored measurement may
+    # be published — weight-digest binding, environment frame, equivalence coverage, counter
+    # ABI, absolute-path disclosure — which is exactly this list's criterion. It is the gate,
+    # so an unscreened gate here is the whole failure mode it exists to prevent.
+    "attribution_gate.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -497,7 +503,12 @@ BENCH_HELD_OUT: dict[str, str] = {
     # `_polarity.py`, plus eight planted mutants. A caller and a screen, not an instrument.
     "test_compute_attribution.py": (
         "test module — a caller, screened as polarity, not as an instrument."
-    ),    "test_plausible_but_wrong.py": "test module.",
+    ),
+    "test_attribution_gate.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries the "
+        "publication gate's mutation battery."
+    ),
+    "test_plausible_but_wrong.py": "test module.",
     "test_run_disturbance.py": "test module.",
     "test_tenancy_signature.py": "test module.",
     "test_win_gpu_counters.py": "test module.",

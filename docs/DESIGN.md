@@ -6708,6 +6708,34 @@ outside the dispatch. Adding one would have turned the containment contract red 
 documented in `PERF.md`, which this change leaves intact and true. The pre-dispatch cost therefore
 surfaces where issue #88 asked for it: as the computed residual.
 
+#### 9.5.6 `bench/attribution_gate.py` — the only supported path from a measurement to a public number
+
+The instrumentation above produces a *measurement*. It does not produce a *claim*. The step between
+them is a review-visible gate, `bench/attribution_gate.py`, and it exists because a review of the
+withdrawn first attempt at this issue found seven distinct ways an artifact can look complete while
+being unfalsifiable. Each of its instruments is that review's finding turned into a refusal:
+
+| gate | refuses unless |
+|---|---|
+| `weight_digest_binding` | every external-data file the graph itself names is present, non-empty and digested. A graph hash plus a byte count admits any same-sized substitute; a 2.29 GB weight blob is the model. A genuinely self-contained graph must say so explicitly. |
+| `environment_witnesses` | device name/UUID, driver name *and* version, Vulkan API version, ORT version, source commit (clean), `release` build and exclusive-GPU evidence are all present — and `taken_at` lies **inside** `[started_at, finished_at]`, which a hard-coded timestamp cannot do. |
+| `equivalence_coverage` | **every** quotable point has a `MATCH` covering **every** output. Checking the shortest past length and output 0 leaves the KV cache and the long contexts — the parts a decode artifact is about — unverified. |
+| `counters_witness` | the counters are present, the record path is wired, and the ABI version equals `rust/tools/counters_abi.py::abi_version()`. There is no second reader and no literal version number in the module: a probe that carries its own idea of the ABI is how a stale v8 record was admitted. |
+| `attribution_shares` | every child row carries both its denominators (§9.3.2 in `PERF.md`), the residual is present and the single call's shares sum to 100% ± 0.01. |
+| `public_path_screen` | no absolute path appears anywhere in the record. It screens the *shape* of a path — drive letter, UNC, or POSIX-absolute — not a list of known roots, because the previous root-list screen passed `D:\other-user\…` unharmed. |
+| `publish` | all of the above hold. |
+
+**`publish` is a total function returning `(value, why)` and its refusal value is literally `None`.**
+This is the structural half of the finding, and it is the one that matters most: the withdrawn
+artifact kept complete-looking shares beside its own refusal, so a reader who quoted the table got a
+number the artifact had already disowned. A refusal here has no table to quote — there is no
+degraded mode, no partial share, no "indicative" figure. `bench/test_attribution_gate.py` asserts
+that property directly, and puts nine planted mutants of the screens through the census's
+value-polarity helpers.
+
+The gate grades an artifact. It does not measure one, and it cannot make an unreproduced run
+quotable — §9.3.1 of `PERF.md` still publishes no number for this issue.
+
 ---
 
 ## 10. Milestones

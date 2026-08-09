@@ -183,6 +183,41 @@ def build_info() -> dict:
     return info
 
 
+def source_commit() -> dict:
+    """Which commit the code under test came from, and whether the tree was clean.
+
+    A stored number's frame is the *source* as much as it is the binary: ``build.sha256``
+    identifies the artifact that ran, but only a commit says what it was built from, and only
+    the dirty flag says whether that commit describes it. A record naming a commit taken from a
+    dirty tree names a state that exists on one disk and nowhere else.
+
+    ``dirty`` is ``None``, never ``False``, when git could not be consulted. "Unknown" and
+    "clean" must not collapse: ``bench/attribution_gate.py::environment_witnesses`` refuses
+    anything that is not exactly ``False``, and it can only do that if this reports the
+    difference.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    out: dict = {"commit": None, "dirty": None, "note": None}
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, timeout=30
+        )
+        if head.returncode != 0:
+            out["note"] = f"git rev-parse HEAD failed: {(head.stderr or '').strip()[:200]}"
+            return out
+        out["commit"] = head.stdout.strip() or None
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, timeout=60
+        )
+        if status.returncode != 0:
+            out["note"] = "git status failed; the tree's cleanliness is unknown, not clean"
+            return out
+        out["dirty"] = bool(status.stdout.strip())
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - env dependent
+        out["note"] = f"git unavailable: {exc!r}; the commit is unknown, not absent"
+    return out
+
+
 def capture(load_seconds: float = 0.0) -> dict:
     """Collect the full environment record.
 
@@ -219,6 +254,7 @@ def capture(load_seconds: float = 0.0) -> dict:
             "onnxruntime": ort_version,
         },
         "build": build_info(),
+        "source_commit": source_commit(),
         "devices": devices,
         "device_note": device_note,
         "device_facts": device_facts,

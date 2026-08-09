@@ -1092,6 +1092,49 @@ Two reading rules apply when such numbers are eventually published here:
 - The residual is admissible only on calls whose `outcome` is `ok`. Refused and inadmissible calls
   are counted and disclosed, never silently dropped.
 
+#### 9.3.2 Every percentage names its denominator, in the same sentence
+
+A nested phase has **two** true percentages and they are not interchangeable:
+
+- its share **of its parent** — `child_ms ÷ parent_ms`, and
+- its share **of the whole compute call** — `child_ms ÷ compute_call_ms`, which is a number of
+  *percentage points of the call*.
+
+A sentence that gives one figure and names the other denominator is false even though both figures
+are individually true. The worked example, from the review of the withdrawn artifact: a
+`cmd_upload` that is **16.396 percentage points of the whole `Execute` call** is at the same time
+**95.16% of `record`**. Writing "16.4% of record" conflates the two and understates the child's
+grip on its parent by nearly six times.
+
+`bench/attribution_gate.py::attribution_shares` therefore refuses a share table whose child rows do
+not carry **both** `percent_of_parent` (beside `denominator_parent_ms`) and `percent_of_compute_call`
+(beside `denominator_compute_call_ms`). The denominator travels with the number, so a quoting error
+of this shape cannot be made from an admitted table.
+
+Within a single call the sibling shares plus the residual **do** sum to 100%, because the residual
+is defined as `Total − Σ Sibling`; the gate enforces that to ±0.01. The "medians need not sum to
+100%" rule in §9.3.1 is about a *median column across many calls* and does not license a
+non-summing single-call table.
+
+#### 9.3.3 What a large `fence_wait` share does and does not license
+
+`fence_wait` being the largest phase on a device says the host reached the fence and then waited.
+It does **not** say the wait is irreducible, and it does **not** license the claim that only faster
+kernels can shrink it. Any such causal reading in earlier drafts is withdrawn.
+
+Host-side changes that can move `fence_wait` without touching kernel speed at all:
+
+- **Synchronisation policy** — waiting on a later fence, or on a timeline value, instead of blocking
+  per dispatch.
+- **Overlap** — recording call *n+1* while *n* is in flight turns wait into useful host time.
+- **Transfer scheduling** — the upload that precedes the submit is serialised in front of the wait
+  today; moving it off the critical path shortens the interval the fence covers.
+- **Batching** — fewer, larger submissions amortise a fixed per-submit wait cost.
+
+A fence wait is an interval, not a workload. Attributing it to kernel duration requires GPU
+timestamps that bracket the same interval, which §9.3's per-kernel table supplies separately and
+which the phase split alone does not.
+
 ### 9.4 The 68% is not `vkCmd*`. It is `memcpy`. — the finding Switch needs
 
 `vulkan.record` is not one activity. It brackets `vkBeginCommandBuffer` → `vkEndCommandBuffer`,
