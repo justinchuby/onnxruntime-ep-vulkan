@@ -5920,9 +5920,11 @@ next lever and says what it would have to prove.
 real models. Three things from it belong in the design record:
 
 * **The claim is Phi-3.5 prefill, and only that.** `M = 128` is 2.077× with per-repeat
-  `2.075 – 2.089`; `M = 32` is `FASTER` on a minimum repeat of 1.278×. Decode is `NEUTRAL` at
-  `past = 1024` and gets no verdict at `past = 128`. Nothing there is a claim about another
-  execution provider, and no CUDA number is involved.
+  `2.075 – 2.089`; `M = 32` is `FASTER` on a minimum repeat of 1.278× and is quotable **only as
+  that floor**, never as its 2.053× median, because §27.12 shows the baseline arm alone moving
+  176% between its own repeats. Decode is `NEUTRAL` at `past = 1024` and gets no verdict at
+  `past = 128`. Nothing there is a claim about another execution provider, and no CUDA number is
+  involved.
 * **`M = 64` prefill is bimodal and is not explained by this design.** Three repeats of the same
   cell read `1.032 / 1.568 / 1.863` with identical outputs and identical pipeline keys —
   `gqa_f16:64` against `gqa_f16:` — so the arms are distinguishable and the dispersion is not a
@@ -5932,9 +5934,13 @@ real models. Three things from it belong in the design record:
   the number of workgroups (`ceil(total/64)`), hence tail occupancy. **Handed to issue #96.** No
   result from that diagnosis is imported here or into §27.
 * **`decode past = 128` reads 0.859×** — the candidate slower, consistently, in all three repeats —
-  and is recorded as a descriptive regression rather than a verdict because it does not clear the
-  observed control envelope. It is the second thing #96 should look at, and it is the case §8.13
-  would most expect to be untouched, since decode selects `local = 1`.
+  and is recorded as a **provisional descriptive ratio**, not a verdict and not a regression claim,
+  because it clears neither the observed control envelope nor this host's own within-arm
+  dispersion (13.67% effect against a 23.91% same-build envelope, §27.12). **The label retires on
+  exactly one condition: issue #96 landing a real A/A run on this host** — two independent runs of
+  one build, scheduled the way the cross-build run was. Until then no ownership of the shortfall is
+  asserted. It is the second thing #96 should look at, and it is the case §8.13 would most expect
+  to be untouched, since decode selects `local = 1`.
 
 ---
 

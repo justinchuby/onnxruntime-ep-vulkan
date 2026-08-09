@@ -5059,6 +5059,24 @@ Not "real models" plural. Not decode. Not any other execution provider — **no 
 anywhere in this section or in either artifact it cites**, and none is implied. Issue #69's title
 names CUDA; this evidence does not address it, and saying so is part of the result.
 
+**The answer, in the exact words it may be said in** — one model, Phi-3.5-mini-instruct
+(int4 RTN block-32), prefill phase, on one contended Windows/lavapipe host, from records measured
+on PR #95 and reused here byte-identically:
+
+| subject | verdict | quotable as | separation from this host's own noise (§27.12) |
+|---|---|---|---|
+| prefill `M = 128` | **FASTER, 2.077×** | point estimate | 59.9× |
+| prefill `M = 32` | **FASTER, at least 1.278×** | floor only — never the 2.053× median | 0.16× |
+| prefill `M = 64` | **INDETERMINATE** | nothing; handed to issue #96 | 0.02× |
+| decode `past = 128` | **INDETERMINATE**, raw 0.859× | provisional descriptive ratio until #96's A/A | 0.57× |
+| decode `past = 1024` | **NEUTRAL** | nothing | 0.08× |
+| prefill `M = 1` (null) | **NEUTRAL** | nothing | 0.13× |
+
+Every cell of that table is derived by `bench/crossbuild_summary.py::headline` from the raw records
+rather than typed in, and `headline` refuses to render at all if the graded rows ever span more
+than one model — the plural-model failure that got PR #95's title rejected is now a raised
+exception rather than a habit.
+
 ### 27.1 Provenance: these timings were not measured here
 
 **The 60 raw records were measured on PR #95 and are reused byte-identically. They were not
@@ -5113,7 +5131,8 @@ Deleting the shipped gate would not have turned anything red, because there was 
 ```
 python bench/crossbuild_summary.py --check      # gate only, no write
 python bench/crossbuild_summary.py --finalize   # rewrites bench/results/real_model_crossbuild_gqa_landing_v2.json
-python bench/crossbuild_summary.py              # prints the table below
+python bench/crossbuild_summary.py --dispersion # prints the within-arm A/A surrogate table of §27.12
+python bench/crossbuild_summary.py              # prints both tables below
 ```
 
 `gated_verdict()` is the gate. It downgrades a raw `FASTER`/`SLOWER` to `REFUSED` when any of the
@@ -5132,14 +5151,19 @@ exception:
 | the row is a calibration control | a control that defines the band may not be judged by it | `CALIBRATION` |
 
 `bench/test_crossbuild_summary.py` proves those gates are load-bearing rather than decorative. It
-holds 17 named properties and 13 **mutations of the shipped source**, compiled in memory. Each
+holds **25 named properties and 21 mutations of the shipped source**, compiled in memory. Each
 mutation deletes or bypasses exactly one gate — `elif False:` on the witness comparison, publishing
 `raw_verdict` instead of `gated_verdict`, `if False:` on the equivalence premise, on the model
 digest, on the completeness check, on the cross-arm output check, on the borrowed-witness screen,
 on the admissibility raise, on the frozen-digest check, grading the calibration rows, handing out
-the superseded PR #95 blocks. Two paired tests run over the matrix: every property must hold on the
-shipped module, and every property named by a mutation must **go red on that mutant**. A guard
-nothing can falsify fails the second test, which is the failure mode that got PR #95 rejected.
+the superseded PR #95 blocks. Eight of them belong to §27.12's dispersion diagnostic: promoting the
+provisional ratio to a claim, shrinking the within-arm envelope, dropping the split-half surrogate,
+deleting the zero-envelope guard, letting the diagnostic overturn a verdict, quoting a median where
+only the floor is supported, letting the headline span more than one model, and making separation
+unreachable. Two paired tests run over the matrix: every property must hold on the shipped module,
+and every property named by a mutation must **go red on that mutant**. A third refuses to let a
+property sit in the suite with no mutation that kills it. A guard nothing can falsify fails the
+second test, which is the failure mode that got PR #95 rejected.
 
 ### 27.3 The band, and why the old one could not have said anything else
 
@@ -5214,11 +5238,15 @@ Read as prose, and no wider than that:
 
 * **`M = 128` prefill is the result.** 2.077× median, per-repeat `2.075 – 2.089`, and the three
   repeats do not merely clear the band — the smallest of them would survive a band of **107.5%**.
-  This is the one workload where the claim is not sensitive to any choice made in §27.3.
-* **`M = 32` prefill is real but wide.** Its *minimum* repeat is **1.278×**, which is the number to
-  quote; its median is 2.053× and its spread reaches 3.578×, an 2.8× range across three repeats of
-  the same cell. `FASTER` holds because even the worst repeat clears 1.153, but a factor of 2.8
-  between repeats is not a precision result and is not presented as one.
+  This is the one workload where the claim is not sensitive to any choice made in §27.3, and
+  §27.12 shows it also clears this host's own within-arm noise by **59.9×**, so `2.077×` is
+  quotable as a point estimate.
+* **`M = 32` prefill is real but wide.** Its *minimum* repeat is **at least 1.278×**, which is the
+  number to quote; its median is 2.053× and its spread reaches 3.578×, an 2.8× range across three
+  repeats of the same cell. `FASTER` holds because even the worst repeat clears 1.153, but a factor
+  of 2.8 between repeats is not a precision result and is not presented as one — §27.12 shows the
+  baseline arm alone moving 176% between its own repeats, so **the median is not quotable and the
+  floor is**.
 * **`M = 64` prefill is indeterminate**, and stays indeterminate at *every* band examined: repeat 1
   reads 1.032×, inside any band wide enough to be honest about this box, while repeats 0 and 2 read
   1.568× and 1.863×. Something is bimodal here. **This is the observation handed to issue #96**, not
@@ -5226,10 +5254,12 @@ Read as prose, and no wider than that:
 * **`decode past = 128` reads 0.859× — the candidate is slower — and is reported as
   `INDETERMINATE`, not `SLOWER`.** This is the corrected control envelope doing exactly what it is
   for: the largest band under which `SLOWER` would still hold is 13.67%, and the calibration set
-  says drift on this box reaches 15.34%. The regression is **descriptive** — all three repeats are
-  below 1, consistently, and it should be looked at — but it is not a thresholded verdict, because
-  the controls do not support one. PR #95 called it `SLOWER`; that call was an artefact of the
-  narrow circular band.
+  says drift on this box reaches 15.34%. It is a **provisional descriptive ratio** — all three
+  repeats are below 1, consistently, and it should be looked at — but it is not a thresholded
+  verdict and not a regression claim, because the controls do not support one and, as §27.12 shows,
+  neither does this host's own within-arm dispersion (13.67% effect against a 23.91% envelope).
+  The label retires when **issue #96** lands a real A/A run. PR #95 called it `SLOWER`; that call
+  was an artefact of the narrow circular band.
 * **`decode past = 1024` and the `M = 1` prefill null control are `NEUTRAL`**, and under the
   corrected envelope the null control is *not eligible* for `FASTER` or `SLOWER` — its widest
   deviation, 5.10%, is a third of the band. Under PR #95's band it sat exactly at the edge by
@@ -5367,11 +5397,17 @@ PR #95 cited "155 tests" beside a file that has 14. Every count below names its 
 
 | command | result |
 |---|---|
-| `python -m pytest bench/test_crossbuild_summary.py -q` | 32 passed |
-| `python -m pytest bench/test_crossbuild_gqa_landing.py -q` | see §27.11 |
+| `python -m pytest bench/test_crossbuild_summary.py -q` | 40 passed |
+| `python -m pytest bench/test_crossbuild_gqa_landing.py -q` | 49 passed |
 | `python -m pytest tests/ops/test_harness_census.py -q` | **14** tests |
 | `python -m pytest bench/test_perf_claims.py bench/test_real_model.py bench/test_paired_ratio.py -q` | 105 collected |
+| `python -m pytest bench/test_crossbuild_summary.py bench/test_crossbuild_gqa_landing.py bench/test_perf_claims.py bench/test_real_model.py bench/test_paired_ratio.py tests/ops/test_harness_census.py -q` | 207 passed, 1 skipped |
 | `python rust/tools/audit_instruments.py --check` | census verdict |
+
+Every one of those was run on this branch's head. The two crossbuild counts moved when the offline
+within-arm dispersion instrument of §27.12 landed (32 → 40 and 38 → 49); the old numbers are not
+carried forward, because a count bound to a command is only worth anything if it is rebound when
+the command's answer changes.
 
 Full-suite totals are a different measurement and are kept separate; a number quoted from a
 five-file run may not be cited beside a one-file claim.
@@ -5399,9 +5435,10 @@ is deliberately session-local and unpublished, and a test asserts both files are
   with identical outputs and identical pipeline keys. `M = 32` shows the same shape more widely
   (`1.278 / 2.053 / 3.578`). Neither is explained here. Handed to **issue #96**, which is being
   diagnosed separately; nothing in that diagnosis is imported into this section.
-* **`decode past = 128` is a descriptive regression**, 0.859× with all three repeats below 1. It
-  does not clear the control envelope, so it gets no verdict — but "no verdict" is not "no
-  problem", and it belongs in the same look as #96.
+* **`decode past = 128` is a provisional descriptive ratio**, 0.859× with all three repeats below
+  1, and §27.12 shows it does not clear this host's own within-arm envelope either. It gets no
+  verdict and it is not called a regression — but "no verdict" is not "no problem", and it belongs
+  in the same look as #96. The label retires when #96 lands a real A/A run.
 * **`n = 3`.** Every verdict here is an envelope screen on three paired repeats. Widening the band
   is the honest response to a noisy box; more repeats would be a better one, and would need a run.
 * **The band is post-hoc.** Mechanical subject/calibration separation and a published sensitivity
@@ -5409,3 +5446,75 @@ is deliberately session-local and unpublished, and a test asserts both files are
 * **The grid is inferred at `local == 1`.** A witness field would settle it; it needs a run.
 * **One box, one device.** RTX A1000, driver 573.44. Nothing here transfers to another GPU, and the
   RTX 4060 numbers elsewhere in this file are not comparable.
+
+### 27.12 Offline within-arm dispersion — what each build does against itself
+
+A cross-arm ratio only means something to the extent that it is bigger than what **one build does
+against itself** on this host. The proper instrument for that is an A/A run — two independent runs
+of the *same* build, scheduled the way the cross-build run was — and **no A/A run exists**. It is
+issue #96's. So the frozen records are re-cut two ways instead, and **nothing is re-measured**:
+
+* **across-repeat** — one arm's three repeat medians against each other, `|m_i/m_j − 1|` over all
+  six ordered pairs. Unpaired, three separate processes, so it carries all of this box's slow
+  drift. It is the upper bound on what within-repeat pairing has to cancel.
+* **split-half** — the first ten timed samples of a single record against its last ten. Paired and
+  adjacent in time, the same *shape* of comparison the cross-arm ratio is, with the build held
+  constant.
+
+`within_arm_envelope` is the larger of the two, over both arms — the conservative one.
+`separation` is the **weakest** paired repeat's `|ratio − 1|` divided by that envelope; the weakest
+repeat is chosen because that is what a claim actually rests on. Everything below is produced by
+`bench/crossbuild_summary.py --dispersion` and a test regenerates every cell.
+
+**This is a diagnostic, not a gate.** It never changes a verdict, and a test
+(`test_the_within_arm_diagnostic_never_moves_a_verdict`) recomputes every published verdict from a
+row that has never seen a dispersion figure. A rule invented after seeing which subjects it would
+demote is not a rule.
+
+| workload | cross-arm effect (weakest repeat) | within-arm A/A envelope (across-repeat / split-half) | separation | status |
+|---|---|---|---|---|
+| all-MiniLM-L6-v2-onnx/encode/S128 | 1.03% | 19.55% (19.55% / 14.01%) | 0.05× | CALIBRATION |
+| all-MiniLM-L6-v2-onnx/encode/S384 | 0.38% | 32.43% (32.43% / 7.97%) | 0.01× | CALIBRATION |
+| mobilenetv2-12/batch/N1 | 2.69% | 7.44% (7.44% / 5.52%) | 0.36× | CALIBRATION |
+| mobilenetv2-12/batch/N16 | 1.52% | 9.18% (9.18% / 7.88%) | 0.17× | CALIBRATION |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past1024 | 0.65% | 8.49% (8.49% / 4.05%) | 0.08× | NO_DIRECTION |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128 | 13.67% | 23.91% (10.08% / 23.91%) | 0.57× | PROVISIONAL_DESCRIPTIVE |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0 | 3.81% | 28.83% (9.82% / 28.83%) | 0.13× | NO_DIRECTION |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0 | 107.54% | 1.79% (1.55% / 1.79%) | 59.92× | CLAIM |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M32/past0 | 27.79% | 176.16% (176.16% / 41.71%) | 0.16× | CLAIM |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M64/past0 | 3.18% | 160.55% (160.55% / 74.79%) | 0.02× | PROVISIONAL_DESCRIPTIVE |
+
+What it says, in order of how much it changes:
+
+* **`decode past = 128`, 0.859×, is a PROVISIONAL DESCRIPTIVE RATIO — not a `SLOWER` verdict and
+  not a regression claim.** Its weakest repeat is 13.67% from unity. The same records show one
+  build disagreeing with *itself* by up to 23.91% on this workload (the baseline arm's repeat 0
+  splits 23.91% between its first and last ten timed samples), so the separation is **0.57×** —
+  the effect is *smaller* than the host's own noise on that workload. Two independent screens now
+  say the same thing: the calibration band (§27.3) will not grade it, and the within-arm envelope
+  does not clear it either. The label retires on exactly one condition, and it is stated in the
+  artifact as `provisional_until`: **issue #96 lands a real A/A run on this host**. Until then this
+  is a description of what these 60 frozen records contain, and no ownership of it is asserted here.
+* **`M = 128` prefill is the one result that clears everything.** 107.54% effect against a 1.79%
+  within-arm envelope — a separation of **59.92×**. Both arms are quiet here (per-record RSD 0.43 –
+  1.19%) and the three repeats span `2.075 – 2.089`. This is why `2.077×` is quotable as a point
+  estimate rather than as a floor.
+* **`M = 32` prefill keeps its `FASTER` verdict and loses its point estimate.** All three paired
+  repeats clear the band, which is what the verdict rests on — but the *baseline arm alone* moves
+  by **176.16%** between its own repeats (`510 / 843 / 1410 ms`), far more than the 27.79% weakest
+  cross-arm effect. Pairing within a repeat is what makes the comparison usable at all, and the
+  size of the gain is not resolvable on this host. **So the number to quote is the floor —
+  "at least 1.278×" — and never the median 2.053×.** The summarizer enforces this: `headline`
+  renders `quotable_as: floor_only` for this row and a mutation that quotes the median instead
+  turns the suite red.
+* **`M = 64` is the same story one step further** — 3.18% effect against a 160.55% envelope,
+  separation 0.02×. It is `INDETERMINATE` at every band and provisional-descriptive here. #96.
+* **The calibration controls all sit far below their own envelopes** (0.01× – 0.36×), which is what
+  a control should look like and is a weak independent check that the band in §27.3 is not too
+  tight.
+
+Two honest limits on this instrument. It is computed from the **same** records the ratios come
+from, so it is not independent evidence — it is a re-cut, and a real A/A would be better. And the
+across-repeat surrogate is unpaired while the cross-arm ratio is paired, so for a workload whose
+drift is slow it is deliberately pessimistic; that is why both surrogates are published side by
+side instead of only the one that flatters a row.

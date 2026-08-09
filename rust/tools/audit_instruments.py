@@ -457,8 +457,13 @@ BENCH_INSTRUMENT_FILES = [
     # `pair_repeats` are the premises it rests on. PR #95 was rejected precisely because
     # that gate lived in a test file instead of a shipped module, so screening this one is
     # not bookkeeping: it is the thing that keeps the gate falsifiable. Two-polarity tests
-    # for all eleven public functions live in bench/test_crossbuild_summary.py (which also
-    # carries the source-mutation battery) and bench/test_crossbuild_gqa_landing.py.
+    # for all fifteen public functions live in bench/test_crossbuild_summary.py (which also
+    # carries the source-mutation battery) and bench/test_crossbuild_gqa_landing.py. The
+    # five that arrived with the offline within-arm dispersion diagnostic
+    # (`within_arm_dispersion`, `separation_from_drift`, `descriptive_status`, `headline`,
+    # `dispersion_table`) were caught by this census as NEW unfalsified instruments before
+    # they could ship, which is the whole point of it: each now has a direct accept/reject
+    # pair in bench/test_crossbuild_gqa_landing.py.
     "crossbuild_summary.py",
 ]
 

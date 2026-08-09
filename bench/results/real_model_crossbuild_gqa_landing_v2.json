@@ -290,6 +290,8 @@
   ]
  },
  "decision_rule": "ratio = baseline_median_ms / candidate_median_ms, paired WITHIN a repeat (>1 means the candidate build is faster). Per workload, over its 3 repeat ratios, with band b: FASTER iff min(ratios) > 1+b; SLOWER iff max(ratios) < 1-b; NEUTRAL iff every ratio lies in [1-b, 1+b]; INDETERMINATE otherwise. Symmetric on purpose -- PR #95 required every repeat for FASTER but only the median for SLOWER, which makes a regression cheaper to claim than an improvement. n=3: this is an envelope screen, NOT a confidence interval, and no p-value is computed or implied.",
+ "within_arm_rule": "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three repeat medians -- same build, same workload, different process, same host, i.e. the exact comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: |median(first 10 timed samples)/median(last 10) - 1| within each single record -- same build, same process, adjacent in time, so it is paired the way the cross-arm ratio is paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after seeing which subjects it would demote is not a rule. It reports how much room there is between an effect and this host's own noise.",
+ "provisional_until": "issue #96: a same-build A/A run on this host, plus the bimodality diagnosis. Until that exists this is a PROVISIONAL DESCRIPTIVE RATIO -- a description of what these 60 frozen records contain -- and NOT a finding that the candidate build is slower. It is not a SLOWER verdict, it is not a regression claim, and no ownership of it is asserted here.",
  "band": {
   "applied": 0.15341637858622792,
   "floor": 0.05,
@@ -403,6 +405,89 @@
     "grids_equal_across_arms": null,
     "inferred_grid": null,
     "inference_inputs": []
+   },
+   "within_arm": {
+    "workload": "all-MiniLM-L6-v2-onnx/encode/S128",
+    "rule": "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three repeat medians -- same build, same workload, different process, same host, i.e. the exact comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: |median(first 10 timed samples)/median(last 10) - 1| within each single record -- same build, same process, adjacent in time, so it is paired the way the cross-arm ratio is paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after seeing which subjects it would demote is not a rule. It reports how much room there is between an effect and this host's own noise.",
+    "per_arm": {
+     "baseline": {
+      "repeat_medians_ms": [
+       666.6907000000001,
+       775.96975,
+       797.0183999999999
+      ],
+      "across_repeat_ratios": [
+       0.14082900783181285,
+       0.1635190605386273,
+       0.16391266594839227,
+       0.02640923973649789,
+       0.19548450278367424,
+       0.027125606378341383
+      ],
+      "across_repeat_envelope": 0.19548450278367424,
+      "split_half_deviations": [
+       0.01780911914081229,
+       0.02840117902585315,
+       0.051658955844934296
+      ],
+      "split_half_envelope": 0.051658955844934296,
+      "per_record_rsd_pct": [
+       9.901988313366713,
+       5.686748475784404,
+       6.578832744467746
+      ]
+     },
+     "candidate": {
+      "repeat_medians_ms": [
+       673.5967,
+       672.7577,
+       738.4716000000001
+      ],
+      "across_repeat_ratios": [
+       0.0012471057559060306,
+       0.08785023012394788,
+       0.0012455524203133228,
+       0.0889863604775053,
+       0.09631119036064173,
+       0.09767840635640446
+      ],
+      "across_repeat_envelope": 0.09767840635640446,
+      "split_half_deviations": [
+       0.08913697099408013,
+       0.14005031601589546,
+       0.04745513586683714
+      ],
+      "split_half_envelope": 0.14005031601589546,
+      "per_record_rsd_pct": [
+       9.112471631266574,
+       8.788215678560826,
+       5.336967606486502
+      ]
+     }
+    },
+    "across_repeat_envelope": 0.19548450278367424,
+    "split_half_envelope": 0.14005031601589546,
+    "within_arm_envelope": 0.19548450278367424,
+    "n_aa_comparisons": 18,
+    "is_a_real_aa_run": false,
+    "why_not": "these are the SAME records the cross-arm ratio uses, re-cut two ways. A real A/A -- two independent runs of one build, scheduled like the cross-build run was -- has not been done on this host. Issue #96 owns it."
+   },
+   "separation_from_drift": {
+    "cross_arm_effect": 0.01025242552405603,
+    "cross_arm_effect_pct": 1.025242552405603,
+    "within_arm_envelope": 0.19548450278367424,
+    "within_arm_envelope_pct": 19.548450278367426,
+    "separation_ratio": 0.052446231686209425,
+    "threshold": 2.0,
+    "class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "MIXED",
+    "all_repeats_same_side": false
+   },
+   "descriptive_status": {
+    "status": "CALIBRATION",
+    "quotable_as": null,
+    "until": null,
+    "separation_class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT"
    }
   },
   {
@@ -486,6 +571,89 @@
     "grids_equal_across_arms": null,
     "inferred_grid": null,
     "inference_inputs": []
+   },
+   "within_arm": {
+    "workload": "all-MiniLM-L6-v2-onnx/encode/S384",
+    "rule": "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three repeat medians -- same build, same workload, different process, same host, i.e. the exact comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: |median(first 10 timed samples)/median(last 10) - 1| within each single record -- same build, same process, adjacent in time, so it is paired the way the cross-arm ratio is paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after seeing which subjects it would demote is not a rule. It reports how much room there is between an effect and this host's own noise.",
+    "per_arm": {
+     "baseline": {
+      "repeat_medians_ms": [
+       763.27125,
+       688.2378,
+       911.46015
+      ],
+      "across_repeat_ratios": [
+       0.10902256458450843,
+       0.16258406908958112,
+       0.09830509140754351,
+       0.24490631872386304,
+       0.19414972069234882,
+       0.3243389857401031
+      ],
+      "across_repeat_envelope": 0.3243389857401031,
+      "split_half_deviations": [
+       0.0342192162575774,
+       0.022973303510415266,
+       0.07970987733990775
+      ],
+      "split_half_envelope": 0.07970987733990775,
+      "per_record_rsd_pct": [
+       11.733235255670333,
+       11.799022041016036,
+       7.566449728634216
+      ]
+     },
+     "candidate": {
+      "repeat_medians_ms": [
+       760.3651,
+       780.4055000000001,
+       968.8228
+      ],
+      "across_repeat_ratios": [
+       0.025679470480410638,
+       0.21516597255968795,
+       0.026356285947369384,
+       0.19448066251124552,
+       0.2741547448719044,
+       0.24143512571349124
+      ],
+      "across_repeat_envelope": 0.2741547448719044,
+      "split_half_deviations": [
+       0.04807828698930894,
+       0.00853133403083417,
+       0.023583653568856944
+      ],
+      "split_half_envelope": 0.04807828698930894,
+      "per_record_rsd_pct": [
+       11.25473975475418,
+       12.341060686899525,
+       6.183405111768148
+      ]
+     }
+    },
+    "across_repeat_envelope": 0.3243389857401031,
+    "split_half_envelope": 0.07970987733990775,
+    "within_arm_envelope": 0.3243389857401031,
+    "n_aa_comparisons": 18,
+    "is_a_real_aa_run": false,
+    "why_not": "these are the SAME records the cross-arm ratio uses, re-cut two ways. A real A/A -- two independent runs of one build, scheduled like the cross-build run was -- has not been done on this host. Issue #96 owns it."
+   },
+   "separation_from_drift": {
+    "cross_arm_effect": 0.003822045488410808,
+    "cross_arm_effect_pct": 0.3822045488410808,
+    "within_arm_envelope": 0.3243389857401031,
+    "within_arm_envelope_pct": 32.433898574010314,
+    "separation_ratio": 0.011784107543190817,
+    "threshold": 2.0,
+    "class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "MIXED",
+    "all_repeats_same_side": false
+   },
+   "descriptive_status": {
+    "status": "CALIBRATION",
+    "quotable_as": null,
+    "until": null,
+    "separation_class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT"
    }
   },
   {
@@ -569,6 +737,89 @@
     "grids_equal_across_arms": null,
     "inferred_grid": null,
     "inference_inputs": []
+   },
+   "within_arm": {
+    "workload": "mobilenetv2-12/batch/N1",
+    "rule": "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three repeat medians -- same build, same workload, different process, same host, i.e. the exact comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: |median(first 10 timed samples)/median(last 10) - 1| within each single record -- same build, same process, adjacent in time, so it is paired the way the cross-arm ratio is paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after seeing which subjects it would demote is not a rule. It reports how much room there is between an effect and this host's own noise.",
+    "per_arm": {
+     "baseline": {
+      "repeat_medians_ms": [
+       28.587400000000002,
+       29.2564,
+       30.093200000000003
+      ],
+      "across_repeat_ratios": [
+       0.022866791539628784,
+       0.05003788231228323,
+       0.023401918327654814,
+       0.027806946419789313,
+       0.05267355548248531,
+       0.02860228872998749
+      ],
+      "across_repeat_envelope": 0.05267355548248531,
+      "split_half_deviations": [
+       0.0015671239776962054,
+       0.042455960744166354,
+       0.05517707913383951
+      ],
+      "split_half_envelope": 0.05517707913383951,
+      "per_record_rsd_pct": [
+       5.517076580427717,
+       6.012678451410029,
+       8.013341126316565
+      ]
+     },
+     "candidate": {
+      "repeat_medians_ms": [
+       29.37855,
+       27.3453,
+       28.223399999999998
+      ],
+      "across_repeat_ratios": [
+       0.07435464229684796,
+       0.04092880375858332,
+       0.06920865733673032,
+       0.03111248113267706,
+       0.03931950351531999,
+       0.032111551162356866
+      ],
+      "across_repeat_envelope": 0.07435464229684796,
+      "split_half_deviations": [
+       0.005294695901183699,
+       0.012978610171468397,
+       0.01372644660523592
+      ],
+      "split_half_envelope": 0.01372644660523592,
+      "per_record_rsd_pct": [
+       8.348973073115934,
+       5.015849088768027,
+       4.437597046106633
+      ]
+     }
+    },
+    "across_repeat_envelope": 0.07435464229684796,
+    "split_half_envelope": 0.05517707913383951,
+    "within_arm_envelope": 0.07435464229684796,
+    "n_aa_comparisons": 18,
+    "is_a_real_aa_run": false,
+    "why_not": "these are the SAME records the cross-arm ratio uses, re-cut two ways. A real A/A -- two independent runs of one build, scheduled like the cross-build run was -- has not been done on this host. Issue #96 owns it."
+   },
+   "separation_from_drift": {
+    "cross_arm_effect": 0.026929511497333913,
+    "cross_arm_effect_pct": 2.6929511497333913,
+    "within_arm_envelope": 0.07435464229684796,
+    "within_arm_envelope_pct": 7.435464229684796,
+    "separation_ratio": 0.362176599408851,
+    "threshold": 2.0,
+    "class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "MIXED",
+    "all_repeats_same_side": false
+   },
+   "descriptive_status": {
+    "status": "CALIBRATION",
+    "quotable_as": null,
+    "until": null,
+    "separation_class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT"
    }
   },
   {
@@ -652,6 +903,89 @@
     "grids_equal_across_arms": null,
     "inferred_grid": null,
     "inference_inputs": []
+   },
+   "within_arm": {
+    "workload": "mobilenetv2-12/batch/N16",
+    "rule": "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three repeat medians -- same build, same workload, different process, same host, i.e. the exact comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: |median(first 10 timed samples)/median(last 10) - 1| within each single record -- same build, same process, adjacent in time, so it is paired the way the cross-arm ratio is paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after seeing which subjects it would demote is not a rule. It reports how much room there is between an effect and this host's own noise.",
+    "per_arm": {
+     "baseline": {
+      "repeat_medians_ms": [
+       150.40494999999999,
+       164.21935,
+       158.61090000000002
+      ],
+      "across_repeat_ratios": [
+       0.08412163365644798,
+       0.05173635607641103,
+       0.09184804090556864,
+       0.03535980187994636,
+       0.054559042105994715,
+       0.0341521873031404
+      ],
+      "across_repeat_envelope": 0.09184804090556864,
+      "split_half_deviations": [
+       0.02714070364177046,
+       0.014865763296639467,
+       0.06175913177091075
+      ],
+      "split_half_envelope": 0.06175913177091075,
+      "per_record_rsd_pct": [
+       4.49179861410826,
+       6.519248091321089,
+       6.42193404644724
+      ]
+     },
+     "candidate": {
+      "repeat_medians_ms": [
+       147.95105,
+       150.34895,
+       156.24259999999998
+      ],
+      "across_repeat_ratios": [
+       0.015948897548004104,
+       0.05306843332100186,
+       0.016207387510936755,
+       0.03772114647349689,
+       0.0560425221720291,
+       0.03919980817957147
+      ],
+      "across_repeat_envelope": 0.0560425221720291,
+      "split_half_deviations": [
+       0.0362225675098905,
+       0.0784990824255204,
+       0.07883160297257519
+      ],
+      "split_half_envelope": 0.07883160297257519,
+      "per_record_rsd_pct": [
+       2.8727143426318307,
+       6.887096276063201,
+       7.348832655068853
+      ]
+     }
+    },
+    "across_repeat_envelope": 0.09184804090556864,
+    "split_half_envelope": 0.07883160297257519,
+    "within_arm_envelope": 0.09184804090556864,
+    "n_aa_comparisons": 18,
+    "is_a_real_aa_run": false,
+    "why_not": "these are the SAME records the cross-arm ratio uses, re-cut two ways. A real A/A -- two independent runs of one build, scheduled like the cross-build run was -- has not been done on this host. Issue #96 owns it."
+   },
+   "separation_from_drift": {
+    "cross_arm_effect": 0.015157837875201974,
+    "cross_arm_effect_pct": 1.5157837875201974,
+    "within_arm_envelope": 0.09184804090556864,
+    "within_arm_envelope_pct": 9.184804090556863,
+    "separation_ratio": 0.16503169502315396,
+    "threshold": 2.0,
+    "class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "FASTER_SIDE",
+    "all_repeats_same_side": true
+   },
+   "descriptive_status": {
+    "status": "CALIBRATION",
+    "quotable_as": null,
+    "until": null,
+    "separation_class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT"
    }
   },
   {
@@ -747,6 +1081,89 @@
      "ops::attention::gqa_local_size(32) == 1 (rust/src/ops/attention.rs)"
     ],
     "inferred_not_witnessed": "the artifact records no grid field; total is bounded to [32, 64) by the rule when local == 1, which contains 32 without pinning it"
+   },
+   "within_arm": {
+    "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past1024",
+    "rule": "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three repeat medians -- same build, same workload, different process, same host, i.e. the exact comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: |median(first 10 timed samples)/median(last 10) - 1| within each single record -- same build, same process, adjacent in time, so it is paired the way the cross-arm ratio is paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after seeing which subjects it would demote is not a rule. It reports how much room there is between an effect and this host's own noise.",
+    "per_arm": {
+     "baseline": {
+      "repeat_medians_ms": [
+       699.87415,
+       744.6073,
+       728.8968
+      ],
+      "across_repeat_ratios": [
+       0.0600761636368593,
+       0.03981722789838016,
+       0.06391599118212898,
+       0.02155380569649923,
+       0.041468383994465396,
+       0.02109904106500171
+      ],
+      "across_repeat_envelope": 0.06391599118212898,
+      "split_half_deviations": [
+       0.03977633959751525,
+       0.002410733819021238,
+       0.01245556595595243
+      ],
+      "split_half_envelope": 0.03977633959751525,
+      "per_record_rsd_pct": [
+       6.045029201809764,
+       4.473804111849283,
+       5.801123312289006
+      ]
+     },
+     "candidate": {
+      "repeat_medians_ms": [
+       695.3645,
+       754.4014999999999,
+       716.0414000000001
+      ],
+      "across_repeat_ratios": [
+       0.0782567372943982,
+       0.028876682270047582,
+       0.08490079663255745,
+       0.05357246103367741,
+       0.02973534024241964,
+       0.050848387761689096
+      ],
+      "across_repeat_envelope": 0.08490079663255745,
+      "split_half_deviations": [
+       0.04045728998570208,
+       0.0016438303954516842,
+       0.00261674813774726
+      ],
+      "split_half_envelope": 0.04045728998570208,
+      "per_record_rsd_pct": [
+       14.294506450055913,
+       5.504853610377066,
+       5.037973600506911
+      ]
+     }
+    },
+    "across_repeat_envelope": 0.08490079663255745,
+    "split_half_envelope": 0.04045728998570208,
+    "within_arm_envelope": 0.08490079663255745,
+    "n_aa_comparisons": 18,
+    "is_a_real_aa_run": false,
+    "why_not": "these are the SAME records the cross-arm ratio uses, re-cut two ways. A real A/A -- two independent runs of one build, scheduled like the cross-build run was -- has not been done on this host. Issue #96 owns it."
+   },
+   "separation_from_drift": {
+    "cross_arm_effect": 0.006485303750766613,
+    "cross_arm_effect_pct": 0.6485303750766613,
+    "within_arm_envelope": 0.08490079663255745,
+    "within_arm_envelope_pct": 8.490079663255745,
+    "separation_ratio": 0.0763868421498374,
+    "threshold": 2.0,
+    "class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "MIXED",
+    "all_repeats_same_side": false
+   },
+   "descriptive_status": {
+    "status": "NO_DIRECTION",
+    "quotable_as": null,
+    "until": null,
+    "separation_class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT"
    }
   },
   {
@@ -842,6 +1259,91 @@
      "ops::attention::gqa_local_size(32) == 1 (rust/src/ops/attention.rs)"
     ],
     "inferred_not_witnessed": "the artifact records no grid field; total is bounded to [32, 64) by the rule when local == 1, which contains 32 without pinning it"
+   },
+   "within_arm": {
+    "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128",
+    "rule": "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three repeat medians -- same build, same workload, different process, same host, i.e. the exact comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: |median(first 10 timed samples)/median(last 10) - 1| within each single record -- same build, same process, adjacent in time, so it is paired the way the cross-arm ratio is paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after seeing which subjects it would demote is not a rule. It reports how much room there is between an effect and this host's own noise.",
+    "per_arm": {
+     "baseline": {
+      "repeat_medians_ms": [
+       109.73995,
+       120.229,
+       109.68405
+      ],
+      "across_repeat_ratios": [
+       0.08724226268204849,
+       0.0005096456595101717,
+       0.09558096208354394,
+       0.09613932016551185,
+       0.0005093860531191208,
+       0.08770720874331484
+      ],
+      "across_repeat_envelope": 0.09613932016551185,
+      "split_half_deviations": [
+       0.2390663453747328,
+       0.08184924923725734,
+       0.009400338793704499
+      ],
+      "split_half_envelope": 0.2390663453747328,
+      "per_record_rsd_pct": [
+       14.256235415072519,
+       11.347271125974997,
+       10.225895209629874
+      ]
+     },
+     "candidate": {
+      "repeat_medians_ms": [
+       127.11915,
+       139.93035,
+       137.99295
+      ],
+      "across_repeat_ratios": [
+       0.09155411960307391,
+       0.07879967780962727,
+       0.10078103889146517,
+       0.014039847687870921,
+       0.08554021954992619,
+       0.01384545954469485
+      ],
+      "across_repeat_envelope": 0.10078103889146517,
+      "split_half_deviations": [
+       0.045135480481949264,
+       0.032342063630834916,
+       0.0051546111594831245
+      ],
+      "split_half_envelope": 0.045135480481949264,
+      "per_record_rsd_pct": [
+       5.904949246998735,
+       4.855841578720904,
+       6.7329588793965245
+      ]
+     }
+    },
+    "across_repeat_envelope": 0.10078103889146517,
+    "split_half_envelope": 0.2390663453747328,
+    "within_arm_envelope": 0.2390663453747328,
+    "n_aa_comparisons": 18,
+    "is_a_real_aa_run": false,
+    "why_not": "these are the SAME records the cross-arm ratio uses, re-cut two ways. A real A/A -- two independent runs of one build, scheduled like the cross-build run was -- has not been done on this host. Issue #96 owns it."
+   },
+   "separation_from_drift": {
+    "cross_arm_effect": 0.13671582920433323,
+    "cross_arm_effect_pct": 13.671582920433323,
+    "within_arm_envelope": 0.2390663453747328,
+    "within_arm_envelope_pct": 23.90663453747328,
+    "separation_ratio": 0.5718740084056301,
+    "threshold": 2.0,
+    "class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "SLOWER_SIDE",
+    "all_repeats_same_side": true
+   },
+   "descriptive_status": {
+    "status": "PROVISIONAL_DESCRIPTIVE",
+    "quotable_as": "description_only",
+    "until": "issue #96: a same-build A/A run on this host, plus the bimodality diagnosis. Until that exists this is a PROVISIONAL DESCRIPTIVE RATIO -- a description of what these 60 frozen records contain -- and NOT a finding that the candidate build is slower. It is not a SLOWER verdict, it is not a regression claim, and no ownership of it is asserted here.",
+    "separation_class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "SLOWER_SIDE",
+    "note": "every repeat falls on one side of 1, but the band will not grade it, so it is described and not concluded"
    }
   },
   {
@@ -937,6 +1439,89 @@
      "ops::attention::gqa_local_size(32) == 1 (rust/src/ops/attention.rs)"
     ],
     "inferred_not_witnessed": "the artifact records no grid field; total is bounded to [32, 64) by the rule when local == 1, which contains 32 without pinning it"
+   },
+   "within_arm": {
+    "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0",
+    "rule": "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three repeat medians -- same build, same workload, different process, same host, i.e. the exact comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: |median(first 10 timed samples)/median(last 10) - 1| within each single record -- same build, same process, adjacent in time, so it is paired the way the cross-arm ratio is paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after seeing which subjects it would demote is not a rule. It reports how much room there is between an effect and this host's own noise.",
+    "per_arm": {
+     "baseline": {
+      "repeat_medians_ms": [
+       66.80925,
+       60.835049999999995,
+       66.5115
+      ],
+      "across_repeat_ratios": [
+       0.09820325618208603,
+       0.004476669448140624,
+       0.08942174923382629,
+       0.08534539139847996,
+       0.004456718193962761,
+       0.09330887374959018
+      ],
+      "across_repeat_envelope": 0.09820325618208603,
+      "split_half_deviations": [
+       0.1852213961706055,
+       0.2883407192595031,
+       0.045700932417802376
+      ],
+      "split_half_envelope": 0.2883407192595031,
+      "per_record_rsd_pct": [
+       16.26841856721124,
+       74.91139898569051,
+       26.053229093329215
+      ]
+     },
+     "candidate": {
+      "repeat_medians_ms": [
+       63.56555,
+       63.24245,
+       64.07225
+      ],
+      "across_repeat_ratios": [
+       0.005108910233553532,
+       0.00790825981606691,
+       0.005082941939462571,
+       0.012951004530042276,
+       0.007971298918989955,
+       0.01312093380316548
+      ],
+      "across_repeat_envelope": 0.01312093380316548,
+      "split_half_deviations": [
+       0.13684067399343292,
+       0.18205692755000813,
+       0.00951113781707369
+      ],
+      "split_half_envelope": 0.18205692755000813,
+      "per_record_rsd_pct": [
+       11.718125653681623,
+       76.77996068223067,
+       59.20640806647802
+      ]
+     }
+    },
+    "across_repeat_envelope": 0.09820325618208603,
+    "split_half_envelope": 0.2883407192595031,
+    "within_arm_envelope": 0.2883407192595031,
+    "n_aa_comparisons": 18,
+    "is_a_real_aa_run": false,
+    "why_not": "these are the SAME records the cross-arm ratio uses, re-cut two ways. A real A/A -- two independent runs of one build, scheduled like the cross-build run was -- has not been done on this host. Issue #96 owns it."
+   },
+   "separation_from_drift": {
+    "cross_arm_effect": 0.03806620395003679,
+    "cross_arm_effect_pct": 3.806620395003679,
+    "within_arm_envelope": 0.2883407192595031,
+    "within_arm_envelope_pct": 28.83407192595031,
+    "separation_ratio": 0.1320181348225662,
+    "threshold": 2.0,
+    "class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "MIXED",
+    "all_repeats_same_side": false
+   },
+   "descriptive_status": {
+    "status": "NO_DIRECTION",
+    "quotable_as": null,
+    "until": null,
+    "separation_class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT"
    }
   },
   {
@@ -1024,6 +1609,90 @@
     "inferred_grid": null,
     "inference_inputs": [],
     "inferred_not_witnessed": null
+   },
+   "within_arm": {
+    "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0",
+    "rule": "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three repeat medians -- same build, same workload, different process, same host, i.e. the exact comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: |median(first 10 timed samples)/median(last 10) - 1| within each single record -- same build, same process, adjacent in time, so it is paired the way the cross-arm ratio is paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after seeing which subjects it would demote is not a rule. It reports how much room there is between an effect and this host's own noise.",
+    "per_arm": {
+     "baseline": {
+      "repeat_medians_ms": [
+       3043.77245,
+       3070.3094499999997,
+       3064.10815
+      ],
+      "across_repeat_ratios": [
+       0.008643102733504548,
+       0.006636743549668811,
+       0.008718457255239231,
+       0.002023851540618571,
+       0.0066810841920854624,
+       0.002019763838462474
+      ],
+      "across_repeat_envelope": 0.008718457255239231,
+      "split_half_deviations": [
+       0.004701213492325551,
+       0.0006581905830439494,
+       0.0008269923050259198
+      ],
+      "split_half_envelope": 0.004701213492325551,
+      "per_record_rsd_pct": [
+       0.6905530793939142,
+       0.42585453045811955,
+       0.49575915263477965
+      ]
+     },
+     "candidate": {
+      "repeat_medians_ms": [
+       1456.8468,
+       1479.36205,
+       1474.9958499999998
+      ],
+      "across_repeat_ratios": [
+       0.015219567110025478,
+       0.012304475297337136,
+       0.015454782204964879,
+       0.002960143921761027,
+       0.01245776151617295,
+       0.0029514073312886246
+      ],
+      "across_repeat_envelope": 0.015454782204964879,
+      "split_half_deviations": [
+       0.017949045788040352,
+       0.01053398049429155,
+       0.0066490706897746055
+      ],
+      "split_half_envelope": 0.017949045788040352,
+      "per_record_rsd_pct": [
+       1.1941983739594675,
+       1.1389210378233883,
+       1.1253178012779779
+      ]
+     }
+    },
+    "across_repeat_envelope": 0.015454782204964879,
+    "split_half_envelope": 0.017949045788040352,
+    "within_arm_envelope": 0.017949045788040352,
+    "n_aa_comparisons": 18,
+    "is_a_real_aa_run": false,
+    "why_not": "these are the SAME records the cross-arm ratio uses, re-cut two ways. A real A/A -- two independent runs of one build, scheduled like the cross-build run was -- has not been done on this host. Issue #96 owns it."
+   },
+   "separation_from_drift": {
+    "cross_arm_effect": 1.0754280198008321,
+    "cross_arm_effect_pct": 107.54280198008321,
+    "within_arm_envelope": 0.017949045788040352,
+    "within_arm_envelope_pct": 1.7949045788040352,
+    "separation_ratio": 59.91560958173062,
+    "threshold": 2.0,
+    "class": "SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "FASTER_SIDE",
+    "all_repeats_same_side": true
+   },
+   "descriptive_status": {
+    "status": "CLAIM",
+    "quotable_as": "point_estimate",
+    "until": null,
+    "separation_class": "SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "note": "the magnitude clears this host's own within-arm envelope, so the median ratio is quotable"
    }
   },
   {
@@ -1111,6 +1780,90 @@
     "inferred_grid": null,
     "inference_inputs": [],
     "inferred_not_witnessed": null
+   },
+   "within_arm": {
+    "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M32/past0",
+    "rule": "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three repeat medians -- same build, same workload, different process, same host, i.e. the exact comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: |median(first 10 timed samples)/median(last 10) - 1| within each single record -- same build, same process, adjacent in time, so it is paired the way the cross-arm ratio is paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after seeing which subjects it would demote is not a rule. It reports how much room there is between an effect and this host's own noise.",
+    "per_arm": {
+     "baseline": {
+      "repeat_medians_ms": [
+       510.4792,
+       842.7891,
+       1409.7334
+      ],
+      "across_repeat_ratios": [
+       0.3942978142455805,
+       0.6378895470590398,
+       0.6509763767064358,
+       0.402164196436007,
+       1.7615883272031456,
+       0.6727000859408363
+      ],
+      "across_repeat_envelope": 1.7615883272031456,
+      "split_half_deviations": [
+       0.011320310450835036,
+       0.417064454117955,
+       0.23081217782600894
+      ],
+      "split_half_envelope": 0.417064454117955,
+      "per_record_rsd_pct": [
+       2.6361298922698078,
+       29.059050814363847,
+       55.43754138781289
+      ]
+     },
+     "candidate": {
+      "repeat_medians_ms": [
+       399.47265000000004,
+       410.5125,
+       393.99789999999996
+      ],
+      "across_repeat_ratios": [
+       0.02689284735543973,
+       0.013895378630190969,
+       0.027636059690193893,
+       0.04191545183362666,
+       0.013704943254563395,
+       0.04022922566304321
+      ],
+      "across_repeat_envelope": 0.04191545183362666,
+      "split_half_deviations": [
+       0.0014609260483788855,
+       0.07970341765432087,
+       0.07189401568295839
+      ],
+      "split_half_envelope": 0.07970341765432087,
+      "per_record_rsd_pct": [
+       2.889340126086806,
+       58.27624879579768,
+       18.395190337173826
+      ]
+     }
+    },
+    "across_repeat_envelope": 1.7615883272031456,
+    "split_half_envelope": 0.417064454117955,
+    "within_arm_envelope": 1.7615883272031456,
+    "n_aa_comparisons": 18,
+    "is_a_real_aa_run": false,
+    "why_not": "these are the SAME records the cross-arm ratio uses, re-cut two ways. A real A/A -- two independent runs of one build, scheduled like the cross-build run was -- has not been done on this host. Issue #96 owns it."
+   },
+   "separation_from_drift": {
+    "cross_arm_effect": 0.27788272864237373,
+    "cross_arm_effect_pct": 27.788272864237374,
+    "within_arm_envelope": 1.7615883272031456,
+    "within_arm_envelope_pct": 176.15883272031456,
+    "separation_ratio": 0.15774555516246244,
+    "threshold": 2.0,
+    "class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "FASTER_SIDE",
+    "all_repeats_same_side": true
+   },
+   "descriptive_status": {
+    "status": "CLAIM",
+    "quotable_as": "floor_only",
+    "until": null,
+    "separation_class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "note": "the magnitude sits inside this host's own within-arm envelope, so only the weakest repeat is quotable and the median ratio is not"
    }
   },
   {
@@ -1198,6 +1951,91 @@
     "inferred_grid": null,
     "inference_inputs": [],
     "inferred_not_witnessed": null
+   },
+   "within_arm": {
+    "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M64/past0",
+    "rule": "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three repeat medians -- same build, same workload, different process, same host, i.e. the exact comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: |median(first 10 timed samples)/median(last 10) - 1| within each single record -- same build, same process, adjacent in time, so it is paired the way the cross-arm ratio is paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after seeing which subjects it would demote is not a rule. It reports how much room there is between an effect and this host's own noise.",
+    "per_arm": {
+     "baseline": {
+      "repeat_medians_ms": [
+       1132.0853000000002,
+       1531.69345,
+       2949.64315
+      ],
+      "across_repeat_ratios": [
+       0.26089303313270673,
+       0.6161958438938622,
+       0.3529841346760705,
+       0.4807190659656576,
+       1.605495495789937,
+       0.9257398730796949
+      ],
+      "across_repeat_envelope": 1.605495495789937,
+      "split_half_deviations": [
+       0.001721231591735095,
+       0.4109935408257108,
+       0.6580770567368048
+      ],
+      "split_half_envelope": 0.6580770567368048,
+      "per_record_rsd_pct": [
+       0.9409301485729783,
+       33.7589523497358,
+       53.0096658148115
+      ]
+     },
+     "candidate": {
+      "repeat_medians_ms": [
+       721.87045,
+       1484.5576999999998,
+       1583.17725
+      ],
+      "across_repeat_ratios": [
+       0.5137471248170414,
+       0.5440368726875022,
+       1.0565431096396867,
+       0.062292172275719704,
+       1.1931597975786374,
+       0.066430257308288
+      ],
+      "across_repeat_envelope": 1.1931597975786374,
+      "split_half_deviations": [
+       0.011384268446652412,
+       0.019421542620596366,
+       0.7478582009346213
+      ],
+      "split_half_envelope": 0.7478582009346213,
+      "per_record_rsd_pct": [
+       2.327424572973416,
+       25.994316486322894,
+       41.846540395967125
+      ]
+     }
+    },
+    "across_repeat_envelope": 1.605495495789937,
+    "split_half_envelope": 0.7478582009346213,
+    "within_arm_envelope": 1.605495495789937,
+    "n_aa_comparisons": 18,
+    "is_a_real_aa_run": false,
+    "why_not": "these are the SAME records the cross-arm ratio uses, re-cut two ways. A real A/A -- two independent runs of one build, scheduled like the cross-build run was -- has not been done on this host. Issue #96 owns it."
+   },
+   "separation_from_drift": {
+    "cross_arm_effect": 0.03175070258299839,
+    "cross_arm_effect_pct": 3.175070258299839,
+    "within_arm_envelope": 1.605495495789937,
+    "within_arm_envelope_pct": 160.5495495789937,
+    "separation_ratio": 0.019776263880065505,
+    "threshold": 2.0,
+    "class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "FASTER_SIDE",
+    "all_repeats_same_side": true
+   },
+   "descriptive_status": {
+    "status": "PROVISIONAL_DESCRIPTIVE",
+    "quotable_as": "description_only",
+    "until": "issue #96: a same-build A/A run on this host, plus the bimodality diagnosis. Until that exists this is a PROVISIONAL DESCRIPTIVE RATIO -- a description of what these 60 frozen records contain -- and NOT a finding that the candidate build is slower. It is not a SLOWER verdict, it is not a regression claim, and no ownership of it is asserted here.",
+    "separation_class": "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT",
+    "direction": "FASTER_SIDE",
+    "note": "every repeat falls on one side of 1, but the band will not grade it, so it is described and not concluded"
    }
   }
  ],
@@ -1214,7 +2052,49 @@
    "INDETERMINATE": 2,
    "REFUSED": 0,
    "CALIBRATION": 4
+  },
+  "descriptive_statuses": {
+   "CALIBRATION": 4,
+   "CLAIM": 2,
+   "NO_DIRECTION": 2,
+   "PROVISIONAL_DESCRIPTIVE": 2
   }
+ },
+ "headline": {
+  "model": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+  "scope": "ONE model, Phi-3.5-mini-instruct (int4 RTN block-32), prefill phase, on this one contended Windows/lavapipe host. Singular on purpose: this is not a claim about real models in general, about decode, about any other model in the run, or about any other device or backend.",
+  "claims": [
+   {
+    "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0",
+    "verdict": "FASTER",
+    "quote": "2.077x",
+    "ratio_min": 2.075428019800832,
+    "ratio_median": 2.077367302423258,
+    "ratio_max": 2.089287940228169,
+    "quotable_as": "point_estimate",
+    "separation_ratio": 59.91560958173062
+   },
+   {
+    "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M32/past0",
+    "verdict": "FASTER",
+    "quote": "at least 1.278x",
+    "ratio_min": 1.2778827286423737,
+    "ratio_median": 2.0530168996071985,
+    "ratio_max": 3.578022623978453,
+    "quotable_as": "floor_only",
+    "separation_ratio": 0.15774555516246244
+   }
+  ],
+  "indeterminate": [
+   "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128",
+   "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M64/past0"
+  ],
+  "provisional_descriptive": [
+   "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128",
+   "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M64/past0"
+  ],
+  "not_claimed": "MobileNetV2 and MiniLM are calibration controls and are never graded; decode is not claimed in either direction; no CUDA, no other device, no other backend.",
+  "measured_by": "PR #95's frozen run, reused byte-identically and not re-measured here"
  },
  "sensitivity": {
   "bands": [

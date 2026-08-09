@@ -145,6 +145,17 @@ def perf():
     return _perf()
 
 
+@pytest.fixture(scope="module")
+def frozen():
+    return xb.load_frozen()
+
+
+P128 = "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128"
+M128W = "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0"
+M32W = "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M32/past0"
+M64W = "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M64/past0"
+
+
 # ---------------------------------------------------------------------------
 # Provenance: the records were reused, not measured here
 # ---------------------------------------------------------------------------
@@ -720,6 +731,166 @@ def test_identical_witnesses_across_arms_remove_a_speed_verdict_in_production(su
 
 
 # ---------------------------------------------------------------------------
+# The offline within-arm dispersion instrument (A/A surrogate) — two polarities each
+# ---------------------------------------------------------------------------
+
+def test_within_arm_dispersion_measures_a_real_workload_and_refuses_a_malformed_one(frozen):
+    """Accept and reject polarity for the new instrument, in the always-on lane.
+
+    The census (`rust/tools/audit_instruments.py`) will not accept a new measurement
+    instrument on the strength of its accept path alone: an instrument that never refuses is
+    indistinguishable from one that cannot. Both are exercised here by direct call.
+    """
+    got = xb.within_arm_dispersion(frozen["records"], P128)
+    assert got["within_arm_envelope"] > 0
+    assert got["within_arm_envelope"] == max(
+        got["across_repeat_envelope"], got["split_half_envelope"]
+    )
+    assert got["is_a_real_aa_run"] is False and "96" in got["why_not"]
+    assert got["n_aa_comparisons"] == 18  # 2 arms x (6 ordered repeat pairs + 3 split halves)
+
+    with pytest.raises(xb.SchemaError):
+        xb.within_arm_dispersion(frozen["records"], "no/such/workload")
+    with pytest.raises(xb.SchemaError):
+        xb.within_arm_dispersion(frozen["records"], "")
+
+    one_arm = [r for r in frozen["records"] if r["workload"] != P128 or r["arm"] == "candidate"]
+    with pytest.raises(xb.SchemaError):
+        xb.within_arm_dispersion(one_arm, P128)
+
+    truncated = json.loads(json.dumps([r for r in frozen["records"] if r["workload"] == P128]))
+    truncated[0]["speed"]["samples_ms"] = [1.0, 2.0]
+    with pytest.raises(xb.SchemaError):
+        xb.within_arm_dispersion(truncated, P128)
+
+
+def test_separation_from_drift_reports_a_ratio_and_refuses_a_zero_envelope(summary):
+    """Accept and reject polarity. A zero envelope would separate everything from everything."""
+    rows = {r["workload"]: r for r in summary["rows"]}
+    got = xb.separation_from_drift(rows[M128W], rows[M128W]["within_arm"])
+    assert got["class"] == xb.SEPARATED and got["separation_ratio"] > 10
+    assert got["direction"] == "FASTER_SIDE"
+
+    for bad in ({"within_arm_envelope": 0.0}, {"within_arm_envelope": -0.1}, {}, None):
+        with pytest.raises(xb.SchemaError):
+            xb.separation_from_drift(rows[M128W], bad)
+    with pytest.raises(xb.SchemaError):
+        xb.separation_from_drift({"workload": "x", "ratios": []}, {"within_arm_envelope": 0.1})
+
+
+def test_descriptive_status_labels_a_row_and_refuses_an_ungraded_one(summary):
+    """Accept and reject polarity for the label that keeps 0.859× out of the verdict column."""
+    rows = {r["workload"]: r for r in summary["rows"]}
+    got = xb.descriptive_status(rows[P128], rows[P128]["separation_from_drift"])
+    assert got["status"] == xb.PROVISIONAL_DESCRIPTIVE
+    assert xb.descriptive_status(rows[M128W], rows[M128W]["separation_from_drift"])["status"] == (
+        "CLAIM"
+    )
+    with pytest.raises(xb.SchemaError):
+        xb.descriptive_status({"ratios": [1.0]}, None)
+    with pytest.raises(xb.SchemaError):
+        xb.descriptive_status(None, None)
+
+
+def test_headline_renders_from_the_rows_and_refuses_a_claimless_set(summary):
+    """Accept and reject polarity. A headline with nothing under it must not render."""
+    got = xb.headline(summary["rows"])
+    assert got["model"] == "phi-3.5-mini-instruct-cuda-int4-rtn-block-32"
+    with pytest.raises(xb.SchemaError):
+        xb.headline([dict(r, verdict="NEUTRAL") for r in summary["rows"]])
+    with pytest.raises(xb.SchemaError):
+        xb.headline([])
+
+
+def test_dispersion_table_renders_a_summary_and_refuses_anything_else(summary):
+    """Accept and reject polarity for the renderer §27.12 quotes."""
+    rendered = xb.dispersion_table(summary)
+    assert rendered.count("\n") == len(summary["rows"]) + 1
+    for bad in ({"schema": "not/mine"}, {}, "a string", None):
+        with pytest.raises(xb.SchemaError):
+            xb.dispersion_table(bad)
+
+
+def test_the_within_arm_diagnostic_never_moves_a_verdict(summary, frozen):
+    """It describes; the band decides. Requirement 2's gate stays the only thing that grades.
+
+    Recomputed from raw: every published verdict is what `gated_verdict` returns for a row that
+    has never seen a dispersion figure, so the diagnostic cannot have quietly re-graded anything.
+    """
+    band = summary["band"]["applied"]
+    for row in summary["rows"]:
+        bare = xb.pair_repeats(frozen["records"], row["workload"], models=frozen["models"])
+        assert "within_arm" not in bare
+        assert xb.gated_verdict(bare, band)["verdict"] == row["verdict"], row["workload"]
+
+
+def test_the_document_states_the_size_of_the_mutation_matrix_it_actually_has(perf):
+    """§27.2 quotes two counts about the battery; both are read off the battery, not recalled."""
+    import test_crossbuild_summary as battery
+
+    body = _flat(_section(perf, "27.2"))
+    claimed = (
+        f"**{len(battery.PROPERTIES)} named properties and "
+        f"{len(battery._MUTATIONS)} mutations of the shipped source**"
+    )
+    assert claimed in body, f"§27.2 does not say {claimed!r}"
+    covered = {name for _, names in battery._MUTATIONS.values() for name in names}
+    assert covered == set(battery.PROPERTIES), "a property in the suite has no killing mutation"
+
+
+def test_p128_is_a_provisional_descriptive_ratio_bound_to_issue_96(perf, summary):
+    """0.859× is described, not concluded, and the condition that retires the label is stated."""
+    row = [r for r in summary["rows"] if r["workload"] == P128][0]
+    status = row["descriptive_status"]
+    assert row["verdict"] == "INDETERMINATE"
+    assert status["status"] == "PROVISIONAL_DESCRIPTIVE"
+    assert status["quotable_as"] == "description_only"
+    assert "#96" in status["until"] and "A/A" in status["until"]
+    assert row["separation_from_drift"]["class"] == xb.NOT_SEPARATED
+    assert row["separation_from_drift"]["separation_ratio"] < 1.0
+
+    body = _flat(_section(perf, "27.12"))
+    assert "provisional descriptive ratio" in body.lower()
+    assert "issue #96" in body
+    for word in ("13.67%", "23.91%"):
+        assert word in body, f"§27.12 does not publish {word}"
+    for m in re.finditer(r"0\.859", body):
+        window = body[max(0, m.start() - 300): m.end() + 300].lower()
+        assert any(
+            k in window for k in ("provisional", "descriptive", "not a slower", "indeterminate")
+        ), "§27.12 quotes 0.859× without its provisional label"
+
+
+def test_the_dispersion_table_in_the_document_is_the_shipped_one(perf, summary):
+    """Every cell of §27.12's table is regenerated by `dispersion_table(summarize())`."""
+    published = _table(_section(perf, "27.12"), "workload", "separation", "status")
+    rendered = [
+        [c.strip() for c in line.strip().strip("|").split("|")]
+        for line in xb.dispersion_table(summary).splitlines()[2:]
+    ]
+    assert len(published) == len(rendered) == 10
+    for pub, ren in zip(published, rendered):
+        assert pub == ren, f"§27.12 row disagrees with the summarizer:\n  doc  {pub}\n  code {ren}"
+
+
+def test_the_headline_is_one_model_and_quotes_m32_only_as_a_floor(perf, summary):
+    """The exact claim, derived: M=128 2.077×, M=32 at least 1.278×, M=64 indeterminate."""
+    head = summary["headline"]
+    assert head["model"] == "phi-3.5-mini-instruct-cuda-int4-rtn-block-32"
+    claims = {c["workload"]: c for c in head["claims"]}
+    assert set(claims) == {M128W, M32W}
+    assert claims[M128W]["quote"] == "2.077x" and claims[M128W]["quotable_as"] == "point_estimate"
+    assert claims[M32W]["quote"] == "at least 1.278x"
+    assert claims[M32W]["quotable_as"] == "floor_only"
+    assert M64W in head["indeterminate"]
+    assert P128 in head["provisional_descriptive"]
+
+    body = _flat(_section(perf, "27"))
+    assert "2.077×" in body and "at least 1.278×" in body
+    assert "real models" not in body.lower() or 'not "real models" plural' in body.lower()
+
+
+# ---------------------------------------------------------------------------
 # Scope of the claim
 # ---------------------------------------------------------------------------
 
@@ -831,6 +1002,43 @@ def test_every_count_in_the_counts_table_names_a_command(perf):
     for cells in rows:
         assert cells[0].startswith("`") and cells[0].endswith("`"), (
             f"§27.9 publishes a result with no command: {cells}"
+        )
+
+
+def test_the_crossbuild_counts_are_what_those_commands_actually_collect(perf):
+    """Req 7, kept alive. §27.9's numbers are re-collected, not remembered.
+
+    Only the two self-contained crossbuild modules are re-run here: they import nothing heavy,
+    so the child collection is cheap, and they are the two counts that move whenever this
+    section's own suites change — which is exactly what happened when §27.12's dispersion
+    instrument landed. The child's output is decoded with ``errors="replace"`` on purpose: a
+    stray cp1252 byte in a plugin banner must not be able to turn a count check into a crash.
+    """
+    published = {
+        cells[0].strip("`"): cells[1]
+        for cells in _table(_section(perf, "27.9"), "command", "result")
+    }
+    for module in ("bench/test_crossbuild_summary.py", "bench/test_crossbuild_gqa_landing.py"):
+        command = f"python -m pytest {module} -q"
+        assert command in published, f"§27.9 no longer binds a count to `{command}`"
+        m = re.match(r"^(\d+) passed$", published[command])
+        assert m, f"§27.9's result for `{command}` is not a plain pass count: {published[command]}"
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", module, "--collect-only", "-q", "-p", "no:cacheprovider"],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            check=False,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            pytest.skip(f"child collection of {module} did not run here: rc={proc.returncode}")
+        collected = re.search(r"(\d+) tests? collected", proc.stdout)
+        assert collected, f"could not read a collected count from:\n{proc.stdout[-800:]}"
+        assert int(collected.group(1)) == int(m.group(1)), (
+            f"§27.9 says `{command}` gives {m.group(1)}, collection gives {collected.group(1)}"
         )
 
 

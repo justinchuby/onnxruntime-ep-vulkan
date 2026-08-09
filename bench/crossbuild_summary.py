@@ -160,6 +160,43 @@ SENSITIVITY_BANDS = (0.05, 0.0510292125170773, 0.10, 0.15, 0.20, 0.25, 0.30)
 VERDICTS = ("FASTER", "SLOWER", "NEUTRAL", "INDETERMINATE", "REFUSED", "CALIBRATION")
 
 # ---------------------------------------------------------------------------------------
+# OFFLINE WITHIN-ARM DISPERSION -- an A/A surrogate computed from the frozen samples
+# ---------------------------------------------------------------------------------------
+#: A cross-arm ratio is only interesting to the extent that it is larger than what the SAME
+#: build does against ITSELF on this host.  A real A/A run does not exist -- that is issue #96
+#: -- so two surrogates are computed from records that already exist.  Nothing is re-measured.
+WITHIN_ARM_RULE = (
+    "Two same-build (A/A) surrogates are computed offline from the frozen samples_ms, per arm "
+    "per workload. (1) ACROSS-REPEAT: |m_i/m_j - 1| over every ordered pair of that arm's three "
+    "repeat medians -- same build, same workload, different process, same host, i.e. the exact "
+    "comparison the cross-arm ratio makes with the build held constant. (2) SPLIT-HALF: "
+    "|median(first 10 timed samples)/median(last 10) - 1| within each single record -- same "
+    "build, same process, adjacent in time, so it is paired the way the cross-arm ratio is "
+    "paired. within_arm_envelope = max of both surrogates over both arms, i.e. the conservative "
+    "one. separation_ratio = min |ratio - 1| over the paired repeats, divided by that envelope. "
+    "This is a DIAGNOSTIC, not a gate: it never changes a verdict, because a rule invented after "
+    "seeing which subjects it would demote is not a rule. It reports how much room there is "
+    "between an effect and this host's own noise."
+)
+
+#: A cross-arm effect at least this many times the within-arm envelope is called separated.
+#: 2x is a convention, not a test statistic, and is exposed here so it can be argued with.
+SEPARATION_STRONG = 2.0
+
+SEPARATED = "SEPARATED_FROM_WITHIN_ARM_DRIFT"
+NOT_SEPARATED = "NOT_SEPARATED_FROM_WITHIN_ARM_DRIFT"
+
+#: What a consistently-directional ratio that the band will not grade is called, and the exact
+#: condition that would retire the label.  `decode past=128` (0.859x) is the row this exists for.
+PROVISIONAL_DESCRIPTIVE = "PROVISIONAL_DESCRIPTIVE"
+PROVISIONAL_UNTIL = (
+    "issue #96: a same-build A/A run on this host, plus the bimodality diagnosis. Until that "
+    "exists this is a PROVISIONAL DESCRIPTIVE RATIO -- a description of what these 60 frozen "
+    "records contain -- and NOT a finding that the candidate build is slower. It is not a "
+    "SLOWER verdict, it is not a regression claim, and no ownership of it is asserted here."
+)
+
+# ---------------------------------------------------------------------------------------
 # WITNESS CLASSES
 # ---------------------------------------------------------------------------------------
 #: Neither arm ever built a gqa_f16 pipeline -> the landed change provably cannot have moved
@@ -894,6 +931,210 @@ def dispatch_grid_claim(row) -> dict:
     }
 
 
+def within_arm_dispersion(records, workload: str) -> dict:
+    """The offline A/A surrogate of :data:`WITHIN_ARM_RULE`. Same build against itself.
+
+    A cross-arm ratio only means something to the degree that it exceeds what one build does
+    against *itself* on this host.  The real A/A run does not exist yet -- that is issue #96 --
+    so this computes two surrogates from records that already exist, and re-measures nothing:
+
+    * **across-repeat** -- one arm's three repeat medians against each other.  Unpaired, three
+      separate processes, so it carries all of this box's slow drift.  It is the upper bound on
+      what within-repeat pairing has to cancel.
+    * **split-half** -- the first ten timed samples of a single record against its last ten.
+      Paired and adjacent in time, so it is the same *shape* of comparison the cross-arm ratio
+      is, with the build held constant.
+
+    The published envelope is the larger of the two, over both arms.  This function renders no
+    verdict and is wired into no gate: :func:`gated_verdict` never sees it.  It exists so that
+    ``M = 128``'s 107.5% and ``decode past = 128``'s 13.7% can be read against the noise each
+    one sits in, instead of against each other.
+
+    Raises :class:`SchemaError` when the workload is missing, an arm is missing, or a record
+    carries too few timed samples to halve.
+    """
+    if not isinstance(workload, str) or not workload:
+        raise SchemaError(f"workload must be a non-empty name, got {workload!r}")
+    mine = [r for r in records if isinstance(r, dict) and r.get("workload") == workload]
+    if not mine:
+        raise SchemaError(f"no records for workload {workload!r}")
+    arms = {r.get("arm") for r in mine}
+    if arms != set(EXPECTED_ARMS):
+        raise SchemaError(
+            f"{workload}: within-arm dispersion needs both arms, got {sorted(arms)}"
+        )
+
+    per_arm = {}
+    for arm in sorted(EXPECTED_ARMS):
+        rows = sorted(
+            (r for r in mine if r.get("arm") == arm), key=lambda r: r.get("repeat", -1)
+        )
+        medians, split_half, rsd = [], [], []
+        for r in rows:
+            samples = (r.get("speed") or {}).get("samples_ms")
+            if not isinstance(samples, list) or len(samples) < 4:
+                raise SchemaError(
+                    f"{workload}/{arm}/repeat {r.get('repeat')}: {len(samples or [])} timed "
+                    f"samples is too few to halve; there is no within-arm dispersion to report"
+                )
+            half = len(samples) // 2
+            lo, hi = _median(samples[:half]), _median(samples[half:])
+            if lo <= 0 or hi <= 0:
+                raise SchemaError(
+                    f"{workload}/{arm}/repeat {r.get('repeat')}: non-positive half median"
+                )
+            medians.append(_median(samples))
+            split_half.append(abs(lo / hi - 1.0))
+            speed = r["speed"]
+            rsd.append(
+                100.0 * speed["stdev_ms"] / speed["mean_ms"] if speed.get("mean_ms") else None
+            )
+        if len(medians) < 2:
+            raise SchemaError(
+                f"{workload}/{arm}: {len(medians)} repeat(s); an across-repeat A/A surrogate "
+                f"needs at least two runs of the same build"
+            )
+        across = [
+            abs(a / b - 1.0)
+            for i, a in enumerate(medians)
+            for j, b in enumerate(medians)
+            if i != j
+        ]
+        per_arm[arm] = {
+            "repeat_medians_ms": medians,
+            "across_repeat_ratios": across,
+            "across_repeat_envelope": max(across),
+            "split_half_deviations": split_half,
+            "split_half_envelope": max(split_half),
+            "per_record_rsd_pct": rsd,
+        }
+
+    across_env = max(a["across_repeat_envelope"] for a in per_arm.values())
+    split_env = max(a["split_half_envelope"] for a in per_arm.values())
+    return {
+        "workload": workload,
+        "rule": WITHIN_ARM_RULE,
+        "per_arm": per_arm,
+        "across_repeat_envelope": across_env,
+        "split_half_envelope": split_env,
+        "within_arm_envelope": max(across_env, split_env),
+        "n_aa_comparisons": sum(
+            len(a["across_repeat_ratios"]) + len(a["split_half_deviations"])
+            for a in per_arm.values()
+        ),
+        "is_a_real_aa_run": False,
+        "why_not": (
+            "these are the SAME records the cross-arm ratio uses, re-cut two ways. A real A/A "
+            "-- two independent runs of one build, scheduled like the cross-build run was -- "
+            "has not been done on this host. Issue #96 owns it."
+        ),
+    }
+
+
+def separation_from_drift(row, dispersion) -> dict:
+    """How far a workload's weakest paired repeat sits above this host's own noise.
+
+    ``cross_arm_effect`` is deliberately the **minimum** ``|ratio - 1|`` across the repeats,
+    not the median: the weakest repeat is what the claim actually rests on.
+
+    Raises :class:`SchemaError` on a row with no ratios or a dispersion with a non-positive
+    envelope -- an envelope of zero would make every effect infinitely separated, which is the
+    one answer this function must never be able to give.
+    """
+    if not isinstance(row, dict) or "ratios" not in row:
+        raise SchemaError(f"not a paired row: {type(row).__name__}")
+    if not row.get("ratios"):
+        raise SchemaError(f"{row.get('workload')!r} has no paired ratios to separate")
+    envelope = (dispersion or {}).get("within_arm_envelope")
+    if not isinstance(envelope, (int, float)) or envelope <= 0:
+        raise SchemaError(
+            f"within_arm_envelope must be a positive fraction, got {envelope!r}; a zero "
+            f"envelope would report every effect as infinitely separated from noise"
+        )
+    ratios = row["ratios"]
+    effect = min(abs(r - 1.0) for r in ratios)
+    if all(r > 1.0 for r in ratios):
+        direction = "FASTER_SIDE"
+    elif all(r < 1.0 for r in ratios):
+        direction = "SLOWER_SIDE"
+    else:
+        direction = "MIXED"
+    ratio = effect / envelope
+    return {
+        "cross_arm_effect": effect,
+        "cross_arm_effect_pct": 100.0 * effect,
+        "within_arm_envelope": envelope,
+        "within_arm_envelope_pct": 100.0 * envelope,
+        "separation_ratio": ratio,
+        "threshold": SEPARATION_STRONG,
+        "class": SEPARATED if ratio >= SEPARATION_STRONG else NOT_SEPARATED,
+        "direction": direction,
+        "all_repeats_same_side": direction != "MIXED",
+    }
+
+
+def descriptive_status(row, sep) -> dict:
+    """Label a row's *epistemic* standing, separately from its verdict.
+
+    The band decides what may be claimed.  This decides what an un-claimable but consistently
+    directional row may be *called*, which is the question ``decode past = 128`` raises: three
+    repeats all below 1, none of them clearing the band.  Calling that ``SLOWER`` is what PR #95
+    did and is wrong; calling it nothing at all hides it.  It is a **provisional descriptive
+    ratio**, and :data:`PROVISIONAL_UNTIL` states the exact condition that retires the label.
+
+    A graded ``FASTER``/``SLOWER`` keeps its verdict here regardless of separation -- the verdict
+    comes from :func:`gated_verdict` and nothing in this module may quietly overturn it -- but
+    the separation class rides along, because a claim whose magnitude sits inside the host's own
+    drift may be quoted as a floor and never as a point estimate.
+
+    Raises :class:`SchemaError` on a row with no verdict.
+    """
+    if not isinstance(row, dict) or "verdict" not in row:
+        raise SchemaError(f"not a graded row: {type(row).__name__}")
+    verdict = row["verdict"]
+    if verdict in ("CALIBRATION", "REFUSED"):
+        return {
+            "status": verdict,
+            "quotable_as": None,
+            "until": None,
+            "separation_class": (sep or {}).get("class"),
+        }
+    direction = (sep or {}).get("direction")
+    separated = (sep or {}).get("class") == SEPARATED
+    if verdict in ("FASTER", "SLOWER"):
+        return {
+            "status": "CLAIM",
+            "quotable_as": "point_estimate" if separated else "floor_only",
+            "until": None,
+            "separation_class": (sep or {}).get("class"),
+            "note": (
+                "the magnitude clears this host's own within-arm envelope, so the median ratio "
+                "is quotable"
+                if separated
+                else "the magnitude sits inside this host's own within-arm envelope, so only "
+                "the weakest repeat is quotable and the median ratio is not"
+            ),
+        }
+    if verdict == "INDETERMINATE" and direction in ("FASTER_SIDE", "SLOWER_SIDE"):
+        return {
+            "status": PROVISIONAL_DESCRIPTIVE,
+            "quotable_as": "description_only",
+            "until": PROVISIONAL_UNTIL,
+            "separation_class": (sep or {}).get("class"),
+            "direction": direction,
+            "note": (
+                "every repeat falls on one side of 1, but the band will not grade it, so it is "
+                "described and not concluded"
+            ),
+        }
+    return {
+        "status": "NO_DIRECTION",
+        "quotable_as": None,
+        "until": None,
+        "separation_class": (sep or {}).get("class"),
+    }
+
+
 def summarize(artifact=None) -> dict:
     """The one authoritative summary. The CLI publishes it; the tests assert against it.
 
@@ -920,6 +1161,9 @@ def summarize(artifact=None) -> dict:
     for row in rows:
         row.update(gated_verdict(row, band["applied"]))
         row["dispatch_grid"] = dispatch_grid_claim(row)
+        row["within_arm"] = within_arm_dispersion(records, row["workload"])
+        row["separation_from_drift"] = separation_from_drift(row, row["within_arm"])
+        row["descriptive_status"] = descriptive_status(row, row["separation_from_drift"])
 
     subjects = [r for r in rows if r["role"] == "subject"]
     return {
@@ -946,6 +1190,8 @@ def summarize(artifact=None) -> dict:
         "exclusivity": doc.get("exclusivity"),
         "exclusivity_language": EXCLUSIVITY_LANGUAGE,
         "decision_rule": DECISION_RULE,
+        "within_arm_rule": WITHIN_ARM_RULE,
+        "provisional_until": PROVISIONAL_UNTIL,
         "band": band,
         "rows": rows,
         "counts": {
@@ -955,8 +1201,81 @@ def summarize(artifact=None) -> dict:
             "subjects": len(subjects),
             "admissible_records": sum(1 for r in records if not record_refusals(r, models=models)),
             "verdicts": {v: sum(1 for r in rows if r["verdict"] == v) for v in VERDICTS},
+            "descriptive_statuses": {
+                s: sum(1 for r in rows if r["descriptive_status"]["status"] == s)
+                for s in sorted({r["descriptive_status"]["status"] for r in rows})
+            },
         },
+        "headline": headline(rows),
         "sensitivity": sensitivity(rows),
+    }
+
+
+def headline(rows) -> dict:
+    """The claim, in the exact words it may be said in, derived from the rows -- not typed in.
+
+    Every number here is read out of :func:`pair_repeats` output, so the sentence in
+    ``docs/PERF.md`` and the sentence in the PR cannot drift away from the records the way
+    PR #95's title did.  The scope restriction is part of the payload: the subject is **one
+    model, Phi-3.5-mini, on its prefill phase**, and the word chosen for it is singular.
+
+    Raises :class:`SchemaError` if the graded rows do not include the prefill subject the claim
+    is about -- a headline with nothing under it must not render.
+    """
+    by = {r["workload"]: r for r in rows}
+    claimed = sorted(
+        (w for w, r in by.items() if r["verdict"] in ("FASTER", "SLOWER")),
+        key=lambda w: -by[w]["ratio_median"],
+    )
+    if not claimed:
+        raise SchemaError("no graded FASTER/SLOWER row; there is no headline to render")
+    models_claimed = sorted({by[w]["model_key"] for w in claimed})
+    if len(models_claimed) != 1:
+        raise SchemaError(
+            f"the claim spans {len(models_claimed)} models {models_claimed}; the scope "
+            f"restriction in this function is written for exactly one"
+        )
+    parts = []
+    for w in claimed:
+        r = by[w]
+        floor = r["descriptive_status"]["quotable_as"] == "floor_only"
+        parts.append(
+            {
+                "workload": w,
+                "verdict": r["verdict"],
+                "quote": (
+                    f"at least {r['ratio_min']:.3f}x"
+                    if floor
+                    else f"{r['ratio_median']:.3f}x"
+                ),
+                "ratio_min": r["ratio_min"],
+                "ratio_median": r["ratio_median"],
+                "ratio_max": r["ratio_max"],
+                "quotable_as": r["descriptive_status"]["quotable_as"],
+                "separation_ratio": r["separation_from_drift"]["separation_ratio"],
+            }
+        )
+    provisional = sorted(
+        w
+        for w, r in by.items()
+        if r["descriptive_status"]["status"] == PROVISIONAL_DESCRIPTIVE
+    )
+    return {
+        "model": models_claimed[0],
+        "scope": (
+            "ONE model, Phi-3.5-mini-instruct (int4 RTN block-32), prefill phase, on this one "
+            "contended Windows/lavapipe host. Singular on purpose: this is not a claim about "
+            "real models in general, about decode, about any other model in the run, or about "
+            "any other device or backend."
+        ),
+        "claims": parts,
+        "indeterminate": sorted(w for w, r in by.items() if r["verdict"] == "INDETERMINATE"),
+        "provisional_descriptive": provisional,
+        "not_claimed": (
+            "MobileNetV2 and MiniLM are calibration controls and are never graded; decode is "
+            "not claimed in either direction; no CUDA, no other device, no other backend."
+        ),
+        "measured_by": "PR #95's frozen run, reused byte-identically and not re-measured here",
     }
 
 
@@ -1022,6 +1341,34 @@ def markdown_table(summary) -> str:
     return "\n".join(lines)
 
 
+def dispersion_table(summary) -> str:
+    """Render the offline within-arm (A/A surrogate) table. docs/PERF.md quotes this one too.
+
+    Raises :class:`SchemaError` on anything that is not a :func:`summarize` output.
+    """
+    if not isinstance(summary, dict) or summary.get("schema") != SUMMARY_SCHEMA:
+        raise SchemaError(
+            f"expected a {SUMMARY_SCHEMA} summary, got "
+            f"{summary.get('schema') if isinstance(summary, dict) else type(summary).__name__}"
+        )
+    lines = [
+        "| workload | cross-arm effect (weakest repeat) | within-arm A/A envelope "
+        "(across-repeat / split-half) | separation | status |",
+        "|---|---|---|---|---|",
+    ]
+    for row in summary["rows"]:
+        sep = row["separation_from_drift"]
+        wa = row["within_arm"]
+        lines.append(
+            f"| {row['workload']} | {sep['cross_arm_effect_pct']:.2f}% "
+            f"| {sep['within_arm_envelope_pct']:.2f}% "
+            f"({100 * wa['across_repeat_envelope']:.2f}% / "
+            f"{100 * wa['split_half_envelope']:.2f}%) "
+            f"| {sep['separation_ratio']:.2f}× | {row['descriptive_status']['status']} |"
+        )
+    return "\n".join(lines)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--finalize", action="store_true", help="write the derived summary artifact")
@@ -1031,6 +1378,11 @@ def main(argv=None) -> int:
         help="where --finalize writes",
     )
     ap.add_argument("--markdown", action="store_true", help="print the published table")
+    ap.add_argument(
+        "--dispersion",
+        action="store_true",
+        help="print the offline within-arm (A/A surrogate) table",
+    )
     ap.add_argument("--check", action="store_true", help="verify the frozen input and exit")
     args = ap.parse_args(argv)
 
@@ -1045,6 +1397,9 @@ def main(argv=None) -> int:
     if args.markdown:
         print(markdown_table(summary))
         return 0
+    if args.dispersion:
+        print(dispersion_table(summary))
+        return 0
     if args.finalize:
         out = Path(args.out)
         out.write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
@@ -1054,6 +1409,8 @@ def main(argv=None) -> int:
     band = summary["band"]
     print(f"band {band['applied']:.6f} from {band['n_calibration_ratios']} calibration ratios")
     print(markdown_table(summary))
+    print()
+    print(dispersion_table(summary))
     return 0
 
 

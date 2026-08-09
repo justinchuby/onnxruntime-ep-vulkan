@@ -35,6 +35,7 @@ import crossbuild_summary as xb  # noqa: E402
 SOURCE_TEXT = pathlib.Path(xb.__file__).read_text(encoding="utf-8")
 
 M128 = "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0"
+M32 = "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M32/past0"
 M1 = "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0"
 P128 = "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128"
 MOBILENET = "mobilenetv2-12/batch/N1"
@@ -223,6 +224,90 @@ def _superseded_blocks_are_withheld(mod, frozen):
     return all(block not in doc for block in mod.SUPERSEDED_BLOCKS)
 
 
+# --- the offline within-arm (A/A surrogate) diagnostic ---------------------------------
+def _row(mod, frozen, workload):
+    return [r for r in mod.summarize(frozen)["rows"] if r["workload"] == workload][0]
+
+
+def _p128_is_provisional_descriptive(mod, frozen):
+    """0.859x is a provisional descriptive ratio, bound to issue #96, and not a SLOWER call."""
+    row = _row(mod, frozen, P128)
+    status = row["descriptive_status"]
+    return (
+        row["verdict"] == "INDETERMINATE"
+        and status["status"] == mod.PROVISIONAL_DESCRIPTIVE
+        and status["quotable_as"] == "description_only"
+        and "#96" in (status["until"] or "")
+        and "A/A" in (status["until"] or "")
+    )
+
+
+def _p128_is_not_separated_from_within_arm_drift(mod, frozen):
+    """The reason it stays provisional: its 13.7% sits inside this host's own A/A envelope."""
+    sep = _row(mod, frozen, P128)["separation_from_drift"]
+    return sep["class"] == mod.NOT_SEPARATED and sep["separation_ratio"] < 1.0
+
+
+def _m128_is_separated_from_within_arm_drift(mod, frozen):
+    """The other side of the same instrument: M=128 clears the envelope by more than 10x."""
+    sep = _row(mod, frozen, M128)["separation_from_drift"]
+    return sep["class"] == mod.SEPARATED and sep["separation_ratio"] > 10.0
+
+
+def _within_arm_envelope_uses_the_larger_surrogate(mod, frozen):
+    """The published envelope is the conservative one, and at P128 that choice bites."""
+    rows = mod.summarize(frozen)["rows"]
+    if not all(
+        r["within_arm"]["within_arm_envelope"]
+        == max(r["within_arm"]["across_repeat_envelope"], r["within_arm"]["split_half_envelope"])
+        for r in rows
+    ):
+        return False
+    wa = [r for r in rows if r["workload"] == P128][0]["within_arm"]
+    return wa["split_half_envelope"] > wa["across_repeat_envelope"]
+
+
+def _zero_envelope_is_refused(mod, frozen):
+    """An envelope of zero would make every effect infinitely separated. It must not render."""
+    row = _row(mod, frozen, P128)
+    try:
+        mod.separation_from_drift(row, {"within_arm_envelope": 0.0})
+    except mod.SchemaError:
+        return True
+    return False
+
+
+def _within_arm_is_a_diagnostic_not_a_gate(mod, frozen):
+    """The dispersion may never move a verdict: the band decides, this only describes."""
+    summary = mod.summarize(frozen)
+    band = summary["band"]["applied"]
+    for row in summary["rows"]:
+        bare = mod.pair_repeats(frozen["records"], row["workload"], models=frozen["models"])
+        if mod.gated_verdict(bare, band)["verdict"] != row["verdict"]:
+            return False
+    return True
+
+
+def _m32_is_quotable_only_as_a_floor(mod, frozen):
+    """M=32's magnitude is inside its own arm's drift, so the headline quotes the floor."""
+    claims = {c["workload"]: c for c in mod.summarize(frozen)["headline"]["claims"]}
+    m32 = claims.get(M32)
+    return bool(m32) and m32["quotable_as"] == "floor_only" and m32["quote"] == "at least 1.278x"
+
+
+def _headline_refuses_more_than_one_model(mod, frozen):
+    """A claim that silently spread to a second model must not render as one sentence."""
+    rows = mod.summarize(frozen)["rows"]
+    for row in rows:
+        if row["workload"] == MOBILENET:
+            row["verdict"] = "FASTER"
+    try:
+        mod.headline(rows)
+    except mod.SchemaError:
+        return True
+    return False
+
+
 PROPERTIES = {
     "identical_witness_refuses_faster": _identical_witness_refuses_faster,
     "missing_equivalence_refuses": _missing_equivalence_refuses,
@@ -241,6 +326,14 @@ PROPERTIES = {
     "null_control_can_still_be_claimed": _null_control_can_still_be_claimed,
     "frozen_digest_is_enforced": _frozen_digest_is_enforced,
     "superseded_blocks_are_withheld": _superseded_blocks_are_withheld,
+    "p128_is_provisional_descriptive": _p128_is_provisional_descriptive,
+    "p128_is_not_separated_from_within_arm_drift": _p128_is_not_separated_from_within_arm_drift,
+    "m128_is_separated_from_within_arm_drift": _m128_is_separated_from_within_arm_drift,
+    "within_arm_envelope_uses_the_larger_surrogate": _within_arm_envelope_uses_the_larger_surrogate,
+    "zero_envelope_is_refused": _zero_envelope_is_refused,
+    "within_arm_is_a_diagnostic_not_a_gate": _within_arm_is_a_diagnostic_not_a_gate,
+    "m32_is_quotable_only_as_a_floor": _m32_is_quotable_only_as_a_floor,
+    "headline_refuses_more_than_one_model": _headline_refuses_more_than_one_model,
 }
 
 
@@ -364,6 +457,71 @@ _MUTATIONS = {
             )
         ],
         ["superseded_blocks_are_withheld"],
+    ),
+    # --- the offline within-arm diagnostic ---------------------------------------------
+    "promote_the_provisional_ratio_to_a_claim": (
+        [
+            (
+                '    if verdict == "INDETERMINATE" and direction in ("FASTER_SIDE", "SLOWER_SIDE"):',
+                "    if False:",
+            )
+        ],
+        ["p128_is_provisional_descriptive"],
+    ),
+    "shrink_the_within_arm_envelope_to_nothing": (
+        [
+            (
+                '        "within_arm_envelope": max(across_env, split_env),',
+                '        "within_arm_envelope": max(across_env, split_env) / 1000.0,',
+            )
+        ],
+        [
+            "p128_is_not_separated_from_within_arm_drift",
+            "within_arm_envelope_uses_the_larger_surrogate",
+        ],
+    ),
+    "drop_the_split_half_surrogate": (
+        [
+            (
+                '        "within_arm_envelope": max(across_env, split_env),',
+                '        "within_arm_envelope": across_env,',
+            )
+        ],
+        ["within_arm_envelope_uses_the_larger_surrogate"],
+    ),
+    "delete_the_zero_envelope_guard": (
+        [
+            (
+                "    if not isinstance(envelope, (int, float)) or envelope <= 0:",
+                "    if False:",
+            )
+        ],
+        ["zero_envelope_is_refused"],
+    ),
+    "let_the_diagnostic_overturn_a_verdict": (
+        [
+            (
+                '        row["descriptive_status"] = descriptive_status('
+                'row, row["separation_from_drift"])',
+                '        row["descriptive_status"] = descriptive_status('
+                'row, row["separation_from_drift"])\n'
+                '        if row["separation_from_drift"]["class"] == NOT_SEPARATED:\n'
+                '            row["verdict"] = "REFUSED"',
+            )
+        ],
+        ["within_arm_is_a_diagnostic_not_a_gate"],
+    ),
+    "quote_the_median_where_only_the_floor_is_supported": (
+        [('        floor = r["descriptive_status"]["quotable_as"] == "floor_only"', "        floor = False")],
+        ["m32_is_quotable_only_as_a_floor"],
+    ),
+    "let_the_headline_span_more_than_one_model": (
+        [("    if len(models_claimed) != 1:", "    if False:")],
+        ["headline_refuses_more_than_one_model"],
+    ),
+    "make_separation_unreachable": (
+        [("SEPARATION_STRONG = 2.0", "SEPARATION_STRONG = 1e9")],
+        ["m128_is_separated_from_within_arm_drift"],
     ),
 }
 
