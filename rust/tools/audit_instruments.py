@@ -504,6 +504,15 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_paired_ratio.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_ceiling.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_real_model.py": "test module — a caller, screened as polarity, not as an instrument.",
+    # Arrived with issue #69 (Tank, the cross-build GQA-landing speed proof) and was caught by
+    # the frame arm on its first run, which is the arm working exactly as the three entries
+    # above record it working. It is a caller: it drives `admissibility_gate`, `paired`,
+    # `verdict_for` and `gqa_witness` from
+    # `bench/results/probe_crossbuild_gqa_landing.py` over mutated copies of records in a
+    # committed artifact. The verdicts it asserts on are that probe's, not its own.
+    "test_crossbuild_gqa_landing.py": (
+        "test module — a caller, screened as polarity, not as an instrument."
+    ),
     # Arrived with Switch's fa5f514 and was the frame arm's second live catch. Worth naming
     # what it cost before it was declared: the frame arm runs BEFORE the uninvoked census, so
     # `audit_instruments --check` failed on the frame and never printed

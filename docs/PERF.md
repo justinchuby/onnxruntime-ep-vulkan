@@ -5046,3 +5046,288 @@ transition can never be declared, because
 correctly requires every declared transition to end at what the build computes. Rebuilding the
 stack on `main` is the only fix; merging `main` is not, because CI screens `refs/pull/N/merge`,
 which has the same shape.
+
+---
+
+## 27. Did the landed change make a real model faster? Two builds, interleaved (2026-08-08)
+
+§26 measured the GQA workgroup size four ways, and every one of them measured it **inside one
+binary**: the `vulkan_tiled` / `vulkan_untiled` arms differ by an environment variable, the
+seven-point sweep in §26.5 differs by a specialisation constant, and §26.9/§26.10 re-measured one
+tree three times. `ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE=1` reproduces the pre-#56 *geometry* inside
+the new EP. It does not reproduce the pre-#56 *binary*.
+
+That distinction is not pedantic, and this section exists because it turned out to matter. The
+question issue #69 asks is a question about two commits — *is the EP that is on `main` today faster
+on real models than the EP that was on `main` before PR #72 landed?* — and the only instrument that
+answers it is one that builds both and runs them against each other.
+
+> **This is Vulkan against prior Vulkan.** Nothing in this section is a comparison with CUDA, and
+> nothing in it should be quoted as one. The CPU EP appears only as the correctness oracle.
+
+### 27.1 The two arms, derived rather than assumed
+
+| arm | commit | role | EP `.dll` sha256 | bytes |
+|---|---|---|---|---|
+| candidate | `85fbda29a92e0e99c3895be8b13664d4ee670c50` | `origin/main` at the time of measurement | `1dfa7b21…07a1b` | 2,563,072 |
+| baseline | `c96e7d94ff706d26ee6a1bd9bb084c0ade426820` | the tree immediately before the GQA change | `f0d8a822…9836820` | 2,560,000 |
+
+The baseline was **read out of git**, not chosen: `git log -1 --format=%P 0cfa362` reports the
+single parent `c96e7d9`, and `git log --oneline c96e7d9..85fbda2` reports exactly two commits —
+`0cfa362` (the GQA change) and `85fbda2` (docs and CI). `git diff --name-only c96e7d9 85fbda2 --
+rust/` reports exactly four paths, of which two are compiled: `rust/shaders/glsl/gqa_f16.comp` and
+`rust/src/ops/attention.rs`. The other two are `rust/tools/audit_instruments.py` and
+`rust/tools/instrument_census.json` — a Python auditor and its data, neither of which is linked
+into the EP. **The compiled delta between these two libraries is the GQA workgroup-packing change
+and nothing else**, which is what licenses attributing a difference to it.
+
+Both arms ran the EP's production defaults. The driver strips every `ONNXRUNTIME_EP_VULKAN_*`
+variable out of the worker environment except the counters path, so `GEMV_MAX_ROWS` resolves to its
+built-in 4 on both — the `vulkan_tiled` configuration of §26.6 — and an operator's shell cannot
+become part of the result.
+
+`origin/main` moved once while this section was being written, to
+`8701812c17b993061d084e686f2d7abeac2d839e` (#91). That commit touches `ci/check_main_is_green.py`,
+`ci/open_reds.json` and `ci/test_lane_checks.py` and nothing else: `git diff --name-only 85fbda2
+origin/main -- rust/src rust/shaders rust/Cargo.toml rust/Cargo.lock` is **empty**, so the EP
+library on `main` today is byte-for-byte the one measured here. The candidate is still named as
+`85fbda2` throughout, because that is the tree that was built and run, and a section that silently
+re-labelled its arm to a commit it never executed would be the exact defect this instrument exists
+to prevent.
+
+### 27.2 Why one process per measurement, and what the witness is
+
+ORT registers an execution-provider library **process-globally**. A process therefore holds exactly
+one EP `.dll`, and a process is the only unit in which "which build produced this number" has an
+unambiguous answer. So the instrument runs **one OS process per (workload, arm, repeat)**: 10
+workloads × 2 arms × 3 repeats = **60 processes**, each of which resolves its own model, computes
+its own CPU-EP reference, verifies its own outputs, times its own 20 iterations after 5 discarded
+warmups, and writes its own record.
+
+Two builds in two processes cannot be compared by object identity, so agreement is established by
+**digest**: sha256 over every output's dtype, shape and exact bytes, in order. Shape and dtype are
+hashed alongside the bytes because a reinterpreted buffer of the same length is not the same tensor.
+
+The path witness is the part that makes a speed number mean something. `vk::session` calls
+`counters::record_pipeline_variant(stem, spec_constants)` **on the production path**, at pipeline
+creation, from the resolved specialisation vector. The candidate's GQA dispatch passes
+`vec![local]`; the baseline's passes `vec![]`. Their recorded keys are therefore `gqa_f16:<local>`
+and `gqa_f16:` and cannot be confused with one another. With `ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE`
+pointed at a per-process file, every one of the 60 records carries its own witness — no count is
+borrowed from another repeat, and no witness is inherited from another arm.
+
+All six Phi-3.5 workloads separate: the candidate recorded exactly the local size
+`ops::attention::gqa_local_size` predicts (1, 32, 64, 64 for prefill `M` = 1/32/64/128, 1 for both
+decode points) and the baseline recorded an unspecialised `gqa_f16:` in all six. The four control
+workloads contain no `GroupQueryAttention` node, so neither arm builds a `gqa_f16` pipeline at all
+and the witness is identical — which on those rows is corroboration rather than a defect, and is
+recorded as such.
+
+### 27.3 The band, fixed before the numbers existed
+
+The pre-registration (sha256 `a17c39ce…69e63b`, 7,709 bytes) fixed the arms, the counts, the
+admissibility rules and the band before the first timed iteration ran. It is not a file you have to
+take on trust: its full text and its digest are embedded in the artifact under `preregistration`,
+so the rules can be read back from the same bytes that carry the results.
+
+The paired statistic is per repeat: `ratio_r = median_ms(baseline, r) / median_ms(candidate, r)`,
+point estimate the median over repeats, error bar `[min, max]`. The band is a **rule**, not a
+number: `max(5%, the null control's own half-range)`. The null control is Phi-3.5 prefill `M = 1`,
+where `gqa_local_size(32)` returns 1 and the two builds dispatch identical geometry, so the spread
+of that row *is* this experiment's cross-build noise floor. It came out at **5.10%**, so the band
+applied is 0.0510.
+
+`FASTER` requires **every** repeat to clear `1 + band` — a median carried by one lucky repeat is not
+a result. `NEUTRAL` requires the median inside the band and the whole range inside twice it.
+`SLOWER` is a median below `1 - band`. Everything else is `INDETERMINATE`, which is a statement
+about the measurement rather than about the code.
+
+### 27.4 The result
+
+Ten workloads, three repeats, arms adjacent in time within each repeat and their order flipped per
+repeat. **60 records, 60 admissible, zero refusals.** Every workload is bitwise identical across the
+two builds.
+
+| workload | candidate (ms) | baseline (ms) | ratio (median) | per-repeat ratios | verdict |
+|---|---|---|---|---|---|
+| Phi-3.5 prefill `M=1` — null control | 63.57 | 66.51 | 1.038× | 1.051 / 0.962 / 1.038 | NEUTRAL |
+| Phi-3.5 prefill `M=32` | 399.47 | 842.79 | **2.053×** | 1.278 / 2.053 / 3.578 | **FASTER** |
+| Phi-3.5 prefill `M=64` | 1484.56 | 1531.69 | 1.568× | 1.568 / 1.032 / 1.863 | INDETERMINATE |
+| Phi-3.5 prefill `M=128` | 1475.00 | 3064.11 | **2.077×** | 2.089 / 2.075 / 2.077 | **FASTER** |
+| Phi-3.5 decode `past=128` | 137.99 | 109.74 | 0.859× | 0.863 / 0.859 / 0.795 | **SLOWER** |
+| Phi-3.5 decode `past=1024` | 716.04 | 728.90 | 1.006× | 1.006 / 0.987 / 1.018 | NEUTRAL |
+| MobileNetV2 `N=1` | 28.22 | 29.26 | 1.066× | 0.973 / 1.070 / 1.066 | INDETERMINATE |
+| MobileNetV2 `N=16` | 150.35 | 158.61 | 1.017× | 1.017 / 1.092 / 1.015 | NEUTRAL |
+| all-MiniLM-L6-v2 `S=128` | 673.60 | 775.97 | 1.079× | 0.990 / 1.153 / 1.079 | INDETERMINATE |
+| all-MiniLM-L6-v2 `S=384` | 780.41 | 763.27 | 0.941× | 1.004 / 0.882 / 0.941 | SLOWER |
+
+Latencies are the median over the three per-repeat medians; ratios are the median over the three
+per-repeat ratios, so a row's two latency cells and its ratio cell need not divide into one another
+and are not claimed to.
+
+**The one row that is beyond argument is `M = 128`.** Its three per-repeat ratios are 2.089, 2.075
+and 2.077 — a total spread of 0.7% — with per-repeat relative standard deviations of 1.1–1.2% on the
+candidate and 0.4–0.7% on the baseline. Prefill of a 128-token prompt on this model takes **1.48 s
+on today's `main` against 3.06 s on the tree before PR #72**.
+
+`M = 32` clears the band in every repeat and is `FASTER`, but its point estimate is worth less than
+`M = 128`'s: the candidate is steady near 400 ms across all three repeats while the *baseline*
+wanders from 510 to 1410 ms, so the honest reading of that row is its **minimum**, 1.278×, and not
+its median.
+
+`M = 64` is the row this run does **not** get to claim. Its median 1.568× sits almost exactly on the
+1.583× the §26 artifact pair implies, but one repeat came in at 1.032× and the pre-registered rule
+requires every repeat to clear the band. It is reported as `INDETERMINATE` rather than rounded up.
+
+### 27.5 What the controls cost the headline, and what they buy it
+
+The four non-GQA workloads exist to price the box. Neither MobileNetV2 nor MiniLM contains a
+`GroupQueryAttention` node — the witness confirms no `gqa_f16` pipeline is ever built on either arm —
+so the landed change **cannot** touch them, and their spread is therefore drift and nothing else.
+Across those four workloads the per-repeat ratios ran from **0.882 to 1.153**.
+
+That is the number to hold the rest of the table against. On this box, in this session, a workload
+that provably did not change moved by up to ±15% between two adjacent processes. So:
+
+* `M = 128`'s range `[2.075, 2.089]` and `M = 32`'s minimum `1.278` are outside the drift envelope.
+  Those two rows are results.
+* `M = 64`'s excursion to 1.032 is *inside* it. That row is not a result, which is exactly why the
+  rule refuses it.
+* MobileNetV2 `N=1` (`INDETERMINATE`, 1.066×) and MiniLM `S=384` (`SLOWER`, 0.941×) are rows where
+  the drift envelope is wider than the band. Both are reported with the verdict the rule produced
+  rather than quietly relabelled, because a control that is allowed to be excused is not a control.
+
+MiniLM is also a **fragmentation** control and behaves like one: 196 claimed nodes split into 36
+viable islands, ~670 ms on Vulkan against ~9 ms on the CPU EP for the same graph. That gap is not
+what this section is about and is not a finding here — the comparison is candidate-Vulkan against
+baseline-Vulkan — but it is the reason MiniLM's rows are noisy: an island-boundary-dominated graph
+prices host round trips, not kernels.
+
+### 27.6 Decode got slower, and the geometry says it should not have
+
+`decode past=128` is `SLOWER` in all three repeats — 0.863, 0.859, 0.795 — and its *worst* repeat
+(0.863) is still below the drift envelope's lower edge (0.882). It is narrow, and it is not
+dismissible.
+
+It is also, on the face of `docs/DESIGN.md` §8.13, not supposed to happen. At decode the rule returns
+`local = 1`; the candidate's witness confirms `gqa_f16:1`, the dispatch grid is the same
+`[32, 1, 1]`, and the outputs are bitwise identical to the baseline's. §26.5's in-binary sweep
+measured `speedup_vs_size_1 = 1.0` at both decode points, because inside one binary size 1 *is* the
+reference.
+
+What the in-binary sweep structurally cannot see is that **the two binaries do not contain the same
+shader**. The candidate's `gqa_f16.comp` declares `local_size_x_id = 0`; the baseline's declares a
+literal `local_size_x = 1`. A specialisation constant resolved to 1 is not the same SPIR-V as a
+literal 1, and the driver is free to compile it differently. This measurement is the first
+instrument in the repository that could observe that difference at all, and what it observes is a
+~14% regression at `past = 128` and none at `past = 1024`.
+
+Two facts bound how far that should be read. The prefill `M = 1` null control also resolves to
+`local = 1` and shows nothing (1.038×, `NEUTRAL`), and decode at `past = 1024` shows nothing
+(1.006×, `NEUTRAL`); so whatever this is, it is not a uniform penalty on the specialised shader.
+Issue #69's follow-up owns it. Nothing in this section proposes a change to the kernel — no kernel
+was altered by this work — and the honest statement is that the landed change bought a large prefill
+win and, at one decode point, cost something that had not been looked for.
+
+### 27.7 Reconciliation with §26, including the part that disagrees
+
+The paired ratios reproduce the §26 artifact pair closely, and the absolute latencies do not:
+
+| case | §26 implied (before ÷ after) | §27 measured (median) | agreement |
+|---|---|---|---|
+| prefill `M=32` | 462.03 ÷ 345.98 = 1.335× | 2.053× (min 1.278×) | §26's value is inside §27's `[min, max]` |
+| prefill `M=64` | 1094.28 ÷ 691.26 = 1.583× | 1.568× | within 0.9% |
+| prefill `M=128` | 3004.55 ÷ 1407.40 = 2.135× | 2.077× | within 2.7% |
+| decode `past=128` | 80.53 ÷ 88.05 = 0.915× | 0.859× | same direction, both a regression |
+| decode `past=1024` | 642.62 ÷ 608.21 = 1.057× | 1.006× | both inside the band |
+
+The **absolute** numbers are a different story and are not averaged with §26's:
+
+| case | §26.6 `vulkan_tiled` (ms) | §27 candidate (ms) | inflation |
+|---|---|---|---|
+| MobileNetV2 `N=1` | 8.19 | 28.22 | 3.45× |
+| Phi-3.5 prefill `M=1` | 27.29 | 63.57 | 2.33× |
+| Phi-3.5 decode `past=128` | 88.05 | 137.99 | 1.57× |
+| Phi-3.5 prefill `M=32` | 345.98 | 399.47 | 1.15× |
+| MobileNetV2 `N=16` | 135.20 | 150.35 | 1.11× |
+| Phi-3.5 prefill `M=128` | 1407.40 | 1475.00 | 1.05× |
+
+The inflation is largest on the shortest workloads and smallest on the longest, which is the
+signature of a **per-inference host-side cost**, not of a GPU that got slower: a device running at
+73% of its clock would inflate the GPU-bound `M = 128` row most, and `M = 128` is the row that moved
+least. The box is shared indefinitely (§20) and was running other agents' CPU-heavy test lanes
+throughout this session. **These two sets of absolute numbers should not be pooled**, and this
+section pools nothing: every claim above is a ratio between two processes that ran adjacent in time
+under the same conditions, which is precisely the design that makes a drifting box survivable.
+
+One further difference is worth stating rather than leaving to be discovered.
+`real_model_latency_before_gqa.json` and `real_model_latency.json` are two *separate sessions* on
+two builds of the **#56 development branch** (`586e9513…` and `2c080583…`), not of the landed
+commits, and their arms were never interleaved with one another. §27 is the first measurement in
+this repository that pairs the two landed trees within a repeat.
+
+### 27.8 Limitations, stated rather than implied
+
+* **A Vulkan-over-prior-Vulkan gain is not a CUDA win**, and is not evidence about any other
+  execution provider. No CUDA number appears in this section or in its artifact.
+* **Three repeats.** The pre-registration fixed 3 × 20 and the run cost 31 minutes of exclusive GPU
+  time; nothing here was extended after a result was seen, and `M = 64` in particular was **not**
+  re-run to try to move it out of `INDETERMINATE`.
+* **The drift envelope is this session's, not the machine's.** ±15% on unchanged workloads is what
+  the four controls happened to show over 31 minutes on a shared box. It is a floor on what may be
+  read here, not a published property of the hardware.
+* **`M = 32`'s baseline is unstable** (510 / 843 / 1410 ms across repeats) while its candidate is
+  not (399 / 411 / 394 ms). The row is `FASTER` on the pre-registered rule, but its median ratio is
+  inflated by that instability and its minimum is the defensible number.
+* **One device.** RTX A1000, driver 573.44, subgroup 32, exactly one Vulkan device on the box. §26.7
+  applies unchanged.
+* **Wall clock, not kernel time.** This instrument answers "is the model faster end to end", so it
+  measures `session.run`. It does not carry per-kernel GPU attribution and makes no per-kernel
+  claim; §26.4 is where that lives.
+* **Decode's KV still comes from host numpy**, so the decode rows inherit §26.7's host-round-trip
+  bound in both arms. That is paired out of the ratio but not out of the absolute cells.
+* **MiniLM is not in `bench/real_model.py`.** It is pinned inside the probe itself
+  (`sentence-transformers/all-MiniLM-L6-v2`, revision `1110a243fdf4706b3f48f1d95db1a4f5529b4d41`,
+  `onnx/model.onnx`, sha256 `6fd5d72f…46452`, 90,405,214 bytes) because the shared pin belongs to
+  an unlanded PR. If the cached bytes do not hash to the pin the probe refuses rather than
+  substituting.
+
+### 27.9 Exclusivity, and how the artifact was screened
+
+The GPU was held exclusively for the whole run through an OS-enforced byte-range lock outside every
+worktree (`msvcrt.locking(LK_NBLCK)` on a handle the holder keeps open): acquired after **0 s** of
+waiting, held **1,840.6 s**, released with the run's exit status. The policy is *wait, never kill* —
+no process was terminated to obtain it, and the device's process list is recorded at both acquire
+and release. The artifact carries that record with `state: RELEASED`, so the proof covers the whole
+measurement window rather than its first instant.
+
+The public artifact is screened for absolute paths: process listings are reduced to executable base
+names, the lock file to its name. Runtime paths — library locations, model locations, the
+interpreter — go to a separate runtime channel that is not published.
+`test_the_public_artifact_carries_no_absolute_paths` fails if a drive letter, a user home, a
+virtualenv or a `site-packages` ever reaches the committed JSON.
+
+### 27.10 Reproduce
+
+```
+cargo build --release --lib                      # in a worktree at 85fbda2, and again at c96e7d9
+
+python bench/results/probe_crossbuild_gqa_landing.py \
+  --candidate-lib <candidate>/rust/target/release/onnxruntime_vulkan_ep.dll \
+  --baseline-lib  <baseline>/rust/target/release/onnxruntime_vulkan_ep.dll \
+  --candidate-sha 85fbda29a92e0e99c3895be8b13664d4ee670c50 \
+  --baseline-sha  c96e7d94ff706d26ee6a1bd9bb084c0ade426820 \
+  --out bench/results/real_model_crossbuild_gqa_landing.json \
+  --runtime-out <somewhere outside the repo>/runtime_paths.json
+```
+
+Artifact: `bench/results/real_model_crossbuild_gqa_landing.json`.
+
+`bench/test_crossbuild_gqa_landing.py` (**37** GPU-free tests) locks the instrument and this
+section against that artifact. It is a mutation suite before it is a unit suite: it takes real
+records out of the committed JSON, breaks one premise at a time, and asserts the refusal. A record
+whose equivalence verdict is removed, emptied or set to `DIVERGENT` loses its `speed` key; a record
+whose model digest no longer matches the pin loses it; a record marked refused that still carries a
+number loses it; and a `FASTER` verdict whose path witness stops distinguishing the two arms is
+downgraded to `REFUSED` even though every timing in it is still real. The last of those is the one
+that matters most here, and it is asserted on the `M = 128` row itself.

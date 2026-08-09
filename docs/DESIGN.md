@@ -5846,6 +5846,28 @@ issue #56. That is asserted twice, in `translate_gqa_phi35_decode_produces_one_d
 predates this change and still passes untouched) and in
 `gqa_decode_stays_at_one_invocation_per_workgroup`.
 
+**"The same pipeline behaviour" was a claim about geometry, and it does not extend to the compiled
+module (issue #69).** The paragraph above is correct about everything it can be checked on: the
+grid is the same, the specialisation resolves to 1, and the outputs are bitwise identical to the
+pre-change build's on every decode case measured. What it quietly implied is that a decode step
+would therefore *run* the same, and that is a claim about SPIR-V rather than about dispatch.
+`gqa_f16.comp` now declares `local_size_x_id = 0`; before this change it declared a literal
+`local_size_x = 1`. A specialisation constant resolved to 1 is not the same module as a literal 1,
+and a driver is free to compile the two differently. No instrument in this repository could see
+that difference until one built both libraries and ran them against each other, because every
+earlier A/B — the `vulkan_tiled`/`vulkan_untiled` arms, the seven-point local-size sweep — varies a
+value *inside one binary*, where size 1 **is** the reference and reads 1.000× by construction.
+
+The cross-build measurement in `docs/PERF.md` §27 (artifact
+`bench/results/real_model_crossbuild_gqa_landing.json`) finds decode at `past = 128` **0.859× as
+fast on the current build as on the tree immediately before this change**, in all three whole-process
+repeats, with the witness confirming `gqa_f16:1` on the candidate and `gqa_f16:` on the baseline and
+the outputs bitwise identical. Decode at `past = 1024` and prefill `M = 1` — which also resolve to
+`local = 1` — show nothing, so this is not a uniform penalty on the specialised module, and §27
+declines to explain it further than the evidence supports. It is recorded here rather than left in
+a performance section because it is a correction to what *this* section asserted, and the same
+build's prefill gain (2.08× at `M = 128`) is not a reason to leave it unsaid.
+
 For every *other* size, "bit-identical" is a claim about the source text, so it is verified as one
 rather than argued: `bench/results/probe_gqa_local_size.py` compares whole-model outputs
 byte-for-byte against the `local = 1` reference in the same case. Six cases at seven sizes are
