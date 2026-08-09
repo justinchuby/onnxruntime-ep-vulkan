@@ -198,6 +198,30 @@ pub struct Kernel {
     /// `Template::None` therefore means *"no generated variant family"*, not *"no module"*. A row
     /// with neither a template nor this field is genuinely metadata-only.
     pub module_stems: Option<&'static [&'static str; DTYPE_COUNT]>,
+    /// Modules this row's `translate` may dispatch **instead of** [`Kernel::stem`], chosen from
+    /// facts that do not exist when the proof key is computed.
+    ///
+    /// # Why a second field rather than more entries in `module_stems`
+    ///
+    /// `module_stems` is indexed by dtype and answers *"which module does this row use at f16"* —
+    /// a total function of the row and the dtype, which is exactly what the key's variant
+    /// component needs. A row that picks between two modules at **dispatch** time has no such
+    /// answer: `GroupQueryAttention` dispatches `gqa_f16` for a prefill and `gqa_decode_f16` for a
+    /// long-cache decode, and which one it will be depends on runtime extents the claim path has
+    /// not seen.
+    ///
+    /// Folding the second module into `module_stems` would make `stem(F16)` return one of two
+    /// true answers arbitrarily, and every key would then name a module that half the nodes do
+    /// not run. Leaving it out entirely is what `Conv` did with `metadata` and §8.9.23 ruled
+    /// against: a module no row names is a module no proof key can ever mention, and
+    /// `templates.rs::every_hand_written_shader_is_named_by_a_row` fails on it by design.
+    ///
+    /// So the row declares it *here*, where the three readers that must know about it look:
+    /// [`variant_is_declared`] (so a shaderless build reports it unloadable rather than unknown),
+    /// the two coherence tests in `templates.rs`, and `registry::variant_key`, which appends a
+    /// suffix to the variant component of exactly those nodes whose dispatch set includes it.
+    /// A form whose key carries that suffix is proven only by a run that dispatched **both**.
+    pub aux_module_stems: Option<&'static [&'static str]>,
 }
 
 impl Kernel {
@@ -208,7 +232,13 @@ impl Kernel {
         stems: [""; DTYPE_COUNT],
         pair_stems: None,
         module_stems: None,
+        aux_module_stems: None,
     };
+
+    /// The dispatch-time alternatives this row declares, or an empty slice.
+    pub fn aux_stems(&self) -> &'static [&'static str] {
+        self.aux_module_stems.unwrap_or(&[])
+    }
 
     /// The SPIR-V module stem for this op at this dtype.
     ///
@@ -356,6 +386,23 @@ macro_rules! kernel {
             stems: [""; $crate::ops::common::dtype::DTYPE_COUNT],
             pair_stems: None,
             module_stems: ::core::option::Option::Some(&$crate::module_stems!($prefix)),
+            aux_module_stems: None,
+        }
+    };
+    (Standalone, $prefix:literal, aux: [$($aux:literal),+ $(,)?]) => {
+        $crate::ops::common::variants::Kernel {
+            template: $crate::ops::common::variants::Template::None,
+            op: $prefix,
+            stems: [""; $crate::ops::common::dtype::DTYPE_COUNT],
+            pair_stems: None,
+            module_stems: ::core::option::Option::Some(&$crate::module_stems!($prefix)),
+            // Hand-written stems, spelled out rather than derived: an alternative module is not
+            // a dtype variant of the primary one and there is no naming rule that would produce
+            // `gqa_decode_f16` from `gqa`. A row that names one is asserting that its `translate`
+            // can dispatch it, and the assertion is checked from both sides — the file must exist
+            // (`templates.rs::every_shader_row_translates_to_a_stem_that_is_in_the_manifest`) and
+            // nothing may exist that no row names (`..::every_hand_written_shader_is_named_by_a_row`).
+            aux_module_stems: ::core::option::Option::Some(&[$($aux),+]),
         }
     };
     (EwUnary, $op:literal) => {
@@ -365,6 +412,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_unary", $op),
             pair_stems: None,
             module_stems: None,
+            aux_module_stems: None,
         }
     };
     (EwBinary, $op:literal) => {
@@ -374,6 +422,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_binary", $op),
             pair_stems: None,
             module_stems: None,
+            aux_module_stems: None,
         }
     };
     (EwSelect, $op:literal) => {
@@ -383,6 +432,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_select", $op),
             pair_stems: None,
             module_stems: None,
+            aux_module_stems: None,
         }
     };
     (QGemv, $op:literal) => {
@@ -392,6 +442,7 @@ macro_rules! kernel {
             stems: $crate::stems!("q_gemv", $op),
             pair_stems: None,
             module_stems: None,
+            aux_module_stems: None,
         }
     };
     (EwCast, $op:literal) => {
@@ -404,6 +455,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_cast", "x"),
             pair_stems: ::core::option::Option::Some(&$crate::pair_stems!("ew_cast")),
             module_stems: None,
+            aux_module_stems: None,
         }
     };
 }
@@ -600,6 +652,9 @@ pub fn variant_is_declared(stem: &str) -> bool {
         .get_or_init(|| {
             let mut set = std::collections::BTreeSet::new();
             for spec in crate::registry::all_specs() {
+                for s in spec.kernel.aux_stems() {
+                    set.insert(*s);
+                }
                 for d in spec.caps.iter() {
                     if let Some(s) = spec.kernel.stem(d) {
                         if !s.is_empty() {

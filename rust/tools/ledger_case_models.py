@@ -770,9 +770,104 @@ def _group_query_attention() -> onnx.ModelProto:
     return model
 
 
+_GQA_DECODE_PAST_SEQ = 127
+_GQA_DECODE_MAX_SEQ = 256
+
+
+def _group_query_attention_decode() -> onnx.ModelProto:
+    """The issue-#90 form: a GQA node whose cache is long enough to split across KV lanes.
+
+    # Why this is a separate case and not a longer feed of the existing one
+
+    `registry::variant_key` appends `@kvpar` to a `GroupQueryAttention` key exactly when the
+    node's DECLARED extents leave `gqa_decode_f16` reachable, so this model and
+    `group_query_attention_f16` produce two different proof keys from the same op, the same
+    dtype signature and the same shape class. That is the point. The existing entry's subject
+    is `gqa_f16` and it was measured on a run that dispatched `gqa_f16`; nothing about it
+    speaks for a module it never ran, and this case exists so that the new module has to earn
+    its own entry rather than inherit one. The existing entry is not touched by minting this
+    one -- different key, and `--append` writes only what is missing.
+
+    # The extents, and why each is the value it is
+
+    `past = 127` is the smallest cache extent this file could carry that is not merely `>= 63`:
+    `attention::gqa_decode_kv_lanes(seq_len=1, past=127, head_dim=32)` reads `total = 128` and
+    picks **W = 4**, two doublings above the W = 2 boundary, so a selector regression that
+    merely shifted the boundary by one would still be caught by the lane count recorded in
+    `spec_digest`. Batch and sequence stay symbolic -- that is what puts this form in the
+    `runtime-extent` shape class, and it is also the real Phi-3.5 shape, where `S` is 1 at
+    decode and the graph cannot say so statically.
+
+    # What this entry does NOT prove
+
+    One lane count (W = 4), one head dimension (32), one batch (1), one grouping (8 query
+    heads over 2 KV heads). W = 2/8/16, head_dim 64/128, batch > 1, MHA, ragged past and the
+    non-finite policy are the business of `tests/ops/test_gqa_decode_kv_parallel.py`, which
+    compares against ORT's own CPU GroupQueryAttention. A ledger entry is a proof that one form
+    matched on one device, not a coverage claim, and this docstring is the place that says so.
+
+    # The one residual, stated here because it is a property of the key and not of the test
+
+    A `@kvpar` key names the set `{gqa_f16, gqa_decode_f16}` -- a node with a symbolic past
+    dispatches whichever the runtime extent selects. `shaders_dispatched` is scoped to the
+    proof run, so this entry's subject is the module this run actually dispatched
+    (`gqa_decode_f16`) and not the union, because a union would be a subject no single run
+    witnessed. The serial half of the set keeps its own independent entry and its own digest.
+    """
+    packed = (_GQA_NUM_HEADS + 2 * _GQA_KV_HEADS) * _GQA_HEAD_DIM
+    f16 = TensorProto.FLOAT16
+    past_kv = ["B", _GQA_KV_HEADS, _GQA_DECODE_PAST_SEQ, _GQA_HEAD_DIM]
+    ins = [
+        helper.make_tensor_value_info("packed_qkv", f16, ["B", "S", packed]),
+        helper.make_tensor_value_info("past_key", f16, past_kv),
+        helper.make_tensor_value_info("past_value", f16, past_kv),
+        helper.make_tensor_value_info("seqlens_k", TensorProto.INT32, ["B"]),
+        helper.make_tensor_value_info("total_seq", TensorProto.INT32, []),
+        helper.make_tensor_value_info(
+            "cos_cache", f16, [_GQA_DECODE_MAX_SEQ, _GQA_ROTARY_DIM // 2]
+        ),
+        helper.make_tensor_value_info(
+            "sin_cache", f16, [_GQA_DECODE_MAX_SEQ, _GQA_ROTARY_DIM // 2]
+        ),
+    ]
+    pres_kv = ["B", _GQA_KV_HEADS, _GQA_DECODE_PAST_SEQ + 1, _GQA_HEAD_DIM]
+    outs = [
+        helper.make_tensor_value_info(
+            "attn_out", f16, ["B", "S", _GQA_NUM_HEADS * _GQA_HEAD_DIM]
+        ),
+        helper.make_tensor_value_info("present_key", f16, pres_kv),
+        helper.make_tensor_value_info("present_value", f16, pres_kv),
+    ]
+    node = helper.make_node(
+        "GroupQueryAttention",
+        inputs=[
+            "packed_qkv", "", "", "past_key", "past_value", "seqlens_k", "total_seq",
+            "cos_cache", "sin_cache",
+        ],
+        outputs=["attn_out", "present_key", "present_value"],
+        domain="com.microsoft",
+        name="gqa_decode0",
+        num_heads=_GQA_NUM_HEADS,
+        kv_num_heads=_GQA_KV_HEADS,
+        scale=float(_GQA_HEAD_DIM ** -0.5),
+        local_window_size=-1,
+        do_rotary=1,
+        rotary_interleaved=0,
+        smooth_softmax=0,
+    )
+    graph = helper.make_graph([node], "gqa_decode_graph", ins, outs)
+    model = helper.make_model(
+        graph,
+        opset_imports=[helper.make_opsetid("", 17), helper.make_opsetid("com.microsoft", 1)],
+    )
+    model.ir_version = 10
+    return model
+
+
 BUILDERS = {
     "add_f32": lambda: _binary("Add", TensorProto.FLOAT),
     "group_query_attention_f16": _group_query_attention,
+    "group_query_attention_decode_f16": _group_query_attention_decode,
     "matmulnbits_f16_scales": lambda: _matmulnbits(with_zero_points=False),
     "matmulnbits_f16_scales_zp": lambda: _matmulnbits(with_zero_points=True),
     "add_f16": lambda: _binary("Add", TensorProto.FLOAT16),
@@ -1263,8 +1358,39 @@ def _gqa_feed_plan() -> dict:
     }
 
 
+def _gqa_decode_feed_plan() -> dict:
+    """Bind the decode model at the one shape its key was derived for.
+
+    `S = 1`, because `gqa_decode_f16` refuses every other sequence length and the `@kvpar`
+    suffix was derived on that assumption; `seqlens_k = 127`, because 127 is the past extent
+    the selector read when it chose W = 4. Feeding a shorter past here would run the serial
+    module under a key that says the alternative was reachable, which is an entry whose subject
+    and whose key describe different runs.
+    """
+    cos, sin = _rope_cache(_GQA_DECODE_MAX_SEQ, _GQA_ROTARY_DIM)
+    half = [_GQA_DECODE_MAX_SEQ, _GQA_ROTARY_DIM // 2]
+    return {
+        "symbolic_dims": {"B": 1, "S": 1},
+        # Same 0.1 as the serial plan, and for the same reason: f16 logits over standard
+        # normals saturate the exponent range, both arms then agree on inf, and the match is
+        # vacuous. It matters more here, not less -- a 128-long cache sums 32x more terms.
+        "float_scale": 0.1,
+        "fixed_inputs": {
+            "seqlens_k": {
+                "dtype": "int32", "shape": [1], "values": [_GQA_DECODE_PAST_SEQ]
+            },
+            "total_seq": {
+                "dtype": "int32", "shape": [], "values": _GQA_DECODE_PAST_SEQ + 1
+            },
+            "cos_cache": {"dtype": "float16", "shape": half, "values": cos},
+            "sin_cache": {"dtype": "float16", "shape": half, "values": sin},
+        },
+    }
+
+
 FEED_PLAN = {
     "group_query_attention_f16": _gqa_feed_plan,
+    "group_query_attention_decode_f16": _gqa_decode_feed_plan,
 }
 
 

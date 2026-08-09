@@ -5899,6 +5899,231 @@ next lever and says what it would have to prove.
 
 ---
 
+### 8.14 Decode-time parallelism over the KV sequence — the 93.5% §8.13 named and declined (issue #90)
+
+§8.13 ends by naming exactly what it did not fix and what fixing it would cost:
+
+> Decode. At 32 invocations there is no packing to do […] Making decode faster needs a different
+> kernel shape: parallelism over the **KV sequence** inside a workgroup, with a reduction, which
+> is a shared-memory and barrier change and therefore a portability question of exactly the kind
+> §8.12 declined to open without evidence.
+
+This section opens that question and answers it. The evidence §8.13 asked for is its own table:
+`gqa_f16` is **268.57 ms of 287.18 ms (93.5%)** of decode GPU time at `past = 1024`, and the
+dispatch that spends it is `[32, 1, 1]` workgroups of **one invocation each** — 32 invocations
+walking 1,025 cache tokens apiece, one after another, on a device with thousands of lanes.
+
+The shape of the answer is forced by that sentence: the only axis with work on it at decode is the
+KV sequence, so the parallelism has to go there, and a reduction over lanes is what a split
+softmax costs.
+
+#### What is added, and what is deliberately not touched
+
+`rust/shaders/glsl/gqa_decode_f16.comp` is a **new** module. `gqa_f16.comp` is not edited — not a
+byte — and this is load-bearing rather than tidy: it is what lets prefill, `seq_len > 1`, every
+refused decode shape and the kill switch keep the *previous bits* rather than a re-derivation of
+them. `git diff <base>..HEAD -- rust/shaders/glsl/gqa_f16.comp` is empty and §8.14's ledger
+argument below depends on it staying that way.
+
+Push constants (36 bytes) and the nine bindings are byte-identical to `gqa_f16`'s, so the host
+descriptor and push paths are shared, not forked.
+
+#### The decomposition
+
+One workgroup per `(batch b, query head h)`; `local_size_x_id = 0` is `W`, the KV lane count; the
+dispatch is `[batch * num_heads, 1, 1]` — the same **grid** §8.13 dispatches, with the invocations
+inside each workgroup now doing different work instead of not existing.
+
+Each lane walks a strided slice of the cache:
+
+```glsl
+for (uint t = lane; t < total_len; t += W) { ... }
+```
+
+Strided, not blocked, for two reasons that are both about not knowing the machine. It balances
+exactly — lane `i` gets `ceil((total_len - i) / W)` tokens, so the spread across lanes is at most
+one token at any `total_len`, with no remainder case to get wrong. And consecutive lanes read
+consecutive `t`, so a cache row is read by adjacent lanes in the same step, which is the access
+pattern every architecture coalesces; a blocked split would have `W` lanes reading `W` addresses
+`total_len / W` apart.
+
+Each lane keeps a private online-softmax state `(m, s, acc[D])` — running max, running denominator,
+running weighted sum — and the lanes are merged pairwise:
+
+```glsl
+mm = max(m1, m2);  w1 = exp(m1 - mm);  w2 = exp(m2 - mm);
+s  = s1*w1 + s2*w2;   acc = acc1*w1 + acc2*w2;   m = mm;
+```
+
+This is the standard rescale-to-the-joint-max merge and it is exact in the sense that matters here:
+`exp(m - mm) <= 1` on both sides, so neither partial can overflow while being brought onto the
+other's scale, whatever the two maxima are. An empty lane (`total_len < W`) carries
+`m = -1e30, s = 0, acc = 0` and merges as an exact identity — `w2` underflows to 0 and contributes
+nothing — so **over-splitting costs idle lanes and never correctness**, which is the property the
+selector leans on when it picks `W` from an upper bound it cannot tighten. Lane 0 always owns
+`t = 0`, so the surviving `s` is never 0 and the final divide is never `0/0`.
+
+The tree is the ordinary halving reduction:
+
+```glsl
+for (uint stride = 1u; stride < W; stride <<= 1u) {
+    memoryBarrierShared(); barrier();
+    if ((lane & ((stride << 1) - 1)) == 0u && lane + stride < W) { ...merge... }
+}
+```
+
+with the barrier at **loop-body** indentation — outside the `if`, executed by every lane on every
+iteration — because `barrier()` in a compute shader must be reached by all invocations in the
+workgroup in uniform control flow. A barrier inside the `if` is the single most natural way to
+write this and it is undefined behaviour; it is a held-out mutation (`BARRIER`) precisely because
+it is the mistake that would be easy to ship and that would pass on the one machine that ran it.
+The `lane + stride < W` guard makes the tree correct for every `W`, not only powers of two.
+
+#### Why this is portable — the same test §8.12 and §8.13 apply
+
+What does it **not** need?
+
+* **No subgroup operation, no wave intrinsic, no ballot, no shuffle.** `GL_KHR_shader_subgroup*`
+  is optional in Vulkan 1.1 and its *sizes* vary 8–64 across shipping hardware. The reduction is
+  shared memory plus `barrier()`, both Vulkan 1.0 core, and the kernel never needs to know the
+  subgroup width to be correct — a `W` that is not a multiple of it costs occupancy, not answers.
+* **No extension, no optional feature, no capability query, no vendor branch.** Vulkan 1.1 core,
+  inside §7.2's frozen set. `glslc --target-env=vulkan1.1` and `spirv-val` are part of the
+  validation sweep.
+* **No device-dependent decision.** `W` is a function of `seq_len`, `past_len_max` and `head_dim`
+  — properties of the *model* — so two conformant devices running the same graph pick the same
+  `W` and build the same pipeline. Nothing reads `maxComputeSharedMemorySize`,
+  `subgroupSize`, a vendor ID or a driver version.
+* **`W <= 16` is a specification number, not a measurement.** The shared allocation is
+  `sh_m[16] + sh_s[16] + sh_a[16 * 128]` floats = 64 + 64 + 8,192 = **8,320 bytes**, fixed,
+  independent of the `W` actually chosen and of `head_dim`. Vulkan 1.1's required floor for
+  `maxComputeSharedMemorySize` is **16,384 bytes**, so this sits at **50.8%** of what every
+  conformant implementation must provide. `W = 32` would need 32 × 128 × 4 = 16,384 bytes for the
+  accumulator *alone*, before the two scalar arrays — over the floor. **16 is therefore the last
+  power of two that is portable by the specification rather than by what a particular driver
+  happens to report**, and that derivation, not a sweep, is where the cap comes from. Sizing to a
+  queried limit would make the arithmetic's partitioning device-dependent, which is the thing
+  `GQA_MAX_LOCAL_SIZE` next door already declines to do for the same reason.
+  `maxComputeWorkGroupInvocations` (floor 128) is not binding: 16 clears it by 8×.
+* **`head_dim <= 128` is checked on both sides.** The shader refuses `D > D_MAX` and writes
+  nothing; the selector never asks it to. A wider head is not a slow path here, it is an
+  out-of-bounds one.
+
+#### The selector, and why the boundary is `== 1` and not `<= n`
+
+`ops::attention::gqa_decode_kv_lanes(seq_len, past_len_max, head_dim, kv_arena) -> u32`, where the
+return value **`1` is a refusal, not a one-lane configuration**: `translate_gqa` responds to it by
+issuing exactly the dispatch it issued before this change existed — `gqa_f16`, `gqa_local_size`'s
+geometry, the previous specialisation constant, the previous bits. That is what discharges "W = 1
+must be bitwise-equivalent to prior production": there is no `W = 1` path through the new module
+at all, so the equivalence is structural rather than measured.
+
+Correctness gates, applied **before** the environment override so the override cannot reach a
+shape the module is not written for:
+
+* **`seq_len != 1` → refuse.** Three of `gqa_f16`'s branches are dead *by arithmetic* only at
+  `seq_len == 1`; the important one is the sibling-key interval `past_len <= t < tok_pos`, which is
+  empty exactly when `s_local` is always 0. At `seq_len == 2` that interval is non-empty and the
+  decode module would silently drop a key. **There is no `n > 1` for which the module is
+  correct**, so `<= n` is not a wider-but-safe boundary, it is a wrong-answer bug. The suite pins
+  `seq_len` 2..8 individually against the serial kernel, and `SELECTOR` — widening `== 1` to
+  `<= 8` — is a held-out mutation that must go red.
+* **`head_dim` outside `1 ..= 128` → refuse.** Above.
+* **`kv_arena` → refuse.** Under the arena the past extent is a *capacity*, not a length; the true
+  length is in `seqlens_k`, which is device data the host cannot read. Correctness is unaffected
+  either way (an empty lane is an exact identity), but a lane count chosen from an allocation size
+  is not a measurement, and this refuses rather than guessing. Declared as remaining debt in the
+  census entry.
+
+Otherwise `W` is the largest power of two `<= 16` leaving every lane at least
+`GQA_DECODE_MIN_KV_PER_LANE = 32` tokens of the upper bound `past_len_max + seq_len`. The overhead
+being amortised is `log2(W)` reduction rounds, each `O(head_dim)`, against `total_len / W` loop
+iterations of the same order — at `W = 16` and 32 tokens per lane that is 4/32 = **12.5%**, and it
+shrinks as the cache grows, which is the regime the change is for. `past_len_max` is combined with
+`saturating_add` because it is read from a graph and a graph is input: `u32::MAX` past must not
+wrap to "no cache".
+
+The consequence the tests, the census entry and the lavapipe lane all name: **`W >= 2` first
+becomes reachable at `total_len >= 64`, i.e. `past >= 63`.** The ladder is 62→1, 63→2, 127→4,
+255→8, 511→16 and it is pinned point-by-point either side of every boundary.
+
+The override `ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL` is clamped to `[1, 16]` and floored to
+a power of two — `=0`, which is what the environment can actually produce, clamps to 1 rather than
+dividing by zero — and it **pins** `W`, bypassing only the amortisation rule, never a correctness
+gate. `=1` is the kill switch and restores the pre-change dispatch exactly, in the same sense that
+`ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE=1` and `..._GEMV_MAX_ROWS=1` are for §8.13 and §8.12.
+
+#### Pipeline identity
+
+The two modules are different SPIR-V and must never share a cache slot. The stem
+(`gqa_decode_f16` vs `gqa_f16`) and the full specialisation vector — which now carries `W` — are
+both in the pipeline cache key, so `W = 4` and `W = 8` are different pipelines and neither can
+alias the serial one. `PIPELINE`, which drops `W` from the key, is a held-out mutation. Dynamic and
+symbolic shapes reselect per dispatch: the selector is a pure function of the shapes actually
+presented, so a session that decodes after a prefill moves from `gqa_f16` to `gqa_decode_f16`
+between dispatches without a stale binding, and the tests assert the witness on both sides of that
+transition.
+
+#### Ledger identity — a separate subject, not a rewitness
+
+`gqa_f16` has an independent proof entry in `evidence/proof_ledger.jsonl` and §8.9's rules make
+overwriting it with this module's digests a falsification: the entry's subject would silently
+become a different shader. The rejected first attempt at this work did exactly that, which is
+finding **B1/B2**.
+
+The fix is identity, not declaration. `registry::variant_key` appends `@kvpar` when the dispatch
+set for a form provably includes the alternative module, so the new work claims under
+`…/gqa_f16@kvpar/…` — a **distinct key**, hence a distinct entry, minted from an actual executed
+run at `W = 4` with `shaders_dispatched: ["gqa_decode_f16"]`. `ProofKey::variant_stem()` strips the
+suffix, so the stem is still `gqa_f16` for every consumer that asks. Because the two are separate
+subjects from the start, **no digest transition occurs** and `evidence/proof_rewitness.json` needs
+no declaration — the requirement is discharged by avoidance, which is the cleaner of the two routes
+§8.9 offers. The pre-existing `gqa_f16` entry is **byte-identical** to its pre-change text and the
+ledger diff is a pure append.
+
+The predicate reads *declared* shapes and is fail-safe: `-1`/symbolic is unknown and therefore
+treated as reachable, so a key can only ever gain the suffix when the alternative is genuinely
+possible. It refuses only on statically-known `seq_len != 1`, an out-of-range `head_dim`, or a past
+too short to reach `W >= 2` — which is why the existing `gqa_f16` case model (static `past = 4`,
+provably below 63) keeps its old key untouched. `kv_arena` is deliberately **not** consulted: a
+process-wide environment flag must not be able to move a checked-in key.
+
+**Residual, stated rather than hidden:** a `@kvpar` key names the *set* `{gqa_f16,
+gqa_decode_f16}`, while `shaders_dispatched` is run-scoped, so the entry's proven subject is the
+one module the minting run actually dispatched. That gap is surfaced by the pre-existing
+`SpecWitness::Partial`/`Delta` disclosure machinery rather than papered over, and no proof is
+claimed for any `W` that was not executed.
+
+#### Census
+
+`ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL` is mapped in `ci/census_surface_map.json` next to
+`GQA_LOCAL_SIZE` and `GEMV_MAX_ROWS` and modelled on them, carrying its reader, its selector, the
+module it reaches, its reachability limits, an external falsifier, an owner and its remaining debt
+(the arena refusal). The disposition is `uncensused` for the same structural reason §8.13 gives:
+the census's six-node elementwise graph carries no `GroupQueryAttention` node, so no run of it can
+build a GQA pipeline at all — the surface is honestly unreachable from the census graph, not
+suppressed. Both polarities are exercised: removing the entry produces
+`FAIL(unmapped_surface)` naming this switch, and the planted-arm negative control passes.
+
+#### What is proven, and what is refused
+
+The equivalence and performance record is `bench/results/gqa_decode_kv_parallel.json`; §26.11 of
+`docs/PERF.md` reads it. Two things belong here because they are design facts, not measurements:
+
+* **The kernel writes the same KV cache.** On the real Phi-3.5 graph, layer 0's `present.key` and
+  `present.value` are **bitwise identical** between the two arms.
+* **Whole-model outputs still diverge, and no whole-model claim is made.** The disagreement first
+  appears at layer 1 at ~2e-3 and compounds through the 32-layer fp16 residual stack to 0.13 by
+  layer 31 and 0.52 on logits. The probe **refuses** every whole-model case on equivalence and
+  structurally removes the speed fields rather than labelling them. A cross-kernel control — an
+  already-shipped, already-accepted change in a *different* kernel — came back bitwise identical
+  on the same instrument, so that control gives this change **no cover**: the divergence is
+  specific to this reassociation and is reported as measured. Issue **#96** owns the cross-build
+  `past = 128` question and issue **#88** v2 owns wall-share attribution; **no model-level ceiling
+  is projected here until both land independently.**
+
+---
+
 ## 9. Testing and benchmarking strategy
 
 ### 9.1 Differential testing against the ORT CPU EP — Trinity

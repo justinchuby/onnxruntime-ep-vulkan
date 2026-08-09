@@ -1045,6 +1045,14 @@ mod tests {
             .join("shaders")
             .join("glsl");
         for spec in crate::registry::all_specs() {
+            for stem in spec.kernel.aux_stems() {
+                assert!(
+                    glsl.join(format!("{stem}.comp")).is_file(),
+                    "`{}` declares `{stem}` as a dispatch-time alternative, which the build never \
+                     produces: shaders/glsl/{stem}.comp does not exist",
+                    spec.op_type
+                );
+            }
             for d in spec.caps.iter() {
                 if let Some(stem) = spec.kernel.stem(d) {
                     let generated = manifest.iter().any(|v| v.stem == stem);
@@ -1072,6 +1080,9 @@ mod tests {
             .join("glsl");
         let mut named = std::collections::BTreeSet::new();
         for spec in crate::registry::all_specs() {
+            for stem in spec.kernel.aux_stems() {
+                named.insert(*stem);
+            }
             for d in spec.caps.iter() {
                 if let Some(stem) = spec.kernel.stem(d) {
                     named.insert(stem);
