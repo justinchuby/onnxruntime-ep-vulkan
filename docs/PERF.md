@@ -5200,9 +5200,9 @@ Only because that passed does the timing get published:
 
 | case | serial `gqa_f16` | parallel `gqa_decode_f16` | `W` chosen | kernel speed-up |
 |---|---|---|---|---|
-| decode past=128 | 1.354 ms | 0.920 ms | 4 | **1.47x** |
-| decode past=512 | 5.102 ms | 1.142 ms | 16 | **4.47x** |
-| decode past=1024 | 10.110 ms | 2.051 ms | 16 | **4.93x** |
+| decode past=128 | 1.355 ms | 0.920 ms | 4 | **1.47x** |
+| decode past=512 | 5.106 ms | 1.142 ms | 16 | **4.47x** |
+| decode past=1024 | 10.116 ms | 2.050 ms | 16 | **4.93x** |
 
 The shape of that column is the design: at `past = 128` the selector picks `W = 4` and the walk is
 short enough that fixed cost dominates; by `past = 1024` it is `W = 16` and the 1,025-token serial
@@ -5227,7 +5227,7 @@ byte-identical.
 | forced `W = 1` vs base build | **bitwise identical on all three outputs at all 13 lengths** (`max_abs = 0.0`) |
 | pipeline witness | forced `W = 1` dispatched `vulkan.gpu.gqa_f16` **only** — the decode module never appeared |
 | shipped default (`auto`) vs base | identical at `past <= 62`, differs at `past >= 63` — **the selector boundary, measured** |
-| `distinct_binaries` | true (subject `7ad38749…`, base `25a27fc4…`) |
+| `distinct_binaries` | true (subject `dcb25298…`, base `25a27fc4…`) |
 
 The last two rows are the point. The `auto` arm is *expected to differ* above the threshold and
 that row is labelled context rather than a check — but the fact that it flips exactly at 63 and
@@ -5241,11 +5241,11 @@ everything else in this file, against the same base build:
 | `past` | `seq_len` | outputs | decode module | subject/base kernel time |
 |---|---|---|---|---|
 | 0 | 2 | bitwise identical | never dispatched | 1.000 |
-| 0 | 8 | bitwise identical | never dispatched | 0.998 |
-| 0 | 64 | bitwise identical | never dispatched | 0.981 |
+| 0 | 8 | bitwise identical | never dispatched | 1.019 |
+| 0 | 64 | bitwise identical | never dispatched | 0.995 |
 | 128 | 2 | bitwise identical | never dispatched | 1.000 |
-| 128 | 8 | bitwise identical | never dispatched | 1.003 |
-| 128 | 128 | bitwise identical | never dispatched | 0.999 |
+| 128 | 8 | bitwise identical | never dispatched | 0.999 |
+| 128 | 128 | bitwise identical | never dispatched | 0.966 |
 
 `gqa_f16` is unchanged by a byte on this branch (`git diff <base>..HEAD -- rust/shaders/glsl/gqa_f16.comp`
 is empty), and this table is the runtime form of the same statement: at `seq_len > 1` the selector
@@ -5264,22 +5264,22 @@ witness, the equivalence and the dispersion gate all hold:
 
 | `past` | W=1 | W=2 | W=4 | W=8 | W=16 |
 |---|---|---|---|---|---|
-| 128 | 1.000 | 0.866 | **1.469** ← shipped | 2.291 | 3.456 |
-| 512 | 1.000 | 0.880 | 1.665 | 2.890 | **4.468** ← shipped |
-| 1024 | 1.000 | 0.884 | 1.700 | 3.081 | **4.930** ← shipped |
-| 2048 | 1.000 | 0.936 | 1.709 | 3.194 | **5.442** ← shipped |
+| 128 | 1.000 | 0.865 | **1.473** ← shipped | 2.300 | 3.453 |
+| 512 | 1.000 | 0.880 | 1.667 | 2.891 | **4.476** ← shipped |
+| 1024 | 1.000 | 0.885 | 1.701 | 3.083 | **4.935** ← shipped |
+| 2048 | 1.000 | 1.011 | 1.739 | 3.262 | **5.536** ← shipped |
 
 Every cell is equivalent to its own `W = 1` cell. Two things in this table are worth saying out
 loud:
 
-* **`W = 2` is slower than `W = 1` at every `past` measured** (0.87–0.94x). The reduction's fixed
-  cost is not amortised by a single extra lane. This is a real, reproducible regression in a cell
-  the selector never picks — `auto` goes 1 → 4 at the threshold and never selects 2 — but it is
-  reported rather than hidden, and it is the reason a `W`-generic statement would be false in both
-  directions.
+* **`W = 2` buys nothing, and below `past = 2048` it costs.** 0.865–0.885x at `past` 128–1024 and
+  1.011x at 2048: the reduction's fixed cost is not amortised by a single extra lane. This is a
+  real, reproducible regression in a cell the selector never picks — `auto` goes 1 → 4 at the
+  threshold and never selects 2 — but it is reported rather than hidden, and it is the reason a
+  `W`-generic statement would be false in both directions.
 * **This ladder does not reproduce #97's `W = 16` column.** The independently corrected values for
   that artifact were 4.1347 / 6.1849 / 7.0732 / 8.0288 at `past` 128/512/1024/2048; this
-  independent rebuild measures **3.456 / 4.468 / 4.930 / 5.442** on the same class of device. No
+  independent rebuild measures **3.453 / 4.476 / 4.935 / 5.536** on the same class of device. No
   attempt is made here to reconcile the two — different kernel, different harness, different
   warm-up and ordering discipline — but **none of #97's ratios are inherited, cited as support, or
   reused**, and the numbers above are the only ones this project stands behind.
