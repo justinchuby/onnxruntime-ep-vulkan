@@ -5052,3 +5052,323 @@ transition can never be declared, because
 correctly requires every declared transition to end at what the build computes. Rebuilding the
 stack on `main` is the only fix; merging `main` is not, because CI screens `refs/pull/N/merge`,
 which has the same shape.
+
+---
+
+## 27. The decode question the #56 change left open, and why it is still open (2026-08-09)
+
+§8.13 of `docs/DESIGN.md` changed the GQA workgroup geometry and said, in its own closing
+subsection, that decode was the thing it did not fix. Issue #96 asks a narrower question about the
+same change: at Phi-3.5 decode, does the candidate build take *longer* than the pre-change
+baseline, and if it does, over what range of KV lengths?
+
+**The answer this run supports is INCONCLUSIVE at `past = 128`, and the question remains open.**
+That is not the same sentence as either of the two sentences an earlier draft wanted to write. It
+is not "the effect is real" and it is not the opposite. It is that this protocol, at the dispersion
+it actually observed, cannot separate the two.
+
+`bench/results/decode_window_evidence.json` is the artifact; `bench/decode_window_evidence.py` is
+the one summarizer that owns its schema, its admissibility rule, its calibration, its verdicts, its
+window rule and its serialization. Nothing downstream re-derives a verdict from the records by a
+second path, because two paths is how a summary and its prose come to disagree.
+
+Every ratio in this section is `baseline_median_ms / candidate_median_ms`, the convention the
+summarizer publishes as `RATIO_CONVENTION`: **above 1 the candidate is faster, below 1 the candidate
+is slower.** Stated at the top because the first revision of this section stated its reciprocal and
+inverted every row it went on to print.
+
+### 27.1 What is in the artifact, and what "in" means
+
+66 records. 48 accepted. 18 refused.
+
+A refused record is **absent**. It is not a slow reading, it is not a fast reading, it is not a
+data point that leans one way; it is a length that was not measured. The producer writes refusals
+without a `speed` block at all, so a refused record has no median to be borrowed by accident, and
+the summarizer's `classify_record()` re-checks the whole admissibility contract on every record it
+is handed rather than trusting the producer's own flag:
+
+* the producer did not refuse it;
+* `median_ms` is finite and positive;
+* `samples_ms` is non-empty, all finite, `n == len(samples_ms)`, and the published median
+  re-derives from those samples to within 1e-3 ms;
+* all 13 required witnesses are present;
+* every output tensor compared CPU-equivalent for that repeat — *all* outputs, with nested verdict
+  keys flattened, so a divergent secondary output refuses the record rather than hiding behind a
+  passing primary.
+
+The 54 treatment records were measured on 2026-08-08/09 by an earlier revision of this
+investigation, and are reused here byte-identically rather than re-timed —
+`bench/results/crossbuild_decode_window_records.json` carries them with their provenance and two
+digests. Re-running the sweep would have replaced one desk-state with another and destroyed the
+ability to compare the two runs that already disagree. They were independently revalidated before
+reuse: 54 unique `(workload, arm, repeat)` triples, zero overlapping process spans, every published
+median re-derived from its own samples to within 4.5e-8 ms, `n == 20` and `inference_calls == 27` on
+all 36 accepted, library digests binding 1:1 to arms, and all 18 refusals structurally carrying no
+`speed` block.
+
+The 12 A/A records were measured here, and they do not match that protocol: 20 timed iterations
+each, as above, but **25** inference calls rather than 27. §27.2.1 is where that is disclosed and
+what it costs.
+
+### 27.2 The A/A arms, and the number that changes the reading
+
+An A/A arm allocates the **same binary** to both sides of a comparison. Whatever ratio it shows is,
+by construction, not a build difference. It is what this box does to two identical things, and it is
+the best scale available here against which a build difference could be called real.
+
+*Best available* is not *same protocol*, and §27.2.1 retracts that claim in full: these A/A arms ran
+a shorter warmup than the records they grade, in a session five hours later. Read the table below
+with that subsection open.
+
+| arm | binary on both sides | per-repeat ratios | half-range |
+|---|---|---|---|
+| `aa-candidate` | `85fbda2`, sha256 `3b210b01…`, 2,563,072 B | 0.8731 / 1.0226 / 1.0128 | **0.0748** |
+| `aa-baseline` | `c96e7d9`, sha256 `655a247c…`, 2,560,000 B | 1.0105 / 1.0163 / 0.9969 | 0.0097 |
+
+**A binary compared against itself moved 12.7% in one repeat.** Both arms run at
+`phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128` — the treatment workload, not a
+28 ms CNN standing in for it — and both are process-disjoint from every treatment record.
+
+The band is `max(0.05, widest A/A half-range) = 0.0748` (exactly 0.07475272505587355). The floor
+exists so that an unusually quiet calibration cannot produce a band tighter than this harness has
+ever been shown to resolve; here the measured spread is what binds.
+
+Two things make the band refuse to exist, and when there is no band every row is INDETERMINATE:
+no admissible A/A pair survives, or an A/A pair shares a process with the records it grades. Both
+are exercised as mutations in `bench/test_decode_window_evidence.py`.
+
+Process identity here is `(pid, started_at)`, not the bare PID. The two sessions are hours apart and
+Windows recycled a PID between them, so the same integer genuinely appears on both sides: **PID
+36380** is the treatment `prefill/M1/past0` baseline record of repeat 1, started
+`2026-08-09T00:05:22`, and it is also the `aa-candidate` left-side record of repeat 1, started
+`2026-08-09T05:03:42`. One integer, two processes, 4h 58m 20s apart. That is the whole reason the
+disjointness the artifact claims is about processes and not about integers, and it is the one PID in
+this artifact that is shared — the shipped test re-derives the set rather than trusting this
+sentence.
+
+#### 27.2.1 What the A/A arms did **not** share with the records they grade
+
+An earlier revision of this section described the calibration as running the treatment's protocol,
+and described the gap between the two sessions in units of days. Both descriptions are withdrawn
+here as inaccurate, and replaced with what the records say.
+
+**Timing, exactly.** Every timestamp below is `started_at`/`finished_at` from the records
+themselves, and the shipped tests re-derive each span rather than quoting this table.
+
+| span | value |
+|---|---|
+| treatment sweep (54 records) | `2026-08-08T23:59:28` → `2026-08-09T00:16:29` |
+| A/A calibration (12 records) | `2026-08-09T05:02:25` → `2026-08-09T05:05:33` |
+| last treatment record ends → first A/A record starts | **4h 45m 56s** |
+| first treatment record starts → last A/A record ends | **5h 06m 05s** |
+| the six `past = 128` treatment records | `2026-08-09T00:01:04` → `2026-08-09T00:13:01`, i.e. **4h 49m 24s** before the A/A arms started |
+
+6 of the 54 treatment records — the two mobilenet workloads and the `prefill/M1/past0` pair of
+repeat 0 — started on 2026-08-08, in the last 32 seconds of that day. Every other treatment record,
+every `past = 128` record, and all twelve A/A records ran on **2026-08-09**. The earlier revision's
+day-scale wording was wrong, and for the row the headline is about it was false outright: the
+`past = 128` comparison and the calibration that grades it carry the same calendar date. The honest
+figure is hours, and it is stated above to the second.
+
+**Protocol, exactly.** The two arms did not issue the same number of inference calls per record:
+
+| | timed iterations (`speed.n`) | inference calls | untimed calls |
+|---|---|---|---|
+| treatment (36 accepted) | 20 | **27** | 7 |
+| A/A calibration (12 accepted) | 20 | **25** | 5 |
+
+Both sides time 20 iterations and publish the median of those 20; the workload, the repeat count and
+the pairing code are identical. What differs is two untimed calls per record. The A/A probe's own
+constants say where its five come from — one first run plus four further warmups, discarded before
+timing. The treatment producer's warmup parameter is *not* carried in its records, so the
+composition of its seven is not established here, only the count. `protocol_delta()` in
+`bench/decode_window_evidence.py` reads both numbers off the records and reports the mismatch; a
+document that stops disclosing it turns the test file red.
+
+**What this costs, and what is therefore not said.** The direction is unmeasured. A shorter warmup
+could leave the A/A samples less settled and so *widen* its spread, or it could leave them in a
+state quieter than the treatment's and *narrow* it; the A/A arm was never run at 27 calls, so this
+artifact cannot say which, and no argument is offered that the delta is conservative in either
+direction. The consequences are taken structurally rather than talked away:
+
+* the band **is not** a measurement of the noise the treatment records were subject to, and this
+  section no longer describes it as one, in either direction. It is a measurement of a neighbouring
+  protocol in a later session on the same machine at the same workload;
+* every power figure derived from it is therefore an **upper bound** and is labelled as one in
+  §27.3, because `power_at` is monotonically decreasing in the band;
+* no `NEUTRAL` row in §27.3 may be read as "no difference at this length". `NEUTRAL` here means
+  "no difference wider than a band that was not calibrated on this protocol", which is weaker, and
+  §27.8 forbids the stronger reading outright;
+* the `INDETERMINATE` verdict at `past = 128` stands unchanged. It is the verdict that declines to
+  decide, and nothing about the delta lets it decide.
+
+The one claim that survives the delta untouched is the calibration's *existence* argument: two
+allocations of one identical binary, at the treatment workload, differed by 12.7% in one of three
+repeats. That is a fact about this machine at this workload under a 25-call protocol, and it is
+enough to establish that single-digit-percent differences here are not self-evidently real. It is
+not enough to price them.
+
+### 27.3 The rows
+
+Ratio convention is **`baseline_median_ms / candidate_median_ms`**, the string
+`bench/decode_window_evidence.py` publishes as `RATIO_CONVENTION` and writes into the artifact:
+**above 1 the candidate is faster, below 1 the candidate is slower.** That is the direction the
+shipped code computes — `paired()` divides the baseline side by the candidate side, and the planted
+mutation test scales the candidate's samples *up* and requires `SLOWER` back. An earlier revision of
+this section stated the reciprocal, which inverts every row below; `test_the_documents_state_the_ratio_convention_the_code_implements`
+now fails on that phrasing. Three repeats are required; a row is SLOWER or FASTER only if every
+repeat clears the band in the same direction, NEUTRAL if the whole spread sits inside it, and
+INDETERMINATE otherwise.
+
+| workload | ratios | geo-mean | 95% CI | verdict | power at 0.859 (upper bound, at the selected 0.0748 band) |
+|---|---|---|---|---|---|
+| `mobilenetv2-12/batch/N1` | 1.0292 / 1.0859 / 0.8646 | 0.9886 | [0.735, 1.329] | INDETERMINATE | ≤ 0.40 |
+| `mobilenetv2-12/batch/N16` | 1.0031 / 0.9788 / 1.0245 | 1.0020 | [0.947, 1.060] | NEUTRAL | ≤ 1.00 |
+| `…/decode/M1/past1024` | 1.1091 / 1.0249 / 1.0345 | 1.0555 | [0.948, 1.175] | INDETERMINATE | ≤ 0.88 |
+| **`…/decode/M1/past128`** | 1.0008 / 1.0038 / 0.8948 | **0.9651** | **[0.820, 1.136]** | **INCONCLUSIVE** | **≤ 0.6621** |
+| `…/decode/M1/past512` | 0.9584 / 1.0202 / 1.0740 | 1.0165 | [0.882, 1.171] | NEUTRAL | ≤ 0.74 |
+| `…/prefill/M1/past0` | 1.1884 / 1.1538 / 0.8414 | 1.0488 | [0.652, 1.687] | INDETERMINATE | ≤ 0.28 |
+
+Under the convention above, the `past = 128` geometric mean of 0.9651 sits on the *slower*-candidate
+side of 1.0 and four rows sit on the faster side. **No speedup is claimed anywhere in this section
+or this artifact**, and none is available to be claimed: not one of those four rows clears the band
+in every repeat, so each is NEUTRAL or INDETERMINATE, and a NEUTRAL row here says only "no
+difference wider than a band that §27.2.1 shows was not calibrated on this protocol". None of them
+is evidence that anything got faster, and none of them is evidence that nothing changed.
+
+The artifact records `past = 128` as INDETERMINATE, which is the summarizer's vocabulary for "the
+spread straddles the band". Read as a conclusion about issue #96, that is **INCONCLUSIVE**: the
+95% interval [0.820, 1.136] contains 1.0 *and* contains the earlier observation, so the data are
+consistent with there being nothing there and consistent with the effect that motivated the issue.
+
+Power against 0.859 at this row's own dispersion is **at most 0.6621 at the selected 0.0748 band**,
+and both halves of that qualifier carry weight.
+`power_at` is monotonically decreasing in the band, and §27.2.1 shows the band was
+measured in a different session under a 25-call protocol rather than the treatment's 27 — so 0.0748
+is not established as wide enough for the run it grades, and every power figure computed against it
+is an upper bound rather than a point estimate. Even at that ceiling, at least a third of the time
+an effect of exactly the disputed size would have failed to declare itself under this rule; if the
+treatment session's own band was wider, the true power is lower still. At the older floor the
+previous revision used (0.1106, derived from a CNN) the same figure is 0.346, which is the number
+the review verified; which band a power figure belongs to always has to be said out loud, and so
+does which direction the inequality runs. The pairing is shipped as an assertion:
+`test_the_power_figure_is_pinned_to_the_band_it_was_computed_at` re-derives both numbers from
+`power_at` and fails if either drifts from the band it is quoted against.
+
+### 27.4 Two observations, both preserved
+
+| run | protocol | per-repeat ratios at `past = 128` | summary |
+|---|---|---|---|
+| PR #95 (closed unmerged, head `ce63201`) | paired, 3 repeats | 0.8633 / 0.8592 / 0.7949 | median **0.859**, geo-mean 0.8385 |
+| this artifact (records from PR #99, closed unmerged, head `cf6e3f5`) | paired, 3 repeats | 1.0008 / 1.0038 / 0.8948 | geo-mean **0.9651** |
+
+Both are kept. The 0.859 figure is the **median** of its three per-repeat ratios, not their
+geometric mean — worth stating, because the issue's own table pairs a candidate repeat against a
+baseline repeat from a different index and arrives at the same headline by a route whose arithmetic
+does not re-derive.
+
+Why the two runs disagree is not known and is not guessed at here. One factual difference is
+recorded because it is a fact and not an explanation: **the two runs did not use bit-identical
+binaries.** Same two commits, same byte sizes, different content digests —
+
+| arm | commit | bytes | PR #95 sha256 | this artifact's sha256 |
+|---|---|---|---|---|
+| candidate | `85fbda2` | 2,563,072 | `1dfa7b21…` | `3b210b01…` |
+| baseline | `c96e7d9` | 2,560,000 | `f0d8a822…` | `655a247c…` |
+
+That is an observation about build reproducibility. It is *not* offered as the reason the numbers
+differ; nothing here measures whether it is.
+
+A second limitation, stated because omitting it would make the band look stronger than it is: the
+A/A arms were measured in a **later session on the same day** — 4h 45m 56s after the last treatment
+record finished — and under a **25-call protocol against the treatment's 27**. §27.2.1 gives both to
+the second and to the call, and withdraws the day-scale wording this section used to carry. The A/A
+medians sit around 100–117 ms while the treatment medians at the same workload sit around
+118–141 ms, so the two sessions were not in the same state. A band measured in one desk-state and
+under one protocol, then applied to another of each, is a real weakness of this calibration. The
+reading that follows is that the band is **not a measurement of the treatment run's noise at all**,
+in either direction: the earlier revision's "lower bound" wording is withdrawn too, because a lower
+bound is a claim about direction and nothing here measures which way two untimed calls and five
+hours move dispersion.
+
+### 27.5 The window question has no answer at all
+
+Issue #96 asks over what range of KV lengths the effect holds. A window claim about a target length
+needs the target *and* its named neighbours in the preregistered ordered universe
+`{32, 64, 128, 256, 512, 1024}` to be measured, accepted lengths. If either side is absent or
+refused, the window verdict is INDETERMINATE — not "as far as we can see", not a window inferred
+from whichever lengths happened to survive.
+
+* measured and accepted: 128, 512, 1024
+* **no admissible pair exists at: 32, 64, 256**
+
+The target is 128; its predecessor 64 and its successor 256 are both unmeasured. So the window
+verdict is INDETERMINATE for the strongest possible reason — both sides of the target are missing.
+No arrangement of the three lengths that were measured answers the question that was asked.
+
+`bench/test_decode_window_evidence.py` mutates every treatment record to refused, and separately
+mutates only the neighbours of 128 to refused, and asserts that no claim survives either.
+
+### 27.6 What differs between the two binaries
+
+Three compiled inputs differ, not one:
+
+1. `rust/shaders/glsl/gqa_f16.comp` — the workgroup geometry and its specialisation constant;
+2. `rust/src/ops/attention.rs` — the host-side size rule and the dispatch grid;
+3. `evidence/proof_ledger.jsonl` — `include_str!`'d into the crate at `rust/src/registry.rs`, so it
+   is baked into the binary; it differs between the arms, and any enumeration that stops at `rust/`
+   is incomplete.
+
+Because three inputs differ, no timing difference measured here can be attributed to any one of
+them. The static SPIR-V observations that are available — the literal `local_size` declaration and
+the specialisation-constant id — are observations about the shader *text*, and nothing about driver
+machine code, register allocation or occupancy is inferred from them.
+
+`rust/tools/audit_instruments.py` and `rust/tools/instrument_census.json` also differ between the
+two trees, and are named here for completeness; neither is compiled into the DLL.
+
+### 27.7 Reproduce
+
+The A/A calibration in this artifact was produced with the probe's default `--warmups 5`, which is
+the 25-call protocol §27.2.1 describes. Reproducing the *calibration as published* means keeping
+that default; reproducing the calibration this artifact would have wanted means passing
+`--warmups 7`, so that the band and the records it grades issue the same number of inference calls.
+Neither run exists yet at both settings, which is why §27.2.1 declines to price the difference.
+
+```
+python bench/results/probe_decode_aa_calibration.py \
+  --candidate <candidate-worktree>/rust/target/release/onnxruntime_vulkan_ep.dll \
+  --baseline  <baseline-worktree>/rust/target/release/onnxruntime_vulkan_ep.dll \
+  --repeats 3 --out bench/results/decode_window_evidence.json
+```
+
+and to check a committed artifact against its own raw samples without a GPU:
+
+```
+python bench/results/probe_decode_aa_calibration.py \
+  --resummarize bench/results/decode_window_evidence.json --check
+```
+
+`--check` re-derives the whole summary from the records and exits non-zero if the published one
+disagrees. It fails when timing samples are scaled or deleted, when a witness is removed, when a
+length is refused, when the A/A arm is contaminated, and when a binary identity disagrees with the
+arm it is filed under. Each of those is a shipped mutation test rather than a claim.
+
+### 27.8 What may be said, and what may not
+
+May be said: at `past = 128` this run is **INCONCLUSIVE**; a binary compared against itself moved
+12.7% in one repeat at this workload, under a 25-call protocol in a later session; three of the six
+preregistered KV lengths have an admissible pair and 32, 64 and 256 have none; the earlier 0.859
+observation and this run's 0.9651 both stand as observations, unpooled, under the
+`baseline ÷ candidate` convention in which both sit on the slower-candidate side of 1.0.
+
+May not be said: that the effect was shown to be absent; that the window is bounded; that any
+single compiled input is responsible for anything measured here; that the disagreement between the
+two runs has a known cause; that the candidate was shown to be **faster** at any length — no row
+here clears the band in every repeat in either direction, and no speedup result exists here to be
+cited; that the band measures the treatment session's noise, or bounds it from either side; that
+the A/A arms ran the treatment's protocol, which §27.2.1 shows they did not; that this protocol's
+power against 0.859 is anything other than at most 0.6621 at the 0.0748 band — the figure is a
+ceiling attached to one band, not a point estimate and not band-free. Issue #96 is not answered by
+this artifact, and the artifact says so in its own
+`window.claim` field.
