@@ -1281,13 +1281,31 @@ unsafe fn get_capability_impl(
             // SAFETY: api live; node is a live graph node.
             let view = unsafe { NodeView::new(api, node) };
             let qual = view.qualified_name();
-            if partition::is_anchor(&qual) {
+            // Issue #73. Anchor status is a property of the NODE, not of its op name: the op must
+            // be anchor-capable AND carry a resident graph initializer at one of its
+            // schema-designated weight sites (`partition::WEIGHT_SITE_AUDIT`).
+            //
+            // The residency oracle is `NodeView::input_is_constant`, which is the same constant
+            // set the boundary-byte accounting twenty lines below already reads. That matters:
+            // `ValueInfo_IsConstantInitializer` answers `false` for fused-node boundary
+            // `value_info` (see the `const_names` reconciliation in `Compile`), so asking the
+            // other side of that seam would report "no weights anywhere" for every island and
+            // silently disable every anchor. Here we are on original graph nodes during
+            // `GetCapability`, which is the side that answers truthfully.
+            if partition::anchors_with_residency(&qual, |i| {
+                view.has_input(i) && view.input_is_constant(i)
+            }) {
                 island.anchors += 1;
                 // Anchor flop estimate: 2 × K × N for a matmul-family op.
                 // Conservative minimum: 2 × 3072 × 3072 when shapes are unavailable.
                 island.flops = island.flops.saturating_add(2 * 3072 * 3072);
             } else {
                 // Light elementwise op: 1 FLOP per output element (fp16: 2 bytes → 1 FLOP).
+                //
+                // An activation-only `MatMul` now lands here rather than in the branch above, and
+                // that is the intended consequence, not a regression: with no weight operand it
+                // has no reuse to amortise a boundary against, so it is scored — and gated — as
+                // the transfer-dominated work it is.
                 // SAFETY: `api` is live; node is a live graph node for this call.
                 let out_slots = unsafe { node_slots(api, node, Slots::Outputs) };
                 let out_bytes: u64 = out_slots.iter().map(|&s| slot_bytes(s)).sum();

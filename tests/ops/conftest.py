@@ -773,14 +773,20 @@ def register_vulkan_ep() -> bool:
 def _probe_vulkan_device() -> bool:
     """Return True if the registered Vulkan EP claims at least one node in a probe session.
 
-    Uses a minimal MatMulNBits (com.microsoft, 4-bit, K=32 N=32) model: MatMulNBits is an
-    anchor op (partition::is_anchor), so it passes the partition economics gate regardless of
-    transfer cost — the anchor exemption unconditionally claims any island containing one.
-    Returns False if the EP is registered but advertises zero devices (no Vulkan ICD, or all
-    devices fail the capability gate).
+    Uses a minimal MatMulNBits (com.microsoft, 4-bit, K=32 N=32) model. MatMulNBits is
+    anchor-capable in `partition::WEIGHT_SITE_AUDIT` **and** this model supplies `B` (input 1)
+    and `scale` (input 2) as graph initializers, which are two of its three designated weight
+    sites — so `partition::anchors_with_residency` returns true and the island passes the
+    partition economics gate regardless of transfer cost via the anchor exemption.
+
+    Both halves matter since issue #73: anchor-capability alone is no longer enough, and if this
+    model ever streamed its weights instead of embedding them, the probe would stop claiming and
+    every device-gated test would skip. Returns False if the EP is registered but advertises zero
+    devices (no Vulkan ICD, or all devices fail the capability gate).
 
     A plain Add model is NOT sufficient here: a 1-node Add forms a non-anchor island and is
-    correctly declined by the partition TooSmall gate (1 < min_nodes=4, anchors=0).
+    correctly declined by the partition TooSmall gate (1 < min_nodes=4, anchors=0). Nor would an
+    activation-only MatMul do: since #73 it is not an anchor either, for the same reason.
     """
     import onnx
     import onnx.helper as oh

@@ -1976,6 +1976,26 @@ remains 0.0 until Niobe wires VkQueryPool timestamps for calibration.
   model must produce `[partition]` codes. If it does not, the gate is inert. Falsifier: the test
   asserting `claims["Sigmoid"]["code"] == "partition"` goes red.
 
+> **Amendment 2026-08-09 (Niobe), issue #73 — `island.anchors` no longer counts what this section
+> says it counts.** The over-declination bullet above is still correct about Phi-3.5, and its
+> reason has narrowed: an island is exempt when it contains a node that is anchor-capable **and**
+> carries a resident graph initializer at a schema-designated weight site (`DESIGN.md` §5.4.2).
+> Phi-3.5's `MatMulNBits` nodes each carry `B` and `scales` as initializers — both schema-required
+> — so its 225 anchors and its exemption are unchanged, and `bench/phi35.py → 0 claimed nodes`
+> remains the falsifier. GQA, however, **no longer contributes an anchor**: it has zero designated
+> weight sites, so "any island containing MatMulNBits or GQA" now reads "any island containing
+> MatMulNBits". This costs nothing on Phi-3.5, where every GQA node already sits in the island the
+> `MatMulNBits` nodes anchor, and it is stated here because a reader counting anchors from that
+> sentence would get 225 for the wrong reason.
+>
+> The over-declination guard also gains a second falsifier that needs no model download: the
+> `weighted` arm of
+> `test_partition_gate.py::test_activation_only_matmul_is_declined_and_the_weighted_one_is_claimed`
+> asserts that a `MatMul` with a resident `B` is still claimed. The `act_only` arm in the same
+> session — same op, same shapes, same island count, no resident operand — asserts it is declined
+> with `code == "partition"`, which is a *third* under-declination guard on an op that used to be
+> unconditionally exempt.
+
 **Single-cluster exemption retained:** when all claimed nodes form one connected component (the
 common case for unit tests of individual ops), the gate is bypassed. The gate applies to
 multi-cluster graphs, where it has a real scheduling decision to make.
@@ -4151,9 +4171,100 @@ was built for on its first run: the two new declines are
 Tank's new Cast kernel arriving ahead of its proof. That is the ledger gate behaving: a kernel that
 exists and is unproven declines, and says so by name.
 
-## 8. Quantization
+### 7.25 Where every registered op keeps its weights — the designated-weight-site audit (2026-08-09, Niobe, issue #73)
 
-Mandatory, not optional (§3.2). The plan.
+**Why this belongs in the op-coverage document.** `partition::is_anchor` was a list of ten op-name
+strings, and issue #73 is what a list of op names costs when the property it stands in for is a
+property of *nodes*: MiniLM-L6-v2's per-head QK^T and AV batched matmuls are `MatMul` nodes with
+both operands runtime activations, they matched the string, and six single-node islands of
+~1.18 MB boundary for ~0.013 GFLOP were claimed on the strength of it. The design rationale and the
+gate mechanics are `DESIGN.md` §5.4.2; **this section is the op census** — the per-row question
+"where does this operator keep its weights, and how do we know?", asked of every registered op and
+every schema input including trailing optionals.
+
+**The rule the census feeds.** A node anchors iff its op is **anchor-capable** *and* it carries a
+resident graph initializer at one of that op's **designated weight sites**. A designated site is a
+schema input holding the weight payload — the learned matrix a GEMM reuses across every token, or
+the per-block quantisation parameters whose extent scales with it. Not designated anywhere:
+activations, **activation**-quantisation parameters, per-channel biases, rotary sin/cos tables, KV
+caches, masks, sequence lengths, index and shape vectors.
+
+**Result over all 96 registered rows.** 10 anchor-capable, 86 not; 17 designated sites in total.
+
+| Registered op | Anchor-capable | Designated sites (schema ordinal : name) |
+|---|---|---|
+| `MatMul` | ✔ | 0 `A`, 1 `B` |
+| `Gemm` | ✔ | 0 `A`, 1 `B` |
+| `Conv` | ✔ | 1 `W` |
+| `com.microsoft::MatMulNBits` | ✔ | 1 `B`, 2 `scales`, 3 `zero_points` |
+| `com.microsoft::QMoE` | ✔ | 2 `fc1_experts_weights`, 3 `fc1_scales`, 5 `fc2_experts_weights`, 6 `fc2_scales`, 8 `fc3_experts_weights`, 9 `fc3_scales`, 11 `fc1_zero_points`, 12 `fc2_zero_points`, 13 `fc3_zero_points` |
+| `com.microsoft::GroupQueryAttention` | ✔ | *(none)* |
+| `com.microsoft::MultiHeadAttention` | ✔ | *(none)* |
+| `Attention` (ai.onnx 23/24) | ✔ | *(none)* |
+| `LinearAttention`, `com.microsoft::LinearAttention` | ✔ | *(none)* |
+| 86 further rows | ✘ | *(none)* |
+
+**The five findings worth reading, rather than the table.**
+
+1. **`MatMul` and `Gemm` designate both operands, not just `B`.** The schema names neither operand
+   a weight and constrains both to one type; `x @ W` and `W @ x` both occur, and `Gemm` has
+   `transA`/`transB`. Designating both makes the rule exactly the issue's — *anchors iff at least
+   one operand is a graph initializer* — rather than a narrower rule that would have silently
+   declined `W @ x` graphs. On MiniLM, 36 of 48 `MatMul` nodes have an initializer at `B`; the 12
+   that do not are the six QK^T and six AV nodes, which are precisely the reported defect.
+
+2. **GQA has zero designated weight sites, audited across its full 7..=16 input range.** Query,
+   key, value, `past_key`, `past_value`, `seqlens_k`, `total_sequence_length`, `cos_cache`,
+   `sin_cache`, `position_ids`, `attention_bias`, `head_sink` and the QK-norm inputs 14/15 are
+   activations, KV caches, rotary tables or sequence bookkeeping. The QKV projections are separate
+   upstream nodes — which is exactly why §5 of this document treats attention as *leverage over the
+   projection kernels*. `cos_cache`/`sin_cache` **are** resident initializers in a GenAI-exported
+   graph, and designating them would let a lone GQA node anchor an island on a lookup table.
+   **So GQA never anchors by itself, and remains fully claimable as a supported node inside an
+   island anchored elsewhere** — which is its position in Phi-3.5, where 32 GQA nodes sit in the
+   island the 161 `MatMulNBits` nodes anchor. The same finding holds for MHA (input 3 `bias` is a
+   packed QKV bias *vector*), for `ai.onnx::Attention`-23/24, and for both spellings of
+   `LinearAttention`.
+
+3. **QMoE has nine designated sites, and inputs 19/20 are not among them.** Read against
+   `contrib_ops/contrib_defs.cc` on ORT `main`: the three per-expert weight matrices (2, 5, 8) and
+   their per-block scales (3, 6, 9) and zero-points (11, 12, 13). Excluded and why: 0 `input`,
+   1 `router_probs`, 14 `router_weights` are activations; 4, 7, 10 `fc*_experts_bias` are
+   per-channel biases; 15, 16 `fc*_global_scale` are one scalar per expert; 17, 18 `fc*_act_scale`
+   and **19, 20 `fc1_act_block_scale` / `fc2_act_block_scale` are MXFP block scales of the
+   ACTIVATIONS** — a resident tensor at 19 or 20 describes this inference's activation
+   quantisation, not any weight, and must never designate. This matters more than it looks:
+   `QMOE`'s fingerprint declares `max_inputs: 21`, so 19/20 are exactly the trailing optionals an
+   audit that stopped at "the inputs I remembered" would have missed.
+
+4. **Ten registered rows are genuinely weight-bearing and are still not anchor-capable.** `PRelu`
+   (slope), `Gather` (embedding table), `RMSNormalization` and the three Simplified/Skip norms
+   (gain vectors), `com.microsoft::GatherBlockQuantized` (quantised embedding table),
+   `com.microsoft::MoE` (expert matrices), and both spellings of `CausalConvWithState` (depthwise
+   kernel). None has ever been an anchor. Issue #73 is about removing anchors that were never
+   earned, not about adding new ones, so their sites are recorded in the audit prose and left
+   undesignated; promoting any of them is a separate change with its own measurement.
+
+5. **Two names in the old list had no registry row at all.** `ConvTranspose` and
+   `com.microsoft::Attention` were unreachable: a node whose op the registry does not carry is
+   never claimed, so it never reaches an island. The old list was over-wide in that second way too,
+   and they are absent from the audit rather than carried as decoration. (`com.microsoft::Attention`
+   is a real ORT contrib op and simply is not registered here; §4's inventory is the authority on
+   what is.)
+
+**Completeness is enforced, not asserted.** `weight_site_audit_covers_the_registry_exactly`
+compares the audit's key set against `registry::all_specs()` — no gaps, no strays, no duplicates —
+so a row cannot be added to the registry without someone deciding where its weights are. That is
+the same discipline §4's inventory applies to claiming, applied to anchoring.
+
+**Falsifiers.** Four source-level mutations, each rebuilt and run
+(`rust/tools/probe_partition_anchor_mutations.py`, witness
+`bench/results/partition_anchor_mutations.json`): removing the residency check, removing the
+designated-site check, designating GQA's `cos_cache`, and designating QMoE's 19/20. All four are
+`CAUGHT`. The first, rebuilt into the shipping cdylib, makes the live EP claim an activation-only
+`MatMul` again — the pre-#73 behaviour observed rather than inferred.
+
+
 
 ### 8.1 `MatMulNBits` — the shape of the work
 

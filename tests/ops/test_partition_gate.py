@@ -11,14 +11,21 @@ partition::evaluate is called for each component; a non-anchor component below t
 flops-per-transfer margin produces a [partition] decline code in the CLAIM_LOG.
 
 Model design: two independent Sigmoid branches share no edges. ORT sees them as a graph with
-two disconnected claimed clusters, each a 1-node island with no anchors (Sigmoid is not in
-partition::is_anchor). partition::evaluate fires → TooSmall (1 < min_nodes=4, anchors=0) →
-[partition] decline code. CLAIM_LOG records the decline.
+two disconnected claimed clusters, each a 1-node island with no anchors (Sigmoid is not
+anchor-capable in partition::WEIGHT_SITE_AUDIT). partition::evaluate fires → TooSmall
+(1 < min_nodes=4, anchors=0) → [partition] decline code. CLAIM_LOG records the decline.
+
+Issue #73 added a third model to this file. The two above establish that the gate fires for ops
+that were never anchors; that one establishes it now fires for a `MatMul` too, when the
+`MatMul`'s operands are both runtime activations — which is the case the anchor exemption used
+to swallow on op name alone. It carries its own regression control in the same graph.
 
 Two guard directions (§7.0.2, as formalised by Morpheus):
-  Over-declination: the anchor exemption in partition::evaluate ensures any island containing
-    MatMulNBits or GQA always passes (anchors > 0 → Claim). Phi-3.5 bench checks this
-    (353 claimed, 1 island after GQA, MATCH). Falsifier: bench/phi35.py → 0 claimed nodes.
+  Over-declination: the anchor exemption in partition::evaluate ensures any island containing a
+    MatMulNBits node with its resident weight always passes (anchors > 0 → Claim). Phi-3.5 bench
+    checks this (353 claimed, 1 island after GQA, MATCH). Falsifier: bench/phi35.py → 0 claimed
+    nodes. Second falsifier, host-side and cheap: the `weighted` arm of
+    test_activation_only_matmul_is_declined_and_the_weighted_one_is_claimed.
   Under-declination: THIS TEST. A non-anchor two-cluster model must produce [partition]
     declines. Falsifier: claims["Sigmoid"]["code"] != "partition" when CLAIM_LOG is set,
     i.e. the EP claims both Sigmoid nodes instead of declining them.
@@ -30,12 +37,14 @@ Run::
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 
 import numpy as np
 import onnx
 import onnx.helper as oh
+import onnx.numpy_helper as onh
 import onnxruntime as ort
 
 import _models as m
@@ -87,6 +96,139 @@ def _two_branch_mul_model() -> bytes:
     model = oh.make_model(graph, opset_imports=[oh.make_opsetid("", 15)])
     model.ir_version = 8
     return model.SerializeToString()
+
+
+def _mixed_matmul_residency_model() -> bytes:
+    """Two independent 1-node `MatMul` clusters that differ **only** in operand residency.
+
+    Cluster A — ``act_only``:  xa [4,8] @ xb [8,4] -> ya [4,4]
+        Both operands are graph inputs. No initializer sits at either of `MatMul`'s designated
+        weight sites (0 `A`, 1 `B`), so `partition::anchors_with_residency` returns false, the
+        island carries `anchors=0`, and the `min_nodes` gate rejects it: `TooSmall` (1 < 4)
+        -> `[partition]` decline.
+
+    Cluster B — ``weighted``:  xc [4,8] @ W [8,4] (initializer) -> yc [4,4]
+        Identical op, identical opset, identical shapes, identical node count, identical
+        elementwise byte traffic. The single difference is that `B` is a graph initializer —
+        a resident weight at a designated site — so this node anchors and the exemption claims
+        the island.
+
+    This is issue #73's pair in one graph and one session: same op name, opposite fates,
+    decided by residency. Before the fix, `is_anchor("MatMul")` was true for both and both
+    islands were claimed on the strength of the string.
+    """
+    rng = np.random.default_rng(73)
+    xa = oh.make_tensor_value_info("xa", onnx.TensorProto.FLOAT, [4, 8])
+    xb = oh.make_tensor_value_info("xb", onnx.TensorProto.FLOAT, [8, 4])
+    xc = oh.make_tensor_value_info("xc", onnx.TensorProto.FLOAT, [4, 8])
+    ya = oh.make_tensor_value_info("ya", onnx.TensorProto.FLOAT, [4, 4])
+    yc = oh.make_tensor_value_info("yc", onnx.TensorProto.FLOAT, [4, 4])
+
+    weight = onh.from_array(rng.standard_normal((8, 4)).astype(np.float32), name="W")
+
+    act_only = oh.make_node("MatMul", inputs=["xa", "xb"], outputs=["ya"], name="act_only")
+    weighted = oh.make_node("MatMul", inputs=["xc", "W"], outputs=["yc"], name="weighted")
+
+    graph = oh.make_graph(
+        [act_only, weighted],
+        "matmul_residency_pair",
+        [xa, xb, xc],
+        [ya, yc],
+        initializer=[weight],
+    )
+    model = oh.make_model(graph, opset_imports=[oh.make_opsetid("", 15)])
+    model.ir_version = 8
+    return model.SerializeToString(), onh.to_array(weight)
+
+
+def _claim_records(log_path: pathlib.Path) -> list[dict]:
+    """Every CLAIM_LOG record, in order.
+
+    `m.read_claim_log` keys by op name and keeps the last record per op, which cannot express
+    "two nodes of the same op, opposite verdicts" — the exact shape this file needs. Reading the
+    raw lines is not a second implementation of the log format; it is the same parse without the
+    lossy reduction.
+    """
+    if not log_path.exists():
+        return []
+    out = []
+    for line in log_path.read_text("utf-8").splitlines():
+        line = line.strip()
+        if line:
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return out
+
+
+def test_activation_only_matmul_is_declined_and_the_weighted_one_is_claimed(
+    require_vulkan, tmp_path: pathlib.Path
+) -> None:
+    """Issue #73, through the live EP: an activation-only `MatMul` must not anchor.
+
+    Artifact: the CLAIM_LOG for one session containing two `MatMul` nodes shows
+    ``act_only`` declined with ``code == "partition"`` and ``weighted`` claimed.
+
+    Falsifier: if `partition::anchors_with_residency` ever reverts to matching the op name,
+    ``act_only`` is claimed and the first assertion below fails. If instead the fix over-reaches
+    and rejects `MatMul` outright, ``weighted`` is declined and the second fails. The two
+    assertions bracket the change from both sides, which a single-polarity test cannot do.
+
+    Why the pair is in **one** graph: everything a partition verdict depends on except residency
+    — opset, dtype, shapes, node count, island count, transfer model, policy, driver, build — is
+    then held identical by construction rather than by the author remembering to match it.
+    """
+    log_path = tmp_path / "claim_matmul_residency.jsonl"
+    model, weight = _mixed_matmul_residency_model()
+    feeds = {
+        "xa": np.random.default_rng(1).standard_normal((4, 8)).astype(np.float32),
+        "xb": np.random.default_rng(2).standard_normal((8, 4)).astype(np.float32),
+        "xc": np.random.default_rng(3).standard_normal((4, 8)).astype(np.float32),
+    }
+
+    opts = m._make_session_options()
+    os.environ["ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"] = str(log_path)
+    try:
+        session = ort.InferenceSession(model, opts, providers=m.EP_PROVIDERS)
+        ya, yc = session.run(None, feeds)
+    finally:
+        del os.environ["ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"]
+
+    # Numerics first: a partition decision that changed the answer would be a different and
+    # worse defect than the one being fixed, and neither branch may drift.
+    np.testing.assert_allclose(ya, feeds["xa"] @ feeds["xb"], rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(yc, feeds["xc"] @ weight, rtol=1e-4, atol=1e-4)
+
+    records = _claim_records(log_path)
+    assert records, (
+        "No CLAIM_LOG records at all — the EP did not run GetCapability, so nothing below "
+        "would be attributable to the partition gate."
+    )
+    by_node = {r["node"]: r for r in records if r.get("op") == "MatMul"}
+    assert set(by_node) >= {"act_only", "weighted"}, (
+        f"Expected CLAIM_LOG rows for both MatMul nodes; saw {sorted(by_node)}. "
+        f"All records: {records}"
+    )
+
+    act = by_node["act_only"]
+    assert act["claimed"] is False, (
+        "An activation-only MatMul (both operands are graph inputs) has no resident initializer "
+        "at a designated weight site, so it must not anchor its 1-node island and the min_nodes "
+        f"gate must reject it. Instead it was claimed. Record: {act}"
+    )
+    assert act["code"] == "partition", (
+        f"Expected code='partition' for the activation-only MatMul island (TooSmall: 1 node, "
+        f"0 anchors, min_nodes=4); got code={act['code']!r}. Record: {act}"
+    )
+
+    weighted = by_node["weighted"]
+    assert weighted["claimed"] is True, (
+        "REGRESSION CONTROL: the MatMul whose B operand is a graph initializer carries a "
+        "resident weight at a designated site, so it must still anchor and still be claimed on "
+        "the identical boundary. A fix that declined this one would strip every projection "
+        f"matmul in every transformer the EP runs. Record: {weighted}"
+    )
 
 
 def test_two_branch_sigmoid_produces_partition_decline(

@@ -46,10 +46,13 @@ The baseline is per-node too: a node counts as claimable only if the log says *t
 claimed. The old baseline treated all 364 `Add` nodes as claimable when 182 were.
 
 Islands are connected components over the graph's data edges, restricted to claimable nodes.
-The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; `--anchors` mirrors its
-anchor exemption. Neither is the partitioner -- this is a *ranking* instrument, and it says so:
-it reports island structure, and the partitioner's cost model is the thing that finally decides.
-The number to read is the **delta**, which is much more robust than either absolute.
+The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; `--anchors` mirrors the
+*anchor-capable* column of its weight-site audit. Neither is the partitioner -- this is a
+*ranking* instrument, and it says so: it reports island structure, and the partitioner's cost
+model is the thing that finally decides. Since issue #73 the production anchor rule also
+requires a resident initializer at a designated weight site, which a claim log does not record,
+so `--anchors` here is an upper bound (see `DEFAULT_ANCHORS`). The number to read is the
+**delta**, which is much more robust than either absolute.
 
 NO CLOCK.
 
@@ -66,8 +69,16 @@ import collections
 import json
 import pathlib
 
-# Mirrors `ops::partition::is_anchor` closely enough to rank with. Not authoritative; the
-# partitioner in the DLL is. Kept short and named so a reader can check it against that list.
+# Mirrors `ops::partition::WEIGHT_SITE_AUDIT`'s *anchor-capable* column, and nothing more.
+#
+# Since issue #73 the production rule has a second half this instrument cannot evaluate: an
+# op anchors only if it also carries a resident graph initializer at a schema-designated weight
+# site, and this script ranks from a claim log that does not record initializer residency. So
+# this list is now an **upper bound** on the production anchor set — an activation-only `MatMul`
+# is counted as an anchor here and is not one in the DLL. That was already the standing caveat
+# ("not authoritative; the partitioner in the DLL is"), and #73 widened the gap rather than
+# creating it: any island this instrument ranks as anchored on the strength of a `MatMul` alone
+# may be rejected by the real gate. The number to read is still the delta.
 DEFAULT_ANCHORS = ("Conv", "Gemm", "MatMul", "MatMulNBits", "Attention", "GroupQueryAttention")
 
 

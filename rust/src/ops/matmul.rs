@@ -5,9 +5,12 @@
 //! Two censuses, not a taxonomy:
 //!
 //! * MobileNetV2-12, 2026-08-04: with `Conv` and `GlobalAveragePool` claimed, the single `Gemm`
-//!   at the tail is the last node in the model that carries data. It is also an *anchor* in
-//!   `ops::partition::is_anchor`, so a lone `Gemm` island is exempt from the minimum-node gate —
-//!   the row was already written into the partitioner's cost model before any kernel existed.
+//!   at the tail is the last node in the model that carries data. It is also *anchor-capable* in
+//!   `ops::partition::WEIGHT_SITE_AUDIT`, and it carries its classifier matrix as a resident
+//!   initializer at designated site `B`, so a lone `Gemm` island is exempt from the minimum-node
+//!   gate — the row was already written into the partitioner's cost model before any kernel
+//!   existed. (Anchor-capability alone is not enough: since issue #73 the resident weight is
+//!   required too. MobileNetV2's `Gemm` has one; an activation-only `MatMul` does not.)
 //! * The registry had no `Gemm` at all, which is why every non-LLM model this project has looked
 //!   at ends on the CPU regardless of how much of its body the EP claims.
 //! * BERT-SQuAD-12, 2026-08-04: `MatMul` ×95 is the largest unregistered op on any censused
@@ -779,12 +782,46 @@ mod tests {
         assert!(spec.blind_axes.contains(&"transB"));
     }
 
-    /// `Gemm` is already an anchor in the partitioner, which is why a lone one at a model's tail
-    /// is claimable at all. If that ever changed, this row would go live and never be used.
+    /// `Gemm` is already anchor-capable in the partitioner, which is why a lone one at a model's
+    /// tail is claimable at all. If that ever changed, this row would go live and never be used.
+    ///
+    /// Issue #73 narrowed the rule but not for this case: `Gemm` and `MatMul` are still
+    /// anchor-capable, they just also need a resident initializer at a designated weight site.
+    /// MobileNetV2's tail `Gemm` has its classifier matrix at `B`, so it still anchors; the
+    /// activation-only `MatMul` that motivated #73 does not. Both polarities are asserted here
+    /// through the production predicate, so a regression in either direction is visible.
     #[test]
-    fn gemm_is_a_partition_anchor() {
-        assert!(crate::ops::partition::is_anchor("Gemm"));
-        assert!(crate::ops::partition::is_anchor("MatMul"));
+    fn gemm_is_a_partition_anchor_when_it_carries_a_resident_weight() {
+        use crate::ops::partition::{anchors_with_residency, designated_weight_sites};
+
+        // The weight site the tail `Gemm` and every transformer projection actually use.
+        assert_eq!(
+            designated_weight_sites("Gemm")
+                .iter()
+                .map(|s| s.name)
+                .collect::<Vec<_>>(),
+            vec!["A", "B"],
+        );
+        assert_eq!(
+            designated_weight_sites("MatMul")
+                .iter()
+                .map(|s| s.name)
+                .collect::<Vec<_>>(),
+            vec!["A", "B"],
+        );
+
+        // Positive: a resident `B` anchors.
+        assert!(anchors_with_residency("Gemm", |i| i == 1));
+        assert!(anchors_with_residency("MatMul", |i| i == 1));
+
+        // Negative: issue #73's node. Both operands are runtime activations, so nothing is
+        // resident anywhere and neither op anchors.
+        assert!(!anchors_with_residency("Gemm", |_| false));
+        assert!(!anchors_with_residency("MatMul", |_| false));
+
+        // Held out: `Gemm`'s `C` is a rank-1 bias, not a weight site. A model that folds its
+        // bias in as an initializer but streams both matrices is still not an anchor.
+        assert!(!anchors_with_residency("Gemm", |i| i == 2));
     }
 
     // ---------------------------------------------------------------------------------------

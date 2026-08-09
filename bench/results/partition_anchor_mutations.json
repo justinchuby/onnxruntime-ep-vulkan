@@ -1,0 +1,75 @@
+{
+  "probe": "partition weight-site anchor rule, source-level mutations",
+  "issue": 73,
+  "target": "rust/src/ops/partition.rs",
+  "filter": "ops::partition",
+  "baseline": [
+    "test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 723 filtered out; finished in 0.01s"
+  ],
+  "mutations": [
+    {
+      "mutation": "M1_residency_check_removed",
+      "broke": "`anchors` ignores the residency oracle: any anchor-capable op with a designated site anchors, which is the pre-#73 op-name predicate",
+      "outcome": "CAUGHT",
+      "compiled": true,
+      "failing_tests": [
+        "test ops::partition::tests::falsifier_designating_an_activation_site_would_readmit_the_defect ... FAILED",
+        "test ops::partition::tests::an_activation_only_matmul_does_not_anchor ... FAILED",
+        "test ops::partition::tests::residency_at_a_designated_site_is_the_thing_that_decides ... FAILED",
+        "test ops::partition::tests::matmulnbits_anchors_on_its_quantised_weight_payload_and_not_on_its_bias ... FAILED",
+        "test ops::partition::tests::falsifier_designating_qmoe_activation_block_scales_would_let_them_anchor ... FAILED",
+        "test ops::partition::tests::qmoe_designates_nine_weight_sites_and_excludes_the_activation_block_scales ... FAILED",
+        "test ops::partition::tests::the_activation_only_matmul_island_is_rejected_and_the_weighted_one_is_claimed ... FAILED",
+        "test ops::partition::tests::the_multi_node_activation_only_island_is_transfer_dominated ... FAILED"
+      ],
+      "result_line": "test result: FAILED. 38 passed; 8 failed; 0 ignored; 0 measured; 723 filtered out; finished in 0.00s"
+    },
+    {
+      "mutation": "M2_designated_site_check_removed",
+      "broke": "`anchors` ignores which sites are designated: a resident initializer at ANY input of an anchor-capable op anchors it",
+      "outcome": "CAUGHT",
+      "compiled": true,
+      "failing_tests": [
+        "test ops::partition::tests::anchors_are_the_heavy_ops_only ... FAILED",
+        "test ops::partition::tests::matmulnbits_anchors_on_its_quantised_weight_payload_and_not_on_its_bias ... FAILED",
+        "test ops::partition::tests::falsifier_designating_an_activation_site_would_readmit_the_defect ... FAILED",
+        "test ops::partition::tests::falsifier_giving_gqa_a_weight_site_would_let_it_anchor_alone ... FAILED",
+        "test ops::partition::tests::group_query_attention_has_no_designated_weight_sites_and_never_anchors_alone ... FAILED",
+        "test ops::partition::tests::falsifier_designating_qmoe_activation_block_scales_would_let_them_anchor ... FAILED",
+        "test ops::partition::tests::residency_at_a_designated_site_is_the_thing_that_decides ... FAILED",
+        "test ops::partition::tests::group_query_attention_is_still_claimable_inside_an_island_anchored_elsewhere ... FAILED",
+        "test ops::partition::tests::qmoe_designates_nine_weight_sites_and_excludes_the_activation_block_scales ... FAILED"
+      ],
+      "result_line": "test result: FAILED. 37 passed; 9 failed; 0 ignored; 0 measured; 723 filtered out; finished in 0.00s"
+    },
+    {
+      "mutation": "M3_gqa_given_a_weight_site",
+      "broke": "GroupQueryAttention designates `cos_cache`, so a lone GQA node anchors an island on the strength of a rotary lookup table",
+      "outcome": "CAUGHT",
+      "compiled": true,
+      "failing_tests": [
+        "test ops::partition::tests::anchors_are_the_heavy_ops_only ... FAILED",
+        "test ops::partition::tests::group_query_attention_has_no_designated_weight_sites_and_never_anchors_alone ... FAILED",
+        "test ops::partition::tests::group_query_attention_is_still_claimable_inside_an_island_anchored_elsewhere ... FAILED",
+        "test ops::partition::tests::falsifier_giving_gqa_a_weight_site_would_let_it_anchor_alone ... FAILED",
+        "test ops::partition::tests::the_documented_census_totals_are_the_table_s_totals ... FAILED"
+      ],
+      "result_line": "test result: FAILED. 41 passed; 5 failed; 0 ignored; 0 measured; 723 filtered out; finished in 0.01s"
+    },
+    {
+      "mutation": "M4_qmoe_activation_block_scales_designated",
+      "broke": "QMoE designates inputs 19/20, so MXFP block scales of the ACTIVATIONS count as a weight payload",
+      "outcome": "CAUGHT",
+      "compiled": true,
+      "failing_tests": [
+        "test ops::partition::tests::falsifier_designating_qmoe_activation_block_scales_would_let_them_anchor ... FAILED",
+        "test ops::partition::tests::qmoe_designates_nine_weight_sites_and_excludes_the_activation_block_scales ... FAILED",
+        "test ops::partition::tests::the_documented_census_totals_are_the_table_s_totals ... FAILED"
+      ],
+      "result_line": "test result: FAILED. 43 passed; 3 failed; 0 ignored; 0 measured; 723 filtered out; finished in 0.01s"
+    }
+  ],
+  "restored_identical": true,
+  "green_after_restore": true,
+  "note": "A mutation reported MISSED names a check that production could lose with CI green. A mutation whose `compiled` is false was caught by the compiler rather than by a test, which is a weaker but still real screen \u2014 it is recorded, not counted as a test result."
+}

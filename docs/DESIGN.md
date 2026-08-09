@@ -1249,6 +1249,10 @@ GetCapability(OrtGraph) →
                            3a. size       nodes < min_nodes AND anchors == 0  → TooSmall
                            3b. EXEMPTION  anchors > 0 (shipping default on)   → Claim, and RETURN
                            3c. economics  compute_ns < margin × transfer_ns   → TransferDominated
+
+                         `anchors` is a count of NODES, not of op names: since §5.4.2 a node
+                         anchors only if its op is anchor-capable AND it carries a resident
+                         graph initializer at one of that op's schema-designated weight sites.
   4. report              AddNodesToFuse(kept) ; declines for step 1 and step 3 both go to the
                          one decline vocabulary and the one CLAIM_DEBUG dump
 ```
@@ -1301,13 +1305,21 @@ defaults — is a fact about **3a**, `TOO_SMALL`. It establishes that *stage 3* 
 It does not establish that **3c** has ever decided anything outside a probe, and I can find no
 artifact in which it has.
 
-**(ii) The diagnosis inverts once you read `is_anchor`.** The anchor set is `MatMul`, `Gemm`,
+**(ii) The diagnosis inverts once you read the anchor predicate.** *As written on 2026-08-01,
+citing `is_anchor` at `partition.rs:308`:* the anchor set was the op-name list `MatMul`, `Gemm`,
 `Conv`, `ConvTranspose`, `Attention`, `MatMulNBits`, `GroupQueryAttention`, `MultiHeadAttention`,
-`QMoE`, `LinearAttention` (`partition.rs:308`). **Every non-trivial island of any transformer
-contains at least one.** So "the economics model does not decide our partition" is not a Phi-3.5
-accident and is not a discovered defect — **it is the design, working.** 3c was written to kill
-cheap elementwise scatter whose tensors outweigh its arithmetic, and Phi-3.5's fused island is not
-that. The doc comment at `partition.rs:458` says so in as many words.
+`QMoE`, `LinearAttention`. **Every non-trivial island of any transformer contains at least one.**
+So "the economics model does not decide our partition" is not a Phi-3.5 accident and is not a
+discovered defect — **it is the design, working.** 3c was written to kill cheap elementwise scatter
+whose tensors outweigh its arithmetic, and Phi-3.5's fused island is not that. The doc comment at
+`partition.rs:458` said so in as many words.
+
+> **Superseded in its citation, not in its reasoning — §5.4.2 (2026-08-09).** `is_anchor` no
+> longer exists; the predicate is `partition::anchors_with_residency` over `WEIGHT_SITE_AUDIT`.
+> The paragraph above remains true of Phi-3.5 — its 161 `MatMulNBits` nodes each carry a resident
+> `B` and `scales`, so its island is still anchor-bearing and 3c still does not decide it. What
+> changed is that the sentence "every non-trivial island of any transformer contains at least one"
+> was **doing more work than its evidence supported**, and item 1 below names exactly how.
 
 **So what is actually wrong is narrower, and I want it stated without inflation.** Three things:
 
@@ -1319,6 +1331,16 @@ that. The doc comment at `partition.rs:458` says so in as many words.
    declined** — one small `MatMul` surrounded by large boundary traffic, which is a small-model or
    edge-shape graph, not ours. Under 3b we claim it unconditionally and 3c never sees it. That is a
    cross-model generality risk and it is where I expect this to bite first.
+
+   > **The exposure became present, and was measured — issue #73, closed by §5.4.2 (2026-08-09).**
+   > It bit exactly where this paragraph said it would, and one model earlier than "cross-model":
+   > MiniLM-L6-v2's six QK^T and six AV batched matmuls are `MatMul` nodes with **both operands
+   > runtime activations**, and each claimed a single-node island of ~1.18 MB boundary for
+   > ~0.013 GFLOP. The warrant — *heavy enough on LLM-sized weights* — was never true of them,
+   > because they have no weights. The remedy is not to weaken 3b but to make its precondition
+   > mean what the warrant says: a node anchors only with a **resident initializer at a
+   > schema-designated weight site**. The prediction in this paragraph is the reason the fix is
+   > narrow; it named the shape of the defect eight days before an artifact showed it.
 2. **The exemption's silence set includes "the byte estimator is broken."** §7.12.1's 104,116×
    estimator-versus-measured discrepancy (89,199,100,032 B estimated against 856,720 B measured) is
    the reason 3c declines the graph we ship when it is allowed to answer. The exemption is doing two
@@ -1498,7 +1520,93 @@ the same `(kept, dropped)` pair, is what produces `largest_island_flops` for §1
 reporting — the rule and its metric live in one module deliberately, because their drifting apart is
 exactly how a coverage number becomes a lie.
 
-### 5.5 `Compile` — plan build and prepacking
+#### 5.4.2 An anchor is a node with a resident weight, not an op with a familiar name — issue #73 (2026-08-09, Niobe)
+
+§5.4.1 item 1 named this defect as a future exposure. It arrived, and the artifact is MiniLM-L6-v2.
+
+**The finding.** `is_anchor` matched a bare op-name string. Six of MiniLM's `MatMul` nodes are the
+per-head QK^T and AV batched matmuls, whose **both operands are runtime activations**. They matched
+`"MatMul"`, so `island.anchors > 0`, so stage 3b returned `Claim` before 3a's node count or 3c's
+economics could be read: six single-node islands, each ~983,040 B in and ~196,608 B out for
+~0.013 GFLOP at batch 1, sequence 128. Every one of them is precisely the "cheap island whose
+tensors outweigh its arithmetic" that 3c exists to kill, exempted by op *identity*.
+
+The old predicate's own doc comment stated the correct rule and did not implement it — *"a single
+`MatMul` on LLM-sized **weights** always is [worth a round-trip]"*. The weight was in the sentence
+and never in the test.
+
+**The rule now.** A node anchors iff **both** of:
+
+1. its op is **anchor-capable** — a resident weight at one of its inputs would justify a boundary
+   on its own; and
+2. it carries a **resident graph initializer at a schema-designated weight site** of that op.
+
+A *designated weight site* is a schema input position holding the operator's weight payload: the
+learned matrix a GEMM reuses across every token, or the per-block quantisation parameters (scale,
+zero-point) whose extent scales with that matrix. Deliberately not designated anywhere: runtime
+activations; **activation**-quantisation parameters; per-channel biases; rotary sin/cos tables; KV
+caches; masks; sequence lengths; index and shape vectors.
+
+Both halves live in `partition::WEIGHT_SITE_AUDIT`, one row per registered op, each carrying a
+prose audit of why its *other* inputs are not designated. `partition::anchors_with_residency` is the
+single production predicate; `ep.rs` supplies residency from `NodeView::input_is_constant`, which
+is the same constant set the boundary-byte accounting reads — deliberately, because
+`ValueInfo_IsConstantInitializer` answers `false` for fused-node boundary `value_info` and reading
+the other side of that seam would report "no weights anywhere" and silently disable every anchor.
+
+**What the audit found, over every registered op and every schema input including trailing
+optionals.** The two decisions are kept in separate fields because they answer different questions
+and the interesting rows are the ones where they disagree.
+
+| Row | Anchor-capable | Designated sites | Why it matters |
+|---|---|---|---|
+| `MatMul`, `Gemm` | yes | 0 `A`, 1 `B` | The schema names neither operand a weight and constrains both to one type, so either may hold one. This makes the rule exactly the issue's: anchors iff ≥1 operand is an initializer. `Gemm`'s `C` is a rank-1 bias and is excluded. |
+| `Conv` | yes | 1 `W` | `X` is the activation, `B` a per-channel bias of extent M. |
+| `com.microsoft::MatMulNBits` | yes | 1 `B`, 2 `scales`, 3 `zero_points` | The packed weight and its per-block parameters. `g_idx` (extent K) and `bias` (extent N) excluded. `B` and `scales` are schema-required, so Phi-3.5's verdict is unchanged. |
+| `com.microsoft::QMoE` | yes | **nine**: 2, 3, 5, 6, 8, 9, 11, 12, 13 | Three expert weight matrices and their scales and zero-points. **Inputs 19/20 are `fc1_act_block_scale` / `fc2_act_block_scale`, MXFP block scales of the ACTIVATIONS, and are explicitly non-designating** — a resident tensor there describes this inference's activation quantisation, not any weight. |
+| `com.microsoft::GroupQueryAttention` | yes | **zero** | Audited across the full 7..=16 range. Q/K/V, the KV caches, `seqlens_k`, `position_ids`, `attention_bias`, `head_sink`, the QK-norm inputs — all activations or per-inference state. `cos_cache`/`sin_cache` *are* resident initializers in a GenAI-exported graph, and are rotary tables rather than matrices any GEMM reuses; designating them would let a lone GQA node anchor an island on a lookup table. **So GQA never anchors by itself, and remains fully claimable inside an island anchored elsewhere** — which is its actual position in Phi-3.5, where its 32 GQA nodes sit in the island the 161 `MatMulNBits` nodes anchor. |
+| `Attention` (ai.onnx 23/24), `com.microsoft::MultiHeadAttention`, `LinearAttention` (both spellings) | yes | zero | Same finding as GQA. The projections are separate upstream nodes; MHA's input 3 `bias` is a packed QKV bias vector. |
+| 86 further registered rows | no | zero | 68 all-activation rows; 8 that take constants which are not weights (shape vectors, clip bounds, Q/DQ scales, rotary tables, scatter indices); 10 genuinely weight-bearing rows — `PRelu`, `Gather`, the RMS/skip norms, `GatherBlockQuantized`, `MoE`, `CausalConvWithState` — which have never been anchors and are **not** promoted here. Widening the anchor set is a separate, separately measured change. |
+
+`ConvTranspose` and `com.microsoft::Attention` were in the old name list and have **no registry row
+at all**: a node the registry does not know is never claimed and never reaches an island, so those
+two entries were unreachable. They are absent from the audit rather than carried as decoration.
+
+**Completeness is a build-time property, not a claim in a PR body.** The audit's key set must equal
+`registry::all_specs()`'s qualified names exactly — no duplicates, no strays, no gaps — or
+`weight_site_audit_covers_the_registry_exactly` fails. A new op cannot be registered without
+someone deciding where its weights are.
+
+**What is unchanged, and checked rather than assumed.** Phi-3.5's `MatMulNBits` nodes and
+MobileNetV2's `Conv`/`Gemm` nodes all carry resident weights at designated sites, so they anchor
+exactly as before; MiniLM's 36 weighted `MatMul` nodes likewise. Only the 12 activation-only ones
+lose the exemption. Stage 3b itself is untouched: this narrows its **precondition** to mean what
+its warrant always said, rather than weakening the exemption — which §5.4.1's "what must not be
+done" list explicitly forbids.
+
+**A consequence, stated because it is load-bearing and easy to read as a bug.** An activation-only
+`MatMul` now falls to `ep.rs`'s elementwise FLOP estimate (`output_bytes / 2`) instead of the
+`2 × 3072 × 3072` anchor estimate. That *understates* its arithmetic. It is the intended direction
+— such a node has no weight reuse to amortise a boundary against, so it is scored as the
+transfer-dominated work it is — but it is an approximation, not a measurement, and it is named here
+rather than left for a reader to discover.
+
+**Proof.** Both gates are reached again and each is exercised in its own polarity: at one node 3a
+answers (`TooSmall`), at six nodes 3c answers (`TransferDominated`), and both render as
+`DeclineCode::Partition`. The live-EP artifact is one session over one graph containing two
+`MatMul` nodes that differ **only** in operand residency — `act_only` declined with
+`code == "partition"`, `weighted` claimed — so opset, dtype, shapes, island count, transfer model,
+policy, driver and build are held identical by construction rather than by an author remembering to
+match them. Four source-level mutations (drop the residency check, drop the designated-site check,
+give GQA a site, designate QMoE 19/20) each turn the suite red; the first of them, rebuilt into the
+shipping cdylib, makes the live EP claim `act_only` again, which is the pre-#73 behaviour observed
+rather than inferred.
+
+**Honest limitation.** The MiniLM node counts and boundary bytes in this section are quoted from
+issue #73's report and are not re-measured by this change; no wall-clock claim is made here, and
+none of the tests above depends on one.
+
+
 
 For each fused subgraph, in order:
 
