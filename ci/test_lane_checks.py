@@ -20,6 +20,7 @@ import ast
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1623,6 +1624,356 @@ def test_history_reading_op_test_jobs_check_out_full_history_issue_24():
             f"ERROR(instrument=truncated_history) and the lane goes red for a checkout "
             f"reason (issue #24, run 31164215291)."
         )
+
+
+# ---------------------------------------------------------------------------------------
+# ISSUE #104 -- exit 2 must fail the REAL shipped lane step, not merely be printed.
+#
+# Issue #104's remeasurement found that `ci/check_ledger_census.py`'s history-completeness
+# guard (exit 2, `ERROR(instrument=truncated_history)`) is real and load-bearing, but that
+# nothing proved the hosted `lane-checks` step actually dies on it: the step is a bare
+# `run:` line, so lane rejection of a nonzero exit is IMPLICIT, and the nearest existing
+# `rc == 2` assertion in this suite covers a different tool at unit level via monkeypatch
+# -- "a duplicated test-only rule" the issue explicitly excludes.
+#
+# What follows is three things, each with its own falsifiability arm sharing the SAME
+# assertion helper as its passing counterpart, so a mutated helper -- not just a mutated
+# subject -- would be caught by both:
+#   1. structural: the step carries no `continue-on-error` and no shell-level swallow on
+#      its `run:` line (two independent masks, two independent mutation arms);
+#   2. behavioural: the EXACT argv ci.yml ships is run, unmodified, against a real full
+#      clone and a real `git clone --depth 1` clone of THIS repository -- changing only
+#      the working directory between the two polarities, never the command;
+#   3. register coherence: `ci/open_reds.json`'s disposition for the shallow-clone known
+#      limit and `ci/check_ledger_census.py`'s own `KNOWN_LIMITS` declaration must agree,
+#      mechanically, not by two people remembering to edit two files in the same commit.
+#
+# Every scratch mutant here is written under pytest's own `tmp_path`, never under `ci/`:
+# `ci/check_tautological_assertions.py`, `ci/check_gh_auth.py`, `ci/check_hardcoded_
+# foundry_paths.py` and `ci/phi35_identity_audit.py` all glob some subset of `ci/*.py` or
+# `ci/**/*.py`, and a stray mutant left behind by a cancelled job would be discovered by
+# one of them as if it were real production source.
+# ---------------------------------------------------------------------------------------
+
+sys.path.insert(0, str(CI_DIR))
+import check_ledger_census as _ledger_census  # noqa: E402
+
+LEDGER_CENSUS_STEP_NAME = "Proof-ledger census (has a proof ever gone missing?)"
+
+
+def _job_block(ci_text: str, job_name: str) -> str:
+    """One job's exact text, bounded by the NEXT top-level job marker (or EOF)."""
+    job_start = ci_text.index(f"\n  {job_name}:\n")
+    next_job = re.search(r"\n  [a-zA-Z][\w-]*:\n", ci_text[job_start + 1 :])
+    job_end = job_start + 1 + next_job.start() if next_job else len(ci_text)
+    return ci_text[job_start:job_end]
+
+
+def _ledger_census_step_block(ci_text: str) -> str:
+    """The `lane-checks` job's 'Proof-ledger census' step, exact text, bounded by the
+    NEXT `- name:` step marker rather than by counting lines -- so a step reordered or
+    renamed around it fails this extraction loudly (`ValueError`/`AssertionError`)
+    instead of silently returning the wrong slice."""
+    job_body = _job_block(ci_text, "lane-checks")
+    marker = f"- name: {LEDGER_CENSUS_STEP_NAME}"
+    assert job_body.count(marker) == 1, (
+        f"expected exactly one {marker!r} step in the lane-checks job, found "
+        f"{job_body.count(marker)}"
+    )
+    step_start = job_body.index(marker)
+    line_start = job_body.rfind("\n", 0, step_start) + 1
+    tail = job_body[step_start:]
+    next_step = re.search(r"\n {6}- name:", tail[1:])
+    step_end = step_start + 1 + next_step.start() if next_step else len(job_body)
+    return job_body[line_start:step_end]
+
+
+def _assert_ledger_census_step_has_no_error_suppression(step_text: str) -> None:
+    """THE shared assertion. Called by the real (passing) test below AND by both of its
+    falsifiability arms on mutated copies of the same text, so the three can never drift
+    into three different claims wearing one name.
+
+    Two independent masks are checked because one alone is not enough: `continue-on-
+    error: true` is the mask ci.yml's own top-of-file comment already forbids in prose
+    ("`continue-on-error` appears NOWHERE in this file"), so a shell-level swallow
+    (`||`, `&&`, `;`, or a redirect appended to the `run:` line) is the mask that prose
+    does NOT name and is therefore the more likely real one to slip in unnoticed.
+    """
+    assert "continue-on-error" not in step_text, (
+        "the Proof-ledger census step must not declare `continue-on-error`; that turns "
+        "check_ledger_census.py's exit 2 (or any nonzero exit) into a passing step "
+        "instead of a failing lane"
+    )
+    run_lines = [ln for ln in step_text.splitlines() if ln.strip().startswith("run:")]
+    assert len(run_lines) == 1, (
+        f"expected exactly one `run:` line in this step, found {len(run_lines)}:\n"
+        f"{step_text}"
+    )
+    (run_line,) = run_lines
+    cmd_text = run_line.split("run:", 1)[1]
+    for token in ("||", "&&", ";", ">"):
+        assert token not in cmd_text, (
+            f"the census run line contains {token!r}, which can swallow a nonzero exit "
+            f"from check_ledger_census.py with no `continue-on-error` directive at all: "
+            f"{run_line!r}"
+        )
+
+
+def test_ledger_census_step_is_a_bare_run_with_no_error_suppression_issue_104():
+    """The real (passing) half of the structural proof: ci.yml's own text, today, has
+    neither mask on the step whose exit code this issue is about."""
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    step = _ledger_census_step_block(ci_text)
+    assert "check_ledger_census.py" in step, step
+    _assert_ledger_census_step_has_no_error_suppression(step)
+
+
+def test_mutating_the_ledger_census_step_to_add_continue_on_error_is_caught_by_the_shared_helper_issue_104():
+    """Falsifiability arm 1/2, calling the EXACT SAME helper the passing test above
+    calls -- not a re-typed copy of its assertions -- so a helper weakened to stop
+    catching this mask would make BOTH this arm and the passing test wrong together,
+    rather than only the passing test silently losing coverage."""
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    step = _ledger_census_step_block(ci_text)
+    run_marker = "run: python ci/check_ledger_census.py --json bench/results/ledger-census.json"
+    assert step.count(run_marker) == 1, (
+        f"mutation target {run_marker!r} is not unique in the shipped step:\n{step}"
+    )
+    lines = step.splitlines()
+    run_idx = next(i for i, ln in enumerate(lines) if ln.strip() == run_marker.strip())
+    lines.insert(run_idx, " " * 8 + "continue-on-error: true")
+    mutated = "\n".join(lines) + ("\n" if step.endswith("\n") else "")
+    assert mutated != step
+
+    with pytest.raises(AssertionError):
+        _assert_ledger_census_step_has_no_error_suppression(mutated)
+
+
+def test_mutating_the_ledger_census_run_line_to_add_shell_suppression_is_caught_by_the_shared_helper_issue_104():
+    """Falsifiability arm 2/2 -- the mask ci.yml's own prose does NOT forbid by name, and
+    the one Morpheus's review of the prior attempt found untested: appending `|| true`
+    to the `run:` line swallows check_ledger_census.py's exit 2 with no
+    `continue-on-error` directive anywhere in the file. Same shared helper as both
+    tests above."""
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    step = _ledger_census_step_block(ci_text)
+    run_marker = "run: python ci/check_ledger_census.py --json bench/results/ledger-census.json"
+    assert step.count(run_marker) == 1, (
+        f"mutation target {run_marker!r} is not unique in the shipped step:\n{step}"
+    )
+    mutated = step.replace(run_marker, run_marker + " || true", 1)
+    assert mutated != step
+
+    with pytest.raises(AssertionError):
+        _assert_ledger_census_step_has_no_error_suppression(mutated)
+
+
+def _ledger_census_argv(ci_text: str) -> list[str]:
+    """The exact argv ci.yml's 'Proof-ledger census' step ships, with `sys.executable`
+    substituted for the literal `python` token so it runs under this test process's own
+    interpreter -- everything after the interpreter name is exactly what the lane runs,
+    parsed from ci.yml's own text rather than retyped."""
+    step = _ledger_census_step_block(ci_text)
+    run_lines = [ln for ln in step.splitlines() if ln.strip().startswith("run:")]
+    assert len(run_lines) == 1, run_lines
+    cmd_text = run_lines[0].split("run:", 1)[1].strip()
+    parts = shlex.split(cmd_text)
+    assert parts[0] == "python", parts
+    assert parts[1] == "ci/check_ledger_census.py", parts
+    return [sys.executable, *parts[1:]]
+
+
+def _assert_shallow_history_is_rejected(returncode: int, output: str) -> None:
+    """THE shared assertion for the behavioural proof, called by the real passing test
+    and by the masking-mutant falsifiability arm below on the mutant's own output."""
+    assert returncode == 2, (
+        f"a truncated-history checkout must make check_ledger_census.py exit 2, got "
+        f"{returncode}. Output:\n{output}"
+    )
+    assert "ERROR(instrument=truncated_history)" in output, (
+        f"exit code alone is not the claim; the specific instrument token must be "
+        f"present too:\n{output}"
+    )
+
+
+def test_ledger_census_exit_2_on_truncated_history_fails_the_real_lane_step_issue_104(tmp_path):
+    """The behavioural two-polarity proof issue #104 asks for, run against the EXACT
+    argv ci.yml ships -- not a hand-built `--repo ...` invocation the workflow never
+    uses. Only the working directory differs between the two clones; `argv` itself is
+    the same Python list object for both subprocess calls.
+
+    POSITIVE: a real, full (`git clone`, no depth limit) clone of this repository's own
+    current HEAD -- history is complete, so the step must not report the
+    truncated-history instrument error.
+
+    NEGATIVE: a real `git clone --depth 1` of the same HEAD -- a genuine shallow clone,
+    not a hand-written `.git/shallow` file -- must make the SAME argv exit 2 with the
+    SAME token, proving the real shipped step (not a duplicated test-only rule) dies on
+    it.
+    """
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    argv = _ledger_census_argv(ci_text)
+
+    full = tmp_path / "full-clone"
+    clone_full = subprocess.run(
+        ["git", "clone", "-q", "--no-local", REPO_ROOT.as_uri(), str(full)],
+        capture_output=True, text=True,
+    )
+    assert clone_full.returncode == 0, f"full scratch clone failed: {clone_full.stderr}"
+    shallow_check = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        capture_output=True, text=True, cwd=str(full),
+    )
+    assert shallow_check.stdout.strip() == "false", (
+        "the POSITIVE arm's clone must have complete history, or it proves nothing "
+        f"about the full-history polarity: {shallow_check.stdout!r}"
+    )
+
+    shallow = tmp_path / "shallow-clone"
+    clone_shallow = subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", "--no-local", REPO_ROOT.as_uri(), str(shallow)],
+        capture_output=True, text=True,
+    )
+    assert clone_shallow.returncode == 0, f"shallow scratch clone failed: {clone_shallow.stderr}"
+    shallow_check2 = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        capture_output=True, text=True, cwd=str(shallow),
+    )
+    assert shallow_check2.stdout.strip() == "true", (
+        "the NEGATIVE arm's clone must genuinely be shallow, or it proves nothing about "
+        f"the truncated-history polarity: {shallow_check2.stdout!r}"
+    )
+
+    positive = subprocess.run(argv, capture_output=True, text=True, cwd=str(full))
+    assert positive.returncode != 2, (
+        f"a full-history clone must not exit 2:\n{positive.stdout}{positive.stderr}"
+    )
+    assert "ERROR(instrument=truncated_history)" not in (positive.stdout + positive.stderr), (
+        "the POSITIVE arm reported the truncated-history token on complete history:\n"
+        f"{positive.stdout}{positive.stderr}"
+    )
+
+    negative = subprocess.run(argv, capture_output=True, text=True, cwd=str(shallow))
+    _assert_shallow_history_is_rejected(
+        negative.returncode, negative.stdout + negative.stderr
+    )
+
+
+def test_mutating_the_guard_to_mask_exit_2_would_be_missed_by_the_shared_helper_issue_104(tmp_path):
+    """Falsifiability arm for the behavioural proof above, in the shape
+    `_mutant_main_green` (this same file, `check_main_is_green.py` coverage) already
+    established for this repository: a text-mutated COPY of the real screen, written
+    only under `tmp_path` -- never under `ci/`, where `check_tautological_assertions.py`
+    and three other screens glob `*.py` -- with the mutation target's uniqueness pinned
+    before it is applied.
+
+    The mutation flips exactly one `return 2` -- the one in the shallow-clone branch of
+    `screen()` -- to `return 0`, leaving every `print(...)` above it (including the
+    `ERROR(instrument=truncated_history)` line) untouched, so the masked run still PRINTS
+    the token and only the exit code lies. Run against the SAME real shallow clone this
+    test builds itself, the SAME shared helper
+    (`_assert_shallow_history_is_rejected`) that the real negative arm calls must then
+    raise -- proving that helper's `returncode == 2` assertion is load-bearing and not
+    vacuously true for every possible exit code.
+    """
+    real_src = (CI_DIR / "check_ledger_census.py").read_text(encoding="utf-8")
+    old = (
+        'print(f"ERROR(instrument=truncated_history): {LEDGER_REL} census cannot run here.")\n'
+        '        print(f"  {why}")\n'
+        '        print(\n'
+        '            "  This is deliberately NOT a PASS and NOT a FAIL. The screen\'s whole claim is "\n'
+        '            "about what the history contains; with the history truncated it has no "\n'
+        '            "denominator, and an answer computed from a denominator that silently shrank is "\n'
+        '            "the failure this screen exists to prevent, arriving through the clone depth."\n'
+        '        )\n'
+        '        return 2'
+    )
+    assert real_src.count(old) == 1, (
+        "mutation target for the shallow-clone return-2 branch is not unique in "
+        "check_ledger_census.py -- update this test's `old` text to match the current "
+        "source before trusting the mutant below"
+    )
+    new = old[: old.rfind("return 2")] + "return 0"
+    mutant_src = real_src.replace(old, new)
+    assert mutant_src != real_src
+
+    mutant_path = tmp_path / "mutant_check_ledger_census.py"
+    mutant_path.write_text(mutant_src, encoding="utf-8")
+
+    shallow = tmp_path / "shallow-clone-for-mutant"
+    clone_shallow = subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", "--no-local", REPO_ROOT.as_uri(), str(shallow)],
+        capture_output=True, text=True,
+    )
+    assert clone_shallow.returncode == 0, f"shallow scratch clone failed: {clone_shallow.stderr}"
+
+    # The mutant does `import proof_retirement` from its own directory (mirroring the
+    # real script's `sys.path.insert(0, str(HERE))`), which does not exist under
+    # `tmp_path`. Rather than copy `proof_retirement.py` alongside it (a second file that
+    # would then ALSO need cleanup-on-cancellation guarantees), point PYTHONPATH at the
+    # real `ci/` directory so the import resolves without the mutant ever living there.
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(CI_DIR) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+
+    mutant_run = subprocess.run(
+        [sys.executable, str(mutant_path), "--repo", str(shallow),
+         "--json", str(tmp_path / "mutant-ledger-census.json")],
+        capture_output=True, text=True, env=env,
+    )
+    output = mutant_run.stdout + mutant_run.stderr
+    assert "ERROR(instrument=truncated_history)" in output, (
+        "the mutant must still PRINT the token -- only its exit code should be masked, "
+        f"proving the mutation is narrow:\n{output}"
+    )
+    assert mutant_run.returncode == 0, (
+        f"the masked mutant was expected to exit 0 on a genuine shallow clone (that is "
+        f"the defect this arm exists to demonstrate); got {mutant_run.returncode}:\n{output}"
+    )
+
+    with pytest.raises(AssertionError):
+        _assert_shallow_history_is_rejected(mutant_run.returncode, output)
+
+
+def test_check_ledger_census_declares_no_known_limit_that_open_reds_has_retired_issue_104():
+    """Register/screen coherence, checked mechanically rather than left to whoever edits
+    the next entry remembering to touch both files: no prose or screen may declare a
+    known limit open while `ci/open_reds.json` declares the matching subject retired.
+
+    This is exactly the gap a prior review of this issue found: `ci/open_reds.json`
+    moving `ledger_census_is_unobservable_in_a_shallow_clone` into `retired` did not, by
+    itself, stop `ci/check_ledger_census.py`'s own `KNOWN_LIMITS` dict from continuing to
+    declare `shallow_clone_is_unobservable_not_clean` open and printing
+    `FAIL(condition=known_limit_still_open)` for it on request -- the screen and the
+    register disagreeing with each other, invisibly to CI, because
+    `check_open_reds.py`'s `screen_known_limits` only ever walks the ACTIVE
+    `known_limits` list and has no reverse-direction check.
+
+    This test is that reverse-direction check: for every retired subject id that also
+    names a `ci/check_ledger_census.py` known limit (via each retired entry's own
+    `reason` text, since that is the only place the two registers cross-reference each
+    other today), the corresponding limit name must be ABSENT from `KNOWN_LIMITS`.
+    """
+    doc = json.loads((CI_DIR / "open_reds.json").read_text(encoding="utf-8"))
+    retired = doc.get("retired", {})
+    assert "ledger_census_is_unobservable_in_a_shallow_clone" in retired, (
+        "this test assumes issue #104 retired the shallow-clone limit; if it has not, "
+        "this test (and the KNOWN_LIMITS edit it protects) is not yet applicable"
+    )
+    assert "shallow_clone_is_unobservable_not_clean" not in _ledger_census.KNOWN_LIMITS, (
+        "ci/open_reds.json retires ledger_census_is_unobservable_in_a_shallow_clone but "
+        "ci/check_ledger_census.py's KNOWN_LIMITS still declares "
+        "'shallow_clone_is_unobservable_not_clean' open -- the screen and the register "
+        "disagree, which is exactly the coherence defect issue #104's review found"
+    )
+    # And the reverse polarity: an id genuinely still open in KNOWN_LIMITS must not be
+    # silently retired in the register out from under the screen that owns it.
+    for limit_name in _ledger_census.KNOWN_LIMITS:
+        for subject_id, rec in retired.items():
+            assert limit_name not in rec.get("reason", ""), (
+                f"{subject_id!r} is retired in ci/open_reds.json but "
+                f"ci/check_ledger_census.py's KNOWN_LIMITS still declares {limit_name!r} "
+                "open -- retire it in the screen in the same commit"
+            )
 
 
 # ---------------------------------------------------------------------------------------

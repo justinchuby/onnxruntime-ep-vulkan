@@ -1489,17 +1489,24 @@ def guard_one_register(repo: Path) -> int:
     return 2
 
 
-KNOWN_LIMITS = {
-    "shallow_clone_is_unobservable_not_clean": (
-        "This census walks every revision that touched the ledger. In a shallow clone most "
-        "of them are absent, so the walk is short and the answer 'nothing vanished' is a "
-        "statement about the fetch depth, not about the project. history_is_complete() now "
-        "GUARDS this — ERROR(instrument=truncated_history), exit 2 — but a guard is not a "
-        "fix: in a shallow CI checkout the screen still rules on nothing, and a lane that "
-        "only tests for exit 1 would read that as tolerable. See ci/open_reds.json "
-        "known_limits id=ledger_census_is_unobservable_in_a_shallow_clone."
-    ),
-}
+# RETIRED 2026-08-09 (issue #104): this dict used to declare
+# "shallow_clone_is_unobservable_not_clean" -- the claim that a lane running this screen
+# against a shallow checkout would rule on nothing and no test proved otherwise. Retired
+# together with its `ci/open_reds.json` `retired` entry
+# (id=ledger_census_is_unobservable_in_a_shallow_clone) in the SAME commit, on purpose:
+# a limit closed in one register and left open in the other is exactly the
+# two-registers-for-one-fact defect this module's own module docstring already names for
+# `evidence/retired_proof_keys.json` vs `evidence/proof_ledger.jsonl`, reproduced one
+# level up between this screen and the register that grants its exemptions.
+# `ci/test_lane_checks.py::test_ledger_census_exit_2_on_truncated_history_fails_the_real_lane_step_issue_104`
+# now proves, against a real `git clone --depth 1`, that this screen's exit 2 fails the
+# real `lane-checks` job step -- both halves of the retired entry's own `closes_when`
+# (`fetch-depth: 0` since issue #24/#28, and a lane test proving exit 2 fails the lane).
+# `history_is_complete()`/`screen()` above are unchanged; nothing about the guard was
+# weakened to close this. If this dict gains a new entry in the future, keep this
+# module and `ci/open_reds.json` in the same commit -- see
+# `ci/test_lane_checks.py::test_check_ledger_census_declares_no_known_limit_that_open_reds_has_retired_issue_104`.
+KNOWN_LIMITS: dict[str, str] = {}
 
 
 def _assert_known_limit(name: str) -> int:
