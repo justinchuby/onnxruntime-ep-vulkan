@@ -491,9 +491,9 @@ impl WeightSite {
 /// its `(qualified_op, index, name)` projection must equal the pinned schemas' input lists
 /// exactly — same families, same order, same names, same *count* — so a schema that gains an
 /// input, loses one, or reorders two is a red test rather than a silent misclassification of
-/// whatever now sits at that index. `ci/audit_weight_sites.py` performs that comparison against
-/// the installed `onnx` / `onnxruntime` packages, reading this table out of the built binary via
-/// `epctl --dump-weight-sites --json`.
+/// whatever now sits at that index. `tests/ops/test_weight_sites.py` performs that comparison
+/// against the installed `onnx` / `onnxruntime` packages, reading this table out of the built
+/// binary via `epctl --dump-weight-sites --json`.
 ///
 /// # Provenance
 ///
@@ -1912,11 +1912,11 @@ mod tests {
     //   1. `HELD_OUT_SITES` below — a hand-maintained second copy of the table's *semantics*
     //      (family, index, name, kind) plus a tamper seal over each `reason`. It is a change
     //      detector: nothing may move in `WEIGHT_SITES` without a human re-affirming it here.
-    //   2. `ci/audit_weight_sites.py` — the *independent* pin. It reads the shipped table out of
-    //      the built binary (`epctl --dump-weight-sites --json`) and compares family membership,
-    //      operand order, operand names and operand *count* against the pinned `onnx` /
-    //      `onnxruntime` packages themselves. Neither this table nor the list below is an input
-    //      to it.
+    //   2. `tests/ops/test_weight_sites.py` — the *independent* pin. It reads the shipped table
+    //      out of the built binary (`epctl --dump-weight-sites --json`) and compares family
+    //      membership, operand order, operand names and operand *count* against the pinned
+    //      `onnx` / `onnxruntime` packages themselves. Neither this table nor the list below is
+    //      an input to it.
     //   3. `the_mutations_that_must_red` — feeds eight held-out mutations through the same
     //      `disagreement_with_held_out` the production test uses, and requires every one of them
     //      to be caught. A check that cannot fail is not a check.
@@ -2073,10 +2073,10 @@ com.microsoft::LinearAttention 5 beta activation 8b5fcacf882c20d8
         if let Err(why) = disagreement_with_held_out(WEIGHT_SITES) {
             panic!(
                 "`WEIGHT_SITES` disagrees with the held-out pin: {why}\n\n\
-                 If the pinned schemas genuinely changed, `ci/audit_weight_sites.py` is the check \
-                 that says so, and both this list and the table must be updated together with the \
-                 new schema's text quoted in the `reason`. If they did not, this is the defect the \
-                 pin exists to catch."
+                 If the pinned schemas genuinely changed, `tests/ops/test_weight_sites.py` is \
+                 the check that says so, and both this list and the table must be updated \
+                 together with the new schema's text quoted in the `reason`. If they did not, \
+                 this is the defect the pin exists to catch."
             );
         }
     }

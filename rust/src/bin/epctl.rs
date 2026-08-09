@@ -209,7 +209,7 @@ fn dump_json() {
 /// The weight-site table, in the pinned schemas' own order.
 ///
 /// Emitted from the *binary* rather than from `partition.rs`'s source so that
-/// `ci/audit_weight_sites.py` — which compares this against the installed `onnx` and
+/// `tests/ops/test_weight_sites.py` — which compares this against the installed `onnx` and
 /// `onnxruntime` packages — is checking the table the shipped EP actually consults. A source
 /// scraper would pass on a table that never reached a build.
 fn dump_weight_sites_human() {
@@ -298,10 +298,10 @@ fn usage() {
     eprintln!("    --dump-weight-sites  every input of every heavy-op family, in pinned-schema");
     eprintln!("                         order, with whether a resident initializer there makes");
     eprintln!("                         the node a partition anchor, and why. This is the table");
-    eprintln!("                         `ci/audit_weight_sites.py` checks against the installed");
-    eprintln!("                         onnx / onnxruntime schemas — it reads the built binary,");
-    eprintln!("                         not the source, so the audit cannot pass on a table the");
-    eprintln!("                         shipped EP does not use.");
+    eprintln!("                         `tests/ops/test_weight_sites.py` checks against the");
+    eprintln!("                         installed onnx / onnxruntime schemas — it reads the");
+    eprintln!("                         built binary, not the source, so the audit cannot");
+    eprintln!("                         pass on a table the shipped EP does not use.");
     eprintln!("    --probe-loader       probe the Vulkan loader: library presence, version,");
     eprintln!(
         "                         and whether vkCreateInstance + device enumeration succeed."
