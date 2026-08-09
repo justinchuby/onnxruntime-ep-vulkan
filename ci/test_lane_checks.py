@@ -8805,3 +8805,369 @@ def test_no_artifact_claims_the_landing_gate_is_enforced_MORE_THAN_IT_IS():
         "no longer possible",
     ):
         assert overclaim not in low, f"DESIGN.md now overclaims: {overclaim!r}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════
+# THE REGISTERED CLOSING CONDITION IS THE SHIPPED ONE (issue #103)
+#
+# THE DEFECT. PR #91 (issue #84) made ci/check_main_is_green.py rule on the whole
+# applicable WINDOW. The `main_is_green` entry in ci/open_reds.json was written before
+# that, and its `closes_when` still said a push to `main` whose CI run completes green
+# closes it. The entry's expected COLOUR was right the whole time — the screen was red and
+# the register said red — so nothing went red, and nothing could: no lane compared the
+# register's discharge instruction to the semantics of the screen it is an instruction
+# about. What was wrong was the sentence check_open_reds.py hands the next reader in
+# STATE_STALE, in `--list`, in `--summary` and in the merge annotation: follow it and you
+# flip an accepted red to expect=green on a single green push while reds are still inside
+# the window and the screen goes on failing.
+#
+# WHAT THESE ARMS PIN, AND WHY THEY ARE NOT A REIMPLEMENTATION. The rule identifier and
+# the prose parser live in ci/check_main_is_green.py beside the verdict they describe, and
+# ci/check_open_reds.py runs that parser in its production load path before it will grant
+# an acceptance. So these tests drive the SHIPPED parser and the SHIPPED checker; none of
+# them restates the closure rule in test code, because a second copy of the rule is the
+# thing that drifted in the first place.
+#
+# Both polarities are driven through the production `gh` path, and the case that carries
+# the weight is the one the old sentence got wrong: a FULL window whose NEWEST run is
+# green with a red still behind it. Two held-out source mutations — rule on `runs[:1]`,
+# rule on `completed[:1]` — turn that arm green, which is how it is known to be about the
+# window rather than about the head.
+# ══════════════════════════════════════════════════════════════════════════════════════════
+
+# The superseded sentence, verbatim from ci/open_reds.json before this fix (git show
+# 8701812c:ci/open_reds.json). Held here as the mutation this suite must convict.
+SUPERSEDED_CLOSES_WHEN = (
+    "A push to `main` whose CI run completes green. At that moment this entry becomes "
+    "FAIL(condition=stale_acceptance) and must be flipped back to expect=green — which "
+    "is the point: the register asks for the flip rather than waiting for someone to "
+    "remember. Do not delete it; an expect=green main_is_green is what turns the "
+    "ELEVENTH unnoticed red push into an unaccounted_red instead of a silence."
+)
+
+
+def _shipped_main_is_green_entry() -> dict:
+    doc = json.loads(OPEN_REDS_REGISTER.read_text(encoding="utf-8"))
+    return next(c for c in doc["checks"] if c["id"] == "main_is_green")
+
+
+def _closure_defects(text):
+    """Run the SHIPPED parser. Not a local reimplementation — that is the point."""
+    return _main_green_module().closure_prose_defects(text)
+
+
+def test_the_shipped_registers_closing_condition_is_the_screens_own_closure_rule():
+    """The fix, stated as the register and the screen agreeing through the screen's own
+    parser rather than through a reader."""
+    mod = _main_green_module()
+    entry = _shipped_main_is_green_entry()
+    assert mod.closure_prose_defects(entry["closes_when"]) == [], (
+        "ci/open_reds.json's main_is_green closes_when no longer describes the closure "
+        "rule ci/check_main_is_green.py implements"
+    )
+    assert mod.CLOSURE_RULE_ID in entry["closes_when"]
+    # And the acceptance itself is untouched: this issue is prose drift, not a colour
+    # change. Flipping expect here would close issue #24 by assertion.
+    assert entry["expect"] == "red"
+    assert entry["signature"] == "FAIL(condition=main_is_red)"
+    assert entry["extent"]["members"] == ["CI"]
+    assert entry["timeout"] == 120
+
+
+def test_the_shipped_register_still_carries_exactly_one_accepted_red():
+    """Requirement 5's denominator. The fix must not have granted or revoked an
+    acceptance; there is one accepted red in this register and it is this one."""
+    doc = json.loads(OPEN_REDS_REGISTER.read_text(encoding="utf-8"))
+    reds = [c["id"] for c in doc["checks"] if c["expect"] == "red"]
+    assert reds == ["main_is_green"], reds
+
+
+# --- the held-out mutation: the sentence that was there ----------------------------------
+
+
+def test_the_superseded_single_green_push_condition_is_refused_by_the_shipped_parser():
+    """HELD-OUT MUTATION. Restore the exact prose this issue removed and the shipped
+    parser must convict it.
+
+    The two findings are asserted SEPARATELY and each is sufficient on its own, so
+    deleting either guard turns a different assertion red rather than leaving the other
+    to cover for it: the identifier check catches any sentence not tied to the rule, and
+    the sentence check catches the specific single-event reading."""
+    defects = _closure_defects(SUPERSEDED_CLOSES_WHEN)
+    joined = " ".join(defects)
+    assert defects, "the superseded closing condition was accepted"
+    assert any("closure rule identifier" in d for d in defects), joined
+    assert any("ONE push the closing event" in d for d in defects), joined
+
+
+@pytest.mark.parametrize("prose, why", [
+    (
+        "The next green push to `main` closes this entry.",
+        "the plainest form of the defect",
+    ),
+    (
+        "Closes under rule zero_red_completed_runs_in_the_applicable_window: a single "
+        "green run on `main` discharges it.",
+        "carries the right identifier and still instructs the wrong action — the "
+        "identifier check alone cannot catch this one",
+    ),
+    (
+        "Closes under rule zero_red_completed_runs_in_the_applicable_window when the "
+        "latest run on `main` is green.",
+        "head-run semantics, which is exactly the pre-PR-#91 rule",
+    ),
+    (
+        "When the applicable window contains zero red runs.",
+        "correct in substance but tied to nothing: if the screen's rule changes this "
+        "sentence goes on reading true while describing a rule that no longer exists",
+    ),
+])
+def test_weakened_closing_conditions_are_refused(prose, why):
+    assert _closure_defects(prose), why
+
+
+def test_a_sentence_that_denies_the_wrong_reading_is_not_convicted_for_quoting_it():
+    """The carve-out, and its limit, exercised in both directions.
+
+    The shipped sentence has to be able to SAY that one green push is not the closing
+    event — that is the correction a reader most needs — so the sentence screen skips
+    negated sentences. This arm pins that the carve-out is a negation carve-out and not
+    an off switch: the same claim asserted rather than denied is still refused."""
+    mod = _main_green_module()
+    denied = (
+        f"Closure rule `{mod.CLOSURE_RULE_ID}`: the applicable window must contain zero "
+        "red runs. A single green push does not close this."
+    )
+    asserted = (
+        f"Closure rule `{mod.CLOSURE_RULE_ID}`: the applicable window must contain zero "
+        "red runs. A single green push closes this."
+    )
+    assert mod.closure_prose_defects(denied) == []
+    assert mod.closure_prose_defects(asserted), (
+        "the sentence screen accepts the affirmed claim, so it is screening nothing"
+    )
+
+
+def test_a_closing_condition_that_is_not_prose_fails_closed():
+    """`closes_when` is an instruction. A non-string one instructs nobody, and reporting
+    `no defects` about it would be this screen's own unobservable-is-not-green error one
+    level up."""
+    for value in (None, 12, ["a push"], {}):
+        assert _closure_defects(value), value
+
+
+# --- the production lane: check_open_reds.py refuses the acceptance ----------------------
+
+
+def _known_limit_entry(**over) -> dict:
+    """An expect=red entry whose cmd really invokes ci/check_main_is_green.py and whose
+    red is reachable with NO network: `--assert-known-limit` prints
+    FAIL(condition=known_limit_still_open) and exits 1 from the screen's own argv path.
+
+    That matters for the positive pole below — it proves the entry is ACTUALLY RUN when
+    the prose agrees, so the negative pole's refusal is a refusal and not the register
+    quietly failing to reach any subject at all."""
+    e = _entry(
+        id="main_is_green",
+        cmd=["python", "ci/check_main_is_green.py", "--assert-known-limit",
+             "github_unreachable_is_unobservable_not_green"],
+        expect="red",
+        signature="FAIL(condition=known_limit_still_open)",
+        owner="morpheus",
+        reason="closure-prose arm",
+        closes_when=_shipped_main_is_green_entry()["closes_when"],
+    )
+    e.update(over)
+    return e
+
+
+def test_open_reds_grants_the_acceptance_when_the_closing_condition_agrees(tmp_path):
+    """POSITIVE POLE, production lane. Shipped prose -> no closure defect -> the command
+    is run and its red is accounted."""
+    rc, out = _open_reds(tmp_path, [_known_limit_entry()])
+    assert rc == 0, out
+    assert "ACCOUNTED" in out, out
+    assert "known_limit_still_open" in out, (
+        "the entry's command never ran, so this pole proves nothing about the refusal"
+    )
+    assert "closure_condition_undeclared" not in out, out
+
+
+def test_open_reds_refuses_an_accepted_red_whose_closing_condition_drifted(tmp_path):
+    """NEGATIVE POLE, production lane — the arm that would have caught issue #103.
+
+    Put the superseded sentence back on an entry that accepts a red from
+    check_main_is_green.py and the SHIPPED checker must refuse the acceptance before it
+    runs anything, naming the instrument. Note what it must NOT do: exit 0 because the
+    colour matched. The colour did match — that is how this defect survived."""
+    rc, out = _open_reds(tmp_path, [_known_limit_entry(closes_when=SUPERSEDED_CLOSES_WHEN)])
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=closure_condition_undeclared)" in out, out
+    assert "zero_red_completed_runs_in_the_applicable_window" in out, (
+        "the refusal does not tell the reader what rule the sentence had to carry"
+    )
+    assert "known_limit_still_open" not in out, (
+        "the command was run anyway; the refusal is supposed to precede dispatch"
+    )
+    assert "ACCOUNTED" not in out, out
+
+
+def test_the_closure_screen_only_rules_on_entries_whose_screen_owns_a_closure_rule(tmp_path):
+    """Scope. Thirteen green entries and every other register in ci/ declare no closure
+    rule, and inventing a defect for them would be this tool ruling on a subject nobody
+    gave it — the same over-reach `_extent_defect`'s docstring records as having made a
+    whole register unloadable."""
+    rc, out = _open_reds(tmp_path, [
+        _entry(id="g", closes_when="n/a"),
+        _entry(id="r", expect="red", signature="the known red",
+               cmd=["python", "-c", "import sys; print('the known red'); sys.exit(1)"],
+               closes_when="when somebody fixes it"),
+    ])
+    assert rc == 0, out
+    assert "closure_condition_undeclared" not in out, out
+
+
+def test_one_entrys_closure_defect_does_not_silence_the_rest_of_the_register(tmp_path):
+    """The lesson of 69ac222, applied to the new guard: a defect on one entry is a defect
+    of THAT entry, not an unloadable register. Nine silences behind one loud failure is
+    the shape this repository has already been bitten by."""
+    rc, out = _open_reds(tmp_path, [
+        _entry(id="g"),
+        _known_limit_entry(closes_when=SUPERSEDED_CLOSES_WHEN),
+    ])
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "closure_condition_undeclared" in out, out
+    assert "PASS" in out and "g" in out, (
+        "the other entry was not ruled on; a guard that refuses before it measures "
+        "reports nothing about its subjects and its silence reads like their being fine"
+    )
+
+
+# --- the production path: what actually closes it, in both polarities ---------------------
+
+
+def _closure_window_with_a_red_behind_the_head():
+    """Nine green pushes in front of ONE red, all ten applicable, red in the OLDEST slot.
+
+    This is the state the superseded sentence got wrong and the only state that
+    distinguishes the window rule from the head-run rule: the newest run is green, so any
+    reading that stops at the head reports PASS."""
+    return _runs(*([("completed", "success")] * 9 + [("completed", "failure")]))
+
+
+def test_a_green_head_with_a_red_still_in_the_window_does_not_close_this(tmp_path):
+    """NEGATIVE POLE on the PRODUCTION `gh` path. The registered condition is zero red
+    runs IN THE WINDOW, so nine consecutive green pushes on top of one unrepaired red
+    close nothing."""
+    rows = _closure_window_with_a_red_behind_the_head()
+    assert rows[0]["conclusion"] == "success", "the head must be green or this proves nothing"
+    rc, out, ladder = _main_green_live(
+        tmp_path, {"50": _page(_noise(40) + rows)}, "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_FAIL_CONDITION, out
+    assert "FAIL(condition=main_is_red)" in out, out
+    assert "10 run(s) in window" in out and "1 RED" in out, out
+    assert "https://example.invalid/runs/9" in out, out
+    assert ladder == [50], ladder
+
+
+def test_a_full_applicable_window_with_zero_reds_is_what_closes_this(tmp_path):
+    """POSITIVE POLE on the PRODUCTION `gh` path. Not "a green push" — a full applicable
+    window with no red left in it. Without this arm the condition would be one no push
+    could ever satisfy, and issue #24 would have no discharge at all."""
+    rc, out, ladder = _main_green_live(
+        tmp_path,
+        {"50": _page(_noise(40) + _runs(*([("completed", "success")] * 10)))},
+        "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_PASS, out
+    assert "0 RED" in out and "10 run(s) in window" in out, out
+    assert "PASS: every completed applicable run" in out, out
+    assert ladder == [50], ladder
+
+
+def test_inapplicable_reds_neither_fill_a_slot_nor_block_closure(tmp_path):
+    """Applicability is unchanged by this issue and is asserted here because the new
+    condition quotes it. A failed bot run, a failed CI run on a PR branch, and a skipped
+    CI push all sit inside the raw page; none is applicable, so none occupies one of the
+    ten slots and none can keep the window from closing."""
+    inapplicable = (
+        _noise(6, workflow="Squad Triage", event="issues")
+        + _runs(("completed", "failure"), workflow="Squad Heartbeat (Ralph)", first=300)
+        + _runs(("completed", "failure"), head_branch="squad/103-something", first=400)
+        + _runs(("completed", "failure"), event="pull_request", first=500)
+        + _runs(("completed", "skipped"), first=600)
+    )
+    rc, out, ladder = _main_green_live(
+        tmp_path,
+        {"50": _page(inapplicable + _runs(*([("completed", "success")] * 10)))},
+        "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_PASS, out
+    assert "10 run(s) in window" in out and "0 RED" in out, out
+    for excluded in (300, 400, 500, 600):
+        assert f"https://example.invalid/runs/{excluded}" not in out, (
+            f"run {excluded} is not applicable but reached the verdict"
+        )
+
+
+# --- held-out source mutations: the window arm is about the window ------------------------
+
+
+def _mutant_main_green(tmp_path, name: str, old: str, new: str, pages, *args: str):
+    """Run a TEXT-MUTATED copy of the shipped screen against the same scripted `gh`.
+
+    The mutation is asserted to have applied exactly once, so a mutant that silently
+    became a no-op cannot be mistaken for a surviving one — a mutation battery whose
+    mutants do not apply is the vacuous-assertion shape this repository screens for."""
+    src = (CI_DIR / "check_main_is_green.py").read_text(encoding="utf-8")
+    assert src.count(old) == 1, f"mutation target {old!r} is not unique in the screen"
+    mutant = tmp_path / f"mutant_{name}.py"
+    mutant.write_text(src.replace(old, new), encoding="utf-8")
+    shim_root = tmp_path / name
+    shim_root.mkdir(parents=True, exist_ok=True)
+    env, log = _gh_shim(shim_root, pages, None)
+    child = dict(os.environ)
+    child["PYTHONIOENCODING"] = "utf-8"
+    child.update({k: str(v) for k, v in env.items()})
+    r = subprocess.run(
+        [sys.executable, str(mutant), *args],
+        capture_output=True, encoding="utf-8", errors="replace", env=child,
+    )
+    return r.returncode, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("name, old, new, weakening", [
+    (
+        "head_window",
+        'completed = [r for r in runs if (r.get("status") or "") == "completed"]',
+        'completed = [r for r in runs[:1] if (r.get("status") or "") == "completed"]',
+        "rules on the newest run only — the pre-PR-#91 semantics the old prose described",
+    ),
+    (
+        "head_red_set",
+        'red = [r for r in completed if (r.get("conclusion") or "") in BAD]',
+        'red = [r for r in completed[:1] if (r.get("conclusion") or "") in BAD]',
+        "fills the window correctly and then lets only the head decide its colour",
+    ),
+])
+def test_weakening_full_window_evaluation_turns_the_closure_arm_green(
+        tmp_path, name, old, new, weakening):
+    """The negative control for the arm above. Each mutant is a way of restoring the
+    single-green-push rule in CODE, and each one makes
+    `test_a_green_head_with_a_red_still_in_the_window_does_not_close_this` pass with a
+    green verdict on a branch that has an unrepaired red inside its window.
+
+    A mutant that goes green here is a mutant that arm would have caught; if a mutant
+    ever fails to go green, that arm is no longer about the window and this test says so
+    before the arm's own PASS is believed."""
+    rc, out = _mutant_main_green(
+        tmp_path, name, old, new,
+        {"50": _page(_noise(40) + _closure_window_with_a_red_behind_the_head())},
+        "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_PASS, (
+        f"the {name} mutant ({weakening}) did not go green, so the window arm is not "
+        f"distinguishing window semantics from head semantics:\n{out}"
+    )
+    assert "PASS: every completed applicable run" in out, out
