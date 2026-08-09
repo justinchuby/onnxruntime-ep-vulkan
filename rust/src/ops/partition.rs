@@ -234,8 +234,8 @@ impl TransferModel {
 pub struct Island {
     /// How many nodes it contains.
     pub nodes: usize,
-    /// How many of those are *anchors* — ops heavy enough to justify a boundary on their own
-    /// (see [`is_anchor`]).
+    /// How many of those are *anchors* — nodes carrying a resident weight at a schema-designated
+    /// site, and so heavy enough to justify a boundary on their own (see [`is_anchor`]).
     pub anchors: usize,
     /// Estimated floating-point operations inside the island.
     pub flops: u64,
@@ -263,9 +263,22 @@ impl Island {
     /// 2026-08-01, read out of `PartitionStats` in a trace this session (`bench/results/
     /// net_benefit_gate-trace-dev0.json`), not assumed.
     ///
-    /// `nodes` and `anchors` are counts from the CLAIM_LOG of the same run (355 claimed, of which
-    /// 161 `MatMulNBits` + 32 `GroupQueryAttention` are anchors). `flops` and the boundary total
-    /// are the estimator's own numbers.
+    /// `nodes` and `anchors` are counts from the CLAIM_LOG of the same run — 355 nodes claimed,
+    /// of which **161 are anchors**, one per `MatMulNBits` node, each carrying its packed weight
+    /// initializer at the schema-designated index 1. `PartitionStats` does **not** carry an
+    /// anchor count (see `crate::trace::PartitionStats`, whose fields are node counts, FLOPs and
+    /// boundary bytes); the anchor figure is a census of the claim log, and saying so is the
+    /// point of this sentence.
+    ///
+    /// **The 32 `GroupQueryAttention` nodes in the same island are claimed and are not anchors**
+    /// (issue #73). Every GQA input is an activation, a KV cache, a length, a per-head scalar or
+    /// an `O(head_size)` norm gain — see [`WEIGHT_SITES`] — so no GQA node can carry a resident
+    /// tensor at a designated weight site. A previous revision of this constant read
+    /// `anchors: 193`, which was `161 + 32` under the op-name predicate this replaced.
+    ///
+    /// `flops` and the boundary total are the estimator's own numbers and are **unchanged**: the
+    /// FLOP term is keyed on the heavy-op *family* ([`is_heavy_op`]), not on anchoring, so all
+    /// 193 heavy-op nodes still score `2·3072·3072` exactly as they did.
     ///
     /// The 2026-07-31 estimate of Phi-3.5's island boundary, **which counted internal edges**.
     ///
@@ -309,7 +322,7 @@ impl Island {
     /// harder to reach, not easier.
     pub const ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED: Island = Island {
         nodes: 355,
-        anchors: 193,
+        anchors: 161,
         flops: 23_020_437_504,
         input_bytes: 0,
         output_bytes: 89_199_100_032,
@@ -320,11 +333,12 @@ impl Island {
     ///
     /// Read out of the verbose `PartitionStats` summary on dev0 with the same model and the same
     /// binary that produced the 355 → 0 claim census. The number that changed is the boundary;
-    /// nodes, anchors and FLOPs are unaffected because the fix touches only which outputs are
-    /// charged to the boundary.
+    /// nodes and FLOPs are unaffected because the fix touches only which outputs are charged to
+    /// the boundary. The anchor count is not a `PartitionStats` field at all — it is the claim-log
+    /// census carried over from the constant above.
     pub const ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_FIXED: Island = Island {
         nodes: 355,
-        anchors: 193,
+        anchors: 161,
         flops: 23_020_437_504,
         input_bytes: 0,
         output_bytes: 13_936_509_056,
@@ -339,7 +353,7 @@ impl Island {
     /// Upload 399,376 B + readback 457,344 B = 856,720 B, asymmetric with readback larger.
     pub const MEASURED_PHI35_DEV0_REAL_BYTES: Island = Island {
         nodes: 355,
-        anchors: 193,
+        anchors: 161,
         flops: 23_020_437_504,
         input_bytes: TransferModel::MEASURED_PHI35_UPLOAD_BYTES,
         output_bytes: TransferModel::MEASURED_PHI35_READBACK_BYTES,
@@ -374,25 +388,868 @@ impl Island {
     }
 }
 
-/// Ops heavy enough that a single one of them justifies an island.
+// ---------------------------------------------------------------------------------------
+// Anchor eligibility — a node property, not an op name
+// ---------------------------------------------------------------------------------------
+
+/// What a **resident** tensor at one schema input index of a heavy-op family would be.
 ///
-/// A lone `Add` is never worth a round-trip; a single `MatMul` on LLM-sized weights always is.
-/// The list is the §4 inventory's "L/XL, compute-bound" rows.
-pub fn is_anchor(qualified_op: &str) -> bool {
-    matches!(
-        qualified_op,
-        "MatMul"
-            | "Gemm"
-            | "Conv"
-            | "ConvTranspose"
-            | "Attention"
-            | "com.microsoft::MatMulNBits"
-            | "com.microsoft::GroupQueryAttention"
-            | "com.microsoft::MultiHeadAttention"
-            | "com.microsoft::Attention"
-            | "com.microsoft::QMoE"
-            | "com.microsoft::LinearAttention"
-    )
+/// The classification is a reading of the *pinned schema's own text* — the shape it declares for
+/// that input — and not of the operand's name. `router_weights` is called a weight and is
+/// `(num_tokens, num_experts)`, so it is an activation; `cos_cache` is called a cache and is a
+/// precomputed table. Names are the one thing this must not be keyed on, because keying anchor
+/// eligibility on names is the defect being repaired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SiteKind {
+    /// A factor of the op's own product or convolution. Its extent is the reduction dimension
+    /// times an output dimension, so a resident value here is read once per *output element* and
+    /// pays for the island boundary many times over.
+    Factor,
+    /// Quantisation payload that reconstitutes a [`SiteKind::Factor`] — packed scales, zero
+    /// points, group indices. Extent scales with the same reduction dimension.
+    QuantPayload,
+    /// A runtime activation: extent scales with batch, tokens or sequence length. A model that
+    /// makes one of these an initializer has folded a constant input, not supplied a weight.
+    Activation,
+    /// An additive bias or a normalisation gain. `O(output channels)` or smaller, and it
+    /// contributes one FLOP per output element — no reuse, nothing to amortise.
+    BiasOrGain,
+    /// A per-expert or per-head scalar. Weight-side in origin for some of these, but far too
+    /// small to justify a boundary on its own; the tensor it scales is the site that does.
+    PerGroupScalar,
+    /// A table precomputed from position, indexed rather than multiplied.
+    PrecomputedTable,
+    /// Recurrent or KV-cache state carried between steps. Written every step, so it is traffic,
+    /// not a weight.
+    CachedState,
+    /// A mask, a length vector or a beam-indirection buffer.
+    MaskOrLength,
+}
+
+impl SiteKind {
+    /// Whether a resident initializer at a site of this kind makes the node an anchor.
+    ///
+    /// Two kinds and only two. This is `const` and total so that adding a variant to
+    /// [`SiteKind`] without deciding its polarity does not compile.
+    pub const fn designates(self) -> bool {
+        match self {
+            SiteKind::Factor | SiteKind::QuantPayload => true,
+            SiteKind::Activation
+            | SiteKind::BiasOrGain
+            | SiteKind::PerGroupScalar
+            | SiteKind::PrecomputedTable
+            | SiteKind::CachedState
+            | SiteKind::MaskOrLength => false,
+        }
+    }
+
+    /// Stable token for the dump surfaces (`epctl --dump-weight-sites`) and the tests that read
+    /// them. Deliberately not `Debug`, which is free to change.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SiteKind::Factor => "factor",
+            SiteKind::QuantPayload => "quant_payload",
+            SiteKind::Activation => "activation",
+            SiteKind::BiasOrGain => "bias_or_gain",
+            SiteKind::PerGroupScalar => "per_group_scalar",
+            SiteKind::PrecomputedTable => "precomputed_table",
+            SiteKind::CachedState => "cached_state",
+            SiteKind::MaskOrLength => "mask_or_length",
+        }
+    }
+}
+
+/// One schema input of one heavy-op family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WeightSite {
+    /// `domain::op` exactly as [`crate::registry::NodeView::qualified_name`] renders it — the
+    /// default domain has no prefix.
+    pub qualified_op: &'static str,
+    /// The operand's position in the pinned schema's input list.
+    pub index: usize,
+    /// The operand's name in the pinned schema. Carried so the row can be pinned against the
+    /// schema itself rather than against a copy of this table.
+    pub name: &'static str,
+    /// What a resident tensor here would be.
+    pub kind: SiteKind,
+    /// Why, in the schema's own terms.
+    pub reason: &'static str,
+}
+
+impl WeightSite {
+    /// Whether a resident initializer here makes the node an anchor.
+    pub const fn designated(&self) -> bool {
+        self.kind.designates()
+    }
+}
+
+/// **Every** input of every heavy-op family, in schema order, with its designation.
+///
+/// # Why every input and not just the designated ones
+///
+/// A table of only the designated indices cannot be checked against anything. This one can:
+/// its `(qualified_op, index, name)` projection must equal the pinned schemas' input lists
+/// exactly — same families, same order, same names, same *count* — so a schema that gains an
+/// input, loses one, or reorders two is a red test rather than a silent misclassification of
+/// whatever now sits at that index. `ci/audit_weight_sites.py` performs that comparison against
+/// the installed `onnx` / `onnxruntime` packages, reading this table out of the built binary via
+/// `epctl --dump-weight-sites --json`.
+///
+/// # Provenance
+///
+/// Derived 2026-08-09 from the pinned packages — `onnx` 1.22.0 (`onnx.defs.get_schema`) and
+/// `onnxruntime` 1.28.0 (`onnxruntime.capi._pybind_state.get_all_operator_schema`), the same
+/// release `third_party/onnxruntime/PROVENANCE.md` pins for the vendored headers (tag `v1.28.0`,
+/// `da9b5e364c465de65c49d91e696cd6485270757f`, `ORT_API_VERSION` 28). Every `reason` below
+/// quotes or paraphrases that schema's declared shape for that operand; none of them was read
+/// off the operand's name.
+///
+/// # The criterion, stated once
+///
+/// An index is designated iff a resident tensor there is **a factor of the op's own arithmetic,
+/// or the quantisation payload that reconstitutes one** — i.e. its extent scales with the op's
+/// reduction dimensions, so it is read once per output element and a single node of this kind
+/// amortises an island boundary by itself. Everything whose extent scales with *tokens* is an
+/// activation; everything that is `O(output channels)` or smaller is a bias, a gain or a scalar
+/// and contributes one FLOP per output element.
+pub static WEIGHT_SITES: &[WeightSite] = &[
+    // -- default domain -----------------------------------------------------------------
+    WeightSite {
+        qualified_op: "MatMul",
+        index: 0,
+        name: "A",
+        kind: SiteKind::Factor,
+        reason: "`N-dimensional matrix A` — either factor of a product may be the resident one; \
+                 ONNX MatMul is symmetric in that respect and a model may emit the weight on \
+                 the left",
+    },
+    WeightSite {
+        qualified_op: "MatMul",
+        index: 1,
+        name: "B",
+        kind: SiteKind::Factor,
+        reason: "`N-dimensional matrix B` — the conventional weight side, and the one 36 of \
+                 MiniLM-L6-v2's 48 MatMul nodes actually use",
+    },
+    WeightSite {
+        qualified_op: "Gemm",
+        index: 0,
+        name: "A",
+        kind: SiteKind::Factor,
+        reason: "`(M, K)` (or `(K, M)` under transA) — a factor of the product, extent K in the \
+                 reduction dimension",
+    },
+    WeightSite {
+        qualified_op: "Gemm",
+        index: 1,
+        name: "B",
+        kind: SiteKind::Factor,
+        reason: "`(K, N)` (or `(N, K)` under transB) — a factor of the product; the classifier \
+                 head's weight matrix on MobileNetV2-12",
+    },
+    WeightSite {
+        qualified_op: "Gemm",
+        index: 2,
+        name: "C",
+        kind: SiteKind::BiasOrGain,
+        reason: "`unidirectional broadcastable to (M, N)`, added once per output element after \
+                 the product — a bias, not a factor",
+    },
+    WeightSite {
+        qualified_op: "Conv",
+        index: 0,
+        name: "X",
+        kind: SiteKind::Activation,
+        reason: "`(N x C x H x W)` where N is the batch size — extent scales with the batch",
+    },
+    WeightSite {
+        qualified_op: "Conv",
+        index: 1,
+        name: "W",
+        kind: SiteKind::Factor,
+        reason: "`The weight tensor that will be used in the convolutions`, `(M x C/group x kH \
+                 x kW)` — the reduction extent of every output element",
+    },
+    WeightSite {
+        qualified_op: "Conv",
+        index: 2,
+        name: "B",
+        kind: SiteKind::BiasOrGain,
+        reason: "`Optional 1D bias`, `size of M` — one add per output element",
+    },
+    WeightSite {
+        qualified_op: "ConvTranspose",
+        index: 0,
+        name: "X",
+        kind: SiteKind::Activation,
+        reason: "`(N x C x H x W)` where N is the batch size — the deconvolution's input \
+                 activation, extent scales with the batch",
+    },
+    WeightSite {
+        qualified_op: "ConvTranspose",
+        index: 1,
+        name: "W",
+        kind: SiteKind::Factor,
+        reason: "`The weight tensor that will be used in the convolutions`, `(C x M/group x kH \
+                 x kW)`",
+    },
+    WeightSite {
+        qualified_op: "ConvTranspose",
+        index: 2,
+        name: "B",
+        kind: SiteKind::BiasOrGain,
+        reason: "`Optional 1D bias`, `size of M` — one add per deconvolved output element",
+    },
+    // ONNX `Attention` (opset 24) is fused scaled-dot-product attention over *already projected*
+    // Q/K/V. It has no projection weights at all, so it designates nothing and a node of it can
+    // never anchor an island on its own. That is the correct reading of the schema and it is a
+    // deliberate narrowing relative to the op-name list this replaced.
+    WeightSite {
+        qualified_op: "Attention",
+        index: 0,
+        name: "Q",
+        kind: SiteKind::Activation,
+        reason: "`Query tensor`, `(batch_size, q_num_heads, q_sequence_length, head_size)` — \
+                 extent scales with the sequence",
+    },
+    WeightSite {
+        qualified_op: "Attention",
+        index: 1,
+        name: "K",
+        kind: SiteKind::Activation,
+        reason: "`Key tensor`, extent scales with `kv_sequence_length`",
+    },
+    WeightSite {
+        qualified_op: "Attention",
+        index: 2,
+        name: "V",
+        kind: SiteKind::Activation,
+        reason: "`Value tensor`, extent scales with `kv_sequence_length`",
+    },
+    WeightSite {
+        qualified_op: "Attention",
+        index: 3,
+        name: "attn_mask",
+        kind: SiteKind::MaskOrLength,
+        reason: "`Attention mask`, broadcastable to `(batch, heads, q_len, total_len)`",
+    },
+    WeightSite {
+        qualified_op: "Attention",
+        index: 4,
+        name: "past_key",
+        kind: SiteKind::CachedState,
+        reason: "`past state cache for key` — rewritten every step",
+    },
+    WeightSite {
+        qualified_op: "Attention",
+        index: 5,
+        name: "past_value",
+        kind: SiteKind::CachedState,
+        reason: "`past state cache for value` — rewritten every step",
+    },
+    WeightSite {
+        qualified_op: "Attention",
+        index: 6,
+        name: "nonpad_kv_seqlen",
+        kind: SiteKind::MaskOrLength,
+        reason: "`a vector of integers of shape (batch_size,)` counting non-padding tokens",
+    },
+    // -- com.microsoft ------------------------------------------------------------------
+    WeightSite {
+        qualified_op: "com.microsoft::MatMulNBits",
+        index: 0,
+        name: "A",
+        kind: SiteKind::Activation,
+        reason: "`The input tensor, not quantized.`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MatMulNBits",
+        index: 1,
+        name: "B",
+        kind: SiteKind::Factor,
+        reason: "`Packed uint8 tensor of shape (N, k_blocks, blob_size)` — the quantised weight \
+                 matrix itself; `k_blocks = ceil(K / block_size)` is the reduction extent",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MatMulNBits",
+        index: 2,
+        name: "scales",
+        kind: SiteKind::QuantPayload,
+        reason: "`Per-block scaling factors for dequantization with shape (N, k_blocks)` — one \
+                 half of what reconstitutes B",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MatMulNBits",
+        index: 3,
+        name: "zero_points",
+        kind: SiteKind::QuantPayload,
+        reason: "`Per-block zero point for dequantization`, shape in `k_blocks` — the other half",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MatMulNBits",
+        index: 4,
+        name: "g_idx",
+        kind: SiteKind::QuantPayload,
+        reason: "`group_idx. This input is deprecated` — the act-order group mapping, extent K, \
+                 and part of what reconstitutes B while it survives; the deprecation is recorded \
+                 here so its eventual removal reds the schema audit rather than shifting the \
+                 meaning of index 5",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MatMulNBits",
+        index: 5,
+        name: "bias",
+        kind: SiteKind::BiasOrGain,
+        reason: "`Bias to add to result. It should have shape [N].`",
+    },
+    // `com.microsoft::Attention` is the *unfused* contrib op: it does its own Q/K/V projection
+    // and therefore does carry a weight matrix, unlike ONNX `Attention` and unlike
+    // `MultiHeadAttention`. Exactly one designated site.
+    WeightSite {
+        qualified_op: "com.microsoft::Attention",
+        index: 0,
+        name: "input",
+        kind: SiteKind::Activation,
+        reason: "`(batch_size, sequence_length, input_hidden_size)`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::Attention",
+        index: 1,
+        name: "weights",
+        kind: SiteKind::Factor,
+        reason: "`Merged Q/K/V weights with shape (input_hidden_size, hidden_size + hidden_size \
+                 + v_hidden_size)` — the projection matrix, reduction extent `input_hidden_size`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::Attention",
+        index: 2,
+        name: "bias",
+        kind: SiteKind::BiasOrGain,
+        reason: "`Bias tensor ... for input projection`, one add per projected element",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::Attention",
+        index: 3,
+        name: "mask_index",
+        kind: SiteKind::MaskOrLength,
+        reason: "`Attention mask`, extent scales with the sequence",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::Attention",
+        index: 4,
+        name: "past",
+        kind: SiteKind::CachedState,
+        reason: "`past state for key and value`, `(2, batch, heads, past_sequence_length, \
+                 head_size)`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::Attention",
+        index: 5,
+        name: "attention_bias",
+        kind: SiteKind::BiasOrGain,
+        reason: "`additional add to QxK'` — one add per score element, no reuse across outputs",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::Attention",
+        index: 6,
+        name: "past_sequence_length",
+        kind: SiteKind::MaskOrLength,
+        reason: "a length scalar under `past_present_share_buffer`",
+    },
+    // `MultiHeadAttention` takes Q/K/V **already projected** — the projection weights belong to
+    // the MatMul/MatMulNBits nodes feeding it. Zero designated sites.
+    WeightSite {
+        qualified_op: "com.microsoft::MultiHeadAttention",
+        index: 0,
+        name: "query",
+        kind: SiteKind::Activation,
+        reason: "`(batch_size, sequence_length, hidden_size)`, or packed QKV",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MultiHeadAttention",
+        index: 1,
+        name: "key",
+        kind: SiteKind::Activation,
+        reason: "`(batch_size, kv_sequence_length, hidden_size)`, or packed KV, or past_key",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MultiHeadAttention",
+        index: 2,
+        name: "value",
+        kind: SiteKind::Activation,
+        reason: "`(batch_size, kv_sequence_length, v_hidden_size)`, or past_value",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MultiHeadAttention",
+        index: 3,
+        name: "bias",
+        kind: SiteKind::BiasOrGain,
+        reason: "`Bias tensor with shape (hidden_size + hidden_size + v_hidden_size) from input \
+                 projection` — the projection's bias; the projection's *matrix* is not an input \
+                 of this op",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MultiHeadAttention",
+        index: 4,
+        name: "key_padding_mask",
+        kind: SiteKind::MaskOrLength,
+        reason: "`Key padding mask`, every declared shape scales with batch or sequence",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MultiHeadAttention",
+        index: 5,
+        name: "attention_bias",
+        kind: SiteKind::BiasOrGain,
+        reason: "`bias added to QxK'` — one add per score element",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MultiHeadAttention",
+        index: 6,
+        name: "past_key",
+        kind: SiteKind::CachedState,
+        reason: "`past state for key`, rewritten every step",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MultiHeadAttention",
+        index: 7,
+        name: "past_value",
+        kind: SiteKind::CachedState,
+        reason: "`past state for value`, rewritten every step",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MultiHeadAttention",
+        index: 8,
+        name: "past_sequence_length",
+        kind: SiteKind::MaskOrLength,
+        reason: "`The past_sequence_length buffer sharing is used with`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::MultiHeadAttention",
+        index: 9,
+        name: "cache_indirection",
+        kind: SiteKind::MaskOrLength,
+        reason: "`[batch_size, beam_width, max_sequence_length]` beam indirection — an index \
+                 buffer",
+    },
+    // `GroupQueryAttention` designates **zero** weight sites, and this is the single most
+    // consequential row-block in the table: it is why Phi-3.5-mini-int4 has **161** anchors and
+    // not 193. GQA consumes Q/K/V that its neighbouring `MatMulNBits` nodes projected; every one
+    // of its remaining inputs is a cache, a length, a per-head scalar or an `O(head_size)` norm
+    // gain. Its 32 nodes are still *claimed* — anchor eligibility and claim eligibility are
+    // different questions and `docs/OP_COVERAGE.md` reports them separately.
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 0,
+        name: "query",
+        kind: SiteKind::Activation,
+        reason: "`Query with shape (batch_size, sequence_length, hidden_size)`, or packed QKV of \
+                 width `num_heads * head_size + 2 * kv_num_heads * head_size`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 1,
+        name: "key",
+        kind: SiteKind::Activation,
+        reason: "`Key with shape (batch_size, kv_sequence_length, kv_hidden_size)`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 2,
+        name: "value",
+        kind: SiteKind::Activation,
+        reason: "`Value with shape (batch_size, kv_sequence_length, kv_hidden_size)`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 3,
+        name: "past_key",
+        kind: SiteKind::CachedState,
+        reason: "`past state key`, shared with `present_key` — written every step",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 4,
+        name: "past_value",
+        kind: SiteKind::CachedState,
+        reason: "`past state value`, shared with `present_value` — written every step",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 5,
+        name: "seqlens_k",
+        kind: SiteKind::MaskOrLength,
+        reason: "`1D Tensor of shape (batch_size)`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 6,
+        name: "total_sequence_length",
+        kind: SiteKind::MaskOrLength,
+        reason: "`Scalar tensor equivalent to the maximum total sequence length`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 7,
+        name: "cos_cache",
+        kind: SiteKind::PrecomputedTable,
+        reason: "`(max_sequence_length, head_size / 2)` rotary table — indexed by position, not \
+                 multiplied against a reduction extent; resident by construction on every model \
+                 that uses rotary embeddings, which is exactly why designating it would make \
+                 the anchor property vacuous",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 8,
+        name: "sin_cache",
+        kind: SiteKind::PrecomputedTable,
+        reason: "`(max_sequence_length, head_size / 2)` rotary table — see `cos_cache`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 9,
+        name: "position_ids",
+        kind: SiteKind::MaskOrLength,
+        reason: "`(batch_size, sequence_length)` index vector",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 10,
+        name: "attention_bias",
+        kind: SiteKind::BiasOrGain,
+        reason: "`additional add to QxK'` — one add per score element",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 11,
+        name: "head_sink",
+        kind: SiteKind::PerGroupScalar,
+        reason: "`1D tensor with shape (num_heads)`, one smoothing term per head",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 12,
+        name: "k_scale",
+        kind: SiteKind::PerGroupScalar,
+        reason: "`Scale tensor for past_key` — quantisation metadata for a *cache*, not for a \
+                 weight",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 13,
+        name: "v_scale",
+        kind: SiteKind::PerGroupScalar,
+        reason: "`Scale tensor for past_value` — see `k_scale`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 14,
+        name: "q_norm_weight",
+        kind: SiteKind::BiasOrGain,
+        reason: "`Optional 1D tensor of shape (head_size)` — an RMS-norm gain applied elementwise \
+                 to Q. Learned, resident, and still `O(head_size)`: one multiply per element of \
+                 Q with no reuse across outputs, so it amortises nothing",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        index: 15,
+        name: "k_norm_weight",
+        kind: SiteKind::BiasOrGain,
+        reason: "`Optional 1D tensor of shape (head_size). See q_norm_weight.`",
+    },
+    // `QMoE` designates **nine** sites: the packed expert weights, their scales and their zero
+    // points, for each of fc1/fc2/fc3. Not four, and not the twelve a name-based reading would
+    // produce — `router_weights`, the two global scales and the four activation scales are all
+    // excluded, each for a different and separately stated reason.
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 0,
+        name: "input",
+        kind: SiteKind::Activation,
+        reason: "`(num_tokens, hidden_size)` or `(batch_size, sequence_length, hidden_size)`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 1,
+        name: "router_probs",
+        kind: SiteKind::Activation,
+        reason: "`2D tensor with shape (num_tokens, num_experts)` — extent scales with tokens",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 2,
+        name: "fc1_experts_weights",
+        kind: SiteKind::Factor,
+        reason: "`(num_experts, fusion_size * inter_size, hidden_size / pack_size)` — the packed \
+                 FC1 weight matrix, reduction extent `hidden_size`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 3,
+        name: "fc1_scales",
+        kind: SiteKind::QuantPayload,
+        reason: "`Optional weight scales` for FC1, extent `(num_experts, fusion_size * \
+                 inter_size[, hidden_size / block_size])`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 4,
+        name: "fc1_experts_bias",
+        kind: SiteKind::BiasOrGain,
+        reason: "`2D optional tensor with shape (num_experts, fusion_size * inter_size)` — a bias",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 5,
+        name: "fc2_experts_weights",
+        kind: SiteKind::Factor,
+        reason: "`(num_experts, hidden_size, inter_size / pack_size)` — the packed FC2 weight \
+                 matrix, reduction extent `inter_size`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 6,
+        name: "fc2_scales",
+        kind: SiteKind::QuantPayload,
+        reason: "`Optional weight scales` for FC2",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 7,
+        name: "fc2_experts_bias",
+        kind: SiteKind::BiasOrGain,
+        reason: "`2D optional tensor with shape (num_experts, hidden_size)` — a bias",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 8,
+        name: "fc3_experts_weights",
+        kind: SiteKind::Factor,
+        reason: "`(num_experts, inter_size, hidden_size / pack_size)` — the packed FC3 (gate) \
+                 weight matrix",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 9,
+        name: "fc3_scales",
+        kind: SiteKind::QuantPayload,
+        reason: "`Optional weight scales` for FC3",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 10,
+        name: "fc3_experts_bias",
+        kind: SiteKind::BiasOrGain,
+        reason: "`2D optional tensor with shape (num_experts, inter_size)` — a bias",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 11,
+        name: "fc1_zero_points",
+        kind: SiteKind::QuantPayload,
+        reason: "`(num_experts, fusion_size * inter_size / pack_size)` — FC1 dequantisation \
+                 payload",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 12,
+        name: "fc2_zero_points",
+        kind: SiteKind::QuantPayload,
+        reason: "`(num_experts, hidden_size / pack_size)` — FC2 dequantisation payload",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 13,
+        name: "fc3_zero_points",
+        kind: SiteKind::QuantPayload,
+        reason: "`(num_experts, inter_size / pack_size)` — FC3 dequantisation payload",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 14,
+        name: "router_weights",
+        kind: SiteKind::Activation,
+        reason: "named a weight and is not one: `2D optional tensor with shape (num_tokens, \
+                 num_experts)`, `used for aggregating expert outputs` — its extent scales with \
+                 tokens. The clearest case in the table for reading shapes rather than names",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 15,
+        name: "fc1_global_scale",
+        kind: SiteKind::PerGroupScalar,
+        reason: "`1D optional tensor with shape (num_experts,). Per-expert global weight scale \
+                 for FC1.` — weight-side in origin but `O(num_experts)`; the tensor it scales \
+                 (index 2) is the site that carries FC1",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 16,
+        name: "fc2_global_scale",
+        kind: SiteKind::PerGroupScalar,
+        reason: "`(num_experts,)` per-expert global weight scale for FC2 — see \
+                 `fc1_global_scale`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 17,
+        name: "fc1_act_scale",
+        kind: SiteKind::Activation,
+        reason: "`Activation scale for FC1 FP8 activation modes.` — activation-side by the \
+                 schema's own word",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 18,
+        name: "fc2_act_scale",
+        kind: SiteKind::Activation,
+        reason: "`Activation scale for FC2 FP8 activation modes.`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 19,
+        name: "fc1_act_block_scale",
+        kind: SiteKind::Activation,
+        reason: "`MXFP activation block-scale tensor for FC1` — one block scale per activation \
+                 block, so its extent scales with tokens",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::QMoE",
+        index: 20,
+        name: "fc2_act_block_scale",
+        kind: SiteKind::Activation,
+        reason: "`MXFP activation block-scale tensor for FC2` — see `fc1_act_block_scale`",
+    },
+    // `LinearAttention` designates zero sites: every one of its six inputs is declared with a
+    // leading `(B, T, ...)` or is the recurrent state.
+    WeightSite {
+        qualified_op: "com.microsoft::LinearAttention",
+        index: 0,
+        name: "query",
+        kind: SiteKind::Activation,
+        reason: "`3D packed shape (B, T, H_q * d_k)`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::LinearAttention",
+        index: 1,
+        name: "key",
+        kind: SiteKind::Activation,
+        reason: "`3D packed shape (B, T, H_kv * d_k)`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::LinearAttention",
+        index: 2,
+        name: "value",
+        kind: SiteKind::Activation,
+        reason: "`3D packed shape (B, T, H_kv * d_v)`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::LinearAttention",
+        index: 3,
+        name: "past_state",
+        kind: SiteKind::CachedState,
+        reason: "`Recurrent state from previous step with shape (B, H_kv, d_k, d_v)`",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::LinearAttention",
+        index: 4,
+        name: "decay",
+        kind: SiteKind::Activation,
+        reason: "`Exponential decay gate in log-space`, `(B, T, H_kv * d_k)` or `(B, T, H_kv)` — \
+                 computed per token",
+    },
+    WeightSite {
+        qualified_op: "com.microsoft::LinearAttention",
+        index: 5,
+        name: "beta",
+        kind: SiteKind::Activation,
+        reason: "`Update rate (sigmoid output)`, `(B, T, H_kv)` or `(B, T, 1)`",
+    },
+];
+
+/// The pinned schema row for one operand of one op, or `None`.
+///
+/// `None` means one of two things and both fail closed: the op is not in the heavy-op inventory
+/// at all, or `index` is past the end of that op's pinned schema. A caller that gets `None`
+/// must treat the operand as incapable of anchoring.
+pub fn classify_weight_operand(qualified_op: &str, index: usize) -> Option<&'static WeightSite> {
+    WEIGHT_SITES
+        .iter()
+        .find(|s| s.qualified_op == qualified_op && s.index == index)
+}
+
+/// Whether a resident initializer at `index` of `qualified_op` designates a weight site.
+pub fn is_designated_weight_site(qualified_op: &str, index: usize) -> bool {
+    classify_weight_operand(qualified_op, index).is_some_and(WeightSite::designated)
+}
+
+/// Every pinned schema row for one op, in schema order. Empty for ops outside the inventory.
+pub fn weight_sites_for(qualified_op: &str) -> Vec<&'static WeightSite> {
+    WEIGHT_SITES
+        .iter()
+        .filter(|s| s.qualified_op == qualified_op)
+        .collect()
+}
+
+/// The heavy-op families, in table order, without repeats.
+pub fn heavy_op_families() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for site in WEIGHT_SITES {
+        if out.last() != Some(&site.qualified_op) {
+            out.push(site.qualified_op);
+        }
+    }
+    out
+}
+
+/// Whether `qualified_op` is a heavy-op family — one whose arithmetic is large enough that the
+/// FLOP estimator scores it as a matmul rather than as an elementwise pass.
+///
+/// **This is not the anchor predicate and must never be used as one.** It answers a question
+/// about arithmetic shape, which is a property of the op; anchoring is a question about whether
+/// a boundary is amortised, which is a property of the *node*. `rust/src/ep.rs` uses this one
+/// for its FLOP estimate — an activation⊗activation `MatMul` really does perform `2·M·K·N`
+/// FLOPs, and pretending otherwise would change the economics arithmetic in a way issue #73
+/// explicitly does not ask for — and [`is_anchor`] for anchoring.
+pub fn is_heavy_op(qualified_op: &str) -> bool {
+    WEIGHT_SITES.iter().any(|s| s.qualified_op == qualified_op)
+}
+
+/// Whether this **node** is an anchor: a heavy-op family node carrying a resident initializer at
+/// at least one schema-designated weight site.
+///
+/// # Why this is not `is_anchor(op_name)` any more
+///
+/// It used to be. `matches!(qualified_op, "MatMul" | ...)` claims every `MatMul` in a graph,
+/// and on MiniLM-L6-v2 twelve of the forty-eight `MatMul` nodes are the attention `QKᵀ` and
+/// `AV` batched products, whose *both* operands are runtime activations. Six of them formed
+/// one-node islands, and the anchor exemption in [`evaluate`] claimed all six: 983,040 B in and
+/// 196,608 B out to buy 0.013 GFLOP, ≈ 11 FLOP/byte at batch 1 and sequence 128. That is the
+/// precise shape the economics gate exists to reject, and the name-keyed anchor predicate was
+/// the reason it never got to answer.
+///
+/// The warrant for the exemption was always *an anchor is heavy enough to justify a boundary on
+/// its own*, and that warrant is about **weights**: a resident matrix is uploaded once and read
+/// once per output element for the life of the session, so it amortises the boundary by
+/// construction. Two runtime activations amortise nothing. So the predicate is now the warrant.
+///
+/// # Arguments
+///
+/// `resident_inputs[i]` is whether operand `i` of this node reads a constant initializer.
+/// Shorter than the node's operand list is fine — absent entries are treated as non-resident,
+/// which is the closed direction. Longer is fine too: indices past the pinned schema classify
+/// as `None` and cannot designate.
+///
+/// Every uncertain reading must arrive here as `false`: a missing operand, a null slot, an
+/// out-of-range index, an ORT status error, or a runtime input. The caller in `ep.rs` gets that
+/// from [`crate::registry::NodeView::input_is_constant`], which returns `false` on every one of
+/// those conditions, and is the same reading the island's boundary-byte accounting uses — so a
+/// value this predicate declines to call resident is also a value that *is* charged as boundary
+/// traffic. The two halves of the economics cannot disagree about which tensors are weights.
+pub fn is_anchor(qualified_op: &str, resident_inputs: &[bool]) -> bool {
+    resident_inputs
+        .iter()
+        .enumerate()
+        .any(|(i, &resident)| resident && is_designated_weight_site(qualified_op, i))
 }
 
 /// The thresholds the rule is expressed in.
@@ -408,7 +1265,8 @@ pub struct Policy {
     pub margin: f64,
     /// Assumed device throughput in FLOPs per nanosecond (i.e. GFLOP/s).
     pub flops_per_ns: f64,
-    /// Whether an island containing at least one [`is_anchor`] op skips the economics check.
+    /// Whether an island containing at least one anchor node ([`is_anchor`]) skips the economics
+    /// check.
     ///
     /// `true` in production. Settable to `false` (via [`ENV_ANCHOR_EXEMPTION`]) purely so the
     /// economics arithmetic can be *observed deciding* on a real model: Phi-3.5's single island
@@ -528,12 +1386,14 @@ impl Verdict {
 ///    case: a graph of unsupported ops sprinkled with lone `Add`s.
 /// 2. **Economics.** `compute_ns` must exceed `margin × transfer_ns`. This kills the subtler case:
 ///    a large island of cheap elementwise work whose tensors are bigger than its arithmetic.
-///    **Anchor-containing islands are exempt from gate 2**: an op in `is_anchor` is by definition
-///    heavy enough to justify a boundary on its own — that is the design invariant of `is_anchor`.
-///    The provisional `TransferModel` constants are calibrated against real model execution and
-///    may not reflect isolated unit-test input sizes; applying the economic check to anchors
-///    would reject them when tested in isolation, which contradicts the stated design intent
-///    ("a single MatMul on LLM-sized weights always is worth it").
+///    **Anchor-containing islands are exempt from gate 2**: a node carrying a resident weight at
+///    a schema-designated site is by definition heavy enough to justify a boundary on its own —
+///    that is the design invariant of [`is_anchor`], and since issue #73 the predicate states it
+///    rather than assuming it from the op's name. The provisional `TransferModel` constants are
+///    calibrated against real model execution and may not reflect isolated unit-test input sizes;
+///    applying the economic check to anchors would reject them when tested in isolation, which
+///    contradicts the stated design intent ("a single MatMul on LLM-sized weights always is worth
+///    it"). A `MatMul` on *no* weights at all is not that op, and no longer takes the exemption.
 pub fn evaluate(island: &Island, model: &TransferModel, policy: &Policy) -> Verdict {
     if island.nodes < policy.min_nodes && island.anchors == 0 {
         return Verdict::Reject(RejectReason::TooSmall {
@@ -1044,14 +1904,562 @@ mod tests {
         assert!(TransferModel::fit(&[(1024, 5.0), (1024, 6.0)]).is_none());
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Anchor eligibility (issue #73)
+    //
+    // Three layers, and they check different things on purpose:
+    //
+    //   1. `HELD_OUT_SITES` below — a hand-maintained second copy of the table's *semantics*
+    //      (family, index, name, kind) plus a tamper seal over each `reason`. It is a change
+    //      detector: nothing may move in `WEIGHT_SITES` without a human re-affirming it here.
+    //   2. `ci/audit_weight_sites.py` — the *independent* pin. It reads the shipped table out of
+    //      the built binary (`epctl --dump-weight-sites --json`) and compares family membership,
+    //      operand order, operand names and operand *count* against the pinned `onnx` /
+    //      `onnxruntime` packages themselves. Neither this table nor the list below is an input
+    //      to it.
+    //   3. `the_mutations_that_must_red` — feeds eight held-out mutations through the same
+    //      `disagreement_with_held_out` the production test uses, and requires every one of them
+    //      to be caught. A check that cannot fail is not a check.
+    // ---------------------------------------------------------------------------------------
+
+    /// The held-out expectation, written in a different medium from the table it guards: one
+    /// whitespace-separated line per operand, `family index name kind reason-seal`.
+    ///
+    /// The seal is FNV-1a-64 of the `reason` string. It exists so that *swapping two rows'
+    /// justifications* — which changes no name, no index and no kind — is still a red test.
+    /// Rewording a justification is expected to require editing this list; that is the point.
+    const HELD_OUT_SITES: &str = "\
+MatMul 0 A factor a4e2c01724f12b13
+MatMul 1 B factor 1793f9f25a769803
+Gemm 0 A factor 37e42c16fed227a1
+Gemm 1 B factor 644a72f52032970a
+Gemm 2 C bias_or_gain a13be18c29fdbb13
+Conv 0 X activation 3fb4e2b3fa3519eb
+Conv 1 W factor 4a1df61a7a0b7334
+Conv 2 B bias_or_gain 0ed8da9b5660b239
+ConvTranspose 0 X activation c9db15db9ec746f1
+ConvTranspose 1 W factor ef43117c81208ab5
+ConvTranspose 2 B bias_or_gain 090d5b054c897fb2
+Attention 0 Q activation de3da0e84fb6394e
+Attention 1 K activation 85dc31635eeefdcc
+Attention 2 V activation 488e6d49e4905126
+Attention 3 attn_mask mask_or_length 2775cf9090a73408
+Attention 4 past_key cached_state 97430fbe84d627d9
+Attention 5 past_value cached_state 0cbb2b875bdda62f
+Attention 6 nonpad_kv_seqlen mask_or_length e3aa20a6b1985858
+com.microsoft::MatMulNBits 0 A activation 32a30058fad145e7
+com.microsoft::MatMulNBits 1 B factor 195c23be97ef1ba0
+com.microsoft::MatMulNBits 2 scales quant_payload c24086730a172e46
+com.microsoft::MatMulNBits 3 zero_points quant_payload 990b94f75fdea173
+com.microsoft::MatMulNBits 4 g_idx quant_payload 03f935c58cfd39d5
+com.microsoft::MatMulNBits 5 bias bias_or_gain 7dfd845245694501
+com.microsoft::Attention 0 input activation 7eeca8495207a075
+com.microsoft::Attention 1 weights factor f87e9f51b869d8e3
+com.microsoft::Attention 2 bias bias_or_gain d7ec9a18a6b1c7db
+com.microsoft::Attention 3 mask_index mask_or_length 208cfa1c2cc978d6
+com.microsoft::Attention 4 past cached_state 05c81f549e800c35
+com.microsoft::Attention 5 attention_bias bias_or_gain 5b6e09e9ff7bc6df
+com.microsoft::Attention 6 past_sequence_length mask_or_length d41646ff5b5b3327
+com.microsoft::MultiHeadAttention 0 query activation 84301079e21c142f
+com.microsoft::MultiHeadAttention 1 key activation d4a3c7f908214c81
+com.microsoft::MultiHeadAttention 2 value activation e1f0bc631e0bcadc
+com.microsoft::MultiHeadAttention 3 bias bias_or_gain abc8895a1da2fcbc
+com.microsoft::MultiHeadAttention 4 key_padding_mask mask_or_length 947d0f25d52de862
+com.microsoft::MultiHeadAttention 5 attention_bias bias_or_gain 444e801813292f70
+com.microsoft::MultiHeadAttention 6 past_key cached_state cde57b963ad99cc9
+com.microsoft::MultiHeadAttention 7 past_value cached_state f36c1016ec733707
+com.microsoft::MultiHeadAttention 8 past_sequence_length mask_or_length e0b978ae139fde82
+com.microsoft::MultiHeadAttention 9 cache_indirection mask_or_length bbb8126a60b12dc8
+com.microsoft::GroupQueryAttention 0 query activation 2699b02ead578d32
+com.microsoft::GroupQueryAttention 1 key activation 201a4d57d863d228
+com.microsoft::GroupQueryAttention 2 value activation 07500a79e2386a7e
+com.microsoft::GroupQueryAttention 3 past_key cached_state 26ce060512e8b3f9
+com.microsoft::GroupQueryAttention 4 past_value cached_state e0f6a81f7f7fc4a1
+com.microsoft::GroupQueryAttention 5 seqlens_k mask_or_length 63e7a917dce60074
+com.microsoft::GroupQueryAttention 6 total_sequence_length mask_or_length 52cc4eae9d226fe3
+com.microsoft::GroupQueryAttention 7 cos_cache precomputed_table 702b875f51820e2e
+com.microsoft::GroupQueryAttention 8 sin_cache precomputed_table 4ed9ac4f1c30b26e
+com.microsoft::GroupQueryAttention 9 position_ids mask_or_length 2d3480edf79e437b
+com.microsoft::GroupQueryAttention 10 attention_bias bias_or_gain d8cf2703ecfc01c7
+com.microsoft::GroupQueryAttention 11 head_sink per_group_scalar 31ab9b91882f6d54
+com.microsoft::GroupQueryAttention 12 k_scale per_group_scalar add019bd85a406d9
+com.microsoft::GroupQueryAttention 13 v_scale per_group_scalar 1a19340553b992f8
+com.microsoft::GroupQueryAttention 14 q_norm_weight bias_or_gain f1d5cee4a6633324
+com.microsoft::GroupQueryAttention 15 k_norm_weight bias_or_gain bd8957657edfba12
+com.microsoft::QMoE 0 input activation c192105d13c456e7
+com.microsoft::QMoE 1 router_probs activation 0a51206b391eb840
+com.microsoft::QMoE 2 fc1_experts_weights factor 1e446264d078992b
+com.microsoft::QMoE 3 fc1_scales quant_payload ca7047ef5ca6f81a
+com.microsoft::QMoE 4 fc1_experts_bias bias_or_gain af9ebd37f35a1f02
+com.microsoft::QMoE 5 fc2_experts_weights factor 0db69f8af69a58aa
+com.microsoft::QMoE 6 fc2_scales quant_payload e86a952cdc7d793c
+com.microsoft::QMoE 7 fc2_experts_bias bias_or_gain 47f9124bf60d5ebc
+com.microsoft::QMoE 8 fc3_experts_weights factor df78407d85b0bf78
+com.microsoft::QMoE 9 fc3_scales quant_payload e86a962cdc7d7aef
+com.microsoft::QMoE 10 fc3_experts_bias bias_or_gain d88164cefcb2789c
+com.microsoft::QMoE 11 fc1_zero_points quant_payload 36fccf03fc344fe3
+com.microsoft::QMoE 12 fc2_zero_points quant_payload c766b97bd2dcf096
+com.microsoft::QMoE 13 fc3_zero_points quant_payload 209697fbc8d573af
+com.microsoft::QMoE 14 router_weights activation 12566694ffaeb578
+com.microsoft::QMoE 15 fc1_global_scale per_group_scalar c6e142177ee166e1
+com.microsoft::QMoE 16 fc2_global_scale per_group_scalar bdd6432850947719
+com.microsoft::QMoE 17 fc1_act_scale activation c9ee385c7e49a36f
+com.microsoft::QMoE 18 fc2_act_scale activation 91b419bdfa0df39b
+com.microsoft::QMoE 19 fc1_act_block_scale activation 9919092b4b00f7bc
+com.microsoft::QMoE 20 fc2_act_block_scale activation 6b755ae615768f6e
+com.microsoft::LinearAttention 0 query activation 6295d4702e0b3bc8
+com.microsoft::LinearAttention 1 key activation 4be9119fa2ef4a8a
+com.microsoft::LinearAttention 2 value activation 36a956a02825b725
+com.microsoft::LinearAttention 3 past_state cached_state a414c724e348327c
+com.microsoft::LinearAttention 4 decay activation e8cab253b8b4cbf5
+com.microsoft::LinearAttention 5 beta activation 8b5fcacf882c20d8
+";
+
+    /// FNV-1a 64. Chosen because it is four lines and needs no dependency; this is a tamper seal
+    /// over a doc string, not a security boundary.
+    fn seal(s: &str) -> String {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in s.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{h:016x}")
+    }
+
+    /// Render a table in the held-out list's own vocabulary.
+    fn render(rows: &[WeightSite]) -> Vec<String> {
+        rows.iter()
+            .map(|s| {
+                format!(
+                    "{} {} {} {} {}",
+                    s.qualified_op,
+                    s.index,
+                    s.name,
+                    s.kind.as_str(),
+                    seal(s.reason)
+                )
+            })
+            .collect()
+    }
+
+    /// The one production assertion, factored so the mutation harness can call it.
+    ///
+    /// Returns `Ok(())` when `rows` matches [`HELD_OUT_SITES`] exactly — same length, same order,
+    /// same content — and a human-readable disagreement otherwise.
+    fn disagreement_with_held_out(rows: &[WeightSite]) -> Result<(), String> {
+        let expected: Vec<&str> = HELD_OUT_SITES.lines().filter(|l| !l.is_empty()).collect();
+        let actual = render(rows);
+        if expected.len() != actual.len() {
+            return Err(format!(
+                "row count: held-out list has {}, table has {}",
+                expected.len(),
+                actual.len()
+            ));
+        }
+        for (i, (e, a)) in expected.iter().zip(actual.iter()).enumerate() {
+            if e != a {
+                return Err(format!("row {i}: held-out `{e}` != table `{a}`"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Every operand of every heavy-op family is pinned, in order, by family, index, name, kind
+    /// and a seal over its justification.
+    ///
+    /// This is the assertion the eight mutations below must each break.
     #[test]
-    fn anchors_are_the_heavy_ops_only() {
-        assert!(is_anchor("MatMul"));
-        assert!(is_anchor("Conv"));
-        assert!(is_anchor("com.microsoft::MatMulNBits"));
-        assert!(is_anchor("com.microsoft::GroupQueryAttention"));
-        assert!(!is_anchor("Add"));
-        assert!(!is_anchor("Reshape"));
+    fn the_weight_site_table_matches_its_held_out_pin() {
+        if let Err(why) = disagreement_with_held_out(WEIGHT_SITES) {
+            panic!(
+                "`WEIGHT_SITES` disagrees with the held-out pin: {why}\n\n\
+                 If the pinned schemas genuinely changed, `ci/audit_weight_sites.py` is the check \
+                 that says so, and both this list and the table must be updated together with the \
+                 new schema's text quoted in the `reason`. If they did not, this is the defect the \
+                 pin exists to catch."
+            );
+        }
+    }
+
+    /// The eight held-out mutations, each of which must be caught.
+    ///
+    /// Named after what a careless edit would actually look like. A check that no mutation can
+    /// break is a check that proves nothing about the thing it guards (R10).
+    #[test]
+    fn the_mutations_that_must_red() {
+        let base: Vec<WeightSite> = WEIGHT_SITES.to_vec();
+        assert!(
+            disagreement_with_held_out(&base).is_ok(),
+            "the unmutated table must be green, or the controls below prove nothing"
+        );
+
+        let mut cases: Vec<(&str, Vec<WeightSite>)> = Vec::new();
+
+        // 1. Delete the final row — the classic off-by-one on a hand-written table.
+        let mut m = base.clone();
+        m.pop();
+        cases.push(("delete final row", m));
+
+        // 2. A schema gains an input: append one to the last family.
+        let mut m = base.clone();
+        let last = *base.last().unwrap();
+        m.push(WeightSite {
+            index: last.index + 1,
+            name: "gate",
+            kind: SiteKind::Activation,
+            ..last
+        });
+        cases.push(("schema gains an input", m));
+
+        // 3. Swap two indices within a family.
+        let mut m = base.clone();
+        let (a, b) = (
+            m.iter()
+                .position(|s| s.qualified_op == "Gemm" && s.index == 1)
+                .unwrap(),
+            m.iter()
+                .position(|s| s.qualified_op == "Gemm" && s.index == 2)
+                .unwrap(),
+        );
+        let (ia, ib) = (m[a].index, m[b].index);
+        m[a].index = ib;
+        m[b].index = ia;
+        cases.push(("swap two indices", m));
+
+        // 4. Swap two names — the mutation that stayed green in the revision this replaces.
+        let mut m = base.clone();
+        let (na, nb) = (m[a].name, m[b].name);
+        m[a].name = nb;
+        m[b].name = na;
+        cases.push(("swap two names", m));
+
+        // 5. Swap two justifications, leaving names, indices and kinds alone.
+        let mut m = base.clone();
+        let (ra, rb) = (m[a].reason, m[b].reason);
+        m[a].reason = rb;
+        m[b].reason = ra;
+        cases.push(("swap two justifications", m));
+
+        // 6. Designate an activation. This is the mutation that would resurrect issue #73:
+        //    GQA's `cos_cache` is resident on every rotary model, so designating it would make
+        //    all 32 GQA nodes anchors again and put 193 back into the accounting.
+        let mut m = base.clone();
+        let cos = m
+            .iter()
+            .position(|s| {
+                s.qualified_op == "com.microsoft::GroupQueryAttention" && s.name == "cos_cache"
+            })
+            .unwrap();
+        m[cos].kind = SiteKind::Factor;
+        cases.push(("designate an activation", m));
+
+        // 7. Contiguous truncation of one family's tail — QMoE loses its four activation scales.
+        let mut m = base.clone();
+        m.retain(|s| !(s.qualified_op == "com.microsoft::QMoE" && s.index >= 17));
+        cases.push(("contiguous truncation", m));
+
+        // 8. A family's schema extent changes: MatMulNBits drops the deprecated `g_idx` and
+        //    everything after it shifts down one index.
+        let mut m = base.clone();
+        m.retain(|s| !(s.qualified_op == "com.microsoft::MatMulNBits" && s.index == 4));
+        for s in m.iter_mut() {
+            if s.qualified_op == "com.microsoft::MatMulNBits" && s.index == 5 {
+                s.index = 4;
+            }
+        }
+        cases.push(("schema extent change", m));
+
+        for (label, mutated) in cases {
+            assert!(
+                disagreement_with_held_out(&mutated).is_err(),
+                "mutation `{label}` was NOT caught by the held-out pin. The pin is not \
+                 load-bearing and every conclusion drawn from it is void."
+            );
+        }
+    }
+
+    /// The designated counts, stated per family so a reader can check them one at a time.
+    ///
+    /// These are the numbers issue #73 and its review turn on: **nine** QMoE sites (not four),
+    /// **zero** GQA sites (which is why Phi-3.5 has 161 anchors and not 193), and zero for both
+    /// attention ops that consume already-projected Q/K/V.
+    #[test]
+    fn the_designated_counts_are_stated_per_family() {
+        let designated = |op: &str| {
+            WEIGHT_SITES
+                .iter()
+                .filter(|s| s.qualified_op == op && s.designated())
+                .count()
+        };
+        assert_eq!(
+            designated("MatMul"),
+            2,
+            "both factors of a product may be resident"
+        );
+        assert_eq!(designated("Gemm"), 2, "A and B, not C");
+        assert_eq!(designated("Conv"), 1, "W, not X and not B");
+        assert_eq!(designated("ConvTranspose"), 1, "W, not X and not B");
+        assert_eq!(
+            designated("Attention"),
+            0,
+            "ONNX `Attention` is fused SDPA over already-projected Q/K/V and has no weight input"
+        );
+        assert_eq!(
+            designated("com.microsoft::Attention"),
+            1,
+            "the unfused contrib op does carry its merged Q/K/V projection matrix at index 1"
+        );
+        assert_eq!(
+            designated("com.microsoft::MatMulNBits"),
+            4,
+            "B, scales, zero_points, g_idx"
+        );
+        assert_eq!(
+            designated("com.microsoft::GroupQueryAttention"),
+            0,
+            "GQA's projections belong to its neighbouring MatMulNBits nodes; every GQA input is \
+             an activation, a cache, a length, a per-head scalar or an O(head_size) norm gain"
+        );
+        assert_eq!(
+            designated("com.microsoft::MultiHeadAttention"),
+            0,
+            "MHA takes Q/K/V already projected"
+        );
+        assert_eq!(
+            designated("com.microsoft::QMoE"),
+            9,
+            "packed weights + scales + zero points for fc1/fc2/fc3 — not four, and not the twelve \
+             a name-based reading gives"
+        );
+        assert_eq!(
+            designated("com.microsoft::LinearAttention"),
+            0,
+            "every input is declared with a leading (B, T, ...) or is the recurrent state"
+        );
+        assert_eq!(
+            WEIGHT_SITES.iter().filter(|s| s.designated()).count(),
+            20,
+            "twenty designated sites over eleven families and eighty-four operands"
+        );
+        assert_eq!(WEIGHT_SITES.len(), 84);
+        assert_eq!(heavy_op_families().len(), 11);
+    }
+
+    /// No two operands share a justification.
+    ///
+    /// Without this the seal in [`HELD_OUT_SITES`] would not detect a swap between the two rows
+    /// that happened to be worded identically, and "swap two justifications" would be a control
+    /// with a hole in it. Four pairs were identically worded when the table was first written —
+    /// `Conv`/`ConvTranspose`'s `X` and `B`, `GroupQueryAttention`'s `key` and `value`, and
+    /// `MultiHeadAttention`/`GroupQueryAttention`'s `query` — and this assertion is why they are
+    /// not any more.
+    #[test]
+    fn every_justification_is_distinct() {
+        let mut seen: Vec<&str> = WEIGHT_SITES.iter().map(|s| s.reason).collect();
+        let total = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            total,
+            "two operands share a justification, so the seal cannot distinguish them"
+        );
+        assert!(WEIGHT_SITES.iter().all(|s| !s.reason.is_empty()));
+    }
+
+    /// Each family's rows are contiguous and start at 0, which is what makes `index` an offset
+    /// into the pinned schema rather than a label.
+    #[test]
+    fn every_family_is_contiguous_from_zero() {
+        for family in heavy_op_families() {
+            let rows = weight_sites_for(family);
+            for (expected, row) in rows.iter().enumerate() {
+                assert_eq!(
+                    row.index, expected,
+                    "{family} operand list is not contiguous from 0 at position {expected}"
+                );
+            }
+            assert!(!rows.is_empty(), "{family} has no rows");
+        }
+    }
+
+    /// Anchoring is a property of the node, and the shipped predicate says so.
+    #[test]
+    fn anchoring_requires_a_resident_weight_at_a_designated_site() {
+        // A MatMul of two runtime activations is not an anchor — the six MiniLM-L6-v2 islands
+        // issue #73 is about.
+        assert!(!is_anchor("MatMul", &[false, false]));
+        // The same op with a resident B is.
+        assert!(is_anchor("MatMul", &[false, true]));
+        // ...and with a resident A, because ONNX MatMul is symmetric and models emit both.
+        assert!(is_anchor("MatMul", &[true, false]));
+
+        // Gemm's C is a bias: resident there and nowhere else is not an anchor.
+        assert!(!is_anchor("Gemm", &[false, false, true]));
+        assert!(is_anchor("Gemm", &[false, true, true]));
+
+        // Conv anchors on W and not on X or B.
+        assert!(!is_anchor("Conv", &[true, false, true]));
+        assert!(is_anchor("Conv", &[false, true, false]));
+
+        // A quantised weight matrix anchors on any of its four payload sites.
+        assert!(is_anchor(
+            "com.microsoft::MatMulNBits",
+            &[false, true, true, false, false, false]
+        ));
+        assert!(!is_anchor(
+            "com.microsoft::MatMulNBits",
+            &[true, false, false, false, false, true]
+        ));
+
+        // GQA never anchors, however much of it is resident. This is the 193 → 161 correction.
+        assert!(!is_anchor(
+            "com.microsoft::GroupQueryAttention",
+            &[true; 16]
+        ));
+        // Nor does MultiHeadAttention, nor ONNX `Attention`, nor `LinearAttention`.
+        assert!(!is_anchor("com.microsoft::MultiHeadAttention", &[true; 10]));
+        assert!(!is_anchor("Attention", &[true; 7]));
+        assert!(!is_anchor("com.microsoft::LinearAttention", &[true; 6]));
+        // The contrib `Attention` does, at index 1 and only there.
+        assert!(is_anchor(
+            "com.microsoft::Attention",
+            &[false, true, false, false, false, false, false]
+        ));
+        assert!(!is_anchor(
+            "com.microsoft::Attention",
+            &[true, false, true, true, true, true, true]
+        ));
+
+        // Ops outside the inventory never anchor whatever is resident.
+        assert!(!is_anchor("Add", &[true, true]));
+        assert!(!is_anchor("Reshape", &[true, true]));
+        assert!(!is_anchor("com.microsoft::NotAnOp", &[true; 8]));
+    }
+
+    /// Every uncertain reading fails closed.
+    #[test]
+    fn unreadable_operands_cannot_manufacture_an_anchor() {
+        // No operands read at all.
+        assert!(!is_anchor("MatMul", &[]));
+        // Fewer residency answers than the schema has inputs — absent means non-resident.
+        assert!(!is_anchor("com.microsoft::MatMulNBits", &[false]));
+        // More answers than the schema has inputs: the surplus classifies as `None` and cannot
+        // designate, so a node whose operand list ORT reports as longer than the schema still
+        // needs a real designated site to anchor.
+        assert!(!is_anchor("Conv", &[false, false, false, true, true, true]));
+        assert!(is_anchor("Conv", &[false, true, false, true, true, true]));
+        // Out-of-range indices classify as nothing at all.
+        assert!(classify_weight_operand("MatMul", 2).is_none());
+        assert!(classify_weight_operand("com.microsoft::QMoE", 21).is_none());
+        assert!(classify_weight_operand("Add", 0).is_none());
+        assert!(!is_designated_weight_site("MatMul", 99));
+    }
+
+    /// The FLOP-scoring predicate and the anchor predicate read the same table and answer
+    /// different questions.
+    #[test]
+    fn heavy_op_and_anchor_are_different_questions_over_one_table() {
+        // Heavy is about arithmetic shape and stays true for the activation-only MatMul, which
+        // is why `ep.rs`'s FLOP estimate is unchanged by issue #73.
+        assert!(is_heavy_op("MatMul"));
+        assert!(!is_anchor("MatMul", &[false, false]));
+        assert!(is_heavy_op("com.microsoft::GroupQueryAttention"));
+        assert!(!is_anchor(
+            "com.microsoft::GroupQueryAttention",
+            &[true; 16]
+        ));
+        assert!(!is_heavy_op("Add"));
+        // No family may be anchorable without being heavy: the anchor predicate reads the same
+        // rows, so this is a structural fact and the assertion records it.
+        for family in heavy_op_families() {
+            assert!(is_heavy_op(family));
+        }
+    }
+
+    /// Both polarities of the gate, on islands of the shape the issue names.
+    ///
+    /// A one-node island of an activation⊗activation `MatMul` must be declined, and the
+    /// identically-shaped island whose `MatMul` carries a resident weight must be claimed. The
+    /// two islands differ in exactly one bit — whether operand 1 is resident — so nothing else
+    /// can be responsible for the difference in verdict.
+    #[test]
+    fn the_gate_answers_differently_for_a_weight_matmul_and_an_activation_matmul() {
+        // MiniLM-L6-v2's attention AV product at batch 1, sequence 128, measured in the issue:
+        // 983,040 B in, 196,608 B out, 0.013 GFLOP.
+        let boundary_in = 983_040_u64;
+        let boundary_out = 196_608_u64;
+        let flops = 13_000_000_u64;
+
+        let island_for = |resident_b: bool| Island {
+            nodes: 1,
+            anchors: usize::from(is_anchor("MatMul", &[false, resident_b])),
+            flops,
+            input_bytes: boundary_in,
+            output_bytes: boundary_out,
+            symbolic_boundary_slots: 0,
+        };
+
+        let policy = Policy::default();
+        let model = &TransferModel::DISCRETE;
+
+        let activation_only = island_for(false);
+        assert_eq!(activation_only.anchors, 0);
+        let verdict = evaluate(&activation_only, model, &policy);
+        let Verdict::Reject(why) = &verdict else {
+            panic!(
+                "a one-node island of an activation-only MatMul must be declined; got {verdict:?}"
+            );
+        };
+        let text = decline_for(why);
+        assert!(
+            text.starts_with(&format!("[{}] ", DeclineCode::Partition.tag())),
+            "the decline must reach the claim log as a [partition] code; got {text}"
+        );
+
+        let weight_bearing = island_for(true);
+        assert_eq!(weight_bearing.anchors, 1);
+        assert!(
+            evaluate(&weight_bearing, model, &policy).is_claim(),
+            "the same island with a resident weight at B must still be claimed — narrowing the \
+             anchor predicate must not cost us the case it was written for"
+        );
+
+        // And with the exemption switched off, the weight-bearing island is decided by the
+        // economics rather than by the exemption, which is what makes the exemption observable
+        // (R10).
+        let no_exemption = Policy {
+            anchor_exemption: false,
+            ..policy
+        };
+        assert!(
+            !evaluate(&weight_bearing, model, &no_exemption).is_claim(),
+            "with the exemption off this island is transfer-dominated; if it claims anyway the \
+             exemption is not the term doing the work and this test is measuring nothing"
+        );
+    }
+
+    /// Phi-3.5's fused island: 355 claimed nodes, **161** anchors, and the 32 GQA nodes among the
+    /// claimed-but-not-anchor remainder.
+    ///
+    /// Recorded as an assertion rather than only as prose because `193` appeared in six constants
+    /// and two documents, and prose is not what a future edit is checked against.
+    #[test]
+    fn the_phi35_constants_carry_the_corrected_anchor_count() {
+        for island in [
+            Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED,
+            Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_FIXED,
+            Island::MEASURED_PHI35_DEV0_REAL_BYTES,
+        ] {
+            assert_eq!(island.nodes, 355);
+            assert_eq!(
+                island.anchors, 161,
+                "161 MatMulNBits anchors. The 32 GroupQueryAttention nodes are claimed and are \
+                 not anchors (issue #73); 193 was the op-name count"
+            );
+        }
+        // The GQA nodes are the difference, and it is exactly 32.
+        assert_eq!(193 - Island::MEASURED_PHI35_DEV0_REAL_BYTES.anchors, 32);
     }
 
     #[test]
@@ -1415,7 +2823,7 @@ mod tests {
         ] {
             let island = Island {
                 nodes: 355,
-                anchors: 193,
+                anchors: 161,
                 flops: 23_020_437_504,
                 input_bytes: 0,
                 output_bytes: bytes,
@@ -1493,7 +2901,7 @@ mod tests {
             (
                 Island {
                     nodes: 355,
-                    anchors: 193,
+                    anchors: 161,
                     flops: 23_020_437_504,
                     input_bytes: 0,
                     output_bytes: SUBSTITUTED * per_slot_bytes,
@@ -1501,7 +2909,7 @@ mod tests {
                 },
                 Island {
                     nodes: 355,
-                    anchors: 193,
+                    anchors: 161,
                     flops: 23_020_437_504,
                     input_bytes: 0,
                     output_bytes: real_extent * per_slot_bytes,

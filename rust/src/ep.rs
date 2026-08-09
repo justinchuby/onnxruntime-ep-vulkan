@@ -1281,8 +1281,24 @@ unsafe fn get_capability_impl(
             // SAFETY: api live; node is a live graph node.
             let view = unsafe { NodeView::new(api, node) };
             let qual = view.qualified_name();
-            if partition::is_anchor(&qual) {
+            // Anchor eligibility is a property of this *node*, not of its op name (issue #73).
+            // The residency reading is `NodeView::input_is_constant`, the same reading the
+            // boundary-byte accounting below uses, so a tensor this loop declines to call a
+            // weight is also one it charges as per-inference traffic. Every uncertain answer —
+            // null slot, absent optional, ORT status error — arrives as `false`, which cannot
+            // manufacture an anchor.
+            // SAFETY: `api` is live; node is a live graph node for this call.
+            let n_inputs = unsafe { node_slots(api, node, Slots::Inputs) }.len();
+            let resident_inputs: Vec<bool> =
+                (0..n_inputs).map(|i| view.input_is_constant(i)).collect();
+            if partition::is_anchor(&qual, &resident_inputs) {
                 island.anchors += 1;
+            }
+            // The FLOP estimate stays keyed on the op *family*: an activation⊗activation
+            // `MatMul` performs the same arithmetic as a weight-bearing one, and issue #73 asks
+            // for the anchor property to change, not the economics. `is_heavy_op` and
+            // `is_anchor` read the same table, so the two cannot drift apart.
+            if partition::is_heavy_op(&qual) {
                 // Anchor flop estimate: 2 × K × N for a matmul-family op.
                 // Conservative minimum: 2 × 3072 × 3072 when shapes are unavailable.
                 island.flops = island.flops.saturating_add(2 * 3072 * 3072);

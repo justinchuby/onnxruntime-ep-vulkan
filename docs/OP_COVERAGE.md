@@ -3450,11 +3450,18 @@ lands.
 #### (c) The EP's own estimator cannot answer this question, and the artifact shows why
 
 The last column of (a) is the split computed with `ep.rs`'s model reproduced exactly. **It is
-16.58% at every context and does not move at all.** 16.58% is `32 / 193` — the declined anchors
-over the total anchors. The estimator scores every anchor with the constant `2 * 3072 * 3072` and
-everything else with `out_bytes / 2` under a substituted dim, so **its FLOP number is the anchor
-count wearing a FLOP's clothes**, and it is blind to the one axis on which this model's cost
-actually varies.
+16.58% at every context and does not move at all.** 16.58% is `32 / 193` — the declined
+**anchor-family nodes** over the total anchor-family nodes. The estimator scores every node of an
+anchor-eligible family with the constant `2 * 3072 * 3072` and everything else with `out_bytes / 2`
+under a substituted dim, so **its FLOP number is the anchor-family node count wearing a FLOP's
+clothes**, and it is blind to the one axis on which this model's cost actually varies.
+
+> **Terminology, corrected 2026-08-09 (issue #73).** This paragraph used to say "anchors" where it
+> now says "anchor-family nodes", and the arithmetic is unchanged because the estimator's FLOP term
+> is keyed on the op **family** (`ops::partition::is_heavy_op`) and always was. Since #73, *anchor*
+> means something narrower — a node with a resident initializer at a schema-designated weight site —
+> and Phi-3.5-mini-int4 has **161 anchors**, not 193. The 32 GQA nodes counted here are
+> anchor-family nodes and claimed nodes; they are **not** anchors. See §(e) and `DESIGN.md` §5.4.2.
 
 That is not a call to tighten it. Per R9 amendment 5, a verdict that moves with a constant nobody
 measured is a fabricated input, not an over-broad one. The estimator is adequate for the job it has
@@ -3482,6 +3489,46 @@ profile   = {VulkanExecutionProvider: 33, CPUExecutionProvider: 40}
 - **The standing `{CPU: 120, Vulkan: 99}` reading matches none of these numbers.** It sums to 219,
   not 366, not 363, not 73. I am not able to reproduce it from this build and I am not going to
   reconcile it by guessing; it should be re-taken or withdrawn.
+
+##### (d1) Anchors and claimed nodes are different counts — issue #73, 2026-08-09
+
+Both figures below are about the *same* run reconciled in (d); they answer different questions and
+were previously reported under one name.
+
+```
+anchor-family nodes 193 = MatMulNBits 161 + GroupQueryAttention 32
+anchors             161 = MatMulNBits 161
+claimed nodes       323 (this run) / 355 (with GQA claimed, §7.13)
+```
+
+- An **anchor-family node** is a node of one of the eleven heavy-op families. This is what the
+  `GetCapability` FLOP estimator keys on (`ops::partition::is_heavy_op`), and it is the denominator
+  of §(c)'s `32 / 193`.
+- An **anchor** is a node carrying a **resident initializer at a schema-designated weight site**
+  (`ops::partition::is_anchor`, `DESIGN.md` §5.4.2). It is the term that takes the stage-3b
+  exemption in `partition::evaluate`.
+- A **claimed node** is one the EP took. Anchors are a subset of claimed nodes; most claimed nodes
+  are not anchors and never were.
+
+**Why GQA contributes zero anchors, and the limitation that follows.** All sixteen
+`com.microsoft::GroupQueryAttention` inputs are activations (`query`/`key`/`value`), KV caches
+(`past_key`/`past_value`), lengths (`seqlens_k`, `total_sequence_length`, `position_ids`), rotary
+tables (`cos_cache`/`sin_cache`), per-head or per-tensor scalars (`head_sink`, `k_scale`, `v_scale`),
+attention bias, or **O(head_size) RMS-norm gains (`q_norm_weight`, `k_norm_weight`)**. None is a
+factor of the attention product whose extent scales with the reduction dimension, so none designates
+a weight site. GQA's weights live in the `MatMulNBits` projections *around* it, which do anchor.
+
+**The limitation, stated rather than smoothed:** a graph consisting only of GQA nodes — an attention
+block with its projections already fused away, or a decode-only subgraph — has **zero anchors** and
+must therefore survive stage 3 on its economics alone. If the byte estimator is wrong for such a
+graph, nothing rescues it. That is the intended behaviour (an island of pure attention genuinely has
+no resident tensor to amortise its boundary) but it is a real change in exposure: before #73 such an
+island was claimed unconditionally, and its claim was not evidence of anything. On Phi-3.5-mini-int4
+this does not bite, because the 32 GQA nodes are declined for an unrelated reason (§7.13) and the
+surviving island carries all 161 `MatMulNBits` anchors.
+
+**`trace::PartitionStats` does not carry an anchor count.** Neither figure above is read from it.
+Both are censuses over the `CLAIM_LOG` and the graph.
 
 #### (e) The denominator does not come from us (R11)
 
@@ -3527,7 +3574,7 @@ Written to `bench/results/roofline_split-prediction.md` before the tool ran.
 | 2 | CPU bytes under 5% at ctx=0 | **held** (0.07%) |
 | 3 | CPU bytes over 40% at ctx=8192 | **held, but I under-predicted** — 73.77% |
 | 4 | the node count (32.8%) predicts neither end | **held** — byte share crosses it between ctx 512 and 2048 |
-| 5 | the EP estimator is flat in ctx | **held** — 16.58% at every ctx, and it is `32/193` exactly |
+| 5 | the EP estimator is flat in ctx | **held** — 16.58% at every ctx, and it is `32/193` exactly (anchor-**family** nodes; see §(d1)) |
 | 6 | fabricated extents contribute nothing | **held, after I fixed my own instrument** — see (f) |
 
 #### (h) Disagreement with the 60.5% KV figure, left standing

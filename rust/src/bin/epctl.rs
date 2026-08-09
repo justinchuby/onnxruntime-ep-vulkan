@@ -21,6 +21,7 @@
 
 use onnxruntime_vulkan_ep::counters;
 use onnxruntime_vulkan_ep::engine;
+use onnxruntime_vulkan_ep::ops::partition;
 use onnxruntime_vulkan_ep::registry::{OPSET_ANY, OpSpec, OpStatus, all_specs};
 use onnxruntime_vulkan_ep::sys;
 
@@ -205,11 +206,85 @@ fn dump_json() {
     println!("}}");
 }
 
+/// The weight-site table, in the pinned schemas' own order.
+///
+/// Emitted from the *binary* rather than from `partition.rs`'s source so that
+/// `ci/audit_weight_sites.py` — which compares this against the installed `onnx` and
+/// `onnxruntime` packages — is checking the table the shipped EP actually consults. A source
+/// scraper would pass on a table that never reached a build.
+fn dump_weight_sites_human() {
+    println!("onnxruntime-ep-vulkan {}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "ORT ABI: built against {}, minimum supported {}",
+        sys::ORT_PINNED,
+        sys::ORT_FLOOR
+    );
+    println!();
+    println!(
+        "{:<36} {:>3}  {:<22} {:<18} why",
+        "op", "idx", "operand", "kind"
+    );
+    println!("{}", "-".repeat(126));
+    for site in partition::WEIGHT_SITES {
+        println!(
+            "{:<36} {:>3}  {:<22} {:<18} {}",
+            site.qualified_op,
+            site.index,
+            site.name,
+            format!(
+                "{}{}",
+                site.kind.as_str(),
+                if site.designated() { " *" } else { "" }
+            ),
+            site.reason,
+        );
+    }
+    let designated = partition::WEIGHT_SITES
+        .iter()
+        .filter(|s| s.designated())
+        .count();
+    println!();
+    println!(
+        "{} operand(s) over {} heavy-op families; {designated} are designated weight sites (*).",
+        partition::WEIGHT_SITES.len(),
+        partition::heavy_op_families().len(),
+    );
+    println!(
+        "A node anchors its island iff it carries a resident initializer at one of the starred \
+         sites."
+    );
+}
+
+fn dump_weight_sites_json() {
+    println!("{{");
+    println!("  \"crate_version\": \"{}\",", env!("CARGO_PKG_VERSION"));
+    println!("  \"ort_built_against\": \"{}\",", sys::ORT_PINNED.release);
+    println!("  \"ort_api_version\": {},", sys::ORT_PINNED.api_version);
+    println!("  \"weight_sites\": [");
+    let rows = partition::WEIGHT_SITES;
+    for (i, site) in rows.iter().enumerate() {
+        let comma = if i + 1 == rows.len() { "" } else { "," };
+        println!(
+            "    {{\"op\": \"{}\", \"index\": {}, \"name\": \"{}\", \"kind\": \"{}\", \
+             \"designated\": {}, \"reason\": \"{}\"}}{comma}",
+            escape_json(site.qualified_op),
+            site.index,
+            escape_json(site.name),
+            site.kind.as_str(),
+            site.designated(),
+            escape_json(site.reason),
+        );
+    }
+    println!("  ]");
+    println!("}}");
+}
+
 fn usage() {
     eprintln!("epctl — offline inspector for the Vulkan execution provider");
     eprintln!();
     eprintln!("USAGE:");
     eprintln!("    epctl --dump-capabilities [--json]");
+    eprintln!("    epctl --dump-weight-sites [--json]");
     eprintln!("    epctl --probe-loader");
     eprintln!("    epctl --probe-validation [--plant-violation]");
     eprintln!(
@@ -220,6 +295,13 @@ fn usage() {
     eprintln!("                         backing shader, and (for contrib ops) the ORT release");
     eprintln!("                         its claim predicate was verified against.");
     eprintln!("    --json               machine-readable output, for CI diffing.");
+    eprintln!("    --dump-weight-sites  every input of every heavy-op family, in pinned-schema");
+    eprintln!("                         order, with whether a resident initializer there makes");
+    eprintln!("                         the node a partition anchor, and why. This is the table");
+    eprintln!("                         `ci/audit_weight_sites.py` checks against the installed");
+    eprintln!("                         onnx / onnxruntime schemas — it reads the built binary,");
+    eprintln!("                         not the source, so the audit cannot pass on a table the");
+    eprintln!("                         shipped EP does not use.");
     eprintln!("    --probe-loader       probe the Vulkan loader: library presence, version,");
     eprintln!(
         "                         and whether vkCreateInstance + device enumeration succeed."
@@ -1345,6 +1427,7 @@ fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let json = args.iter().any(|a| a == "--json");
     let dump = args.iter().any(|a| a == "--dump-capabilities");
+    let dump_sites = args.iter().any(|a| a == "--dump-weight-sites");
     let probe = args.iter().any(|a| a == "--probe-loader");
     let probe_validation_flag = args.iter().any(|a| a == "--probe-validation");
     let plant_violation = args.iter().any(|a| a == "--plant-violation");
@@ -1393,6 +1476,7 @@ fn main() -> std::process::ExitCode {
         .find(|(_, a)| {
             a.as_str() != "--json"
                 && a.as_str() != "--dump-capabilities"
+                && a.as_str() != "--dump-weight-sites"
                 && a.as_str() != "--probe-loader"
                 && a.as_str() != "--probe-validation"
                 && a.as_str() != "--plant-violation"
@@ -1443,6 +1527,15 @@ fn main() -> std::process::ExitCode {
         let report = engine::loader_probe_report();
         println!("{report}");
         return probe_exit_code(&report);
+    }
+
+    if dump_sites {
+        if json {
+            dump_weight_sites_json()
+        } else {
+            dump_weight_sites_human()
+        }
+        return std::process::ExitCode::SUCCESS;
     }
 
     if !dump {

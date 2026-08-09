@@ -11,17 +11,25 @@ partition::evaluate is called for each component; a non-anchor component below t
 flops-per-transfer margin produces a [partition] decline code in the CLAIM_LOG.
 
 Model design: two independent Sigmoid branches share no edges. ORT sees them as a graph with
-two disconnected claimed clusters, each a 1-node island with no anchors (Sigmoid is not in
-partition::is_anchor). partition::evaluate fires → TooSmall (1 < min_nodes=4, anchors=0) →
-[partition] decline code. CLAIM_LOG records the decline.
+two disconnected claimed clusters, each a 1-node island with no anchors (Sigmoid has no
+designated weight site in partition::WEIGHT_SITES, so partition::is_anchor cannot return true
+for it whatever its operands hold). partition::evaluate fires → TooSmall (1 < min_nodes=4,
+anchors=0) → [partition] decline code. CLAIM_LOG records the decline.
 
 Two guard directions (§7.0.2, as formalised by Morpheus):
   Over-declination: the anchor exemption in partition::evaluate ensures any island containing
-    MatMulNBits or GQA always passes (anchors > 0 → Claim). Phi-3.5 bench checks this
-    (353 claimed, 1 island after GQA, MATCH). Falsifier: bench/phi35.py → 0 claimed nodes.
+    a node with a resident initializer at a designated weight site — MatMulNBits with its
+    packed B and scales, for instance — always passes (anchors > 0 → Claim). Phi-3.5 bench
+    checks this (353 claimed, 1 island after GQA, MATCH). Note that the 32 GQA nodes are
+    claimed but are *not* anchors: every GQA input is an activation, a KV cache, a length, a
+    per-head scalar or an O(head_size) norm gain (issue #73, docs/OP_COVERAGE.md).
+    Falsifier: bench/phi35.py → 0 claimed nodes.
   Under-declination: THIS TEST. A non-anchor two-cluster model must produce [partition]
     declines. Falsifier: claims["Sigmoid"]["code"] != "partition" when CLAIM_LOG is set,
     i.e. the EP claims both Sigmoid nodes instead of declining them.
+
+The companion case — a heavy op whose operands are *all runtime activations*, which used to
+anchor on its name alone — lives in `tests/ops/test_weight_sites.py` (issue #73).
 
 Run::
 
