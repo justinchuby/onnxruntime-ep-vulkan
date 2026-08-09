@@ -5354,6 +5354,31 @@ the only scope with a number in it.
 * **`past = 128` cross-build behaviour is issue #96's question, not this one.** This artifact times
   the GQA kernel at `past = 128` on this box and says nothing about why any cross-build difference
   exists or whether this change resolves it. **No p128 regression-resolution claim is made.**
+
+  That question is open **in both directions**, and this file is careful not to close it by
+  citation. The two prior measurements of it disagree, and neither is load-bearing here:
+
+  | source | p128 ratio | interval | status in this file |
+  |---|---|---|---|
+  | issue #95 | 0.859 | none published | **descriptive only** — a point estimate with no interval, carrying no inferential weight |
+  | PR #99, exact `cf6e3f5` | 0.9651 | 95% CI **[0.820, 1.136]** | **inconclusive on its own terms** — the interval spans 1.0, so it excludes neither "no change" nor #95's 0.859 |
+
+  Read together they are **conflicting and inconclusive**, not a converging pair. And **PR #99 at
+  `cf6e3f5` was rejected**, so its "does not reproduce" / "no regression" reading is not an
+  available premise: it is not cited, not inherited, and nothing in §27 rests on it. The rejection
+  does not convert into evidence of the opposite conclusion either — a withdrawn negative result
+  leaves the question where it was, which is open.
+
+  So while the p128 evidence is divergent this change **fails closed**: it publishes no p128
+  cross-build claim in either direction, and `past = 128` stays in every control (§27.3, §27.3.3,
+  §27.4) precisely so that it can never be quietly dropped from the comparison at the point where
+  it is least flattering. Issue **#96** owns the resolution, independently and without input from
+  here.
+
+  One distinction worth stating plainly, because the same number appears on both sides of it:
+  §27.3's **1.48x at `past = 128`** is *same-build, node-scope, kernel GPU time on this box*. The
+  ratios above estimate a *cross-build, whole-model* quantity. They are not the same measurement,
+  and §27.3's row neither corroborates nor refutes either of them.
 * **No CUDA parity claim, no cross-device gain claim, no model ceiling projection.**
 * **GPU time is a timestamp-query total, not an occupancy counter.** It says the kernel finished
   sooner. The lane-occupancy explanation is consistent with it and with §26.7's arithmetic, but this
@@ -5371,10 +5396,13 @@ the only scope with a number in it.
 * **The forced-`W` ladder is a table of cells, not a source of a `W`-generic ratio.** Production
   selects `W` from the KV extent, so at any given `past` exactly one cell is the shipped behaviour.
   `W = 2` being slower than `W = 1` is measured and reported; it is not reachable by `auto`.
-* **No claim is inherited from #97.** Its ratios, its "harness-only divergence" reasoning and its
-  early relative-error inflation story are not used as support anywhere in this file. Where this
-  rebuild measures the same quantity it publishes its own number, and where the two disagree
-  (§27.3.3) the disagreement is stated rather than reconciled.
+* **No claim is inherited from any rejected artifact.** From **#97**: its ratios, its "harness-only
+  divergence" reasoning and its early relative-error inflation story are not used as support
+  anywhere in this file. From **#99** (`cf6e3f5`): its "does not reproduce" / "no regression"
+  reading of `past = 128` is not used either, per the bullet above. Where this rebuild measures the
+  same quantity it publishes its own number, and where the two disagree (§27.3.3) the disagreement
+  is stated rather than reconciled. A rejected artifact is treated as neither support nor
+  counter-evidence — it is simply not a premise.
 * **The recorded DLL sha256 is an identity, not a reproduction recipe.** The `MSVC` release link
   used here is **not** byte-reproducible: relinking the identical source tree produces a different
   file hash every time (verified — three relinks of one clean tree gave three distinct sha256s).

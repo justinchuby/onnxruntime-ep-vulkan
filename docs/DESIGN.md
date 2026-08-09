@@ -6192,7 +6192,10 @@ The equivalence and performance record is `bench/results/gqa_decode_kv_parallel.
   on the same instrument, so that control gives this change **no cover**: the divergence is
   specific to this reassociation and is reported as measured. Issue **#96** owns the cross-build
   `past = 128` question and issue **#88** v2 owns wall-share attribution; **no model-level ceiling
-  is projected here until both land independently.**
+  is projected here until both land independently.** The p128 question is contested rather than
+  merely unfinished — the two prior measurements of it conflict, and the one artifact that read
+  them as "no regression" was itself rejected (PERF.md §27.5 tabulates both and inherits neither),
+  so this design fails closed there and states no p128 conclusion in either direction.
 
 ---
 
