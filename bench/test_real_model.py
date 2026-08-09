@@ -9,6 +9,8 @@ has an RTX A1000 and a Foundry cache.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -98,8 +100,13 @@ def test_a_graph_with_no_external_data_says_so_rather_than_looking_unscanned(tmp
     mpath.write_bytes(model.SerializeToString())
     rec = rm.external_data_provenance(mpath)
     assert rec["scanned"] is True
+    assert rec["complete"] is True
     assert rec["files"] == []
-    assert "covers the weights" in rec["reason"]
+    # #78: the reason must name the places it looked, not just assert an absence. "no external
+    # data" from a walk that only read `graph.initializer` was the pre-#78 false negative.
+    assert "covers every weight byte" in rec["reason"]
+    for place in ("subgraph", "sparse initializer", "function body", "training_info"):
+        assert place in rec["reason"], place
 
 
 def test_a_missing_weight_blob_is_reported_not_silently_skipped(tmp_path):
@@ -622,3 +629,472 @@ def test_the_diagnostics_pass_names_its_own_schema():
     assert '"schema": "real_model_diagnostics/1"' in src
     assert '"schema": rm.SCHEMA' in src
     assert rm.SCHEMA != "real_model_diagnostics/1"
+
+
+# ---------------------------------------------------------------------------
+# MiniLM, pinned identity only - issue #78
+# ---------------------------------------------------------------------------
+#
+# The defect these arms exist against, stated once: `resolve_model` used to decide a model's
+# identity by asking whether a file with the expected *name* existed in a cache directory. Any
+# same-named MiniLM export - a third-party re-export, a quantised variant, a partially written
+# download - satisfied that question, and the resolver then reported it as MiniLM with a
+# `sha256` computed from whatever it found. Nothing in the record disagreed, because the record
+# was derived from the file rather than compared against a pin.
+
+
+def _minilm_cache(tmp_path, monkeypatch, blob: bytes):
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(tmp_path))
+    (tmp_path / rm.MINILM.cache_filename).write_bytes(blob)
+    return tmp_path
+
+
+def _minilm_sidecar_dir(tmp_path, digest: str):
+    results = tmp_path / "results"
+    (results / "pinned-bytes").mkdir(parents=True, exist_ok=True)
+    (results / rm.MINILM.recorded_provenance).write_text(
+        json.dumps({"onnx_sha256": digest}), encoding="utf-8"
+    )
+    return results
+
+
+def _tiny_onnx_bytes():
+    onnx = pytest.importorskip("onnx")
+    from onnx import helper, TensorProto
+
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["x"], ["y"], name="/enc/Identity")],
+        "g",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1])],
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    return model.SerializeToString()
+
+
+def _pinned_spec_for(blob: bytes):
+    """A MINILM spec whose pin names *these* bytes, so the happy path can be driven offline."""
+    import dataclasses as _dc
+
+    pin = dict(rm.MINILM_PIN)
+    pin["sha256"] = hashlib.sha256(blob).hexdigest()
+    pin["pinned_bytes"] = len(blob)
+    return _dc.replace(rm.MINILM, pin=pin)
+
+
+def test_minilm_is_pinned_to_an_immutable_revision_not_a_branch():
+    """`main` is a name for whatever was pushed last; a 40-hex commit is a name for bytes."""
+    assert rm.MINILM_PIN["revision"] == "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+    assert len(rm.MINILM_PIN["revision"]) == 40
+    for movable in ("main", "master", "refs/heads", "latest", "HEAD"):
+        assert movable not in rm.MINILM_PIN["revision"]
+    assert rm.MINILM_PIN["repo"] == "sentence-transformers/all-MiniLM-L6-v2"
+    assert rm.MINILM_PIN["file"] == "onnx/model.onnx"
+    assert len(rm.MINILM_PIN["sha256"]) == 64
+    assert rm.MINILM_PIN["pinned_bytes"] == 90405214
+
+
+def test_the_minilm_spec_carries_no_literal_local_path():
+    blob = repr(rm.MINILM)
+    assert ":\\" not in blob and ":/" not in blob
+    assert "Users" not in blob and "home" not in blob
+
+
+def test_minilm_is_absent_from_the_timed_matrix_so_no_speed_claim_can_appear():
+    """#78 asks for identity. A latency number smuggled in beside it is an unreviewed claim."""
+    assert rm.MINILM.key not in rm.MODELS
+    assert rm.MINILM.key in rm.PROVENANCE_ONLY
+    assert rm.MINILM.key in rm.ALL_MODELS
+    assert set(rm.MODELS) & set(rm.PROVENANCE_ONLY) == set()
+
+
+def test_the_probe_iterates_the_timed_matrix_not_every_known_model():
+    """The structural reason the previous test stays true when someone adds `--models all`."""
+    src = (_BENCH / "results" / "probe_real_model_latency.py").read_text(encoding="utf-8")
+    assert "rm.ALL_MODELS" not in src
+    assert "rm.PROVENANCE_ONLY" not in src
+    assert "rm.MODELS" in src
+
+
+def test_an_absent_pinned_model_is_unavailable_not_an_unverified_pass(tmp_path, monkeypatch):
+    monkeypatch.setenv(rm.REPO_CACHE_ENV, str(tmp_path))
+    with pytest.raises(rm.ModelUnavailable) as exc:
+        rm.resolve_model(rm.MINILM)
+    assert "absent" in str(exc.value)
+
+
+def test_a_same_named_file_that_is_not_the_pinned_bytes_is_refused(tmp_path, monkeypatch):
+    """THE ISSUE. The filename was the whole check; this is the file that exploited it."""
+    blob = _tiny_onnx_bytes()
+    _minilm_cache(tmp_path, monkeypatch, blob)
+    results = _minilm_sidecar_dir(tmp_path, hashlib.sha256(blob).hexdigest())
+    with pytest.raises(rm.ModelUnavailable) as exc:
+        rm.resolve_model(rm.MINILM, results_dir=results)
+    msg = str(exc.value)
+    assert "REFUSED(instrument=provenance_mismatch)" in msg
+    assert "not the bytes pinned" in msg
+
+
+def test_a_truncated_download_is_refused_rather_than_hashed_and_believed(
+        tmp_path, monkeypatch):
+    blob = _tiny_onnx_bytes()
+    spec = _pinned_spec_for(blob)
+    _minilm_cache(tmp_path, monkeypatch, blob[:-4])
+    results = _minilm_sidecar_dir(tmp_path, spec.pin["sha256"])
+    with pytest.raises(rm.ModelUnavailable):
+        rm.resolve_model(spec, results_dir=results)
+
+
+def test_the_pinned_bytes_resolve_and_the_record_says_so(tmp_path, monkeypatch):
+    blob = _tiny_onnx_bytes()
+    spec = _pinned_spec_for(blob)
+    _minilm_cache(tmp_path, monkeypatch, blob)
+    results = _minilm_sidecar_dir(tmp_path, spec.pin["sha256"])
+    rec = rm.resolve_model(spec, results_dir=results)
+    assert rec["provenance_ok"] is True
+    assert rec["sha256"] == spec.pin["sha256"]
+    assert rec["bytes"] == len(blob)
+    assert rec["provenance"] == "pinned-immutable"
+    assert rec["agrees_with_recorded_provenance"] is True
+
+
+def test_a_missing_sidecar_cannot_produce_a_verified_resolution(tmp_path, monkeypatch):
+    """#78: `agrees_with_recorded_provenance: None` was reported and then ignored."""
+    blob = _tiny_onnx_bytes()
+    spec = _pinned_spec_for(blob)
+    _minilm_cache(tmp_path, monkeypatch, blob)
+    empty = tmp_path / "results"
+    (empty / "pinned-bytes").mkdir(parents=True)
+    with pytest.raises(rm.ModelUnavailable) as exc:
+        rm.resolve_model(spec, results_dir=empty)
+    assert "REFUSED(instrument=" in str(exc.value)
+
+
+def test_a_sidecar_that_disagrees_with_the_bytes_is_refused(tmp_path, monkeypatch):
+    """Two witnesses that disagree is not one witness that agrees."""
+    blob = _tiny_onnx_bytes()
+    spec = _pinned_spec_for(blob)
+    _minilm_cache(tmp_path, monkeypatch, blob)
+    results = _minilm_sidecar_dir(tmp_path, "0" * 64)
+    with pytest.raises(rm.ModelUnavailable):
+        rm.resolve_model(spec, results_dir=results)
+
+
+def test_the_public_record_of_a_resolution_carries_no_local_path(tmp_path, monkeypatch):
+    blob = _tiny_onnx_bytes()
+    spec = _pinned_spec_for(blob)
+    _minilm_cache(tmp_path, monkeypatch, blob)
+    results = _minilm_sidecar_dir(tmp_path, spec.pin["sha256"])
+    rec = rm.resolve_model(spec, results_dir=results)
+    public = json.dumps(rec["public_provenance"])
+    assert str(tmp_path) not in public
+    assert "AppData" not in public and "Users" not in public
+    assert "huggingface.co" in public
+    # ... while the caller-facing record still knows where the file is, because the caller has
+    # to open it. The separation is the point: one field is published, the other is not.
+    assert rec["path"].startswith(str(tmp_path))
+
+
+def test_there_is_no_fallback_to_another_model_when_minilm_is_refused(tmp_path, monkeypatch):
+    """A resolver that quietly returns MobileNet would publish MobileNet numbers as MiniLM."""
+    blob = _tiny_onnx_bytes()
+    _minilm_cache(tmp_path, monkeypatch, blob)
+    (tmp_path / rm.MOBILENETV2.cache_filename).write_bytes(blob)
+    results = _minilm_sidecar_dir(tmp_path, hashlib.sha256(blob).hexdigest())
+    with pytest.raises(rm.ModelUnavailable):
+        rm.resolve_model(rm.MINILM, results_dir=results)
+
+
+def test_resolving_a_pinned_model_never_imports_onnxruntime(tmp_path, monkeypatch):
+    """A check that already handed the bytes to the runtime is not deciding whether to."""
+    import subprocess
+
+    blob = _tiny_onnx_bytes()
+    spec = _pinned_spec_for(blob)
+    cache = _minilm_cache(tmp_path, monkeypatch, blob)
+    results = _minilm_sidecar_dir(tmp_path, spec.pin["sha256"])
+    script = tmp_path / "probe_import.py"
+    script.write_text(
+        "import sys, os, json, dataclasses\n"
+        f"sys.path.insert(0, {str(_BENCH)!r})\n"
+        f"os.environ[{rm.REPO_CACHE_ENV!r}] = {str(cache)!r}\n"
+        "import real_model as rm\n"
+        f"pin = json.loads(open({str(tmp_path / 'pin.json')!r}, encoding='utf-8').read())\n"
+        "spec = dataclasses.replace(rm.MINILM, pin=pin)\n"
+        f"rec = rm.resolve_model(spec, results_dir={str(results)!r})\n"
+        "assert rec['provenance_ok'] is True\n"
+        "print(json.dumps(sorted(m for m in sys.modules if 'onnxruntime' in m)))\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pin.json").write_text(json.dumps(spec.pin), encoding="utf-8")
+    out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                         timeout=300)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip().splitlines()[-1]) == []
+
+
+def test_minilm_feeds_are_int64_token_ids_not_float_activations():
+    """A BERT encoder fed float32 raises at session-run time, long after the record said OK."""
+    cases = rm.minilm_cases([8, 16])
+    assert [c.m for c in cases] == [8, 16]
+    for case in cases:
+        feeds = rm.minilm_feeds(case, np)
+        assert set(feeds) == {"input_ids", "attention_mask", "token_type_ids"}
+        for name, arr in feeds.items():
+            assert arr.dtype == np.int64, (name, arr.dtype)
+            assert arr.shape == (1, case.m), (name, arr.shape)
+        assert feeds["input_ids"][0][0] == 101
+        assert feeds["input_ids"][0][-1] == 102
+        assert (feeds["attention_mask"] == 1).all()
+        assert (feeds["token_type_ids"] == 0).all()
+        assert feeds["input_ids"].max() < rm.MINILM_VOCAB
+
+
+def test_minilm_feeds_are_deterministic_across_calls():
+    """Two runs that fed different tokens are two runs that are not comparable."""
+    case = rm.minilm_cases([16])[0]
+    a, b = rm.minilm_feeds(case, np), rm.minilm_feeds(case, np)
+    for name in a:
+        assert (a[name] == b[name]).all(), name
+
+
+def test_build_feeds_dispatches_minilm_without_a_mobilenet_shaped_guess():
+    case = rm.minilm_cases([8])[0]
+    feeds = rm.build_feeds(case, np)
+    assert set(feeds) == {"input_ids", "attention_mask", "token_type_ids"}
+
+
+@pytest.mark.parametrize("lengths,label", [
+    ([], "empty list - an empty matrix reads as a completed one"),
+    ([0], "zero positions"),
+    ([1], "one position cannot carry [CLS]...[SEP]"),
+    ([-8], "negative"),
+    ([16, 16], "the same length twice inflates any total over the list"),
+    (["16"], "a string that int() would have happily coerced"),
+    ([16.0], "a float that int() would have happily truncated"),
+    ([True], "a bool, which is an int to isinstance and a mistake to a reader"),
+    ([None], "None"),
+    (16, "a bare int rather than an iterable of them"),
+    ("16", "a string, which is iterable and would have yielded characters"),
+])
+def test_minilm_cases_refuses_a_shape_nobody_chose(lengths, label):
+    with pytest.raises(ValueError):
+        rm.minilm_cases(lengths)
+
+
+def test_minilm_feeds_refuses_a_case_that_is_not_this_model_or_this_phase():
+    """A feed built for the wrong model is wrong in a way the session will not catch."""
+    with pytest.raises(ValueError):
+        rm.minilm_feeds(rm.Case(rm.MOBILENETV2.key, "batch", 1, 0), np)
+    with pytest.raises(ValueError):
+        rm.minilm_feeds(rm.Case(rm.MINILM.key, "decode", 1, 128), np)
+    with pytest.raises(ValueError):
+        rm.minilm_feeds(rm.Case(rm.MINILM.key, "prefill", 16, 128), np)
+    with pytest.raises(ValueError):
+        rm.minilm_feeds(rm.Case(rm.MINILM.key, "prefill", 1, 0), np)
+    with pytest.raises(ValueError):
+        rm.minilm_feeds(object(), np)
+
+
+# ---------------------------------------------------------------------------
+# Cross-reader agreement - there must not be two provenance opinions in this repo
+# ---------------------------------------------------------------------------
+
+def test_the_bench_and_rust_provenance_readers_agree_on_the_same_file(tmp_path):
+    """`rust/tools/model_provenance.py` already enforces size+digest for the differential-test
+    subjects. `bench/pinned_bytes.py` enforces size+digest+sidecar+traversal for the pinned
+    bench subject. Where their remits overlap - "do these bytes match this digest and size" -
+    they must never disagree, or the repository holds two provenance opinions and a reader has
+    to guess which one a green lane came from.
+    """
+    import importlib.util
+
+    spec_path = _BENCH.parent / "rust" / "tools" / "model_provenance.py"
+    spec = importlib.util.spec_from_file_location("_rust_model_provenance", spec_path)
+    rust_mp = importlib.util.module_from_spec(spec)
+    # Registered before exec because its `@dataclass` resolves annotations through
+    # `sys.modules[cls.__module__]`, which does not exist for an unregistered module.
+    sys.modules[spec.name] = rust_mp
+    spec.loader.exec_module(rust_mp)
+
+    sys.path.insert(0, str(_BENCH))
+    import pinned_bytes as pb
+
+    blob = _tiny_onnx_bytes()
+    path = tmp_path / "m.onnx"
+    path.write_bytes(blob)
+    digest = hashlib.sha256(blob).hexdigest()
+    side = tmp_path / "side.json"
+    side.write_text(json.dumps({"onnx_sha256": digest}), encoding="utf-8")
+
+    def pin_for(sha, nbytes):
+        return {**rm.MINILM_PIN, "sha256": sha, "pinned_bytes": nbytes}
+
+    cases = [
+        (digest, len(blob), True),
+        ("0" * 64, len(blob), False),
+        (digest, len(blob) + 1, False),
+    ]
+    for sha, nbytes, expect_ok in cases:
+        entry = rust_mp.ModelProvenance(
+            name="x", url="https://example.invalid/m.onnx", sha256=sha, bytes=nbytes,
+            fetched="2026-08-09", why="cross-reader agreement control",
+        )
+        rust_ok = True
+        try:
+            rust_mp.verify_file(path, entry)
+        except rust_mp.ProvenanceMismatch:
+            rust_ok = False
+
+        bench_ok = True
+        try:
+            pb.check_pinned_bytes(path, pin_for(sha, nbytes), sidecar=side)
+        except pb.ProvenanceError:
+            bench_ok = False
+
+        assert rust_ok is expect_ok, (sha, nbytes)
+        assert bench_ok is rust_ok, (
+            f"the two provenance readers disagree about {sha[:8]}/{nbytes}: "
+            f"rust={rust_ok} bench={bench_ok}"
+        )
+
+
+def test_minilm_is_deliberately_not_in_the_rust_download_contract():
+    """Stated so a reader does not read its absence as an oversight.
+
+    `bench/results/model_provenance.json` is the *download* contract for differential-testing
+    subjects: `rust/modelrunner` fetches from its `url` and `tests/ops/` runs CPU-vs-Vulkan
+    agreement over them. MiniLM has no agreement lane here and is not fetched by that runner -
+    it is resolved from a HuggingFace revision by `bench/real_model.py`. Adding it would make
+    the runner and `ci/check_verification_subjects.py` claim a subject with no verification
+    behind it, which is the exact species of false completeness #78 is about.
+    """
+    contract = json.loads(
+        (_BENCH / "results" / "model_provenance.json").read_text(encoding="utf-8")
+    )
+    names = {m["name"] for m in contract["models"]}
+    assert rm.MINILM.key not in names
+    # ...and the pin still has a home that is read programmatically, so this is a routing
+    # decision and not a gap: the bench resolver reads MINILM_PIN on every resolution.
+    assert rm.MINILM.pin is rm.MINILM_PIN
+
+
+# ---------------------------------------------------------------------------
+# The real cached bytes, when this machine has them
+# ---------------------------------------------------------------------------
+
+def test_the_real_pinned_minilm_verifies_when_it_is_present():
+    """Not a skip-shaped pass: when the file is here, this is the whole gate end to end."""
+    path = rm.repo_cache_dir() / rm.MINILM.cache_filename
+    if not path.is_file():
+        pytest.skip(f"the pinned MiniLM is not in this machine's model cache ({path.name})")
+    rec = rm.resolve_model(rm.MINILM)
+    assert rec["provenance_ok"] is True
+    assert rec["sha256"] == rm.MINILM_PIN["sha256"]
+    assert rec["bytes"] == rm.MINILM_PIN["pinned_bytes"]
+    assert rec["external_data"]["scanned"] is True
+    assert rec["external_data"]["files"] == []
+
+
+def test_the_shipped_sidecar_records_the_pinned_digest_and_size():
+    """The committed witness must name the same bytes the code pins, or one of them is stale."""
+    side = json.loads(
+        (_BENCH / "results" / rm.MINILM.recorded_provenance).read_text(encoding="utf-8")
+    )
+    assert side["onnx_sha256"] == rm.MINILM_PIN["sha256"]
+    assert side["onnx_bytes"] == rm.MINILM_PIN["pinned_bytes"]
+    assert side["pin"]["revision"] == rm.MINILM_PIN["revision"]
+    assert side["pin"]["repo"] == rm.MINILM_PIN["repo"]
+    assert side["pin"]["file"] == rm.MINILM_PIN["file"]
+    assert rm.MINILM_PIN["revision"] in side["pin"]["url"]
+    assert side["external_data"]["declared_files"] == 0
+
+
+def test_external_data_provenance_reaches_a_declaration_hidden_in_a_subgraph(tmp_path):
+    """Kills `edp-partial-walk-again`.
+
+    This is the pre-#78 defect itself, asserted against the shipped adapter rather than
+    against the module it delegates to: a model whose only external weight is declared
+    inside an `If` branch used to be reported as `scanned: true, files: []`, which reads
+    exactly like "this model has no external weights".
+    """
+    onnx = pytest.importorskip("onnx")
+    from onnx import helper, TensorProto
+
+    def ext(name):
+        t = helper.make_tensor(name, TensorProto.FLOAT, [1], [0.0])
+        t.ClearField("float_data")
+        t.data_location = TensorProto.EXTERNAL
+        kv = t.external_data.add()
+        kv.key, kv.value = "location", "w.bin"
+        return t
+
+    def sub(inits=()):
+        return helper.make_graph(
+            [helper.make_node("Identity", ["x"], ["sy"])], "sub", [],
+            [helper.make_tensor_value_info("sy", TensorProto.FLOAT, [1])],
+            initializer=list(inits))
+
+    node = helper.make_node("If", ["x"], ["y"], then_branch=sub([ext("hidden")]),
+                            else_branch=sub())
+    graph = helper.make_graph(
+        [node], "g", [helper.make_tensor_value_info("x", TensorProto.BOOL, [1])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1])])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    mpath = tmp_path / "m.onnx"
+    mpath.write_bytes(model.SerializeToString())
+    (tmp_path / "w.bin").write_bytes(b"weights that are not in the .onnx")
+
+    rec = rm.external_data_provenance(mpath)
+    assert rec["scanned"] is True
+    assert rec["complete"] is True
+    assert [f["location"] for f in rec["files"]] == ["w.bin"], rec
+    assert rec["files"][0]["bytes"] == len(b"weights that are not in the .onnx")
+    assert rec["files"][0]["sha256"]
+
+
+def test_external_data_provenance_reports_a_missing_blob_rather_than_an_empty_list(tmp_path):
+    """`files: []` and "the declared weights are not on this disk" must not look alike."""
+    onnx = pytest.importorskip("onnx")
+    from onnx import helper, TensorProto
+
+    t = helper.make_tensor("w", TensorProto.FLOAT, [1], [0.0])
+    t.ClearField("float_data")
+    t.data_location = TensorProto.EXTERNAL
+    kv = t.external_data.add()
+    kv.key, kv.value = "location", "absent.bin"
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["x"], ["y"])], "g",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1])], initializer=[t])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    mpath = tmp_path / "m.onnx"
+    mpath.write_bytes(model.SerializeToString())
+
+    rec = rm.external_data_provenance(mpath)
+    assert rec["files"] == [{"location": "absent.bin", "bytes": 0, "sha256": None,
+                             "missing": True}]
+
+
+def test_external_data_provenance_refuses_an_unsafe_declaration_rather_than_ignoring_it(
+        tmp_path):
+    onnx = pytest.importorskip("onnx")
+    from onnx import helper, TensorProto
+
+    t = helper.make_tensor("w", TensorProto.FLOAT, [1], [0.0])
+    t.ClearField("float_data")
+    t.data_location = TensorProto.EXTERNAL
+    kv = t.external_data.add()
+    kv.key, kv.value = "location", "../../escape.bin"
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["x"], ["y"])], "g",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1])], initializer=[t])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    mpath = tmp_path / "m.onnx"
+    mpath.write_bytes(model.SerializeToString())
+
+    rec = rm.external_data_provenance(mpath)
+    assert rec["scanned"] is False
+    assert rec["complete"] is False
+    assert "REFUSED(instrument=external_unsafe)" in rec["reason"]

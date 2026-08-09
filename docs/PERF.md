@@ -4905,12 +4905,18 @@ a memory), `real_model_diagnostics.json`, `real_model_diagnostics_before_gqa.jso
 
 **Two test modules lock this section, and they lock different things.**
 
-`bench/test_real_model.py` (**62** GPU-free tests) locks the *harness*: provenance, feeds, arm
+`bench/test_real_model.py` (**97** GPU-free tests) locks the *harness*: provenance, feeds, arm
 isolation, the statistics helpers and every equivalence gate, including the planted-error controls.
-One of those 62 is a scar. `--diagnose` inherited the timed pass's default `--out` and
+One of those is a scar. `--diagnose` inherited the timed pass's default `--out` and
 overwrote a completed thirteen-minute matrix with a profiling record of a different schema;
 `test_the_two_passes_do_not_default_to_the_same_file` is the control, and the matrix was re-run
-rather than reconstructed.
+rather than reconstructed. Thirty-five of them arrived with issue #78 and are about *identity*
+rather than timing: they drive the shipped `resolve_model` on a pinned model, and they include a
+cross-reader agreement arm proving `rust/tools/model_provenance.verify_file` and
+`bench/pinned_bytes.check_pinned_bytes` cannot disagree where their remits overlap. The identity
+authority itself is locked separately by `bench/test_pinned_bytes.py` (**266** GPU-free tests)
+and `bench/test_path_screen.py` (**76**), each written against a named mutant of the production
+module rather than against its own copy of the rule — see `DESIGN.md` §9.1.5.
 
 `bench/test_perf_claims.py` (**24** GPU-free tests) locks *this document against those artifacts*.
 It exists because the first review of this section found published numbers that were internally

@@ -450,6 +450,17 @@ BENCH_INSTRUMENT_FILES = [
     # run is admissible as evidence about device utilisation. Those are verdicts about a
     # measurement, which is this list's criterion.
     "real_model.py",
+    # Arrived with issue #78 (Mouse, the MiniLM identity pin). Both are screened, not held
+    # out, and the criterion is met in its strongest form: `pinned_bytes.py` renders the
+    # verdict that decides whether a measurement is *about the model it claims to be about*,
+    # and `path_screen.py` renders the verdict that decides whether an artifact may be
+    # published at all. A wrong answer from either is not a wrong number -- it is a right
+    # number attributed to the wrong bytes, or a named person's home directory in a public
+    # file. Both refuse by raising rather than returning, so `pytest.raises` gives this
+    # census the reject polarity directly for the guard functions, and `bench/_polarity.py`
+    # gives it for the total ones.
+    "pinned_bytes.py",
+    "path_screen.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -491,6 +502,13 @@ BENCH_HELD_OUT: dict[str, str] = {
     # a reader of committed JSON/markdown, so it belongs here rather than in
     # BENCH_INSTRUMENT_FILES.
     "test_perf_claims.py": "test module — a caller, screened as polarity, not as an instrument.",
+    # Arrived with issue #78 (Mouse). Test modules -- callers, screened as polarity, not as
+    # instruments. Named here rather than left to drift because the pair they exercise
+    # (`pinned_bytes.py`, `path_screen.py`) is in BENCH_INSTRUMENT_FILES, and an instrument
+    # whose falsifiers are invisible to this census is an instrument with no recorded
+    # polarity at all.
+    "test_pinned_bytes.py": "test module - a caller, screened as polarity, not as an instrument.",
+    "test_path_screen.py": "test module - a caller, screened as polarity, not as an instrument.",
     "test_phases.py": "test module.",
     "test_plausible_but_wrong.py": "test module.",
     "test_run_disturbance.py": "test module.",
