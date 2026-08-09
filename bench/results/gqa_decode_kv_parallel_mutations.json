@@ -1,0 +1,91 @@
+{
+  "schema": "gqa_decode_kv_parallel_mutations/1",
+  "issue": 90,
+  "generated_at": "2026-08-09T06:21:48-0700",
+  "method": "each mutation edits a tracked source file, rebuilds the release EP, runs the named selection, and restores the file; REFUSAL is an in-process mutation of the evidence probe's own decision function",
+  "suite": "tests/ops/test_gqa_decode_kv_parallel.py",
+  "tree_was_dirty_in_rust_before_run": true,
+  "restored_build_ok": true,
+  "restored_build_error": "",
+  "mutations": [
+    {
+      "mutation": "STRIDE",
+      "breaks": "the strided KV partition no longer covers every position exactly once",
+      "file": "rust/shaders/glsl/gqa_decode_f16.comp",
+      "selection": "tests/ops/test_gqa_decode_kv_parallel.py::test_lane_matrix_matches_cpu",
+      "outcome": "CAUGHT",
+      "pytest_exit": 1,
+      "detail": "           AssertionError: W=2 past=63: the EP did not build the parallel pipeline. pipeline_variants=[], shaders_dispatched=[], wanted 'gqa_decode_f16:2'. Either the selector declined this shape (in which case \n=== end R13 lane summary ===\n=========================== short test summary info ===========================\nFAILED tests/ops/test_gqa_decode_kv_parallel.py::test_lane_matrix_matches_cpu[2]\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed in 3.79s\n",
+      "seconds": 48.0
+    },
+    {
+      "mutation": "MERGE",
+      "breaks": "the online-softmax merge stops rescaling the incoming partial",
+      "file": "rust/shaders/glsl/gqa_decode_f16.comp",
+      "selection": "tests/ops/test_gqa_decode_kv_parallel.py::test_lane_matrix_matches_cpu",
+      "outcome": "CAUGHT",
+      "pytest_exit": 1,
+      "detail": "           AssertionError: W=2 past=63: the EP did not build the parallel pipeline. pipeline_variants=[], shaders_dispatched=[], wanted 'gqa_decode_f16:2'. Either the selector declined this shape (in which case \n=== end R13 lane summary ===\n=========================== short test summary info ===========================\nFAILED tests/ops/test_gqa_decode_kv_parallel.py::test_lane_matrix_matches_cpu[2]\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed in 0.55s\n",
+      "seconds": 46.0
+    },
+    {
+      "mutation": "BARRIER",
+      "breaks": "the reduction barrier becomes non-uniform (undefined behaviour)",
+      "file": "rust/shaders/glsl/gqa_decode_f16.comp",
+      "selection": "tests/ops/test_gqa_decode_kv_parallel.py::test_lane_matrix_matches_cpu",
+      "outcome": "CAUGHT",
+      "pytest_exit": 1,
+      "detail": "           AssertionError: W=2 past=63: the EP did not build the parallel pipeline. pipeline_variants=[], shaders_dispatched=[], wanted 'gqa_decode_f16:2'. Either the selector declined this shape (in which case \n=== end R13 lane summary ===\n=========================== short test summary info ===========================\nFAILED tests/ops/test_gqa_decode_kv_parallel.py::test_lane_matrix_matches_cpu[2]\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed in 1.05s\n",
+      "seconds": 49.3
+    },
+    {
+      "mutation": "SELECTOR",
+      "breaks": "the decode-only selector boundary widens from seq_len == 1 to seq_len <= 8",
+      "file": "rust/src/ops/attention.rs",
+      "selection": "tests/ops/test_gqa_decode_kv_parallel.py::test_prefill_sequence_lengths_refuse_the_parallel_kernel",
+      "outcome": "CAUGHT",
+      "pytest_exit": 1,
+      "detail": "_the_parallel_kernel[2]\n                    AssertionError: seq_len=2 past=511: the parallel pipeline was built where the selector must refuse. pipeline_variants=['gqa_decode_f16:16']\n=== end R13 lane summary ===\n=========================== short test summary info ===========================\nFAILED tests/ops/test_gqa_decode_kv_parallel.py::test_prefill_sequence_lengths_refuse_the_parallel_kernel[2]\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed in 0.68s\n",
+      "seconds": 49.0
+    },
+    {
+      "mutation": "W_CAP",
+      "breaks": "the W <= 16 shared-memory cap is raised past the Vulkan 1.1 16 KiB floor",
+      "file": "rust/src/ops/attention.rs",
+      "selection": "tests/ops/test_gqa_decode_kv_parallel.py::test_override_clamps_and_floors",
+      "outcome": "CAUGHT",
+      "pytest_exit": 1,
+      "detail": "onError: override=999: the EP did not build the parallel pipeline. pipeline_variants=['gqa_decode_f16:32'], shaders_dispatched=['gqa_decode_f16'], wanted 'gqa_decode_f16:16'. Either the selecto\n=== end R13 lane summary ===\n=========================== short test summary info ===========================\nFAILED tests/ops/test_gqa_decode_kv_parallel.py::test_override_clamps_and_floors[999-16]\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 2 passed in 0.77s\n",
+      "seconds": 14.2
+    },
+    {
+      "mutation": "PIPELINE",
+      "breaks": "the KV lane count is dropped from the pipeline cache key, aliasing the two variants",
+      "file": "rust/src/ops/attention.rs",
+      "selection": "tests/ops/test_gqa_decode_kv_parallel.py::test_lane_counts_are_distinct_pipelines_within_one_process",
+      "outcome": "CAUGHT",
+      "pytest_exit": 1,
+      "detail": "four lane counts produced ['gqa_decode_f16:']; expected all of ['gqa_decode_f16:16', 'gqa_decode_f16:2', 'gqa_decode_f16:4', 'gqa_decode_f16:8']. A missing entry means two lane counts \n=== end R13 lane summary ===\n=========================== short test summary info ===========================\nFAILED tests/ops/test_gqa_decode_kv_parallel.py::test_lane_counts_are_distinct_pipelines_within_one_process\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed in 1.03s\n",
+      "seconds": 13.9
+    },
+    {
+      "mutation": "LEDGER",
+      "breaks": "the new shader stops claiming under its own @kvpar subject and inherits gqa_f16's proof",
+      "file": "rust/src/registry.rs",
+      "selection": "tests/ops/test_gqa_decode_kv_parallel.py::test_the_decode_form_claims_under_its_own_proof_key",
+      "outcome": "CAUGHT",
+      "pytest_exit": 1,
+      "detail": "Error: a shape that reaches the parallel kernel claimed under {'com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/gqa_f16/runtime-extent/past_key+past_value+cos_ca\n=== end R13 lane summary ===\n=========================== short test summary info ===========================\nFAILED tests/ops/test_gqa_decode_kv_parallel.py::test_the_decode_form_claims_under_its_own_proof_key\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed in 0.67s\n",
+      "seconds": 13.2
+    },
+    {
+      "mutation": "REFUSAL",
+      "breaks": "the evidence probe's structural removal of speed fields on non-equivalence",
+      "file": "bench/results/probe_gqa_decode_kv_parallel.py",
+      "selection": "in-process",
+      "outcome": "CAUGHT",
+      "detail": "unmutated: refusal with reasons 'the two arms are not equivalent at the predeclared tolerance (worst |parallel-serial| = 0.523438 on logits); past-128 DI'; mutated: kernel_speedup=1.5154595510376958 verdict=FASTER",
+      "note": "CAUGHT here means the mutation DID produce the forbidden field, which proves the gate that normally removes it is load-bearing rather than decorative."
+    }
+  ]
+}

@@ -1,0 +1,5459 @@
+{
+  "device": {
+    "api_version": "1.4.303",
+    "devices_enumerated": 1,
+    "driver_version": "573.44",
+    "facts_source": "",
+    "index": 0,
+    "luid": "7adf070000000000",
+    "max_compute_shared_memory": 49152,
+    "max_compute_workgroup_invocations": null,
+    "name": "NVIDIA RTX A1000",
+    "note": "one device; see `limitations`. The kernel-time claim is scoped to it.",
+    "pci": "0000:9f:00.0",
+    "shared_memory_headroom": {
+      "fits_the_floor": true,
+      "note": "the cap W <= 16 is derived from the floor, so it does not widen on a device that reports more. Nothing here is read at run time.",
+      "shader_bytes": 8320,
+      "this_device_bytes": 49152,
+      "vulkan_1_1_required_floor_bytes": 16384
+    },
+    "subgroup_size": 32,
+    "timestamp_period": null,
+    "transfer_class": "discrete",
+    "uuid": "aadf33d4d118155fcc60c22b5c352463"
+  },
+  "equivalence_complete": false,
+  "generated_at": "2026-08-09T07:18:39-0700",
+  "headline": {
+    "claim": "decode-time GQA kernel GPU time, one isolated node, one RTX A1000",
+    "kernel_speedup_max": 4.92448847028256,
+    "kernel_speedup_min": 1.4635904830569575,
+    "scope": "kernel-only, node-scoped, single-device. Not a model-level claim."
+  },
+  "issue": 90,
+  "limitations": [
+    "ONE DEVICE (RTX A1000). Nothing here supports a cross-device claim; W is a portable-by-construction spec constant, but its best value is a property of the machine, which is why the environment kill switch exists.",
+    "KERNEL TIME ONLY, NODE SCOPE ONLY. The only speed numbers this artifact publishes are for one GQA node in isolation. A whole-model speed claim needs the approved wall-share attribution that issue #88 v2 owns, and this file makes none.",
+    "The p128 cross-build behaviour is issue #96's question. This artifact measures the GQA kernel at p128 on this box and says nothing about why any cross-build difference exists or whether this change resolves it.",
+    "GPU time is the EP's own timestamp-query total, not a hardware occupancy counter: it says the kernel finished sooner, not why.",
+    "Wall clock on this box is STEADY_UNCERTIFIED (PERF.md \u00a720); process_wall_s is context, never evidence."
+  ],
+  "model": {
+    "external_data": {
+      "files": [
+        {
+          "bytes": 2291238912,
+          "location": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx.data",
+          "sha256": "9ce390a75dd00614031c41af38f0f3a83fdfe4648dcec8514d96800020e92217"
+        }
+      ],
+      "reason": null,
+      "scanned": true
+    },
+    "family": "phi3",
+    "key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+    "location": "resolved by identity via rust/tools/foundry_discovery.py; path omitted from this artifact on purpose (it is a private absolute path)",
+    "onnx_bytes": 26180848,
+    "onnx_filename": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    "onnx_sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+    "provenance": "foundry-resolved",
+    "variant_name": "Phi-3.5-mini-instruct-cuda-gpu"
+  },
+  "node_scope": {
+    "cases": [
+      {
+        "arms": {
+          "parallel": {
+            "expected_kernel": "vulkan.gpu.gqa_decode_f16",
+            "graph_total_us": 924.6666666666666,
+            "kernels_seen": [
+              "vulkan.gpu.gqa_decode_f16"
+            ],
+            "median_us": 924.6666666666666,
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_decode_f16": 928.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_decode_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 928.0,
+                "graph_total_us": 928.0,
+                "process_wall_s": 1.084,
+                "repeat": 0,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_decode_f16": 924.6666666666666
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_decode_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 924.6666666666666,
+                "graph_total_us": 924.6666666666666,
+                "process_wall_s": 0.968,
+                "repeat": 1,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_decode_f16": 924.6666666666666
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_decode_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 924.6666666666666,
+                "graph_total_us": 924.6666666666666,
+                "process_wall_s": 0.982,
+                "repeat": 2,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 0.001697327847303302,
+            "samples_us": [
+              928.0,
+              924.6666666666666,
+              924.6666666666666
+            ],
+            "witness_ok": true
+          },
+          "serial": {
+            "expected_kernel": "vulkan.gpu.gqa_f16",
+            "graph_total_us": 1353.3333333333333,
+            "kernels_seen": [
+              "vulkan.gpu.gqa_f16"
+            ],
+            "median_us": 1353.3333333333333,
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_f16": 1352.3333333333333
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 1352.3333333333333,
+                "graph_total_us": 1352.3333333333333,
+                "process_wall_s": 1.001,
+                "repeat": 0,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_f16": 1354.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 1354.0,
+                "graph_total_us": 1354.0,
+                "process_wall_s": 0.991,
+                "repeat": 1,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_f16": 1353.3333333333333
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 1353.3333333333333,
+                "graph_total_us": 1353.3333333333333,
+                "process_wall_s": 1.055,
+                "repeat": 2,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 0.0005061510799711992,
+            "samples_us": [
+              1352.3333333333333,
+              1354.0,
+              1353.3333333333333
+            ],
+            "witness_ok": true
+          }
+        },
+        "case": "node/decode/past128",
+        "equivalence": {
+          "all_bitwise_identical": false,
+          "equivalent": true,
+          "outputs_compared": 3,
+          "outputs_total": 3,
+          "per_output": [
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3072,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 0,
+              "max_abs_diff": 1.9073486328125e-06,
+              "name": "attn_out",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                1,
+                3072
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 1,
+              "max_abs_diff": 0.0,
+              "name": "present_key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 2,
+              "max_abs_diff": 0.0,
+              "name": "present_value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            }
+          ],
+          "scope": "the GroupQueryAttention node itself, in isolation \u2014 the same thing the kernel time below is measured on",
+          "worst": {
+            "max_abs": 1.9073486328125e-06,
+            "name": "attn_out"
+          }
+        },
+        "graph_total_parallel_us": 924.6666666666666,
+        "graph_total_serial_us": 1353.3333333333333,
+        "kernel_speedup": 1.4635904830569575,
+        "parallel_median_us": 924.6666666666666,
+        "past": 128,
+        "scope": "GQA kernel GPU time for one isolated GroupQueryAttention node on one device (see report.device). NOT a whole-model claim, NOT a cross-device claim, NOT a statement about the issue #96 p128 cross-build question, and NOT a projection onto a model ceiling \u2014 that needs the approved wall-share attribution issue #88 v2 owns.",
+        "serial_median_us": 1353.3333333333333,
+        "verdict": "FASTER"
+      },
+      {
+        "arms": {
+          "parallel": {
+            "expected_kernel": "vulkan.gpu.gqa_decode_f16",
+            "graph_total_us": 1146.0,
+            "kernels_seen": [
+              "vulkan.gpu.gqa_decode_f16"
+            ],
+            "median_us": 1146.0,
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_decode_f16": 1146.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_decode_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 1146.0,
+                "graph_total_us": 1146.0,
+                "process_wall_s": 1.014,
+                "repeat": 0,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_decode_f16": 1142.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_decode_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 1142.0,
+                "graph_total_us": 1142.0,
+                "process_wall_s": 1.236,
+                "repeat": 1,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_decode_f16": 1155.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_decode_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 1155.0,
+                "graph_total_us": 1155.0,
+                "process_wall_s": 1.131,
+                "repeat": 2,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 0.004737004481643941,
+            "samples_us": [
+              1146.0,
+              1142.0,
+              1155.0
+            ],
+            "witness_ok": true
+          },
+          "serial": {
+            "expected_kernel": "vulkan.gpu.gqa_f16",
+            "graph_total_us": 5101.666666666667,
+            "kernels_seen": [
+              "vulkan.gpu.gqa_f16"
+            ],
+            "median_us": 5101.666666666667,
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_f16": 5101.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 5101.0,
+                "graph_total_us": 5101.0,
+                "process_wall_s": 1.007,
+                "repeat": 0,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_f16": 5101.666666666667
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 5101.666666666667,
+                "graph_total_us": 5101.666666666667,
+                "process_wall_s": 1.148,
+                "repeat": 1,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_f16": 5102.333333333333
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 5102.333333333333,
+                "graph_total_us": 5102.333333333333,
+                "process_wall_s": 1.186,
+                "repeat": 2,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 0.00010669671100000526,
+            "samples_us": [
+              5101.0,
+              5101.666666666667,
+              5102.333333333333
+            ],
+            "witness_ok": true
+          }
+        },
+        "case": "node/decode/past512",
+        "equivalence": {
+          "all_bitwise_identical": false,
+          "equivalent": true,
+          "outputs_compared": 3,
+          "outputs_total": 3,
+          "per_output": [
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3072,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 0,
+              "max_abs_diff": 9.5367431640625e-07,
+              "name": "attn_out",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                1,
+                3072
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 1,
+              "max_abs_diff": 0.0,
+              "name": "present_key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 2,
+              "max_abs_diff": 0.0,
+              "name": "present_value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            }
+          ],
+          "scope": "the GroupQueryAttention node itself, in isolation \u2014 the same thing the kernel time below is measured on",
+          "worst": {
+            "max_abs": 9.5367431640625e-07,
+            "name": "attn_out"
+          }
+        },
+        "graph_total_parallel_us": 1146.0,
+        "graph_total_serial_us": 5101.666666666667,
+        "kernel_speedup": 4.45171611401978,
+        "parallel_median_us": 1146.0,
+        "past": 512,
+        "scope": "GQA kernel GPU time for one isolated GroupQueryAttention node on one device (see report.device). NOT a whole-model claim, NOT a cross-device claim, NOT a statement about the issue #96 p128 cross-build question, and NOT a projection onto a model ceiling \u2014 that needs the approved wall-share attribution issue #88 v2 owns.",
+        "serial_median_us": 5101.666666666667,
+        "verdict": "FASTER"
+      },
+      {
+        "arms": {
+          "parallel": {
+            "expected_kernel": "vulkan.gpu.gqa_decode_f16",
+            "graph_total_us": 2052.6666666666665,
+            "kernels_seen": [
+              "vulkan.gpu.gqa_decode_f16"
+            ],
+            "median_us": 2052.6666666666665,
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_decode_f16": 2102.6666666666665
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_decode_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 2102.6666666666665,
+                "graph_total_us": 2102.6666666666665,
+                "process_wall_s": 1.341,
+                "repeat": 0,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_decode_f16": 2049.3333333333335
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_decode_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 2049.3333333333335,
+                "graph_total_us": 2049.3333333333335,
+                "process_wall_s": 1.261,
+                "repeat": 1,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_decode_f16": 2052.6666666666665
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_decode_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 2052.6666666666665,
+                "graph_total_us": 2052.6666666666665,
+                "process_wall_s": 1.267,
+                "repeat": 2,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 0.01179461609546582,
+            "samples_us": [
+              2102.6666666666665,
+              2049.3333333333335,
+              2052.6666666666665
+            ],
+            "witness_ok": true
+          },
+          "serial": {
+            "expected_kernel": "vulkan.gpu.gqa_f16",
+            "graph_total_us": 10108.333333333334,
+            "kernels_seen": [
+              "vulkan.gpu.gqa_f16"
+            ],
+            "median_us": 10108.333333333334,
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_f16": 10108.333333333334
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 10108.333333333334,
+                "graph_total_us": 10108.333333333334,
+                "process_wall_s": 1.108,
+                "repeat": 0,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_f16": 10109.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 10109.0,
+                "graph_total_us": 10109.0,
+                "process_wall_s": 1.426,
+                "repeat": 1,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.gqa_f16": 10108.333333333334
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.gqa_f16": 1
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 10108.333333333334,
+                "graph_total_us": 10108.333333333334,
+                "process_wall_s": 1.396,
+                "repeat": 2,
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 3.1089474534702365e-05,
+            "samples_us": [
+              10108.333333333334,
+              10109.0,
+              10108.333333333334
+            ],
+            "witness_ok": true
+          }
+        },
+        "case": "node/decode/past1024",
+        "equivalence": {
+          "all_bitwise_identical": false,
+          "equivalent": true,
+          "outputs_compared": 3,
+          "outputs_total": 3,
+          "per_output": [
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3072,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 0,
+              "max_abs_diff": 1.9073486328125e-06,
+              "name": "attn_out",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                1,
+                3072
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 1,
+              "max_abs_diff": 0.0,
+              "name": "present_key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 2,
+              "max_abs_diff": 0.0,
+              "name": "present_value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            }
+          ],
+          "scope": "the GroupQueryAttention node itself, in isolation \u2014 the same thing the kernel time below is measured on",
+          "worst": {
+            "max_abs": 1.9073486328125e-06,
+            "name": "attn_out"
+          }
+        },
+        "graph_total_parallel_us": 2052.6666666666665,
+        "graph_total_serial_us": 10108.333333333334,
+        "kernel_speedup": 4.92448847028256,
+        "parallel_median_us": 2052.6666666666665,
+        "past": 1024,
+        "scope": "GQA kernel GPU time for one isolated GroupQueryAttention node on one device (see report.device). NOT a whole-model claim, NOT a cross-device claim, NOT a statement about the issue #96 p128 cross-build question, and NOT a projection onto a model ceiling \u2014 that needs the approved wall-share attribution issue #88 v2 owns.",
+        "serial_median_us": 10108.333333333334,
+        "verdict": "FASTER"
+      }
+    ],
+    "equivalence_complete": true,
+    "shape": {
+      "head_dim": 96,
+      "kv_heads": 32,
+      "num_heads": 32,
+      "rotary_dim": 96,
+      "seq_len": 1
+    },
+    "what": "one GroupQueryAttention node, Phi-3.5's own shape, alone in a graph"
+  },
+  "protocol": {
+    "arms": [
+      {
+        "ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL": "<unset>",
+        "expected_kernel": "vulkan.gpu.gqa_decode_f16",
+        "name": "parallel"
+      },
+      {
+        "ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL": "1",
+        "expected_kernel": "vulkan.gpu.gqa_f16",
+        "name": "serial"
+      }
+    ],
+    "dispersion_ceiling_rsd": 0.1,
+    "gpu_lock": "NONE. This box has no exclusive GPU reservation and this artifact does not claim one. The occupancy conditions are stated instead: per-arm dispersion above, and ci/check_run_disturbance.py as the standing version of the same question.",
+    "interleaving": "arm order reversed on odd repeats",
+    "iters_per_point": 4,
+    "kernel_time_source": "EP GPU timestamp queries (ONNXRUNTIME_EP_VULKAN_TRACE_GPU), attributed by shader module stem",
+    "only_difference_between_arms": "ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL",
+    "predeclared_tolerance": {
+      "logits": {
+        "atol": 0.01,
+        "rtol": 0.01
+      },
+      "present": {
+        "atol": 0.01,
+        "rtol": 0.01
+      }
+    },
+    "process_isolation": "one subprocess per (case, arm, repeat); ORT registers an EP process-globally and the EP writes counters from an exit hook",
+    "repeats": 3,
+    "timed_inferences_per_point": 3,
+    "tolerance_is_shared": "the node scope and the whole-model scope are judged by the SAME tolerance object. Neither scope has a looser band.",
+    "warmup_inferences_dropped": 1
+  },
+  "provenance": {
+    "branch": "squad/90-decode-gqa-parallelism-v2",
+    "commit": "ad92d431b01f684418fe91726a8fb7767225e22b",
+    "ep_library": "rust/target/release/onnxruntime_vulkan_ep.dll",
+    "ep_library_bytes": 2588672,
+    "ep_library_profile": "release",
+    "ep_library_sha256": "27e5b62940948d3efdb63d5db1b37ef5d8af6b6c9393831906a258aefeb27b14",
+    "subject_paths": [
+      "rust/shaders/glsl/gqa_decode_f16.comp",
+      "rust/src/ops/attention.rs",
+      "rust/src/registry.rs"
+    ],
+    "toolchain": {
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "glslc": "shaderc v2026.2 v2026.2",
+      "onnxruntime": "1.28.0",
+      "python": "3.12.10",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+    },
+    "worktree_dirty_in_subject": false
+  },
+  "schema": "gqa_decode_kv_parallel/1",
+  "subject": "rust/shaders/glsl/gqa_decode_f16.comp dispatched by ops::attention::gqa_decode_kv_lanes",
+  "supersedes": "PR #97 (rejected; frozen at fc1b163). This artifact is an independent re-derivation, not a re-run of that one.",
+  "whole_model_scope": {
+    "cases": [
+      {
+        "arms": {
+          "parallel": {
+            "expected_kernel": "vulkan.gpu.gqa_decode_f16",
+            "kernels_seen": [
+              "vulkan.gpu.gqa_decode_f16"
+            ],
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 177.33333333333334,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 94.0,
+                  "vulkan.gpu.gather_f16": 5.666666666666667,
+                  "vulkan.gpu.gqa_decode_f16": 23730.0,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 16941.0,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.333333333333334,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 802.6666666666666
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_decode_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 23730.0,
+                "graph_total_us": 41760.0,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_decode_f16:4",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 7.286,
+                "repeat": 0,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_decode_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 176.33333333333334,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 89.0,
+                  "vulkan.gpu.gather_f16": 6.0,
+                  "vulkan.gpu.gqa_decode_f16": 23747.0,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 16933.333333333332,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.333333333333334,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 802.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_decode_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 23747.0,
+                "graph_total_us": 41763.0,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_decode_f16:4",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 6.993,
+                "repeat": 1,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_decode_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 175.33333333333334,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 91.33333333333333,
+                  "vulkan.gpu.gather_f16": 5.333333333333333,
+                  "vulkan.gpu.gqa_decode_f16": 23744.333333333332,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 16936.333333333332,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.0,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 799.6666666666666
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_decode_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 23744.333333333332,
+                "graph_total_us": 41761.333333333336,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_decode_f16:4",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 7.867,
+                "repeat": 2,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_decode_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 0.00031444842429684646,
+            "samples_us": [
+              23730.0,
+              23747.0,
+              23744.333333333332
+            ],
+            "witness_ok": true
+          },
+          "serial": {
+            "expected_kernel": "vulkan.gpu.gqa_f16",
+            "kernels_seen": [
+              "vulkan.gpu.gqa_f16"
+            ],
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 183.66666666666666,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 91.0,
+                  "vulkan.gpu.gather_f16": 6.0,
+                  "vulkan.gpu.gqa_f16": 35885.0,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 17427.333333333332,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 807.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 35885.0,
+                "graph_total_us": 54409.666666666664,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_f16:1",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 7.095,
+                "repeat": 0,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 180.0,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 93.0,
+                  "vulkan.gpu.gather_f16": 5.333333333333333,
+                  "vulkan.gpu.gqa_f16": 35897.666666666664,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 17429.666666666668,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.0,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 794.6666666666666
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 35897.666666666664,
+                "graph_total_us": 54409.33333333333,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_f16:1",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 7.022,
+                "repeat": 1,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 177.0,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 98.0,
+                  "vulkan.gpu.gather_f16": 5.333333333333333,
+                  "vulkan.gpu.gqa_f16": 35874.666666666664,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 17418.666666666668,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 804.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 35874.666666666664,
+                "graph_total_us": 54387.33333333333,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_f16:1",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 7.107,
+                "repeat": 2,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 0.00026210392770974775,
+            "samples_us": [
+              35885.0,
+              35897.666666666664,
+              35874.666666666664
+            ],
+            "witness_ok": true
+          }
+        },
+        "case": "decode/M1/past128",
+        "equivalence": {
+          "all_bitwise_identical": false,
+          "argmax_agrees": true,
+          "argmax_note": "recorded, never the criterion: a merge that lost a lane moves the distribution long before it moves the argmax",
+          "equivalent": false,
+          "outputs_compared": 65,
+          "outputs_total": 65,
+          "per_output": [
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 32064,
+              "elements_outside_tolerance": 22260,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 0,
+              "max_abs_diff": 0.5234375,
+              "name": "logits",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                1,
+                32064
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 1,
+              "max_abs_diff": 0.0,
+              "name": "present.0.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 2,
+              "max_abs_diff": 0.0,
+              "name": "present.0.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 3,
+              "max_abs_diff": 0.001953125,
+              "name": "present.1.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 4,
+              "max_abs_diff": 0.0001220703125,
+              "name": "present.1.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 5,
+              "max_abs_diff": 0.00390625,
+              "name": "present.2.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 6,
+              "max_abs_diff": 0.000244140625,
+              "name": "present.2.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 7,
+              "max_abs_diff": 0.0078125,
+              "name": "present.3.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 8,
+              "max_abs_diff": 0.00048828125,
+              "name": "present.3.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 9,
+              "max_abs_diff": 0.0078125,
+              "name": "present.4.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 10,
+              "max_abs_diff": 0.0009765625,
+              "name": "present.4.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 11,
+              "max_abs_diff": 0.015625,
+              "name": "present.5.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 12,
+              "max_abs_diff": 0.00146484375,
+              "name": "present.5.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 13,
+              "max_abs_diff": 0.0078125,
+              "name": "present.6.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 14,
+              "max_abs_diff": 0.0029296875,
+              "name": "present.6.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 15,
+              "max_abs_diff": 0.0078125,
+              "name": "present.7.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 16,
+              "max_abs_diff": 0.0029296875,
+              "name": "present.7.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 17,
+              "max_abs_diff": 0.0078125,
+              "name": "present.8.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 18,
+              "max_abs_diff": 0.00341796875,
+              "name": "present.8.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 19,
+              "max_abs_diff": 0.015625,
+              "name": "present.9.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 20,
+              "max_abs_diff": 0.00390625,
+              "name": "present.9.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 21,
+              "max_abs_diff": 0.015625,
+              "name": "present.10.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 22,
+              "max_abs_diff": 0.0048828125,
+              "name": "present.10.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 23,
+              "max_abs_diff": 0.01171875,
+              "name": "present.11.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 24,
+              "max_abs_diff": 0.0048828125,
+              "name": "present.11.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 25,
+              "max_abs_diff": 0.015625,
+              "name": "present.12.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 26,
+              "max_abs_diff": 0.0072021484375,
+              "name": "present.12.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 1,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 27,
+              "max_abs_diff": 0.015625,
+              "name": "present.13.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 28,
+              "max_abs_diff": 0.0087890625,
+              "name": "present.13.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 4,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 29,
+              "max_abs_diff": 0.01978302001953125,
+              "name": "present.14.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 30,
+              "max_abs_diff": 0.009033203125,
+              "name": "present.14.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 10,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 31,
+              "max_abs_diff": 0.0224609375,
+              "name": "present.15.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 32,
+              "max_abs_diff": 0.01171875,
+              "name": "present.15.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 18,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 33,
+              "max_abs_diff": 0.02001953125,
+              "name": "present.16.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 34,
+              "max_abs_diff": 0.0126953125,
+              "name": "present.16.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 24,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 35,
+              "max_abs_diff": 0.02734375,
+              "name": "present.17.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 2,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 36,
+              "max_abs_diff": 0.01513671875,
+              "name": "present.17.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 32,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 37,
+              "max_abs_diff": 0.0244140625,
+              "name": "present.18.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 9,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 38,
+              "max_abs_diff": 0.015625,
+              "name": "present.18.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 38,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 39,
+              "max_abs_diff": 0.022705078125,
+              "name": "present.19.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 17,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 40,
+              "max_abs_diff": 0.021484375,
+              "name": "present.19.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 68,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 41,
+              "max_abs_diff": 0.03082275390625,
+              "name": "present.20.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 55,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 42,
+              "max_abs_diff": 0.02587890625,
+              "name": "present.20.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 100,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 43,
+              "max_abs_diff": 0.0313720703125,
+              "name": "present.21.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 92,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 44,
+              "max_abs_diff": 0.025390625,
+              "name": "present.21.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 115,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 45,
+              "max_abs_diff": 0.0322265625,
+              "name": "present.22.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 120,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 46,
+              "max_abs_diff": 0.02734375,
+              "name": "present.22.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 161,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 47,
+              "max_abs_diff": 0.0458984375,
+              "name": "present.23.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 244,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 48,
+              "max_abs_diff": 0.0389404296875,
+              "name": "present.23.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 280,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 49,
+              "max_abs_diff": 0.03955078125,
+              "name": "present.24.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 364,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 50,
+              "max_abs_diff": 0.045166015625,
+              "name": "present.24.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 370,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 51,
+              "max_abs_diff": 0.0498046875,
+              "name": "present.25.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 503,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 52,
+              "max_abs_diff": 0.048828125,
+              "name": "present.25.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 536,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 53,
+              "max_abs_diff": 0.0703125,
+              "name": "present.26.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 694,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 54,
+              "max_abs_diff": 0.08251953125,
+              "name": "present.26.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 737,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 55,
+              "max_abs_diff": 0.070068359375,
+              "name": "present.27.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 963,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 56,
+              "max_abs_diff": 0.0771484375,
+              "name": "present.27.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 1006,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 57,
+              "max_abs_diff": 0.08984375,
+              "name": "present.28.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 1318,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 58,
+              "max_abs_diff": 0.08984375,
+              "name": "present.28.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 1101,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 59,
+              "max_abs_diff": 0.104156494140625,
+              "name": "present.29.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 1415,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 60,
+              "max_abs_diff": 0.1083984375,
+              "name": "present.29.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 1248,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 61,
+              "max_abs_diff": 0.103271484375,
+              "name": "present.30.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 1610,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 62,
+              "max_abs_diff": 0.16796875,
+              "name": "present.30.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 1474,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 63,
+              "max_abs_diff": 0.1328125,
+              "name": "present.31.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 396288,
+              "elements_outside_tolerance": 1717,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 64,
+              "max_abs_diff": 0.169921875,
+              "name": "present.31.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                129,
+                96
+              ]
+            }
+          ],
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ],
+          "worst": {
+            "max_abs": 0.5234375,
+            "name": "logits"
+          }
+        },
+        "past": 128,
+        "refusal": {
+          "note": "This case carries no speedup, no verdict and no timing summary. The fields are absent rather than false, by construction \u2014 see `_apply_structural_removal`. A divergence is NOT relabelled as a tolerance residual and the predeclared tolerance is not widened to remove it.",
+          "reasons": [
+            "the two arms are not equivalent at the predeclared tolerance (worst |parallel-serial| = 0.5234375 on logits)"
+          ],
+          "speed_claim": "WITHHELD"
+        }
+      },
+      {
+        "arms": {
+          "parallel": {
+            "expected_kernel": "vulkan.gpu.gqa_decode_f16",
+            "kernels_seen": [
+              "vulkan.gpu.gqa_decode_f16"
+            ],
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 180.33333333333334,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 93.33333333333333,
+                  "vulkan.gpu.gather_f16": 6.0,
+                  "vulkan.gpu.gqa_decode_f16": 29539.0,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 16955.666666666668,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 805.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_decode_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 29539.0,
+                "graph_total_us": 47589.00000000001,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_decode_f16:16",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 8.99,
+                "repeat": 0,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_decode_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 177.66666666666666,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 90.66666666666667,
+                  "vulkan.gpu.gather_f16": 6.666666666666667,
+                  "vulkan.gpu.gqa_decode_f16": 29545.333333333332,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 16944.0,
+                  "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 807.3333333333334
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_decode_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 29545.333333333332,
+                "graph_total_us": 47581.666666666664,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_decode_f16:16",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 9.048,
+                "repeat": 1,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_decode_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 179.0,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 92.66666666666667,
+                  "vulkan.gpu.gather_f16": 6.333333333333333,
+                  "vulkan.gpu.gqa_decode_f16": 29528.333333333332,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 16961.0,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 808.6666666666666
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_decode_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 29528.333333333332,
+                "graph_total_us": 47585.66666666666,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_decode_f16:16",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 9.415,
+                "repeat": 2,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_decode_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 0.00023749342257562553,
+            "samples_us": [
+              29539.0,
+              29545.333333333332,
+              29528.333333333332
+            ],
+            "witness_ok": true
+          },
+          "serial": {
+            "expected_kernel": "vulkan.gpu.gqa_f16",
+            "kernels_seen": [
+              "vulkan.gpu.gqa_f16"
+            ],
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 184.66666666666666,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 95.33333333333333,
+                  "vulkan.gpu.gather_f16": 6.333333333333333,
+                  "vulkan.gpu.gqa_f16": 135166.0,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 17479.0,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.333333333333334,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 804.6666666666666
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 135166.0,
+                "graph_total_us": 153745.3333333333,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_f16:1",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 9.52,
+                "repeat": 0,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 183.33333333333334,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 94.0,
+                  "vulkan.gpu.gather_f16": 6.333333333333333,
+                  "vulkan.gpu.gqa_f16": 135103.33333333334,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 17474.666666666668,
+                  "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 796.6666666666666
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 135103.33333333334,
+                "graph_total_us": 153668.33333333334,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_f16:1",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 9.834,
+                "repeat": 1,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 185.33333333333334,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 95.66666666666667,
+                  "vulkan.gpu.gather_f16": 6.666666666666667,
+                  "vulkan.gpu.gqa_f16": 135032.66666666666,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 17482.666666666668,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 808.3333333333334
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 135032.66666666666,
+                "graph_total_us": 153621.0,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_f16:1",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 9.557,
+                "repeat": 2,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 0.00040314942042974207,
+            "samples_us": [
+              135166.0,
+              135103.33333333334,
+              135032.66666666666
+            ],
+            "witness_ok": true
+          }
+        },
+        "case": "decode/M1/past512",
+        "equivalence": {
+          "all_bitwise_identical": false,
+          "argmax_agrees": false,
+          "argmax_note": "recorded, never the criterion: a merge that lost a lane moves the distribution long before it moves the argmax",
+          "equivalent": false,
+          "outputs_compared": 65,
+          "outputs_total": 65,
+          "per_output": [
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 32064,
+              "elements_outside_tolerance": 11381,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 0,
+              "max_abs_diff": 0.5234375,
+              "name": "logits",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                1,
+                32064
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 1,
+              "max_abs_diff": 0.0,
+              "name": "present.0.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 2,
+              "max_abs_diff": 0.0,
+              "name": "present.0.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 3,
+              "max_abs_diff": 0.0,
+              "name": "present.1.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 4,
+              "max_abs_diff": 0.0,
+              "name": "present.1.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 5,
+              "max_abs_diff": 0.0078125,
+              "name": "present.2.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 6,
+              "max_abs_diff": 0.000244140625,
+              "name": "present.2.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 7,
+              "max_abs_diff": 0.00390625,
+              "name": "present.3.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 8,
+              "max_abs_diff": 0.00048828125,
+              "name": "present.3.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 9,
+              "max_abs_diff": 0.0078125,
+              "name": "present.4.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 10,
+              "max_abs_diff": 0.0009765625,
+              "name": "present.4.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 11,
+              "max_abs_diff": 0.0078125,
+              "name": "present.5.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 12,
+              "max_abs_diff": 0.001129150390625,
+              "name": "present.5.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 13,
+              "max_abs_diff": 0.0078125,
+              "name": "present.6.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 14,
+              "max_abs_diff": 0.001953125,
+              "name": "present.6.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 15,
+              "max_abs_diff": 0.0078125,
+              "name": "present.7.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 16,
+              "max_abs_diff": 0.0029296875,
+              "name": "present.7.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 17,
+              "max_abs_diff": 0.015625,
+              "name": "present.8.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 18,
+              "max_abs_diff": 0.00341796875,
+              "name": "present.8.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 19,
+              "max_abs_diff": 0.0078125,
+              "name": "present.9.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 20,
+              "max_abs_diff": 0.00341796875,
+              "name": "present.9.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 21,
+              "max_abs_diff": 0.015625,
+              "name": "present.10.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 22,
+              "max_abs_diff": 0.0048828125,
+              "name": "present.10.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 23,
+              "max_abs_diff": 0.01171875,
+              "name": "present.11.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 24,
+              "max_abs_diff": 0.0045166015625,
+              "name": "present.11.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 1,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 25,
+              "max_abs_diff": 0.014404296875,
+              "name": "present.12.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 26,
+              "max_abs_diff": 0.00732421875,
+              "name": "present.12.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 27,
+              "max_abs_diff": 0.015625,
+              "name": "present.13.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 28,
+              "max_abs_diff": 0.0081787109375,
+              "name": "present.13.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 3,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 29,
+              "max_abs_diff": 0.021484375,
+              "name": "present.14.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 30,
+              "max_abs_diff": 0.00927734375,
+              "name": "present.14.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 5,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 31,
+              "max_abs_diff": 0.01953125,
+              "name": "present.15.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 32,
+              "max_abs_diff": 0.01171875,
+              "name": "present.15.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 15,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 33,
+              "max_abs_diff": 0.02001953125,
+              "name": "present.16.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 3,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 34,
+              "max_abs_diff": 0.01416015625,
+              "name": "present.16.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 17,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 35,
+              "max_abs_diff": 0.01953125,
+              "name": "present.17.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 1,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 36,
+              "max_abs_diff": 0.0146484375,
+              "name": "present.17.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 22,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 37,
+              "max_abs_diff": 0.025390625,
+              "name": "present.18.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 9,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 38,
+              "max_abs_diff": 0.0159912109375,
+              "name": "present.18.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 34,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 39,
+              "max_abs_diff": 0.028076171875,
+              "name": "present.19.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 10,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 40,
+              "max_abs_diff": 0.021484375,
+              "name": "present.19.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 52,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 41,
+              "max_abs_diff": 0.02581787109375,
+              "name": "present.20.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 31,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 42,
+              "max_abs_diff": 0.0224609375,
+              "name": "present.20.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 85,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 43,
+              "max_abs_diff": 0.029296875,
+              "name": "present.21.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 68,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 44,
+              "max_abs_diff": 0.0244140625,
+              "name": "present.21.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 115,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 45,
+              "max_abs_diff": 0.0263671875,
+              "name": "present.22.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 106,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 46,
+              "max_abs_diff": 0.03125,
+              "name": "present.22.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 148,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 47,
+              "max_abs_diff": 0.037841796875,
+              "name": "present.23.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 204,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 48,
+              "max_abs_diff": 0.0341796875,
+              "name": "present.23.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 273,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 49,
+              "max_abs_diff": 0.0439453125,
+              "name": "present.24.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 282,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 50,
+              "max_abs_diff": 0.0390625,
+              "name": "present.24.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 415,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 51,
+              "max_abs_diff": 0.0546875,
+              "name": "present.25.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 530,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 52,
+              "max_abs_diff": 0.044189453125,
+              "name": "present.25.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 573,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 53,
+              "max_abs_diff": 0.05615234375,
+              "name": "present.26.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 688,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 54,
+              "max_abs_diff": 0.0546875,
+              "name": "present.26.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 731,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 55,
+              "max_abs_diff": 0.0810546875,
+              "name": "present.27.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 990,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 56,
+              "max_abs_diff": 0.0859375,
+              "name": "present.27.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 1021,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 57,
+              "max_abs_diff": 0.0810546875,
+              "name": "present.28.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 1267,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 58,
+              "max_abs_diff": 0.1025390625,
+              "name": "present.28.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 1287,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 59,
+              "max_abs_diff": 0.1044921875,
+              "name": "present.29.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 1484,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 60,
+              "max_abs_diff": 0.1357421875,
+              "name": "present.29.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 1425,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 61,
+              "max_abs_diff": 0.1103515625,
+              "name": "present.30.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 1684,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 62,
+              "max_abs_diff": 0.13916015625,
+              "name": "present.30.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 1628,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 63,
+              "max_abs_diff": 0.12939453125,
+              "name": "present.31.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 1575936,
+              "elements_outside_tolerance": 1758,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 64,
+              "max_abs_diff": 0.1748046875,
+              "name": "present.31.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                513,
+                96
+              ]
+            }
+          ],
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ],
+          "worst": {
+            "max_abs": 0.5234375,
+            "name": "logits"
+          }
+        },
+        "past": 512,
+        "refusal": {
+          "note": "This case carries no speedup, no verdict and no timing summary. The fields are absent rather than false, by construction \u2014 see `_apply_structural_removal`. A divergence is NOT relabelled as a tolerance residual and the predeclared tolerance is not widened to remove it.",
+          "reasons": [
+            "the two arms are not equivalent at the predeclared tolerance (worst |parallel-serial| = 0.5234375 on logits)"
+          ],
+          "speed_claim": "WITHHELD"
+        }
+      },
+      {
+        "arms": {
+          "parallel": {
+            "expected_kernel": "vulkan.gpu.gqa_decode_f16",
+            "kernels_seen": [
+              "vulkan.gpu.gqa_decode_f16"
+            ],
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 182.66666666666666,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 92.66666666666667,
+                  "vulkan.gpu.gather_f16": 5.0,
+                  "vulkan.gpu.gqa_decode_f16": 52151.0,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 16964.666666666668,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 809.3333333333334
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_decode_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 52151.0,
+                "graph_total_us": 70215.00000000001,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_decode_f16:16",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 11.849,
+                "repeat": 0,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_decode_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 182.0,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 91.66666666666667,
+                  "vulkan.gpu.gather_f16": 5.0,
+                  "vulkan.gpu.gqa_decode_f16": 52192.0,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 16952.0,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.0,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 805.3333333333334
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_decode_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 52192.0,
+                "graph_total_us": 70237.0,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_decode_f16:16",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 11.54,
+                "repeat": 1,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_decode_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 181.0,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 91.0,
+                  "vulkan.gpu.gather_f16": 5.0,
+                  "vulkan.gpu.gqa_decode_f16": 52213.333333333336,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 16944.0,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 806.0
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_decode_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_decode_f16"
+                ],
+                "gqa_us": 52213.333333333336,
+                "graph_total_us": 70250.0,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_decode_f16:16",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 11.468,
+                "repeat": 2,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_decode_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 0.0004956598116469904,
+            "samples_us": [
+              52151.0,
+              52192.0,
+              52213.333333333336
+            ],
+            "witness_ok": true
+          },
+          "serial": {
+            "expected_kernel": "vulkan.gpu.gqa_f16",
+            "kernels_seen": [
+              "vulkan.gpu.gqa_f16"
+            ],
+            "points": [
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 177.66666666666666,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 91.0,
+                  "vulkan.gpu.gather_f16": 5.0,
+                  "vulkan.gpu.gqa_f16": 267343.0,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 17450.666666666668,
+                  "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 808.3333333333334
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 267343.0,
+                "graph_total_us": 285885.6666666667,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_f16:1",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 12.808,
+                "repeat": 0,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 181.0,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 90.0,
+                  "vulkan.gpu.gather_f16": 5.0,
+                  "vulkan.gpu.gqa_f16": 267305.0,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 17471.333333333332,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 805.6666666666666
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 267305.0,
+                "graph_total_us": 285867.6666666667,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_f16:1",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 12.481,
+                "repeat": 1,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              },
+              {
+                "by_kernel_us": {
+                  "vulkan.gpu.ew_binary_mul_f16": 174.33333333333334,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 92.0,
+                  "vulkan.gpu.gather_f16": 5.0,
+                  "vulkan.gpu.gqa_f16": 267270.0,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 17463.666666666668,
+                  "vulkan.gpu.simplified_layer_norm_f16": 9.666666666666666,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 803.3333333333334
+                },
+                "dispatches_per_inference": {
+                  "vulkan.gpu.ew_binary_mul_f16": 64,
+                  "vulkan.gpu.ew_unary_sigmoid_f16": 32,
+                  "vulkan.gpu.gather_f16": 1,
+                  "vulkan.gpu.gqa_f16": 32,
+                  "vulkan.gpu.q_gemv_matmul_nbits_f16": 161,
+                  "vulkan.gpu.simplified_layer_norm_f16": 1,
+                  "vulkan.gpu.skip_simplified_layer_norm_f16": 64
+                },
+                "gqa_kernels_seen": [
+                  "vulkan.gpu.gqa_f16"
+                ],
+                "gqa_us": 267270.0,
+                "graph_total_us": 285817.99999999994,
+                "pipeline_variants": [
+                  "ew_binary_mul_f16:256,1",
+                  "ew_unary_sigmoid_f16:256,1",
+                  "gather_f16:256",
+                  "gqa_f16:1",
+                  "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+                  "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+                  "simplified_layer_norm_f16:256",
+                  "skip_simplified_layer_norm_f16:256"
+                ],
+                "process_wall_s": 12.688,
+                "repeat": 2,
+                "shaders_dispatched": [
+                  "ew_binary_mul_f16",
+                  "ew_unary_sigmoid_f16",
+                  "gather_f16",
+                  "gqa_f16",
+                  "q_gemv_matmul_nbits_f16",
+                  "simplified_layer_norm_f16",
+                  "skip_simplified_layer_norm_f16"
+                ],
+                "timed_inferences": 3,
+                "warmup_inferences": 1
+              }
+            ],
+            "repeatable": true,
+            "rsd": 0.00011152204846536115,
+            "samples_us": [
+              267343.0,
+              267305.0,
+              267270.0
+            ],
+            "witness_ok": true
+          }
+        },
+        "case": "decode/M1/past1024",
+        "equivalence": {
+          "all_bitwise_identical": false,
+          "argmax_agrees": true,
+          "argmax_note": "recorded, never the criterion: a merge that lost a lane moves the distribution long before it moves the argmax",
+          "equivalent": false,
+          "outputs_compared": 65,
+          "outputs_total": 65,
+          "per_output": [
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 32064,
+              "elements_outside_tolerance": 12575,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 0,
+              "max_abs_diff": 0.357421875,
+              "name": "logits",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                1,
+                32064
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 1,
+              "max_abs_diff": 0.0,
+              "name": "present.0.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": true,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 2,
+              "max_abs_diff": 0.0,
+              "name": "present.0.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 3,
+              "max_abs_diff": 0.000244140625,
+              "name": "present.1.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 4,
+              "max_abs_diff": 6.103515625e-05,
+              "name": "present.1.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 5,
+              "max_abs_diff": 0.00390625,
+              "name": "present.2.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 6,
+              "max_abs_diff": 0.000244140625,
+              "name": "present.2.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 7,
+              "max_abs_diff": 0.0078125,
+              "name": "present.3.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 8,
+              "max_abs_diff": 0.00048828125,
+              "name": "present.3.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 9,
+              "max_abs_diff": 0.00390625,
+              "name": "present.4.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 10,
+              "max_abs_diff": 0.0009765625,
+              "name": "present.4.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 11,
+              "max_abs_diff": 0.0078125,
+              "name": "present.5.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 12,
+              "max_abs_diff": 0.00146484375,
+              "name": "present.5.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 13,
+              "max_abs_diff": 0.00390625,
+              "name": "present.6.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 14,
+              "max_abs_diff": 0.00213623046875,
+              "name": "present.6.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 15,
+              "max_abs_diff": 0.0078125,
+              "name": "present.7.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 16,
+              "max_abs_diff": 0.00244140625,
+              "name": "present.7.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 17,
+              "max_abs_diff": 0.0078125,
+              "name": "present.8.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 18,
+              "max_abs_diff": 0.00341796875,
+              "name": "present.8.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 19,
+              "max_abs_diff": 0.01171875,
+              "name": "present.9.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 20,
+              "max_abs_diff": 0.003173828125,
+              "name": "present.9.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 21,
+              "max_abs_diff": 0.015625,
+              "name": "present.10.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 22,
+              "max_abs_diff": 0.00390625,
+              "name": "present.10.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 23,
+              "max_abs_diff": 0.0087890625,
+              "name": "present.11.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 24,
+              "max_abs_diff": 0.005859375,
+              "name": "present.11.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 25,
+              "max_abs_diff": 0.009765625,
+              "name": "present.12.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 26,
+              "max_abs_diff": 0.0068359375,
+              "name": "present.12.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 27,
+              "max_abs_diff": 0.015625,
+              "name": "present.13.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 28,
+              "max_abs_diff": 0.0126953125,
+              "name": "present.13.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 1,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 29,
+              "max_abs_diff": 0.015625,
+              "name": "present.14.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 30,
+              "max_abs_diff": 0.009033203125,
+              "name": "present.14.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 3,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 31,
+              "max_abs_diff": 0.017578125,
+              "name": "present.15.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 32,
+              "max_abs_diff": 0.009765625,
+              "name": "present.15.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 5,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 33,
+              "max_abs_diff": 0.015625,
+              "name": "present.16.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 34,
+              "max_abs_diff": 0.0126953125,
+              "name": "present.16.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 6,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 35,
+              "max_abs_diff": 0.0169677734375,
+              "name": "present.17.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 0,
+              "equivalent": true,
+              "finite_masks_match": true,
+              "index": 36,
+              "max_abs_diff": 0.01171875,
+              "name": "present.17.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 6,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 37,
+              "max_abs_diff": 0.02490234375,
+              "name": "present.18.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 1,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 38,
+              "max_abs_diff": 0.0123291015625,
+              "name": "present.18.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 19,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 39,
+              "max_abs_diff": 0.0263671875,
+              "name": "present.19.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 3,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 40,
+              "max_abs_diff": 0.014190673828125,
+              "name": "present.19.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 31,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 41,
+              "max_abs_diff": 0.0302734375,
+              "name": "present.20.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 23,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 42,
+              "max_abs_diff": 0.019287109375,
+              "name": "present.20.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 59,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 43,
+              "max_abs_diff": 0.03125,
+              "name": "present.21.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 32,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 44,
+              "max_abs_diff": 0.0205078125,
+              "name": "present.21.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 52,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 45,
+              "max_abs_diff": 0.025390625,
+              "name": "present.22.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 44,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 46,
+              "max_abs_diff": 0.0224609375,
+              "name": "present.22.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 79,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 47,
+              "max_abs_diff": 0.0263671875,
+              "name": "present.23.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 85,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 48,
+              "max_abs_diff": 0.025390625,
+              "name": "present.23.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 134,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 49,
+              "max_abs_diff": 0.03125,
+              "name": "present.24.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 169,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 50,
+              "max_abs_diff": 0.03466796875,
+              "name": "present.24.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 213,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 51,
+              "max_abs_diff": 0.0390625,
+              "name": "present.25.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 296,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 52,
+              "max_abs_diff": 0.0361328125,
+              "name": "present.25.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 290,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 53,
+              "max_abs_diff": 0.04296875,
+              "name": "present.26.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 363,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 54,
+              "max_abs_diff": 0.0478515625,
+              "name": "present.26.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 408,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 55,
+              "max_abs_diff": 0.0556640625,
+              "name": "present.27.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 564,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 56,
+              "max_abs_diff": 0.0498046875,
+              "name": "present.27.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 508,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 57,
+              "max_abs_diff": 0.056640625,
+              "name": "present.28.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 762,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 58,
+              "max_abs_diff": 0.07712554931640625,
+              "name": "present.28.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 679,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 59,
+              "max_abs_diff": 0.060546875,
+              "name": "present.29.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 928,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 60,
+              "max_abs_diff": 0.083984375,
+              "name": "present.29.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 892,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 61,
+              "max_abs_diff": 0.0732421875,
+              "name": "present.30.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 1157,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 62,
+              "max_abs_diff": 0.126953125,
+              "name": "present.30.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 1068,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 63,
+              "max_abs_diff": 0.0859375,
+              "name": "present.31.key",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            },
+            {
+              "atol": 0.01,
+              "bitwise_identical": false,
+              "elements": 3148800,
+              "elements_outside_tolerance": 1262,
+              "equivalent": false,
+              "finite_masks_match": true,
+              "index": 64,
+              "max_abs_diff": 0.106201171875,
+              "name": "present.31.value",
+              "rtol": 0.01,
+              "shape": [
+                1,
+                32,
+                1025,
+                96
+              ]
+            }
+          ],
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ],
+          "worst": {
+            "max_abs": 0.357421875,
+            "name": "logits"
+          }
+        },
+        "past": 1024,
+        "refusal": {
+          "note": "This case carries no speedup, no verdict and no timing summary. The fields are absent rather than false, by construction \u2014 see `_apply_structural_removal`. A divergence is NOT relabelled as a tolerance residual and the predeclared tolerance is not widened to remove it.",
+          "reasons": [
+            "the two arms are not equivalent at the predeclared tolerance (worst |parallel-serial| = 0.357421875 on logits)"
+          ],
+          "speed_claim": "WITHHELD"
+        }
+      }
+    ],
+    "equivalence_complete": false,
+    "frame": {
+      "case": "decode/M1/past128",
+      "cross_kernel_control": {
+        "all_bitwise_identical": true,
+        "env_a": {
+          "ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS": "1",
+          "ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL": "1"
+        },
+        "env_b": {
+          "ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS": "4",
+          "ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL": "1"
+        },
+        "logits_max_abs": 0.0,
+        "measured": true,
+        "outputs_outside_predeclared_tolerance": 0,
+        "outputs_total": 65,
+        "question": "is whole-model elementwise divergence simply what this instrument reports for any accepted kernel change?",
+        "reading": "NEGATIVE for this change. That pair is bitwise identical, so the whole-model divergence above is NOT generic to accepted kernel changes and this control gives this change no cover whatsoever.",
+        "reproduces_the_divergence": false,
+        "subject": "q_gemv_matmul_nbits_f16 row tiling \u2014 shipped and accepted on main, and not this change",
+        "worst": {
+          "max_abs": 0.0,
+          "name": null
+        }
+      },
+      "depth_profile": {
+        "deepest_layer_max_abs": 0.169921875,
+        "layer0_bitwise_identical": true,
+        "layer0_max_abs": 0.0,
+        "layers": 32,
+        "measured": true,
+        "median_growth_per_layer": 1.064970028394153,
+        "per_layer_max_abs": {
+          "0": 0.0,
+          "1": 0.001953125,
+          "10": 0.015625,
+          "11": 0.01171875,
+          "12": 0.015625,
+          "13": 0.015625,
+          "14": 0.01978302001953125,
+          "15": 0.0224609375,
+          "16": 0.02001953125,
+          "17": 0.02734375,
+          "18": 0.0244140625,
+          "19": 0.022705078125,
+          "2": 0.00390625,
+          "20": 0.03082275390625,
+          "21": 0.0313720703125,
+          "22": 0.0322265625,
+          "23": 0.0458984375,
+          "24": 0.045166015625,
+          "25": 0.0498046875,
+          "26": 0.08251953125,
+          "27": 0.0771484375,
+          "28": 0.08984375,
+          "29": 0.1083984375,
+          "3": 0.0078125,
+          "30": 0.16796875,
+          "31": 0.169921875,
+          "4": 0.0078125,
+          "5": 0.015625,
+          "6": 0.0078125,
+          "7": 0.0078125,
+          "8": 0.0078125,
+          "9": 0.015625
+        },
+        "reading": "layer 0's present KV is the kernel's own output before any downstream layer has touched it. Bitwise equality there says the kernel wrote the same cache; a divergence that only appears deeper is the residual stack amplifying an fp16 reassociation, which is a property of the model and not of this change. This field does NOT lift the refusal above it and no speed number is attached to it."
+      },
+      "does_not_lift_the_refusal": true,
+      "lane_sensitivity_control": {
+        "all_bitwise_identical": false,
+        "env_a": {
+          "ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL": "2"
+        },
+        "env_b": {
+          "ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL": "16"
+        },
+        "logits_max_abs": 0.65850830078125,
+        "measured": true,
+        "outputs_outside_predeclared_tolerance": 36,
+        "outputs_total": 65,
+        "question": "is the model's output invariant under reassociation of THIS sum at all, or does it move between two equally-correct lane counts?",
+        "reading": "W=2 and W=16 are both correct by construction \u2014 neither is a reference and neither is 'the bug' \u2014 yet the model's logits move by 0.65850830078125 between them, which is at least as large as the parallel-vs-serial divergence (0.5234375) that this report refuses on. So the whole-model refusal is NOT evidence that one association is wrong: it is evidence that this model's 32-layer fp16 residual stack has no invariant whole-model output under ANY reassociation of the attention sum, and the serial kernel's left-to-right order is simply one such association with no privileged status. This is why the refusal is reported as a limit on what this instrument can adjudicate rather than as a defect found in the kernel \u2014 and it still does NOT lift the refusal, because 'the reference is arbitrary too' is not a correctness proof. The node scope, where the comparison IS adjudicable, is the only scope that publishes.",
+        "subject": "the new kernel against itself at two lane counts, both correct by construction",
+        "worst": {
+          "max_abs": 0.65850830078125,
+          "name": "logits"
+        }
+      },
+      "null_control": {
+        "all_bitwise_identical": true,
+        "env_a": {},
+        "env_b": {},
+        "expectation": "bitwise identical. A non-zero result here voids this whole section.",
+        "holds": true,
+        "logits_max_abs": 0.0,
+        "measured": true,
+        "outputs_outside_predeclared_tolerance": 0,
+        "outputs_total": 65,
+        "worst": {
+          "max_abs": 0.0,
+          "name": null
+        }
+      },
+      "purpose": "make the whole-model refusal interpretable without lifting it"
+    },
+    "reading": "This scope publishes NO speed field. Its per-element logits comparison at the predeclared tolerance does not pass, and under this file's structural rule that removes every speed and verdict field from every case in it. The divergence is not relabelled: `frame.depth_profile` records that layer 0's present KV \u2014 the kernel's own output, before any downstream layer touches it \u2014 is bitwise identical, and that the disagreement first appears at layer 1 and compounds with depth. `frame.cross_kernel_control` asked whether that is simply what this instrument reports for any accepted kernel change and came back NEGATIVE, which is recorded as measured and gives this change no cover. `frame.lane_sensitivity_control` measures whether the model's output moves between two equally-correct lane counts, which is the honest statement of the limitation. None of them lifts the refusal.",
+    "what": "Phi-3.5-mini-instruct int4, 32 layers, decode step"
+  }
+}

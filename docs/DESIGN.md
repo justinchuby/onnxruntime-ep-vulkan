@@ -6107,7 +6107,7 @@ suppressed. Both polarities are exercised: removing the entry produces
 
 #### What is proven, and what is refused
 
-The equivalence and performance record is `bench/results/gqa_decode_kv_parallel.json`; §26.11 of
+The equivalence and performance record is `bench/results/gqa_decode_kv_parallel.json`; §27 of
 `docs/PERF.md` reads it. Two things belong here because they are design facts, not measurements:
 
 * **The kernel writes the same KV cache.** On the real Phi-3.5 graph, layer 0's `present.key` and

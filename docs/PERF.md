@@ -5121,22 +5121,22 @@ object, which is the property §26.2's instrument bugs were about.
 
 `elements_outside_tolerance` is **0** on every output of every case, and `finite_masks_match` is
 true on all of them — the non-finite policy is compared, not assumed. `attn_out`'s worst residual
-is ~2e-6, five orders of magnitude inside the predeclared 1e-2 band; the KV cache the kernel
+is ~2e-6, four orders of magnitude inside the predeclared 1e-2 band; the KV cache the kernel
 writes is *bit-for-bit* the serial kernel's.
 
 Only because that passed does the timing get published:
 
 | case | serial `gqa_f16` | parallel `gqa_decode_f16` | kernel speed-up |
 |---|---|---|---|
-| decode past=128 | 1.354 ms | 0.922 ms | **1.47x** |
-| decode past=512 | 5.100 ms | 1.143 ms | **4.46x** |
-| decode past=1024 | 10.107 ms | 2.049 ms | **4.93x** |
+| decode past=128 | 1.353 ms | 0.925 ms | **1.46x** |
+| decode past=512 | 5.102 ms | 1.146 ms | **4.45x** |
+| decode past=1024 | 10.108 ms | 2.053 ms | **4.92x** |
 
 The shape of that column is the design: at `past = 128` the selector picks `W = 4` and the walk is
 short enough that fixed cost dominates; by `past = 1024` it is `W = 16` and the 1,025-token serial
-walk has become a 65-token one plus four reduction rounds. Per-repeat spread is well under 1% in
-every cell (e.g. `past = 1024` parallel: 2049.0 / 2046.3 / 2048.7 us), which is what earns these
-rows the right to be quoted to three digits.
+walk has become a 65-token one plus four reduction rounds. Per-repeat spread is under 1% in every
+cell (e.g. `past = 128` parallel: 928.0 / 924.7 / 924.7 us), which is what earns these rows the
+right to be quoted to three digits.
 
 **Exactly what these numbers are:** GQA kernel GPU time, for one isolated node, on one device.
 They are **not** a whole-model speed claim, **not** a cross-device claim, **not** a statement about
@@ -5157,9 +5157,8 @@ This is recorded as `DIVERGENT`. It is **not** relabelled a tolerance residual, 
 below converts it into one.
 
 The kernel-time observations at those points survive as observations only, stripped of medians and
-verdicts: at `past = 1024` the arms read ~267 ms against ~52 ms of GQA GPU time and ~286 ms against
-~70 ms of graph total. **Those numbers may not be cited as a result of this change** — they are in
-the artifact because deleting a measurement you dislike is worse than refusing to conclude from it.
+verdicts. **They may not be cited as a result of this change** — they are in the artifact because
+deleting a measurement you dislike is worse than refusing to conclude from it.
 
 #### Three controls, and one of them came back against this change
 
