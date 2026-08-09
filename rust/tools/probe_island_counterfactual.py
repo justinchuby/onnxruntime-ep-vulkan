@@ -66,8 +66,12 @@ import collections
 import json
 import pathlib
 
-# Mirrors `ops::partition::is_anchor` closely enough to rank with. Not authoritative; the
-# partitioner in the DLL is. Kept short and named so a reader can check it against that list.
+# Mirrors `ops::partition::heavy_op_families` — the op-FAMILY set, which is what the EP's FLOP
+# estimator keys on. It is deliberately NOT `ops::partition::is_anchor`: since issue #73 an anchor
+# is a node property (a resident initializer at a schema-designated weight site), and this probe
+# ranks islands without reading initializer residency, so it can only approximate at the family
+# level. Not authoritative; the partitioner in the DLL is. Kept short and named so a reader can
+# check it against `epctl --dump-weight-sites`.
 DEFAULT_ANCHORS = ("Conv", "Gemm", "MatMul", "MatMulNBits", "Attention", "GroupQueryAttention")
 
 

@@ -200,6 +200,77 @@ fn the_human_summary_names_the_predicate_it_counted() {
     );
 }
 
+/// `--dump-weight-sites` is the surface `ci`/`tests/ops` reads the anchor table through.
+///
+/// Issue #73 made anchor eligibility a node property backed by a table of schema-designated
+/// weight sites. `tests/ops/test_weight_sites.py` audits that table against the installed `onnx`
+/// and `onnxruntime` packages, and it must audit the table the *binary* carries — a source
+/// scraper would happily certify a table that no build ever consumed. These tests guard the
+/// surface that makes that possible.
+#[test]
+fn the_weight_site_dump_carries_every_row_of_the_shipped_table() {
+    let (stdout, _, code) = run(&["--dump-weight-sites"]);
+    assert_eq!(code, 0);
+    let table = onnxruntime_vulkan_ep::ops::partition::WEIGHT_SITES;
+    assert!(
+        !table.is_empty(),
+        "the table is empty; this test proves nothing"
+    );
+    for site in table {
+        let needle = format!(
+            "{:<36} {:>3}  {:<22}",
+            site.qualified_op, site.index, site.name
+        );
+        assert!(
+            stdout.contains(&needle),
+            "`{} [{}] {}` is in the shipped table and absent from the dump",
+            site.qualified_op,
+            site.index,
+            site.name
+        );
+    }
+    let designated = table.iter().filter(|s| s.designated()).count();
+    assert!(
+        stdout.contains(&format!(
+            "{} operand(s) over {} heavy-op families; {designated} are designated weight sites",
+            table.len(),
+            onnxruntime_vulkan_ep::ops::partition::heavy_op_families().len()
+        )),
+        "the summary must decompose to the table it printed:\n{stdout}"
+    );
+}
+
+#[test]
+fn the_weight_site_json_is_well_formed_and_marks_designation_per_row() {
+    let (stdout, _, code) = run(&["--dump-weight-sites", "--json"]);
+    assert_eq!(code, 0);
+    assert!(stdout.trim_start().starts_with('{'), "{stdout}");
+    assert!(stdout.trim_end().ends_with('}'), "{stdout}");
+    assert_eq!(
+        stdout.matches('{').count(),
+        stdout.matches('}').count(),
+        "unbalanced braces in JSON output"
+    );
+    assert!(!stdout.contains(",\n  ]"), "trailing comma:\n{stdout}");
+
+    let table = onnxruntime_vulkan_ep::ops::partition::WEIGHT_SITES;
+    assert_eq!(stdout.matches("\"index\": ").count(), table.len());
+    assert_eq!(
+        stdout.matches("\"designated\": true").count(),
+        table.iter().filter(|s| s.designated()).count()
+    );
+    assert_eq!(
+        stdout.matches("\"designated\": false").count(),
+        table.iter().filter(|s| !s.designated()).count()
+    );
+    // Both polarities must be present, or the field distinguishes nothing.
+    assert!(stdout.contains("\"designated\": true"));
+    assert!(stdout.contains("\"designated\": false"));
+    // Every row carries its justification: an unexplained designation is the thing this table
+    // exists to stop being possible.
+    assert_eq!(stdout.matches("\"reason\": \"").count(), table.len());
+}
+
 #[test]
 fn no_arguments_is_an_error_not_an_empty_success() {
     let (_, stderr, code) = run(&[]);

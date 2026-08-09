@@ -53,8 +53,9 @@ def _matmulnbits(
     component of the proof key. Their keys differ, so a proof of one can never be returned for
     the other, and the defect is unrepresentable rather than merely unlikely.
 
-    They are also the form the whole Phi-3.5 claim rests on: MatMulNBits is the anchor op, and
-    the test suite's own device probe uses it.
+    They are also the form the whole Phi-3.5 claim rests on: MatMulNBits carries all 161 of that
+    model's partition anchors — its packed `B`, `scales` and `zero_points` are resident
+    initializers at designated weight sites — and the test suite's own device probe uses it.
     """
     rng = np.random.default_rng(20260801)
     blocks_per_col = (K + block_size - 1) // block_size
@@ -1019,7 +1020,7 @@ BUILDERS.update({
     "cast_f32_to_f16_dyn": lambda: _cast_dyn(TensorProto.FLOAT, TensorProto.FLOAT16),
     # 72 nodes. `Add` at f16 is proven static; every gpt-oss-20b `Add` is symbolic.
     "add_f16_dyn": lambda: _binary_dyn("Add", TensorProto.FLOAT16),
-    # 73 nodes — the anchor op, in the one form gpt-oss-20b carries: zero points AND symbolic
+    # 73 nodes — the anchor-bearing op, in the one form gpt-oss-20b carries: zero points AND symbolic
     # extents. The ledger holds `scales`/runtime-extent and `scales+zero_points`/static; the
     # intersection of the two axes was never measured, and it is the whole model.
     "matmulnbits_f16_scales_zp_dyn": lambda: _matmulnbits_typed(

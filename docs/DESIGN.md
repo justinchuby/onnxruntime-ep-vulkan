@@ -1277,6 +1277,10 @@ Four properties of that placement are binding, not incidental:
    scatter — but it means **stage 3's verdict on our production graph is not a decision.** Anything
    that reads `viable_islands_retained == 1` as evidence that the economics model endorsed the
    island is reading a field that is silent on that question.
+6. **`island.anchors` counts nodes, not op names.** *Amended 2026-08-09, issue #73, see §5.4.2.*
+   The count is over nodes that carry a **resident initializer at a schema-designated weight site**,
+   which is a property of the node in its graph and not of its op type. A `MatMul` whose operands
+   are both runtime activations contributes nothing to it and never takes the 3b exemption.
 
 #### 5.4.1 The anchor exemption is the deciding term, and it is not an exemption from a working model — RULING (2026-08-01)
 
@@ -1308,6 +1312,14 @@ contains at least one.** So "the economics model does not decide our partition" 
 accident and is not a discovered defect — **it is the design, working.** 3c was written to kill
 cheap elementwise scatter whose tensors outweigh its arithmetic, and Phi-3.5's fused island is not
 that. The doc comment at `partition.rs:458` says so in as many words.
+
+> **Amended 2026-08-09 (issue #73) — the premise of (ii) was the defect.** `is_anchor` no longer
+> keys on the op name; it requires a resident initializer at a schema-designated weight site. The
+> falsifier named two paragraphs below — *"one small `MatMul` surrounded by large boundary
+> traffic"* — was already firing on MiniLM-L6-v2, six times per session. The reasoning in (ii) is
+> correct given its premise and is left standing as the record of it. **See §5.4.2 for the contract
+> that replaced it.** The anchor set quoted above is now the *heavy-op family* set
+> (`ops::partition::is_heavy_op`), which is what FLOP scoring keys on and is unchanged.
 
 **So what is actually wrong is narrower, and I want it stated without inflation.** Three things:
 
@@ -1497,6 +1509,121 @@ M0/M1 have a defined behaviour before Niobe's measurements exist. `CoverageRepor
 the same `(kept, dropped)` pair, is what produces `largest_island_flops` for §10.0's milestone
 reporting — the rule and its metric live in one module deliberately, because their drifting apart is
 exactly how a coverage number becomes a lie.
+
+#### 5.4.2 An anchor is a node property, not an op name — the weight-site contract (issue #73, 2026-08-09)
+
+**What §5.4.1(ii) read, and why the reading no longer holds.** That ruling read `is_anchor` as the
+set `{MatMul, Gemm, Conv, ConvTranspose, Attention, MatMulNBits, GroupQueryAttention,
+MultiHeadAttention, QMoE, LinearAttention}` and concluded that "every non-trivial island of any
+transformer contains at least one" — therefore the exemption firing everywhere **is the design,
+working**. The conclusion followed from the premise. The premise was the defect, and the ruling
+named its own falsifier one paragraph later: *"an anchor-bearing island that genuinely should be
+declined — one small `MatMul` surrounded by large boundary traffic … That is a cross-model
+generality risk and it is where I expect this to bite first."*
+
+It bit. On MiniLM-L6-v2 (418 EP-visible nodes) the name-keyed predicate claimed **six one-node
+islands**, each the attention `AV` batched product: **983,040 B in, 196,608 B out, 0.013 GFLOP** —
+about **11 FLOP per byte** at batch 1, sequence 128. Both operands are runtime activations. This is
+precisely the shape 3c exists to reject, and 3b returned above it every time. The exposure was not
+future and was not confined to small models; it was a live mis-claim on a model we ship benchmarks
+for.
+
+**The warrant, restated as the predicate.** The exemption's justification has always been *an anchor
+is heavy enough to justify a boundary on its own.* That is a claim about **weights**: a resident
+tensor is uploaded once, lives in device memory for the session, and is read once per output
+element, so a single node bearing one amortises its island's boundary by construction. Two runtime
+activations amortise nothing — they cross the boundary on every inference, in both directions. So
+the predicate is now the warrant, stated directly:
+
+> **An anchor is a heavy-op node carrying a resident initializer at a schema-designated weight
+> site.**
+
+Three parts, each independently checkable: *heavy-op* (family membership), *resident* (the operand
+reads a constant initializer), *designated weight site* (the operand index is one at which a
+resident tensor is a factor of the op's own arithmetic).
+
+**The designation criterion.** An input index is designated iff a resident tensor there is **a
+factor of the op's own arithmetic, or the quantisation payload that reconstitutes one** — its
+extent scales with the op's *reduction* dimensions, so it is read once per output element. Excluded,
+and each exclusion is a substantive claim rather than an oversight:
+
+| kind | why it does not designate |
+|---|---|
+| `Activation` | extent scales with tokens/sequence — it crosses the boundary every inference |
+| `BiasOrGain` | O(output channels); one FLOP per output element, no reuse across the reduction |
+| `PerGroupScalar` | O(experts) or O(heads); far too small to amortise a boundary |
+| `PrecomputedTable` | resident on every rotary model — designating it makes the property vacuous for every LLM |
+| `CachedState` | KV caches are written every step; resident in shape only |
+| `MaskOrLength` | control operands, not arithmetic |
+
+**The table.** `ops::partition::WEIGHT_SITES` carries **one row per input of every heavy-op family,
+in pinned-schema order** — 84 rows across 11 families, of which **20 designate**. Every row states
+its index, its schema name, its kind, and a justification quoting the shape the schema declares. The
+per-family designated counts:
+
+| family | inputs | designated | which |
+|---|---|---|---|
+| `MatMul` | 2 | 2 | `A`, `B` — either factor may be the resident one |
+| `Gemm` | 3 | 2 | `A`, `B`; `C` is a bias |
+| `Conv` | 3 | 1 | `W` |
+| `ConvTranspose` | 3 | 1 | `W` |
+| `Attention` (default domain, opset 24) | 7 | **0** | fused SDPA over already-projected Q/K/V — it has no weight input |
+| `com.microsoft::Attention` | 7 | 1 | `weights` (the packed QKV projection) |
+| `com.microsoft::MatMulNBits` | 6 | 4 | `B`, `scales`, `zero_points`, `g_idx` |
+| `com.microsoft::MultiHeadAttention` | 10 | **0** | Q/K/V arrive projected |
+| `com.microsoft::GroupQueryAttention` | 16 | **0** | see below |
+| `com.microsoft::QMoE` | 21 | **9** | `fc{1,2,3}_experts_weights`, `fc{1,2,3}_scales`, `fc{1,2,3}_zero_points` |
+| `com.microsoft::LinearAttention` | 6 | **0** | Q/K/V, cache, decay and beta are all activations |
+
+**GQA designates nothing, and this is the correction that moves the Phi-3.5 numbers.** All sixteen
+GQA inputs are activations (`query`/`key`/`value`), KV caches, lengths, per-head scalars
+(`head_sink`, `k_scale`, `v_scale`), rotary tables (`cos_cache`, `sin_cache`), or **O(head_size)
+RMS-norm gains (`q_norm_weight`, `k_norm_weight`)**. The norm gains are the interesting case: they
+*are* learned and *are* resident, and they still do not designate, because one multiply per element
+with no reuse across the reduction is not what the exemption is buying. So on Phi-3.5-mini-int4:
+
+- **161 anchors** — the MatMulNBits nodes.
+- **355 claimed nodes**, of which **32 are GQA**: claimed, executed on the EP, and *not anchors*.
+
+`161 + 32 = 193`, the figure this document and `OP_COVERAGE.md` previously called the anchor count.
+It was the count of nodes in **anchor-eligible families**. Those are different questions and are now
+reported under different names. **`trace::PartitionStats` has never carried an anchor field**; the
+figure is a `CLAIM_LOG` census, and any text implying otherwise is wrong.
+
+**FLOP scoring is deliberately unchanged.** `ep.rs`'s estimator scores heavy-op nodes with the
+constant `2 · 3072 · 3072`, and that term is keyed on the **family**, via
+`ops::partition::is_heavy_op` — a batched attention `MatMul` genuinely does the arithmetic; what it
+lacks is amortisation. Splitting the two predicates keeps the economics arithmetic bit-identical
+across this change while fixing the anchoring, and both read `WEIGHT_SITES`, so they cannot drift
+apart. §5.4.1(a)'s bound and `OP_COVERAGE.md` §(c)'s `32/193` arithmetic are untouched; only their
+wording changes, from "anchors" to "anchor-family nodes".
+
+**Fail-closed.** `is_anchor` takes the residency vector the caller already computed for the
+island's boundary-byte accounting, from `registry::NodeView::input_is_constant`, which returns
+`false` on an out-of-range index, a null slot, an absent `ValueInfo_IsConstantInitializer` function
+pointer, and any non-null ORT status. Every uncertain reading therefore arrives as *not resident*,
+which is the closed direction: an unreadable operand cannot manufacture an anchor. It is also the
+*same* reading the boundary accounting uses, so a tensor this predicate declines to call a weight is
+a tensor that gets charged as boundary traffic — the two halves of the economics cannot disagree
+about which tensors are weights.
+
+**How the table is held true.** Two independent checks, deliberately not sharing a source:
+
+1. `ops::partition`'s unit tests pin the 84 rows against a held-out list of `family index name kind`
+   tuples sealed with FNV-1a over each justification, and prove that pin load-bearing with eight
+   held-out mutations — delete the final row, add a schema input, swap two indices, swap two names,
+   swap two justifications, designate an activation, truncate a family contiguously, change a
+   schema's extent. Each must red.
+2. `tests/ops/test_weight_sites.py` reads the shipped table out of the **built binary**
+   (`epctl --dump-weight-sites --json`, never out of `partition.rs`'s source) and compares family
+   membership, operand count, operand order and operand names against `onnx.defs` and onnxruntime's
+   own `com.microsoft` schema registry. Neither the table nor the held-out list is an input to that
+   comparison, so a *derivation* error — as opposed to an edit — has somewhere to show up.
+
+The behavioural evidence is in the same file: two models differing in exactly one bit — whether the
+`MatMul`'s `B` operand is a graph input or a graph initializer — run through a real ORT session, one
+declining with `DeclineCode::Partition` and one claiming. Reverting `is_anchor` to its name-keyed
+form reds the first and leaves the second green.
 
 ### 5.5 `Compile` — plan build and prepacking
 
