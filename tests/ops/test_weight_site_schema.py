@@ -412,9 +412,66 @@ STALE_ANCHOR_COUNT_PERMITTED = {
     ".squad/decisions.md": "pre-#73 reading",
 }
 
-#: Directories holding captured run output. A log is a record of what a binary printed on a date;
-#: rewriting one to match a later predicate is falsifying evidence, not correcting a claim.
-STALE_ANCHOR_COUNT_EXEMPT_DIRS = ("bench/results/", "ci/fixtures/", "evidence/", "third_party/")
+#: Directories holding captured run output, or a frozen dated record of a past round. Both are a
+#: record of what was printed or decided on a date; rewriting either to match a later predicate is
+#: falsifying evidence, not correcting a claim. `.squad/decisions-archive/` holds exactly the same
+#: kind of frozen, dated record as `bench/results/` — Scribe-rotated history, not a live claim.
+STALE_ANCHOR_COUNT_EXEMPT_DIRS = (
+    "bench/results/",
+    "ci/fixtures/",
+    "evidence/",
+    "third_party/",
+    ".squad/decisions-archive/",
+)
+
+#: Numeric band that has carried a stale anchor total: `193` (161 `MatMulNBits` + 32
+#: `GroupQueryAttention`, a pre-#73 reading) or the still-older `225`. A band, not the two bare
+#: literals, so a one-digit typo/variant of either does not slip past the guard unnoticed.
+_STALE_COUNT = r"(?:19[0-9]|22[0-9])"
+
+#: Phrases that, found near a match, show the number is being disclosed as a family/heavy-op-node
+#: count (or an explicitly labelled historical reading) rather than asserted as a live anchor
+#: total. Any one of these defuses a match; none of them appeared near either defect this guard
+#: was tightened to catch (see `test_the_stale_anchor_guard_catches_the_pr113_review_findings`).
+_STALE_ANCHOR_COUNT_DISCLOSURE = re.compile(
+    r"heavy-op-family|heavy op family|family[- ]node|non-anchor|used to read|"
+    r"historical reading|pre-#73|never an anchor|not an anchor",
+    re.I,
+)
+
+#: How far (characters) a disclosure phrase may sit from a match and still cover it. Wide enough
+#: to span one markdown hard-wrap (this repo wraps prose near column 90) plus a short clause;
+#: not wide enough to reach into an unrelated paragraph three sentences away.
+_STALE_ANCHOR_COUNT_WINDOW = 220
+
+
+def _stale_anchor_count_patterns() -> list[re.Pattern[str]]:
+    """Every textual shape that treats a family-node count as an anchor total.
+
+    Five shapes, not two. The original pair only matched the number glued directly onto the word
+    "anchor(s)" (`anchors: 193`, `193 anchors`) — real PR #113 review findings show two ways past
+    that: prose where the number and the word share a clause but are not adjacent (`32 / 193` —
+    the declined anchors over the total anchors`), and a bare ratio that repeats the same figure
+    with no word "anchor" anywhere nearby at all (`32/193` exactly`, relying on an equally
+    uncaptioned earlier paragraph in the same document to supply the meaning — this is exactly how
+    that second finding went stale without ever containing the word "anchor").
+    """
+    return [
+        # "anchors: 193" / "anchors 193" / "anchors = 225" -- word immediately decorating number.
+        re.compile(rf"anchors?[^A-Za-z0-9]{{0,4}}{_STALE_COUNT}\b", re.I),
+        # "193 anchors" / "225 anchors" -- number immediately decorating word.
+        re.compile(rf"\b{_STALE_COUNT}\s+anchors?\b", re.I),
+        # number ... anchors, same clause (bounded by a sentence-ending period so a disclosure two
+        # sentences later cannot retroactively excuse a live claim in this one).
+        re.compile(rf"\b{_STALE_COUNT}\b[^.]{{0,60}}?\banchors?\b", re.I),
+        # anchors ... number, same clause.
+        re.compile(rf"\banchors?\b[^.]{{0,60}}?\b{_STALE_COUNT}\b", re.I),
+        # The specific 32/193 (or 193/32) ratio. In this codebase that ratio has never meant
+        # anything but "32 declined GroupQueryAttention nodes over 193 heavy-op-family nodes";
+        # left uncaptioned it reads as an anchor fraction to anyone who has not memorised the
+        # distinction, which is exactly what happened to the PR #113 predictions-table finding.
+        re.compile(r"\b32\s*/\s*193\b|\b193\s*/\s*32\b"),
+    ]
 
 
 def test_no_stale_anchor_count_is_reasserted() -> None:
@@ -427,13 +484,12 @@ def test_no_stale_anchor_count_is_reasserted() -> None:
 
     Such a figure may be *recorded as history* — `partition.rs` does exactly that, dated, labelled
     and pointing at all three constants that carry it. It may not appear anywhere else, in any
-    tense. The permitted file must still carry its retraction, so deleting the label turns this
-    red rather than turning the guard off.
+    tense, **unless the same passage discloses it as a family/heavy-op-node count** (see
+    `_stale_anchor_count_patterns` and `_STALE_ANCHOR_COUNT_DISCLOSURE`). A permitted file must
+    still carry its retraction, so deleting the label turns this red rather than turning the guard
+    off.
     """
-    patterns = [
-        re.compile(r"anchors?[^A-Za-z0-9]{0,4}(?:19[0-9]|22[0-9])\b", re.I),
-        re.compile(r"\b(?:19[0-9]|22[0-9])\s+anchors?\b", re.I),
-    ]
+    patterns = _stale_anchor_count_patterns()
     suffixes = {".rs", ".py", ".md", ".json", ".toml", ".yml", ".yaml"}
     skip_dirs = {".git", "target", "__pycache__", ".venv", "node_modules"}
 
@@ -458,6 +514,10 @@ def test_no_stale_anchor_count_is_reasserted() -> None:
             )
             continue
         for m, _ in hits:
+            start = max(0, m.start() - _STALE_ANCHOR_COUNT_WINDOW)
+            end = min(len(text), m.end() + _STALE_ANCHOR_COUNT_WINDOW)
+            if _STALE_ANCHOR_COUNT_DISCLOSURE.search(text[start:end]):
+                continue
             line = text[: m.start()].count("\n") + 1
             offenders.append(f"{rel}:{line}: {m.group(0)!r}")
 
@@ -467,20 +527,85 @@ def test_no_stale_anchor_count_is_reasserted() -> None:
 
 def test_the_stale_anchor_guard_is_not_vacuous(tmp_path, monkeypatch) -> None:
     """Positive control: the patterns above must actually match the shapes they forbid."""
-    patterns = [
-        re.compile(r"anchors?[^A-Za-z0-9]{0,4}(?:19[0-9]|22[0-9])\b", re.I),
-        re.compile(r"\b(?:19[0-9]|22[0-9])\s+anchors?\b", re.I),
-    ]
+    patterns = _stale_anchor_count_patterns()
     for planted in [
         "anchors: 193,",
         "anchors = 225",
         "Phi-3.5 has 193 anchors",
         "353 claimed, 1 island, 225 anchors",
         "anchors 193",
+        # The two real PR #113 review findings: number and word share a clause but are not
+        # adjacent, and a bare ratio with no word "anchor" anywhere near it.
+        "16.58% is `32 / 193` \u2014 the declined anchors over the total anchors.",
+        "it is `32/193` exactly",
     ]:
         assert any(p.search(planted) for p in patterns), planted
-    for benign in ["anchors: 0", "0 anchors", "anchors: 161", "1930 anchors"]:
+    for benign in [
+        "anchors: 0",
+        "0 anchors",
+        "anchors: 161",
+        "1930 anchors",
+        # unrelated ratios sharing the numeric band must not become candidates on their own
+        "195/195 device-resident",
+        "0/195",
+        "1 / 229",
+    ]:
         assert not any(p.search(benign) for p in patterns), benign
+
+
+def test_the_stale_anchor_guard_catches_the_pr113_review_findings() -> None:
+    """Mutation evidence: the exact two PR #113 review-finding sentences must fail this guard.
+
+    These are the two stale claims named in the PR #113 revision-N+1 review: `docs/OP_COVERAGE.md`
+    described the FLOP estimator's `32/193` figure as "the declined anchors over the total
+    anchors" (near the roofline-split analysis) and, separately, restated the same figure as
+    exactly `32/193` in a predictions table with no word "anchor" anywhere nearby to explain it.
+    Both treat `193` — a heavy-op-family node count (161 `MatMulNBits` + 32 `GroupQueryAttention`)
+    — as an anchor total, which is exactly what issue #73 retired. This test proves the tightened
+    guard rejects both sentences verbatim, and that the corrected replacement text actually
+    shipped in `docs/OP_COVERAGE.md` passes.
+    """
+    patterns = _stale_anchor_count_patterns()
+
+    def is_caught(text: str) -> bool:
+        for p in patterns:
+            for m in p.finditer(text):
+                start = max(0, m.start() - _STALE_ANCHOR_COUNT_WINDOW)
+                end = min(len(text), m.end() + _STALE_ANCHOR_COUNT_WINDOW)
+                if not _STALE_ANCHOR_COUNT_DISCLOSURE.search(text[start:end]):
+                    return True
+        return False
+
+    stale_finding_1 = (
+        "16.58% at every context and does not move at all.** 16.58% is `32 / 193` \u2014 the "
+        "declined anchors\nover the total anchors. The estimator scores every anchor with the "
+        "constant `2 * 3072 * 3072` and\neverything else with `out_bytes / 2` under a substituted "
+        "dim"
+    )
+    stale_finding_2 = (
+        "| 5 | the EP estimator is flat in ctx | **held** \u2014 16.58% at every ctx, and it is "
+        "`32/193` exactly |"
+    )
+    assert is_caught(stale_finding_1), "the guard regressed: it no longer catches finding 1"
+    assert is_caught(stale_finding_2), "the guard regressed: it no longer catches finding 2"
+
+    # The corrected text that actually ships must not itself trip the guard.
+    op_coverage_text = OP_COVERAGE.read_text(encoding="utf-8")
+    assert not is_caught(
+        "16.58% at every context and does not move at all.** 16.58% is `32 / 193` \u2014 the 32 "
+        "CPU-declined\n`GroupQueryAttention` nodes over **193 heavy-op-family nodes** (161 "
+        "`MatMulNBits` + 32\n`GroupQueryAttention`), **never an anchor total**"
+    )
+    assert "declined anchors\nover the total anchors" not in op_coverage_text
+    assert "the anchor ratio of claimed-to-total node counts" not in op_coverage_text
+    assert (
+        "32 CPU-declined\n`GroupQueryAttention` nodes over **193 heavy-op-family nodes**"
+        in op_coverage_text
+    )
+    assert (
+        "32 declined `GroupQueryAttention` over 193 heavy-op-family nodes scored by the FLOP "
+        "estimator" in op_coverage_text
+    )
 
 
 def test_the_design_rule_and_the_shipped_table_agree(rust_table: dict) -> None:
