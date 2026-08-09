@@ -456,6 +456,14 @@ impl<'graph> NodeView<'graph> {
         self.input_slots().get(i).is_some_and(|s| !s.is_null())
     }
 
+    /// How many input slots ORT declares for this node, present or omitted.
+    ///
+    /// The count includes omitted interior optionals, which ORT surfaces as null slots, so it is
+    /// the right upper bound for an index-parallel scan over the schema's declared sites.
+    pub fn input_count(&self) -> usize {
+        self.input_slots().len()
+    }
+
     /// Whether input `i` is a constant initializer — i.e. a weight we may prepack at compile time.
     pub fn input_is_constant(&self, i: usize) -> bool {
         let slots = self.input_slots();

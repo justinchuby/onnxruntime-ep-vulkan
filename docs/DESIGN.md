@@ -1309,6 +1309,21 @@ accident and is not a discovered defect — **it is the design, working.** 3c wa
 cheap elementwise scatter whose tensors outweigh its arithmetic, and Phi-3.5's fused island is not
 that. The doc comment at `partition.rs:458` says so in as many words.
 
+> **SUPERSEDED IN ITS PREMISE — 2026-08-08T17:01:06-07:00, Niobe, issue #73. The conclusion of (ii)
+> survives; the sentence it rests on does not.** The set quoted above is a list of **op names**, and
+> that is precisely the defect issue #73 names: a name is not a fact about a node's operands. The
+> two batched matmuls inside every attention block multiply an activation by an activation and were
+> matched by `MatMul`, so islands with nothing to amortise were exempted by the gate that exists to
+> reject them. Since the repair, `is_anchor` takes the node's **resident-operand vector** and no
+> name-only form of the call exists; the designated sites are ruled in **§5.4.2**. The count that
+> sentence implies is therefore a **pre-#73 historical reading and is not re-asserted here**;
+> `GroupQueryAttention`, `MultiHeadAttention`, `LinearAttention` and `ai.onnx::Attention` designate
+> no site at all and can never anchor. What survives untouched is (ii)'s actual conclusion —
+> Phi-3.5's fused island is anchor-bearing (it is dense with `MatMulNBits` nodes carrying resident
+> packed weights), so the economics arm still does not decide our partition, and that is still the
+> design working rather than a defect. The line citation `partition.rs:308` is stale by the
+> convention ruled at the end of this subsection; the symbol is `partition.rs::is_anchor`.
+
 **So what is actually wrong is narrower, and I want it stated without inflation.** Three things:
 
 1. **The exemption is load-bearing for a question it was not designed to answer.** Its stated
@@ -1497,6 +1512,142 @@ M0/M1 have a defined behaviour before Niobe's measurements exist. `CoverageRepor
 the same `(kept, dropped)` pair, is what produces `largest_island_flops` for §10.0's milestone
 reporting — the rule and its metric live in one module deliberately, because their drifting apart is
 exactly how a coverage number becomes a lie.
+
+#### 5.4.2 An anchor is a node carrying a resident weight at a schema-designated site — RULING (2026-08-08T17:01:06-07:00, Niobe, issue #73)
+
+**The defect.** `is_anchor` took a qualified op name and matched it against a list. `MatMul` was on
+the list. The two batched matmuls at the centre of every attention block — `Q·Kᵀ` and `A·V` — are
+`MatMul` nodes whose **both** operands are activations produced by the graph. They matched, they
+counted as anchors, and their islands took the stage-3b exemption. On MiniLM that is six single-node
+islands claimed by the gate whose entire purpose is to reject islands with nothing to amortise a
+host round trip against. The name was never evidence; it was a proxy that happened to be right on
+the graphs anyone had looked at.
+
+**The rule that ships.**
+
+> An island is exempt from the economics gate when it contains at least one **anchor node**. A node
+> is an anchor when (a) its qualified op appears in the audited table below, and (b) at least one of
+> the input sites that table **designates** holds a tensor that is **present and a constant graph
+> initializer** at `GetCapability` time.
+
+Both conjuncts are read from the node, not from its name. `is_anchor` takes the node's
+resident-operand vector as an argument, so **there is no name-only form of the call** — the old
+question cannot be asked by accident, because it cannot be spelled.
+
+**Residency is read once, in one place, from the body node.** `ValueInfo_IsConstantInitializer`
+answers `false` for every input of a *fused* node (measured: 457 fused-node inputs, 0 constant,
+against 388 constant on the same island's body nodes), so the question is asked during island
+construction in `ep.rs::GetCapability`, where it is answerable, and nowhere else.
+
+**Fail-closed, and total.** `WeightOperand` has exactly two states, `Present` and `Absent`. There is
+no `Unknown`, because a third state is a place for a caller to guess. Every way of failing to
+establish residency — an op the table has never seen, an op that designates nothing, a residency
+vector shorter than the designated index, an absent optional input, a present input that is not a
+constant initializer — reads `Absent` and denies the exemption. The costs are not symmetric: a false
+`Absent` means an island is judged on its economics instead of waved through; a false `Present` is
+issue #73.
+
+**What the designations are, and how they were arrived at — stated plainly, because the previous
+attempt at this table claimed a derivation it did not perform.** Each site is placed in exactly one
+role by reading three things the pinned schema states: the site's **name**, its **documented
+shape**, and its **documented function** in the op's arithmetic. That is an **audited semantic
+reading**. It is *not* a dimensional test, and it is not mechanically derived from declared extents —
+a table that claims to be derived and is not looks checkable while being unauditable, which is worse
+than a judgement that says so. What *is* mechanical is the **skeleton**: `rust/tools/ort_weight_sites.py`
+extracts every declared input of every listed op, in order, with its name and optionality, from the
+pinned upstream sources into `rust/tools/ort_weight_sites.json` (per-file sha256 recorded), and
+`tests/ops/test_weight_site_schema.py` holds the shipped Rust table to it site by site. So the set of
+sites being judged is machine-established; only the judgement is human, and the judgement is pinned
+by site name in the same artifact so a silent re-reading is a red test.
+
+Five roles. Exactly one designates:
+
+| role | what it is | designates |
+|---|---|---|
+| `ContractedParameter` | a model parameter **contracted against the activation** — the matrix a GEMM multiplies by, or a convolution kernel | **yes** |
+| `Activation` | runtime data: activations, KV cache, masks, sequence lengths, position ids, routing probabilities | no |
+| `QuantisationCompanion` | a scale, zero point, group index or block scale accompanying a quantised tensor — weight *or* cache | no |
+| `ElementwiseParameter` | a bias or per-channel/per-head learned factor: resident, `O(N)`, added or multiplied rather than contracted | no |
+| `PositionTable` | a table indexed by sequence position — the RoPE `cos_cache`/`sin_cache` pair | no |
+
+`ElementwiseParameter` is the role that costs us something, and it is deliberate. `head_sink`,
+`q_norm_weight` and `k_norm_weight` are genuine learned parameters that are frequently resident. They
+are still not designated, because the rule is not *resident data means anchor*: an `O(num_heads)`
+vector has nothing to amortise a boundary against, and designating it would re-open issue #73 through
+a smaller door. `QuantisationCompanion` is not designated for the fail-closed reason: designating a
+scale would let a node with resident scales and a **runtime** weight tensor claim the exemption.
+
+**The table.** Every declared input of every anchor-eligible op, against ONNX Runtime v1.28.0 @
+`da9b5e364c465de65c49d91e696cd6485270757f` (the commit `third_party/onnxruntime/PROVENANCE.md`
+pins) and the `onnx` package's own schema objects for the standard domain. Membership is **necessary
+and not sufficient**: four rows designate nothing.
+
+| qualified op | source | declared inputs | designated sites |
+|---|---|---|---|
+| `MatMul` | `ai.onnx::MatMul-13` | 2 | `A`, `B` |
+| `Gemm` | `ai.onnx::Gemm-13` | 3 | `A`, `B` |
+| `Conv` | `ai.onnx::Conv-22` | 3 | `W` |
+| `ConvTranspose` | `ai.onnx::ConvTranspose-22` | 3 | `W` |
+| `Attention` | `ai.onnx::Attention-24` | 7 | **designates no site** |
+| `com.microsoft::Attention` | `bert_defs.cc` | 7 | `weights` |
+| `com.microsoft::MultiHeadAttention` | `bert_defs.cc` | 10 | **designates no site** |
+| `com.microsoft::GroupQueryAttention` | `bert_defs.cc` | 16 | **designates no site** |
+| `com.microsoft::MatMulNBits` | `contrib_defs.cc` | 6 | `B` |
+| `com.microsoft::QMoE` | `contrib_defs.cc` | 21 | `fc1_experts_weights`, `fc2_experts_weights`, `fc3_experts_weights` |
+| `com.microsoft::LinearAttention` | `bert_defs.cc` | 6 | **designates no site** |
+
+Both `MatMul` operands are designated because `x @ W` and `W @ x` are both projections and exporters
+emit both; designating only index 1 would miss half of them. Symmetrically, an activation⊗activation
+`MatMul` has neither operand resident and is not an anchor — which is the case issue #73 is named
+for.
+
+**Four rows are listed and designate nothing, and that is a result rather than an omission.**
+"This op was audited and designates no site" and "this op was never audited" are different facts and
+only the first is safe to act on, so both are representable and they are different values.
+`GroupQueryAttention` is the load-bearing one: its arithmetic is `Q·Kᵀ` and `A·V` against activations
+and KV cache, its RoPE tables are indexed by sequence position, its `k_scale`/`v_scale` describe the
+**cache** rather than a weight, and its three learned vectors are elementwise. **No combination of
+resident GQA operands — including all sixteen at once — produces an anchor.** The consequence for
+Phi-3.5 is direct and is stated as a consequence rather than as a measurement: GQA nodes contribute
+**zero** to `Island::anchors`, so any figure that counted them is a pre-#73 reading. This document
+does not restate a replacement total, because no post-repair census has been run on Phi-3.5 in this
+change and a number nobody witnessed is not improved by being plausible.
+
+**`com.microsoft::Attention` is the one attention op that designates**, because the fused form
+performs its own QKV projection and its `weights` input is that projection's matrix. The distinction
+between it and `ai.onnx::Attention` — which takes Q, K and V already projected and has no weight
+anywhere in its signature — is exactly the distinction a name-based rule cannot make, since both are
+spelled `Attention`.
+
+**`QMoE` declares 21 inputs**, ending `fc1_act_block_scale` and `fc2_act_block_scale`. That is
+recorded here because a previous table stopped at 19 and every structural check passed: indices
+`0..=18` were contiguous, complete and correctly named. **Contiguity cannot see a missing tail.** The
+shipped `AnchorOpSchema` therefore carries a `declared_inputs` total written independently of its
+site list, the two must agree, and both are compared against the machine extract.
+
+**The FLOP estimator is untouched, on purpose.** `ep.rs` charges the heavy-op rate on
+`partition::is_heavy_op`, a name-only predicate holding the pre-repair list byte for byte, and tallies
+anchors on `partition::is_anchor`. Had the FLOP branch kept keying on anchor status, GQA ceasing to
+anchor would have moved every Phi-3.5 GQA node from `2·3072·3072` to the elementwise rate and shifted
+every recorded `largest_island_flops` and `total_flops` for a reason that has nothing to do with
+partitioning. A number that moves when an unrelated predicate is repaired is a number nobody can
+compare across commits.
+
+**Gate ordering is unchanged.** Stage 3a (size) still runs before 3b (anchor exemption) before 3c
+(economics). What changed is only which nodes increment `Island::anchors`. One consequence is worth
+naming rather than leaving for a reader to discover: a **1-node** anchor-free island is declined by
+**3a** (`TOO_SMALL`, since `min_nodes` is 4) and not by 3c, so MiniLM's six single-node islands
+disappear under the size gate now that the exemption no longer lifts them past it. Both rejections
+render as `DeclineCode::Partition`; the distinction is visible in `RejectReason`, and the shipped
+tests assert the reason the ordering really produces rather than the one the issue text predicted.
+
+**Falsifiers, named.** (1) An ONNX Runtime bump that adds an input to any listed op turns
+`tests/ops/test_weight_site_schema.py` red against the recorded sha256 — the check is against pinned
+bytes, so a bump is a deliberate re-audit rather than a silent drift. (2) An exporter that emits a
+`MatMul` whose weight arrives as a `Constant` **node** output rather than a graph initializer reads
+`Absent` and loses the exemption; that is the fail-closed direction and it costs coverage, not
+correctness. (3) A future op whose parameter is contracted but which nobody adds to the table
+designates nothing and can never anchor — again fail-closed.
 
 ### 5.5 `Compile` — plan build and prepacking
 

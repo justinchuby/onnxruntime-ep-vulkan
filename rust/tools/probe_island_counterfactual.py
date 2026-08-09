@@ -46,10 +46,12 @@ The baseline is per-node too: a node counts as claimable only if the log says *t
 claimed. The old baseline treated all 364 `Add` nodes as claimable when 182 were.
 
 Islands are connected components over the graph's data edges, restricted to claimable nodes.
-The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; `--anchors` mirrors its
-anchor exemption. Neither is the partitioner -- this is a *ranking* instrument, and it says so:
-it reports island structure, and the partitioner's cost model is the thing that finally decides.
-The number to read is the **delta**, which is much more robust than either absolute.
+The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; `--anchors` is a coarse
+op-name stand-in for its anchor exemption and is **not** a mirror of it — see the note on
+`DEFAULT_ANCHORS` below and `DESIGN.md` §5.4.2. Neither is the partitioner -- this is a *ranking*
+instrument, and it says so: it reports island structure, and the partitioner's cost model is the
+thing that finally decides. The number to read is the **delta**, which is much more robust than
+either absolute.
 
 NO CLOCK.
 
@@ -66,8 +68,25 @@ import collections
 import json
 import pathlib
 
-# Mirrors `ops::partition::is_anchor` closely enough to rank with. Not authoritative; the
-# partitioner in the DLL is. Kept short and named so a reader can check it against that list.
+# A deliberately *coarse* op-name stand-in for `ops::partition::is_anchor`, kept for ranking only.
+#
+# **It is not a mirror and must not be read as one.** Since issue #73 (2026-08-08) the shipped
+# predicate is `is_anchor(op, resident_inputs)`: a node anchors when it carries a *resident constant
+# initializer* at a site the pinned schema designates a contracted parameter (`DESIGN.md` §5.4.2).
+# That question cannot be answered from a claim log, which records op types and claim outcomes and
+# says nothing about which operands are graph initializers. So this instrument keeps the name-only
+# approximation and states the two ways it is wrong, in the two directions:
+#
+#   * **Too permissive.** An activation-only `MatMul` — attention's `Q·Kᵀ` and `A·V` — is listed here
+#     and is *not* an anchor in the EP. This is exactly the defect issue #73 repaired.
+#   * **Too permissive again.** `GroupQueryAttention` designates no weight site at all and can never
+#     be an anchor, whatever its operands.
+#
+# Both errors inflate the *retained* count, and both apply identically to the baseline and to every
+# candidate, so the **delta** this file exists to report is the reading least disturbed by them. The
+# absolutes are ceilings. `Attention` is kept for the same coarse reason: the fused
+# `com.microsoft::Attention` does designate its `weights` input, the standard-domain op does not, and
+# a claim log's `op_type` does not distinguish them.
 DEFAULT_ANCHORS = ("Conv", "Gemm", "MatMul", "MatMulNBits", "Attention", "GroupQueryAttention")
 
 

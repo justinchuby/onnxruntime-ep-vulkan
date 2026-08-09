@@ -234,8 +234,13 @@ impl TransferModel {
 pub struct Island {
     /// How many nodes it contains.
     pub nodes: usize,
-    /// How many of those are *anchors* — ops heavy enough to justify a boundary on their own
-    /// (see [`is_anchor`]).
+    /// How many of those are *anchors* — nodes that carry a resident weight at a
+    /// schema-designated site and so justify a boundary on their own (see [`is_anchor`]).
+    ///
+    /// **Not a count of heavy op names.** Two nodes of the same op type contribute differently:
+    /// a `MatMul` against a graph initializer is an anchor, and the same `MatMul` against two
+    /// activations is not. Until 2026-08-09 this field counted the second one too, which is
+    /// issue #73.
     pub anchors: usize,
     /// Estimated floating-point operations inside the island.
     pub flops: u64,
@@ -266,6 +271,20 @@ impl Island {
     /// `nodes` and `anchors` are counts from the CLAIM_LOG of the same run (355 claimed, of which
     /// 161 `MatMulNBits` + 32 `GroupQueryAttention` are anchors). `flops` and the boundary total
     /// are the estimator's own numbers.
+    ///
+    /// **`anchors: 193` is a historical reading, not the current predicate's answer
+    /// (2026-08-08T17:01:06-07:00, Niobe, issue #73), and the same applies to the identical field
+    /// in [`Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_FIXED`] and
+    /// [`Island::MEASURED_PHI35_DEV0_REAL_BYTES`], which record the same run.** It was produced by
+    /// the name-only `is_anchor`, which counted every
+    /// `GroupQueryAttention` node. `GroupQueryAttention` designates no weight site
+    /// ([`ANCHOR_OP_SCHEMAS`]), so those 32 nodes are not anchors under the shipped predicate and
+    /// the term `+ 32` no longer appears in any live accounting. The 161 `MatMulNBits` term is
+    /// **not** re-asserted here either: under the current rule each of those nodes is an anchor
+    /// only if its own `B` operand is a resident initializer, and this constant records a run
+    /// that never asked that question. The value is left exactly as it was read, because
+    /// rewriting a recorded reading to match a later predicate destroys the record; what changes
+    /// is that nothing may now cite `193` as what the partitioner would count.
     ///
     /// The 2026-07-31 estimate of Phi-3.5's island boundary, **which counted internal edges**.
     ///
@@ -374,11 +393,20 @@ impl Island {
     }
 }
 
-/// Ops heavy enough that a single one of them justifies an island.
+/// Ops whose arithmetic the FLOP estimator charges at the heavy-op rate.
 ///
-/// A lone `Add` is never worth a round-trip; a single `MatMul` on LLM-sized weights always is.
-/// The list is the §4 inventory's "L/XL, compute-bound" rows.
-pub fn is_anchor(qualified_op: &str) -> bool {
+/// **This is a name-only set and it is deliberately unchanged from the pre-2026-08-09 `is_anchor`
+/// list, byte for byte.** It answers one question — *how should `ep.rs` estimate this node's
+/// FLOPs* — and nothing else. It is not the anchor predicate; see [`is_anchor`], which is a
+/// property of the *node* and cannot be evaluated from a name.
+///
+/// Splitting the two is what keeps the estimator's output bit-identical across the anchor change.
+/// Had the FLOP branch continued to key on `is_anchor`, a `GroupQueryAttention` node ceasing to be
+/// an anchor would also have moved from the heavy-op rate to the elementwise rate, and every
+/// `largest_island_flops` and `total_flops` figure on record would have shifted for a reason that
+/// has nothing to do with partitioning. A number that moves when an unrelated predicate is
+/// repaired is a number nobody can compare across commits.
+pub fn is_heavy_op(qualified_op: &str) -> bool {
     matches!(
         qualified_op,
         "MatMul"
@@ -395,6 +423,429 @@ pub fn is_anchor(qualified_op: &str) -> bool {
     )
 }
 
+/// What one declared input site of an op *is*, as adjudicated against the pinned schema.
+///
+/// # This is an audited reading, not a dimensional test — and saying so is the point
+///
+/// An earlier attempt at this table claimed the designation was derived from each site's declared
+/// extents. It was not, and the claim was false in four places at once: a 1D `(num_heads)` learned
+/// parameter was omitted while two sites with no declared extents were designated, and two
+/// sequence-indexed tables were designated while a genuine expert weight matrix was left out.
+/// A rule that does not generate its own table is worse than no rule, because the table then looks
+/// derived and is actually a judgement nobody can audit.
+///
+/// So the criterion is stated as what it is. For each site, the pinned schema declares a **name**,
+/// a **documented shape**, and a **role in the op's arithmetic** (its doc string says what the op
+/// does with it). Reading those three together, each site is placed in exactly one of the variants
+/// below. Only [`SiteRole::ContractedParameter`] designates. Nothing here is inferred from a rank
+/// or an extent count, and no site is left unclassified: [`AnchorOpSchema::sites`] enumerates
+/// **every** declared input of every listed op, in index order, so an omission is a hole in a
+/// contiguous sequence rather than an invisible absence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SiteRole {
+    /// A model parameter **contracted against the activation** — the matrix a GEMM multiplies by,
+    /// or a convolution kernel. This is the tensor whose residency is what an anchor amortises:
+    /// it is uploaded once and re-read by every inference, so the boundary it justifies is paid
+    /// for by reuse rather than by the size of one call's activations.
+    ///
+    /// **The only designating role.**
+    ContractedParameter,
+    /// Runtime data: activations, KV cache, masks, sequence lengths, position ids, routing
+    /// probabilities. Never a weight, whatever its dtype, and never designating — this is the
+    /// whole of issue #73: the attention batched matmuls have two of these and no parameter, so
+    /// there is no reuse for the boundary to amortise against.
+    Activation,
+    /// A scale, zero point, group index or block scale that accompanies a **quantised** tensor —
+    /// weight *or* cache. Resident in the weight cases, runtime in the cache cases, and in neither
+    /// case contracted: it is metadata read alongside the tensor it describes.
+    ///
+    /// Not designating, and the reason is a fail-closed one. Designating a companion would let a
+    /// node with resident scales and a *runtime* weight tensor claim anchor status, which is the
+    /// same over-claim in a different position.
+    QuantisationCompanion,
+    /// A bias or per-channel/per-head learned scale: resident, `O(N)` rather than `O(N·K)`, and
+    /// **added or multiplied elementwise** rather than contracted. `GroupQueryAttention`'s
+    /// `head_sink`, `q_norm_weight` and `k_norm_weight` are here, as is every `bias`.
+    ///
+    /// Not designating. These are genuine learned parameters, so the rule is *not* "resident data
+    /// means anchor": a lone op carrying only a bias vector has nothing to amortise a round trip
+    /// with, and claiming it would re-open issue #73 through a smaller door.
+    ElementwiseParameter,
+    /// A table indexed by **sequence position**, not by feature: the RoPE `cos_cache` / `sin_cache`
+    /// pair. Frequently a constant initializer, and just as frequently not; either way it is
+    /// consulted per token rather than contracted, and its size tracks `max_sequence_length`
+    /// rather than the model's hidden dimensions.
+    ///
+    /// Not designating.
+    PositionTable,
+}
+
+impl SiteRole {
+    /// Whether a resident tensor at a site with this role makes its node an anchor.
+    ///
+    /// One place, so the table and the predicate cannot disagree.
+    pub fn designates(&self) -> bool {
+        matches!(self, SiteRole::ContractedParameter)
+    }
+}
+
+/// One declared input position of an anchor-eligible op.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchemaSite {
+    /// Input index, exactly as the schema declares it.
+    pub index: usize,
+    /// Input name, exactly as the schema declares it.
+    pub name: &'static str,
+    /// Whether the schema marks the input optional.
+    pub optional: bool,
+    /// The audited role — see [`SiteRole`].
+    pub role: SiteRole,
+}
+
+/// Every declared input of one anchor-eligible op, with its adjudicated role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnchorOpSchema {
+    /// The op as [`crate::registry::NodeView::qualified_name`] renders it.
+    pub qualified_op: &'static str,
+    /// Where the declaration was read. Pinned; see [`ANCHOR_SCHEMA_PROVENANCE`].
+    pub source: &'static str,
+    /// How many inputs the schema declares.
+    ///
+    /// Written independently of `sites`, and required to equal `sites.len()`. This is the guard
+    /// against a **trailing omission** — the failure that shipped once already, when a 21-input
+    /// schema was tabulated with 19 rows and every structural check still passed because indices
+    /// `0..=18` were contiguous and complete. Contiguity cannot see a missing tail; a separately
+    /// written total can.
+    pub declared_inputs: usize,
+    /// Every declared input, in index order, with no gaps.
+    pub sites: &'static [SchemaSite],
+}
+
+impl AnchorOpSchema {
+    /// The indices this schema designates as weight sites.
+    pub fn designated_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.sites
+            .iter()
+            .filter(|s| s.role.designates())
+            .map(|s| s.index)
+    }
+
+    /// How many sites this schema designates. Zero is a legitimate, load-bearing answer.
+    pub fn designated_count(&self) -> usize {
+        self.designated_indices().count()
+    }
+
+    /// Whether the table is internally coherent: contiguous indices, and a total that matches.
+    ///
+    /// Deliberately a method rather than a test-local loop, so the shipped predicate and the
+    /// screen that checks it are the same code.
+    pub fn is_well_formed(&self) -> bool {
+        self.declared_inputs == self.sites.len()
+            && self
+                .sites
+                .iter()
+                .enumerate()
+                .all(|(i, s)| s.index == i && !s.name.is_empty())
+    }
+}
+
+/// Where every row of [`ANCHOR_OP_SCHEMAS`] was read from.
+///
+/// The `com.microsoft` rows are the contrib-op schemas at the ONNX Runtime commit this repository
+/// vendors headers from (`third_party/onnxruntime/PROVENANCE.md`). The `ai.onnx` rows are the
+/// standard operator schemas as published by the `onnx` package pinned in
+/// `tests/requirements.txt`. `rust/tools/ort_weight_sites.py` extracts both mechanically into
+/// `rust/tools/ort_weight_sites.json`, and `tests/ops/test_weight_site_schema.py` checks this
+/// table against that extract site by site.
+pub const ANCHOR_SCHEMA_PROVENANCE: &str = "ONNX Runtime v1.28.0 @ da9b5e364c465de65c49d91e696cd6485270757f (contrib op schemas); \
+     onnx 1.22.0 operator schemas (standard domain)";
+
+const fn site(index: usize, name: &'static str, optional: bool, role: SiteRole) -> SchemaSite {
+    SchemaSite {
+        index,
+        name,
+        optional,
+        role,
+    }
+}
+
+use SiteRole::Activation as ACT;
+use SiteRole::ContractedParameter as PARAM;
+use SiteRole::ElementwiseParameter as ELEM;
+use SiteRole::PositionTable as POS;
+use SiteRole::QuantisationCompanion as QUANT;
+
+const MATMUL_SITES: &[SchemaSite] = &[
+    // Either operand may be the parameter matrix: `x @ W` and `W @ x` are both projections, and
+    // ONNX exporters emit both. Designating only index 1 would miss the second.
+    site(0, "A", false, PARAM),
+    site(1, "B", false, PARAM),
+];
+
+const GEMM_SITES: &[SchemaSite] = &[
+    site(0, "A", false, PARAM),
+    site(1, "B", false, PARAM),
+    site(2, "C", true, ELEM),
+];
+
+const CONV_SITES: &[SchemaSite] = &[
+    site(0, "X", false, ACT),
+    site(1, "W", false, PARAM),
+    site(2, "B", true, ELEM),
+];
+
+const CONV_TRANSPOSE_SITES: &[SchemaSite] = &[
+    site(0, "X", false, ACT),
+    site(1, "W", false, PARAM),
+    site(2, "B", true, ELEM),
+];
+
+// ai.onnx::Attention takes Q, K and V already projected. There is no weight anywhere in its
+// signature, so it designates nothing and can never be an anchor on its own.
+const ONNX_ATTENTION_SITES: &[SchemaSite] = &[
+    site(0, "Q", false, ACT),
+    site(1, "K", false, ACT),
+    site(2, "V", false, ACT),
+    site(3, "attn_mask", true, ACT),
+    site(4, "past_key", true, ACT),
+    site(5, "past_value", true, ACT),
+    site(6, "nonpad_kv_seqlen", true, ACT),
+];
+
+// com.microsoft::Attention is the *fused* form: it performs the QKV projection itself, so its
+// `weights` input is a genuine contracted parameter. This is the one attention op that designates.
+const MS_ATTENTION_SITES: &[SchemaSite] = &[
+    site(0, "input", false, ACT),
+    site(1, "weights", false, PARAM),
+    site(2, "bias", true, ELEM),
+    site(3, "mask_index", true, ACT),
+    site(4, "past", true, ACT),
+    site(5, "attention_bias", true, ACT),
+    site(6, "past_sequence_length", true, ACT),
+];
+
+// MultiHeadAttention takes query/key/value already projected; `bias` is added, not contracted.
+const MS_MHA_SITES: &[SchemaSite] = &[
+    site(0, "query", false, ACT),
+    site(1, "key", true, ACT),
+    site(2, "value", true, ACT),
+    site(3, "bias", true, ELEM),
+    site(4, "key_padding_mask", true, ACT),
+    site(5, "attention_bias", true, ACT),
+    site(6, "past_key", true, ACT),
+    site(7, "past_value", true, ACT),
+    site(8, "past_sequence_length", true, ACT),
+    site(9, "cache_indirection", true, ACT),
+];
+
+// GroupQueryAttention designates **zero** sites, and that is a result rather than an oversight.
+// Its arithmetic is Q·Kᵀ and A·V — activation against activation, or against KV cache, which is
+// runtime state. Sites 11, 14 and 15 are learned parameters and are still not designated: they are
+// per-head/per-channel elementwise factors, `O(num_heads)` and `O(head_size)`, with nothing to
+// amortise a host round trip against. Sites 7 and 8 are RoPE tables indexed by sequence position.
+// Sites 12 and 13 scale the KV *cache*, not a weight.
+const MS_GQA_SITES: &[SchemaSite] = &[
+    site(0, "query", false, ACT),
+    site(1, "key", true, ACT),
+    site(2, "value", true, ACT),
+    site(3, "past_key", true, ACT),
+    site(4, "past_value", true, ACT),
+    site(5, "seqlens_k", false, ACT),
+    site(6, "total_sequence_length", false, ACT),
+    site(7, "cos_cache", true, POS),
+    site(8, "sin_cache", true, POS),
+    site(9, "position_ids", true, ACT),
+    site(10, "attention_bias", true, ACT),
+    site(11, "head_sink", true, ELEM),
+    site(12, "k_scale", true, QUANT),
+    site(13, "v_scale", true, QUANT),
+    site(14, "q_norm_weight", true, ELEM),
+    site(15, "k_norm_weight", true, ELEM),
+];
+
+const MS_MATMUL_NBITS_SITES: &[SchemaSite] = &[
+    site(0, "A", false, ACT),
+    site(1, "B", false, PARAM),
+    site(2, "scales", false, QUANT),
+    site(3, "zero_points", true, QUANT),
+    site(4, "g_idx", true, QUANT),
+    site(5, "bias", true, ELEM),
+];
+
+// All 21 declared inputs. The three `fc*_experts_weights` tensors are the contracted expert
+// matrices; everything else is routing, bias, or quantisation metadata for a weight or for an
+// activation. Sites 19 and 20 exist and are listed: a table that stopped at 18 shipped once.
+const MS_QMOE_SITES: &[SchemaSite] = &[
+    site(0, "input", false, ACT),
+    site(1, "router_probs", false, ACT),
+    site(2, "fc1_experts_weights", false, PARAM),
+    site(3, "fc1_scales", true, QUANT),
+    site(4, "fc1_experts_bias", true, ELEM),
+    site(5, "fc2_experts_weights", false, PARAM),
+    site(6, "fc2_scales", true, QUANT),
+    site(7, "fc2_experts_bias", true, ELEM),
+    site(8, "fc3_experts_weights", true, PARAM),
+    site(9, "fc3_scales", true, QUANT),
+    site(10, "fc3_experts_bias", true, ELEM),
+    site(11, "fc1_zero_points", true, QUANT),
+    site(12, "fc2_zero_points", true, QUANT),
+    site(13, "fc3_zero_points", true, QUANT),
+    site(14, "router_weights", true, ACT),
+    site(15, "fc1_global_scale", true, QUANT),
+    site(16, "fc2_global_scale", true, QUANT),
+    site(17, "fc1_act_scale", true, QUANT),
+    site(18, "fc2_act_scale", true, QUANT),
+    site(19, "fc1_act_block_scale", true, QUANT),
+    site(20, "fc2_act_block_scale", true, QUANT),
+];
+
+// LinearAttention's recurrence runs over query/key/value and a carried state. Every input is
+// runtime data; it designates zero sites for the same reason GroupQueryAttention does.
+const MS_LINEAR_ATTENTION_SITES: &[SchemaSite] = &[
+    site(0, "query", false, ACT),
+    site(1, "key", false, ACT),
+    site(2, "value", false, ACT),
+    site(3, "past_state", true, ACT),
+    site(4, "decay", true, ACT),
+    site(5, "beta", true, ACT),
+];
+
+/// The schema-designated weight-site table: every anchor-eligible op, every declared input.
+///
+/// Membership of this table is necessary for anchor status and **not sufficient**. Four of the
+/// eleven rows designate no site at all and can therefore never anchor: `ai.onnx::Attention`,
+/// `com.microsoft::MultiHeadAttention`, `com.microsoft::GroupQueryAttention` and
+/// `com.microsoft::LinearAttention`. They are listed anyway, because "this op was audited and
+/// designates nothing" and "this op was never audited" are different facts and only one of them
+/// is safe to act on.
+pub const ANCHOR_OP_SCHEMAS: &[AnchorOpSchema] = &[
+    AnchorOpSchema {
+        qualified_op: "MatMul",
+        source: "ai.onnx::MatMul-13",
+        declared_inputs: 2,
+        sites: MATMUL_SITES,
+    },
+    AnchorOpSchema {
+        qualified_op: "Gemm",
+        source: "ai.onnx::Gemm-13",
+        declared_inputs: 3,
+        sites: GEMM_SITES,
+    },
+    AnchorOpSchema {
+        qualified_op: "Conv",
+        source: "ai.onnx::Conv-22",
+        declared_inputs: 3,
+        sites: CONV_SITES,
+    },
+    AnchorOpSchema {
+        qualified_op: "ConvTranspose",
+        source: "ai.onnx::ConvTranspose-22",
+        declared_inputs: 3,
+        sites: CONV_TRANSPOSE_SITES,
+    },
+    AnchorOpSchema {
+        qualified_op: "Attention",
+        source: "ai.onnx::Attention-24",
+        declared_inputs: 7,
+        sites: ONNX_ATTENTION_SITES,
+    },
+    AnchorOpSchema {
+        qualified_op: "com.microsoft::Attention",
+        source: "bert_defs.cc::Attention-1",
+        declared_inputs: 7,
+        sites: MS_ATTENTION_SITES,
+    },
+    AnchorOpSchema {
+        qualified_op: "com.microsoft::MultiHeadAttention",
+        source: "bert_defs.cc::MultiHeadAttention-1",
+        declared_inputs: 10,
+        sites: MS_MHA_SITES,
+    },
+    AnchorOpSchema {
+        qualified_op: "com.microsoft::GroupQueryAttention",
+        source: "bert_defs.cc::GroupQueryAttention-1",
+        declared_inputs: 16,
+        sites: MS_GQA_SITES,
+    },
+    AnchorOpSchema {
+        qualified_op: "com.microsoft::MatMulNBits",
+        source: "contrib_defs.cc::MatMulNBits-1",
+        declared_inputs: 6,
+        sites: MS_MATMUL_NBITS_SITES,
+    },
+    AnchorOpSchema {
+        qualified_op: "com.microsoft::QMoE",
+        source: "contrib_defs.cc::QMoE-1",
+        declared_inputs: 21,
+        sites: MS_QMOE_SITES,
+    },
+    AnchorOpSchema {
+        qualified_op: "com.microsoft::LinearAttention",
+        source: "bert_defs.cc::LinearAttention-1",
+        declared_inputs: 6,
+        sites: MS_LINEAR_ATTENTION_SITES,
+    },
+];
+
+/// The audited schema for one op, or `None` if the op was never audited.
+///
+/// `None` is the fail-closed answer: an op this table has not seen cannot be an anchor.
+pub fn anchor_schema(qualified_op: &str) -> Option<&'static AnchorOpSchema> {
+    ANCHOR_OP_SCHEMAS
+        .iter()
+        .find(|s| s.qualified_op == qualified_op)
+}
+
+/// Whether a node carries a resident weight at a designated site.
+///
+/// **Total, and two-state on purpose.** There is no `Unknown`. Every way of failing to establish
+/// residency — an op that is not in the table, an op that designates nothing, an index past the
+/// end of the residency slice, an absent optional input, a present input that is not a constant
+/// initializer — produces [`WeightOperand::Absent`], which denies anchor status. The cost of a
+/// false `Absent` is that an island is measured on its economics instead of being exempted; the
+/// cost of a false `Present` is issue #73, which is a claimed island that should have been
+/// declined. Those are not symmetric, and the type reflects that rather than deferring it to a
+/// caller who might read a third state either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeightOperand {
+    /// At least one designated site holds a graph initializer resident on the device.
+    Present,
+    /// No designated site holds one — including every op that designates none.
+    Absent,
+}
+
+/// Adjudicate one node's weight operand.
+///
+/// `resident_inputs[i]` must be true exactly when input `i` is **present and a constant
+/// initializer**. A shorter slice than the node has inputs is not an error and is not a guess:
+/// the missing entries read as `false`.
+pub fn weight_operand(qualified_op: &str, resident_inputs: &[bool]) -> WeightOperand {
+    let Some(schema) = anchor_schema(qualified_op) else {
+        return WeightOperand::Absent;
+    };
+    for index in schema.designated_indices() {
+        if resident_inputs.get(index).copied().unwrap_or(false) {
+            return WeightOperand::Present;
+        }
+    }
+    WeightOperand::Absent
+}
+
+/// Whether this **node** is an anchor: a heavy op carrying a resident weight at a designated site.
+///
+/// A lone `Add` is never worth a round-trip; a `MatMul` against LLM-sized *weights* is. The
+/// predicate now says the second thing rather than approximating it by op name — that is issue
+/// #73. The signature is the enforcement: there is no name-only form of this call, so a caller
+/// cannot ask the old question by accident.
+///
+/// See [`weight_operand`] for the residency contract and for why the answer is two-state.
+pub fn is_anchor(qualified_op: &str, resident_inputs: &[bool]) -> bool {
+    matches!(
+        weight_operand(qualified_op, resident_inputs),
+        WeightOperand::Present
+    )
+}
+
 /// The thresholds the rule is expressed in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Policy {
@@ -408,7 +859,9 @@ pub struct Policy {
     pub margin: f64,
     /// Assumed device throughput in FLOPs per nanosecond (i.e. GFLOP/s).
     pub flops_per_ns: f64,
-    /// Whether an island containing at least one [`is_anchor`] op skips the economics check.
+    /// Whether an island containing at least one anchor node skips the economics check.
+    ///
+    /// "Anchor" is a property of a **node**, not of an op name — see [`is_anchor`].
     ///
     /// `true` in production. Settable to `false` (via [`ENV_ANCHOR_EXEMPTION`]) purely so the
     /// economics arithmetic can be *observed deciding* on a real model: Phi-3.5's single island
@@ -528,12 +981,17 @@ impl Verdict {
 ///    case: a graph of unsupported ops sprinkled with lone `Add`s.
 /// 2. **Economics.** `compute_ns` must exceed `margin × transfer_ns`. This kills the subtler case:
 ///    a large island of cheap elementwise work whose tensors are bigger than its arithmetic.
-///    **Anchor-containing islands are exempt from gate 2**: an op in `is_anchor` is by definition
-///    heavy enough to justify a boundary on its own — that is the design invariant of `is_anchor`.
-///    The provisional `TransferModel` constants are calibrated against real model execution and
-///    may not reflect isolated unit-test input sizes; applying the economic check to anchors
-///    would reject them when tested in isolation, which contradicts the stated design intent
-///    ("a single MatMul on LLM-sized weights always is worth it").
+///    **Anchor-containing islands are exempt from gate 2**: an anchor node carries a resident
+///    weight at a schema-designated site, so the boundary it costs is amortised by every
+///    inference that re-reads that weight — that is the design invariant of [`is_anchor`], and
+///    since 2026-08-09 it is a property the predicate actually tests rather than one it assumes
+///    from an op name. The provisional `TransferModel` constants are calibrated against real
+///    model execution and may not reflect isolated unit-test input sizes; applying the economic
+///    check to anchors would reject them when tested in isolation, which contradicts the stated
+///    design intent ("a single MatMul on LLM-sized weights always is worth it").
+///
+/// Gate ordering is unchanged by the anchor repair. What changed is only which nodes increment
+/// `Island::anchors`; both gates read that count exactly as before.
 pub fn evaluate(island: &Island, model: &TransferModel, policy: &Policy) -> Verdict {
     if island.nodes < policy.min_nodes && island.anchors == 0 {
         return Verdict::Reject(RejectReason::TooSmall {
@@ -1044,14 +1502,459 @@ mod tests {
         assert!(TransferModel::fit(&[(1024, 5.0), (1024, 6.0)]).is_none());
     }
 
+    // ===========================================================================================
+    // Issue #73: the anchor predicate reads operands, not op names.
+    // ===========================================================================================
+
+    /// A `Policy` with the production defaults, used by the tests that drive `evaluate`.
+    fn default_policy() -> Policy {
+        Policy::default()
+    }
+
+    /// The heavy-op set is name-only, serves the FLOP estimator, and is pinned bit-identical to
+    /// what the pre-#73 `is_anchor` matched. If this ever drifts, every recorded `total_flops`
+    /// stops being comparable across the repair.
     #[test]
-    fn anchors_are_the_heavy_ops_only() {
-        assert!(is_anchor("MatMul"));
-        assert!(is_anchor("Conv"));
-        assert!(is_anchor("com.microsoft::MatMulNBits"));
-        assert!(is_anchor("com.microsoft::GroupQueryAttention"));
-        assert!(!is_anchor("Add"));
-        assert!(!is_anchor("Reshape"));
+    fn the_heavy_op_set_is_unchanged_by_the_anchor_repair() {
+        for op in [
+            "MatMul",
+            "Gemm",
+            "Conv",
+            "ConvTranspose",
+            "Attention",
+            "com.microsoft::MatMulNBits",
+            "com.microsoft::GroupQueryAttention",
+            "com.microsoft::MultiHeadAttention",
+            "com.microsoft::Attention",
+            "com.microsoft::QMoE",
+            "com.microsoft::LinearAttention",
+        ] {
+            assert!(is_heavy_op(op), "{op} must still be charged the heavy rate");
+        }
+        for op in [
+            "Add",
+            "Reshape",
+            "com.microsoft::SkipLayerNormalization",
+            "",
+        ] {
+            assert!(!is_heavy_op(op), "{op} must not be charged the heavy rate");
+        }
+        // The set has exactly these members: a row added to the table must not silently join it.
+        let heavy_in_table = ANCHOR_OP_SCHEMAS
+            .iter()
+            .filter(|s| is_heavy_op(s.qualified_op))
+            .count();
+        assert_eq!(
+            heavy_in_table,
+            ANCHOR_OP_SCHEMAS.len(),
+            "every audited op is a heavy op"
+        );
+        assert_eq!(ANCHOR_OP_SCHEMAS.len(), 11);
+    }
+
+    /// The site table is structurally sound: contiguous indices, named sites, and a separately
+    /// written `declared_inputs` that catches a **trailing** omission. Trailing omission is not a
+    /// hypothetical: a 21-input `QMoE` shipped with 19 rows and every contiguity check passed.
+    #[test]
+    fn every_audited_schema_is_well_formed_and_complete_to_its_declared_total() {
+        for schema in ANCHOR_OP_SCHEMAS {
+            assert!(
+                schema.is_well_formed(),
+                "{} is malformed: declared_inputs={} sites={}",
+                schema.qualified_op,
+                schema.declared_inputs,
+                schema.sites.len()
+            );
+            assert!(!schema.source.is_empty(), "{}", schema.qualified_op);
+        }
+        // No duplicate rows: `anchor_schema` returns the first match, so a duplicate would make
+        // one row unreachable and unauditable.
+        for (i, a) in ANCHOR_OP_SCHEMAS.iter().enumerate() {
+            for b in &ANCHOR_OP_SCHEMAS[i + 1..] {
+                assert_ne!(a.qualified_op, b.qualified_op, "duplicate row");
+            }
+        }
+        assert!(!ANCHOR_SCHEMA_PROVENANCE.is_empty());
+    }
+
+    /// Truncating a schema's site list must be caught. This is the positive control for the
+    /// trailing-omission guard: without the independently written `declared_inputs`, the mutant
+    /// below is indistinguishable from a correct table.
+    #[test]
+    fn a_trailing_omission_fails_well_formedness() {
+        let real = anchor_schema("com.microsoft::QMoE").expect("QMoE is audited");
+        assert_eq!(real.declared_inputs, 21);
+        assert!(real.is_well_formed());
+
+        let truncated = AnchorOpSchema {
+            sites: &MS_QMOE_SITES[..19],
+            ..*real
+        };
+        assert!(
+            !truncated.is_well_formed(),
+            "a 21-input schema tabulated with 19 rows must not pass"
+        );
+
+        // And contiguity alone would *not* have caught it, which is why the total exists.
+        let contiguous = truncated
+            .sites
+            .iter()
+            .enumerate()
+            .all(|(i, s)| s.index == i);
+        assert!(contiguous, "the truncated table is still contiguous");
+    }
+
+    /// Only `ContractedParameter` designates, and the per-op designated sets are exactly these.
+    /// Pinned by index *and* by name, so a reordering that preserves the index set is still a
+    /// failure.
+    #[test]
+    fn the_designated_sites_are_exactly_the_audited_ones() {
+        let expected: &[(&str, &[(usize, &str)])] = &[
+            ("MatMul", &[(0, "A"), (1, "B")]),
+            ("Gemm", &[(0, "A"), (1, "B")]),
+            ("Conv", &[(1, "W")]),
+            ("ConvTranspose", &[(1, "W")]),
+            ("Attention", &[]),
+            ("com.microsoft::Attention", &[(1, "weights")]),
+            ("com.microsoft::MultiHeadAttention", &[]),
+            ("com.microsoft::GroupQueryAttention", &[]),
+            ("com.microsoft::MatMulNBits", &[(1, "B")]),
+            (
+                "com.microsoft::QMoE",
+                &[
+                    (2, "fc1_experts_weights"),
+                    (5, "fc2_experts_weights"),
+                    (8, "fc3_experts_weights"),
+                ],
+            ),
+            ("com.microsoft::LinearAttention", &[]),
+        ];
+        assert_eq!(expected.len(), ANCHOR_OP_SCHEMAS.len());
+
+        for (op, want) in expected {
+            let schema = anchor_schema(op).unwrap_or_else(|| panic!("{op} must be audited"));
+            let got: Vec<(usize, &str)> = schema
+                .sites
+                .iter()
+                .filter(|s| s.role.designates())
+                .map(|s| (s.index, s.name))
+                .collect();
+            assert_eq!(&got[..], *want, "{op} designated sites");
+            assert_eq!(schema.designated_count(), want.len(), "{op}");
+        }
+    }
+
+    /// `GroupQueryAttention` designates zero sites, so no combination of resident operands can
+    /// make one an anchor — including every operand resident at once.
+    ///
+    /// This is the load-bearing consequence of issue #73 on Phi-3.5: GQA nodes contribute zero
+    /// anchors, so an island's anchor count is not "heavy ops present".
+    #[test]
+    fn group_query_attention_can_never_anchor_however_resident_its_operands_are() {
+        let gqa = anchor_schema("com.microsoft::GroupQueryAttention").expect("audited");
+        assert_eq!(gqa.declared_inputs, 16);
+        assert_eq!(gqa.designated_count(), 0);
+
+        let all_resident = vec![true; 16];
+        assert_eq!(
+            weight_operand("com.microsoft::GroupQueryAttention", &all_resident),
+            WeightOperand::Absent
+        );
+        assert!(!is_anchor(
+            "com.microsoft::GroupQueryAttention",
+            &all_resident
+        ));
+
+        // Each single-site residency, one at a time — including the learned ones (11, 14, 15),
+        // the RoPE tables (7, 8) and the cache scales (12, 13).
+        for i in 0..16 {
+            let mut resident = vec![false; 16];
+            resident[i] = true;
+            assert!(
+                !is_anchor("com.microsoft::GroupQueryAttention", &resident),
+                "site {i} ({}) must not designate",
+                gqa.sites[i].name
+            );
+        }
+
+        // Same for the other three zero-designating rows.
+        for op in [
+            "Attention",
+            "com.microsoft::MultiHeadAttention",
+            "com.microsoft::LinearAttention",
+        ] {
+            let schema = anchor_schema(op).expect("audited");
+            assert_eq!(schema.designated_count(), 0, "{op}");
+            assert!(!is_anchor(op, &vec![true; schema.declared_inputs]), "{op}");
+        }
+    }
+
+    /// `QMoE` designates its three expert weight matrices and nothing else — in particular not
+    /// the two block-scale sites at the tail that a previous table omitted entirely.
+    #[test]
+    fn qmoe_designates_the_three_expert_matrices_and_no_companion() {
+        let qmoe = anchor_schema("com.microsoft::QMoE").expect("audited");
+        assert_eq!(qmoe.declared_inputs, 21);
+        assert_eq!(qmoe.sites[19].name, "fc1_act_block_scale");
+        assert_eq!(qmoe.sites[20].name, "fc2_act_block_scale");
+
+        let designated: Vec<usize> = qmoe.designated_indices().collect();
+        assert_eq!(designated, vec![2, 5, 8]);
+
+        for i in designated {
+            let mut resident = vec![false; 21];
+            resident[i] = true;
+            assert!(is_anchor("com.microsoft::QMoE", &resident), "site {i}");
+        }
+        for i in (0..21).filter(|i| ![2usize, 5, 8].contains(i)) {
+            let mut resident = vec![false; 21];
+            resident[i] = true;
+            assert!(
+                !is_anchor("com.microsoft::QMoE", &resident),
+                "site {i} ({}) must not designate",
+                qmoe.sites[i].name
+            );
+        }
+    }
+
+    /// Both polarities of the case issue #73 is named for.
+    #[test]
+    fn a_matmul_anchors_on_a_resident_weight_and_not_on_activations() {
+        // x @ W and W @ x are both projections; exporters emit both.
+        assert!(is_anchor("MatMul", &[false, true]));
+        assert!(is_anchor("MatMul", &[true, false]));
+        // Activation ⊗ activation: the attention batched matmuls.
+        assert!(!is_anchor("MatMul", &[false, false]));
+        assert_eq!(
+            weight_operand("MatMul", &[false, false]),
+            WeightOperand::Absent
+        );
+
+        // MatMulNBits anchors on its packed weight, not on its scales.
+        assert!(is_anchor(
+            "com.microsoft::MatMulNBits",
+            &[false, true, true, false, false, false]
+        ));
+        assert!(!is_anchor(
+            "com.microsoft::MatMulNBits",
+            &[false, false, true, true, true, true]
+        ));
+
+        // The fused com.microsoft::Attention does its own projection, so it *can* anchor.
+        assert!(is_anchor(
+            "com.microsoft::Attention",
+            &[false, true, true, false, false, false, false]
+        ));
+        assert!(!is_anchor(
+            "com.microsoft::Attention",
+            &[false, false, true, false, false, false, false]
+        ));
+    }
+
+    /// Every way of failing to establish residency lands on `Absent`. Fail-closed, and total:
+    /// there is no third state for a caller to read either way.
+    #[test]
+    fn the_weight_operand_is_total_and_fails_closed() {
+        // Unaudited op.
+        assert_eq!(weight_operand("Add", &[true, true]), WeightOperand::Absent);
+        assert_eq!(weight_operand("", &[true]), WeightOperand::Absent);
+        assert_eq!(
+            weight_operand("com.microsoft::NotAnOp", &[true; 32]),
+            WeightOperand::Absent
+        );
+        // Empty residency slice: designated indices are all out of range.
+        assert_eq!(weight_operand("MatMul", &[]), WeightOperand::Absent);
+        assert_eq!(weight_operand("Conv", &[]), WeightOperand::Absent);
+        // Slice shorter than the designated index (Conv designates 1).
+        assert_eq!(weight_operand("Conv", &[true]), WeightOperand::Absent);
+        // Slice shorter than QMoE's fc3 site (8).
+        assert_eq!(
+            weight_operand("com.microsoft::QMoE", &[true, true, false]),
+            WeightOperand::Absent
+        );
+        // Present but non-constant reads as false at every site.
+        assert_eq!(
+            weight_operand("Gemm", &[false, false, false]),
+            WeightOperand::Absent
+        );
+        // Longer slice than the schema declares: extra entries cannot designate.
+        assert_eq!(
+            weight_operand("MatMul", &[false, false, true, true, true]),
+            WeightOperand::Absent
+        );
+        // Two-state: `is_anchor` is exactly `Present`.
+        for (op, resident) in [
+            ("MatMul", vec![false, true]),
+            ("MatMul", vec![false, false]),
+            ("Add", vec![true]),
+        ] {
+            assert_eq!(
+                is_anchor(op, &resident),
+                weight_operand(op, &resident) == WeightOperand::Present
+            );
+        }
+    }
+
+    /// The repair must be visible in the shipped `evaluate`, not only in the predicate.
+    ///
+    /// A lone activation⊗activation `MatMul` is what issue #73 says was wrongly claimed. Under the
+    /// unchanged gate ordering it is now declined by gate 1 (`TooSmall`, since `min_nodes` is 4
+    /// and the node count is 1) rather than by gate 2; both render as `DeclineCode::Partition`.
+    /// The behavioural change under test is the anchor count, so the same island is asserted in
+    /// both polarities and the verdicts must differ.
+    #[test]
+    fn a_lone_activation_only_matmul_island_is_declined_and_a_weight_bearing_one_is_claimed() {
+        let policy = default_policy();
+        let model = TransferModel::DISCRETE;
+
+        let anchors = usize::from(is_anchor("MatMul", &[false, true]));
+        let no_anchors = usize::from(is_anchor("MatMul", &[false, false]));
+        assert_eq!((anchors, no_anchors), (1, 0));
+
+        let weight_bearing = Island {
+            anchors,
+            ..big_matmul_island()
+        };
+        let activation_only = Island {
+            anchors: no_anchors,
+            ..big_matmul_island()
+        };
+
+        assert_eq!(
+            evaluate(&weight_bearing, &model, &policy),
+            Verdict::Claim,
+            "a lone MatMul against a resident weight is still exempt"
+        );
+        match evaluate(&activation_only, &model, &policy) {
+            Verdict::Reject(reason) => {
+                assert!(
+                    matches!(reason, RejectReason::TooSmall { .. }),
+                    "expected the size gate to answer first: {reason:?}"
+                );
+                assert_eq!(
+                    DeclineCode::of_reason(&decline_for(&reason)),
+                    Some(DeclineCode::Partition)
+                );
+            }
+            Verdict::Claim => panic!("an activation-only 1-node island must not be claimed"),
+        }
+    }
+
+    /// The same repair at island sizes the size gate does not reach: with `nodes >= min_nodes`,
+    /// an anchor-free transfer-dominated island is declined by **gate 2**, and the identical
+    /// island with one anchor is exempted. This is the pair that proves the anchor count is what
+    /// selects the branch.
+    #[test]
+    fn above_the_size_gate_the_anchor_count_selects_between_exemption_and_economics() {
+        let policy = default_policy();
+        let model = TransferModel::DISCRETE;
+
+        // Cheap arithmetic, large boundary traffic: transfer-dominated by construction.
+        let scatter = Island {
+            nodes: policy.min_nodes + 4,
+            anchors: 0,
+            flops: 1_000,
+            input_bytes: 64 << 20,
+            output_bytes: 64 << 20,
+            symbolic_boundary_slots: 0,
+        };
+        match evaluate(&scatter, &model, &policy) {
+            Verdict::Reject(RejectReason::TransferDominated { .. }) => {}
+            other => panic!("expected TransferDominated, got {other:?}"),
+        }
+
+        let with_anchor = Island {
+            anchors: 1,
+            ..scatter
+        };
+        assert_eq!(evaluate(&with_anchor, &model, &policy), Verdict::Claim);
+
+        // And with the exemption disabled the economics still answer, so the exemption is an
+        // override rather than the only path to a claim.
+        let no_exemption = Policy {
+            anchor_exemption: false,
+            ..policy
+        };
+        match evaluate(&with_anchor, &model, &no_exemption) {
+            Verdict::Reject(RejectReason::TransferDominated { .. }) => {}
+            other => panic!("expected TransferDominated, got {other:?}"),
+        }
+    }
+
+    /// A mutated table must move the predicate. Without this, the site roles could be arbitrary
+    /// and every other test above would still pass.
+    #[test]
+    fn changing_a_site_role_changes_the_verdict() {
+        // Designating GQA's `head_sink` (the site an earlier attempt was faulted for omitting)
+        // would make a resident-head_sink GQA node an anchor. It does not today.
+        let gqa = anchor_schema("com.microsoft::GroupQueryAttention").expect("audited");
+        assert_eq!(gqa.sites[11].name, "head_sink");
+        assert_eq!(gqa.sites[11].role, SiteRole::ElementwiseParameter);
+        assert!(!gqa.sites[11].role.designates());
+
+        let mutated: Vec<SchemaSite> = gqa
+            .sites
+            .iter()
+            .map(|s| {
+                if s.index == 11 {
+                    site(s.index, s.name, s.optional, SiteRole::ContractedParameter)
+                } else {
+                    *s
+                }
+            })
+            .collect();
+        let mutant = AnchorOpSchema {
+            sites: Box::leak(mutated.into_boxed_slice()),
+            ..*gqa
+        };
+        assert_eq!(mutant.designated_count(), 1);
+        let mut resident = vec![false; 16];
+        resident[11] = true;
+        assert!(
+            !is_anchor("com.microsoft::GroupQueryAttention", &resident),
+            "the shipped table must still refuse"
+        );
+        assert!(
+            mutant.designated_indices().any(|i| resident[i]),
+            "the mutant would have accepted, so the role assignment is load-bearing"
+        );
+
+        // Un-designating QMoE's fc3 (the site an earlier attempt omitted) would lose an anchor.
+        let qmoe = anchor_schema("com.microsoft::QMoE").expect("audited");
+        assert_eq!(qmoe.sites[8].name, "fc3_experts_weights");
+        assert!(qmoe.sites[8].role.designates());
+        let mut fc3_only = vec![false; 21];
+        fc3_only[8] = true;
+        assert!(is_anchor("com.microsoft::QMoE", &fc3_only));
+    }
+
+    /// Every role is exercised by the table and exactly one of them designates.
+    #[test]
+    fn exactly_one_role_designates_and_all_five_are_in_use() {
+        let mut seen = [false; 5];
+        for schema in ANCHOR_OP_SCHEMAS {
+            for s in schema.sites {
+                let slot = match s.role {
+                    SiteRole::ContractedParameter => 0,
+                    SiteRole::Activation => 1,
+                    SiteRole::QuantisationCompanion => 2,
+                    SiteRole::ElementwiseParameter => 3,
+                    SiteRole::PositionTable => 4,
+                };
+                seen[slot] = true;
+            }
+        }
+        assert_eq!(seen, [true; 5], "every role must be used by the table");
+
+        assert!(SiteRole::ContractedParameter.designates());
+        for role in [
+            SiteRole::Activation,
+            SiteRole::QuantisationCompanion,
+            SiteRole::ElementwiseParameter,
+            SiteRole::PositionTable,
+        ] {
+            assert!(!role.designates(), "{role:?} must not designate");
+        }
     }
 
     #[test]

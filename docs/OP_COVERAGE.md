@@ -1969,9 +1969,20 @@ remains 0.0 until Niobe wires VkQueryPool timestamps for calibration.
 
 **Guards against both failure modes (§7.0.2):**
 - *Over-declination* (gate declines everything): the anchor exemption —
-  `if island.anchors > 0 { return Verdict::Claim }` — ensures any island containing MatMulNBits
-  or GQA is always claimed. On Phi-3.5 (353 claimed, 1 island, 225 anchors), the gate never
-  declines. Falsifier: bench/phi35.py → 0 claimed nodes would indicate a broken anchor exemption.
+  `if island.anchors > 0 { return Verdict::Claim }` — ensures any island containing a node that
+  carries a resident weight at a schema-designated site is always claimed. On Phi-3.5 the island is
+  dense with `MatMulNBits` nodes holding resident packed weights, so the gate never declines.
+  Falsifier: bench/phi35.py → 0 claimed nodes would indicate a broken anchor exemption.
+
+  > **Amendment 2026-08-08T17:01:06-07:00 — Niobe, issue #73.** This bullet used to read "any island
+  > containing MatMulNBits or GQA is always claimed. On Phi-3.5 (353 claimed, 1 island, 225
+  > anchors)". Both halves were readings of the **pre-#73 name-only** `is_anchor` and neither is
+  > re-asserted. `GroupQueryAttention` designates **no** weight site — its operands are activations,
+  > KV cache, position-indexed RoPE tables, cache scales and elementwise learned vectors — so GQA
+  > nodes contribute zero anchors under the shipped predicate, and the anchor total for Phi-3.5 is
+  > **not restated here** because no post-repair census has been run on that model. The claimed-node
+  > count and island count are separate observations and are not affected by the anchor repair. See
+  > `DESIGN.md` §5.4.2 for the designated-site table and its provenance.
 - *Under-declination* (gate declines nothing): `test_partition_gate.py`. A non-anchor two-cluster
   model must produce `[partition]` codes. If it does not, the gate is inert. Falsifier: the test
   asserting `claims["Sigmoid"]["code"] == "partition"` goes red.

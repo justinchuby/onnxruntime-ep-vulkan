@@ -1281,8 +1281,30 @@ unsafe fn get_capability_impl(
             // SAFETY: api live; node is a live graph node.
             let view = unsafe { NodeView::new(api, node) };
             let qual = view.qualified_name();
-            if partition::is_anchor(&qual) {
+
+            // Which of this node's inputs are present AND constant initializers — i.e. resident
+            // weights rather than per-inference traffic. This is the fact `partition::is_anchor`
+            // needs and the fact issue #73 says the old predicate never asked for.
+            //
+            // Asked of the *body* node, never of the fused node. `ValueInfo_IsConstantInitializer`
+            // answers `false` for every input of a fused node (measured: 457 inputs, 0 constant,
+            // against 388 constant on the same island's body nodes — see the note in
+            // `subgraph_plan`), so the residency question has exactly one place it can be asked
+            // truthfully and this is it.
+            let resident_inputs: Vec<bool> = (0..view.input_count())
+                .map(|i| view.has_input(i) && view.input_is_constant(i))
+                .collect();
+
+            if partition::is_anchor(&qual, &resident_inputs) {
                 island.anchors += 1;
+            }
+
+            // The FLOP estimate keys on `is_heavy_op`, the unchanged name-only set — NOT on
+            // anchor status. Keeping them separate is what makes this change FLOP-neutral: a
+            // `GroupQueryAttention` node stops being an anchor here and its FLOP contribution is
+            // byte-identical to what it was, so `largest_island_flops` and `total_flops` remain
+            // comparable across this commit.
+            if partition::is_heavy_op(&qual) {
                 // Anchor flop estimate: 2 × K × N for a matmul-family op.
                 // Conservative minimum: 2 × 3072 × 3072 when shapes are unavailable.
                 island.flops = island.flops.saturating_add(2 * 3072 * 3072);
