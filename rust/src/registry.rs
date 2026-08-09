@@ -2296,9 +2296,9 @@ fn optional_input_names(qualified: &str) -> Option<&'static [(usize, &'static st
 ///
 /// **JSON Lines, generated, never hand-edited.** `rust/tools/gen_proof_ledger.py` writes it from
 /// a differential run that obtained the evidence; `epctl --check-ledger` and
-/// `rust/tools/check_proof_ledger.py` reject a file whose digest does not match its own contents
-/// or whose evidence artifact has moved or changed. The first line is the header; every other
-/// non-empty line is one entry.
+/// `rust/tools/gen_proof_ledger.py --check` reject a file whose digest does not match its own
+/// contents or whose evidence artifact has moved or changed. The first line is the header; every
+/// other non-empty line is one entry.
 ///
 /// It is `include_str!`d rather than read from disk on purpose: a ledger a running process can be
 /// pointed at with an environment variable is an escape hatch that §8.9.4 does not authorise, and
@@ -2805,8 +2805,8 @@ impl Ledger {
 /// A checksum, not a signature, and the distinction is recorded rather than smoothed: it catches
 /// the careless hand-edit, which is the failure §8.9.2 rule 3 names. It does **not** catch a
 /// deliberate forgery, because anyone who can edit the file can recompute it. The defence against
-/// that is `check_proof_ledger.py`, which re-hashes each entry's evidence artifact — an entry
-/// whose artifact does not exist or does not match is rejected there.
+/// that is `gen_proof_ledger.py --check`, which re-hashes each entry's evidence artifact — an
+/// entry whose artifact does not exist or does not match is rejected there.
 pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
