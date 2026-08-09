@@ -364,6 +364,11 @@ impl DispatchDescriptorPool {
                 }
             }
         };
+        // Counted at the vkCreateDescriptorPool call site, not at the caller (issue #88): this
+        // counts pools that were actually created, so a caller that starts reusing one makes the
+        // number fall without anything else being edited. Counted only on success — a failed
+        // create allocated nothing.
+        crate::counters::record_descriptor_pool_created();
         Some(DispatchDescriptorPool {
             ash_device: ash_device.clone(),
             pool,
@@ -398,6 +403,11 @@ impl DispatchDescriptorPool {
             }
         };
         let set = sets[0];
+        // Counted at the vkAllocateDescriptorSets call site (issue #88). `descriptor_writes`
+        // counts the individual buffer descriptors written into it, because "355 sets per warm
+        // call" and "355 descriptors per warm call" are very different problems and the fix for
+        // one is not the fix for the other.
+        crate::counters::record_descriptor_set_allocated(buffers.len() as u64);
 
         // Write one VkDescriptorBufferInfo + VkWriteDescriptorSet per binding.
         let buffer_infos: Vec<vk::DescriptorBufferInfo> = buffers

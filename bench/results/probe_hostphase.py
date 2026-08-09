@@ -27,9 +27,14 @@ The median is printed alongside, clearly labelled as contended.
 
 **R11 discipline.** Naming every child of a parent makes a decomposition look closed. This prints
 the UNACCOUNTED remainder of every `vulkan.subgraph` span as its own column, so a decomposition
-that covers 40% of the span cannot read as one that covers all of it. `pipeline_lookup` and
-`desc_alloc` are nested inside `record` and are reported separately, never added to the top-level
-sum.
+that covers 40% of the span cannot read as one that covers all of it. Phases that open and close
+*inside* another phase — `upload`, `cmd_alloc`, `desc_alloc`, `pipeline_lookup`, `cmd_upload`,
+`readback` — are reported separately, never added to the top-level sum.
+
+The two lists are **derived from `phases.PHASE_CHILDREN`**, not written out here, so a phase added
+to `trace.rs` cannot be silently omitted from the sum and quietly inflate UNACCOUNTED. Issue #88
+added three top-level phases (`prepare`, `buffer_alloc`, `writeback`); against the hardcoded list
+this probe would have reported all of them as unaccounted and read as if nothing had improved.
 
 Usage:
     python bench/results/probe_hostphase.py trace_a.json [trace_b.json ...]
@@ -49,9 +54,20 @@ import phases  # noqa: E402
 
 SUB = "vulkan.subgraph"
 # Top-level children of one subgraph span. These are summed; the remainder is reported.
-TOP = ["vulkan.record", "vulkan.submit", "vulkan.fence_wait"]
-# Nested inside `record`. Reported for shape, NEVER added to the top-level sum.
-NESTED = ["vulkan.cmd_upload", "vulkan.pipeline_lookup", "vulkan.desc_alloc"]
+#
+# DERIVED, not listed. An earlier revision hardcoded three names, and when `trace.rs` grew
+# `prepare`, `buffer_alloc` and `writeback` this probe kept summing the old three and kept
+# reporting the new work as UNACCOUNTED — a decomposition that had improved would have read as
+# one that had not. The parenthood now comes from `phases.PHASE_CHILDREN`, which
+# `phases.phase_nesting` independently re-derives from timestamp containment and goes red on
+# disagreement, so a phase added tomorrow lands in one of these two lists by itself.
+_NESTED_NAMES = {c for kids in phases.PHASE_CHILDREN.values() for c in kids}
+# `compile` and `prepack` are session-setup phases that do not run inside a Compute call.
+_NOT_IN_COMPUTE = {"compile", "prepack"}
+TOP = [f"vulkan.{p}" for p in phases.HOST_PHASES
+       if p not in _NESTED_NAMES and p not in _NOT_IN_COMPUTE]
+# Nested inside a top-level phase. Reported for shape, NEVER added to the top-level sum.
+NESTED = [f"vulkan.{p}" for p in phases.HOST_PHASES if p in _NESTED_NAMES]
 
 
 def decompose(trace: Path) -> dict:

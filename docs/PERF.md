@@ -52,11 +52,16 @@ So our span vocabulary is different, and the difference is the whole point:
 |---|---|---|
 | `compile` | Shader module creation, pipeline layout + compute pipeline creation, descriptor layout. | Real host CPU work. Once per subgraph, amortised over the session. |
 | `prepack` | Weight repacking/quantisation-layout fixups on the host. | Real host CPU work. Once. |
+| `execute` | The **whole** of one `Compute` call, entry to return. | The denominator, not a part. It is a *total*, never summed beside the rows below. §27. |
+| `prepare` | Plan/cache lookup, shape resolution, binding preparation — before any Vulkan object is touched. | Real host CPU work, per call. §27. |
+| `buffer_alloc` | Per-call `vkCreateBuffer` / `vkAllocateMemory` / staging preparation. | Real host CPU work *and* driver allocation, per call. §27. |
 | `upload` | Staging-buffer write + transfer of weights and inputs to device-local memory. | Host time *plus* a real transfer. Counters carry bytes and effective GiB/s. |
-| `record` | Filling the command buffer: binds, push constants, barriers, dispatches. | Real host CPU work. Per `ENGINE.md` §6.1 this is record-once/replay-many, so a steady-state inference should show *no* `record` span at all — if it does, something is invalidating the recording. |
+| `record` | Filling the command buffer: binds, push constants, barriers, dispatches. | Real host CPU work. **Not** record-once/replay-many in practice — §27.4 measures 0 replays per inference on the real model. |
+| `cmd_alloc` | Command-buffer allocation/reset/`vkBeginCommandBuffer`. Nested **inside** `record`. | Real host CPU work. Never added beside `record`. |
 | `submit` | `vkQueueSubmit` itself. | **Almost nothing.** See §1.3. |
 | `fence_wait` | Waiting for the submission's fence. | An **upper bound** on GPU execution, inflated by queue contention, other clients' work, and driver scheduling. Not kernel time. |
-| `readback` | Device→host transfer of outputs. | Host time plus a real transfer. Bytes + GiB/s counters. |
+| `writeback` | Post-fence output handling: readback, staging copies back into ORT tensors. | Real host CPU work plus a real transfer. §27. |
+| `readback` | Device→host transfer of outputs. Nested **inside** `writeback`. | Host time plus a real transfer. Bytes + GiB/s counters. |
 
 Two further span-adjacent facts we record because they are the ones that mislead people:
 
@@ -65,7 +70,9 @@ Two further span-adjacent facts we record because they are the ones that mislead
   it?" A shape key never seen before for a given subgraph is classified `rerecord`, not
   `replay`, even if a recording existed — resolving against a *set* of seen keys rather than a
   single last-key, which is the lesson the MLX tracer learned the hard way about alternating
-  shapes.
+  shapes. **Until issue #88 this classification had no production caller at all** — it was a
+  vocabulary with nothing to say. It is now reported from `dispatch_ort`, and what it reports is
+  `rerecord` on every inference after the first: see §27.4.
 * **`PartitionStats`** — `island_count`, `largest_island_nodes`, `largest_island_flops`,
   `concentration`, `boundary_bytes_per_inference`, `boundary_time_fraction`, and the `declined`
   histogram keyed by `deny!` reason. `largest_island_flops` is the metric of record
@@ -5046,3 +5053,209 @@ transition can never be declared, because
 correctly requires every declared transition to end at what the build computes. Rebuilding the
 stack on `main` is the only fix; merging `main` is not, because CI screens `refs/pull/N/merge`,
 which has the same shape.
+
+
+## 27. The 59% nobody had named — decode host cost, measured in production (2026-08-08)
+
+Section 26 measured the whole model and found the largest consumer of *device* time. It left a
+larger hole open. In the approved four-arm matrix, Phi-3.5 decode at past 1024 spent roughly 41%
+of its wall inside the device profile — which means **the majority of the wall was outside it**,
+and nothing in this repository could say what that majority was. It was not a small residual to be
+waved at: it was the bigger half.
+
+Worse, the instrument that was supposed to answer the question could not be asked. `Phase::Execute`
+did not exist, so there was no whole to divide by; `dispatch_ort`'s first three steps ran entirely
+untimed; and `Tracer::record_path` — the mechanism designed to say whether an inference reused its
+command buffer — **had no production caller**, which `rust/tools/instrument_census.json` recorded
+in a list literally named `uninvoked` and `log_summary()` printed as `record-path breakdown NOT
+WIRED`.
+
+Issue #88 is that gap. This section is what the instrument now says.
+
+> **This PR makes nothing faster and claims nothing faster.** It has one arm. There is no
+> comparison in it, and `bench/results/decode_host_attribution.json` records
+> `"speedup_claim": "NONE. This probe has one arm and cannot support a comparison."` The
+> descriptor-reuse and command-cache work that §27.5 ranks is deliberately *not* in it — an
+> optimisation landed together with the instrument that scores it is an optimisation nobody can
+> check. See `docs/DESIGN.md` §9.5 for the model; this section is the reading.
+
+### 27.1 The three roles, and the arithmetic they make impossible
+
+The old phase vocabulary had two states: a phase was either a sibling or nested inside another
+phase. `Execute` fits neither. It is the **whole** — and under the two-state model it would have
+been classified a sibling, added to the very parts it contains, and doubled every host total in
+every artifact that summed them. That is not a hypothetical: `HOST_PHASES` in `bench/phases.py` is
+summed by four different call sites.
+
+So `trace.rs` now carries an explicit `PhaseRole`:
+
+| Role | Members | Rule |
+|---|---|---|
+| `Total` | `execute` | The denominator. Summed with nothing, ever. |
+| `Sibling` | `prepare`, `buffer_alloc`, `record`, `submit`, `fence_wait`, `writeback` | Wall-clock disjoint within one call. These, and only these, may be added. |
+| `Child(p)` | `upload`, `cmd_alloc`, `desc_alloc`, `pipeline_lookup`, `cmd_upload` → `record`; `readback` → `writeback` | Already inside a sibling. Reported for shape; adding one to the total double-counts it. |
+
+`role()` is an exhaustive `match`, so a `Phase` variant added tomorrow does not compile until
+somebody has decided which of the three it is. This is the same trick §1.2's table describes in
+prose, moved somewhere the compiler enforces it.
+
+**A real bug fell out of writing it down.** `Phase::Readback::nested_in()` returned
+`Some(Phase::Record)`. It is not inside `record`: `record_transfer(Transfer::Readback, ..)` fires
+in Step 5 of `dispatch_ort`, *after* the record guard is dropped and after the fence has been
+waited on. Anything that subtracted readback from record was subtracting a number that had never
+been inside it. `bench/phases.py`'s `PHASE_CHILDREN` did not list readback at all, so the two
+disagreed and neither was checked against the trace. Both are fixed; `phase_nesting()` re-derives
+parenthood from timestamp containment and now goes red if they diverge again.
+
+### 27.2 Exact timer boundaries, and what they refuse to claim
+
+Every boundary is stated in `docs/DESIGN.md` §9.5.2 against the line of `dispatch_ort` that opens
+and closes it. Three properties matter for reading the numbers below:
+
+* **The siblings are disjoint but not exhaustive.** Nothing asserts they cover the call. The
+  residual is computed, named `UNATTRIBUTED`, and printed as its own row. A decomposition that
+  covers 82% of a call must not be readable as one that covers all of it — house rule R11.
+* **`fence_wait` is not idle time and `submit` is not GPU time.** §1.3 already said so; the
+  attribution below inherits it. A host phase that waits is *host wall time spent waiting*, which
+  is a real cost to the caller and not a measurement of the device.
+* **Overlap is refused, not distributed.** If the disjoint siblings ever sum to more than the call
+  containing them, the probe writes `measured: false` and a reason, and does not clamp. A clamp
+  would turn an instrument fault into a plausible-looking 100%.
+
+The verdict line is machine-checked in both directions. `HostAttribution::refusal()` emits, in
+order: `NO WHOLE` (phases recorded but `execute` did not), `OVER-SUBSCRIBED` (parts exceed whole),
+`INCOMPLETE` (a `Compute` call ran and some top-level phase recorded nothing). Any of the three
+turns the summary's last line into `ATTRIBUTION: NOT ADMISSIBLE — <reason>`, and
+`tests/ops/test_host_cost_counters.py::test_a_phase_cannot_go_silent_while_the_report_still_reads_as_complete`
+locks the machine verdict and the rendered verdict together, so a report cannot read as complete
+while a phase has gone silent.
+
+**Cost when off.** Tracing is off by default. `VulkanTracer::phase()` and `execute_region()` return
+`None` behind a single `enabled` load before any clock is read, any string is formatted, or any
+allocation happens. The counters are always-on relaxed atomic increments, matching the existing
+precedent in `counters.rs`.
+
+### 27.3 What decode actually spends its host time on
+
+Command, exactly, on the branch `squad/88-decode-host-attribution`:
+
+```bash
+python bench/results/probe_decode_host_attribution.py \
+  --past 128,512,1024,2048 --warmup 3 --iters 15 --repeats 3 --device 0 \
+  --out bench/results/decode_host_attribution.json
+```
+
+Model `phi-3.5-mini-instruct-cuda-int4-rtn-block-32`, sha256 `3dbdd4b5…04dac3f`, 26,180,848 bytes
+of graph plus 2,291,238,912 bytes of external weights, resolved by `bench/real_model.py` and
+agreeing with its recorded provenance. Windows 11 10.0.26200, Python 3.12.10, ORT 1.28.0, EP
+library sha256 `75e000e9…8d10972`, device selector 0. Three **whole-process** repeats per past
+length; repeat 0 is discarded as process-cold and never averaged in, so no repeat borrows a counter
+from repeat 0. Output equivalence against the ORT CPU EP on identical feeds: **MATCH** (argmax 6657
+both, top-10 identical, max_abs 0.582 against a 1.164 budget, max softmax delta 0.017).
+
+Each figure is the median over warm calls of a quantity computed **within a single call** — the
+per-call residual is computed per call and *then* medianed, never as `median(whole) − Σ
+median(part)`. Shares of the containing `Compute` call:
+
+| past | wall (ms) | call (µs) | `fence_wait` | `writeback` | `record` | `buffer_alloc` | `prepare` | `submit` | **UNATTRIBUTED** |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 128 | 145.68 | 96,440 | 61.71% | 13.25% | 16.90% | 1.66% | 4.28% | 0.19% | **0.86%** |
+| 512 | 417.05 | 373,256 | 46.89% | 22.80% | 22.75% | 3.96% | 0.75% | 0.05% | **0.27%** |
+| 1024 | 728.85 | 688,162 | 49.21% | 27.68% | 17.23% | 4.36% | 0.40% | 0.03% | **0.13%** |
+| 2048 | 1331.97 | 1,300,288 | 51.32% | 28.70% | 14.46% | 3.99% | 0.23% | 0.02% | **0.06%** |
+
+Nested phases, reported for shape and **never added** to the row above them:
+
+| past | `cmd_upload` (in `record`) | `desc_alloc` (in `record`) | `pipeline_lookup` | `cmd_alloc` |
+|---:|---:|---:|---:|---:|
+| 128 | 9.84% | 1.35% | 0.351% | 0.083% |
+| 512 | 20.85% | 0.31% | 0.017% | 0.018% |
+| 1024 | 16.40% | 0.11% | 0.003% | 0.014% |
+| 2048 | 14.13% | 0.05% | 0.002% | 0.007% |
+
+The wall column is this box on this afternoon and nothing more. An earlier run of the *same*
+command an hour before produced 104.49 / 368.98 / 915.67 / 1997.27 ms — the shares held their shape
+across both, the absolute walls did not. §20 applies: no clock lock, no affinity mask, wall clock
+is `STEADY_UNCERTIFIED`. Quote the shares; do not quote the walls as a baseline for anything.
+
+### 27.4 The counts, and the thing the counts were wrong about
+
+Per inference, **identical at every past length**, from the counters file of each warm repeat:
+
+| counter | per inference |
+|---|---:|
+| `descriptor_sets_allocated` | **355** |
+| `descriptor_pools_created` | **355** |
+| `command_buffers_recorded` | 1 |
+| `queue_submits` | 1 |
+| `record_path_first_record` | 0.056 (one per process) |
+| `record_path_rerecord` | 0.944 |
+| `record_path_replay` | **0** |
+
+Two readings, and the second is a correction of this repository's own prior expectation.
+
+**`RecordPath::Replay` is structurally unreachable, not merely unused.** §1.2 used to say that per
+`ENGINE.md` §6.1 recording is record-once/replay-many and "a steady-state inference should show
+*no* `record` span at all". It shows one on every inference. `CommandPool::begin()` issues
+`vkResetCommandBuffer` followed by `vkBeginCommandBuffer` unconditionally, every call — there is no
+branch that could reuse a recording, so no execution of this code can ever report `replay`. That is
+now measured rather than assumed, and §1.2 has been corrected.
+
+**The 355 descriptor sets are real, and they are also much cheaper than their count suggests.**
+One pool *and* one set per dispatch, 355 dispatches per decode inference, on every single call —
+the churn hypothesis was correct. But `desc_alloc` measures **0.05%–1.35%** of the call, falling as
+past grows. The count is alarming and the cost is not. Anyone sizing descriptor-set reuse off the
+count alone would have been budgeting for a wall-clock win that the clock says is under one and a
+half percent at its very best, and under a tenth of a percent where decode actually hurts. This is
+exactly the failure R11 warns about, caught by measuring the thing rather than counting a proxy
+for it.
+
+### 27.5 Where the host time actually is, ranked by measured ceiling
+
+Each ceiling is the share of the `Compute` call the phase occupies at past 1024 — that is, the
+absolute most that eliminating it *entirely* could remove from the host side. None of these is a
+promise, and none has been attempted here.
+
+1. **`writeback` — 27.7%, and rising with past length (13.3% → 28.7%).** The post-fence output
+   path: readback plus the host copies back into ORT tensors. It is the largest addressable
+   non-waiting host cost, and it is the only one that gets *worse* as the KV cache grows, which is
+   the direction decode goes. This is the first thing to look at.
+2. **`record` — 17.2%, of which `cmd_upload` is 16.4%.** Nearly all of `record` is the host staging
+   memcpy, not command construction. A command-buffer cache would therefore leave most of `record`
+   exactly where it is; the addressable part is ~0.8%. That reordering of priorities is only
+   visible because `cmd_upload` is reported nested rather than summed beside its parent.
+3. **`buffer_alloc` — 4.4%, roughly flat from past 512 on.** Per-call `vkCreateBuffer` /
+   `vkAllocateMemory`. Small, real, and a well-understood fix (suballocation from a persistent
+   arena).
+4. **Descriptor churn — ceiling under 1.4%, and 0.11% at past 1024.** 355 pools and 355 sets per
+   inference is genuine waste and worth removing on cleanliness grounds. It is not a decode
+   performance lever. See §27.4.
+5. **`prepare` 0.40%, `pipeline_lookup` 0.003%, `cmd_alloc` 0.014%, `submit` 0.03%.** Negligible.
+   Recorded so that nobody has to guess again.
+6. **`fence_wait` — 49.2% — is not on this list.** It is where the host waits for the device. It
+   cannot be optimised by host work; shrinking it means making kernels faster, which is §26's
+   territory, not this one. It is included in the table because leaving it out would make the host
+   costs look larger than they are.
+
+The `UNATTRIBUTED` remainder is 0.86% at past 128 and 0.06% at past 2048. The decomposition is
+close to closed — which is a statement about coverage, not about correctness, and it is printed
+as its own row precisely so that it stays a statement and not an assumption.
+
+### 27.6 Admissibility of this section
+
+`bench/results/decode_host_attribution.json`, schema `decode_host_attribution/1`, taken at
+`2026-08-08T17:27:40.427-07:00`. Verdict **ADMISSIBLE** — output equivalence established, and every
+past point marked `quotable: true`. The artifact contains no absolute home, repo, cache, venv or
+interpreter path: the probe screens its own output through the shared public/runtime path
+separation and **refuses to write at all** on a leak, rather than writing a redacted file that
+looks clean.
+
+Reproduce with the command in §27.3. The instrumentation itself is exercised by
+`tests/ops/test_host_cost_counters.py` (18 cases, each reading from a **fresh child process**,
+because the tracer is a `OnceLock` initialised from the environment on first touch — a test that
+sets the variable in-process after another test has touched it silently measures nothing). Two live
+mutations were run against that lane and are recorded here because a test that has never been seen
+to fail is not evidence: deleting `counters::record_queue_submit()` turned three cases red, and
+replacing `t.phase(Phase::Prepare)` with `None` turned two red *and* flipped the rendered verdict to
+`ATTRIBUTION: NOT ADMISSIBLE — INCOMPLETE: 3 Compute call(s) ran and these top-level phases recorded
+none: prepare.`

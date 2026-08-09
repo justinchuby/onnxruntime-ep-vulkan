@@ -160,6 +160,24 @@ pub enum Phase {
     Compile,
     /// Weight prepack (CPU repack) plus the upload of the packed bytes. Once per `PackKey`.
     Prepack,
+    /// **The whole `Compute` call's host wall time** — the total every other Compute-time phase
+    /// is a part of. A [`PhaseRole::Total`], never summed with the siblings it contains.
+    ///
+    /// Opened at the top of the EP's dispatch entry point and closed on **every** exit from it,
+    /// error paths included, so `execute` is the denominator a share may be taken against and the
+    /// whole an attribution must close on. Before this phase existed, everything the EP did
+    /// before `vkBeginCommandBuffer` — ORT tensor pointer reads, the dynamic-shape pre-pass, plan
+    /// and cache lookup, binding preparation, per-call buffer allocation — was outside every
+    /// phase, and no row said so.
+    Execute,
+    /// Plan/cache lookup and shape/binding preparation, before any GPU object is created for this
+    /// call: reading ORT's input tensor pointers, resolving dynamic byte sizes, the shape-only
+    /// pre-pass that re-runs dynamic translate handlers, and the device-residency resolution that
+    /// decides which inputs are already on the device.
+    Prepare,
+    /// Per-call GPU buffer and staging allocation: device-local input/output/intermediate/temp
+    /// buffers, their staging counterparts, and the output-binding decision.
+    BufferAlloc,
     /// Host→device staging copy of this inference's inputs.
     Upload,
     /// The `Compute` recording bracket. The name is historical: this span's host wall time is
@@ -168,6 +186,15 @@ pub enum Phase {
     /// (87-229 ms). R11: a measurement's name is not its definition — subtract `upload`+`readback`
     /// before attributing anything here to recording.
     Record,
+    /// Sub-phase of `Record`: command-buffer acquisition — `vkResetCommandBuffer` followed by
+    /// `vkBeginCommandBuffer`. Emitted once per `Compute` call, inside the `Record` bracket.
+    ///
+    /// Separated from the rest of `Record` because "the command buffer is reused" and "the
+    /// recording is reused" are different claims and this project has conflated them: the buffer
+    /// object is allocated once per session, but it is **reset and re-recorded on every call**,
+    /// and only a timer around the reset/begin pair can show which of the two a reader is looking
+    /// at.
+    CmdAlloc,
     /// Sub-phase of `Record`: `vkCreateDescriptorPool` + `vkAllocateDescriptorSets` +
     /// `vkUpdateDescriptorSets` per dispatch. Nested inside a `Record` span; emitted
     /// per-kernel so the breakdown is visible in the Chrome Trace.
@@ -183,6 +210,13 @@ pub enum Phase {
     Submit,
     /// `vkWaitForFences`. Queue latency + GPU execution, an *upper bound* on kernel time.
     FenceWait,
+    /// Everything after the fence signals: copying the downloaded staging bytes into ORT's own
+    /// output tensors, inserting freshly-uploaded constant inputs into the weight cache, and
+    /// releasing this call's buffers.
+    ///
+    /// A top-level sibling, **not** part of `Record`: it runs after the recording bracket has
+    /// closed and after the submission has completed.
+    Writeback,
     /// Device→host copy of this inference's outputs.
     Readback,
 }
@@ -193,13 +227,18 @@ impl Phase {
         match self {
             Phase::Compile => "compile",
             Phase::Prepack => "prepack",
+            Phase::Execute => "execute",
+            Phase::Prepare => "prepare",
+            Phase::BufferAlloc => "buffer_alloc",
             Phase::Upload => "upload",
             Phase::Record => "record",
+            Phase::CmdAlloc => "cmd_alloc",
             Phase::DescAlloc => "desc_alloc",
             Phase::PipelineLookup => "pipeline_lookup",
             Phase::CmdUpload => "cmd_upload",
             Phase::Submit => "submit",
             Phase::FenceWait => "fence_wait",
+            Phase::Writeback => "writeback",
             Phase::Readback => "readback",
         }
     }
@@ -214,21 +253,46 @@ impl Phase {
                 "host: pipeline/descriptor creation; may hit the driver's shader compiler"
             }
             Phase::Prepack => "host: CPU repack + staging upload of weights; once per PackKey",
+            Phase::Execute => {
+                "TOTAL, not a part: the whole Compute call's host wall time, from EP entry to EP \
+                 return on every exit path including errors. It CONTAINS `prepare`, \
+                 `buffer_alloc`, `record` (and record's children), `submit`, `fence_wait` and \
+                 `writeback`. Never add it to any of them — it is the denominator, and the part \
+                 of it no other phase names is printed as UNATTRIBUTED"
+            }
+            Phase::Prepare => {
+                "host: plan/cache lookup and shape/binding preparation before any GPU object is \
+                 created for this call — ORT input pointer reads, dynamic byte-size resolution, \
+                 the shape-only pre-pass, and the device-residency resolution. Contains NO \
+                 Vulkan work and NO transfer. Disjoint from every other Compute-time phase"
+            }
+            Phase::BufferAlloc => {
+                "host: per-call vkCreateBuffer/vkAllocateMemory for device-local and staging \
+                 buffers, plus the output-binding decision. Allocation only — the bytes are \
+                 moved later, under `cmd_upload`. Disjoint from every other Compute-time phase"
+            }
             Phase::Upload => {
                 "host: staging copy; on a discrete GPU this is PCIe time and users pay it. \
                  NESTED INSIDE `record` — already counted there, do not add to the sibling total"
             }
             Phase::Record => {
                 "host: the whole vkBeginCommandBuffer..vkEndCommandBuffer bracket. It CONTAINS \
-                 `upload`/`cmd_upload` (the staging memcpy), `readback`, `desc_alloc` and \
+                 `upload`/`cmd_upload` (the staging memcpy), `cmd_alloc`, `desc_alloc` and \
                  `pipeline_lookup`, so it is an INCLUSIVE interval and its name describes its \
-                 bracket, not its content (R11). The split is regime-dependent and must be read \
-                 from the child rows of THIS run, never from a remembered ratio: with a cold \
-                 weight cache `cmd_upload` dominates it (measured 1148 of 1185 ms on Phi-3.5's \
-                 first Compute), and with a warm cache the children collapse to ~1-2 ms and the \
-                 UNNAMED RESIDUAL — the vkCmd* calls themselves — is ~90% of it. The summary \
-                 prints that residual as its own row, but CUMULATIVELY over all calls, so it \
-                 mixes the two regimes; the per-call split is only in the trace spans"
+                 bracket, not its content (R11). It does NOT contain `readback`, which is folded \
+                 under `writeback` after the fence. The split is regime-dependent and must be \
+                 read from the child rows of THIS run, never from a remembered ratio: with a cold \
+                 weight cache `cmd_upload` dominates it, and with a warm cache the children \
+                 collapse and the UNNAMED RESIDUAL — the vkCmd* calls themselves — dominates. The \
+                 summary prints that residual as its own row, but CUMULATIVELY over all calls, so \
+                 it mixes the two regimes; the per-call split is only in the trace spans"
+            }
+            Phase::CmdAlloc => {
+                "host/sub-record: vkResetCommandBuffer + vkBeginCommandBuffer, once per Compute \
+                 call. This is command-buffer ACQUISITION, not recording: a non-zero count here \
+                 on every call is the witness that the recording is rebuilt per call rather than \
+                 replayed. NESTED INSIDE `record` — already counted there, do not add to the \
+                 sibling total"
             }
             Phase::DescAlloc => {
                 "host/sub-record: vkCreateDescriptorPool + vkAllocateDescriptorSets + \
@@ -253,14 +317,32 @@ impl Phase {
             Phase::FenceWait => {
                 "host: queue latency + GPU execution — an UPPER BOUND on kernel time, not kernel time"
             }
+            Phase::Writeback => {
+                "host: after the fence — copying downloaded staging bytes into ORT's output \
+                 tensors, weight-cache insertion, and this call's buffer frees. It CONTAINS \
+                 `readback`. Disjoint from `record`: it begins after vkEndCommandBuffer and after \
+                 the fence has signalled"
+            }
             Phase::Readback => {
                 "host: device->host copy; counts toward end-to-end latency. NESTED INSIDE \
-                 `record` — already counted there, do not add to the sibling total"
+                 `writeback` — already counted there, do not add to the sibling total"
             }
         }
     }
 
     /// The phase whose wall time already contains this one, if any.
+    ///
+    /// Emitted as the `nested_in` span arg. A phase with `nested_in == Some(p)` must never be
+    /// added to a total that also contains `p`.
+    pub fn nested_in(self) -> Option<Phase> {
+        match self.role() {
+            PhaseRole::Child(parent) => Some(parent),
+            PhaseRole::Total | PhaseRole::Sibling => None,
+        }
+    }
+
+    /// What kind of quantity this phase's wall time is. **The single exhaustive declaration** —
+    /// [`Self::nested_in`], [`Self::is_sibling`] and [`Self::is_total`] all derive from it.
     ///
     /// # Why this is structural and not a sentence
     ///
@@ -272,32 +354,103 @@ impl Phase {
     /// while summing `record` alone attributes a child's cost to its parent's name. Both are one
     /// field away from being impossible.
     ///
-    /// Emitted as the `nested_in` span arg. A phase with `nested_in == Some(p)` must never be
-    /// added to a total that also contains `p`.
-    pub fn nested_in(self) -> Option<Phase> {
+    /// The third state — [`PhaseRole::Total`] — was added with [`Phase::Execute`]. A total is not
+    /// a sibling and it is not a child: it is the *whole* the siblings decompose, and the
+    /// two-state model had no way to say that. Without it `execute` would have been summed into
+    /// SIBLING TOTAL and doubled the host time of every run.
+    pub fn role(self) -> PhaseRole {
         match self {
+            // The whole Compute call. Contains every Compute-time phase below.
+            Phase::Execute => PhaseRole::Total,
             // `vk::session` opens Phase::Record before vkBeginCommandBuffer and drops it after
-            // vkEndCommandBuffer; the input staging loop and the output readback both run inside
-            // that bracket. See session.rs (Record guard) — this is a fact about the call graph,
-            // not a policy, and it must be re-checked if that guard moves.
-            Phase::Upload | Phase::Readback => Some(Phase::Record),
-            // Switch's per-dispatch sub-phases, added in `692e7d0`. They are documented in their
-            // own caveats as "sub-record" and they are opened inside the Record guard.
-            Phase::DescAlloc | Phase::PipelineLookup | Phase::CmdUpload => Some(Phase::Record),
+            // vkEndCommandBuffer; the input staging loop runs inside that bracket. See session.rs
+            // (Record guard) — this is a fact about the call graph, not a policy, and it must be
+            // re-checked if that guard moves.
+            Phase::Upload => PhaseRole::Child(Phase::Record),
+            // Switch's per-dispatch sub-phases, added in `692e7d0`, plus `CmdAlloc`. They are
+            // documented in their own caveats as "sub-record" and are opened inside the Record
+            // guard.
+            Phase::CmdAlloc | Phase::DescAlloc | Phase::PipelineLookup | Phase::CmdUpload => {
+                PhaseRole::Child(Phase::Record)
+            }
+            // CORRECTED 2026-08-08 (issue #88). `Readback` was declared a child of `Record`, and
+            // it is not one: `record_transfer(Transfer::Readback, ..)` is called in the EP's
+            // Step 5, *after* the Record guard is dropped and after the fence has signalled. The
+            // declaration therefore removed readback from the sibling total and charged it to a
+            // bracket it does not lie inside — `bench/phases.py` never listed it under
+            // `PHASE_CHILDREN["record"]`, so the two sides of the same fact disagreed. Its real
+            // parent is the post-fence `Writeback` bracket, which now exists to hold it.
+            Phase::Readback => PhaseRole::Child(Phase::Writeback),
             // EXHAUSTIVE ON PURPOSE — do not add a `_` arm. A catch-all here classifies every
             // future phase as a top-level sibling by default, which means a new sub-phase gets
             // silently added into SIBLING TOTAL and double-counts its parent. That is how three
-            // phases arrived this session: they merged cleanly and would have been summed.
+            // phases arrived in one session: they merged cleanly and would have been summed.
             // Make the compiler ask.
-            Phase::Compile | Phase::Prepack | Phase::Record | Phase::Submit | Phase::FenceWait => {
-                None
-            }
+            Phase::Compile
+            | Phase::Prepack
+            | Phase::Prepare
+            | Phase::BufferAlloc
+            | Phase::Record
+            | Phase::Submit
+            | Phase::FenceWait
+            | Phase::Writeback => PhaseRole::Sibling,
         }
     }
 
-    /// Phases that are top-level: their wall times may be summed.
+    /// Phases that are top-level parts: their wall times may be summed.
+    ///
+    /// False for [`Phase::Execute`], which is the *whole* those parts decompose, and false for
+    /// every child.
     pub fn is_sibling(self) -> bool {
-        self.nested_in().is_none()
+        matches!(self.role(), PhaseRole::Sibling)
+    }
+
+    /// Whether this phase is a whole rather than a part — the denominator, never an addend.
+    pub fn is_total(self) -> bool {
+        matches!(self.role(), PhaseRole::Total)
+    }
+
+    /// Whether this phase happens **inside one `Compute` call**.
+    ///
+    /// `Compile` and `Prepack` are session-build phases: they are real host time and they are
+    /// genuinely siblings, but they are not part of any `Compute` call, so adding them to a
+    /// decomposition of [`Phase::Execute`] would over-subscribe the total. This is the predicate
+    /// that keeps the attribution honest about which whole it is closing on.
+    ///
+    /// Exhaustive for the same reason [`Self::role`] is.
+    pub fn in_compute(self) -> bool {
+        match self {
+            Phase::Compile | Phase::Prepack => false,
+            Phase::Execute
+            | Phase::Prepare
+            | Phase::BufferAlloc
+            | Phase::Upload
+            | Phase::Record
+            | Phase::CmdAlloc
+            | Phase::DescAlloc
+            | Phase::PipelineLookup
+            | Phase::CmdUpload
+            | Phase::Submit
+            | Phase::FenceWait
+            | Phase::Writeback
+            | Phase::Readback => true,
+        }
+    }
+
+    /// Whether [`VulkanTracer::phase`] may open a `ph:"X"` span for this phase.
+    ///
+    /// `false` for the three phases whose duration is folded into the summary from a caller that
+    /// already owns the clock:
+    ///
+    /// * [`Phase::Execute`] — its bracket is already drawn on the timeline as `vulkan.subgraph`.
+    ///   Emitting a second, coincident `vulkan.execute` span would give every trace aggregator
+    ///   two spans covering the same microseconds under different names, which is the exact
+    ///   double-count this module exists to prevent.
+    /// * [`Phase::Upload`] / [`Phase::Readback`] — reported through
+    ///   [`VulkanTracer::record_transfer`], which emits byte and bandwidth *counters* rather than
+    ///   a span, because the same memcpy is already bracketed by `cmd_upload` / `writeback`.
+    pub fn emits_span(self) -> bool {
+        !matches!(self, Phase::Execute | Phase::Upload | Phase::Readback)
     }
 
     /// Whether a host clock around this phase can see any GPU execution at all.
@@ -311,30 +464,74 @@ impl Phase {
     }
 
     /// Every phase, in reporting order.
-    pub const ALL: [Phase; 10] = [
+    pub const ALL: [Phase; 15] = [
         Phase::Compile,
         Phase::Prepack,
+        Phase::Execute,
+        Phase::Prepare,
+        Phase::BufferAlloc,
         Phase::Upload,
         Phase::Record,
+        Phase::CmdAlloc,
         Phase::DescAlloc,
         Phase::PipelineLookup,
         Phase::CmdUpload,
         Phase::Submit,
         Phase::FenceWait,
+        Phase::Writeback,
         Phase::Readback,
     ];
+
+    /// The top-level parts of one `Compute` call, in the order they run.
+    ///
+    /// This is the **only** set that may be summed and compared against [`Phase::Execute`]. It is
+    /// derived, not restated: a new phase joins it by being a `Sibling` that is `in_compute`, and
+    /// a phase that stops being either leaves it, without anyone editing a list.
+    pub fn compute_siblings() -> impl Iterator<Item = Phase> {
+        Phase::ALL
+            .into_iter()
+            .filter(|p| p.is_sibling() && p.in_compute())
+    }
+}
+
+/// What kind of quantity a [`Phase`]'s wall time is. See [`Phase::role`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PhaseRole {
+    /// A whole that other phases decompose. Never summed with anything; used as a denominator.
+    Total,
+    /// A top-level part. Siblings within the same scope are disjoint and may be summed.
+    Sibling,
+    /// A part of the named parent's interval. Never added to a total that contains the parent.
+    Child(Phase),
 }
 
 /// Which recording path one `Compute` call took — the Vulkan analogue of MLX's compile-cache
 /// state, over `ENGINE.md` §6.1's record-once / replay-many model.
+///
+/// # What this build actually does, stated because the vocabulary predates it
+///
+/// The vocabulary was written for a design in which a `VkCommandBuffer` is recorded once and
+/// replayed. **This build does not do that.** `VulkanSession::dispatch_ort` calls
+/// `CommandPool::begin` — `vkResetCommandBuffer` + `vkBeginCommandBuffer` — unconditionally on
+/// every `Compute` call and re-records every dispatch. So [`RecordPath::Replay`] is a state this
+/// EP cannot currently reach, and the production call site never reports it. That is the finding,
+/// not a gap in the instrument: the aspiration is in the vocabulary and the measurement is what
+/// says whether it was met.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RecordPath {
     /// First recording of this subgraph's command buffer.
     FirstRecord,
-    /// Replayed the cached `VkCommandBuffer` — the steady-state path.
+    /// Replayed the cached `VkCommandBuffer` — the steady-state path. **Unreachable in this
+    /// build**; see the enum docs.
     Replay,
-    /// Re-recorded because the input shape key changed. A benchmark that reports a median over
-    /// runs where this fired is measuring the recording path, not the steady state.
+    /// The command buffer was recorded again for a subgraph that had already been recorded.
+    ///
+    /// Originally documented as "re-recorded because the input shape key changed". It has two
+    /// causes now, and only a caller can tell them apart: a shape-key change (reported by passing
+    /// [`RecordPath::Replay`] with a key this subgraph has not presented), or — the case this EP
+    /// is in — a build with no command-buffer cache at all, which re-records unconditionally.
+    /// Either way, a benchmark that reports a median over runs where this fired is measuring the
+    /// recording path, not a steady state.
     Rerecord,
 }
 
@@ -561,6 +758,132 @@ fn record_residual_us(record_us: u64, xfer_us: u64, desc_alloc_us: u64, pipeline
     record_us.saturating_sub(xfer_us + desc_alloc_us + pipeline_us)
 }
 
+/// How much of the `Compute` wall the phase table can name, and — the part that matters — how
+/// much it cannot.
+///
+/// # The whole and the parts
+///
+/// The whole is [`Phase::Execute`]: one bracket around the EP's dispatch entry point, closed on
+/// every exit path. The parts are [`Phase::compute_siblings`] — the top-level phases that happen
+/// inside a `Compute` call. They are disjoint by construction (each guard is dropped before the
+/// next is opened; see `vk/session.rs`), so summing them is legitimate and comparing that sum to
+/// the whole is a real identity rather than a tautology: numerator and denominator are read from
+/// different `Instant`s at different points in the call.
+///
+/// # Why the residual is the headline and not a footnote
+///
+/// R11: a decomposition that appears to close is the hardest kind of wrong. Every phase this EP
+/// has ever emitted was a *part*, so a reader summing them had no way to know what fraction of
+/// the call they covered — and the answer, before issue #88, was "everything after
+/// `vkBeginCommandBuffer`", which on a decode step is not most of it. [`Self::unattributed_us`]
+/// is that gap, computed rather than assumed, and it is printed even when it is zero.
+///
+/// # What this is NOT
+///
+/// * It is **not** a claim that the parts are causally exclusive. They are wall-clock disjoint on
+///   the calling thread. Asynchronous device work started in one part and completed in another
+///   moves cost between them, and no host clock can undo that — which is exactly why `submit` is
+///   labelled host-only and `fence_wait` an upper bound.
+/// * It is **not** per-call. Every field is cumulative over the process, so a session mixing one
+///   cold call with many warm ones reports a mixture. The per-call split is only in the spans.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct HostAttribution {
+    /// Cumulative [`Phase::Execute`] wall, in microseconds. The denominator.
+    pub execute_us: u64,
+    /// Number of `Compute` calls the total was measured over.
+    pub execute_calls: u64,
+    /// Sum of the top-level in-`Compute` phases.
+    pub attributed_us: u64,
+    /// `execute_us - attributed_us`, floored at zero. Host time inside `Compute` that no phase
+    /// names.
+    pub unattributed_us: u64,
+    /// The parts summed to more than the whole. Impossible if the guards are disjoint and the
+    /// total encloses them, so it is a defect in the instrumentation — reported, never smoothed.
+    pub over_subscribed: bool,
+    /// In-`Compute` sibling phases that recorded **no calls at all** while `Compute` calls
+    /// happened. A phase that silently stops being invoked would otherwise shrink the attributed
+    /// total and grow the residual with nothing raising.
+    pub silent_phases: Vec<Phase>,
+    /// Whether this attribution may be quoted as a decomposition of `Compute`.
+    ///
+    /// False when there is no total to divide by, when a part is missing, or when the parts
+    /// over-subscribe the whole. A false verdict does not suppress the numbers — it forbids
+    /// reading them as complete.
+    pub admissible: bool,
+}
+
+impl HostAttribution {
+    /// Derive the attribution from a phase table of `phase -> (total_us, calls)`.
+    ///
+    /// A free-standing function of its input so the arithmetic is testable without a tracer, a
+    /// device, or an environment variable.
+    pub fn from_phase_table(table: &BTreeMap<Phase, (u64, u64)>) -> Self {
+        let get = |p: Phase| table.get(&p).copied().unwrap_or((0, 0));
+        let (execute_us, execute_calls) = get(Phase::Execute);
+        let attributed_us: u64 = Phase::compute_siblings().map(|p| get(p).0).sum();
+        let silent_phases: Vec<Phase> = if execute_calls > 0 {
+            Phase::compute_siblings()
+                .filter(|&p| get(p).1 == 0)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let over_subscribed = attributed_us > execute_us;
+        HostAttribution {
+            execute_us,
+            execute_calls,
+            attributed_us,
+            unattributed_us: execute_us.saturating_sub(attributed_us),
+            over_subscribed,
+            admissible: execute_calls > 0
+                && execute_us > 0
+                && !over_subscribed
+                && silent_phases.is_empty(),
+            silent_phases,
+        }
+    }
+
+    /// The share of `Compute` wall no phase names, in percent. `None` when there is no whole to
+    /// take a share of — absence of a denominator is not a share of zero.
+    pub fn unattributed_pct(&self) -> Option<f64> {
+        (self.execute_us > 0).then(|| 100.0 * self.unattributed_us as f64 / self.execute_us as f64)
+    }
+
+    /// One line naming why the attribution may not be read as complete, or `None` when it may.
+    pub fn refusal(&self) -> Option<String> {
+        if self.execute_calls == 0 || self.execute_us == 0 {
+            return Some(
+                "NO WHOLE: Phase::Execute recorded no duration, so there is no denominator and \
+                 no share below is a share of anything. This is the absence of a measurement, \
+                 not a measurement of zero."
+                    .to_string(),
+            );
+        }
+        if self.over_subscribed {
+            return Some(format!(
+                "OVER-SUBSCRIBED: the top-level parts sum to {} us inside a {} us whole. The \
+                 parts are supposed to be wall-clock disjoint and enclosed by the total, so this \
+                 is a defect in the instrumentation and the decomposition below is not usable.",
+                self.attributed_us, self.execute_us
+            ));
+        }
+        if !self.silent_phases.is_empty() {
+            return Some(format!(
+                "INCOMPLETE: {} Compute call(s) ran and these top-level phases recorded none: \
+                 {}. Their cost is inside UNATTRIBUTED under a name that is not theirs, so the \
+                 breakdown must not be quoted as a decomposition.",
+                self.execute_calls,
+                self.silent_phases
+                    .iter()
+                    .map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        None
+    }
+}
+
 /// Cumulative, human-readable digest emitted on teardown. Cheap to update; only touched when
 /// tracing or the verbose flag is on.
 #[derive(Default)]
@@ -579,8 +902,8 @@ struct Summary {
 
     /// `[first_record, replay, rerecord]`.
     record_paths: [u64; 3],
-    /// Shape keys already seen, per subgraph tag, so a REPLAY on a new key is called what it is.
-    seen_shape_keys: HashMap<String, HashSet<String>>,
+    /// Shape keys already seen, per subgraph id, so a REPLAY on a new key is called what it is.
+    seen_shape_keys: HashMap<u64, HashSet<String>>,
 
     upload_bytes: u64,
     upload_count: u64,
@@ -808,10 +1131,40 @@ impl VulkanTracer {
         )
     }
 
+    /// Bracket the whole `Compute` call: the denominator every phase share is a share of.
+    ///
+    /// Returns `None` (a single relaxed atomic load, no clock read, no allocation) when nothing
+    /// is listening. Hold it for the entire EP dispatch entry point — including every early error
+    /// return — so the total encloses the parts on every path, not just the happy one. A total
+    /// that only covers successful calls would make a failing run look faster than it was.
+    ///
+    /// Deliberately emits no span of its own: `vulkan.subgraph` from [`Self::subgraph_region`]
+    /// already brackets the same microseconds, and a second coincident span under a different
+    /// name would let an aggregator count the call twice.
+    #[inline]
+    pub fn execute_region(&self) -> Option<ExecuteGuard> {
+        if !self.active() {
+            return None;
+        }
+        Some(ExecuteGuard {
+            start: Instant::now(),
+        })
+    }
+
     /// Start a timing phase: a span plus a summary fold on drop. `None` (zero cost) when nothing
     /// is listening.
+    ///
+    /// Only for phases where [`Phase::emits_span`] is true. A phase whose duration is owned by a
+    /// caller with its own clock ([`Phase::Execute`], [`Phase::Upload`], [`Phase::Readback`]) is
+    /// folded through [`Self::record_phase`] or [`Self::record_transfer`] instead; opening a span
+    /// for it here would draw two coincident spans over the same microseconds.
     #[inline]
     pub fn phase(&self, phase: Phase) -> Option<PhaseGuard> {
+        debug_assert!(
+            phase.emits_span(),
+            "Phase::{phase:?} does not emit its own span — fold it through record_phase/\
+             record_transfer instead of opening a coincident second span"
+        );
         if !self.active() {
             return None;
         }
@@ -856,10 +1209,15 @@ impl VulkanTracer {
     /// this subgraph has never presented before, the reuse cannot have been legitimate for that
     /// key and the call is reclassified as [`RecordPath::Rerecord`] — the signal that a
     /// benchmark's "steady state" is not steady. Pass an empty `shape_key` for subgraphs with no
-    /// dynamic shapes.
+    /// dynamic shapes, or when the caller re-records unconditionally and the key is therefore not
+    /// consulted by anything.
+    ///
+    /// `subgraph_id` is the EP's own subgraph identifier, **not** a formatted string: the caller
+    /// is on the per-inference path and must not allocate to name a subgraph the tracer will
+    /// discard when tracing is off.
     pub fn record_path(
         &self,
-        subgraph_tag: &str,
+        subgraph_id: u64,
         path: RecordPath,
         shape_key: &str,
         node_count: usize,
@@ -873,7 +1231,7 @@ impl VulkanTracer {
                 RecordPath::Replay if !shape_key.is_empty() => {
                     let seen = s
                         .seen_shape_keys
-                        .get(subgraph_tag)
+                        .get(&subgraph_id)
                         .is_some_and(|keys| keys.contains(shape_key));
                     if seen {
                         RecordPath::Replay
@@ -885,7 +1243,7 @@ impl VulkanTracer {
             };
             if !shape_key.is_empty() {
                 s.seen_shape_keys
-                    .entry(subgraph_tag.to_string())
+                    .entry(subgraph_id)
                     .or_default()
                     .insert(shape_key.to_string());
             }
@@ -901,7 +1259,7 @@ impl VulkanTracer {
             let mut args = Args::new()
                 .with("path", resolved.as_str())
                 .with("nodes", node_count as u64)
-                .with("subgraph", subgraph_tag.to_string());
+                .with("subgraph", subgraph_id);
             if !shape_key.is_empty() {
                 args = args.with("shape_key", shape_key.to_string());
             }
@@ -1142,7 +1500,10 @@ impl VulkanTracer {
             return;
         }
         let s = self.summary();
-        if s.getcap_calls == 0 && s.record_paths.iter().all(|&n| n == 0) {
+        // A session that ran Compute must print, even if GetCapability was never observed and the
+        // record-path witness was somehow not reached: the "the witness vanished" branch below is
+        // the only thing that can report that failure, and bailing out here would suppress it.
+        if s.getcap_calls == 0 && s.record_paths.iter().all(|&n| n == 0) && s.phase_us.is_empty() {
             return;
         }
 
@@ -1180,23 +1541,43 @@ impl VulkanTracer {
                 out.push_str(&format!("              - {op} x{n}: {reason}\n"));
             }
         }
-        // `Tracer::record_path` has no production caller (audited 2026-07-30: zero call sites
-        // outside this file; the classifier is unit-tested, which is why review never caught it).
-        // Printing "first-record=0 replay=0 rerecord=0" reads as "this run recorded nothing",
-        // which is a measurement. It is not one. It is the absence of a measurement, and the
-        // difference matters here more than most: `Phase::Record`'s caveat asserted that recording
-        // is "amortised across replays", and this is the only instrument that could falsify that.
+        // `Tracer::record_path` was wired to a production caller in issue #88 (`vk/session.rs`
+        // classifies every Compute call before it touches the command pool). Before that it had
+        // none, and this line printed "NOT WIRED" — which was the honest thing to print, because
+        // "first-record=0 replay=0 rerecord=0" reads as "this run recorded nothing" and that is a
+        // measurement, not the absence of one.
+        //
+        // The failure mode has now inverted. With a caller in place, all-zeros while Compute
+        // calls happened means the witness was REMOVED — the call site deleted, refactored away,
+        // or moved behind a branch that never runs — and the summary must say so instead of
+        // reverting to a "not wired yet" story that is no longer true.
         if s.record_paths.iter().all(|&n| n == 0) {
-            out.push_str(
-                "  compute:  record-path breakdown NOT WIRED — Tracer::record_path() has no \
-                 production caller, so first-record/replay/rerecord are unmeasured, NOT zero. \
-                 Nothing in this build can tell you whether command buffers are re-recorded per \
-                 inference or replayed.\n",
-            );
+            let execute_calls = s
+                .phase_us
+                .get(&Phase::Execute)
+                .map(|&(_, calls)| calls)
+                .unwrap_or(0);
+            if execute_calls > 0 {
+                out.push_str(&format!(
+                    "  compute:  INSTRUMENT DEFECT — {execute_calls} Compute call(s) ran and the \
+                     record-path witness classified none of them. `Tracer::record_path()` has a \
+                     production caller (vk/session.rs); all-zeros here means it stopped being \
+                     reached, so nothing in this run can tell you whether command buffers were \
+                     re-recorded or replayed.\n"
+                ));
+            } else {
+                out.push_str(
+                    "  compute:  no Compute call in this process — record-path is unmeasured, \
+                     NOT zero.\n",
+                );
+            }
         } else {
             out.push_str(&format!(
-                "  compute:  first-record={} replay={} rerecord={}\n",
-                s.record_paths[0], s.record_paths[1], s.record_paths[2]
+                "  compute:  first-record={} replay={} rerecord={} (over {} distinct subgraph(s))\n",
+                s.record_paths[0],
+                s.record_paths[1],
+                s.record_paths[2],
+                s.seen_shape_keys.len()
             ));
         }
         out.push_str(&format!(
@@ -1210,83 +1591,113 @@ impl VulkanTracer {
         if !s.phase_us.is_empty() {
             // NESTING MATTERS AND THIS TABLE USED TO HIDE IT.
             //
-            // `compile`, `record`, `submit` and `fence_wait` are SIBLINGS — they partition the
-            // host thread's wall time. `upload` and `readback` are CHILDREN OF `record`: the
-            // staging memcpy is timed inside the `Phase::Record` guard (see `vk/session.rs`) and
-            // fed here through `record_transfer`. Summing this column therefore double-counts
-            // transfer, and printing it as a flat list invited exactly that.
+            // Three roles, not two (see `Phase::role`). `execute` is the WHOLE: one bracket
+            // around the entire Compute call. `prepare`/`buffer_alloc`/`record`/`submit`/
+            // `fence_wait`/`writeback` are SIBLINGS that partition it. `upload`, `cmd_alloc`,
+            // `desc_alloc`, `pipeline_lookup`, `cmd_upload` and `readback` are CHILDREN of a
+            // sibling. Summing the column double-counts the children AND counts the whole twice.
             //
             // Children are printed indented under their parent with an explicit marker, and the
             // sibling total is computed and printed so nobody has to add the column by hand.
-            // Both the child set and the sibling total are DERIVED from `Phase::nested_in()`
-            // rather than restated here. They used to be two hardcoded lists, which is the same
+            // Both the child set and the sibling total are DERIVED from `Phase::role()` rather
+            // than restated here. They used to be two hardcoded lists, which is the same
             // duplicate-truth defect one level down: changing the bracketing in `vk::session`
             // would have had to be remembered in three places, and the one that gets forgotten is
             // the one that prints.
             let get = |p: Phase| s.phase_us.get(&p).copied().unwrap_or((0, 0));
             // TRANSFER IS NAMED, NOT INFERRED FROM "IS A CHILD". `desc_alloc` and
-            // `pipeline_lookup` are also children of `record` and are not transfer; summing every
-            // child under the label "xfer" would be the same misnaming one level down.
+            // `pipeline_lookup` are also children and are not transfer; summing every child under
+            // the label "xfer" would be the same misnaming one level down.
             let child_us: u64 = get(Phase::Upload).0 + get(Phase::Readback).0;
-            let sibling_us: u64 = Phase::ALL
-                .iter()
-                .filter(|p| p.is_sibling())
-                .map(|p| get(*p).0)
-                .sum();
+            let attribution = HostAttribution::from_phase_table(&s.phase_us);
             // `upload` (record_transfer totals) and `cmd_upload` (Switch's per-Compute sub-span)
             // can bracket the same memcpy, so the nested rows are NOT disjoint and are never
             // added together here.
             let overlap = get(Phase::CmdUpload).1 > 0 && get(Phase::Upload).1 > 0;
 
             out.push_str(
-                "  host time (wall clock on the CPU thread). `upload`/`readback` are NESTED \
-                 INSIDE `record` — do NOT add this column:\n",
+                "  host time (wall clock on the CPU thread). `execute` is the WHOLE Compute \
+                 call; indented rows are NESTED inside the row above them — do NOT add this \
+                 column:\n",
             );
             for phase in Phase::ALL {
                 let Some((us, calls)) = s.phase_us.get(&phase) else {
                     continue;
                 };
+                let marker = if phase.is_total() {
+                    "  = "
+                } else if phase.is_sibling() {
+                    "    "
+                } else {
+                    "  └─"
+                };
                 out.push_str(&format!(
-                    "              {}{:<11} {:>10} us (x{}) — {}\n",
-                    if phase.is_sibling() {
-                        "    "
-                    } else {
-                        "  └─ "
-                    },
+                    "            {}{:<15} {:>10} us (x{}) — {}\n",
+                    marker,
                     phase.as_str(),
                     us,
                     calls,
                     phase.caveat()
                 ));
             }
+            // THE UNNAMED PART OF THE COMPUTE CALL GETS A ROW, AND A VERDICT (R11).
+            //
+            // This is the point of issue #88. Every phase this EP emitted before it was a PART;
+            // there was no whole, so a reader summing the siblings could not tell whether they
+            // covered 95% of the call or 40% of it. `execute` supplies the denominator and
+            // UNATTRIBUTED is the subtraction, printed even when it is zero, with an explicit
+            // admissibility verdict so a partial trace cannot be quoted as a decomposition.
             out.push_str(&format!(
-                "              {:<15} {:>10} us  (siblings only: {}; excludes the nested rows)\n",
+                "            {:<17} {:>10} us  (siblings only: {}; excludes the nested rows)\n",
                 "SIBLING TOTAL",
-                sibling_us,
-                Phase::ALL
-                    .iter()
-                    .filter(|p| p.is_sibling())
+                attribution.attributed_us,
+                Phase::compute_siblings()
                     .map(|p| p.as_str())
                     .collect::<Vec<_>>()
                     .join("+")
             ));
+            match attribution.unattributed_pct() {
+                Some(pct) => out.push_str(&format!(
+                    "            {:<17} {:>10} us  ({pct:.1}% of `execute`) — host time inside \
+                     Compute that NO phase names. CUMULATIVE over {} call(s), so a session \
+                     mixing one cold call with many warm ones reports a MIXTURE and this share \
+                     belongs to no single call; for the per-call split read the spans in the \
+                     trace JSON\n",
+                    "UNATTRIBUTED", attribution.unattributed_us, attribution.execute_calls
+                )),
+                None => out.push_str(&format!(
+                    "            {:<17} {:>10} us  (no `execute` total — share undefined)\n",
+                    "UNATTRIBUTED", attribution.unattributed_us
+                )),
+            }
+            match attribution.refusal() {
+                Some(reason) => out.push_str(&format!(
+                    "            ATTRIBUTION: NOT ADMISSIBLE — {reason}\n"
+                )),
+                None => out.push_str(
+                    "            ATTRIBUTION: admissible — every top-level phase was invoked and \
+                     the parts fit inside the whole. Still host wall clock only: async device \
+                     work started in one phase and completed in another moves cost between them, \
+                     and no host clock can undo that.\n",
+                ),
+            }
             out.push_str(&format!(
-                "              {:<15} {:>10} us  ({:.1}% of sibling total) — upload+readback only, \
-                 already counted inside `record`\n",
+                "            {:<17} {:>10} us  ({:.1}% of sibling total) — upload+readback only, \
+                 already counted inside their parents\n",
                 "of which xfer",
                 child_us,
-                100.0 * child_us as f64 / (sibling_us.max(1)) as f64,
+                100.0 * child_us as f64 / (attribution.attributed_us.max(1)) as f64,
             ));
             if overlap {
                 out.push_str(
-                    "              NOTE: the nested rows are NOT disjoint — `upload` and \
+                    "            NOTE: the nested rows are NOT disjoint — `upload` and \
                      `cmd_upload` can bracket the same memcpy. Never add the nested rows to each \
-                     other; each is only comparable to its parent `record`.\n",
+                     other; each is only comparable to its parent.\n",
                 );
             }
-            // THE UNNAMED PART OF `record` GETS A ROW (R11).
+            // THE UNNAMED PART OF `record` GETS A ROW TOO (R11, one level down).
             //
-            // Every child of `record` is named and printed above, which makes the decomposition
+            // Every child of `record` is named and printed above, which makes that decomposition
             // *look* closed. It is not: on a warm weight cache the named children fall to ~1-2 ms
             // of an ~18-23 ms `record`, so ~90% of the phase has no span of its own. That
             // residual is the vkCmd* recording itself — the thing the phase is named after — and
@@ -1300,17 +1711,16 @@ impl VulkanTracer {
             if record_us > 0 {
                 let residual = record_residual_us(
                     record_us,
-                    child_us.max(get(Phase::CmdUpload).0),
-                    get(Phase::DescAlloc).0,
+                    get(Phase::Upload).0.max(get(Phase::CmdUpload).0),
+                    get(Phase::DescAlloc).0 + get(Phase::CmdAlloc).0,
                     get(Phase::PipelineLookup).0,
                 );
                 out.push_str(&format!(
-                    "              {:<15} {:>10} us  ({:.1}% of `record`) — `record` minus every \
+                    "            {:<17} {:>10} us  ({:.1}% of `record`) — `record` minus every \
                      named child: the vkCmd* calls themselves, the ONLY part of `record` that is \
                      command-buffer recording. CUMULATIVE over every Compute call, so a session \
                      with one cold call and many warm ones reports a MIXTURE of the two regimes \
-                     and this share belongs to no single call; for the per-call split read the \
-                     `record` spans and their children in the trace JSON\n",
+                     and this share belongs to no single call\n",
                     "record RESIDUAL",
                     residual,
                     100.0 * residual as f64 / record_us as f64,
@@ -1342,6 +1752,7 @@ impl VulkanTracer {
         log::info!("{out}");
 
         if self.is_enabled() {
+            let attribution = HostAttribution::from_phase_table(&s.phase_us);
             let args = Args::new()
                 .with("claimed_nodes", s.claimed_nodes)
                 .with("total_nodes", s.total_nodes)
@@ -1357,6 +1768,27 @@ impl VulkanTracer {
                 .with("first_record", s.record_paths[0])
                 .with("replay", s.record_paths[1])
                 .with("rerecord", s.record_paths[2])
+                // The record-path witness is wired in production (issue #88). Carrying the
+                // wiring state as a fact rather than letting a consumer infer it from three
+                // zeros, which is ambiguous between "nothing ran" and "the witness vanished".
+                .with(
+                    "record_path_wired",
+                    s.record_paths.iter().any(|&n| n > 0) || attribution.execute_calls == 0,
+                )
+                // Host attribution (issue #88). `execute_us` is the WHOLE Compute wall;
+                // `attributed_us` is the sum of the top-level phases inside it; the difference is
+                // host cost no phase names. `attribution_admissible` is false whenever the
+                // breakdown must not be read as a decomposition — a refused or partial trace
+                // therefore cannot be quoted as complete.
+                .with("execute_us", attribution.execute_us)
+                .with("execute_calls", attribution.execute_calls)
+                .with("attributed_us", attribution.attributed_us)
+                .with("unattributed_us", attribution.unattributed_us)
+                .with("attribution_admissible", attribution.admissible)
+                .with(
+                    "attribution_refusal",
+                    attribution.refusal().unwrap_or_default(),
+                )
                 .with("upload_bytes", s.upload_bytes)
                 .with("readback_bytes", s.readback_bytes)
                 .with("gpu_time_measured", s.gpu_measured);
@@ -1552,6 +1984,18 @@ pub struct PhaseGuard {
 impl Drop for PhaseGuard {
     fn drop(&mut self) {
         tracer().record_phase(self.phase, self.start.elapsed());
+    }
+}
+
+/// RAII bracket for [`Phase::Execute`] — the whole `Compute` call. See
+/// [`VulkanTracer::execute_region`].
+pub struct ExecuteGuard {
+    start: Instant,
+}
+
+impl Drop for ExecuteGuard {
+    fn drop(&mut self) {
+        tracer().record_phase(Phase::Execute, self.start.elapsed());
     }
 }
 
@@ -1784,6 +2228,7 @@ mod tests {
         assert!(!Phase::CmdUpload.is_sibling());
         assert!(!Phase::DescAlloc.is_sibling());
         assert!(!Phase::PipelineLookup.is_sibling());
+        assert!(!Phase::CmdAlloc.is_sibling());
         assert!(
             Phase::CmdUpload.caveat().contains("OVERLAPS `upload`"),
             "cmd_upload and upload bracket the same memcpy; the artifact must say so"
@@ -1793,22 +2238,44 @@ mod tests {
     #[test]
     fn nested_phases_are_declared_both_structurally_and_in_their_caveat() {
         assert_eq!(Phase::Upload.nested_in(), Some(Phase::Record));
-        assert_eq!(Phase::Readback.nested_in(), Some(Phase::Record));
+        // CORRECTED IN ISSUE #88. `readback` used to be modelled as a child of `record`, and it
+        // never was: `record_transfer(Transfer::Readback, ..)` fires in Step 5, after the record
+        // guard is dropped AND after the fence. Under the old model its microseconds were
+        // subtracted from `record`'s residual, which inflated the reported command-recording
+        // share of a phase that had already ended.
+        assert_eq!(Phase::Readback.nested_in(), Some(Phase::Writeback));
         for p in Phase::ALL {
-            match p.nested_in() {
-                Some(parent) => {
+            match p.role() {
+                PhaseRole::Child(parent) => {
                     assert!(
                         p.caveat().contains("NESTED INSIDE"),
                         "{p:?} is nested in {parent:?} but its caveat does not say so — an \
                          aggregator that reads prose will double-count it"
                     );
                     assert!(
-                        parent.nested_in().is_none(),
-                        "only one level of nesting is modelled; {parent:?} gained a parent"
+                        matches!(parent.role(), PhaseRole::Sibling),
+                        "only one level of nesting under a sibling is modelled; {parent:?} is \
+                         {:?}",
+                        parent.role()
                     );
                     assert!(!p.is_sibling());
+                    assert!(!p.is_total());
                 }
-                None => assert!(p.is_sibling()),
+                PhaseRole::Sibling => {
+                    assert!(p.is_sibling());
+                    assert!(p.nested_in().is_none());
+                    assert!(!p.is_total());
+                }
+                PhaseRole::Total => {
+                    // A total is neither summable nor nested. If it were classified as a sibling
+                    // it would be added into SIBLING TOTAL and double every host number.
+                    assert!(
+                        !p.is_sibling(),
+                        "{p:?} is the whole and must never be summed"
+                    );
+                    assert!(p.nested_in().is_none());
+                    assert!(p.is_total());
+                }
             }
         }
         // The parent must warn that it CONTAINS its children, not just the reverse: whoever reads
@@ -1818,9 +2285,94 @@ mod tests {
             "the phase that swallowed a memcpy must say what it swallowed"
         );
         assert!(
+            Phase::Writeback.caveat().contains("CONTAINS"),
+            "readback's real parent must name what it contains"
+        );
+        assert!(
+            Phase::Record
+                .caveat()
+                .contains("does NOT contain `readback`"),
+            "`record` no longer contains readback (issue #88) and must say so explicitly; a \
+             caveat silent on the correction would send a reader subtracting post-fence memcpy \
+             time from a phase that had already ended"
+        );
+        assert!(
             !Phase::Record.caveat().contains("amortised across replays"),
             "this claim was falsified by measurement and by an unwired record-path counter"
         );
+    }
+
+    /// Exactly one phase may be the whole, and it must be the one the session actually brackets.
+    ///
+    /// Two totals would mean two denominators and no way to tell which share is which; zero
+    /// totals is the pre-#88 state, where every phase was a part and nothing said what of.
+    #[test]
+    fn there_is_exactly_one_total_and_it_is_execute() {
+        let totals: Vec<Phase> = Phase::ALL.into_iter().filter(|p| p.is_total()).collect();
+        assert_eq!(
+            totals,
+            vec![Phase::Execute],
+            "the Compute call has exactly one whole"
+        );
+    }
+
+    /// The sibling set that gets summed must be exactly the in-Compute top-level phases —
+    /// no total (double-counts the call), no child (double-counts its parent), and nothing
+    /// that happens outside Compute (`compile`/`prepack` are session-setup, and folding them
+    /// into a per-inference denominator would make the first inference look free).
+    #[test]
+    fn compute_siblings_excludes_the_total_the_children_and_the_setup_phases() {
+        let sibs: Vec<Phase> = Phase::compute_siblings().collect();
+        for p in &sibs {
+            assert!(
+                matches!(p.role(), PhaseRole::Sibling),
+                "{p:?} is not a sibling"
+            );
+            assert!(
+                p.in_compute(),
+                "{p:?} does not happen inside a Compute call"
+            );
+        }
+        assert!(!sibs.contains(&Phase::Execute), "the whole is not a part");
+        assert!(!sibs.contains(&Phase::Compile), "compile is session setup");
+        assert!(!sibs.contains(&Phase::Prepack), "prepack is session setup");
+        assert!(!sibs.contains(&Phase::Readback), "readback is a child");
+        // The set the production path actually opens, in order. If a guard is added to
+        // `vk::session` without appearing here — or removed from here without the guard going —
+        // this list is the thing that has to change, so the drift is visible in a diff.
+        assert_eq!(
+            sibs,
+            vec![
+                Phase::Prepare,
+                Phase::BufferAlloc,
+                Phase::Record,
+                Phase::Submit,
+                Phase::FenceWait,
+                Phase::Writeback,
+            ]
+        );
+    }
+
+    /// A phase whose duration is owned by another clock must not also draw its own span.
+    ///
+    /// `execute` shares its microseconds with `vulkan.subgraph`; `upload`/`readback` are folded
+    /// in through `record_transfer` from inside a parent span. Any of them emitting a second
+    /// coincident `ph:"X"` span would let an aggregator count the same time twice under two
+    /// different names, which is the exact failure `nested_in` was added to prevent one level up.
+    #[test]
+    fn phases_owned_by_another_clock_emit_no_span_of_their_own() {
+        assert!(!Phase::Execute.emits_span());
+        assert!(!Phase::Upload.emits_span());
+        assert!(!Phase::Readback.emits_span());
+        for p in Phase::ALL {
+            if !p.emits_span() {
+                continue;
+            }
+            assert!(
+                matches!(p.role(), PhaseRole::Sibling | PhaseRole::Child(_)),
+                "{p:?} emits a span but is the whole"
+            );
+        }
     }
 
     #[test]
@@ -1921,5 +2473,129 @@ mod tests {
             }],
         };
         assert_eq!(tracer().record_gpu_intervals(&report), 0);
+    }
+
+    // ── Host attribution (issue #88) ────────────────────────────────────────────────────────
+    //
+    // The arithmetic is deliberately testable without a device, an environment variable, or a
+    // tracer: `HostAttribution::from_phase_table` is a pure function of the phase table, so
+    // every failure mode below is a real behavioural assertion and not a restatement of the
+    // source.
+
+    /// A table built the way a healthy warm decode step builds one.
+    fn full_table(execute_us: u64, part_us: u64) -> BTreeMap<Phase, (u64, u64)> {
+        let mut t = BTreeMap::new();
+        t.insert(Phase::Execute, (execute_us, 10));
+        for p in Phase::compute_siblings() {
+            t.insert(p, (part_us, 10));
+        }
+        t
+    }
+
+    #[test]
+    fn the_unattributed_remainder_is_the_whole_minus_the_named_parts() {
+        // 6 siblings x 100 us = 600 us named inside a 1000 us call.
+        let a = HostAttribution::from_phase_table(&full_table(1000, 100));
+        assert_eq!(a.execute_us, 1000);
+        assert_eq!(a.attributed_us, 600);
+        assert_eq!(a.unattributed_us, 400);
+        assert_eq!(a.unattributed_pct(), Some(40.0));
+        assert!(a.admissible, "{:?}", a.refusal());
+        assert_eq!(a.refusal(), None);
+
+        // R10: the value must VARY with its input. A residual that reads the same for a call
+        // whose parts cover 95% as for one where they cover 60% is a constant in a
+        // measurement's clothes.
+        let tight = HostAttribution::from_phase_table(&full_table(1000, 160));
+        assert_eq!(tight.unattributed_us, 40);
+        assert_ne!(tight.unattributed_us, a.unattributed_us);
+    }
+
+    /// The failure this whole model exists to make impossible: a phase stops being invoked, its
+    /// cost silently moves into the residual, and the table still reads as a decomposition.
+    #[test]
+    fn a_phase_that_stops_being_invoked_makes_the_attribution_inadmissible() {
+        for missing in Phase::compute_siblings() {
+            let mut t = full_table(1000, 100);
+            t.remove(&missing);
+            let a = HostAttribution::from_phase_table(&t);
+            assert!(
+                !a.admissible,
+                "{missing:?} disappeared and the breakdown still claimed to be complete"
+            );
+            assert_eq!(a.silent_phases, vec![missing]);
+            let refusal = a
+                .refusal()
+                .expect("an inadmissible attribution must say why");
+            assert!(
+                refusal.contains(missing.as_str()),
+                "the refusal must NAME the phase that vanished, or a reader cannot tell which \
+                 number moved: {refusal}"
+            );
+            // The numbers are still reported — refusing to interpret is not refusing to show.
+            assert_eq!(a.execute_us, 1000);
+            assert_eq!(a.unattributed_us, 500);
+        }
+    }
+
+    /// A phase present in the table but with zero calls is the same defect wearing a nicer hat:
+    /// the key exists, the sum reads plausible, and nothing ran.
+    #[test]
+    fn a_phase_present_with_zero_calls_is_still_silent() {
+        let mut t = full_table(1000, 100);
+        t.insert(Phase::Submit, (0, 0));
+        let a = HostAttribution::from_phase_table(&t);
+        assert!(!a.admissible);
+        assert_eq!(a.silent_phases, vec![Phase::Submit]);
+    }
+
+    /// The parts cannot exceed the whole. If they do, the guards overlap or the total does not
+    /// enclose them — an instrumentation defect, and the one thing a plausible-looking
+    /// percentage would hide most effectively.
+    #[test]
+    fn parts_larger_than_the_whole_are_refused_not_clamped() {
+        let a = HostAttribution::from_phase_table(&full_table(500, 100));
+        assert!(a.over_subscribed);
+        assert!(!a.admissible);
+        assert_eq!(
+            a.unattributed_us, 0,
+            "saturating, so the residual never goes negative — but the flag is what makes the \
+             zero readable as a defect instead of as perfect coverage"
+        );
+        assert!(a.refusal().unwrap().contains("OVER-SUBSCRIBED"));
+    }
+
+    /// No Compute call means no denominator. The share must be `None`, not 0.0: a run that
+    /// measured nothing and a run that measured 0% unattributed are opposite findings.
+    #[test]
+    fn an_empty_run_has_no_share_rather_than_a_zero_share() {
+        let a = HostAttribution::from_phase_table(&BTreeMap::new());
+        assert_eq!(a.execute_calls, 0);
+        assert_eq!(a.unattributed_pct(), None);
+        assert!(!a.admissible);
+        assert!(a.refusal().unwrap().contains("NO WHOLE"));
+        assert!(
+            a.silent_phases.is_empty(),
+            "with no Compute call, a phase that did not fire is not evidence of anything"
+        );
+    }
+
+    /// The summary must not be able to print a complete-looking attribution for a partial trace.
+    /// This exercises the rendered text, not the struct, because the text is what a reader
+    /// quotes.
+    #[test]
+    fn the_rendered_summary_refuses_a_partial_attribution_in_words() {
+        let full = HostAttribution::from_phase_table(&full_table(1000, 100));
+        assert!(full.refusal().is_none());
+
+        let mut partial_tbl = full_table(1000, 100);
+        partial_tbl.remove(&Phase::FenceWait);
+        let partial = HostAttribution::from_phase_table(&partial_tbl);
+        let refusal = partial.refusal().expect("must refuse");
+        assert!(refusal.starts_with("INCOMPLETE"));
+        assert!(
+            refusal.contains("fence_wait"),
+            "must name the missing phase: {refusal}"
+        );
     }
 }

@@ -1508,6 +1508,18 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            // Host-cost fields (counters ABI v9, issue #88). Written explicitly rather than
+            // through ..Default::default(): these helpers exist to produce a document with a
+            // KNOWN shape, and a spread would let a future field appear in the artifact without
+            // any test having decided what it should read.
+            descriptor_pools_created: 0,
+            descriptor_sets_allocated: 0,
+            descriptor_writes: 0,
+            command_buffers_recorded: 0,
+            queue_submits: 0,
+            record_path_first_record: 0,
+            record_path_replay: 0,
+            record_path_rerecord: 0,
         }
         .to_json()
     }
@@ -1558,6 +1570,18 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            // Host-cost fields (counters ABI v9, issue #88). Written explicitly rather than
+            // through ..Default::default(): these helpers exist to produce a document with a
+            // KNOWN shape, and a spread would let a future field appear in the artifact without
+            // any test having decided what it should read.
+            descriptor_pools_created: 0,
+            descriptor_sets_allocated: 0,
+            descriptor_writes: 0,
+            command_buffers_recorded: 0,
+            queue_submits: 0,
+            record_path_first_record: 0,
+            record_path_replay: 0,
+            record_path_rerecord: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_MATCH)
     }
@@ -1587,6 +1611,18 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            // Host-cost fields (counters ABI v9, issue #88). Written explicitly rather than
+            // through ..Default::default(): these helpers exist to produce a document with a
+            // KNOWN shape, and a spread would let a future field appear in the artifact without
+            // any test having decided what it should read.
+            descriptor_pools_created: 0,
+            descriptor_sets_allocated: 0,
+            descriptor_writes: 0,
+            command_buffers_recorded: 0,
+            queue_submits: 0,
+            record_path_first_record: 0,
+            record_path_replay: 0,
+            record_path_rerecord: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_DIVERGENT)
     }
@@ -2002,6 +2038,18 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            // Host-cost fields (counters ABI v9, issue #88). Written explicitly rather than
+            // through ..Default::default(): these helpers exist to produce a document with a
+            // KNOWN shape, and a spread would let a future field appear in the artifact without
+            // any test having decided what it should read.
+            descriptor_pools_created: 0,
+            descriptor_sets_allocated: 0,
+            descriptor_writes: 0,
+            command_buffers_recorded: 0,
+            queue_submits: 0,
+            record_path_first_record: 0,
+            record_path_replay: 0,
+            record_path_rerecord: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_UNATTRIBUTED);
         std::fs::write(&f, doc).expect("write");
@@ -2086,6 +2134,18 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            // Host-cost fields (counters ABI v9, issue #88). Written explicitly rather than
+            // through ..Default::default(): these helpers exist to produce a document with a
+            // KNOWN shape, and a spread would let a future field appear in the artifact without
+            // any test having decided what it should read.
+            descriptor_pools_created: 0,
+            descriptor_sets_allocated: 0,
+            descriptor_writes: 0,
+            command_buffers_recorded: 0,
+            queue_submits: 0,
+            record_path_first_record: 0,
+            record_path_replay: 0,
+            record_path_rerecord: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_SPLIT_FRAME);
         std::fs::write(&f, doc).expect("write");

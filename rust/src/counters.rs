@@ -65,7 +65,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// [`COUNTERS_LAYOUT_HASH`], which the compiler computes from the actual field offsets: a layout
 /// change that does not appear in [`COUNTERS_LAYOUT_REGISTRY`] under this version fails the build.
 /// See [`counters_layout_hash`].
-pub const COUNTERS_ABI_VERSION: u32 = 8;
+pub const COUNTERS_ABI_VERSION: u32 = 9;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -745,6 +745,62 @@ pub struct VulkanEpCounters {
     /// parse time, so the form read as `KEY-ABSENT` and was indistinguishable from a form nobody
     /// had ever proven.
     pub subject_changed_declines: u64,
+    /// `vkCreateDescriptorPool` calls that succeeded. **ABI version 9** (issue #88).
+    ///
+    /// This EP creates one descriptor pool per kernel per `Compute` call and destroys it after
+    /// the fence, so on a decode step this is `dispatches_executed`. That is the claim the
+    /// decode-host investigation needs priced, and until now nothing in the build could confirm
+    /// or refute it without a Vulkan layer capture.
+    ///
+    /// Process-cumulative like every counter here. Dividing it by the wrong denominator (e.g. by
+    /// the number of *timed* iterations rather than by every Compute call the process made,
+    /// warmups included) is the standard trap; use `compute_calls` from the same snapshot.
+    pub descriptor_pools_created: u64,
+    /// `vkAllocateDescriptorSets` calls that succeeded. **ABI version 9** (issue #88).
+    ///
+    /// One per kernel per `Compute` call in this build. Separate from
+    /// `descriptor_pools_created` because a fix that keeps one pool alive and re-allocates sets
+    /// from it moves only one of these two numbers, and a fix that caches sets moves the other.
+    pub descriptor_sets_allocated: u64,
+    /// Individual storage-buffer descriptors written by `vkUpdateDescriptorSets`.
+    /// **ABI version 9** (issue #88).
+    ///
+    /// The width of the churn, where `descriptor_sets_allocated` is its count. "355 sets" and
+    /// "355 descriptors" are different problems with different fixes.
+    pub descriptor_writes: u64,
+    /// Command buffers begun (`vkResetCommandBuffer` + `vkBeginCommandBuffer`).
+    /// **ABI version 9** (issue #88).
+    ///
+    /// Equal to `compute_calls` in this build, because `CommandPool::begin` is called
+    /// unconditionally once per `Compute`. It becomes interesting the moment that stops being
+    /// true: a command-buffer cache would make this fall below `compute_calls`, and this is the
+    /// number that would show it.
+    pub command_buffers_recorded: u64,
+    /// `vkQueueSubmit` calls. **ABI version 9** (issue #88).
+    ///
+    /// One per `Compute` in this build. A batching change would drive it below `compute_calls`.
+    pub queue_submits: u64,
+    /// `Compute` calls classified as the first recording for their subgraph.
+    /// **ABI version 9** (issue #88).
+    ///
+    /// With `record_path_rerecord` and `record_path_replay` this is the always-on mirror of the
+    /// tracer's record-path breakdown, available to a benchmark that cannot enable tracing.
+    /// A second first-record for the same subgraph is impossible by construction; more
+    /// first-records than distinct subgraphs would mean the witness is broken.
+    pub record_path_first_record: u64,
+    /// `Compute` calls that reused a cached command buffer. **ABI version 9** (issue #88).
+    ///
+    /// **Zero in this build, and that is a measurement, not a placeholder.** `CommandPool::begin`
+    /// resets and re-begins unconditionally, so there is no replay to count. It is exported
+    /// precisely so the day a command-buffer cache lands, the claim "we now replay" has a number
+    /// that must move.
+    pub record_path_replay: u64,
+    /// `Compute` calls that re-recorded a command buffer they had recorded before.
+    /// **ABI version 9** (issue #88).
+    ///
+    /// In this build, every `Compute` after the first for a given subgraph. This is the
+    /// per-inference re-recording cost the decode-host investigation is about.
+    pub record_path_rerecord: u64,
 }
 }
 
@@ -856,6 +912,12 @@ pub const COUNTERS_LAYOUT_REGISTRY: &[(u32, u64)] = &[
     // that can no longer happen — and `subject_changed_declines` appends the population that used
     // to be invisible because a stale entry was deleted at parse time and read as `KEY-ABSENT`.
     (8, 0xdf71_f4e6_a592_71b3),
+    // v9 = issue #88. Eight host-cost fields appended: the descriptor/command-buffer/submit
+    // churn a decode step actually performs, and the record-path breakdown. Appended, never
+    // inserted, so every v8 offset is unchanged — but the hash moves regardless, because a
+    // consumer compiled against v8 reading a v9 struct would silently see a shorter struct and
+    // this table's job is to make that a build failure rather than a plausible number.
+    (9, 0xe94f_3c3d_f537_bbae),
 ];
 
 /// The build fails here when the struct changed and the version did not.
@@ -899,6 +961,20 @@ static OUTPUTS_DEVICE_BOUND: AtomicU64 = AtomicU64::new(0);
 static OUTPUTS_BIND_ATTEMPTED: AtomicU64 = AtomicU64::new(0);
 static OUTPUTS_BIND_DECLINED: AtomicU64 = AtomicU64::new(0);
 static DISPATCHES_EXECUTED: AtomicU64 = AtomicU64::new(0);
+// ── Host-cost counters (issue #88) ────────────────────────────────────────────────────────
+// Always-on relaxed atomics on the per-dispatch path, the same cost `DISPATCHES_EXECUTED`
+// already pays. Deliberately NOT behind a tracing env switch: the whole point is that a
+// benchmark which cannot enable tracing must still be able to state how many descriptor sets a
+// warm decode step allocated, and a number that only exists when you ask for it cannot be
+// checked against a run somebody else did.
+static DESCRIPTOR_POOLS_CREATED: AtomicU64 = AtomicU64::new(0);
+static DESCRIPTOR_SETS_ALLOCATED: AtomicU64 = AtomicU64::new(0);
+static DESCRIPTOR_WRITES: AtomicU64 = AtomicU64::new(0);
+static COMMAND_BUFFERS_RECORDED: AtomicU64 = AtomicU64::new(0);
+static QUEUE_SUBMITS: AtomicU64 = AtomicU64::new(0);
+static RECORD_PATH_FIRST_RECORD: AtomicU64 = AtomicU64::new(0);
+static RECORD_PATH_REPLAY: AtomicU64 = AtomicU64::new(0);
+static RECORD_PATH_RERECORD: AtomicU64 = AtomicU64::new(0);
 /// Successful and failed writes of the JSON snapshot, reported *by the next successful write*.
 ///
 /// **Why this exists (Tank, 2026-08-02, measured).** The snapshot is rewritten on the dispatch
@@ -2067,6 +2143,53 @@ pub fn record_dispatches(n: u64) {
     dump_if_requested();
 }
 
+/// Record one successful `vkCreateDescriptorPool`.
+///
+/// Called from the pool constructor rather than from its caller (issue #88): counting the Vulkan
+/// call means the number falls on its own the day somebody makes the pool reusable, instead of
+/// staying accurate only for as long as everyone remembers to move the increment too.
+///
+/// No `dump_if_requested()`: this fires per kernel per Compute, and a file write per descriptor
+/// pool would make the instrument the dominant cost of the thing it is measuring.
+pub fn record_descriptor_pool_created() {
+    DESCRIPTOR_POOLS_CREATED.fetch_add(1, ORD);
+}
+
+/// Record one successful `vkAllocateDescriptorSets` and the `n_descriptors` storage-buffer
+/// descriptors written into the set.
+///
+/// Both halves in one call because they are observed at the same instant and splitting them
+/// would let one be updated without the other.
+pub fn record_descriptor_set_allocated(n_descriptors: u64) {
+    DESCRIPTOR_SETS_ALLOCATED.fetch_add(1, ORD);
+    DESCRIPTOR_WRITES.fetch_add(n_descriptors, ORD);
+}
+
+/// Record one `vkBeginCommandBuffer` (preceded by a `vkResetCommandBuffer`).
+pub fn record_command_buffer_recorded() {
+    COMMAND_BUFFERS_RECORDED.fetch_add(1, ORD);
+}
+
+/// Record one `vkQueueSubmit`.
+pub fn record_queue_submit() {
+    QUEUE_SUBMITS.fetch_add(1, ORD);
+}
+
+/// Record which recording path a `Compute` call took — the always-on mirror of
+/// [`crate::trace::VulkanTracer::record_path`].
+///
+/// The tracer's copy only exists when tracing is enabled. This one always does, because
+/// "does this EP re-record a command buffer on every inference?" is a question a benchmark must
+/// be able to answer from a normal run, and the answer changes what the measured wall time means.
+pub fn record_command_path(path: crate::trace::RecordPath) {
+    match path {
+        crate::trace::RecordPath::FirstRecord => &RECORD_PATH_FIRST_RECORD,
+        crate::trace::RecordPath::Replay => &RECORD_PATH_REPLAY,
+        crate::trace::RecordPath::Rerecord => &RECORD_PATH_RERECORD,
+    }
+    .fetch_add(1, ORD);
+}
+
 /// Record that this process bound and dispatched the embedded SPIR-V module `stem`.
 ///
 /// Idempotent and order-independent: the value of interest is the *set*, because a proof entry's
@@ -2466,6 +2589,14 @@ pub fn snapshot() -> VulkanEpCounters {
         device_unattributed_claims: DEVICE_UNATTRIBUTED_CLAIMS.load(ORD),
         proven_elsewhere_claims: PROVEN_ELSEWHERE_CLAIMS.load(ORD),
         subject_changed_declines: SUBJECT_CHANGED_DECLINES.load(ORD),
+        descriptor_pools_created: DESCRIPTOR_POOLS_CREATED.load(ORD),
+        descriptor_sets_allocated: DESCRIPTOR_SETS_ALLOCATED.load(ORD),
+        descriptor_writes: DESCRIPTOR_WRITES.load(ORD),
+        command_buffers_recorded: COMMAND_BUFFERS_RECORDED.load(ORD),
+        queue_submits: QUEUE_SUBMITS.load(ORD),
+        record_path_first_record: RECORD_PATH_FIRST_RECORD.load(ORD),
+        record_path_replay: RECORD_PATH_REPLAY.load(ORD),
+        record_path_rerecord: RECORD_PATH_RERECORD.load(ORD),
     }
 }
 
@@ -2483,6 +2614,14 @@ pub fn reset() {
     OUTPUTS_BIND_ATTEMPTED.store(0, ORD);
     OUTPUTS_BIND_DECLINED.store(0, ORD);
     DISPATCHES_EXECUTED.store(0, ORD);
+    DESCRIPTOR_POOLS_CREATED.store(0, ORD);
+    DESCRIPTOR_SETS_ALLOCATED.store(0, ORD);
+    DESCRIPTOR_WRITES.store(0, ORD);
+    COMMAND_BUFFERS_RECORDED.store(0, ORD);
+    QUEUE_SUBMITS.store(0, ORD);
+    RECORD_PATH_FIRST_RECORD.store(0, ORD);
+    RECORD_PATH_REPLAY.store(0, ORD);
+    RECORD_PATH_RERECORD.store(0, ORD);
     if let Ok(mut used) = SHADERS_DISPATCHED.lock() {
         used.clear();
     }
@@ -2586,7 +2725,16 @@ impl VulkanEpCounters {
              \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \"device_losses\": {},\n  \
              \"outputs_device_resident\": {},\n  \"outputs_host_resident\": {},\n  \"outputs_device_bound\": {},\n  \
              \"outputs_bind_attempted\": {},\n  \"outputs_bind_declined\": {},\n  \
-             \"dispatches_executed\": {},\n  \"claimed_nodes\": {},\n  \"islands_offered\": {},\n  \
+             \"dispatches_executed\": {},\n  \
+             \"descriptor_pools_created\": {},\n  \
+             \"descriptor_sets_allocated\": {},\n  \
+             \"descriptor_writes\": {},\n  \
+             \"command_buffers_recorded\": {},\n  \
+             \"queue_submits\": {},\n  \
+             \"record_path_first_record\": {},\n  \
+             \"record_path_replay\": {},\n  \
+             \"record_path_rerecord\": {},\n  \
+             \"claimed_nodes\": {},\n  \"islands_offered\": {},\n  \
              \"viable_islands_retained\": {},\n  \
              \"net_benefit_gate\": \"{}\",\n  \
              \"net_benefit_gate_clusters_seen\": {},\n  \
@@ -2669,6 +2817,14 @@ impl VulkanEpCounters {
             OUTPUTS_BIND_ATTEMPTED.load(ORD),
             OUTPUTS_BIND_DECLINED.load(ORD),
             self.dispatches_executed,
+            self.descriptor_pools_created,
+            self.descriptor_sets_allocated,
+            self.descriptor_writes,
+            self.command_buffers_recorded,
+            self.queue_submits,
+            self.record_path_first_record,
+            self.record_path_replay,
+            self.record_path_rerecord,
             claimed,
             islands,
             viable,
@@ -2761,13 +2917,24 @@ impl VulkanEpCounters {
     pub fn summary(&self) -> String {
         format!(
             "VulkanExecutionProvider counters: {} dispatch(es) executed across {} Compute call(s) \
-             ({} failed); {} subgraph(s) compiled live, {} stub, from {} Compile call(s)",
+             ({} failed); {} subgraph(s) compiled live, {} stub, from {} Compile call(s); \
+             host churn: {} descriptor pool(s), {} descriptor set(s), {} descriptor write(s), \
+             {} command buffer(s) recorded, {} submit(s); record path \
+             first={} replay={} rerecord={}",
             self.dispatches_executed,
             self.compute_calls,
             self.compute_failures,
             self.subgraphs_live,
             self.subgraphs_stub,
             self.compile_calls,
+            self.descriptor_pools_created,
+            self.descriptor_sets_allocated,
+            self.descriptor_writes,
+            self.command_buffers_recorded,
+            self.queue_submits,
+            self.record_path_first_record,
+            self.record_path_replay,
+            self.record_path_rerecord,
         )
     }
 }

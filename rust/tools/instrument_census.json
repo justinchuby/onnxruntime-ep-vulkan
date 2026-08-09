@@ -34,7 +34,6 @@
     "trace.rs::op_span",
     "trace.rs::op_timer_start",
     "trace.rs::record_op_meta",
-    "trace.rs::record_path",
     "trace.rs::transfer_totals"
   ],
   "ambiguous": [

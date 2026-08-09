@@ -1,0 +1,3567 @@
+{
+  "schema": "decode_host_attribution/1",
+  "issue": 88,
+  "owner": "Switch",
+  "taken_at": "2026-08-08T17:27:40.427-07:00",
+  "what_this_measures": "the host-side breakdown of Vulkan EP Compute wall time during real Phi-3.5 decode",
+  "what_this_does_not_measure": [
+    "any speedup \u2014 there is one arm and no comparison",
+    "kernel time \u2014 submit is not GPU time and fence_wait is not idle time",
+    "the EP's cumulative session phase totals \u2014 those mix the cold first call with the warm ones and are not quoted here; every share below is re-derived per call by span containment and medianed over warm calls only"
+  ],
+  "model": {
+    "key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+    "family": "phi3",
+    "sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+    "bytes": 26180848,
+    "provenance": "foundry-resolved",
+    "resolver": "foundry",
+    "recorded_sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+    "agrees_with_recorded_provenance": true,
+    "weights_bytes": 2291238912,
+    "external_data_files": 1,
+    "path_note": "resolved at run time via bench/real_model.py; not recorded here"
+  },
+  "environment": {
+    "os": "Windows-11-10.0.26200-SP0",
+    "machine": "AMD64",
+    "python": "3.12.10",
+    "device_selector": 0,
+    "device_selector_note": "a selector is a request, not an identity; the device the run actually opened is in the EP's own device frame, not here",
+    "ep_library_present": true,
+    "ep_library_sha256": "75e000e94a6a939f31009099f40cca569601eca5245937d76fdac5a058d10972",
+    "trace_env": "ONNXRUNTIME_EP_VULKAN_TRACE",
+    "counters_env": "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE",
+    "serialised": true,
+    "serialised_note": "repeats run one at a time in this process's own subprocess loop; nothing in this probe runs two GPU children concurrently. Whether the *box* was otherwise quiet is not something this probe can witness, and it does not claim to."
+  },
+  "counters_are_per_repeat": true,
+  "counters_are_per_repeat_note": "every repeat is a fresh process with its own counters file, written by its own exit hook. No repeat can borrow a count from repeat 0, and repeat 0's cold compilation is never averaged into the warm repeats.",
+  "runs": [
+    {
+      "past": 128,
+      "repeat": 0,
+      "cold": true,
+      "child_exit_code": 0,
+      "child_seconds": 11.6,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 143.26849998906255,
+        "mean_ms": 142.6709666576547,
+        "min_ms": 114.33479998959228,
+        "max_ms": 164.16319995187223,
+        "p05_ms": 126.14050999982283,
+        "p95_ms": 157.316430011997,
+        "mad_ms": 8.620999986305833,
+        "stdev_ms": 12.16175158624628,
+        "rsd": 0.08488782661348962
+      },
+      "feeds_digest": "52dbbe9170218c768400716e1b8d98cf0d99b09616917cd63928cd7b060033ae",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 4134898,
+        "execute_calls": 18,
+        "attributed_us": 4119133,
+        "unattributed_us": 15765,
+        "unattributed_share": 0.0038126696232893774,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 69597
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 272199
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 1890933
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 2424
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 1715962
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 21930
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 24799
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 4208
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 1249527
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 633204
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 2439845,
+              "phases": {
+                "prepare": 1148,
+                "buffer_alloc": 235762,
+                "record": 1584272,
+                "cmd_alloc": 1025,
+                "cmd_upload": 1522521,
+                "pipeline_lookup": 17414,
+                "desc_alloc": 3766,
+                "submit": 453,
+                "fence_wait": 235771,
+                "writeback": 381654
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 143253,
+              "phases": {
+                "prepare": 5151,
+                "buffer_alloc": 11342,
+                "record": 43150,
+                "cmd_alloc": 156,
+                "cmd_upload": 34017,
+                "pipeline_lookup": 500,
+                "desc_alloc": 1687,
+                "submit": 332,
+                "fence_wait": 60366,
+                "writeback": 22337
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 102277,
+              "phases": {
+                "prepare": 4413,
+                "buffer_alloc": 2375,
+                "record": 19318,
+                "cmd_alloc": 118,
+                "cmd_upload": 11962,
+                "pipeline_lookup": 378,
+                "desc_alloc": 1461,
+                "submit": 381,
+                "fence_wait": 59320,
+                "writeback": 15121
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 95188,
+            "median_phase_us": {
+              "buffer_alloc": 1316,
+              "cmd_alloc": 72,
+              "cmd_upload": 9452,
+              "desc_alloc": 1105,
+              "fence_wait": 59551,
+              "pipeline_lookup": 313,
+              "prepare": 2984,
+              "record": 16029,
+              "submit": 193,
+              "writeback": 13397
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 94144,
+            "median_unattributed_us": 852,
+            "median_unattributed_share": 0.009239277774765494,
+            "share_of_whole": {
+              "buffer_alloc": 0.013239703012133041,
+              "cmd_alloc": 0.0007667021266400237,
+              "cmd_upload": 0.10067091314333555,
+              "desc_alloc": 0.011821722013009243,
+              "fence_wait": 0.624931714081607,
+              "pipeline_lookup": 0.0030963027068609066,
+              "prepare": 0.03306738979404316,
+              "record": 0.17148450872988702,
+              "submit": 0.0019328198670454213,
+              "writeback": 0.14165651132495694
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": " fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        1989716 us  (48.3% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL       135743 us  (7.2% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past128_r0.json\n",
+      "usable": true
+    },
+    {
+      "past": 128,
+      "repeat": 1,
+      "cold": false,
+      "child_exit_code": 0,
+      "child_seconds": 11.68,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 144.58650001324713,
+        "mean_ms": 146.90515333786607,
+        "min_ms": 124.85269998433068,
+        "max_ms": 166.71210003551096,
+        "p05_ms": 129.35503000044264,
+        "p95_ms": 166.61410002270713,
+        "mad_ms": 4.9300999962724745,
+        "stdev_ms": 11.459585897396273,
+        "rsd": 0.07925764781875443
+      },
+      "feeds_digest": "52dbbe9170218c768400716e1b8d98cf0d99b09616917cd63928cd7b060033ae",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 4467143,
+        "execute_calls": 18,
+        "attributed_us": 4449382,
+        "unattributed_us": 17761,
+        "unattributed_share": 0.003975919284428549,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 68209
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 325552
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 1969417
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 5773
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 1792275
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 20080
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 28359
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 3789
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 1487923
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 595071
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 2753376,
+              "phases": {
+                "prepare": 3454,
+                "buffer_alloc": 296135,
+                "record": 1668629,
+                "cmd_alloc": 4454,
+                "cmd_upload": 1621969,
+                "pipeline_lookup": 14307,
+                "desc_alloc": 4013,
+                "submit": 321,
+                "fence_wait": 455227,
+                "writeback": 328722
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 138507,
+              "phases": {
+                "prepare": 2034,
+                "buffer_alloc": 3350,
+                "record": 18512,
+                "cmd_alloc": 76,
+                "cmd_upload": 13151,
+                "pipeline_lookup": 49,
+                "desc_alloc": 992,
+                "submit": 255,
+                "fence_wait": 79553,
+                "writeback": 33932
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 101629,
+              "phases": {
+                "prepare": 5201,
+                "buffer_alloc": 1881,
+                "record": 16466,
+                "cmd_alloc": 81,
+                "cmd_upload": 9370,
+                "pipeline_lookup": 324,
+                "desc_alloc": 1354,
+                "submit": 220,
+                "fence_wait": 59674,
+                "writeback": 16428
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 96411,
+            "median_phase_us": {
+              "buffer_alloc": 1663,
+              "cmd_alloc": 80,
+              "cmd_upload": 9712,
+              "desc_alloc": 1346,
+              "fence_wait": 59596,
+              "pipeline_lookup": 360,
+              "prepare": 4263,
+              "record": 16639,
+              "submit": 182,
+              "writeback": 13587
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 95914,
+            "median_unattributed_us": 773,
+            "median_unattributed_share": 0.008334551835063606,
+            "share_of_whole": {
+              "buffer_alloc": 0.01682397712369117,
+              "cmd_alloc": 0.0008303406472505346,
+              "cmd_upload": 0.10111586506417837,
+              "desc_alloc": 0.013890895580920142,
+              "fence_wait": 0.6157093025655844,
+              "pipeline_lookup": 0.0037365329126274054,
+              "prepare": 0.04349508718367698,
+              "record": 0.1719635480455857,
+              "submit": 0.001920363277561457,
+              "writeback": 0.1324642604069421
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": " fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        2060547 us  (46.3% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL       135189 us  (6.9% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past128_r1.json\n",
+      "usable": true
+    },
+    {
+      "past": 128,
+      "repeat": 2,
+      "cold": false,
+      "child_exit_code": 0,
+      "child_seconds": 11.74,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 146.78339997772127,
+        "mean_ms": 147.178246662952,
+        "min_ms": 133.27280001249164,
+        "max_ms": 161.75119997933507,
+        "p05_ms": 135.37504000705667,
+        "p95_ms": 159.2098499822896,
+        "mad_ms": 7.857199991121888,
+        "stdev_ms": 8.803388679060989,
+        "rsd": 0.05997536969709902
+      },
+      "feeds_digest": "52dbbe9170218c768400716e1b8d98cf0d99b09616917cd63928cd7b060033ae",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 4264270,
+        "execute_calls": 18,
+        "attributed_us": 4247933,
+        "unattributed_us": 16337,
+        "unattributed_share": 0.0038311363961475234,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 66511
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 267330
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 1836218
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 14507
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 1644255
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 27245
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 26614
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 3828
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 1465655
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 608919
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 2577810,
+              "phases": {
+                "prepare": 1272,
+                "buffer_alloc": 234011,
+                "record": 1558126,
+                "cmd_alloc": 13145,
+                "cmd_upload": 1480212,
+                "pipeline_lookup": 22547,
+                "desc_alloc": 5217,
+                "submit": 452,
+                "fence_wait": 430010,
+                "writeback": 353086
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 150912,
+              "phases": {
+                "prepare": 4274,
+                "buffer_alloc": 7707,
+                "record": 21530,
+                "cmd_alloc": 133,
+                "cmd_upload": 14986,
+                "pipeline_lookup": 355,
+                "desc_alloc": 1214,
+                "submit": 242,
+                "fence_wait": 80163,
+                "writeback": 35944
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 88221,
+              "phases": {
+                "prepare": 2227,
+                "buffer_alloc": 982,
+                "record": 11287,
+                "cmd_alloc": 65,
+                "cmd_upload": 7927,
+                "pipeline_lookup": 9,
+                "desc_alloc": 523,
+                "submit": 160,
+                "fence_wait": 59815,
+                "writeback": 12925
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 96469,
+            "median_phase_us": {
+              "buffer_alloc": 1546,
+              "cmd_alloc": 79,
+              "cmd_upload": 9029,
+              "desc_alloc": 1289,
+              "fence_wait": 59666,
+              "pipeline_lookup": 319,
+              "prepare": 4036,
+              "record": 15836,
+              "submit": 185,
+              "writeback": 12663
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 95805,
+            "median_unattributed_us": 838,
+            "median_unattributed_share": 0.008848249355915022,
+            "share_of_whole": {
+              "buffer_alloc": 0.016349407783417935,
+              "cmd_alloc": 0.0008354483925549916,
+              "cmd_upload": 0.09558511024266864,
+              "desc_alloc": 0.013122654002011212,
+              "fence_wait": 0.6184992069991396,
+              "pipeline_lookup": 0.003289168428107439,
+              "prepare": 0.042016388382767306,
+              "record": 0.16598902106273525,
+              "submit": 0.0019177144989582146,
+              "writeback": 0.13252930491781084
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": " fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        1905200 us  (44.9% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL       134383 us  (7.3% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past128_r2.json\n",
+      "usable": true
+    },
+    {
+      "past": 512,
+      "repeat": 0,
+      "cold": true,
+      "child_exit_code": 0,
+      "child_seconds": 17.86,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 410.90810002060607,
+        "mean_ms": 417.1455866812418,
+        "min_ms": 356.41130001749843,
+        "max_ms": 488.50570002105087,
+        "p05_ms": 373.1573299970478,
+        "p95_ms": 477.0036500412971,
+        "mad_ms": 15.010899980552495,
+        "stdev_ms": 35.04030747680941,
+        "rsd": 0.08527529020491983
+      },
+      "feeds_digest": "f913196d3921834831d32553dab5b90819a46d1c6147941dd9d92712deaa2bc3",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 9376727,
+        "execute_calls": 18,
+        "attributed_us": 9357170,
+        "unattributed_us": 19557,
+        "unattributed_share": 0.0020856957870267526,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 62895
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 573369
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 3076181
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 1950
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 2922663
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 23752
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 23030
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 3336
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 3503636
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 2138502
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 2970534,
+              "phases": {
+                "prepare": 6644,
+                "buffer_alloc": 258289,
+                "record": 1543642,
+                "cmd_alloc": 470,
+                "cmd_upload": 1496833,
+                "pipeline_lookup": 20589,
+                "desc_alloc": 2497,
+                "submit": 292,
+                "fence_wait": 535168,
+                "writeback": 624995
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 447687,
+              "phases": {
+                "prepare": 2522,
+                "buffer_alloc": 68471,
+                "record": 77698,
+                "cmd_alloc": 129,
+                "cmd_upload": 72221,
+                "pipeline_lookup": 79,
+                "desc_alloc": 1138,
+                "submit": 254,
+                "fence_wait": 174495,
+                "writeback": 122765
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 363406,
+              "phases": {
+                "prepare": 5715,
+                "buffer_alloc": 12678,
+                "record": 99865,
+                "cmd_alloc": 94,
+                "cmd_upload": 93596,
+                "pipeline_lookup": 57,
+                "desc_alloc": 1345,
+                "submit": 250,
+                "fence_wait": 174001,
+                "writeback": 70153
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 363317,
+            "median_phase_us": {
+              "buffer_alloc": 15621,
+              "cmd_alloc": 74,
+              "cmd_upload": 80548,
+              "desc_alloc": 1030,
+              "fence_wait": 174623,
+              "pipeline_lookup": 34,
+              "prepare": 2419,
+              "record": 86684,
+              "submit": 171,
+              "writeback": 89324
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 362457,
+            "median_unattributed_us": 907,
+            "median_unattributed_share": 0.002553963438862445,
+            "share_of_whole": {
+              "buffer_alloc": 0.03884506734040225,
+              "cmd_alloc": 0.0001919953189712708,
+              "cmd_upload": 0.21647144237602703,
+              "desc_alloc": 0.002942230341813484,
+              "fence_wait": 0.4821188833210866,
+              "pipeline_lookup": 8.494942768748475e-05,
+              "prepare": 0.006850760297377803,
+              "record": 0.23236005331567275,
+              "submit": 0.0004358607233029661,
+              "writeback": 0.23160764894503486
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": " fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        3573326 us  (38.2% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL       112631 us  (3.7% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past512_r0.json\n",
+      "usable": true
+    },
+    {
+      "past": 512,
+      "repeat": 1,
+      "cold": false,
+      "child_exit_code": 0,
+      "child_seconds": 18.04,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 426.28670000704005,
+        "mean_ms": 417.90914666295674,
+        "min_ms": 359.99089997494593,
+        "max_ms": 461.2557999789715,
+        "p05_ms": 370.90250002220273,
+        "p95_ms": 455.2894899796229,
+        "mad_ms": 25.239600043278188,
+        "stdev_ms": 31.447105679054655,
+        "rsd": 0.07376984944295778
+      },
+      "feeds_digest": "f913196d3921834831d32553dab5b90819a46d1c6147941dd9d92712deaa2bc3",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 9517304,
+        "execute_calls": 18,
+        "attributed_us": 9497584,
+        "unattributed_us": 19720,
+        "unattributed_share": 0.002072015352246813,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 67469
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 608140
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 3126256
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 1954
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 2949922
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 25586
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 25643
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 3246
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 3587597
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 2105513
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 3086885,
+              "phases": {
+                "prepare": 4718,
+                "buffer_alloc": 291473,
+                "record": 1674172,
+                "cmd_alloc": 631,
+                "cmd_upload": 1616357,
+                "pipeline_lookup": 21604,
+                "desc_alloc": 2732,
+                "submit": 226,
+                "fence_wait": 609083,
+                "writeback": 505457
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 477529,
+              "phases": {
+                "prepare": 4456,
+                "buffer_alloc": 69530,
+                "record": 79458,
+                "cmd_alloc": 227,
+                "cmd_upload": 74422,
+                "pipeline_lookup": 19,
+                "desc_alloc": 953,
+                "submit": 255,
+                "fence_wait": 174595,
+                "writeback": 148198
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 358039,
+              "phases": {
+                "prepare": 4309,
+                "buffer_alloc": 10801,
+                "record": 105347,
+                "cmd_alloc": 50,
+                "cmd_upload": 100822,
+                "pipeline_lookup": 20,
+                "desc_alloc": 852,
+                "submit": 113,
+                "fence_wait": 173933,
+                "writeback": 62898
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 375029,
+            "median_phase_us": {
+              "buffer_alloc": 16267,
+              "cmd_alloc": 61,
+              "cmd_upload": 78770,
+              "desc_alloc": 1048,
+              "fence_wait": 174785,
+              "pipeline_lookup": 49,
+              "prepare": 3306,
+              "record": 85294,
+              "submit": 162,
+              "writeback": 87530
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 374018,
+            "median_unattributed_us": 902,
+            "median_unattributed_share": 0.0026240054173015067,
+            "share_of_whole": {
+              "buffer_alloc": 0.04177162857223562,
+              "cmd_alloc": 0.00017804708615727687,
+              "cmd_upload": 0.20902144153926083,
+              "desc_alloc": 0.0029012918629562822,
+              "fence_wait": 0.46779269154196906,
+              "pipeline_lookup": 0.0001364522417153996,
+              "prepare": 0.008686878241813682,
+              "record": 0.22616562841179114,
+              "submit": 0.00045194889824318006,
+              "writeback": 0.22626267983822848
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": " fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        3604312 us  (37.9% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL       132170 us  (4.2% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past512_r1.json\n",
+      "usable": true
+    },
+    {
+      "past": 512,
+      "repeat": 2,
+      "cold": false,
+      "child_exit_code": 0,
+      "child_seconds": 17.7,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 407.81170001719147,
+        "mean_ms": 406.0182533382128,
+        "min_ms": 352.54500003065914,
+        "max_ms": 462.01469999505207,
+        "p05_ms": 353.41153002809733,
+        "p95_ms": 457.7667500008829,
+        "mad_ms": 23.771299980580807,
+        "stdev_ms": 36.45420348236492,
+        "rsd": 0.08938979308545629
+      },
+      "feeds_digest": "f913196d3921834831d32553dab5b90819a46d1c6147941dd9d92712deaa2bc3",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 9383534,
+        "execute_calls": 18,
+        "attributed_us": 9362860,
+        "unattributed_us": 20674,
+        "unattributed_share": 0.002203221089197311,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 55014
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 592356
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 3080295
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 5308
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 2919984
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 22440
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 23739
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 3439
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 3527631
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 2104787
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 3033093,
+              "phases": {
+                "prepare": 5006,
+                "buffer_alloc": 315097,
+                "record": 1685634,
+                "cmd_alloc": 4023,
+                "cmd_upload": 1634462,
+                "pipeline_lookup": 18847,
+                "desc_alloc": 2404,
+                "submit": 269,
+                "fence_wait": 536262,
+                "writeback": 488833
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 414247,
+              "phases": {
+                "prepare": 2455,
+                "buffer_alloc": 45185,
+                "record": 68179,
+                "cmd_alloc": 85,
+                "cmd_upload": 64985,
+                "pipeline_lookup": 12,
+                "desc_alloc": 561,
+                "submit": 231,
+                "fence_wait": 174187,
+                "writeback": 123006
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 419202,
+              "phases": {
+                "prepare": 7067,
+                "buffer_alloc": 23031,
+                "record": 91197,
+                "cmd_alloc": 120,
+                "cmd_upload": 85957,
+                "pipeline_lookup": 31,
+                "desc_alloc": 1063,
+                "submit": 185,
+                "fence_wait": 186657,
+                "writeback": 109480
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 371482,
+            "median_phase_us": {
+              "buffer_alloc": 13185,
+              "cmd_alloc": 65,
+              "cmd_upload": 76127,
+              "desc_alloc": 1193,
+              "fence_wait": 175012,
+              "pipeline_lookup": 73,
+              "prepare": 2301,
+              "record": 81742,
+              "submit": 164,
+              "writeback": 84173
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 370616,
+            "median_unattributed_us": 946,
+            "median_unattributed_share": 0.0028452884427856576,
+            "share_of_whole": {
+              "buffer_alloc": 0.03751447317637978,
+              "cmd_alloc": 0.00018278830503016006,
+              "cmd_upload": 0.20795058467556565,
+              "desc_alloc": 0.0033594082273199566,
+              "fence_wait": 0.4699150968283793,
+              "pipeline_lookup": 0.00020869962977257457,
+              "prepare": 0.00634809257360129,
+              "record": 0.2288393522910918,
+              "submit": 0.00048577751389863443,
+              "writeback": 0.22973556560430405
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": " fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        3594058 us  (38.4% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL       117318 us  (3.8% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past512_r2.json\n",
+      "usable": true
+    },
+    {
+      "past": 1024,
+      "repeat": 0,
+      "cold": true,
+      "child_exit_code": 0,
+      "child_seconds": 25.94,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 755.6660000118427,
+        "mean_ms": 755.4076933379596,
+        "min_ms": 700.7621000520885,
+        "max_ms": 803.679300006479,
+        "p05_ms": 711.2022500135936,
+        "p95_ms": 801.9887300091796,
+        "mad_ms": 25.753699999768287,
+        "stdev_ms": 32.61812173787955,
+        "rsd": 0.04316473380748685
+      },
+      "feeds_digest": "255c299d295a9017b742254939988392ff171ea0aa32c6130802092b9bc0d7a4",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 15053806,
+        "execute_calls": 18,
+        "attributed_us": 15033378,
+        "unattributed_us": 20428,
+        "unattributed_share": 0.0013569990207127685,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 70134
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 1035291
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 3486927
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 8355
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 3328618
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 30275
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 19494
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 4222
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 6273091
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 4164368
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 2953421,
+              "phases": {
+                "prepare": 1176,
+                "buffer_alloc": 292356,
+                "record": 1500018,
+                "cmd_alloc": 6309,
+                "cmd_upload": 1425519,
+                "pipeline_lookup": 28696,
+                "desc_alloc": 5012,
+                "submit": 483,
+                "fence_wait": 521445,
+                "writeback": 636879
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 748701,
+              "phases": {
+                "prepare": 4401,
+                "buffer_alloc": 85565,
+                "record": 124453,
+                "cmd_alloc": 282,
+                "cmd_upload": 118050,
+                "pipeline_lookup": 368,
+                "desc_alloc": 1052,
+                "submit": 228,
+                "fence_wait": 336134,
+                "writeback": 197033
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 717453,
+              "phases": {
+                "prepare": 2510,
+                "buffer_alloc": 22873,
+                "record": 107627,
+                "cmd_alloc": 102,
+                "cmd_upload": 103038,
+                "pipeline_lookup": 26,
+                "desc_alloc": 846,
+                "submit": 200,
+                "fence_wait": 336325,
+                "writeback": 246668
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 705956,
+            "median_phase_us": {
+              "buffer_alloc": 41279,
+              "cmd_alloc": 93,
+              "cmd_upload": 113012,
+              "desc_alloc": 839,
+              "fence_wait": 337942,
+              "pipeline_lookup": 31,
+              "prepare": 4442,
+              "record": 118201,
+              "submit": 220,
+              "writeback": 204603
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 705178,
+            "median_unattributed_us": 948,
+            "median_unattributed_share": 0.0012932238794055428,
+            "share_of_whole": {
+              "buffer_alloc": 0.05772293717304575,
+              "cmd_alloc": 0.00013160054564699357,
+              "cmd_upload": 0.15464397531878987,
+              "desc_alloc": 0.0011872350300841678,
+              "fence_wait": 0.47769407725127344,
+              "pipeline_lookup": 4.2327811146960794e-05,
+              "prepare": 0.006574935316372507,
+              "record": 0.16062830087058577,
+              "submit": 0.0003003909178171411,
+              "writeback": 0.28616978937056087
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": "fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        4479075 us  (29.8% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL       105833 us  (3.0% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past1024_r0.json\n",
+      "usable": true
+    },
+    {
+      "past": 1024,
+      "repeat": 1,
+      "cold": false,
+      "child_exit_code": 0,
+      "child_seconds": 24.89,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 696.8876000028104,
+        "mean_ms": 711.6889399980815,
+        "min_ms": 632.706500007771,
+        "max_ms": 809.3863999820314,
+        "p05_ms": 651.1596199881751,
+        "p95_ms": 805.193119996693,
+        "mad_ms": 37.49020001851022,
+        "stdev_ms": 50.03492946043769,
+        "rsd": 0.07179770376203552
+      },
+      "feeds_digest": "255c299d295a9017b742254939988392ff171ea0aa32c6130802092b9bc0d7a4",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 14382777,
+        "execute_calls": 18,
+        "attributed_us": 14363418,
+        "unattributed_us": 19359,
+        "unattributed_share": 0.0013459848539680481,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 54157
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 867150
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 3370120
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 6517
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 3222409
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 19035
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 19995
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 4351
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 6273572
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 3794687
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 2769878,
+              "phases": {
+                "prepare": 2216,
+                "buffer_alloc": 292611,
+                "record": 1404042,
+                "cmd_alloc": 4548,
+                "cmd_upload": 1345460,
+                "pipeline_lookup": 17236,
+                "desc_alloc": 4209,
+                "submit": 375,
+                "fence_wait": 523822,
+                "writeback": 546012
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 777920,
+              "phases": {
+                "prepare": 2381,
+                "buffer_alloc": 53632,
+                "record": 99927,
+                "cmd_alloc": 172,
+                "cmd_upload": 95464,
+                "pipeline_lookup": 34,
+                "desc_alloc": 756,
+                "submit": 177,
+                "fence_wait": 337749,
+                "writeback": 282235
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 711344,
+              "phases": {
+                "prepare": 2800,
+                "buffer_alloc": 16958,
+                "record": 115096,
+                "cmd_alloc": 78,
+                "cmd_upload": 108591,
+                "pipeline_lookup": 336,
+                "desc_alloc": 1230,
+                "submit": 227,
+                "fence_wait": 337346,
+                "writeback": 237629
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 666593,
+            "median_phase_us": {
+              "buffer_alloc": 28106,
+              "cmd_alloc": 107,
+              "cmd_upload": 111299,
+              "desc_alloc": 856,
+              "fence_wait": 338268,
+              "pipeline_lookup": 22,
+              "prepare": 2500,
+              "record": 116609,
+              "submit": 232,
+              "writeback": 171278
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 665950,
+            "median_unattributed_us": 893,
+            "median_unattributed_share": 0.001278923369405871,
+            "share_of_whole": {
+              "buffer_alloc": 0.04541962397141372,
+              "cmd_alloc": 0.00015454122544883976,
+              "cmd_upload": 0.16274490185734297,
+              "desc_alloc": 0.0012840484278480117,
+              "fence_wait": 0.5078922795353528,
+              "pipeline_lookup": 3.3831216063061385e-05,
+              "prepare": 0.003915872103634852,
+              "record": 0.17346267425854844,
+              "submit": 0.00034759120620781977,
+              "writeback": 0.25689725498364097
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": "fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        4390191 us  (30.6% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL       107819 us  (3.2% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past1024_r1.json\n",
+      "usable": true
+    },
+    {
+      "past": 1024,
+      "repeat": 2,
+      "cold": false,
+      "child_exit_code": 0,
+      "child_seconds": 26.32,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 760.8036000165157,
+        "mean_ms": 754.1975333394172,
+        "min_ms": 675.7350999978371,
+        "max_ms": 824.0773000288755,
+        "p05_ms": 699.4615999981761,
+        "p95_ms": 803.357650025282,
+        "mad_ms": 20.09510004427284,
+        "stdev_ms": 37.39753664222224,
+        "rsd": 0.04915530978219662
+      },
+      "feeds_digest": "255c299d295a9017b742254939988392ff171ea0aa32c6130802092b9bc0d7a4",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 15522552,
+        "execute_calls": 18,
+        "attributed_us": 15502351,
+        "unattributed_us": 20201,
+        "unattributed_share": 0.0013013968321703802,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 59483
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 846156
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 3971644
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 2408
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 3804473
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 38296
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 25269
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 5011
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 6404891
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 4215798
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 3433215,
+              "phases": {
+                "prepare": 2800,
+                "buffer_alloc": 233099,
+                "record": 1835247,
+                "cmd_alloc": 573,
+                "cmd_upload": 1750273,
+                "pipeline_lookup": 36413,
+                "desc_alloc": 10756,
+                "submit": 533,
+                "fence_wait": 645065,
+                "writeback": 715298
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 839669,
+              "phases": {
+                "prepare": 4178,
+                "buffer_alloc": 69589,
+                "record": 141003,
+                "cmd_alloc": 136,
+                "cmd_upload": 133065,
+                "pipeline_lookup": 336,
+                "desc_alloc": 1343,
+                "submit": 547,
+                "fence_wait": 337336,
+                "writeback": 285192
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 663065,
+              "phases": {
+                "prepare": 2502,
+                "buffer_alloc": 25328,
+                "record": 110415,
+                "cmd_alloc": 99,
+                "cmd_upload": 105253,
+                "pipeline_lookup": 41,
+                "desc_alloc": 1041,
+                "submit": 222,
+                "fence_wait": 338695,
+                "writeback": 184856
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 709731,
+            "median_phase_us": {
+              "buffer_alloc": 30665,
+              "cmd_alloc": 96,
+              "cmd_upload": 118173,
+              "desc_alloc": 665,
+              "fence_wait": 338113,
+              "pipeline_lookup": 18,
+              "prepare": 2919,
+              "record": 122753,
+              "submit": 221,
+              "writeback": 209716
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 707994,
+            "median_unattributed_us": 868,
+            "median_unattributed_share": 0.0013063489493155291,
+            "share_of_whole": {
+              "buffer_alloc": 0.0417427833241222,
+              "cmd_alloc": 0.00013523594957928244,
+              "cmd_upload": 0.16517341536209676,
+              "desc_alloc": 0.0009055864561474547,
+              "fence_wait": 0.4763959866484626,
+              "pipeline_lookup": 2.4623196692831095e-05,
+              "prepare": 0.004112825845285045,
+              "record": 0.17114872495573247,
+              "submit": 0.00030891117895042884,
+              "writeback": 0.29678338973869317
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": "fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        5008019 us  (32.3% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL       107381 us  (2.7% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past1024_r2.json\n",
+      "usable": true
+    },
+    {
+      "past": 2048,
+      "repeat": 0,
+      "cold": true,
+      "child_exit_code": 0,
+      "child_seconds": 41.07,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 1353.8332000025548,
+        "mean_ms": 1381.9056199941163,
+        "min_ms": 1180.171000014525,
+        "max_ms": 2206.3153999624774,
+        "p05_ms": 1185.5144500383176,
+        "p95_ms": 1715.3199999942437,
+        "mad_ms": 54.45319996215403,
+        "stdev_ms": 246.50256809480828,
+        "rsd": 0.1820775026748813
+      },
+      "feeds_digest": "4ec0ee70983b73b3eadffde68e7c234f94a17ae830cf786b0e7d22006146065a",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 25965714,
+        "execute_calls": 18,
+        "attributed_us": 25949046,
+        "unattributed_us": 16668,
+        "unattributed_share": 0.0006419234225563757,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 57273
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 1397827
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 4773567
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 12753
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 4653477
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 15468
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 15202
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 4018
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 12303737
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 7413230
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 3768600,
+              "phases": {
+                "prepare": 1460,
+                "buffer_alloc": 329128,
+                "record": 1677864,
+                "cmd_alloc": 10546,
+                "cmd_upload": 1635407,
+                "pipeline_lookup": 14172,
+                "desc_alloc": 1622,
+                "submit": 251,
+                "fence_wait": 961376,
+                "writeback": 797660
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 1471779,
+              "phases": {
+                "prepare": 3542,
+                "buffer_alloc": 81435,
+                "record": 208039,
+                "cmd_alloc": 106,
+                "cmd_upload": 200844,
+                "pipeline_lookup": 413,
+                "desc_alloc": 1279,
+                "submit": 247,
+                "fence_wait": 667360,
+                "writeback": 510405
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 1345593,
+              "phases": {
+                "prepare": 3578,
+                "buffer_alloc": 67869,
+                "record": 178718,
+                "cmd_alloc": 110,
+                "cmd_upload": 175647,
+                "pipeline_lookup": 15,
+                "desc_alloc": 439,
+                "submit": 158,
+                "fence_wait": 669035,
+                "writeback": 425464
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 1312335,
+            "median_phase_us": {
+              "buffer_alloc": 55303,
+              "cmd_alloc": 105,
+              "cmd_upload": 179226,
+              "desc_alloc": 765,
+              "fence_wait": 666874,
+              "pipeline_lookup": 24,
+              "prepare": 2459,
+              "record": 182061,
+              "submit": 200,
+              "writeback": 389286
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 1311742,
+            "median_unattributed_us": 747,
+            "median_unattributed_share": 0.000646776205908608,
+            "share_of_whole": {
+              "buffer_alloc": 0.04411397375976927,
+              "cmd_alloc": 7.75190364605251e-05,
+              "cmd_upload": 0.1422004237644206,
+              "desc_alloc": 0.0005739727014081464,
+              "fence_wait": 0.5091024776448086,
+              "pipeline_lookup": 1.8006986710843806e-05,
+              "prepare": 0.0017955173362356627,
+              "record": 0.145620250657255,
+              "submit": 0.00015070989828253186,
+              "writeback": 0.29207782619656425
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": "fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        6823082 us  (26.3% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL        80774 us  (1.7% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past2048_r0.json\n",
+      "usable": true
+    },
+    {
+      "past": 2048,
+      "repeat": 1,
+      "cold": false,
+      "child_exit_code": 0,
+      "child_seconds": 38.6,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 1338.9901000191458,
+        "mean_ms": 1323.200499995922,
+        "min_ms": 1211.144900007639,
+        "max_ms": 1386.641499993857,
+        "p05_ms": 1238.265560020227,
+        "p95_ms": 1383.0282399838325,
+        "mad_ms": 23.436999996192753,
+        "stdev_ms": 51.39143872710432,
+        "rsd": 0.03838074585194431
+      },
+      "feeds_digest": "4ec0ee70983b73b3eadffde68e7c234f94a17ae830cf786b0e7d22006146065a",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 25145871,
+        "execute_calls": 18,
+        "attributed_us": 25129434,
+        "unattributed_us": 16437,
+        "unattributed_share": 0.0006536659636884322,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 62403
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 1315304
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 4239314
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 8017
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 4107714
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 13799
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 17584
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 4337
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 12188045
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 7320602
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 3190323,
+              "phases": {
+                "prepare": 2197,
+                "buffer_alloc": 307926,
+                "record": 1186917,
+                "cmd_alloc": 6561,
+                "cmd_upload": 1138088,
+                "pipeline_lookup": 11847,
+                "desc_alloc": 3251,
+                "submit": 308,
+                "fence_wait": 854876,
+                "writeback": 836753
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 1381204,
+              "phases": {
+                "prepare": 3035,
+                "buffer_alloc": 62686,
+                "record": 151661,
+                "cmd_alloc": 79,
+                "cmd_upload": 147975,
+                "pipeline_lookup": 19,
+                "desc_alloc": 634,
+                "submit": 171,
+                "fence_wait": 665156,
+                "writeback": 497853
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 1216917,
+              "phases": {
+                "prepare": 2176,
+                "buffer_alloc": 24007,
+                "record": 210103,
+                "cmd_alloc": 69,
+                "cmd_upload": 201934,
+                "pipeline_lookup": 401,
+                "desc_alloc": 1605,
+                "submit": 350,
+                "fence_wait": 665880,
+                "writeback": 313795
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 1295953,
+            "median_phase_us": {
+              "buffer_alloc": 57915,
+              "cmd_alloc": 69,
+              "cmd_upload": 176892,
+              "desc_alloc": 764,
+              "fence_wait": 666914,
+              "pipeline_lookup": 32,
+              "prepare": 3131,
+              "record": 180360,
+              "submit": 197,
+              "writeback": 369687
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 1294438,
+            "median_unattributed_us": 704,
+            "median_unattributed_share": 0.0005224463772992621,
+            "share_of_whole": {
+              "buffer_alloc": 0.047073119188503806,
+              "cmd_alloc": 5.288620727714212e-05,
+              "cmd_upload": 0.13481210014509792,
+              "desc_alloc": 0.0005855806139092258,
+              "fence_wait": 0.5146073970275157,
+              "pipeline_lookup": 2.4274698557551897e-05,
+              "prepare": 0.0023104231741864264,
+              "record": 0.1381780575751737,
+              "submit": 0.00015105540229401766,
+              "writeback": 0.29030753683482036
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": "fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        6099193 us  (24.3% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL        98258 us  (2.3% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past2048_r1.json\n",
+      "usable": true
+    },
+    {
+      "past": 2048,
+      "repeat": 2,
+      "cold": false,
+      "child_exit_code": 0,
+      "child_seconds": 40.9,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "error": null,
+      "warmup": 3,
+      "iters": 15,
+      "wall_ms": {
+        "n": 15,
+        "median_ms": 1324.9586999882013,
+        "mean_ms": 1380.6495066732168,
+        "min_ms": 1246.4676000527106,
+        "max_ms": 1781.9129000417888,
+        "p05_ms": 1250.7498500228394,
+        "p95_ms": 1669.8302300006615,
+        "mad_ms": 48.22939995210618,
+        "stdev_ms": 146.28512779220273,
+        "rsd": 0.11040731140789928
+      },
+      "feeds_digest": "4ec0ee70983b73b3eadffde68e7c234f94a17ae830cf786b0e7d22006146065a",
+      "counters": {
+        "present": true,
+        "abi_version": 9,
+        "dispatches_executed": 6390,
+        "descriptor_pools_created": 6390,
+        "descriptor_sets_allocated": 6390,
+        "descriptor_writes": 30150,
+        "command_buffers_recorded": 18,
+        "queue_submits": 18,
+        "record_path_first_record": 1,
+        "record_path_replay": 0,
+        "record_path_rerecord": 17,
+        "missing_fields": []
+      },
+      "attribution": {
+        "present": true,
+        "subgraph_spans": 18,
+        "execute_us": 27153558,
+        "execute_calls": 18,
+        "attributed_us": 27134190,
+        "unattributed_us": 19368,
+        "unattributed_share": 0.0007132766910325342,
+        "attribution_admissible": true,
+        "attribution_refusal": "",
+        "record_path_wired": true,
+        "phases": {
+          "prepare": {
+            "spans": 18,
+            "microseconds": 62475
+          },
+          "buffer_alloc": {
+            "spans": 18,
+            "microseconds": 1253164
+          },
+          "record": {
+            "spans": 18,
+            "microseconds": 5373093
+          },
+          "cmd_alloc": {
+            "spans": 18,
+            "microseconds": 3701
+          },
+          "cmd_upload": {
+            "spans": 18,
+            "microseconds": 5255471
+          },
+          "pipeline_lookup": {
+            "spans": 6390,
+            "microseconds": 18332
+          },
+          "desc_alloc": {
+            "spans": 6390,
+            "microseconds": 16083
+          },
+          "submit": {
+            "spans": 18,
+            "microseconds": 4560
+          },
+          "fence_wait": {
+            "spans": 18,
+            "microseconds": 12510217
+          },
+          "writeback": {
+            "spans": 18,
+            "microseconds": 7931378
+          }
+        },
+        "summable_by_bench": [
+          "buffer_alloc",
+          "fence_wait",
+          "prepare",
+          "record",
+          "submit",
+          "writeback"
+        ],
+        "nested_by_bench": [
+          "cmd_alloc",
+          "cmd_upload",
+          "desc_alloc",
+          "pipeline_lookup"
+        ],
+        "unknown_phase_spans": {
+          "check": "unknown_phase_spans",
+          "asserts": "every ep.phase span in the trace has a name this module knows, so no phase can drop out of the decomposition while the decomposition still looks whole",
+          "unknown": {},
+          "known": [
+            "vulkan.buffer_alloc",
+            "vulkan.cmd_alloc",
+            "vulkan.cmd_upload",
+            "vulkan.compile",
+            "vulkan.desc_alloc",
+            "vulkan.fence_wait",
+            "vulkan.pipeline_lookup",
+            "vulkan.prepack",
+            "vulkan.prepare",
+            "vulkan.readback",
+            "vulkan.record",
+            "vulkan.submit",
+            "vulkan.upload",
+            "vulkan.writeback"
+          ],
+          "ok": true,
+          "verdict": "ALL_KNOWN",
+          "detail": "every ep.phase span matched one of the 14 known names"
+        },
+        "cumulative_note": "every figure above is CUMULATIVE over the whole session, warmup included. A session that mixes one cold call with many warm ones reports a mixture whose share belongs to no single call. Read `per_call` for the warm steady state.",
+        "per_call": {
+          "measured": true,
+          "calls_seen": 18,
+          "cold_calls": 3,
+          "warm_calls": 15,
+          "phase_spans_outside_any_call": 0,
+          "whole_note": "`whole_us` is the `vulkan.subgraph` span, which brackets the same interval as Phase::Execute (the execute region opens immediately inside it). It is used as the per-call denominator because Execute deliberately emits no span of its own.",
+          "cold": [
+            {
+              "index": 0,
+              "whole_us": 3935074,
+              "phases": {
+                "prepare": 2055,
+                "buffer_alloc": 368225,
+                "record": 1839081,
+                "cmd_alloc": 1522,
+                "cmd_upload": 1799188,
+                "pipeline_lookup": 17180,
+                "desc_alloc": 2298,
+                "submit": 298,
+                "fence_wait": 856226,
+                "writeback": 868453
+              }
+            },
+            {
+              "index": 1,
+              "whole_us": 1752641,
+              "phases": {
+                "prepare": 4258,
+                "buffer_alloc": 65025,
+                "record": 191982,
+                "cmd_alloc": 117,
+                "cmd_upload": 189010,
+                "pipeline_lookup": 8,
+                "desc_alloc": 434,
+                "submit": 181,
+                "fence_wait": 789429,
+                "writeback": 700966
+              }
+            },
+            {
+              "index": 2,
+              "whole_us": 1266649,
+              "phases": {
+                "prepare": 1243,
+                "buffer_alloc": 4837,
+                "record": 310896,
+                "cmd_alloc": 80,
+                "cmd_upload": 306034,
+                "pipeline_lookup": 44,
+                "desc_alloc": 895,
+                "submit": 339,
+                "fence_wait": 668922,
+                "writeback": 279762
+              }
+            }
+          ],
+          "warm": {
+            "measured": true,
+            "calls": 15,
+            "median_whole_us": 1304622,
+            "median_phase_us": {
+              "buffer_alloc": 44118,
+              "cmd_alloc": 121,
+              "cmd_upload": 196283,
+              "desc_alloc": 842,
+              "fence_wait": 669829,
+              "pipeline_lookup": 24,
+              "prepare": 2733,
+              "record": 201225,
+              "submit": 214,
+              "writeback": 367515
+            },
+            "summable_phases": [
+              "buffer_alloc",
+              "fence_wait",
+              "prepare",
+              "record",
+              "submit",
+              "writeback"
+            ],
+            "nested_phases": [
+              "cmd_alloc",
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "median_attributed_us": 1303625,
+            "median_unattributed_us": 997,
+            "median_unattributed_share": 0.0007642060305590432,
+            "share_of_whole": {
+              "buffer_alloc": 0.03263283338025616,
+              "cmd_alloc": 9.333143070912604e-05,
+              "cmd_upload": 0.14777307143371796,
+              "desc_alloc": 0.00048572320716094787,
+              "fence_wait": 0.5117908569237613,
+              "pipeline_lookup": 1.9252150224528202e-05,
+              "prepare": 0.002192338606818149,
+              "record": 0.1510271852484249,
+              "submit": 0.00016287374120211627,
+              "writeback": 0.28368977724121214
+            },
+            "calls_with_parts_exceeding_the_whole": 0,
+            "caveat": "each figure is the median over warm calls of a quantity computed within a single call. The summable phases are wall-clock disjoint siblings; the nested ones are already inside a sibling and must not be added to it. Because each phase's median is taken independently, the medians are NOT required to sum to the median whole \u2014 read `median_unattributed_us`, which is a median of per-call residuals, and not the difference of two medians.",
+            "not_a_speedup_claim": "these are host-cost shares of a single arm. Nothing here is compared to anything."
+          }
+        }
+      },
+      "stderr_tail": "fit inside the whole. Still host wall clock only: async device work started in one phase and completed in another moves cost between them, and no host clock can undo that.\n            of which xfer        7610360 us  (28.0% of sibling total) \u2014 upload+readback only, already counted inside their parents\n            NOTE: the nested rows are NOT disjoint \u2014 `upload` and `cmd_upload` can bracket the same memcpy. Never add the nested rows to each other; each is only comparable to its parent.\n            record RESIDUAL        83488 us  (1.6% of `record`) \u2014 `record` minus every named child: the vkCmd* calls themselves, the ONLY part of `record` that is command-buffer recording. CUMULATIVE over every Compute call, so a session with one cold call and many warm ones reports a MIXTURE of the two regimes and this share belongs to no single call\n  GPU time: NOT MEASURED. No timestamp queries were reported this run, so nothing above is kernel time. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 on an engine build that writes VkQueryPool timestamps.\n=====================================\n[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED \u2014 Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.\n[vulkan-ep] INFO: wrote Vulkan EP trace (12963 span event(s), 76 counter sample(s)) to <repo>\\bench\\results\\_issue88_scratch\\trace_past2048_r2.json\n",
+      "usable": true
+    }
+  ],
+  "per_past": [
+    {
+      "past": 128,
+      "usable_repeats": 3,
+      "warm_repeats": 2,
+      "admissible_warm_repeats": 2,
+      "cold_repeat_excluded": true,
+      "quotable": true,
+      "median_wall_ms": 145.6849499954842,
+      "repeats_with_a_warm_split": 2,
+      "median_call_us": 96440.0,
+      "median_unattributed_share": 0.008591400595489313,
+      "warm_phase_share_of_call": {
+        "buffer_alloc": {
+          "median": 0.01658669245355455,
+          "repeats": 2,
+          "summable": true
+        },
+        "cmd_alloc": {
+          "median": 0.000832894519902763,
+          "repeats": 2,
+          "summable": false
+        },
+        "cmd_upload": {
+          "median": 0.0983504876534235,
+          "repeats": 2,
+          "summable": false
+        },
+        "desc_alloc": {
+          "median": 0.013506774791465677,
+          "repeats": 2,
+          "summable": false
+        },
+        "fence_wait": {
+          "median": 0.617104254782362,
+          "repeats": 2,
+          "summable": true
+        },
+        "pipeline_lookup": {
+          "median": 0.0035128506703674223,
+          "repeats": 2,
+          "summable": false
+        },
+        "prepare": {
+          "median": 0.04275573778322214,
+          "repeats": 2,
+          "summable": true
+        },
+        "record": {
+          "median": 0.16897628455416047,
+          "repeats": 2,
+          "summable": true
+        },
+        "submit": {
+          "median": 0.0019190388882598358,
+          "repeats": 2,
+          "summable": true
+        },
+        "writeback": {
+          "median": 0.13249678266237647,
+          "repeats": 2,
+          "summable": true
+        }
+      },
+      "warm_phase_us": {
+        "buffer_alloc": {
+          "median": 1604.5,
+          "repeats": 2
+        },
+        "cmd_alloc": {
+          "median": 79.5,
+          "repeats": 2
+        },
+        "cmd_upload": {
+          "median": 9370.5,
+          "repeats": 2
+        },
+        "desc_alloc": {
+          "median": 1317.5,
+          "repeats": 2
+        },
+        "fence_wait": {
+          "median": 59631.0,
+          "repeats": 2
+        },
+        "pipeline_lookup": {
+          "median": 339.5,
+          "repeats": 2
+        },
+        "prepare": {
+          "median": 4149.5,
+          "repeats": 2
+        },
+        "record": {
+          "median": 16237.5,
+          "repeats": 2
+        },
+        "submit": {
+          "median": 183.5,
+          "repeats": 2
+        },
+        "writeback": {
+          "median": 13125.0,
+          "repeats": 2
+        }
+      },
+      "reading_rules": [
+        "only the entries marked summable=true may be added together",
+        "the rest are nested inside a summable phase and are already counted there",
+        "median_unattributed_share is the part of a warm call no phase names",
+        "no entry here is a kernel time and none of them is a comparison"
+      ],
+      "per_inference_churn": {
+        "descriptor_sets_allocated": {
+          "median_per_inference": 355.0,
+          "repeats": 2
+        },
+        "descriptor_pools_created": {
+          "median_per_inference": 355.0,
+          "repeats": 2
+        },
+        "command_buffers_recorded": {
+          "median_per_inference": 1.0,
+          "repeats": 2
+        },
+        "queue_submits": {
+          "median_per_inference": 1.0,
+          "repeats": 2
+        },
+        "record_path_first_record": {
+          "median_per_inference": 0.05555555555555555,
+          "repeats": 2
+        },
+        "record_path_rerecord": {
+          "median_per_inference": 0.9444444444444444,
+          "repeats": 2
+        },
+        "record_path_replay": {
+          "median_per_inference": 0.0,
+          "repeats": 2
+        }
+      },
+      "per_inference_churn_note": "counters are per-process totals divided by that process's own inference count (warmup + timed). They are not per-call medians and a process whose calls differed in shape would report a mixture; every call in a decode point here has the same shape."
+    },
+    {
+      "past": 512,
+      "usable_repeats": 3,
+      "warm_repeats": 2,
+      "admissible_warm_repeats": 2,
+      "cold_repeat_excluded": true,
+      "quotable": true,
+      "median_wall_ms": 417.04920001211576,
+      "repeats_with_a_warm_split": 2,
+      "median_call_us": 373255.5,
+      "median_unattributed_share": 0.0027346469300435824,
+      "warm_phase_share_of_call": {
+        "buffer_alloc": {
+          "median": 0.039643050874307695,
+          "repeats": 2,
+          "summable": true
+        },
+        "cmd_alloc": {
+          "median": 0.00018041769559371847,
+          "repeats": 2,
+          "summable": false
+        },
+        "cmd_upload": {
+          "median": 0.20848601310741324,
+          "repeats": 2,
+          "summable": false
+        },
+        "desc_alloc": {
+          "median": 0.0031303500451381194,
+          "repeats": 2,
+          "summable": false
+        },
+        "fence_wait": {
+          "median": 0.4688538941851742,
+          "repeats": 2,
+          "summable": true
+        },
+        "pipeline_lookup": {
+          "median": 0.00017257593574398708,
+          "repeats": 2,
+          "summable": false
+        },
+        "prepare": {
+          "median": 0.007517485407707487,
+          "repeats": 2,
+          "summable": true
+        },
+        "record": {
+          "median": 0.2275024903514415,
+          "repeats": 2,
+          "summable": true
+        },
+        "submit": {
+          "median": 0.0004688632060709072,
+          "repeats": 2,
+          "summable": true
+        },
+        "writeback": {
+          "median": 0.22799912272126627,
+          "repeats": 2,
+          "summable": true
+        }
+      },
+      "warm_phase_us": {
+        "buffer_alloc": {
+          "median": 14726.0,
+          "repeats": 2
+        },
+        "cmd_alloc": {
+          "median": 63.0,
+          "repeats": 2
+        },
+        "cmd_upload": {
+          "median": 77448.5,
+          "repeats": 2
+        },
+        "desc_alloc": {
+          "median": 1120.5,
+          "repeats": 2
+        },
+        "fence_wait": {
+          "median": 174898.5,
+          "repeats": 2
+        },
+        "pipeline_lookup": {
+          "median": 61.0,
+          "repeats": 2
+        },
+        "prepare": {
+          "median": 2803.5,
+          "repeats": 2
+        },
+        "record": {
+          "median": 83518.0,
+          "repeats": 2
+        },
+        "submit": {
+          "median": 163.0,
+          "repeats": 2
+        },
+        "writeback": {
+          "median": 85851.5,
+          "repeats": 2
+        }
+      },
+      "reading_rules": [
+        "only the entries marked summable=true may be added together",
+        "the rest are nested inside a summable phase and are already counted there",
+        "median_unattributed_share is the part of a warm call no phase names",
+        "no entry here is a kernel time and none of them is a comparison"
+      ],
+      "per_inference_churn": {
+        "descriptor_sets_allocated": {
+          "median_per_inference": 355.0,
+          "repeats": 2
+        },
+        "descriptor_pools_created": {
+          "median_per_inference": 355.0,
+          "repeats": 2
+        },
+        "command_buffers_recorded": {
+          "median_per_inference": 1.0,
+          "repeats": 2
+        },
+        "queue_submits": {
+          "median_per_inference": 1.0,
+          "repeats": 2
+        },
+        "record_path_first_record": {
+          "median_per_inference": 0.05555555555555555,
+          "repeats": 2
+        },
+        "record_path_rerecord": {
+          "median_per_inference": 0.9444444444444444,
+          "repeats": 2
+        },
+        "record_path_replay": {
+          "median_per_inference": 0.0,
+          "repeats": 2
+        }
+      },
+      "per_inference_churn_note": "counters are per-process totals divided by that process's own inference count (warmup + timed). They are not per-call medians and a process whose calls differed in shape would report a mixture; every call in a decode point here has the same shape."
+    },
+    {
+      "past": 1024,
+      "usable_repeats": 3,
+      "warm_repeats": 2,
+      "admissible_warm_repeats": 2,
+      "cold_repeat_excluded": true,
+      "quotable": true,
+      "median_wall_ms": 728.845600009663,
+      "repeats_with_a_warm_split": 2,
+      "median_call_us": 688162.0,
+      "median_unattributed_share": 0.0012926361593607002,
+      "warm_phase_share_of_call": {
+        "buffer_alloc": {
+          "median": 0.04358120364776796,
+          "repeats": 2,
+          "summable": true
+        },
+        "cmd_alloc": {
+          "median": 0.00014488858751406108,
+          "repeats": 2,
+          "summable": false
+        },
+        "cmd_upload": {
+          "median": 0.16395915860971988,
+          "repeats": 2,
+          "summable": false
+        },
+        "desc_alloc": {
+          "median": 0.0010948174419977332,
+          "repeats": 2,
+          "summable": false
+        },
+        "fence_wait": {
+          "median": 0.4921441330919077,
+          "repeats": 2,
+          "summable": true
+        },
+        "pipeline_lookup": {
+          "median": 2.922720637794624e-05,
+          "repeats": 2,
+          "summable": false
+        },
+        "prepare": {
+          "median": 0.0040143489744599485,
+          "repeats": 2,
+          "summable": true
+        },
+        "record": {
+          "median": 0.17230569960714046,
+          "repeats": 2,
+          "summable": true
+        },
+        "submit": {
+          "median": 0.0003282511925791243,
+          "repeats": 2,
+          "summable": true
+        },
+        "writeback": {
+          "median": 0.27684032236116707,
+          "repeats": 2,
+          "summable": true
+        }
+      },
+      "warm_phase_us": {
+        "buffer_alloc": {
+          "median": 29385.5,
+          "repeats": 2
+        },
+        "cmd_alloc": {
+          "median": 101.5,
+          "repeats": 2
+        },
+        "cmd_upload": {
+          "median": 114736.0,
+          "repeats": 2
+        },
+        "desc_alloc": {
+          "median": 760.5,
+          "repeats": 2
+        },
+        "fence_wait": {
+          "median": 338190.5,
+          "repeats": 2
+        },
+        "pipeline_lookup": {
+          "median": 20.0,
+          "repeats": 2
+        },
+        "prepare": {
+          "median": 2709.5,
+          "repeats": 2
+        },
+        "record": {
+          "median": 119681.0,
+          "repeats": 2
+        },
+        "submit": {
+          "median": 226.5,
+          "repeats": 2
+        },
+        "writeback": {
+          "median": 190497.0,
+          "repeats": 2
+        }
+      },
+      "reading_rules": [
+        "only the entries marked summable=true may be added together",
+        "the rest are nested inside a summable phase and are already counted there",
+        "median_unattributed_share is the part of a warm call no phase names",
+        "no entry here is a kernel time and none of them is a comparison"
+      ],
+      "per_inference_churn": {
+        "descriptor_sets_allocated": {
+          "median_per_inference": 355.0,
+          "repeats": 2
+        },
+        "descriptor_pools_created": {
+          "median_per_inference": 355.0,
+          "repeats": 2
+        },
+        "command_buffers_recorded": {
+          "median_per_inference": 1.0,
+          "repeats": 2
+        },
+        "queue_submits": {
+          "median_per_inference": 1.0,
+          "repeats": 2
+        },
+        "record_path_first_record": {
+          "median_per_inference": 0.05555555555555555,
+          "repeats": 2
+        },
+        "record_path_rerecord": {
+          "median_per_inference": 0.9444444444444444,
+          "repeats": 2
+        },
+        "record_path_replay": {
+          "median_per_inference": 0.0,
+          "repeats": 2
+        }
+      },
+      "per_inference_churn_note": "counters are per-process totals divided by that process's own inference count (warmup + timed). They are not per-call medians and a process whose calls differed in shape would report a mixture; every call in a decode point here has the same shape."
+    },
+    {
+      "past": 2048,
+      "usable_repeats": 3,
+      "warm_repeats": 2,
+      "admissible_warm_repeats": 2,
+      "cold_repeat_excluded": true,
+      "quotable": true,
+      "median_wall_ms": 1331.9744000036735,
+      "repeats_with_a_warm_split": 2,
+      "median_call_us": 1300287.5,
+      "median_unattributed_share": 0.0006433262039291527,
+      "warm_phase_share_of_call": {
+        "buffer_alloc": {
+          "median": 0.03985297628437998,
+          "repeats": 2,
+          "summable": true
+        },
+        "cmd_alloc": {
+          "median": 7.310881899313409e-05,
+          "repeats": 2,
+          "summable": false
+        },
+        "cmd_upload": {
+          "median": 0.14129258578940795,
+          "repeats": 2,
+          "summable": false
+        },
+        "desc_alloc": {
+          "median": 0.0005356519105350868,
+          "repeats": 2,
+          "summable": false
+        },
+        "fence_wait": {
+          "median": 0.5131991269756384,
+          "repeats": 2,
+          "summable": true
+        },
+        "pipeline_lookup": {
+          "median": 2.176342439104005e-05,
+          "repeats": 2,
+          "summable": false
+        },
+        "prepare": {
+          "median": 0.0022513808905022877,
+          "repeats": 2,
+          "summable": true
+        },
+        "record": {
+          "median": 0.1446026214117993,
+          "repeats": 2,
+          "summable": true
+        },
+        "submit": {
+          "median": 0.00015696457174806696,
+          "repeats": 2,
+          "summable": true
+        },
+        "writeback": {
+          "median": 0.28699865703801625,
+          "repeats": 2,
+          "summable": true
+        }
+      },
+      "warm_phase_us": {
+        "buffer_alloc": {
+          "median": 51016.5,
+          "repeats": 2
+        },
+        "cmd_alloc": {
+          "median": 95.0,
+          "repeats": 2
+        },
+        "cmd_upload": {
+          "median": 186587.5,
+          "repeats": 2
+        },
+        "desc_alloc": {
+          "median": 803.0,
+          "repeats": 2
+        },
+        "fence_wait": {
+          "median": 668371.5,
+          "repeats": 2
+        },
+        "pipeline_lookup": {
+          "median": 28.0,
+          "repeats": 2
+        },
+        "prepare": {
+          "median": 2932.0,
+          "repeats": 2
+        },
+        "record": {
+          "median": 190792.5,
+          "repeats": 2
+        },
+        "submit": {
+          "median": 205.5,
+          "repeats": 2
+        },
+        "writeback": {
+          "median": 368601.0,
+          "repeats": 2
+        }
+      },
+      "reading_rules": [
+        "only the entries marked summable=true may be added together",
+        "the rest are nested inside a summable phase and are already counted there",
+        "median_unattributed_share is the part of a warm call no phase names",
+        "no entry here is a kernel time and none of them is a comparison"
+      ],
+      "per_inference_churn": {
+        "descriptor_sets_allocated": {
+          "median_per_inference": 355.0,
+          "repeats": 2
+        },
+        "descriptor_pools_created": {
+          "median_per_inference": 355.0,
+          "repeats": 2
+        },
+        "command_buffers_recorded": {
+          "median_per_inference": 1.0,
+          "repeats": 2
+        },
+        "queue_submits": {
+          "median_per_inference": 1.0,
+          "repeats": 2
+        },
+        "record_path_first_record": {
+          "median_per_inference": 0.05555555555555555,
+          "repeats": 2
+        },
+        "record_path_rerecord": {
+          "median_per_inference": 0.9444444444444444,
+          "repeats": 2
+        },
+        "record_path_replay": {
+          "median_per_inference": 0.0,
+          "repeats": 2
+        }
+      },
+      "per_inference_churn_note": "counters are per-process totals divided by that process's own inference count (warmup + timed). They are not per-call medians and a process whose calls differed in shape would report a mixture; every call in a decode point here has the same shape."
+    }
+  ],
+  "output_equivalence": {
+    "shape_candidate": [
+      1,
+      1,
+      32064
+    ],
+    "shape_reference": [
+      1,
+      1,
+      32064
+    ],
+    "top_k": 10,
+    "reference_all_zero": false,
+    "argmax_candidate": 6657,
+    "argmax_reference": 6657,
+    "topk_overlap": 10,
+    "max_abs": 0.58203125,
+    "reference_scale": 23.28125,
+    "abs_budget": 1.1640625,
+    "max_rel": 1290.3701171875,
+    "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+    "max_prob_delta": 0.017005630108892833,
+    "top1_prob_reference": 0.37570795272066876,
+    "top1_prob_candidate": 0.3927135828295616,
+    "verdict": "MATCH",
+    "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero",
+    "measured": true,
+    "reference": "ORT CPU EP, identical feeds, same process image"
+  },
+  "admissibility": {
+    "output_equivalence_established": true,
+    "any_quotable_past_point": true,
+    "verdict": "ADMISSIBLE \u2014 attribution may be quoted for the past points marked quotable",
+    "speedup_claim": "NONE. This probe has one arm and cannot support a comparison."
+  }
+}

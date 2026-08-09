@@ -503,6 +503,97 @@
       "disposition": "uncensused",
       "reason": "The growing-cache prefix alias (stage past into present's prefix, never allocate a separate past buffer); the sole reader is kv_prefix_alias_enabled() at rust/src/factory.rs:554-561, ships ON \u2014 polarity reversed from every other flag in the file because disabling it is the escape hatch. Not one of flag_frame's nine switches, and unreachable from the census's KV-free graph for the same reason ONNXRUNTIME_EP_VULKAN_KV_ARENA is. bench/results/probe_ctx4096_shipping_lane.py is a real falsifier across shipping/noalias arms and context lengths (MEASURED 2026-08-04: the default shipping lane executes 355 dispatches at past_len 2048 and zero at 3072 with the alias off \u2014 bench/results/ctx4096_BEFORE.json), but it is an archival probe, not the wiring census. Owed by Mouse (KV-cache op contract) with Switch (the staging copy): a KV-cache-shaped census lane, or a discrimination arm in the existing archival probe.",
       "owner": "Mouse"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "Execute",
+      "disposition": "uncensused",
+      "reason": "Added by issue #88 as the WHOLE the other Compute-time phases decompose. It is the only phase with role Total, and the census cannot see that: a run in which Execute stopped being opened would leave every part still reporting, with the denominator silently zero. The falsifier lives in trace.rs's HostAttribution tests and in bench/test_phases.py::the_report_refuses_an_attribution_with_no_whole, not here.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "Prepare",
+      "disposition": "uncensused",
+      "reason": "Added by issue #88. Brackets plan/cache lookup and shape/binding preparation before any Vulkan object exists for the call. A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does. ",
+      "owner": "Switch"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "BufferAlloc",
+      "disposition": "uncensused",
+      "reason": "Added by issue #88. Brackets the per-call vkCreateBuffer/vkAllocateMemory burst. Its always-on counterpart is descriptor_pools_created/descriptor_sets_allocated, which the census also does not read. A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does. ",
+      "owner": "Switch"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "CmdAlloc",
+      "disposition": "uncensused",
+      "reason": "Added by issue #88. Brackets vkResetCommandBuffer + vkBeginCommandBuffer, nested inside `record`. A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does. ",
+      "owner": "Switch"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "Writeback",
+      "disposition": "uncensused",
+      "reason": "Added by issue #88, and it is also the correction of an existing defect: `readback` was modelled as a child of `record` while `record_transfer(Readback, ..)` fires after the fence, so readback microseconds were being subtracted from a phase that had already ended. Writeback is readback's real parent. A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does. ",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "descriptor_pools_created",
+      "disposition": "uncensused",
+      "reason": "vkCreateDescriptorPool calls (issue #88). The census reads no descriptor-churn counter: it infers execution from dispatches_executed, and a build that stopped creating a pool per dispatch would be invisible to it. Falsified instead by tests/ops/test_host_cost_counters.py, which asserts the ratio against dispatches_executed from a real Vulkan run.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "descriptor_sets_allocated",
+      "disposition": "uncensused",
+      "reason": "vkAllocateDescriptorSets calls (issue #88). Same census blind spot as descriptor_pools_created; separate from it because a pool-reuse fix moves one and a set-cache fix moves the other.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "descriptor_writes",
+      "disposition": "uncensused",
+      "reason": "Storage-buffer descriptors written by vkUpdateDescriptorSets (issue #88). The width of the churn where descriptor_sets_allocated is its count. Not censused.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "command_buffers_recorded",
+      "disposition": "uncensused",
+      "reason": "vkBeginCommandBuffer calls (issue #88). Equal to compute_calls in this build; it becomes informative the moment a command-buffer cache makes it fall below. Not censused.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "queue_submits",
+      "disposition": "uncensused",
+      "reason": "vkQueueSubmit calls (issue #88). One per Compute in this build; a batching change would drive it below compute_calls. Not censused.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "record_path_first_record",
+      "disposition": "uncensused",
+      "reason": "Compute calls classified as the first recording for their subgraph (issue #88). The always-on mirror of Tracer::record_path, which had no production caller until #88. Not censused: the census does not read the record-path breakdown.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "record_path_replay",
+      "disposition": "uncensused",
+      "reason": "Compute calls that reused a cached command buffer (issue #88). STRUCTURALLY ZERO in this build because CommandPool::begin resets unconditionally \u2014 exported so the day a command-buffer cache lands, the claim 'we now replay' has a number that must move. A counter whose only observable value today is zero is declared here rather than left to read as a measurement.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "counter",
+      "id": "record_path_rerecord",
+      "disposition": "uncensused",
+      "reason": "Compute calls that re-recorded a command buffer they had recorded before (issue #88). In this build, every Compute after the first per subgraph. Not censused.",
+      "owner": "Switch"
     }
   ],
   "mechanism_names": [

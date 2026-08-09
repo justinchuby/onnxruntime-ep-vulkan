@@ -949,3 +949,74 @@ def test_the_marginal_verdict_is_not_a_steady_one_to_any_consumer():
                                  12.18, 12.19, 12.18, 12.17, 12.18]])
     assert t["verdict"] != "STEADY"
     assert t["verdict"] in ("MARGINAL_TAIL", "NO_STEADY_TAIL")
+
+
+# ---------------------------------------------------------------------------
+# Issue #88 — the analysis must not be able to lose a phase silently.
+# ---------------------------------------------------------------------------
+
+def test_a_phase_the_module_does_not_know_is_reported_rather_than_dropped():
+    """The failure this check exists for, planted.
+
+    ``phase_spans`` selects by allowlist. Every phase ``trace.rs`` ever gained was added on the
+    Rust side first, and until ``HOST_PHASES`` was edited the new span was invisible here: its
+    microseconds fell into ``unattributed_in_compute_ms`` under no name at all, and no line in
+    the report said a name had gone missing. This plants exactly that: a real ``ep.phase`` span
+    whose name is not in the allowlist.
+    """
+    ev = _run(1, [1])
+    ev.append({"name": "vulkan.brand_new_phase", "cat": "ep.phase", "ph": "X",
+               "ts": 1_000_020, "dur": 4321, "pid": 1, "tid": 0,
+               "args": {"device": "host", "caveat": "host: something new"}})
+
+    u = phases.unknown_phase_spans(ev)
+    assert u["ok"] is False
+    assert u["verdict"] == "UNKNOWN_PHASE"
+    assert "vulkan.brand_new_phase" in u["unknown"]
+    assert u["unknown"]["vulkan.brand_new_phase"]["total_us"] == 4321
+    # The report must carry it AND red_flags must raise it, or a reader of the summary never
+    # sees it.
+    r = phases.analyse(ev)
+    assert r["unknown_phase_spans"]["ok"] is False
+    assert any("unknown_phase_spans" in f for f in phases.red_flags(r))
+
+
+def test_a_trace_using_only_known_phases_is_not_flagged():
+    """The negative control: the check must be capable of being quiet, or it is a constant."""
+    ev = _run(2, [1, 1])
+    u = phases.unknown_phase_spans(ev)
+    assert u["ok"] is True
+    assert u["verdict"] == "ALL_KNOWN"
+    assert u["unknown"] == {}
+    assert not any("unknown_phase_spans" in f for f in phases.red_flags(phases.analyse(ev)))
+
+
+def test_every_phase_this_module_knows_is_either_a_sibling_or_has_a_declared_parent():
+    """``HOST_PHASES`` and ``PHASE_CHILDREN`` must not drift apart.
+
+    A name added to the allowlist but to neither the child table nor the sibling set would be
+    summed as a top-level part. If it is really nested, that double-counts its parent — which is
+    the ~2x error this module was written after.
+    """
+    children = {c for kids in phases.PHASE_CHILDREN.values() for c in kids}
+    for parent in phases.PHASE_CHILDREN:
+        assert parent in phases.HOST_PHASES, f"{parent} parents children but is not a known phase"
+    for child in children:
+        assert child in phases.HOST_PHASES, f"{child} is a declared child but is not known"
+    # Every sub-record phase must be a child of `record` specifically, since `phase_nesting`
+    # derives containment against `record` spans only.
+    assert set(phases.SUB_RECORD_PHASES) <= set(phases.PHASE_CHILDREN["record"])
+
+
+def test_readback_is_a_child_of_writeback_not_of_record():
+    """Issue #88's correction, asserted where the two sides used to disagree.
+
+    ``record_transfer(Transfer::Readback, ..)`` fires in Step 5 of ``dispatch_ort`` — after the
+    record guard is dropped and after the fence has signalled — so readback time is not inside
+    ``record`` and never was. ``trace.rs`` said it was; this module's ``PHASE_CHILDREN`` said
+    nothing at all. The result was that readback microseconds were subtracted from ``record``'s
+    residual, inflating the share attributed to command-buffer recording.
+    """
+    assert "readback" not in phases.PHASE_CHILDREN["record"]
+    assert phases.PHASE_CHILDREN["writeback"] == ("readback",)
+    assert not phases.is_leaf_phase("writeback")

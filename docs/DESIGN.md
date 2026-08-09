@@ -6581,6 +6581,179 @@ push is a second, staler answer to a question already being asked live — and s
 what it delivered. `--record` remains for a deliberate archival reading; anything it writes carries
 the frame above, so such a reading can go stale *detectably* instead of silently.
 
+### 9.5 Host-cost attribution inside `Compute` — the phase roles and what they may be summed into (issue #88, Switch, 2026-08-08T17:27:40.427-07:00)
+
+Decode had a device reading and no host reading. The profile named the GPU share; everything else
+was one anonymous remainder. Three separate absences produced that:
+
+1. **No whole.** `Phase::Compile` and `Phase::Prepack` covered session setup, and `Record`,
+   `DescAlloc`, `PipelineLookup`, `CmdUpload`, `Submit`, `FenceWait` covered fragments of a Compute
+   call, but nothing timed the Compute call itself. Without a denominator, a phase's microseconds
+   are a number and not a share, and the parts nobody named had no name to be missing from.
+2. **No counters for the churn.** Descriptor pools, descriptor sets, descriptor writes, command
+   buffer recordings and queue submits were all invisible to the counter ABI. "Warm calls still
+   allocate descriptor sets" could be asserted from a debugger and from nowhere else.
+3. **`Tracer::record_path` had no caller.** The mechanism that exists to say *"this Compute
+   replayed a cached command buffer"* versus *"this Compute rebuilt one"* was listed under
+   `uninvoked` in `rust/tools/instrument_census.json`, and `log_summary` printed
+   `record-path breakdown NOT WIRED` on every run since it was written.
+
+#### 9.5.1 Three roles, because two were not enough
+
+Before this change every `Phase` was either a sibling (summable) or nested in exactly one other
+(`nested_in() -> Option<Phase>`). Adding a whole-Compute timer to that model would have classified
+it as a sibling, and `bench/phases.py` would have added the whole to its own parts and reported a
+host total roughly twice the truth. `PhaseRole` makes that unrepresentable:
+
+| Role | Meaning | May be summed? |
+|---|---|---|
+| `Total` | The denominator. Contains the siblings and their children. | **Never.** |
+| `Sibling` | A top-level part of the total. Wall-clock disjoint from the other siblings. | Yes, with the other siblings. |
+| `Child(parent)` | Contained in `parent`'s interval. Already counted there. | **Never** — it is a *within*-parent breakdown. |
+
+`Phase::role()` is an exhaustive match, so a new variant fails to compile until its role is stated.
+`nested_in()` is now derived from `role()` rather than being a second, independently editable
+opinion, and `rust/src/trace.rs::there_is_exactly_one_total_and_it_is_execute` fails if a second
+`Total` ever appears.
+
+#### 9.5.2 Exact timer boundaries
+
+The six top-level boundaries are declared in one block comment at the top of `dispatch_ort`
+(`rust/src/vk/session.rs`), because a boundary defined in six places is six definitions.
+
+| Phase | Role | Opens | Closes | Contains |
+|---|---|---|---|---|
+| `execute` | `Total` | EP entry to `dispatch_ort`, immediately after the subgraph region | EP return, **on every exit path including errors** | everything below |
+| `prepare` | `Sibling` | first statement of `dispatch_ort` | explicit `drop` at "Step 2 & 3" | plan/cache lookup, shape resolution, binding preparation |
+| `buffer_alloc` | `Sibling` | "Step 2 & 3" | explicit `drop` at "Step 4" | per-call `vkCreateBuffer`/`vkAllocateMemory`, staging preparation, host-side upload `memcpy` |
+| `record` | `Sibling` | "Step 4" | before the submit block | command recording; **does not** contain `readback` |
+| `cmd_alloc` | `Child(record)` | before `CommandPool::begin` | after it | `vkResetCommandBuffer` + `vkBeginCommandBuffer`, nothing else |
+| `desc_alloc`, `pipeline_lookup`, `cmd_upload` | `Child(record)` | (unchanged) | (unchanged) | (unchanged) |
+| `submit` | `Sibling` | before `vkQueueSubmit` | after it | the submit call only |
+| `fence_wait` | `Sibling` | before the fence wait | after it | `vkWaitForFences` |
+| `writeback` | `Sibling` | "Step 5" | end of writeback | download, readback `memcpy`, output staging |
+| `readback` | `Child(writeback)` | (unchanged) | (unchanged) | (unchanged) |
+
+The siblings are opened and dropped **explicitly and in order**, never by falling out of scope, so
+that they are provably disjoint rather than accidentally so. That is what makes summing them
+legitimate.
+
+**`readback` was reparented, and that was a bug fix.** `Phase::Readback::nested_in()` returned
+`Some(Phase::Record)`, but `record_transfer(Transfer::Readback, ..)` fires in Step 5 — after the
+record guard is dropped and after the fence. `bench/phases.py`'s `PHASE_CHILDREN` did not list
+readback at all. The two sides disagreed, and readback microseconds were being subtracted from
+`record`'s residual, where they had never been.
+
+#### 9.5.3 What this model refuses to claim
+
+- **`execute` emits no span of its own.** `vulkan.subgraph` already brackets the same interval;
+  two spans over one interval is how a decomposition learns to double-count. `Phase::emits_span()`
+  is false for it, `phase()` `debug_assert!`s on that, and
+  `tests/ops/test_host_cost_counters.py::test_the_whole_is_not_emitted_as_a_span_beside_its_own_parts`
+  fails if one ever appears in a real trace.
+- **The siblings are not exhaustive and are not claimed to be.** The difference between `execute`
+  and the sum of the siblings is printed as its own row, `UNATTRIBUTED`, with its own share. A
+  decomposition that lists only the parts it found reads as if it found all of them (**R11**).
+- **`fence_wait` is not idle time and `submit` is not GPU time.** A driver may complete work inside
+  `vkQueueSubmit`, and a fence wait on a completed submission returns immediately. These phases
+  bound *host* wall time at those call sites and nothing else. §1.3 of `docs/PERF.md` is the longer
+  form of this warning and still governs.
+- **The totals are cumulative over the session.** A session mixing one cold call with many warm ones
+  reports a *mixture*, and the share belongs to no single call. The per-call split is in the trace
+  spans, not in the summary.
+
+#### 9.5.4 Admissibility — a refusal that cannot be mistaken for a finding
+
+`HostAttribution::refusal()` returns `Some(reason)` in exactly three cases, checked in this order:
+
+1. **`NO WHOLE`** — `execute` recorded no calls or no duration. There is no denominator, so no
+   share below is a share of anything. This is the absence of a measurement, not a measurement of
+   zero.
+2. **`OVER-SUBSCRIBED`** — the siblings sum to more than the total. The siblings are supposed to be
+   disjoint and enclosed, so this is a defect in the instrumentation. It is **refused, not
+   clamped**: a clamp would turn an instrument fault into a plausible-looking 100%.
+3. **`INCOMPLETE`** — Compute ran, and a top-level phase recorded nothing. Its cost is inside
+   `UNATTRIBUTED` under a name that is not its own.
+
+The verdict appears in both renderings — the printed `ATTRIBUTION: admissible` / `ATTRIBUTION: NOT
+ADMISSIBLE — <reason>` line, and the `attribution_admissible` / `attribution_refusal` args on the
+`vulkan.session_summary` instant — and
+`tests/ops/test_host_cost_counters.py::test_a_phase_cannot_go_silent_while_the_report_still_reads_as_complete`
+fails if the two ever disagree. Deleting `t.phase(Phase::Prepare)` from `vk/session.rs` was run as
+a live mutation while writing this section; it produced
+
+```
+ATTRIBUTION: NOT ADMISSIBLE — INCOMPLETE: 3 Compute call(s) ran and these top-level phases
+recorded none: prepare.
+```
+
+so both branches of that case are known reachable rather than merely asserted.
+
+#### 9.5.5 The record-path witness, and why it is not `weight_caches`
+
+`dispatch_ort` classifies every recording as `FirstRecord` or `Rerecord` against
+`VulkanSession::computed_subgraphs`, a `HashSet<u64>` whose only purpose is to remember that this
+subgraph id has been through Compute once. It is deliberately **not** `weight_caches.contains_key`:
+`release_weight_cache` can clear that map mid-session and would manufacture a second "first
+record" for a subgraph that had already been recorded many times.
+
+`RecordPath::Replay` is **unreachable in this build**, and that is a statement about the code and
+not about the workload: `CommandPool::begin` issues `vkResetCommandBuffer` followed by
+`vkBeginCommandBuffer` unconditionally on every call, so no recorded command buffer is ever reused.
+The zero is asserted (`test_no_recording_claims_to_be_a_replay_in_a_build_that_cannot_replay`) so
+that a future replay path cannot land while this paragraph still says it cannot.
+
+The shape key passed to `record_path` is the empty string. There is no replay decision for a key
+to arbitrate here, and formatting one would allocate on the per-inference path.
+
+#### 9.5.6 Cost when tracing is off
+
+`t.phase(..)` returns `None` after one `active()` check — an atomic-free read of a `bool` field on
+a `OnceLock`-initialised singleton. No allocation, no formatting, no clock read. `ExecuteGuard` is
+constructed only inside that same branch. The counters are always-on relaxed atomic increments,
+which is the pre-existing precedent set by `record_dispatches` and `record_shader_dispatched`;
+`record_descriptor_pool_created` deliberately does **not** call `dump_if_requested()`, because that
+writes a file and this fires once per kernel per Compute.
+`tests/ops/test_host_cost_counters.py::test_the_counters_are_recorded_whether_or_not_tracing_is_on`
+holds the counters independent of the trace switch, so a CI reading taken with tracing off is a
+measurement rather than a zero that looks like one.
+
+#### 9.5.7 The device timestamp region, and why this adds no new one
+
+The task this section discharges asked for a device timestamp region "where available". There
+already is one, and adding a second would have been a competing mechanism rather than a
+measurement: `rust/src/vk/timestamp.rs` writes a `VK_QUERY_TYPE_TIMESTAMP` pair around every
+`vkCmdDispatch` in the command buffer and reads it after the fence, and `bench/phases.py`
+(`gpu_spans`, `attribute_gpu_ordinally`) turns it into per-kernel device attribution.
+
+It is **optional at every step, and none of the host phases depend on it**:
+
+- `GpuQueryPool::new` returns `None` on `n_kernels == 0` and on `vkCreateQueryPool` failure,
+  logging a warning; the dispatch proceeds without device timestamps rather than failing.
+- `read_results` returns `None` for any pair a driver did not write, rather than a garbage delta.
+- `timestampPeriod` and `timestampValidBits` are read from the device and applied by the consumer,
+  not assumed: the module's own header records `52.0833 ns/tick` on Intel against `1.0` on NVIDIA
+  **and lavapipe**, which is why the raw ticks are handed back unconverted.
+
+Timestamps are a Vulkan 1.0 core feature, so nothing here requires an extension or a 1.2+ device;
+what varies between devices is validity and resolution, and both are read rather than presumed.
+The consequence for §9.5 is deliberate: **the host attribution is complete without any device
+timestamp at all.** On a device or driver that writes none — lavapipe under a constrained ICD, a
+queue family with `timestampValidBits == 0` — every sibling phase, the whole, the residual and the
+admissibility verdict are unaffected, because all of them are host clocks on the calling thread.
+A host decomposition that silently degraded when a device query failed would be an instrument that
+reports the state of the driver under the name of the state of the program.
+
+#### 9.5.8 What this does *not* include
+
+This is instrumentation only. It contains no descriptor-set reuse, no command-buffer cache, and no
+performance claim of any kind. The optimisation must be measured against these instruments, not
+bundled with them — a change that ships its own scoreboard cannot be checked by it.
+
+The reading these instruments produced on the real model is `docs/PERF.md` §27, and the ranked
+optimisation hypotheses it supports — with their **measured** ceilings, which for descriptor churn
+is far smaller than its count suggested — are §27.5.
+
 ---
 
 ## 10. Milestones

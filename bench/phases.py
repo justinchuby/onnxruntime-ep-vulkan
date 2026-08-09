@@ -82,8 +82,19 @@ import statistics
 from pathlib import Path
 
 #: Host-side phase spans, in the order `rust/src/trace.rs` documents them.
-HOST_PHASES = ("compile", "prepack", "record", "upload", "desc_alloc", "pipeline_lookup",
-               "cmd_upload", "submit", "fence_wait", "readback")
+#:
+#: ``execute`` is deliberately ABSENT even though ``Phase::Execute`` exists: it draws no
+#: ``ph:"X"`` span (see ``Phase::emits_span``), because ``vulkan.subgraph`` already brackets the
+#: same microseconds and a second coincident span would let this module count a call twice. The
+#: whole a share is a share OF is ``SUBGRAPH``, and that has been true here since before #88.
+#:
+#: This tuple is an ALLOWLIST, and an allowlist silently drops what it does not list. That is
+#: what :func:`unknown_phase_spans` exists for: any ``cat: "ep.phase"`` span whose name is not
+#: here is reported, so a phase added to ``trace.rs`` cannot vanish out of this analysis while
+#: the decomposition still prints as if it were complete.
+HOST_PHASES = ("compile", "prepack", "prepare", "buffer_alloc", "record", "upload", "cmd_alloc",
+               "desc_alloc", "pipeline_lookup", "cmd_upload", "submit", "fence_wait",
+               "writeback", "readback")
 
 #: Phases the EP emits *nested inside* another phase's span.
 #:
@@ -97,7 +108,7 @@ HOST_PHASES = ("compile", "prepack", "record", "upload", "desc_alloc", "pipeline
 #: re-derives parenthood from timestamp containment, which is evidence, and goes red when the two
 #: disagree. A sub-phase added to ``trace.rs`` tomorrow is therefore detected rather than silently
 #: double-counted.
-SUB_RECORD_PHASES = ("desc_alloc", "pipeline_lookup", "cmd_upload")
+SUB_RECORD_PHASES = ("cmd_alloc", "desc_alloc", "pipeline_lookup", "cmd_upload")
 
 #: Prefix ``trace.rs`` puts on a nested phase's caveat. The artifact declares its own structure.
 SUB_PHASE_CAVEAT_PREFIX = "host/sub-record:"
@@ -115,9 +126,17 @@ SUB_PHASE_CAVEAT_PREFIX = "host/sub-record:"
 #: the ``vkCmd*`` loop instead of at weight residency. Both readings of "record is 68%" made on
 #: this project drew that conclusion.
 #:
+#: ``readback`` moved from ``record`` to ``writeback`` in issue #88, and that was a CORRECTION of
+#: a real defect rather than a renaming: ``record_transfer(Readback, ..)`` fires in Step 5 of
+#: ``dispatch_ort``, after the record guard is dropped and after the fence has signalled, so
+#: readback microseconds were being subtracted from a phase that had already ended. This
+#: module never listed readback as a child of ``record`` — ``trace.rs`` did — which is why the
+#: two sides disagreed and why :func:`phase_nesting` is written to notice.
+#:
 #: Maps parent phase -> the accounted children that live inside its span.
 PHASE_CHILDREN = {
     "record": ("upload",) + SUB_RECORD_PHASES,
+    "writeback": ("readback",),
 }
 
 
@@ -217,6 +236,59 @@ def phase_spans(events: "list[dict]") -> "list[dict]":
         if e.get("ph") == "X" and e.get("name") in names
     ]
     out.sort(key=lambda s: s["ts"])
+    return out
+
+
+def unknown_phase_spans(events: "list[dict]") -> dict:
+    """Report every ``ep.phase`` span this module would silently drop.
+
+    :func:`phase_spans` selects by an allowlist (:data:`HOST_PHASES`), and an allowlist does not
+    say what it discarded. That is a real hazard rather than a hypothetical one: every phase
+    ``trace.rs`` has ever gained was added to the Rust side first, and until the tuple above was
+    edited the new span was invisible here — the decomposition simply reported a larger
+    unaccounted remainder and no line anywhere said a name had gone missing. A reader looking at
+    a table with no red rows has no way to distinguish "nothing else happened" from "something
+    else happened and this module cannot see it".
+
+    The EP tags every phase span with ``cat: "ep.phase"``, so the trace itself enumerates the
+    population. Anything in it that :data:`HOST_PHASES` does not name is reported here, with its
+    total duration, so the omission shows up as a quantity rather than as an absence.
+
+    ``ok=False`` on any unknown name. It is not a measurement failure — the run is fine — it is
+    an analysis-coverage failure, and this module's totals must not be quoted while it holds.
+    """
+    known = {f"vulkan.{p}" for p in HOST_PHASES}
+    unknown: "dict[str, dict]" = {}
+    for e in events:
+        if e.get("ph") != "X" or e.get("cat") != "ep.phase":
+            continue
+        name = e.get("name") or ""
+        if name in known:
+            continue
+        slot = unknown.setdefault(name, {"n": 0, "total_us": 0})
+        slot["n"] += 1
+        slot["total_us"] += e.get("dur", 0)
+    out = {
+        "check": "unknown_phase_spans",
+        "asserts": "every ep.phase span in the trace has a name this module knows, so no phase "
+                   "can drop out of the decomposition while the decomposition still looks whole",
+        "unknown": dict(sorted(unknown.items())),
+        "known": sorted(known),
+    }
+    if unknown:
+        detail = "; ".join(
+            f"{n} (x{v['n']}, {v['total_us'] / 1000.0:.3f} ms)" for n, v in sorted(unknown.items()))
+        out.update(
+            ok=False,
+            verdict="UNKNOWN_PHASE",
+            detail=(f"the EP emitted phase span(s) this module does not know: {detail}. Their "
+                    f"time is in no row of the phase table and is being reported as unaccounted "
+                    f"remainder under no name. Add them to HOST_PHASES (and to SUB_RECORD_PHASES "
+                    f"/ PHASE_CHILDREN if they are nested) before quoting any share from this "
+                    f"run."))
+    else:
+        out.update(ok=True, verdict="ALL_KNOWN",
+                   detail=f"every ep.phase span matched one of the {len(known)} known names")
     return out
 
 
@@ -2055,6 +2127,9 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
     subs = subgraph_spans(events)
     all_phases = phase_spans(events)
     nesting = phase_nesting(all_phases)
+    # Coverage before content: `phase_spans` selects by allowlist, so this is the only thing that
+    # can report a phase the EP emitted and this module cannot name.
+    unknown_phases = unknown_phase_spans(events)
     attributed = attribute(subs, all_phases)
     # Only true siblings may be summed. Nested sub-record spans (desc_alloc, pipeline_lookup,
     # cmd_upload) are real X spans inside vulkan.record; adding them to the host total counts the
@@ -2134,16 +2209,19 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
             "are excluded from host_phases_ms and from every share, since adding them to their "
             "own parent counts the same microseconds twice."),
         "phase_nesting": nesting,
+        "unknown_phase_spans": unknown_phases,
         "decomposition_identity": decomposition_identity(
             host, gpu, in_compute_ms, independent_whole_ms, whole_source),
         "phase_leaf_accounting": leaf_acct,
         "unattributed_in_compute_ms": round(in_compute_ms - phased_ms, 3),
         "unattributed_note": (
-            "time inside vulkan.subgraph that no phase span covers: reading ORT input pointers, "
-            "buffer allocation and descriptor-pool work before recording, the readback memcpy "
-            "and the writes into ORT's output tensors after the fence. It is reported rather "
-            "than folded into a neighbouring phase, because a phase split whose parts do not sum "
-            "to the whole should say so."),
+            "time inside vulkan.subgraph that no phase span covers. Issue #88 named most of what "
+            "used to live here — `prepare` (ORT pointer reads and shape resolution), "
+            "`buffer_alloc` (the per-call vkCreateBuffer/vkAllocateMemory burst) and `writeback` "
+            "(the post-fence memcpy into ORT's tensors) are now their own spans — so a large "
+            "value here on a build that emits them means something ELSE is unnamed, not those. "
+            "It is reported rather than folded into a neighbouring phase, because a phase split "
+            "whose parts do not sum to the whole should say so."),
         "gpu": gpu,
         "device_fingerprint": device_fingerprint(gpus),
         "anchor_quality": anchor_quality(gpus),
@@ -2219,6 +2297,9 @@ def red_flags(report: dict) -> "list[str]":
     pn = report.get("phase_nesting") or {}
     if pn and not pn.get("ok"):
         out.append(f"phase_nesting: {pn.get('verdict')} — {pn.get('detail')}")
+    ups = report.get("unknown_phase_spans") or {}
+    if ups and not ups.get("ok"):
+        out.append(f"unknown_phase_spans: {ups.get('verdict')} — {ups.get('detail')}")
     di = report.get("decomposition_identity") or {}
     if di and not di.get("ok"):
         out.append(f"decomposition_identity: {di.get('verdict')} — {di.get('detail')}")

@@ -26,6 +26,7 @@ use super::{
     timestamp::GpuQueryPool,
 };
 use crate::{
+    counters,
     engine::{
         BufferView, DType, DispatchContext, EpResult, KernelRequest, NodeDesc, OutRef, TensorDesc,
         TensorRef,
@@ -691,6 +692,18 @@ pub(crate) struct VulkanSession {
     /// Populated lazily on the second inference through a subgraph; freed when the subgraph's
     /// `SubgraphComputeInfo` is released (via `release_weight_cache`).
     weight_caches: HashMap<u64, HashMap<(usize, u64), GpuBuffer>>,
+    /// Subgraph IDs that have completed at least one `Compute` call in this session.
+    ///
+    /// The record-path witness (issue #88): the first Compute for a subgraph is a
+    /// `RecordPath::FirstRecord` and every later one is a `Rerecord`, because
+    /// `CommandPool::begin` resets and re-begins the command buffer unconditionally.
+    ///
+    /// Deliberately a separate set rather than a `weight_caches.contains_key` probe.
+    /// `release_weight_cache` empties that map when ORT releases a subgraph, which would report
+    /// a second "first record" for a subgraph that had already recorded one — and the whole
+    /// value of this witness is that a run showing repeated first-records is showing a defect,
+    /// so it must not be able to manufacture one.
+    computed_subgraphs: std::collections::HashSet<u64>,
     /// A permanent 4-byte device-local STORAGE_BUFFER used as a descriptor placeholder for
     /// zero-element inputs (e.g., Phi-3.5 KV-cache tensors on a first-token prefill, whose
     /// shape is `[1, H, 0, D]`).  A zero-byte VkBuffer is invalid; Vulkan also requires
@@ -957,6 +970,7 @@ impl VulkanSession {
             device,
             instance,
             weight_caches: HashMap::new(),
+            computed_subgraphs: std::collections::HashSet::new(),
             zero_elem_placeholder,
         })
     }
@@ -1055,6 +1069,27 @@ impl VulkanSession {
         // and an early return — there is no allocation and no clock read.
         let t = trace::tracer();
         let _sg = t.subgraph_region(kernels.len());
+        // THE WHOLE (issue #88). Every phase this EP emitted before was a PART, so a reader
+        // summing them had no denominator and could not tell whether they covered 95% of the
+        // call or 40% of it. This guard is the denominator: it is opened before any work and
+        // dropped last, so it encloses every early `return` — including the error paths, because
+        // a total that only covered successful calls would make a failing run look faster than
+        // it was. It draws no span (`vulkan.subgraph` above already brackets these exact
+        // microseconds); it folds one duration into the summary on drop.
+        let _execute_guard = t.execute_region();
+        // Host-cost phase boundaries are declared here, once, so the timers and the docs cannot
+        // drift apart:
+        //   prepare      Step 1 .. end of Step 1b   (ORT pointer reads, dynamic re-translate,
+        //                                            shape resolution, device-buffer binding)
+        //   buffer_alloc Step 2&3 .. end of Step 1c (every vkAllocateMemory/vkCreateBuffer and
+        //                                            the output binding that depends on them)
+        //   record       Step 4                     (vkBeginCommandBuffer .. vkEndCommandBuffer)
+        //   submit       vkQueueSubmit only
+        //   fence_wait   vkWaitForFences only
+        //   writeback    Step 5                     (readback memcpy, weight-cache insert, frees)
+        // They are opened and dropped in that order and never overlap, which is what makes
+        // summing them legitimate. See `trace::HostAttribution`.
+        let mut _prepare_guard = t.phase(Phase::Prepare);
 
         let n_plan_inputs = input_byte_sizes.len();
         let n_plan_outputs = output_byte_sizes.len();
@@ -1525,6 +1560,10 @@ impl VulkanSession {
         }
 
         // ── Step 2 & 3: allocate all GPU buffers ─────────────────────────────
+        // `prepare` closes and `buffer_alloc` opens here — explicitly, not by falling out of
+        // scope, so the two phases are provably disjoint rather than accidentally so.
+        drop(_prepare_guard.take());
+        let mut _buffer_alloc_guard = t.phase(Phase::BufferAlloc);
         // We allocate everything upfront so cleanup is a single loop on error.
         let mut gpu_inputs: Vec<GpuBuffer> = Vec::new();
         let mut staging_ups: Vec<GpuBuffer> = Vec::new();
@@ -2053,15 +2092,50 @@ impl VulkanSession {
         }
 
         // ── Step 4: record command buffer ─────────────────────────────────────
+        // `buffer_alloc` closes here; `record` opens.
+        drop(_buffer_alloc_guard.take());
         // Phase::Record wraps everything from vkBeginCommandBuffer through vkEndCommandBuffer.
         // The upload CPU-memcopy time is reported separately via record_transfer so Niobe's
         // harness can attribute it without mixing recording and copy costs.
         let _record_guard = t.phase(Phase::Record);
 
+        // THE RECORD-PATH WITNESS (issue #88). Classified HERE, immediately before the command
+        // pool is touched, because this is the only place that knows which path was actually
+        // taken. `CommandPool::begin` calls vkResetCommandBuffer + vkBeginCommandBuffer
+        // unconditionally on every Compute call, so this build never replays: the first call for
+        // a subgraph is a FirstRecord and every later one is a Rerecord. That is not an
+        // assumption written into a doc comment — it is what this call site reports, and if a
+        // command-buffer cache ever lands, the classification here is what must change.
+        //
+        // `computed_subgraphs` is the first-call witness. Deliberately NOT derived from
+        // `weight_caches` (which `release_weight_cache` can clear mid-session, which would report
+        // a second "first record" for a subgraph that had already recorded one).
+        let first_record = self.computed_subgraphs.insert(subgraph_id);
+        let record_path = if first_record {
+            trace::RecordPath::FirstRecord
+        } else {
+            trace::RecordPath::Rerecord
+        };
+        // Always-on counter: a benchmark that cannot enable tracing must still be able to tell
+        // whether the EP re-records every inference. Three relaxed atomic adds per Compute call,
+        // the same cost the dispatch counters already pay.
+        counters::record_command_path(record_path);
+        // Empty shape key: this build re-records unconditionally, so there is no replay decision
+        // for a key to arbitrate, and formatting one would allocate on the per-inference path.
+        t.record_path(subgraph_id, record_path, "", kernels.len());
+
+        // Phase::CmdAlloc — vkResetCommandBuffer + vkBeginCommandBuffer, nothing else. Nested
+        // inside `record`. Named separately because "we reset and re-begin the command buffer on
+        // every single inference" is the specific claim the decode-host investigation needs
+        // priced, and it was previously buried in the `record` residual alongside the vkCmd*
+        // calls it is supposed to be distinguished from.
+        let cmd_alloc_guard = t.phase(Phase::CmdAlloc);
         // SAFETY: cmd_pool is live; no previous recording is in flight.
         let Some(recorder) = (unsafe { self.cmd_pool.begin() }) else {
             bail!("vkBeginCommandBuffer failed");
         };
+        drop(cmd_alloc_guard);
+        counters::record_command_buffer_recorded();
         let cmd = recorder.cmd;
 
         // Create GPU timestamp query pool and reset all queries before any barrier or dispatch.
@@ -2676,6 +2750,7 @@ impl VulkanSession {
             // _submit_guard drops here, ending the Submit span.
             fence_opt
         };
+        counters::record_queue_submit();
         let Some(fence) = fence else {
             self.free_all([
                 &mut gpu_inputs,
@@ -2789,6 +2864,11 @@ impl VulkanSession {
         }
 
         // ── Step 5: write outputs back to ORT-allocated CPU memory ────────────
+        // Phase::Writeback — everything after the fence: the readback memcpy into ORT's tensors,
+        // the weight-cache insertion, and the buffer frees. Opened here rather than at the fence
+        // so the GPU-timestamp report above (which only runs when tracing is on) is not billed to
+        // a phase whose whole purpose is to price the untraced fast path.
+        let _writeback_guard = t.phase(Phase::Writeback);
         // Readback: time the CPU memcopy from mapped staging_dls to ORT's output tensors.
         let readback_t0 = std::time::Instant::now();
         // SAFETY: `api` and `kernel_ctx` are live for this call (fn contract); the fence above has
