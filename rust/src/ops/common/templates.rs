@@ -1057,6 +1057,19 @@ mod tests {
                     );
                 }
             }
+            // `Kernel::extra_module_stems` (#90) names additional hand-written modules the same
+            // row's `translate` may dispatch instead of `stem(d)`'s answer; they must be real
+            // files too, for the same reason the primary stem must be.
+            for stem in spec.kernel.extra_stems() {
+                let generated = manifest.iter().any(|v| v.stem == *stem);
+                let handwritten = glsl.join(format!("{stem}.comp")).is_file();
+                assert!(
+                    generated || handwritten,
+                    "`{}` would dispatch extra module `{stem}`, which the build never produces: \
+                     it is in neither the variant manifest nor shaders/glsl/{stem}.comp",
+                    spec.op_type
+                );
+            }
         }
     }
 
@@ -1076,6 +1089,11 @@ mod tests {
                 if let Some(stem) = spec.kernel.stem(d) {
                     named.insert(stem);
                 }
+            }
+            // A row may also name additional modules it dispatches conditionally instead of its
+            // primary `stem(d)` (#90's `gqa_decode_f16`, alongside `gqa_f16`) — those count too.
+            for stem in spec.kernel.extra_stems() {
+                named.insert(*stem);
             }
         }
         for entry in std::fs::read_dir(&glsl).expect("shaders/glsl must be readable") {

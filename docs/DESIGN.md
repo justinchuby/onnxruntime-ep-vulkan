@@ -5895,7 +5895,149 @@ Decode. At 32 invocations there is no packing to do — the sweep's own numbers 
 faster needs a different kernel shape: parallelism over the **KV sequence** inside a workgroup,
 with a reduction, which is a shared-memory and barrier change and therefore a portability question
 of exactly the kind §8.12 declined to open without evidence. `docs/PERF.md` §26.7 names it as the
-next lever and says what it would have to prove.
+next lever and says what it would have to prove. **§8.14 (issue #90) opens it.**
+
+---
+
+### 8.14 Decode-time KV parallelism inside a workgroup — a second, separate shader (issue #90)
+
+§8.13 left decode's dispatch untouched: at `B * Nq * S = 32` invocations there is nothing to pack,
+and `gqa_f16.comp` runs one invocation per workgroup, scanning the entire past sequence serially
+inside that invocation. At `past = 1024` that invocation reads and folds 1024 KV positions alone
+while every other lane on the device idles. Issue #90 gives each workgroup `W` cooperating lanes
+that split the **KV/past** dimension instead of the batch/head/query dimension §8.13 already
+exhausted.
+
+#### Why this is a new shader file, not a new branch inside `gqa_f16.comp`
+
+`ctx.dispatch()` calls are separate `CompiledKernel` entries in this engine, and the automatic
+`SHADER_WRITE → SHADER_READ` barrier the engine inserts between two dispatches is global, not
+scoped to one buffer — but `ctx.alloc_temp()` buffers are **per-kernel-private**, so a two-dispatch
+design (one dispatch per KV tile, a second to reduce) cannot share a temp buffer across the two
+calls without a third, host-visible allocation outside the existing temp-buffer contract. The
+single-dispatch alternative — one workgroup per `(batch, query_head)`, `W` lanes cooperating via
+`shared` memory and one `barrier()` inside that one dispatch — needs no new buffer contract, so
+`gqa_decode_f16.comp` is a new file (`rust/shaders/glsl/gqa_decode_f16.comp`) rather than a branch
+inside the ledger-frozen `gqa_f16.comp` (frozen since §8.12/issue #7's row-tile change; untouched
+by #90 — `git diff` on that file is empty for this branch).
+
+#### The mapping
+
+* Dispatch grid: unchanged from §8.13's decode case — `[B * Nq, 1, 1]` workgroups, one per
+  `(batch, query_head)` pair, exactly as `translate_gqa_phi35_decode_produces_one_dispatch` already
+  asserted before #90 existed.
+* Workgroup shape: `local_size_x = W` (specialisation constant), each lane `l` scanning KV
+  positions `l, l+W, l+2W, ...` up to `past_len_max` — a strided, not blocked, partition, so no
+  lane's range depends on `past_len_max % W`.
+* Combine: each lane keeps its own running `(max, sum, weighted-V accumulator)` online-softmax
+  triple exactly as the serial kernel's single invocation did; one `barrier()` after the scan
+  publishes all `W` lanes' triples into `shared` arrays; lane 0 performs the (small, `W`-wide, not
+  past-length-wide) cross-lane online-softmax merge and writes the result — the same combine rule
+  `gqa_f16.comp` already applies when it folds one KV tile's partial into its running total,
+  applied `W` times instead of `past_len_max` times by lane 0 at the end, rather than a different
+  reduction rule invented for this shader.
+* `W` is chosen host-side by `ops::attention::gqa_decode_kv_parallel(past_len_max)`: doubles from 1
+  while `w * 2 <= GQA_DECODE_MAX_KV_PARALLEL (16)` and `past_len_max / (w * 2) >= GQA_DECODE_MIN_WORK_PER_LANE (32)`
+  — i.e. `W` only grows while doing so still leaves each lane at least 32 KV positions of real
+  work, so a short past never over-subscribes lanes for the sake of a specialisation constant.
+  `ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL` overrides this (clamped to `[1, 16]`), exactly as
+  `GQA_LOCAL_SIZE`'s env override works in §8.13, and is both the operational kill switch and the
+  A/B control: `= 1` degenerates to one lane doing the entire scan, in the same order, at the same
+  addresses, as the pre-#90 `gqa_f16.comp` decode path.
+
+#### Why this is portability-neutral
+
+Same test as §8.12/§8.13: what does it *not* need?
+
+* **No subgroup operation, ever.** The cross-lane combine is done through `shared` memory and one
+  `barrier()`, which is Vulkan 1.1 core compute — no `VK_KHR_shader_subgroup_*`, no wave/warp-size
+  assumption, no `gl_SubgroupSize` read. A device with subgroup size 1 (permitted by the spec) is
+  no less correct here, only less concurrent — the same property §7.2's frozen feature set already
+  requires of everything this EP dispatches.
+* **`W ∈ {1, 2, 4, 8, 16}` is a specialisation constant, capped by construction.** 16 lanes is
+  inside every conformant device's `maxComputeWorkGroupInvocations` floor (128) with no per-vendor
+  tuning; the doubling law is a function of `past_len_max` (a model/request property), not of any
+  queried device limit.
+* **`shared` memory usage is a small, fixed multiple of `W`, not of `past_len_max`.** The scan
+  itself stays in registers/L1 per lane; only the `W`-wide combine triple is staged through
+  `shared`, so the shader's `shared` footprint does not grow with sequence length and stays far
+  under the guaranteed `16 KiB` minimum `maxComputeSharedMemorySize` at `W = 16`.
+* **lavapipe and other portable/constrained devices remain correct** because nothing above is
+  optional or device-conditioned in the shader itself — the same SPIR-V runs unmodified on every
+  Vulkan 1.1 device this EP targets, exactly as `gqa_f16.comp` always has.
+
+#### The numerics finding — reordering is real, and where it does and does not matter
+
+`W = 1` is bit-identical to the pre-#90 serial kernel by construction (single lane, same scan
+order, same combine order) and this is verified twice: the reproved `evidence/proof_ledger.jsonl`
+entry for `group_query_attention_f16` carries the identical `worst_rel` to the pre-#90 entry it
+replaced, and `bench/results/probe_gqa_decode_kv_parallel.py`'s own ledger cross-check reads that
+same field back. `W > 1` reorders the online-softmax combine — `W` partial folds instead of one —
+and floating-point addition is not associative, so `W > 1` is **mathematically equivalent, not
+bit-identical**, to `W = 1`, exactly as tiled reductions are everywhere else in this class of
+kernel (FlashAttention's own published numerics behave the same way across tile sizes).
+
+Two investigation findings are recorded here because they materially changed how this was measured,
+not just what it measured:
+
+1. **A relative-error-only metric is the wrong instrument for a 32064-token logit vector.**
+   `|diff| / max(|ref|, 1e-6)` blows up wherever a reference logit is near zero — common across a
+   vocabulary that size — even for a trivially small absolute difference. An early sweep read
+   `worst_rel` up to ~554 at `W > 1` on this metric alone; the *actual* absolute logit difference
+   behind that number was ≤ 0.5 out of a ~20–26-magnitude range. The probe now uses this project's
+   own combined-tolerance convention (`atol = 1e-2, rtol = 1e-2`, matching `tests/ops/_models.py`'s
+   `assert_matches_cpu`) plus an explicit argmax (greedy-decode token) check, applied to the
+   graph's final logits.
+2. **Synthetic random-noise past KV amplifies ordinary reordering into an apparently large
+   divergence.** `bench/real_model.py`'s `phi35_feeds` (inherited from #56, shared with the timing
+   pass, left unmodified) feeds `N(0, 0.02)` noise as decode's `past_key/value` — an
+   out-of-distribution input no real generation loop produces. Under that input, per-layer KV
+   outputs stayed within tolerance through roughly the first 14 of 32 layers, then violations grew
+   through the remaining depth, peaking at the final logits (30–44% of vocab entries outside
+   `atol/rtol` at the worst `W`) — a compounding signature consistent with ordinary per-op
+   float non-associativity amplified by residual-stream/int4-boundary sensitivity over depth, not a
+   localized bug. Repeating the same comparison with a REAL, coherent KV cache — obtained by
+   actually running the model's own prefill over real token ids with an empty cache, then feeding
+   its genuine `present_key/value` back as decode's `past_key/value` — collapsed the divergence:
+   at `past ∈ {512, 1024, 2048}` every candidate `W ∈ {2, 4, 8, 16}` is within `atol/rtol = 1e-2`
+   on the final logits (several `W` bit-identical), and at `past = 128` a small residual remains
+   (≤ 0.9% of vocab entries, worst absolute diff ≤ 0.035) — but **argmax (the actual greedy-decode
+   token) matches `W = 1` at every one of the 16 tested `(past, W)` points**, including `past =
+   128`. Both findings are `probe_gqa_decode_kv_parallel.py`'s `_coherent_decode_feeds` and its
+   docstring now, not a private note.
+
+**What this means for "without changing numerics":** per-op, the design is exact at `W = 1` and
+tolerance-clean at `W > 1` in isolation (verified against the CPU oracle at exact Phi-3.5 dimensions
+for `W ∈ {1, 2, 4, 8}`, symbolic and concrete present-shape, in the PR's test additions). End to end,
+under realistic (coherent) decode input, the greedy-decode token is unchanged at every measured
+point; a strict per-element bound on the full 32-layer network's final logits is met everywhere
+except a small residual at the shortest tested past length, where it is met in every case that
+matters for what the model outputs next. This is reported rather than smoothed over: a full
+32-layer network's final logits are not the same admissibility question as one operator's own
+tolerance, and the honest claim is bounded to what was actually measured.
+
+#### The result
+
+`bench/results/real_model_gqa_decode_kv_parallel.json` (real Foundry Phi-3.5, 3 whole-process
+repeats per point, interleaved `W = 1`/candidate, predeclared non-inferiority ratio 1.05×): every
+candidate `W ∈ {2, 4, 8, 16}` is a **WIN** at every tested past length `{128, 512, 1024, 2048}`,
+with the ratio (candidate ÷ `W = 1` median `gqa_decode_f16` GPU time) improving monotonically with
+`W` — from ~0.6× at `W = 2` to ~0.13–0.29× at `W = 16` depending on past length, i.e. roughly a
+3.4×–8× reduction in the `gqa_decode_f16` kernel's own GPU time at the widest lane count measured.
+`docs/PERF.md` §26.11 reproduces the full table.
+
+#### The kill switch and the default
+
+`gqa_decode_kv_parallel`'s own doubling-and-floor rule is the shipped default (no override set);
+`ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL=1` is the operational fallback, restoring the
+pre-#90 one-lane-per-workgroup decode path exactly, for the same reason `GQA_LOCAL_SIZE=1` is
+§8.13's.
+
+#### What this does *not* fix
+
+The host-side KV round trip §26.7 already named (~320 ms of a 608 ms decode wall at `past = 1024`,
+prior to #90) is unaffected — #90 is a device-side kernel change, and #88's tracing/host-cost work
+is a separate, ongoing track. Issue #81's `q_gemv` selector is also untouched by this change.
 
 ---
 

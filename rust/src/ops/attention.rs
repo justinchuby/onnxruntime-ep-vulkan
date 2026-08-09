@@ -710,7 +710,49 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     push.extend_from_slice(&past_read_stride.to_le_bytes());
     push.extend_from_slice(&scale.to_bits().to_le_bytes());
 
-    // -- Dispatch: one invocation per (batch, query_head, query_seq_pos) ---------------
+    let bindings = vec![
+        qkv_buf,     // binding 0: packed_qkv
+        past_k_buf,  // binding 1: past_key
+        past_v_buf,  // binding 2: past_value
+        seqlens_buf, // binding 3: seqlens_k
+        cos_buf,     // binding 4: cos_cache
+        sin_buf,     // binding 5: sin_cache
+        attn_buf,    // binding 6: attn_output
+        pres_k_buf,  // binding 7: present_key
+        pres_v_buf,  // binding 8: present_value
+    ];
+
+    // -- Decode (seq_len == 1): a KV-dimension-parallel kernel, issue #90 ---------------
+    //
+    // `gqa_f16` dispatches one invocation per (batch, query_head, query_seq_pos); at decode
+    // that is `B * Nq` invocations (S == 1), and `gqa_local_size`'s own "leave >= GQA_MIN_GROUPS
+    // workgroups" rule keeps their packing at 1 — 31 of every 32 SIMD lanes masked off, running
+    // a fully serial loop over the whole past length. `gqa_decode_f16` is a *separate* shader
+    // (gqa_f16.comp is untouched, still the exact pipeline #72 proved) that keeps the same one-
+    // workgroup-per-(batch, head) dispatch shape but gives each workgroup `W` cooperating lanes
+    // that split the KV/past dimension and combine via `shared` memory + one `barrier()` — see
+    // `gqa_decode_f16.comp` for the full portability and numerics argument. `W == 1` reduces to
+    // exactly the serial algorithm (bit-identical output, not merely close), so this path is safe
+    // to take unconditionally at seq_len == 1 rather than gating on a second dispatch shader.
+    if seq_len == 1 {
+        // `past_len_max` is the compile-time-known cache *capacity* (from past_key's declared
+        // shape); the true per-call past length lives in the runtime `seqlens_k` buffer and is
+        // not observable here, so — exactly like `gqa_local_size` already does for packing — the
+        // KV-parallel factor is chosen from the static shape, not the dynamic sequence position.
+        let decode_total_len_bound = past_len_max + seq_len;
+        let kv_parallel = gqa_decode_kv_parallel(decode_total_len_bound);
+        let workgroups = (batch_size * num_heads).max(1);
+        return ctx.dispatch(KernelRequest {
+            shader: "gqa_decode_f16",
+            spec_constants: vec![kv_parallel],
+            push_constants: push,
+            bindings,
+            workgroups: [workgroups, 1, 1],
+        });
+    }
+
+    // -- Prefill (seq_len > 1): unchanged, dispatch: one invocation per (batch, query_head,
+    // query_seq_pos) ---------------
     //
     // The invocation *count* is unchanged; how many of them share a workgroup is not. A
     // workgroup of one invocation costs a whole subgroup with one lane enabled — 1/32 of the
@@ -724,17 +766,7 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
         shader: "gqa_f16",
         spec_constants: vec![local],
         push_constants: push,
-        bindings: vec![
-            qkv_buf,     // binding 0: packed_qkv
-            past_k_buf,  // binding 1: past_key
-            past_v_buf,  // binding 2: past_value
-            seqlens_buf, // binding 3: seqlens_k
-            cos_buf,     // binding 4: cos_cache
-            sin_buf,     // binding 5: sin_cache
-            attn_buf,    // binding 6: attn_output
-            pres_k_buf,  // binding 7: present_key
-            pres_v_buf,  // binding 8: present_value
-        ],
+        bindings,
         workgroups: [groups, 1, 1],
     })
 }
@@ -845,6 +877,77 @@ pub(crate) fn gqa_local_size_with(total: u32, override_size: Option<u32>) -> u32
     local
 }
 
+/// Largest KV-parallel factor `gqa_decode_f16` will ask a Vulkan 1.1 implementation for.
+///
+/// This is a `shared`-array bound, not a device query: `gqa_decode_f16.comp` declares
+/// `s_acc[MAX_KV_PARALLEL][MAX_HEAD_DIM]` at compile time (GLSL `shared` arrays need a
+/// compile-time size), so the cap has to be baked into both the shader and this constant, and
+/// the two must agree. At `MAX_HEAD_DIM = 128` (the same bound `gqa_f16.comp`'s register arrays
+/// already assume) the shared arrays this shader declares total 9,856 bytes — comfortably under
+/// the Vulkan 1.1 CORE-GUARANTEED MINIMUM `maxComputeSharedMemorySize` of 16,384 bytes, with
+/// headroom for `s_q`/`s_knew`/`s_vnew` and driver overhead. 16 also stays inside the required
+/// minimum `maxComputeWorkGroupInvocations` of 128 with a large margin, unlike `gqa_local_size`'s
+/// 64 which is the tightest value under that same floor.
+pub const GQA_DECODE_MAX_KV_PARALLEL: u32 = 16;
+
+/// Overrides [`gqa_decode_kv_parallel`]. Clamped to `[1, GQA_DECODE_MAX_KV_PARALLEL]`.
+///
+/// `=1` restores the plain serial decode kernel geometry exactly (one lane, no `shared`-memory
+/// combine needed beyond a pass-through), the kill switch for issue #90 in the same sense
+/// `ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE=1` is for #56.
+pub const ENV_GQA_DECODE_KV_PARALLEL: &str = "ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL";
+
+/// How many lanes cooperate on one (batch, query_head) decode workgroup in `gqa_decode_f16`.
+///
+/// Pure so it is testable without a device. `total_len_bound` is `past_len_max + seq_len` — the
+/// compile-time-known cache *capacity*, the same kind of static quantity `gqa_local_size` already
+/// keys its packing decision on, because the true per-call past length lives in the runtime
+/// `seqlens_k` buffer and is not observable at translate time.
+///
+/// The rule doubles the lane count while the *work per lane* it would leave stays at or above
+/// `GQA_DECODE_MIN_WORK_PER_LANE`, capped at [`GQA_DECODE_MAX_KV_PARALLEL`] — the same shape as
+/// `gqa_local_size_with`'s "largest power of two that still leaves enough work" rule, applied to
+/// the KV dimension instead of the workgroup-count dimension. A tiny cache (a few past tokens,
+/// e.g. this crate's own ledger case at `past_len_max = 4`) keeps `W == 1`: the degenerate case
+/// that is bit-identical to the plain serial kernel, so there is no tiling overhead where there
+/// is nothing to tile.
+pub fn gqa_decode_kv_parallel(total_len_bound: u32) -> u32 {
+    gqa_decode_kv_parallel_with(total_len_bound, gqa_decode_kv_parallel_override())
+}
+
+/// Fewest KV positions per lane `gqa_decode_kv_parallel` will leave, before it stops doubling.
+///
+/// 32 for the same reason as `GQA_MIN_GROUPS`: below this the per-lane loop is short enough that
+/// the fixed cost of the `shared`-memory publish, the `barrier()`, and lane 0's serial combine
+/// are no longer clearly paid for by the parallel scan they wrap.
+pub const GQA_DECODE_MIN_WORK_PER_LANE: u32 = 32;
+
+fn gqa_decode_kv_parallel_override() -> Option<u32> {
+    std::env::var(ENV_GQA_DECODE_KV_PARALLEL)
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .map(|n| n.clamp(1, GQA_DECODE_MAX_KV_PARALLEL))
+}
+
+/// The body of [`gqa_decode_kv_parallel`] with the environment lifted out, so it is testable.
+///
+/// The clamp is repeated here rather than trusted from the override reader for the same reason
+/// `gqa_local_size_with` repeats it: this is `pub(crate)` and a caller handing it `Some(0)` must
+/// still get a dispatchable geometry.
+pub(crate) fn gqa_decode_kv_parallel_with(total_len_bound: u32, override_size: Option<u32>) -> u32 {
+    if let Some(n) = override_size {
+        return n.clamp(1, GQA_DECODE_MAX_KV_PARALLEL);
+    }
+    let total_len_bound = total_len_bound.max(1);
+    let mut w = 1u32;
+    while w * 2 <= GQA_DECODE_MAX_KV_PARALLEL
+        && total_len_bound / (w * 2) >= GQA_DECODE_MIN_WORK_PER_LANE
+    {
+        w *= 2;
+    }
+    w
+}
+
 crate::op_table! {
     //  op                     domain  opsets                       caps    kernel          claim                   translate                  status              schema
     //
@@ -854,7 +957,7 @@ crate::op_table! {
     // f32 node pass the claim gate and fail at translate, which is a partition-compile failure
     // where a `[dtype]` decline was meant. It is the same argument `Conv`'s row already makes for
     // f16 in the other direction: a dtype with no module declines at the gate.
-    "GroupQueryAttention",     Ms,     1 ..= OPSET_ANY,             F16,    kernel!(Standalone, "gqa"),  group_query_attention,  translate_gqa,             Live,               schema: &GROUP_QUERY_ATTENTION;
+    "GroupQueryAttention",     Ms,     1 ..= OPSET_ANY,             F16,    kernel!(Standalone, "gqa", extra: ["gqa_decode_f16"]),  group_query_attention,  translate_gqa,             Live,               schema: &GROUP_QUERY_ATTENTION;
     "RotaryEmbedding",         Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  rotary_embedding,       templates::unimplemented,  Staged(XL_KERNEL),  schema: &ROTARY_EMBEDDING;
     "MultiHeadAttention",      Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  claim::never,           templates::unimplemented,  Staged(XL_KERNEL),  schema: &MULTI_HEAD_ATTENTION;
     "Attention",               Ai,     OPSET_STD_LLM ..= OPSET_STD_ATTENTION_MAX, FLOAT,  kernel!(None),  std_attention,          templates::unimplemented,  Staged(XL_KERNEL);
@@ -1208,7 +1311,10 @@ mod tests {
 
         assert_eq!(ctx.dispatches.len(), 1, "exactly one dispatch");
         let k = &ctx.dispatches[0];
-        assert_eq!(k.shader, "gqa_f16", "must dispatch gqa_f16 shader");
+        assert_eq!(
+            k.shader, "gqa_decode_f16",
+            "seq_len == 1 must dispatch the KV-parallel decode shader (#90), not gqa_f16"
+        );
         assert_eq!(k.workgroups, [32, 1, 1], "B*Nq*S = 1*32*1 = 32 invocations");
         assert_eq!(k.bindings.len(), 9, "9 bindings: 6 inputs + 3 outputs");
         // Phi-3.5 declares the growing-cache convention (present S = past + S), so present
@@ -1446,12 +1552,16 @@ mod tests {
         );
     }
 
-    /// Decode's dispatch, through the same path, asserted as *unchanged*.
+    /// Decode's dispatch, through the same path, asserted against issue #90's KV-parallel rule.
     ///
-    /// `translate_gqa_phi35_decode_produces_one_dispatch` already pins `[32, 1, 1]`. This adds
-    /// the half that test predates: the specialisation constant decode is dispatched with.
+    /// `translate_gqa_phi35_decode_produces_one_dispatch` already pins `[32, 1, 1]` and the
+    /// `gqa_decode_f16` shader name. This adds the half that test predates: the specialisation
+    /// constant decode is dispatched with is `gqa_decode_kv_parallel`'s answer for this node's
+    /// `past_len_max + seq_len = 257`, not the pre-#90 constant `1` — the workgroup *grid* stays
+    /// untouched (one workgroup per (batch, query_head)); it is only the lanes *within* each
+    /// workgroup that #90 changes.
     #[test]
-    fn translate_gqa_decode_declares_the_unpacked_size() {
+    fn translate_gqa_decode_declares_the_kv_parallel_size() {
         let spec = crate::registry::all_specs()
             .find(|s| s.op_type == "GroupQueryAttention")
             .unwrap();
@@ -1459,8 +1569,20 @@ mod tests {
         let mut ctx = Recorder::default();
         translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
         let k = &ctx.dispatches[0];
-        assert_eq!(k.spec_constants, vec![1], "decode is not packed");
-        assert_eq!(k.workgroups, [32, 1, 1], "and its grid is untouched");
+        // past_len_max=256, seq_len=1 -> total_len_bound=257; gqa_decode_kv_parallel_with(257,
+        // None) == 8 (doubles 1->2->4->8, then 257/16=16 < GQA_DECODE_MIN_WORK_PER_LANE=32 stops
+        // it short of the cap).
+        assert_eq!(
+            gqa_decode_kv_parallel_with(257, None),
+            8,
+            "sanity: the pure function's answer for this node's bound"
+        );
+        assert_eq!(
+            k.spec_constants,
+            vec![8],
+            "decode is KV-parallel per #90, not fixed at 1"
+        );
+        assert_eq!(k.workgroups, [32, 1, 1], "the workgroup grid is untouched");
     }
 
     /// Defect 2 falsifier (R9/R10): with an **empty** past KV (`past_max == 0`, the prefill /
@@ -1932,6 +2054,123 @@ mod tests {
         assert!(
             shaders::find("gqa_f16").is_some(),
             "`gqa_f16` is not in the compiled SPIR-V manifest — did `build.rs` miss the shader?"
+        );
+        assert!(
+            shaders::find("gqa_decode_f16").is_some(),
+            "`gqa_decode_f16` (#90) is not in the compiled SPIR-V manifest — did `build.rs` miss \
+             the new shader file?"
+        );
+    }
+
+    // -- #90: the decode-time KV-parallel factor ------------------------------------------
+
+    /// A tiny cache (this crate's own ledger case, `past_len_max = 4`) must stay at `W == 1`:
+    /// the degenerate case documented on `gqa_decode_kv_parallel` as bit-identical to the plain
+    /// serial kernel. If this regresses to `W > 1`, the ledger case's proven output changes for
+    /// no measured reason on a shape nobody claims parallelism helps.
+    #[test]
+    fn gqa_decode_kv_parallel_stays_serial_for_the_ledger_case() {
+        assert_eq!(
+            gqa_decode_kv_parallel_with(5, None),
+            1,
+            "past_len_max=4, seq_len=1 -> total_len_bound=5: too little work to split"
+        );
+    }
+
+    /// The rule reproduces its own doubling law at the boundaries that make it turn.
+    ///
+    /// `total_len_bound / (w*2) >= GQA_DECODE_MIN_WORK_PER_LANE` is the whole rule; this pins the
+    /// exact bound at which each doubling does and does not happen, so a refactor that shifts the
+    /// threshold by one is caught by name.
+    #[test]
+    fn gqa_decode_kv_parallel_matches_the_doubling_law() {
+        for (total, want, what) in [
+            (1u32, 1u32, "empty/degenerate cache"),
+            (5, 1, "the ledger case: past_len_max=4"),
+            (63, 1, "one below the first doubling threshold (64)"),
+            (64, 2, "exactly the first doubling threshold"),
+            (127, 2, "one below the second threshold (128)"),
+            (128, 4, "exactly the second doubling threshold"),
+            (256, 8, "exactly the third doubling threshold"),
+            (
+                257,
+                8,
+                "Phi-3.5 decode at past_max=256: one past the third threshold",
+            ),
+            (512, 16, "reaches the cap exactly at the fourth threshold"),
+            (
+                u32::MAX,
+                16,
+                "never exceeds the cap regardless of magnitude",
+            ),
+        ] {
+            assert_eq!(
+                gqa_decode_kv_parallel_with(total, None),
+                want,
+                "{total} total_len_bound ({what})"
+            );
+        }
+    }
+
+    /// The cap is a `shared`-array compile-time bound, not a device reading — no input, however
+    /// large, may exceed it, and every answer must stay a power of two (the shader's reduction
+    /// tree assumes it).
+    #[test]
+    fn gqa_decode_kv_parallel_never_exceeds_the_portable_cap() {
+        for total in [4096u32, 1 << 20, u32::MAX] {
+            let w = gqa_decode_kv_parallel_with(total, None);
+            assert!(
+                w <= GQA_DECODE_MAX_KV_PARALLEL,
+                "{total} total_len_bound produced W={w}"
+            );
+            assert!(w.is_power_of_two(), "W stays a power of two");
+        }
+    }
+
+    /// **Planted control.** `ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL=1` is #90's kill
+    /// switch: it must force the plain serial geometry regardless of cache size, and an
+    /// out-of-range override must clamp rather than being honoured or rejected outright.
+    #[test]
+    fn gqa_decode_kv_parallel_override_clamps_and_wins() {
+        assert_eq!(
+            gqa_decode_kv_parallel_with(4096, Some(1)),
+            1,
+            "the kill switch overrides the cache size unconditionally"
+        );
+        assert_eq!(
+            gqa_decode_kv_parallel_with(4096, Some(0)),
+            1,
+            "an override of 0 clamps up to 1, not down to a non-dispatchable size"
+        );
+        assert_eq!(
+            gqa_decode_kv_parallel_with(4096, Some(1024)),
+            GQA_DECODE_MAX_KV_PARALLEL,
+            "an override above the cap clamps to it rather than being honoured"
+        );
+    }
+
+    /// Zero work must still produce a dispatchable size, mirroring
+    /// `gqa_local_size_of_zero_work_is_still_dispatchable` for the decode path.
+    #[test]
+    fn gqa_decode_kv_parallel_of_zero_work_is_still_dispatchable() {
+        assert_eq!(gqa_decode_kv_parallel_with(0, None), 1);
+    }
+
+    /// Prefill (`seq_len > 1`) must keep routing to `gqa_f16` unchanged after #90: the decode
+    /// branch in `translate_gqa` must not accidentally widen its `if seq_len == 1` guard, or
+    /// silently reuse decode's specialisation constant for a prefill shape.
+    #[test]
+    fn translate_gqa_prefill_still_dispatches_gqa_f16_not_decode() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        let node = gqa_node(1, 32, 32, 32, 96, 0);
+        let mut ctx = Recorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+        let k = &ctx.dispatches[0];
+        assert_eq!(
+            k.shader, "gqa_f16",
+            "seq_len > 1 (prefill) must never route to the decode-only shader"
         );
     }
 }

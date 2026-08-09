@@ -2258,7 +2258,16 @@ impl VulkanSession {
             // `past_stride` (offset 28) are equal exactly when `present` aliases `past`; the
             // kernel's own `copy_leader` predicate is that same comparison, so this reads the
             // condition the shader reads rather than a parallel restatement of it.
-            if eff_shader == "gqa_f16" && eff_push_constants.len() >= 32 {
+            //
+            // `gqa_decode_f16` (issue #90, the decode-only KV-parallel kernel) shares this exact
+            // push-constant layout byte-for-byte with `gqa_f16` — see `translate_gqa`, which
+            // builds one `push` block and dispatches it unchanged to whichever of the two shaders
+            // it selects — so the same offsets read the same condition there. Decode is the
+            // shipping hot path for this counter (every Phi-3.5 generation step is seq_len == 1),
+            // so leaving this gated on `gqa_f16` alone would have gone silent for it.
+            if (eff_shader == "gqa_f16" || eff_shader == "gqa_decode_f16")
+                && eff_push_constants.len() >= 32
+            {
                 let present_len = u32::from_le_bytes([
                     eff_push_constants[24],
                     eff_push_constants[25],

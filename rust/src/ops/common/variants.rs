@@ -198,6 +198,27 @@ pub struct Kernel {
     /// `Template::None` therefore means *"no generated variant family"*, not *"no module"*. A row
     /// with neither a template nor this field is genuinely metadata-only.
     pub module_stems: Option<&'static [&'static str; DTYPE_COUNT]>,
+    /// Stems of **additional** hand-written modules this row's `translate` handler may dispatch
+    /// *instead of* [`Kernel::module_stems`]'s answer, for the same dtype, under a runtime
+    /// condition `translate` alone decides (e.g. a shape it can see at graph-compile time).
+    ///
+    /// # Why this exists
+    ///
+    /// [`Kernel::stem`] — and therefore the ledger key's variant component
+    /// (`registry::variant_key`) — names exactly one module per dtype: the row's *declared*
+    /// identity, unconditionally. `GroupQueryAttention` (#90) is the first row whose `translate`
+    /// dispatches a **second** hand-written `.comp` for the same dtype depending on a shape
+    /// (`gqa_decode_f16` at `seq_len == 1`, `gqa_f16` otherwise) — deliberately, so the ledger key
+    /// stays `gqa_f16` and does not fork per shape the way a second *op* would. That leaves the
+    /// second module invisible to [`Kernel::stem`], which is correct for the key, but would also
+    /// make it invisible to `every_hand_written_shader_is_named_by_a_row` — the test that exists
+    /// specifically to catch a `.comp` nobody's row names, i.e. exactly the defect class this
+    /// field prevents reintroducing through the back door of a second shader on an old row.
+    ///
+    /// `stem()` deliberately does not consult this field: it answers the declared/keying
+    /// question, not the dispatch question, and must keep answering it the same way regardless of
+    /// how many extra modules a `translate` handler grows.
+    pub extra_module_stems: Option<&'static [&'static str]>,
 }
 
 impl Kernel {
@@ -208,6 +229,7 @@ impl Kernel {
         stems: [""; DTYPE_COUNT],
         pair_stems: None,
         module_stems: None,
+        extra_module_stems: None,
     };
 
     /// The SPIR-V module stem for this op at this dtype.
@@ -225,6 +247,15 @@ impl Kernel {
             return self.module_stems.map(|s| s[dtype_index(d)]);
         }
         Some(self.stems[dtype_index(d)])
+    }
+
+    /// The additional hand-written modules [`Kernel::extra_module_stems`] declares, or `&[]`.
+    ///
+    /// Not consulted by [`Kernel::stem`] or by anything that keys a proof — see the field's own
+    /// doc comment for why. This exists only for the build-coverage side: so a scan over "every
+    /// `.comp` this row is allowed to dispatch" can see the extra one too.
+    pub fn extra_stems(&self) -> &'static [&'static str] {
+        self.extra_module_stems.unwrap_or(&[])
     }
 
     /// The SPIR-V module stem for a source/destination dtype pair.
@@ -342,6 +373,7 @@ macro_rules! module_stems {
 /// ```ignore
 /// kernel!(EwBinary, "add")   // -> ew_binary_add_f32, ew_binary_add_f16, ...
 /// kernel!(Standalone, "conv")// -> hand-written conv_f32.comp, conv_f16.comp, ...
+/// kernel!(Standalone, "gqa", extra: ["gqa_decode_f16"]) // conditional 2nd module, same dtype
 /// kernel!(None)              // metadata-only row: no module at all
 /// ```
 #[macro_export]
@@ -356,6 +388,17 @@ macro_rules! kernel {
             stems: [""; $crate::ops::common::dtype::DTYPE_COUNT],
             pair_stems: None,
             module_stems: ::core::option::Option::Some(&$crate::module_stems!($prefix)),
+            extra_module_stems: None,
+        }
+    };
+    (Standalone, $prefix:literal, extra: [$($extra:literal),+ $(,)?]) => {
+        $crate::ops::common::variants::Kernel {
+            template: $crate::ops::common::variants::Template::None,
+            op: $prefix,
+            stems: [""; $crate::ops::common::dtype::DTYPE_COUNT],
+            pair_stems: None,
+            module_stems: ::core::option::Option::Some(&$crate::module_stems!($prefix)),
+            extra_module_stems: ::core::option::Option::Some(&[$($extra),+]),
         }
     };
     (EwUnary, $op:literal) => {
@@ -365,6 +408,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_unary", $op),
             pair_stems: None,
             module_stems: None,
+            extra_module_stems: None,
         }
     };
     (EwBinary, $op:literal) => {
@@ -374,6 +418,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_binary", $op),
             pair_stems: None,
             module_stems: None,
+            extra_module_stems: None,
         }
     };
     (EwSelect, $op:literal) => {
@@ -383,6 +428,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_select", $op),
             pair_stems: None,
             module_stems: None,
+            extra_module_stems: None,
         }
     };
     (QGemv, $op:literal) => {
@@ -392,6 +438,7 @@ macro_rules! kernel {
             stems: $crate::stems!("q_gemv", $op),
             pair_stems: None,
             module_stems: None,
+            extra_module_stems: None,
         }
     };
     (EwCast, $op:literal) => {
@@ -404,6 +451,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_cast", "x"),
             pair_stems: ::core::option::Option::Some(&$crate::pair_stems!("ew_cast")),
             module_stems: None,
+            extra_module_stems: None,
         }
     };
 }

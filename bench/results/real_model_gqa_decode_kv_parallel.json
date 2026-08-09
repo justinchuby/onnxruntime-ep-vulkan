@@ -1,0 +1,1399 @@
+{
+  "schema": "real_model_gqa_decode_kv_parallel/1",
+  "issue": 90,
+  "subject": "rust/shaders/glsl/gqa_decode_f16.comp kv_parallel (specialisation constant 0)",
+  "depends_on": "#56 (gqa_f16 workgroup packing), #72 (portable subgroup-sized workgroups)",
+  "non_inferiority_band": {
+    "ratio": 1.05,
+    "predeclared": true,
+    "definition": "candidate median gqa_decode_f16 GPU time <= ratio * baseline (W=1) median at the same case; below 1.0 and inside the band is WIN, inside the band but not below 1.0 is NEUTRAL, above the band is REGRESSION"
+  },
+  "model": {
+    "key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+    "family": "phi3",
+    "path": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu-2\\v2\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+    "sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+    "bytes": 26180848,
+    "provenance": "foundry-resolved",
+    "resolver": "foundry",
+    "recorded_sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+    "agrees_with_recorded_provenance": true,
+    "external_data": {
+      "scanned": true,
+      "files": [
+        {
+          "location": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx.data",
+          "bytes": 2291238912,
+          "sha256": "9ce390a75dd00614031c41af38f0f3a83fdfe4648dcec8514d96800020e92217"
+        }
+      ],
+      "reason": null
+    },
+    "weights_bytes": 2291238912,
+    "note": "Foundry Local Phi-3.5-mini-instruct, int4 RTN block-32, fp16 activations. 32 layers, 32 KV heads, head dim 96, 64 KV inputs and 64 KV outputs."
+  },
+  "pasts": [
+    128,
+    512,
+    1024,
+    2048
+  ],
+  "candidates": [
+    1,
+    2,
+    4,
+    8,
+    16
+  ],
+  "repeats": 3,
+  "iters_per_repeat": 8,
+  "ep_library": "C:\\Users\\justinchu\\.copilot\\repos\\onnxruntime-ep-vulkan-90\\rust\\target\\debug\\onnxruntime_vulkan_ep.dll",
+  "ep_library_sha256": "6c5d8734bd022185fa0a115837b669ce0990aca680a21721cc1d965a10c7197c",
+  "device_index": 0,
+  "equivalence": [
+    {
+      "case": "decode/M1/past128",
+      "reference": "W=1",
+      "comparisons": [
+        {
+          "w": 2,
+          "bitwise_identical": false,
+          "worst_abs_diff_logits": 0.0234375,
+          "atol1e-2_rtol1e-2_frac_fail": 0.00062375249500998,
+          "argmax_match": true,
+          "verdict": "DIVERGENT"
+        },
+        {
+          "w": 4,
+          "bitwise_identical": false,
+          "worst_abs_diff_logits": 0.03515625,
+          "atol1e-2_rtol1e-2_frac_fail": 0.007640968063872255,
+          "argmax_match": true,
+          "verdict": "DIVERGENT"
+        },
+        {
+          "w": 8,
+          "bitwise_identical": false,
+          "worst_abs_diff_logits": 0.03125,
+          "atol1e-2_rtol1e-2_frac_fail": 0.007079590818363273,
+          "argmax_match": true,
+          "verdict": "DIVERGENT"
+        },
+        {
+          "w": 16,
+          "bitwise_identical": false,
+          "worst_abs_diff_logits": 0.03515625,
+          "atol1e-2_rtol1e-2_frac_fail": 0.008950848303393214,
+          "argmax_match": true,
+          "verdict": "DIVERGENT"
+        }
+      ],
+      "all_equivalent": false
+    },
+    {
+      "case": "decode/M1/past512",
+      "reference": "W=1",
+      "comparisons": [
+        {
+          "w": 2,
+          "bitwise_identical": false,
+          "worst_abs_diff_logits": 0.0625,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        },
+        {
+          "w": 4,
+          "bitwise_identical": false,
+          "worst_abs_diff_logits": 0.0625,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        },
+        {
+          "w": 8,
+          "bitwise_identical": true,
+          "worst_abs_diff_logits": 0.0,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        },
+        {
+          "w": 16,
+          "bitwise_identical": false,
+          "worst_abs_diff_logits": 0.03125,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        }
+      ],
+      "all_equivalent": true
+    },
+    {
+      "case": "decode/M1/past1024",
+      "reference": "W=1",
+      "comparisons": [
+        {
+          "w": 2,
+          "bitwise_identical": true,
+          "worst_abs_diff_logits": 0.0,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        },
+        {
+          "w": 4,
+          "bitwise_identical": false,
+          "worst_abs_diff_logits": 0.03125,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        },
+        {
+          "w": 8,
+          "bitwise_identical": true,
+          "worst_abs_diff_logits": 0.0,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        },
+        {
+          "w": 16,
+          "bitwise_identical": true,
+          "worst_abs_diff_logits": 0.0,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        }
+      ],
+      "all_equivalent": true
+    },
+    {
+      "case": "decode/M1/past2048",
+      "reference": "W=1",
+      "comparisons": [
+        {
+          "w": 2,
+          "bitwise_identical": true,
+          "worst_abs_diff_logits": 0.0,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        },
+        {
+          "w": 4,
+          "bitwise_identical": true,
+          "worst_abs_diff_logits": 0.0,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        },
+        {
+          "w": 8,
+          "bitwise_identical": true,
+          "worst_abs_diff_logits": 0.0,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        },
+        {
+          "w": 16,
+          "bitwise_identical": true,
+          "worst_abs_diff_logits": 0.0,
+          "atol1e-2_rtol1e-2_frac_fail": 0.0,
+          "argmax_match": true,
+          "verdict": "EQUIVALENT"
+        }
+      ],
+      "all_equivalent": true
+    }
+  ],
+  "equivalence_complete": false,
+  "argmax_complete": true,
+  "ledger_cross_check": [
+    {
+      "ledger_key": "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/gqa_f16/runtime-extent/past_key+past_value+cos_cache+sin_cache",
+      "ledger_shaders": [
+        "gqa_decode_f16"
+      ],
+      "ledger_worst_rel": 0.0007293946024799417,
+      "ledger_verdict": "MATCH",
+      "note": "worst_rel identical to the pre-#90 gqa_f16-only ledger entry it replaced (0.0007293946024799417) \u2014 confirmed by reprove diff, see decision record"
+    }
+  ],
+  "timing": [
+    {
+      "case": "decode/M1/past128",
+      "baseline_w": 1,
+      "baseline_median_us": 52238.25,
+      "baseline_spread_us": 1176.25,
+      "points": {
+        "w=1": [
+          {
+            "w": 1,
+            "repeat": 0,
+            "process_wall_s": 9.424,
+            "gqa_decode_us": 51501.5,
+            "total_us": 69700.25,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 51501.5,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17087.375,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 814.375,
+              "vulkan.gpu.ew_binary_mul_f16": 189.0,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 92.875,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.5,
+              "vulkan.gpu.gather_f16": 5.625
+            }
+          },
+          {
+            "w": 1,
+            "repeat": 1,
+            "process_wall_s": 9.987,
+            "gqa_decode_us": 52677.75,
+            "total_us": 71123.625,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 52677.75,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17311.0,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 830.875,
+              "vulkan.gpu.ew_binary_mul_f16": 189.5,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 98.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+              "vulkan.gpu.gather_f16": 6.5
+            }
+          },
+          {
+            "w": 1,
+            "repeat": 2,
+            "process_wall_s": 9.923,
+            "gqa_decode_us": 52238.25,
+            "total_us": 70567.375,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 52238.25,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17204.75,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 828.625,
+              "vulkan.gpu.ew_binary_mul_f16": 185.75,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.75,
+              "vulkan.gpu.gather_f16": 6.25
+            }
+          }
+        ],
+        "w=2": [
+          {
+            "w": 2,
+            "repeat": 0,
+            "process_wall_s": 10.268,
+            "gqa_decode_us": 31716.375,
+            "total_us": 49721.25,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 31716.375,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16916.25,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 802.875,
+              "vulkan.gpu.ew_binary_mul_f16": 179.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 90.875,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.5,
+              "vulkan.gpu.gather_f16": 6.0
+            }
+          },
+          {
+            "w": 2,
+            "repeat": 1,
+            "process_wall_s": 9.874,
+            "gqa_decode_us": 32247.125,
+            "total_us": 50413.875,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 32247.125,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17051.5,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 817.25,
+              "vulkan.gpu.ew_binary_mul_f16": 187.625,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.25,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.75,
+              "vulkan.gpu.gather_f16": 6.375
+            }
+          },
+          {
+            "w": 2,
+            "repeat": 2,
+            "process_wall_s": 10.287,
+            "gqa_decode_us": 32827.25,
+            "total_us": 51196.75,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 32827.25,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17238.375,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 829.25,
+              "vulkan.gpu.ew_binary_mul_f16": 192.125,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.25,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.5,
+              "vulkan.gpu.gather_f16": 6.0
+            }
+          }
+        ],
+        "w=4": [
+          {
+            "w": 4,
+            "repeat": 0,
+            "process_wall_s": 9.929,
+            "gqa_decode_us": 20796.375,
+            "total_us": 39138.875,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 20796.375,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17223.25,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 823.5,
+              "vulkan.gpu.ew_binary_mul_f16": 186.125,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.5,
+              "vulkan.gpu.gather_f16": 6.125
+            }
+          },
+          {
+            "w": 4,
+            "repeat": 1,
+            "process_wall_s": 9.81,
+            "gqa_decode_us": 20142.5,
+            "total_us": 38177.25,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 20142.5,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16932.875,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 809.0,
+              "vulkan.gpu.ew_binary_mul_f16": 183.5,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.375,
+              "vulkan.gpu.gather_f16": 6.0
+            }
+          },
+          {
+            "w": 4,
+            "repeat": 2,
+            "process_wall_s": 9.837,
+            "gqa_decode_us": 20208.75,
+            "total_us": 38273.125,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 20208.75,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16959.0,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 809.625,
+              "vulkan.gpu.ew_binary_mul_f16": 186.875,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.75,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.375,
+              "vulkan.gpu.gather_f16": 5.75
+            }
+          }
+        ],
+        "w=8": [
+          {
+            "w": 8,
+            "repeat": 0,
+            "process_wall_s": 9.743,
+            "gqa_decode_us": 14708.625,
+            "total_us": 32802.75,
+            "by_kernel_us": {
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16984.5,
+              "vulkan.gpu.gqa_decode_f16": 14708.625,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 812.625,
+              "vulkan.gpu.ew_binary_mul_f16": 188.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.25,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.5,
+              "vulkan.gpu.gather_f16": 5.875
+            }
+          },
+          {
+            "w": 8,
+            "repeat": 1,
+            "process_wall_s": 9.33,
+            "gqa_decode_us": 14980.75,
+            "total_us": 33242.125,
+            "by_kernel_us": {
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17135.25,
+              "vulkan.gpu.gqa_decode_f16": 14980.75,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 823.0,
+              "vulkan.gpu.ew_binary_mul_f16": 190.625,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 97.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.375,
+              "vulkan.gpu.gather_f16": 6.125
+            }
+          },
+          {
+            "w": 8,
+            "repeat": 2,
+            "process_wall_s": 10.198,
+            "gqa_decode_us": 14974.125,
+            "total_us": 33361.5,
+            "by_kernel_us": {
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17265.125,
+              "vulkan.gpu.gqa_decode_f16": 14974.125,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 824.375,
+              "vulkan.gpu.ew_binary_mul_f16": 188.25,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.25,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.375,
+              "vulkan.gpu.gather_f16": 6.0
+            }
+          }
+        ],
+        "w=16": [
+          {
+            "w": 16,
+            "repeat": 0,
+            "process_wall_s": 9.963,
+            "gqa_decode_us": 13176.875,
+            "total_us": 32226.375,
+            "by_kernel_us": {
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17870.5,
+              "vulkan.gpu.gqa_decode_f16": 13176.875,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 859.75,
+              "vulkan.gpu.ew_binary_mul_f16": 203.125,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 99.5,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+              "vulkan.gpu.gather_f16": 6.625
+            }
+          },
+          {
+            "w": 16,
+            "repeat": 1,
+            "process_wall_s": 9.751,
+            "gqa_decode_us": 12616.75,
+            "total_us": 31028.25,
+            "by_kernel_us": {
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17277.625,
+              "vulkan.gpu.gqa_decode_f16": 12616.75,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 832.75,
+              "vulkan.gpu.ew_binary_mul_f16": 188.5,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 97.125,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.375,
+              "vulkan.gpu.gather_f16": 6.125
+            }
+          },
+          {
+            "w": 16,
+            "repeat": 2,
+            "process_wall_s": 10.137,
+            "gqa_decode_us": 12634.0,
+            "total_us": 31010.375,
+            "by_kernel_us": {
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17245.25,
+              "vulkan.gpu.gqa_decode_f16": 12634.0,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 825.125,
+              "vulkan.gpu.ew_binary_mul_f16": 194.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 95.625,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.875,
+              "vulkan.gpu.gather_f16": 6.125
+            }
+          }
+        ]
+      },
+      "candidates": [
+        {
+          "w": 2,
+          "median_us": 32247.125,
+          "spread_us": 1110.875,
+          "ratio_vs_baseline": 0.6173086770709203,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 4,
+          "median_us": 20208.75,
+          "spread_us": 653.875,
+          "ratio_vs_baseline": 0.38685733155302865,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 8,
+          "median_us": 14974.125,
+          "spread_us": 272.125,
+          "ratio_vs_baseline": 0.2866505864955277,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 16,
+          "median_us": 12634.0,
+          "spread_us": 560.125,
+          "ratio_vs_baseline": 0.24185343115437444,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        }
+      ]
+    },
+    {
+      "case": "decode/M1/past512",
+      "baseline_w": 1,
+      "baseline_median_us": 194654.875,
+      "baseline_spread_us": 1114.0,
+      "points": {
+        "w=1": [
+          {
+            "w": 1,
+            "repeat": 0,
+            "process_wall_s": 14.733,
+            "gqa_decode_us": 195507.375,
+            "total_us": 213647.75,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 195507.375,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17032.625,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 814.125,
+              "vulkan.gpu.ew_binary_mul_f16": 184.0,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.25,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.125,
+              "vulkan.gpu.gather_f16": 6.25
+            }
+          },
+          {
+            "w": 1,
+            "repeat": 1,
+            "process_wall_s": 12.218,
+            "gqa_decode_us": 194654.875,
+            "total_us": 212713.125,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 194654.875,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16961.625,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 809.625,
+              "vulkan.gpu.ew_binary_mul_f16": 179.75,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 91.625,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.625,
+              "vulkan.gpu.gather_f16": 6.0
+            }
+          },
+          {
+            "w": 1,
+            "repeat": 2,
+            "process_wall_s": 12.504,
+            "gqa_decode_us": 194393.375,
+            "total_us": 212454.5,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 194393.375,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16970.75,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 805.5,
+              "vulkan.gpu.ew_binary_mul_f16": 177.25,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 91.75,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.875,
+              "vulkan.gpu.gather_f16": 6.0
+            }
+          }
+        ],
+        "w=2": [
+          {
+            "w": 2,
+            "repeat": 0,
+            "process_wall_s": 13.359,
+            "gqa_decode_us": 117121.25,
+            "total_us": 135325.625,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 117121.25,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17083.625,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 823.125,
+              "vulkan.gpu.ew_binary_mul_f16": 185.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 95.75,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.625,
+              "vulkan.gpu.gather_f16": 6.875
+            }
+          },
+          {
+            "w": 2,
+            "repeat": 1,
+            "process_wall_s": 13.678,
+            "gqa_decode_us": 116027.625,
+            "total_us": 134124.5,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 116027.625,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16992.5,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 809.875,
+              "vulkan.gpu.ew_binary_mul_f16": 184.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.75,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.75,
+              "vulkan.gpu.gather_f16": 6.625
+            }
+          },
+          {
+            "w": 2,
+            "repeat": 2,
+            "process_wall_s": 13.397,
+            "gqa_decode_us": 117012.875,
+            "total_us": 135193.25,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 117012.875,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17064.625,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 819.625,
+              "vulkan.gpu.ew_binary_mul_f16": 186.125,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+              "vulkan.gpu.gather_f16": 7.0
+            }
+          }
+        ],
+        "w=4": [
+          {
+            "w": 4,
+            "repeat": 0,
+            "process_wall_s": 11.347,
+            "gqa_decode_us": 66500.75,
+            "total_us": 84550.0,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 66500.75,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16951.875,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 803.625,
+              "vulkan.gpu.ew_binary_mul_f16": 185.625,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 91.875,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.125,
+              "vulkan.gpu.gather_f16": 6.125
+            }
+          },
+          {
+            "w": 4,
+            "repeat": 1,
+            "process_wall_s": 13.032,
+            "gqa_decode_us": 66492.375,
+            "total_us": 84687.375,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 66492.375,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17087.375,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 811.125,
+              "vulkan.gpu.ew_binary_mul_f16": 186.875,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.25,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.75,
+              "vulkan.gpu.gather_f16": 6.625
+            }
+          },
+          {
+            "w": 4,
+            "repeat": 2,
+            "process_wall_s": 13.242,
+            "gqa_decode_us": 68356.375,
+            "total_us": 86779.25,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 68356.375,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17293.5,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 825.25,
+              "vulkan.gpu.ew_binary_mul_f16": 189.25,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 97.75,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+              "vulkan.gpu.gather_f16": 7.125
+            }
+          }
+        ],
+        "w=8": [
+          {
+            "w": 8,
+            "repeat": 0,
+            "process_wall_s": 11.047,
+            "gqa_decode_us": 42269.375,
+            "total_us": 60315.625,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 42269.375,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16961.25,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 803.25,
+              "vulkan.gpu.ew_binary_mul_f16": 175.25,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 91.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.125,
+              "vulkan.gpu.gather_f16": 6.375
+            }
+          },
+          {
+            "w": 8,
+            "repeat": 1,
+            "process_wall_s": 13.077,
+            "gqa_decode_us": 43243.75,
+            "total_us": 61538.625,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 43243.75,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17177.5,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 819.375,
+              "vulkan.gpu.ew_binary_mul_f16": 185.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 95.75,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+              "vulkan.gpu.gather_f16": 6.875
+            }
+          },
+          {
+            "w": 8,
+            "repeat": 2,
+            "process_wall_s": 12.51,
+            "gqa_decode_us": 42535.125,
+            "total_us": 60658.0,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 42535.125,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17009.625,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 814.875,
+              "vulkan.gpu.ew_binary_mul_f16": 187.5,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.25,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.875,
+              "vulkan.gpu.gather_f16": 6.75
+            }
+          }
+        ],
+        "w=16": [
+          {
+            "w": 16,
+            "repeat": 0,
+            "process_wall_s": 10.151,
+            "gqa_decode_us": 31297.125,
+            "total_us": 49387.75,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 31297.125,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16973.125,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 810.25,
+              "vulkan.gpu.ew_binary_mul_f16": 182.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 96.375,
+              "vulkan.gpu.gather_f16": 18.75,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.75
+            }
+          },
+          {
+            "w": 16,
+            "repeat": 1,
+            "process_wall_s": 12.46,
+            "gqa_decode_us": 31891.875,
+            "total_us": 50124.5,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 31891.875,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17112.0,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 822.0,
+              "vulkan.gpu.ew_binary_mul_f16": 187.125,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 95.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.625,
+              "vulkan.gpu.gather_f16": 6.875
+            }
+          },
+          {
+            "w": 16,
+            "repeat": 2,
+            "process_wall_s": 12.128,
+            "gqa_decode_us": 31472.75,
+            "total_us": 49599.625,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 31472.75,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17016.75,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 813.75,
+              "vulkan.gpu.ew_binary_mul_f16": 185.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.875,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.5,
+              "vulkan.gpu.gather_f16": 6.625
+            }
+          }
+        ]
+      },
+      "candidates": [
+        {
+          "w": 2,
+          "median_us": 117012.875,
+          "spread_us": 1093.625,
+          "ratio_vs_baseline": 0.6011299485820738,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 4,
+          "median_us": 66500.75,
+          "spread_us": 1864.0,
+          "ratio_vs_baseline": 0.3416341358006061,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 8,
+          "median_us": 42535.125,
+          "spread_us": 974.375,
+          "ratio_vs_baseline": 0.21851559073462712,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 16,
+          "median_us": 31472.75,
+          "spread_us": 594.75,
+          "ratio_vs_baseline": 0.1616848794565253,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        }
+      ]
+    },
+    {
+      "case": "decode/M1/past1024",
+      "baseline_w": 1,
+      "baseline_median_us": 384295.0,
+      "baseline_spread_us": 423.625,
+      "points": {
+        "w=1": [
+          {
+            "w": 1,
+            "repeat": 0,
+            "process_wall_s": 18.983,
+            "gqa_decode_us": 384460.0,
+            "total_us": 402592.25,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 384460.0,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17027.75,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 808.25,
+              "vulkan.gpu.ew_binary_mul_f16": 188.25,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+              "vulkan.gpu.gather_f16": 5.0
+            }
+          },
+          {
+            "w": 1,
+            "repeat": 1,
+            "process_wall_s": 18.62,
+            "gqa_decode_us": 384295.0,
+            "total_us": 402445.5,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 384295.0,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17040.125,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 812.5,
+              "vulkan.gpu.ew_binary_mul_f16": 187.75,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 95.375,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.875,
+              "vulkan.gpu.gather_f16": 4.875
+            }
+          },
+          {
+            "w": 1,
+            "repeat": 2,
+            "process_wall_s": 18.899,
+            "gqa_decode_us": 384036.375,
+            "total_us": 402245.875,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 384036.375,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17105.625,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 810.25,
+              "vulkan.gpu.ew_binary_mul_f16": 183.625,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 95.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.125,
+              "vulkan.gpu.gather_f16": 4.875
+            }
+          }
+        ],
+        "w=2": [
+          {
+            "w": 2,
+            "repeat": 0,
+            "process_wall_s": 17.589,
+            "gqa_decode_us": 228354.75,
+            "total_us": 246477.375,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 228354.75,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17013.75,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 816.5,
+              "vulkan.gpu.ew_binary_mul_f16": 182.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 95.125,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.875,
+              "vulkan.gpu.gather_f16": 5.0
+            }
+          },
+          {
+            "w": 2,
+            "repeat": 1,
+            "process_wall_s": 17.557,
+            "gqa_decode_us": 228695.375,
+            "total_us": 246839.625,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 228695.375,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17034.625,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 814.25,
+              "vulkan.gpu.ew_binary_mul_f16": 187.5,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 92.5,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.25,
+              "vulkan.gpu.gather_f16": 5.125
+            }
+          },
+          {
+            "w": 2,
+            "repeat": 2,
+            "process_wall_s": 17.708,
+            "gqa_decode_us": 228026.875,
+            "total_us": 246115.375,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 228026.875,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16989.5,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 808.625,
+              "vulkan.gpu.ew_binary_mul_f16": 183.0,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 92.5,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.125,
+              "vulkan.gpu.gather_f16": 4.75
+            }
+          }
+        ],
+        "w=4": [
+          {
+            "w": 4,
+            "repeat": 0,
+            "process_wall_s": 17.386,
+            "gqa_decode_us": 128784.375,
+            "total_us": 146967.375,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 128784.375,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17051.25,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 839.75,
+              "vulkan.gpu.ew_binary_mul_f16": 184.125,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 92.875,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+              "vulkan.gpu.gather_f16": 5.0
+            }
+          },
+          {
+            "w": 4,
+            "repeat": 1,
+            "process_wall_s": 16.623,
+            "gqa_decode_us": 128025.25,
+            "total_us": 146142.125,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 128025.25,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17012.0,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 812.75,
+              "vulkan.gpu.ew_binary_mul_f16": 184.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.125,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.875,
+              "vulkan.gpu.gather_f16": 4.75
+            }
+          },
+          {
+            "w": 4,
+            "repeat": 2,
+            "process_wall_s": 17.209,
+            "gqa_decode_us": 127465.25,
+            "total_us": 145540.375,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 127465.25,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16974.875,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 808.875,
+              "vulkan.gpu.ew_binary_mul_f16": 184.25,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 92.75,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.625,
+              "vulkan.gpu.gather_f16": 4.75
+            }
+          }
+        ],
+        "w=8": [
+          {
+            "w": 8,
+            "repeat": 0,
+            "process_wall_s": 16.557,
+            "gqa_decode_us": 78117.25,
+            "total_us": 96379.875,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 78117.25,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17152.625,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 817.25,
+              "vulkan.gpu.ew_binary_mul_f16": 185.125,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 92.75,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.875,
+              "vulkan.gpu.gather_f16": 5.0
+            }
+          },
+          {
+            "w": 8,
+            "repeat": 1,
+            "process_wall_s": 16.684,
+            "gqa_decode_us": 78060.625,
+            "total_us": 96224.75,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 78060.625,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17059.0,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 813.875,
+              "vulkan.gpu.ew_binary_mul_f16": 183.5,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 92.875,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.875,
+              "vulkan.gpu.gather_f16": 5.0
+            }
+          },
+          {
+            "w": 8,
+            "repeat": 2,
+            "process_wall_s": 16.803,
+            "gqa_decode_us": 77844.125,
+            "total_us": 95985.5,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 77844.125,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17036.5,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 813.5,
+              "vulkan.gpu.ew_binary_mul_f16": 182.75,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.75,
+              "vulkan.gpu.gather_f16": 4.875
+            }
+          }
+        ],
+        "w=16": [
+          {
+            "w": 16,
+            "repeat": 0,
+            "process_wall_s": 16.554,
+            "gqa_decode_us": 54417.0,
+            "total_us": 72686.875,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 54417.0,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17152.625,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 821.75,
+              "vulkan.gpu.ew_binary_mul_f16": 187.0,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.5,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+              "vulkan.gpu.gather_f16": 5.0
+            }
+          },
+          {
+            "w": 16,
+            "repeat": 1,
+            "process_wall_s": 15.872,
+            "gqa_decode_us": 53632.75,
+            "total_us": 71701.625,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 53632.75,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16969.125,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 809.75,
+              "vulkan.gpu.ew_binary_mul_f16": 182.0,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.875,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.5,
+              "vulkan.gpu.gather_f16": 4.625
+            }
+          },
+          {
+            "w": 16,
+            "repeat": 2,
+            "process_wall_s": 15.936,
+            "gqa_decode_us": 54331.125,
+            "total_us": 72577.375,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 54331.125,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17133.125,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 818.625,
+              "vulkan.gpu.ew_binary_mul_f16": 185.75,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.125,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.75,
+              "vulkan.gpu.gather_f16": 4.875
+            }
+          }
+        ]
+      },
+      "candidates": [
+        {
+          "w": 2,
+          "median_us": 228354.75,
+          "spread_us": 668.5,
+          "ratio_vs_baseline": 0.5942173330384211,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 4,
+          "median_us": 128025.25,
+          "spread_us": 1319.125,
+          "ratio_vs_baseline": 0.3331431582508229,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 8,
+          "median_us": 78060.625,
+          "spread_us": 273.125,
+          "ratio_vs_baseline": 0.2031268296490977,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 16,
+          "median_us": 54331.125,
+          "spread_us": 784.25,
+          "ratio_vs_baseline": 0.14137869345164522,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        }
+      ]
+    },
+    {
+      "case": "decode/M1/past2048",
+      "baseline_w": 1,
+      "baseline_median_us": 762729.625,
+      "baseline_spread_us": 978.125,
+      "points": {
+        "w=1": [
+          {
+            "w": 1,
+            "repeat": 0,
+            "process_wall_s": 28.331,
+            "gqa_decode_us": 762729.625,
+            "total_us": 780827.125,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 762729.625,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16993.25,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 808.75,
+              "vulkan.gpu.ew_binary_mul_f16": 185.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.25,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.875,
+              "vulkan.gpu.gather_f16": 5.0
+            }
+          },
+          {
+            "w": 1,
+            "repeat": 1,
+            "process_wall_s": 28.539,
+            "gqa_decode_us": 762372.875,
+            "total_us": 780464.625,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 762372.875,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16989.875,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 810.625,
+              "vulkan.gpu.ew_binary_mul_f16": 183.375,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 92.875,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.875,
+              "vulkan.gpu.gather_f16": 5.125
+            }
+          },
+          {
+            "w": 1,
+            "repeat": 2,
+            "process_wall_s": 27.655,
+            "gqa_decode_us": 763351.0,
+            "total_us": 781489.125,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 763351.0,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 17029.125,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 810.625,
+              "vulkan.gpu.ew_binary_mul_f16": 188.25,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 95.375,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.75,
+              "vulkan.gpu.gather_f16": 5.0
+            }
+          }
+        ],
+        "w=2": [
+          {
+            "w": 2,
+            "repeat": 0,
+            "process_wall_s": 24.462,
+            "gqa_decode_us": 450577.375,
+            "total_us": 468672.625,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 450577.375,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16987.5,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 812.0,
+              "vulkan.gpu.ew_binary_mul_f16": 186.875,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.75,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.875,
+              "vulkan.gpu.gather_f16": 5.25
+            }
+          },
+          {
+            "w": 2,
+            "repeat": 1,
+            "process_wall_s": 26.143,
+            "gqa_decode_us": 450706.25,
+            "total_us": 468798.0,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 450706.25,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16982.75,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 813.625,
+              "vulkan.gpu.ew_binary_mul_f16": 182.75,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 97.25,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.125,
+              "vulkan.gpu.gather_f16": 5.25
+            }
+          },
+          {
+            "w": 2,
+            "repeat": 2,
+            "process_wall_s": 26.463,
+            "gqa_decode_us": 450591.75,
+            "total_us": 468668.5,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 450591.75,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16972.0,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 809.875,
+              "vulkan.gpu.ew_binary_mul_f16": 186.25,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.5,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+              "vulkan.gpu.gather_f16": 5.125
+            }
+          }
+        ],
+        "w=4": [
+          {
+            "w": 4,
+            "repeat": 0,
+            "process_wall_s": 24.547,
+            "gqa_decode_us": 249440.25,
+            "total_us": 267538.375,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 249440.25,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16989.125,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 812.75,
+              "vulkan.gpu.ew_binary_mul_f16": 186.25,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.125,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.625,
+              "vulkan.gpu.gather_f16": 5.25
+            }
+          },
+          {
+            "w": 4,
+            "repeat": 1,
+            "process_wall_s": 24.177,
+            "gqa_decode_us": 249138.5,
+            "total_us": 267222.875,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 249138.5,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16980.875,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 812.125,
+              "vulkan.gpu.ew_binary_mul_f16": 182.875,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.25,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.875,
+              "vulkan.gpu.gather_f16": 5.375
+            }
+          },
+          {
+            "w": 4,
+            "repeat": 2,
+            "process_wall_s": 24.2,
+            "gqa_decode_us": 249101.0,
+            "total_us": 267188.0,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 249101.0,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16982.25,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 811.75,
+              "vulkan.gpu.ew_binary_mul_f16": 183.125,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.625,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.875,
+              "vulkan.gpu.gather_f16": 5.375
+            }
+          }
+        ],
+        "w=8": [
+          {
+            "w": 8,
+            "repeat": 0,
+            "process_wall_s": 23.624,
+            "gqa_decode_us": 146408.125,
+            "total_us": 164496.0,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 146408.125,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16986.625,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 808.25,
+              "vulkan.gpu.ew_binary_mul_f16": 180.0,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 95.25,
+              "vulkan.gpu.simplified_layer_norm_f16": 11.375,
+              "vulkan.gpu.gather_f16": 6.375
+            }
+          },
+          {
+            "w": 8,
+            "repeat": 1,
+            "process_wall_s": 21.951,
+            "gqa_decode_us": 146182.625,
+            "total_us": 164231.0,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 146182.625,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16961.0,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 802.5,
+              "vulkan.gpu.ew_binary_mul_f16": 178.625,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 91.5,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.75,
+              "vulkan.gpu.gather_f16": 5.0
+            }
+          },
+          {
+            "w": 8,
+            "repeat": 2,
+            "process_wall_s": 22.287,
+            "gqa_decode_us": 146302.5,
+            "total_us": 164375.125,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 146302.5,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16977.375,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 807.5,
+              "vulkan.gpu.ew_binary_mul_f16": 178.5,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 94.375,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.75,
+              "vulkan.gpu.gather_f16": 5.125
+            }
+          }
+        ],
+        "w=16": [
+          {
+            "w": 16,
+            "repeat": 0,
+            "process_wall_s": 22.513,
+            "gqa_decode_us": 95005.5,
+            "total_us": 113075.625,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 95005.5,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16974.0,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 807.75,
+              "vulkan.gpu.ew_binary_mul_f16": 180.25,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 93.0,
+              "vulkan.gpu.simplified_layer_norm_f16": 10.0,
+              "vulkan.gpu.gather_f16": 5.125
+            }
+          },
+          {
+            "w": 16,
+            "repeat": 1,
+            "process_wall_s": 20.546,
+            "gqa_decode_us": 94999.0,
+            "total_us": 113056.625,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 94999.0,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16965.875,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 807.25,
+              "vulkan.gpu.ew_binary_mul_f16": 177.875,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 91.875,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.75,
+              "vulkan.gpu.gather_f16": 5.0
+            }
+          },
+          {
+            "w": 16,
+            "repeat": 2,
+            "process_wall_s": 20.487,
+            "gqa_decode_us": 94949.125,
+            "total_us": 113007.25,
+            "by_kernel_us": {
+              "vulkan.gpu.gqa_decode_f16": 94949.125,
+              "vulkan.gpu.q_gemv_matmul_nbits_f16": 16974.25,
+              "vulkan.gpu.skip_simplified_layer_norm_f16": 800.375,
+              "vulkan.gpu.ew_binary_mul_f16": 177.25,
+              "vulkan.gpu.ew_unary_sigmoid_f16": 91.875,
+              "vulkan.gpu.simplified_layer_norm_f16": 9.5,
+              "vulkan.gpu.gather_f16": 4.875
+            }
+          }
+        ]
+      },
+      "candidates": [
+        {
+          "w": 2,
+          "median_us": 450591.75,
+          "spread_us": 128.875,
+          "ratio_vs_baseline": 0.5907620934482517,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 4,
+          "median_us": 249138.5,
+          "spread_us": 339.25,
+          "ratio_vs_baseline": 0.326640649365101,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 8,
+          "median_us": 146302.5,
+          "spread_us": 225.5,
+          "ratio_vs_baseline": 0.19181436672267713,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        },
+        {
+          "w": 16,
+          "median_us": 94999.0,
+          "spread_us": 56.375,
+          "ratio_vs_baseline": 0.12455134412800604,
+          "non_inferiority_ratio": 1.05,
+          "verdict": "WIN"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "GPU time is the EP's own timestamp-query total per kernel, not a hardware occupancy counter: it says the kernel finished sooner, not why.",
+    "Each _time_point call sums iters inferences' GPU-trace durations and divides by iters; the first inference's pipeline-adjacent cost is not split out the way the wall-clock harness's _sample separates warmup from steady state. iters=8 dilutes but does not eliminate this.",
+    "One device (RTX A1000, discrete). W's rule is a function of the compile-time cache capacity bound (a model property); the best W for THIS occupancy is a machine property, hence ENV_GQA_DECODE_KV_PARALLEL staying a kill switch."
+  ]
+}

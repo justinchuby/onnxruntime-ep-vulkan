@@ -5046,3 +5046,101 @@ transition can never be declared, because
 correctly requires every declared transition to end at what the build computes. Rebuilding the
 stack on `main` is the only fix; merging `main` is not, because CI screens `refs/pull/N/merge`,
 which has the same shape.
+
+### 26.11 Decode's own kernel gets a second shader — KV parallelism inside a workgroup (issue #90)
+
+§26.7 named the next lever and declined to pull it without evidence: at `past = 1024`, `gqa_f16`
+holds 93.5% of GPU time and there is no workgroup-packing left to do at 32 invocations (§26.5/§26.6
+already exhausted that axis). Issue #90's evidence is this section.
+
+**What changed.** A second shader, `rust/shaders/glsl/gqa_decode_f16.comp` — `gqa_f16.comp` is
+untouched (`git diff` on that file is empty for this branch; it is the ledger-frozen kernel §8.12
+established) — dispatches decode with the *same* grid §26.5 measured (`[B * Nq, 1, 1]`
+workgroups) but gives each workgroup `W` lanes that split the **KV/past** dimension via `shared`
+memory and one `barrier()`, instead of one lane scanning the whole past sequence alone. `W` is
+chosen by `ops::attention::gqa_decode_kv_parallel(past_len_max)` — doubling while it still leaves
+≥32 KV positions of work per lane, capped at 16 — and is overridable via
+`ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL` (clamped `[1, 16]`), `= 1` being the exact pre-#90
+geometry. `docs/DESIGN.md` §8.14 has the mapping, the portability argument and the full numerics
+finding; this section is the measured table it points back to.
+
+**Equivalence, corrected in the course of measuring it.** An early version of this section's own
+probe compared `W = 1` against `W > 1` with a pure relative-error metric fed by
+`bench/real_model.py`'s synthetic `N(0, 0.02)`-noise past KV, and read `worst_rel` up to ~554 — a
+number that evaporated under inspection: the metric blows up near-zero logits regardless of the
+real (tiny) absolute difference, and noise KV is an input the model never actually produces, which
+was found to amplify ordinary floating-point reordering into an apparently large divergence (see
+§8.14 for the full account, including the layer-by-layer signature that exposed it). The corrected
+probe (`bench/results/probe_gqa_decode_kv_parallel.py`) builds decode's `past_key/value` from a
+REAL prefill pass over real token ids instead, and grades the final logits with this project's own
+`atol = 1e-2, rtol = 1e-2` combined bound (`tests/ops/_models.py`'s convention) plus an explicit
+argmax check.
+
+| past | `W` | verdict | worst abs diff (logits) | frac of vocab outside atol/rtol | argmax matches `W=1` |
+|---|---|---|---|---|---|
+| 128 | 2 | tolerance residual | 0.0234 | 0.06% | yes |
+| 128 | 4 | tolerance residual | 0.0352 | 0.76% | yes |
+| 128 | 8 | tolerance residual | 0.0312 | 0.71% | yes |
+| 128 | 16 | tolerance residual | 0.0352 | 0.90% | yes |
+| 512 | 2 | EQUIVALENT | 0.0625 | 0.00% | yes |
+| 512 | 4 | EQUIVALENT | 0.0625 | 0.00% | yes |
+| 512 | 8 | EQUIVALENT (bitwise) | 0.0000 | 0.00% | yes |
+| 512 | 16 | EQUIVALENT | 0.0312 | 0.00% | yes |
+| 1024 | 2 | EQUIVALENT (bitwise) | 0.0000 | 0.00% | yes |
+| 1024 | 4 | EQUIVALENT | 0.0312 | 0.00% | yes |
+| 1024 | 8 | EQUIVALENT (bitwise) | 0.0000 | 0.00% | yes |
+| 1024 | 16 | EQUIVALENT (bitwise) | 0.0000 | 0.00% | yes |
+| 2048 | 2 | EQUIVALENT (bitwise) | 0.0000 | 0.00% | yes |
+| 2048 | 4 | EQUIVALENT (bitwise) | 0.0000 | 0.00% | yes |
+| 2048 | 8 | EQUIVALENT (bitwise) | 0.0000 | 0.00% | yes |
+| 2048 | 16 | EQUIVALENT (bitwise) | 0.0000 | 0.00% | yes |
+
+Every one of the 16 `(past, W)` points has the greedy-decode token (argmax of the final logits)
+matching `W = 1` — the property that determines what a real generation loop actually emits. The
+strict per-element bound is met everywhere at `past ≥ 512` (several points bit-identical), and at
+`past = 128` a small residual (≤0.9% of a 32064-token vocab, worst absolute difference ≤0.035 out
+of a ~40-magnitude logit range) remains — reported rather than hidden behind a looser bound, because
+a full 32-layer network's final-logit tolerance is not the same claim as one operator's own.
+
+**Timing (`gqa_decode_f16` GPU kernel time, `W = 1` baseline, 3 whole-process repeats each,
+interleaved, predeclared non-inferiority ratio 1.05×):**
+
+| past | baseline (`W=1`) median µs | `W=2` | `W=4` | `W=8` | `W=16` |
+|---|---|---|---|---|---|
+| 128 | 52,238 | 32,247 (0.617×, WIN) | 20,209 (0.387×, WIN) | 14,974 (0.287×, WIN) | 12,634 (0.242×, WIN) |
+| 512 | 194,655 | 117,013 (0.601×, WIN) | 66,501 (0.342×, WIN) | 42,535 (0.219×, WIN) | 31,473 (0.162×, WIN) |
+| 1024 | 384,295 | 228,355 (0.594×, WIN) | 128,025 (0.333×, WIN) | 78,061 (0.203×, WIN) | 54,331 (0.141×, WIN) |
+| 2048 | 762,730 | 450,592 (0.591×, WIN) | 249,139 (0.327×, WIN) | 146,303 (0.192×, WIN) | 94,999 (0.125×, WIN) |
+
+Every candidate at every past length clears the non-inferiority band and is strictly faster: `W`
+scaling roughly halves the kernel's own GPU time at each doubling through `W = 8`, with diminishing
+but still positive returns to `W = 16` (the point where each lane's own remaining work — one 96-wide
+head-dim FMA chain per KV position it owns — starts to dominate over the reduction's fixed
+`barrier()` cost). No case at any tested past length or `W` is a NEUTRAL or REGRESSION.
+
+**Regression control.** `bench/results/probe_gqa_local_size.py` (§26.5's own unmodified script, not
+re-authored for #90) re-run on this branch: prefill `M ∈ {1, 8, 32, 128}` is
+**BITWISE-IDENTICAL** at every case, and decode `past ∈ {512, 1024}` — dispatched through the new
+`gqa_decode_f16` path — is also BITWISE-IDENTICAL across the `GQA_LOCAL_SIZE` axis §26.5 measured,
+confirming #90 disturbs neither §8.13's prefill packing nor its own local-size independence.
+
+**Reproduce:**
+
+```
+python bench/results/probe_gqa_decode_kv_parallel.py                      # -> real_model_gqa_decode_kv_parallel.json
+python bench/results/probe_gqa_decode_kv_parallel.py --pasts 512,1024
+python bench/results/probe_gqa_local_size.py --sizes 1,2                  # regression control
+```
+
+Artifact: `bench/results/real_model_gqa_decode_kv_parallel.json`. Device: NVIDIA RTX A1000 (the
+same box as §26; the caveats of §26.7/§26.10 about single-device readings apply unchanged here).
+
+**Limitations, stated rather than implied.** One device, same as every other §26 reading. The
+timing pass sums `iters = 8` inferences' GPU-trace durations per point rather than separating a
+first (pipeline-adjacent) sample from steady state the way `probe_real_model_latency.py --diagnose`
+does; `iters = 8` dilutes but does not eliminate a slow first sample's contribution. The equivalence
+pass is a separate run from the timing pass (same as §26.5), not a per-timed-repeat check. The
+`past = 128` residual is not root-caused further than "consistent with floating-point
+non-associativity, argmax-preserving" — a tighter characterization (e.g. bounding it analytically
+from the shader's own combine order) was not attempted and is not claimed.
+

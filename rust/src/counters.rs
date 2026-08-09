@@ -2336,7 +2336,8 @@ static KV_CONVENTIONS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 /// Record the KV convention of one GQA dispatch, read off its effective push constants.
 ///
 /// `present_len` and `past_stride` are the shader's two KV strides (`gqa_f16.comp` push offsets
-/// 24 and 28). They are equal exactly when `present` aliases `past`; the kernel's own
+/// 24 and 28 — `gqa_decode_f16.comp`, issue #90's decode-only kernel, shares the identical
+/// layout). They are equal exactly when `present` aliases `past`; the kernel's own
 /// `copy_leader` predicate is that same comparison, so this reads the condition the shader
 /// reads rather than a parallel restatement of it.
 pub fn record_kv_convention(present_len: u32, past_stride: u32) {
