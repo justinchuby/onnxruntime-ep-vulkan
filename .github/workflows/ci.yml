@@ -397,6 +397,30 @@ jobs:
         # `rewitness/2` is green under a merge and red under a squash and a rebase.
         run: python ci/negative_control_ledger_census.py
 
+      - name: Phi-3.5 frozen evidence gate (host-free)
+        # The authority is bench/phi_evidence.py::evidence_gate; this step is the thin
+        # wrapper that runs it and translates the verdict into an exit code. It needs no
+        # GPU, no model and no ONNX Runtime -- deliberately, because a gate that only runs
+        # where the measurement runs is a gate that runs on one workstation, and the defect
+        # it exists to catch (a published claim the frozen bytes do not support) is exactly
+        # the one a reviewer without the hardware cannot check by hand.
+        #
+        # It re-derives every verdict from the artifact's own raw per-repeat ratios rather
+        # than reading the conclusions, and the calibration band it judges by comes from
+        # subjects proven disjoint from the verdict subjects BY RECORDED FEEDS DIGEST --
+        # label disjointness was not enough: prefill/M1/past0 and decode/M1/past0 feed
+        # byte-identical tensors, so a band "pooled from two subjects" was one measurement
+        # counted twice.
+        run: python ci/check_phi_evidence.py
+
+      - name: Phi-3.5 evidence gate negative control (one attack per condition)
+        # 29 arms, 6 OBSERVED / 23 PLANTED, plus a coverage arm that walks
+        # GATE_CONDITIONS and fails on any token no arm attacks -- so adding a condition
+        # to the gate and forgetting to attack it is not possible quietly. The OBSERVED
+        # arms are not plants: they are defects this instrument found in itself, including
+        # a deleted decode observation silently replaced by a friendlier third one.
+        run: python ci/negative_control_phi_evidence.py
+
       - name: Landing simulation (would this branch survive the squash that lands it?)
         # ISSUE #60. `ci/check_ledger_census.py` above screens THIS checkout. On a
         # `pull_request` event this checkout is `refs/pull/N/merge` — GitHub's synthetic

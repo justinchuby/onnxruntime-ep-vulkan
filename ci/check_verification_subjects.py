@@ -222,6 +222,26 @@ TABLE: dict[str, dict[str, str]] = {
         "subject": "evidence/proof_ledger.jsonl's key set over time",
         "oracle": "git history of the same file, taken with --full-history",
     },
+    "ci/check_phi_evidence.py": {
+        "verdict": "ARTIFACT",
+        "subject": "bench/results/phi35_evidence_v4.json — a frozen Phi-3.5 real-model "
+                   "measurement and every claim it publishes",
+        "oracle": "the artifact's own recorded raw material, read back through "
+                  "bench/phi_evidence.py::evidence_gate: per-repeat ratios reclassified by the "
+                  "symmetric classifier, a calibration band pooled from subjects disjoint from "
+                  "every verdict subject BY RECORDED FEEDS DIGEST, the content digest "
+                  "recomputed over the canonical bytes, and evidence/proof_ledger.jsonl on disk",
+        "note": (
+            "issue #69. ARTIFACT rather than SELF because the gate never reads the artifact's "
+            "own conclusions: it recomputes each verdict from the raw per-repeat series and "
+            "convicts when the recorded verdict is not the classifier's own answer, and the "
+            "band it judges by comes from arm pairs that share no input tensor with any "
+            "subject under judgement. The limit, stated: the raw samples themselves came from "
+            "one workstation and this check cannot re-measure them — it can only refuse an "
+            "artifact whose claims do not follow from the samples it carries. Re-measurement "
+            "is `python bench/phi_evidence.py --measure`, which needs the GPU and the model."
+        ),
+    },
     "ci/check_landing_simulation.py": {
         "verdict": "EXTERNAL",
         "subject": "this branch's declaration, as it would read after each landing GitHub "

@@ -6497,6 +6497,128 @@ verification lane, and MiniLM has none.
 - **No performance claim leaves this repo before the corresponding op is green in `tests/ops/` on
   at least one real GPU.**
 
+#### 9.2.1 A real-model performance claim goes through exactly one gate (issue #69)
+
+**The failure this exists to stop.** §9.2's rules govern how a number is *taken*. They say nothing
+about how it is *published*, and the two failure modes are different. A measurement can be taken
+carefully and then written up as something it is not: a decode reading that disagreed with two
+earlier ones described as if it had settled them; a discrete-GPU reading filed under lavapipe; a
+band that looks like a check on a verdict but was computed from the verdict's own repeats; a claim
+about "the model" resting on output 0 of 65. None of those are measurement errors. Every one of
+them is a **publication** error, and no amount of care at the timer catches any of them.
+
+**The shape of the answer.** One frozen artifact, one gate, and nothing else allowed to decide.
+
+* `bench/phi_evidence.py` takes the measurement and freezes it into a digest-sealed record.
+  Freezing **validates nothing**: a record that would fail the gate freezes perfectly well, because
+  a failing measurement must be publishable as a failing measurement or the only artifacts that
+  ever exist are the flattering ones.
+* Three functions, three jobs, no overlap — and this is stated here because the rejected revision
+  of this work claimed one of them did another's job. `load_frozen()` reads bytes and parses JSON,
+  and that is its **entire** contract; it does not check the digest, the schema, or a single claim,
+  and it **strips nothing** — a record carrying a supersession claim comes back out of it exactly
+  as written, and `evidence_gate()` is the layer that refuses it. `verify_frozen_identity()`
+  recomputes the seal. `evidence_gate()` decides admissibility. The behavioural tests prove the
+  first of these by *editing a frozen record and loading it without complaint*, and by *freezing a
+  superseded block, loading it back intact, and then watching the gate convict on it*, rather than
+  by asserting something about the source text. The whole contract is machine-readable in
+  `identity.loader_contract`, recomputed by the gate, and each named layer must exist and be
+  callable — a contract describing a function nobody has is not checkable by anybody.
+* **Bytes are bound before content, because a parse normalises.** A content digest is taken over
+  the re-serialised record, so a CRLF-translated copy of an artifact parses and hashes identically
+  and is nevertheless a different file. A sidecar seal records the sha256 of the exact bytes as
+  read in binary **and** their exact length; `gate_artifact()` checks length, then digest, then
+  content, in that order and before any parse, and it is what CI calls. Length is checked first so
+  that truncation and padding report as the length problem they are.
+* `evidence_gate()` is the single authority. `ci/check_phi_evidence.py` is a thin host-free
+  wrapper around it — no GPU, no ORT, no 2.3 GB model — so the gate runs on every lane rather than
+  on the one workstation the measurement came from.
+* The gate re-derives every published verdict from the artifact's own raw per-repeat ratios. It
+  never reads the recorded conclusion and believes it; an artifact edited to say `IMPROVEMENT`
+  where its own numbers say `INDETERMINATE` is convicted by its own raw material.
+
+**Verdict-vs-instrument, R13, one level in.** The gate is *total* about content: a false record is
+`FAIL(condition=…)`, never an exception. Its input contract is the opposite — an inverted
+calibration band, a negative latency sample, a "record" that is not a mapping raise
+`EvidenceInstrumentError`, because returning `INDETERMINATE` for those would file an instrument
+fault as a quiet null result, which is precisely how a broken harness reads as an unremarkable one.
+
+**Six properties the gate enforces that a reader cannot check by eye:**
+
+1. **Calibration disjointness by input, not by label.** The band a verdict is read against comes
+   from same-build arm pairs whose true ratio is 1 by construction. Those subjects must share no
+   input with any subject under judgement — and *label* disjointness is not enough. `prefill/M1/past0`
+   and `decode/M1/past0` are two names for byte-identical feeds, so a band "pooled from two
+   subjects" was one measurement counted twice. The gate compares recorded `feeds_digest` values
+   and convicts on a collision, which is how that defect was found in this instrument's own first
+   artifact rather than in review.
+2. **Named observations cannot be replaced by friendlier ones.** "Carry at least two decode
+   observations" was satisfiable by deleting a disagreeing prior reading and letting the branch's
+   own fresher one take its place — a disagreement quietly becoming a consensus. The gate names the
+   two prior values it requires, so a third cannot stand in for either. It also requires the
+   record to **reconcile** them: to name every observation, carry every point estimate, conclude
+   `INCONCLUSIVE`, and declare `arbitrated: false`. Reconciling means stating that the
+   observations disagree and that the disagreement is unresolved; a record that claims to have
+   arbitrated has made one observation superseding by implication, and is convicted.
+3. **A verdict is a statement about a subject read against a *band*, and the band travels with
+   it.** "Indeterminate" with no band named is a claim about every band anyone might ever commit,
+   and a single calibration sitting cannot support one — a tighter band classifies more subjects,
+   not fewer. So every verdict carries `band_scope` (the committed edges, their source, and
+   `band_independent: false`) plus its reading under two hypothetical bands, and the gate
+   **recomputes** those readings from the same series rather than believing them. A subject that
+   is indeterminate against a wide committed band and `IMPROVEMENT` against ±3% is exactly the
+   case this exists for, and it is a real row in §27.3.
+4. **Every timed record proves its own provenance, and any one of them can refuse the lot.** A
+   per-sweep environment block says what a sweep intended; it cannot say what an individual
+   process did. Each record therefore carries the EP library digest, the library actually mapped
+   into that process, the model resolver's own agreement flag, the external-weight metadata, the
+   device the EP reported, the shader digests and count, the dispatch count, the providers the
+   session reported, and three declared agreement pairs — and the gate **recomputes each pair from
+   its own two sides under its own stated rule**, so editing a side, flipping the flag or swapping
+   the rule are three separate convictions. Deleting any single field is fatal; there is no
+   "absent means fine" branch. This is not hypothetical: a baseline repeat in which the EP never
+   registered ran on the CPU provider at half the expected time and would have understated the
+   baseline, and only `providers_reported` and `dispatches_executed` said so.
+5. **A refusal publishes nothing that looks like a result.** When the gate refuses, every timing,
+   ratio, separation, speedup, band edge and lower bound is withheld and the payload is scrubbed
+   of numeric leaves; a refused subject is reduced to its name, `REFUSED`, a statement that
+   nothing about it is admissible, and the list of withheld keys. The lane wrapper prints only
+   that, so a refused number cannot be lifted out of a failed CI log and quoted. A row that marks
+   itself refused and keeps its numbers — or keeps a success-shaped verdict — is itself a
+   conviction, checked before any recomputation touches the row.
+6. **What was discarded is disclosed, on structural grounds only.** The harness re-runs an attempt
+   in which the EP did not register or did not dispatch. Every refused attempt is listed with its
+   samples, and the rule is stated and must be structural: it reads which providers registered and
+   whether a dispatch ran, never a timing, so it cannot select for a result. A rule that consulted
+   a timing, a missing list, or an attempt whose samples are withheld are all convictions, and
+   "nothing was discarded" is written as an empty list rather than an omission.
+
+**Where it runs and what watches it.** `ci/negative_control_phi_evidence.py` breaks exactly one
+thing per condition in `GATE_CONDITIONS` and requires the named conviction, then walks the tuple
+and fails on any token no arm attacks — so a condition can be added to the gate but not left
+unfalsified. Both the gate and its control are `lane-checks` steps, classified in
+`ci/lane_inventory.py`, exercised from the lane's own side in `ci/test_lane_checks.py` (including
+the two R13 outage states: an absent artifact and an unparseable one are `ERROR(instrument=…)`,
+never a clean bill of health), and the module is screened by the instrument census.
+
+**A census gap this surfaced, and how it was closed.** `rust/tools/audit_instruments.py` scores an
+instrument `screened` when it has watched both polarities. It knew two shapes: a guard that raises
+(`pytest.raises`) and a total instrument whose refusal is `(None, why)` (`bench/_polarity.py::refuses`,
+§8.9's value-polarity model). A **gate** is a third shape — it refuses by returning
+`{"verdict": FAIL, "condition": …}` — and neither model could see it, so the most heavily attacked
+instrument in the tree scored `reject_polarity=0`. `bench/_polarity.py::convicts` closes that on
+the same terms as `refuses`: it *enforces* at run time, going red both when the verdict is not a
+refusal and when the refusal names a different condition than the caller did — the second clause
+being what stops a gate that fails everything from reading as a healthy one. It has its own
+synthetic two-polarity trees in `tests/ops/test_harness_census.py`, because a polarity source only
+ever run against the real repository is the defect that model exists to prevent, one level up.
+
+**What none of this claims.** The gate reads what was recorded; if the harness mismeasured, every
+field is consistent and wrong together. It cannot re-measure, it is scoped to one model on one
+adapter, and it says nothing about ORT's CUDA execution provider — issue #69's actual question,
+for which no compatible measurement exists. The published numbers, their limits and the raw
+material behind them are `docs/PERF.md` §27.
+
 ### 9.3 Real-model validation without a Python interpreter — Tank
 
 **The gap this closes.** Every real-model reading this project has ever taken came from a Python

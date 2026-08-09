@@ -461,6 +461,12 @@ BENCH_INSTRUMENT_FILES = [
     # gives it for the total ones.
     "pinned_bytes.py",
     "path_screen.py",
+    # Arrived with issue #69 (Niobe, the frozen Phi-3.5 evidence contract). Screened for
+    # the same reason as real_model.py and more so: `evidence_gate` is the single authority
+    # that decides whether a frozen artifact may be published, and `classify_ratio`/
+    # `calibration_band`/`within_arm_dispersion` decide what a paired measurement means.
+    # Those are verdicts about a measurement.
+    "phi_evidence.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -542,11 +548,17 @@ BENCH_HELD_OUT: dict[str, str] = {
     "_polarity.py": (
         "polarity assertion helpers for TOTAL instruments — the screen's second polarity "
         "source, not a verdict about a measurement. Two-polarity tested in "
-        "test_devices_identity.py."
+        "test_devices_identity.py; `convicts`, the verdict-returning shape added 2026-08-09, "
+        "in tests/ops/test_harness_census.py."
     ),
     "test_devices_identity.py": (
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."
+    ),
+    # Arrived with issue #69 (Niobe). Carries the two-polarity screening for every public
+    # function of phi_evidence.py, including the per-condition attacks on `gate`.
+    "test_phi_evidence.py": (
+        "test module — a caller, screened as polarity, not as an instrument."
     ),
 }
 
@@ -636,7 +648,17 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
 # actually varies the thing under test.  That is earned by mutation —
 # `bench/test_devices_identity.py` for this instrument, `tests/ops/test_guard_d.py` for
 # the harness domain — and it is not claimed by this screen.
-VALUE_REJECT_FN = frozenset({"refuses"})
+#
+# 2026-08-09 (Niobe, issue #69): `convicts` joins `refuses` on identical terms, for the
+# third instrument shape — the one that returns `{"verdict": FAIL, "condition": ...}`
+# because under R13 a detection is a verdict and only a failure to observe is an
+# exception.  `bench/phi_evidence.py::evidence_gate` is that shape, and without this it
+# scored `reject_polarity=0` while a 29-arm mutation battery watched it convict.
+# `convicts` enforces two things at run time: that the verdict really is a refusal, and
+# that the CONDITION matches the one the caller named — so a gate that fails everything,
+# which is the failure mode a bare "it said FAIL" check would certify as health, cannot
+# pass through it.  It credits nothing that was not observed.
+VALUE_REJECT_FN = frozenset({"refuses", "convicts"})
 VALUE_ACCEPT_FN = frozenset({"selects"})
 
 
