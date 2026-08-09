@@ -37,3 +37,12 @@
 # squash landing deletes the branch and the refs with it. Mark them binary so no
 # line-ending translation can touch them on checkout -- the digest is the whole point.
 ci/fixtures/cleanroom-redaction/*.pysrc -text
+
+# The frozen Phi-3.5 evidence artifact and its byte seal are BYTE-ADDRESSED, not
+# content-addressed: bench/results/phi35_evidence_v4.json.seal.json binds the artifact to its
+# exact sha256 *and* its exact byte length, hashed as read, before any parse. That is what
+# catches a line-ending rewrite -- a CRLF copy re-serialises to the same *content* digest, so
+# the content digest alone cannot see it. Mark both binary so a checkout on Windows cannot
+# perform the very transformation the seal exists to refuse.
+bench/results/phi35_evidence_v4.json -text
+bench/results/phi35_evidence_v4.json.seal.json -text

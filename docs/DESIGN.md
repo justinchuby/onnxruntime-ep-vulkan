@@ -6515,10 +6515,21 @@ them is a **publication** error, and no amount of care at the timer catches any 
   ever exist are the flattering ones.
 * Three functions, three jobs, no overlap — and this is stated here because the rejected revision
   of this work claimed one of them did another's job. `load_frozen()` reads bytes and parses JSON,
-  and that is its **entire** contract; it does not check the digest, the schema, or a single claim.
-  `verify_frozen_identity()` recomputes the seal. `evidence_gate()` decides admissibility. The
-  behavioural tests prove the first of these by *editing a frozen record and loading it without
-  complaint*, rather than by asserting something about the source text.
+  and that is its **entire** contract; it does not check the digest, the schema, or a single claim,
+  and it **strips nothing** — a record carrying a supersession claim comes back out of it exactly
+  as written, and `evidence_gate()` is the layer that refuses it. `verify_frozen_identity()`
+  recomputes the seal. `evidence_gate()` decides admissibility. The behavioural tests prove the
+  first of these by *editing a frozen record and loading it without complaint*, and by *freezing a
+  superseded block, loading it back intact, and then watching the gate convict on it*, rather than
+  by asserting something about the source text. The whole contract is machine-readable in
+  `identity.loader_contract`, recomputed by the gate, and each named layer must exist and be
+  callable — a contract describing a function nobody has is not checkable by anybody.
+* **Bytes are bound before content, because a parse normalises.** A content digest is taken over
+  the re-serialised record, so a CRLF-translated copy of an artifact parses and hashes identically
+  and is nevertheless a different file. A sidecar seal records the sha256 of the exact bytes as
+  read in binary **and** their exact length; `gate_artifact()` checks length, then digest, then
+  content, in that order and before any parse, and it is what CI calls. Length is checked first so
+  that truncation and padding report as the length problem they are.
 * `evidence_gate()` is the single authority. `ci/check_phi_evidence.py` is a thin host-free
   wrapper around it — no GPU, no ORT, no 2.3 GB model — so the gate runs on every lane rather than
   on the one workstation the measurement came from.
@@ -6532,7 +6543,7 @@ calibration band, a negative latency sample, a "record" that is not a mapping ra
 `EvidenceInstrumentError`, because returning `INDETERMINATE` for those would file an instrument
 fault as a quiet null result, which is precisely how a broken harness reads as an unremarkable one.
 
-**Two properties the gate enforces that a reader cannot check by eye:**
+**Six properties the gate enforces that a reader cannot check by eye:**
 
 1. **Calibration disjointness by input, not by label.** The band a verdict is read against comes
    from same-build arm pairs whose true ratio is 1 by construction. Those subjects must share no
@@ -6544,7 +6555,43 @@ fault as a quiet null result, which is precisely how a broken harness reads as a
 2. **Named observations cannot be replaced by friendlier ones.** "Carry at least two decode
    observations" was satisfiable by deleting a disagreeing prior reading and letting the branch's
    own fresher one take its place — a disagreement quietly becoming a consensus. The gate names the
-   two prior values it requires, so a third cannot stand in for either.
+   two prior values it requires, so a third cannot stand in for either. It also requires the
+   record to **reconcile** them: to name every observation, carry every point estimate, conclude
+   `INCONCLUSIVE`, and declare `arbitrated: false`. Reconciling means stating that the
+   observations disagree and that the disagreement is unresolved; a record that claims to have
+   arbitrated has made one observation superseding by implication, and is convicted.
+3. **A verdict is a statement about a subject read against a *band*, and the band travels with
+   it.** "Indeterminate" with no band named is a claim about every band anyone might ever commit,
+   and a single calibration sitting cannot support one — a tighter band classifies more subjects,
+   not fewer. So every verdict carries `band_scope` (the committed edges, their source, and
+   `band_independent: false`) plus its reading under two hypothetical bands, and the gate
+   **recomputes** those readings from the same series rather than believing them. A subject that
+   is indeterminate against a wide committed band and `IMPROVEMENT` against ±3% is exactly the
+   case this exists for, and it is a real row in §27.3.
+4. **Every timed record proves its own provenance, and any one of them can refuse the lot.** A
+   per-sweep environment block says what a sweep intended; it cannot say what an individual
+   process did. Each record therefore carries the EP library digest, the library actually mapped
+   into that process, the model resolver's own agreement flag, the external-weight metadata, the
+   device the EP reported, the shader digests and count, the dispatch count, the providers the
+   session reported, and three declared agreement pairs — and the gate **recomputes each pair from
+   its own two sides under its own stated rule**, so editing a side, flipping the flag or swapping
+   the rule are three separate convictions. Deleting any single field is fatal; there is no
+   "absent means fine" branch. This is not hypothetical: a baseline repeat in which the EP never
+   registered ran on the CPU provider at half the expected time and would have understated the
+   baseline, and only `providers_reported` and `dispatches_executed` said so.
+5. **A refusal publishes nothing that looks like a result.** When the gate refuses, every timing,
+   ratio, separation, speedup, band edge and lower bound is withheld and the payload is scrubbed
+   of numeric leaves; a refused subject is reduced to its name, `REFUSED`, a statement that
+   nothing about it is admissible, and the list of withheld keys. The lane wrapper prints only
+   that, so a refused number cannot be lifted out of a failed CI log and quoted. A row that marks
+   itself refused and keeps its numbers — or keeps a success-shaped verdict — is itself a
+   conviction, checked before any recomputation touches the row.
+6. **What was discarded is disclosed, on structural grounds only.** The harness re-runs an attempt
+   in which the EP did not register or did not dispatch. Every refused attempt is listed with its
+   samples, and the rule is stated and must be structural: it reads which providers registered and
+   whether a dispatch ran, never a timing, so it cannot select for a result. A rule that consulted
+   a timing, a missing list, or an attempt whose samples are withheld are all convictions, and
+   "nothing was discarded" is written as an empty list rather than an omission.
 
 **Where it runs and what watches it.** `ci/negative_control_phi_evidence.py` breaks exactly one
 thing per condition in `GATE_CONDITIONS` and requires the named conviction, then walks the tuple

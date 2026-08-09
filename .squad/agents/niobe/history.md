@@ -183,3 +183,43 @@ headline is still one model, one prefill family, one adapter, one box. No compat
 exists, so #69 stays open and the PR says `Refs #69`. The gate has a `headline_scope_widened`
 condition precisely because the pressure to generalise arrives *after* a good measurement, not
 before it.
+
+## Issue #69, revision 5 — second-round review findings, same clean room
+
+Eight further exact-head findings arrived against the rejected #102. I never opened it; I treated
+each as a falsifier to satisfy independently on my own branch. What that cost, and what it bought:
+
+- **Per-record provenance now fails closed, and it caught a real one.** Every raw run carries the
+  loaded DLL's hash, the model resolver, external-weight metadata, device name, shader hashes and
+  count, dispatch count, the providers that actually registered, and typed agreement pairs the gate
+  *recomputes* from their own recorded sides. On the first re-sweep the gate REFUSED my own fresh
+  artifact: `vulkan_pre72/prefill/M128/past0/r1` had registered only `CPUExecutionProvider` and
+  executed zero dispatches, and had timed at 1473.8 ms against 3036.3 and 3020.6 ms either side.
+  Averaged in, that silent CPU fallback would have understated the baseline by about a quarter and
+  inflated every prefill ratio. The instrument caught it on live data, not in a mutation test.
+- **The fix had to be structural, not statistical.** `_vulkan_actually_ran()` reads which providers
+  registered and whether a dispatch happened; it never reads a timing, so it cannot select for a
+  result. `_run_worker_insisting()` retries and discloses every refused attempt *with its samples*,
+  and "nothing was discarded" is written as an empty list, not an omission.
+- **A content digest cannot bind bytes.** A CRLF-translated artifact re-serialises to the same
+  content digest, because the parse already threw the difference away. The sidecar seal binds exact
+  bytes *and* exact length, hashed as read, checked before the parse. Length is compared first so a
+  truncation reports as a truncation.
+- **A red lane can leak a green number.** Refused rows are now sanitised — no timing, ratio,
+  separation, speedup, band edge or lower bound survives — and the sanitation check had to move
+  *earlier* in the gate than every check that recomputes a number out of a row, or a stripped row
+  convicts on the wrong token. That ordering bug was found by the negative control, not by me.
+- **Say what the code does, not what you wish it did.** The loader strips superseded blocks; it does
+  not refuse them, so the docs say strips and a behavioural test pins the layer that actually
+  refuses. The proof ledger has production registry, disclosure and pipeline-audit consumers, so it
+  is not diagnostic-only and is no longer described that way.
+- **A verdict is a reading against a band, not a fact about the world.** M64 is only indeterminate
+  against the band that was committed; under a 3% band it classifies FASTER. The gate recomputes the
+  readings under the alternative bands, which is what makes "indeterminate at any band" unassertable
+  rather than merely discouraged.
+
+This sitting's box was noisier than the last: calibration came back `[0.739547, 1.363869]` against
+`[0.9045, 1.0467]` before. I disclosed the wide band rather than re-rolling until it narrowed. A
+wide band can only suppress a verdict, never manufacture one — M32 fell to INDETERMINATE because of
+it — and repairing it by selection is precisely how a band stops being evidence.
+

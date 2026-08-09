@@ -1,0 +1,7 @@
+{
+ "artifact": "phi35_evidence_v4.json",
+ "byte_length": 427991,
+ "normalisation": "none: hashed as read, in binary, before any parse",
+ "note": "binds the artifact to its exact bytes and exact byte length. A line-ending translation changes both and is refused; it does not change the content digest, which is why the content digest alone was not enough.",
+ "sha256_of_exact_bytes": "8a35e409939b7b7dbd30aa988ef35daa726506d6ba41b81156d9c8a519795b8e"
+}

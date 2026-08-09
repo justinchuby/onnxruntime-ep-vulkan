@@ -700,3 +700,676 @@ def test_docs_perf_quotes_the_artifact_it_cites(real):
     )
     for overclaim in ("Closes #69", "beats CUDA", "faster than CUDA", "CUDA parity"):
         assert overclaim not in section, f"§27 now overclaims: {overclaim!r}"
+
+
+
+# ============================================================================================
+# The byte seal: exact bytes and exact length, checked before anything parses
+# ============================================================================================
+
+
+def _sealed_copy(tmp_path) -> Path:
+    """A byte-for-byte copy of the committed artifact and its seal, in a scratch directory."""
+    dst = tmp_path / ARTIFACT.name
+    dst.write_bytes(ARTIFACT.read_bytes())
+    pe.seal_path_for(dst).write_bytes(pe.seal_path_for(ARTIFACT).read_bytes())
+    return dst
+
+
+def test_the_committed_artifact_matches_its_own_seal():
+    verdict = pe.verify_frozen_bytes(ARTIFACT)
+    assert verdict["verdict"] == pe.MATCH, verdict
+    assert verdict["observed"]["byte_length"] == verdict["declared"]["byte_length"]
+
+
+def test_a_crlf_translation_is_refused_even_though_it_parses_identically(tmp_path):
+    """The whole reason the seal exists, exercised rather than described.
+
+    A line-ending rewrite is the transformation a Windows checkout performs by default. It does
+    not change what the record *says*: parse both copies and they are equal, so the content
+    digest over the re-serialised record is identical and sees nothing. The bytes are a
+    different file, and the seal is taken over the bytes.
+
+    Both halves are asserted here, because the first alone would be satisfied by a gate that
+    refuses everything and the second alone by a gate that refuses nothing.
+    """
+    copy_path = _sealed_copy(tmp_path)
+    assert pe.gate_artifact(copy_path)["verdict"] == pe.PASS
+
+    original = copy_path.read_bytes()
+    copy_path.write_bytes(original.replace(b"\n", b"\r\n"))
+    assert copy_path.read_bytes() != original, "the fixture did not actually translate anything"
+
+    # The content is untouched: this is what a digest over the parsed record would see.
+    assert json.loads(copy_path.read_text(encoding="utf-8")) == json.loads(
+        original.decode("utf-8")), "the fixture changed the content, so it proves nothing"
+    assert pe.verify_frozen_identity(pe.load_frozen(copy_path))["verdict"] == pe.MATCH, (
+        "the content digest noticed the line endings; then this test is not testing what it "
+        "says it is"
+    )
+
+    verdict = pe.gate_artifact(copy_path)
+    assert verdict["verdict"] == pe.FAIL
+    assert verdict["condition"] == "frozen_bytes_length_mismatch", verdict
+
+
+def test_a_padded_or_truncated_artifact_is_reported_as_a_length(tmp_path):
+    copy_path = _sealed_copy(tmp_path)
+    copy_path.write_bytes(copy_path.read_bytes() + b" ")
+    verdict = pe.gate_artifact(copy_path)
+    assert verdict["condition"] == "frozen_bytes_length_mismatch", verdict
+
+
+def test_a_same_length_edit_is_reported_as_a_digest(tmp_path):
+    copy_path = _sealed_copy(tmp_path)
+    raw = bytearray(copy_path.read_bytes())
+    for i, ch in enumerate(raw):
+        if i > 200 and chr(ch).isdigit():
+            raw[i] = ord("7") if chr(ch) != "7" else ord("3")
+            break
+    copy_path.write_bytes(bytes(raw))
+    verdict = pe.gate_artifact(copy_path)
+    assert len(bytes(raw)) == pe.seal_bytes(ARTIFACT)["byte_length"]
+    assert verdict["condition"] == "frozen_bytes_mismatch", verdict
+
+
+def test_an_unsealed_artifact_is_refused_rather_than_trusted(tmp_path):
+    copy_path = _sealed_copy(tmp_path)
+    pe.seal_path_for(copy_path).unlink()
+    verdict = pe.gate_artifact(copy_path)
+    assert verdict["condition"] == "frozen_bytes_unsealed", verdict
+
+
+def test_the_bytes_are_checked_before_the_parse(tmp_path):
+    """A file that is neither the sealed bytes nor JSON reports the byte problem, not the parse.
+
+    Ordering is the claim. If the parse ran first this would come back as an unreadable
+    artifact, which is an instrument outage, and an outage is not a detection.
+    """
+    copy_path = _sealed_copy(tmp_path)
+    copy_path.write_bytes(b"{ not json at all")
+    verdict = pe.gate_artifact(copy_path)
+    assert verdict["verdict"] == pe.FAIL
+    assert verdict["condition"] == "frozen_bytes_length_mismatch", verdict
+
+
+def test_seal_bytes_normalises_nothing(tmp_path):
+    lf = tmp_path / "lf.json"
+    lf.write_bytes(b'{"a": 1}\n')
+    crlf = tmp_path / "crlf.json"
+    crlf.write_bytes(b'{"a": 1}\r\n')
+    assert pe.seal_bytes(lf)["sha256_of_exact_bytes"] != pe.seal_bytes(crlf)[
+        "sha256_of_exact_bytes"]
+    assert pe.seal_bytes(lf)["byte_length"] != pe.seal_bytes(crlf)["byte_length"]
+
+
+def test_an_absent_artifact_is_an_outage_not_a_finding(tmp_path):
+    verdict = pe.gate_artifact(tmp_path / "nothing.json")
+    assert verdict["verdict"] == pe.ERROR and verdict["condition"] == "artifact_absent"
+
+
+# ============================================================================================
+# The loader contract: what each layer does, proved by making each layer do it
+# ============================================================================================
+
+
+def test_load_frozen_does_not_strip_a_superseded_block_and_the_gate_is_what_refuses_it(tmp_path):
+    """Three separate claims, because the reviewer's objection was about which layer acts.
+
+    1. `load_frozen` returns a record carrying a supersession claim, unaltered: it strips
+       nothing. A loader that quietly removed the block would return a record that passes, and
+       nobody would learn that the block had been written.
+    2. The block survives the round trip byte-identically.
+    3. The gate is the layer that refuses it.
+    """
+    path = tmp_path / "superseded.json"
+    record = copy.deepcopy(pe.load_frozen(ARTIFACT))
+    record["decode_observations"][0]["superseded_by"] = \
+        record["decode_observations"][1]["id"]
+    pe.freeze(record, path)
+
+    loaded = pe.load_frozen(path)
+    assert "superseded_by" in loaded["decode_observations"][0], (
+        "load_frozen stripped a superseded block. It does not strip; the gate refuses. "
+        "Documenting one layer's behaviour as another's is the defect this test exists for."
+    )
+    assert loaded["decode_observations"][0]["superseded_by"] == \
+        record["decode_observations"][1]["id"]
+
+    verdict = pe.evidence_gate(loaded)
+    assert verdict["verdict"] == pe.FAIL
+    assert verdict["condition"] == "decode_observation_dropped", verdict
+
+
+def test_the_loader_contract_is_recorded_and_the_gate_recomputes_it(real):
+    assert real["identity"]["loader_contract"] == pe.LOADER_CONTRACT
+    edited = _mutate(real, lambda r: r["identity"]["loader_contract"]["load_frozen"].update(
+        {"validates_content_digest": True}))
+    verdict = pe.evidence_gate(edited)
+    assert verdict["condition"] == "loader_contract_misdescribed", verdict
+
+
+def test_a_contract_claiming_the_loader_strips_is_refused(real):
+    edited = _mutate(real, lambda r: r["identity"]["loader_contract"]["load_frozen"].update(
+        {"strips_superseded_blocks": True}))
+    assert pe.evidence_gate(edited)["condition"] == "loader_contract_misdescribed"
+
+
+def test_every_layer_named_in_the_contract_exists_and_is_callable():
+    for name in pe.LOADER_CONTRACT:
+        assert callable(getattr(pe, name, None)), (
+            f"the loader contract describes {name}, which is not a function in this module; a "
+            f"contract about a layer that does not exist cannot be checked by anybody"
+        )
+
+
+# ============================================================================================
+# Per-record provenance: every named field fails closed, deleted or mutated
+# ============================================================================================
+
+
+def _first_run(record: dict) -> dict:
+    return record["raw"]["runs"][0]
+
+
+@pytest.mark.parametrize("field", pe.REQUIRED_RECORD_PROVENANCE)
+def test_deleting_any_required_provenance_field_makes_the_gate_refuse(real, field):
+    """One case per field the reviewer named. Deletion is fatal, individually, for each."""
+    edited = _mutate(real, lambda r: _first_run(r)["provenance"].pop(field, None))
+    verdict = pe.evidence_gate(edited)
+    assert verdict["verdict"] == pe.FAIL, (field, verdict)
+    assert verdict["condition"] == "record_provenance_incomplete", (field, verdict)
+
+
+@pytest.mark.parametrize("field", pe.REQUIRED_RECORD_PROVENANCE)
+def test_replacing_any_required_provenance_field_with_the_wrong_type_is_fatal(real, field):
+    edited = _mutate(real, lambda r: _first_run(r)["provenance"].__setitem__(field, "yes"))
+    verdict = pe.evidence_gate(edited)
+    assert verdict["verdict"] == pe.FAIL, (field, verdict)
+    assert verdict["condition"] in ("record_provenance_incomplete",
+                                    "record_provenance_disagrees"), (field, verdict)
+
+
+def test_a_provenance_block_missing_entirely_is_fatal(real):
+    edited = _mutate(real, lambda r: _first_run(r).pop("provenance"))
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_incomplete"
+
+
+def test_the_library_a_record_says_it_timed_must_be_the_one_the_process_had_mapped(real):
+    edited = _mutate(real, lambda r: _first_run(r)["provenance"][
+        "ep_library_loaded_in_process"].__setitem__("sha256", "0" * 64))
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_disagrees"
+
+
+def test_a_record_whose_library_was_never_mapped_is_fatal(real):
+    edited = _mutate(real, lambda r: _first_run(r)["provenance"][
+        "ep_library_loaded_in_process"].__setitem__("found", False))
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_disagrees"
+
+
+def test_a_baseline_record_carrying_the_head_library_is_fatal(real):
+    head = real["environment"]["software"]["ep_library_sha256"]
+
+    def swap(r):
+        for run in r["raw"]["runs"]:
+            if run["arm"] == pe.ARM_BASELINE:
+                run["provenance"]["ep_library_sha256"] = head
+                run["provenance"]["ep_library_loaded_in_process"]["sha256"] = head
+                return
+    edited = _mutate(real, swap)
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_disagrees"
+
+
+def test_a_resolver_that_does_not_agree_may_not_be_published(real):
+    edited = _mutate(real, lambda r: _first_run(r)["provenance"]["model_resolver"].__setitem__(
+        "agrees_with_recorded_provenance", False))
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_disagrees"
+
+
+def test_an_agreement_flag_that_is_not_a_boolean_is_not_agreement(real):
+    """'Unknown' and 'agrees' are different states, and a benchmark may not publish under the
+    first while looking like the second. A truthy string is the exact shape of that mistake."""
+    edited = _mutate(real, lambda r: _first_run(r)["provenance"]["model_resolver"].__setitem__(
+        "agrees_with_recorded_provenance", "true"))
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_incomplete"
+
+
+def test_external_weight_metadata_may_not_be_emptied(real):
+    edited = _mutate(real, lambda r: _first_run(r)["provenance"]["external_weights"].__setitem__(
+        "files", []))
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_incomplete"
+
+
+def test_external_weight_metadata_may_not_disagree_with_the_artifact(real):
+    edited = _mutate(real, lambda r: _first_run(r)["provenance"]["external_weights"]["files"][0]
+                     .__setitem__("sha256", "1" * 64))
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_disagrees"
+
+
+def test_a_record_taken_on_another_device_may_not_be_filed_here(real):
+    edited = _mutate(real, lambda r: _first_run(r)["provenance"].__setitem__(
+        "device_name", "llvmpipe (LLVM 17.0.6, 256 bits)"))
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_disagrees"
+
+
+def test_a_record_that_dispatched_no_shader_did_not_run_on_the_gpu(real):
+    edited = _mutate(real, lambda r: _first_run(r)["provenance"]["shaders"].__setitem__(
+        "count", 0))
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_incomplete"
+
+
+def test_a_record_that_executed_no_dispatch_timed_something_else(real):
+    edited = _mutate(real, lambda r: _first_run(r)["provenance"].__setitem__(
+        "dispatches_executed", 0))
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_incomplete"
+
+
+def test_a_vulkan_arm_whose_session_reported_only_the_cpu_is_refused(real):
+    """The defect this instrument actually caught on this desk, kept as a test.
+
+    One baseline repeat came back with the EP unregistered and ran on the CPU provider at less
+    than half the median of the repeats either side of it. Nothing in the timing said so; the
+    provider list and the dispatch count both did.
+    """
+    edited = _mutate(real, lambda r: _first_run(r).__setitem__(
+        "providers_reported", ["CPUExecutionProvider"]))
+    verdict = pe.evidence_gate(edited)
+    assert verdict["condition"] == "record_provenance_disagrees", verdict
+
+
+@pytest.mark.parametrize("field", pe.REQUIRED_AGREEMENT_PAIRS)
+def test_deleting_an_agreement_pair_is_fatal(real, field):
+    def drop(r):
+        agreement = _first_run(r)["provenance"]["provenance_agreement"]
+        agreement["pairs"] = [p for p in agreement["pairs"] if p.get("field") != field]
+    edited = _mutate(real, drop)
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_incomplete", field
+
+
+@pytest.mark.parametrize("field", pe.REQUIRED_AGREEMENT_PAIRS)
+def test_an_agreement_pair_that_does_not_recompute_is_fatal(real, field):
+    """The flag is not trusted: the gate recomputes the pair from its own two sides.
+
+    That is what makes all three mutations fatal — editing a side, flipping the flag, or
+    swapping the rule out for one that would make a disagreement read as agreement.
+    """
+    def edit(r):
+        for p in _first_run(r)["provenance"]["provenance_agreement"]["pairs"]:
+            if p.get("field") == field:
+                p["right"] = "something else entirely"
+    edited = _mutate(real, edit)
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_disagrees", field
+
+
+def test_an_agreement_verdict_may_not_be_asserted_over_a_failing_pair(real):
+    def edit(r):
+        pairs = _first_run(r)["provenance"]["provenance_agreement"]["pairs"]
+        pairs[0]["agree"] = False
+    edited = _mutate(real, edit)
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_disagrees"
+
+
+def test_an_unknown_agreement_rule_cannot_be_recomputed_and_is_fatal(real):
+    def edit(r):
+        pairs = _first_run(r)["provenance"]["provenance_agreement"]["pairs"]
+        pairs[0]["rule"] = "vibes"
+    edited = _mutate(real, edit)
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_incomplete"
+
+
+def test_the_equivalence_arms_carry_the_same_provenance_burden(real):
+    """The equivalence pass is where the production-path witness comes from, so its records
+    are provenance-bearing too. A gate that screened only the timing rows would leave the
+    witness unattributed."""
+    def edit(r):
+        for case in r["equivalence"]:
+            for arm in case["arms"]:
+                if arm.get("provenance"):
+                    arm["provenance"].pop("device_name")
+                    return
+        pytest.skip("no equivalence arm carries provenance")
+    edited = _mutate(real, edit)
+    assert pe.evidence_gate(edited)["condition"] == "record_provenance_incomplete"
+
+
+def test_check_record_provenance_errors_rather_than_verdicts_on_a_non_record():
+    with pytest.raises(pe.EvidenceInstrumentError):
+        pe.check_record_provenance("not a run", {})
+
+
+# ============================================================================================
+# What was thrown away, and on what grounds
+# ============================================================================================
+
+
+def test_the_artifact_discloses_every_attempt_it_refused(real):
+    raw = real["raw"]
+    assert isinstance(raw["discarded_runs"], list), (
+        "an artifact that re-ran anything must say so; 'nothing was discarded' is an empty list"
+    )
+    assert "structural" in raw["discard_rule"].lower()
+    for entry in raw["discarded_runs"]:
+        assert entry["samples_ms"], "a discarded attempt withholding its samples is not disclosed"
+        assert entry["dispatches_executed"] == 0 or \
+            "VulkanExecutionProvider" not in (entry["providers_reported"] or []), entry
+
+
+def test_removing_the_discard_disclosure_makes_the_gate_refuse(real):
+    edited = _mutate(real, lambda r: r["raw"].pop("discarded_runs"))
+    assert pe.evidence_gate(edited)["condition"] == "discarded_runs_undisclosed"
+
+
+def test_a_discard_rule_that_selects_on_timing_is_refused(real):
+    edited = _mutate(real, lambda r: r["raw"].__setitem__(
+        "discard_rule", "attempts slower than the arm median were re-run"))
+    verdict = pe.evidence_gate(edited)
+    assert verdict["condition"] == "discarded_runs_undisclosed", verdict
+
+
+def test_the_discard_predicate_never_reads_a_timing():
+    """The rule itself, exercised on synthetic records rather than read out of its docstring."""
+    healthy = {"providers_reported": ["VulkanExecutionProvider", "CPUExecutionProvider"],
+               "provenance": {"dispatches_executed": 2840}, "samples_ms": [9999.0]}
+    assert pe._vulkan_actually_ran(healthy) is None, (
+        "a run that registered the EP and dispatched was refused for being slow"
+    )
+    fell_back = dict(healthy, providers_reported=["CPUExecutionProvider"], samples_ms=[1.0])
+    assert pe._vulkan_actually_ran(fell_back) is not None
+    no_dispatch = {"providers_reported": ["VulkanExecutionProvider"],
+                   "provenance": {"dispatches_executed": 0}}
+    assert pe._vulkan_actually_ran(no_dispatch) is not None
+
+
+# ============================================================================================
+# A refused row publishes nothing that looks like a result
+# ============================================================================================
+
+
+def test_a_refused_row_keeps_its_name_and_loses_its_numbers():
+    row = {"subject": "phi/prefill/M128/past0", "verdict": pe.IMPROVEMENT,
+           "point_estimate": 2.077, "floor": 1.9, "series": {"ratios": [2.0, 2.1]},
+           "head_median_ms": 1449.6, "baseline_median_ms": 3020.6,
+           "dispersion": {"iqr": 3.0}}
+    out = pe.sanitise_refused_row(row)
+    assert set(out) == {"subject", "status", "admissible", "withheld"}
+    assert out["subject"] == row["subject"]
+    assert out["status"] == "REFUSED"
+    assert "point_estimate" in out["withheld"] and "verdict" in out["withheld"]
+    assert "2.077" not in json.dumps(out) and "1449" not in json.dumps(out)
+
+
+def test_a_refusal_publishes_no_number_anywhere_in_its_payload(real):
+    """Every numeric leaf, not merely the ones a summary happens to print."""
+    edited = _mutate(real, lambda r: r["claim_limits"].__setitem__("closes_issue_69", True))
+    verdict = pe.evidence_gate(edited)
+    assert verdict["verdict"] == pe.FAIL
+
+    published = pe.admissible_output(edited, verdict)
+    leaves = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+        elif isinstance(node, (int, float)) and not isinstance(node, bool):
+            leaves.append(node)
+    walk(published)
+    assert leaves == [], f"a refused record published numbers: {leaves[:8]}"
+    assert "decode_observations" not in published
+    assert "claim_limits" not in published
+
+
+def test_a_refusal_carries_the_subject_names_but_no_verdicts(real):
+    edited = _mutate(real, lambda r: r["claim_limits"].__setitem__("closes_issue_69", True))
+    published = pe.admissible_output(edited)
+    assert published["subjects"], "a refusal that names no subject is not a report"
+    for row in published["subjects"]:
+        assert set(row) == {"subject", "status", "admissible", "withheld"}
+        assert row["status"] == "REFUSED"
+
+
+def test_a_gate_that_refuses_still_says_which_condition_it_refused_on(real):
+    edited = _mutate(real, lambda r: r["claim_limits"].__setitem__("closes_issue_69", True))
+    published = pe.admissible_output(edited)
+    assert published["condition"] == "claim_limit_violated"
+    assert published["verdict"] == pe.FAIL
+
+
+def test_a_passing_record_publishes_its_numbers(real):
+    """The other polarity. A sanitiser that withheld everything always would pass the tests
+    above and be useless."""
+    published = pe.admissible_output(real)
+    assert published["verdict"] == pe.PASS
+    assert published["subjects"] and published["subjects"][0]["point_estimate"] > 0
+    assert len(published["decode_observations"]) >= len(pe.REQUIRED_DECODE_OBSERVATIONS)
+    estimates = {round(o["point_estimate"], 4) for o in published["decode_observations"]}
+    assert {round(o["point_estimate"], 4) for o in pe.REQUIRED_DECODE_OBSERVATIONS} <= estimates
+
+
+def test_the_gate_refuses_a_record_whose_own_refused_row_still_shows_a_result(real):
+    def edit(r):
+        r["verdicts"][0]["status"] = "REFUSED"
+    edited = _mutate(real, edit)
+    assert pe.evidence_gate(edited)["condition"] == "refused_row_leaks_results"
+
+
+def test_sanitise_refused_row_errors_on_a_non_row():
+    with pytest.raises(pe.EvidenceInstrumentError):
+        pe.sanitise_refused_row(["not", "a", "row"])
+
+
+# ============================================================================================
+# Band scope: a verdict is a statement about a subject read against a band
+# ============================================================================================
+
+
+def test_every_verdict_names_the_band_it_was_read_against(real):
+    band = real["calibration"]["band"]
+    for v in real["verdicts"]:
+        scope = v["band_scope"]
+        assert scope["lo"] == pytest.approx(band["lo"])
+        assert scope["hi"] == pytest.approx(band["hi"])
+        assert scope["source"] == "calibration"
+        assert scope["band_independent"] is False, (
+            "a verdict that declares itself band-independent is claiming more than a single "
+            "calibration sitting can support"
+        )
+
+
+def test_a_verdict_stripped_of_its_band_scope_is_refused(real):
+    edited = _mutate(real, lambda r: r["verdicts"][0].pop("band_scope"))
+    assert pe.evidence_gate(edited)["condition"] == "verdict_band_unscoped"
+
+
+def test_an_indeterminate_subject_carries_its_reading_under_other_bands(real):
+    """M64's classification depends on the band, and the artifact has to say so.
+
+    A 3% band classifies it FASTER. Reporting it as indeterminate full stop would be a claim
+    about every band anyone might commit, which this evidence cannot support. The gate
+    recomputes each alternative reading from the same series, so the alternatives cannot be
+    asserted either.
+    """
+    by_subject = {v["subject"]: v for v in real["verdicts"]}
+    indeterminate = [v for v in real["verdicts"] if v["verdict"] == pe.INDETERMINATE]
+    if not indeterminate:
+        pytest.skip("no subject came back indeterminate in this sweep")
+    for v in indeterminate:
+        readings = {a["name"]: a for a in v["alternative_bands"]}
+        assert {b["name"] for b in pe.ALTERNATIVE_BANDS} <= set(readings)
+        for name, reading in readings.items():
+            recomputed = pe.classify_ratio(
+                v["series"], {"lo": reading["lo"], "hi": reading["hi"]})
+            assert reading["verdict"] == recomputed["verdict"], (v["subject"], name)
+    assert by_subject  # the table was not empty
+
+
+def test_an_alternative_band_reading_that_was_asserted_rather_than_computed_is_refused(real):
+    def edit(r):
+        for v in r["verdicts"]:
+            if v.get("alternative_bands"):
+                v["alternative_bands"][0]["verdict"] = pe.INDETERMINATE
+                return
+        pytest.skip("no alternative band readings recorded")
+    edited = _mutate(real, edit)
+    verdict = pe.evidence_gate(edited)
+    assert verdict["condition"] == "verdict_band_unscoped", verdict
+
+
+def test_removing_the_alternative_readings_is_refused(real):
+    edited = _mutate(real, lambda r: [v.pop("alternative_bands", None) for v in r["verdicts"]])
+    assert pe.evidence_gate(edited)["condition"] == "verdict_band_unscoped"
+
+
+# ============================================================================================
+# Both decode observations, reconciled and neither superseding the other
+# ============================================================================================
+
+
+def test_the_reconciliation_names_both_observations_and_concludes_inconclusive(real):
+    rec = real["decode_observations_reconciliation"]
+    text = json.dumps(rec)
+    assert "0.859" in text and "0.9651" in text
+    assert "0.820" in text and "1.136" in text and "0.346" in text
+    assert rec["conclusion"] == pe.INCONCLUSIVE
+    assert rec["arbitrated"] is False, (
+        "the reconciliation claims to have arbitrated between the two observations; it has not, "
+        "and saying it did would make one of them superseding by implication"
+    )
+    assert set(rec["observation_ids"]) >= {o["id"] for o in real["decode_observations"]
+                                           if o.get("id")}
+
+
+def test_removing_the_reconciliation_is_refused(real):
+    edited = _mutate(real, lambda r: r.pop("decode_observations_reconciliation"))
+    assert pe.evidence_gate(edited)["condition"] == "decode_observations_unreconciled"
+
+
+def test_a_reconciliation_that_concludes_a_win_is_refused(real):
+    edited = _mutate(real, lambda r: r["decode_observations_reconciliation"].__setitem__(
+        "conclusion", pe.IMPROVEMENT))
+    assert pe.evidence_gate(edited)["condition"] == "decode_observations_unreconciled"
+
+
+def test_a_reconciliation_that_leaves_one_observation_out_is_refused(real):
+    def edit(r):
+        rec = r["decode_observations_reconciliation"]
+        rec["observation_ids"] = rec["observation_ids"][:1]
+        rec["point_estimates"] = rec["point_estimates"][:1]
+    edited = _mutate(real, edit)
+    assert pe.evidence_gate(edited)["condition"] == "decode_observations_unreconciled"
+
+
+def test_both_observations_reach_the_published_output(real):
+    published = pe.admissible_output(real)
+    text = json.dumps(published)
+    assert "0.859" in text and "0.9651" in text
+    assert published["decode_reconciliation"]["conclusion"] == pe.INCONCLUSIVE
+
+
+# ============================================================================================
+# The compiled proof ledger is reachable from production, and the artifact says where
+# ============================================================================================
+
+
+def test_the_artifact_names_every_production_consumer_of_the_ledger(real):
+    recorded = real["proof_ledger"]["production_reachability"]
+    assert recorded["diagnostic_only"] is False
+    roles = {c["role"] for c in recorded["consumers"]}
+    assert roles == {c["role"] for c in pe.PROOF_LEDGER_CONSUMERS}
+
+
+def test_every_named_ledger_consumer_is_a_symbol_that_exists_in_the_tree(real):
+    """The rows are checkable, and this checks them. A citation nobody follows is prose."""
+    for consumer in real["proof_ledger"]["production_reachability"]["consumers"]:
+        source = (REPO_ROOT / consumer["file"]).read_text(encoding="utf-8", errors="replace")
+        for symbol in consumer["symbol"].split(" / "):
+            bare = symbol.split("::")[-1].strip()
+            assert f"fn {bare}" in source, (
+                f"{consumer['file']} does not define {bare}, which the artifact cites as a "
+                f"production consumer of the proof ledger"
+            )
+
+
+def test_calling_the_ledger_diagnostic_only_is_refused(real):
+    edited = _mutate(real, lambda r: r["proof_ledger"]["production_reachability"].__setitem__(
+        "diagnostic_only", True))
+    assert pe.evidence_gate(edited)["condition"] == "proof_ledger_reachability_understated"
+
+
+def test_dropping_a_production_consumer_is_refused(real):
+    def edit(r):
+        reach = r["proof_ledger"]["production_reachability"]
+        reach["consumers"] = reach["consumers"][:-1]
+    edited = _mutate(real, edit)
+    assert pe.evidence_gate(edited)["condition"] == "proof_ledger_reachability_understated"
+
+
+# ============================================================================================
+# Two-polarity screening for the layers added this revision
+#
+# Every function below is watched refusing and watched accepting, in that order, so that a
+# mutant that refused everything and a mutant that certified everything are both red. The
+# census reads these; they are written to be read by a person first.
+# ============================================================================================
+
+
+def test_seal_path_for_refuses_an_unnamed_artifact_and_names_a_real_one(tmp_path):
+    with pytest.raises(pe.EvidenceInstrumentError):
+        pe.seal_path_for("")
+    assert pe.seal_path_for(tmp_path / "a.json").name == "a.json.seal.json"
+
+
+def test_seal_bytes_refuses_an_absent_file_and_measures_a_present_one(tmp_path):
+    with pytest.raises(pe.FrozenArtifactMissing):
+        pe.seal_bytes(tmp_path / "absent.json")
+    present = tmp_path / "p.json"
+    present.write_bytes(b"abc")
+    assert pe.seal_bytes(present)["byte_length"] == 3
+
+
+def test_write_seal_refuses_an_absent_artifact_and_seals_a_present_one(tmp_path):
+    with pytest.raises(pe.FrozenArtifactMissing):
+        pe.write_seal(tmp_path / "absent.json")
+    present = tmp_path / "q.json"
+    present.write_bytes(b'{"a": 1}\n')
+    seal = pe.write_seal(present)
+    assert seal["byte_length"] == 9
+    assert json.loads(pe.seal_path_for(present).read_text(encoding="utf-8")) == seal
+
+
+def test_verify_frozen_bytes_convicts_a_translated_copy_and_clears_an_untouched_one(tmp_path):
+    copy_path = _sealed_copy(tmp_path)
+    assert pe.verify_frozen_bytes(copy_path)["verdict"] == pe.MATCH
+    copy_path.write_bytes(copy_path.read_bytes().replace(b"\n", b"\r\n"))
+    convicts(pe.verify_frozen_bytes(copy_path),
+             condition="frozen_bytes_length_mismatch",
+             because="a CRLF copy is a different file and the seal is over the bytes")
+
+
+def test_gate_artifact_convicts_edited_bytes_and_passes_the_committed_ones(tmp_path):
+    assert pe.gate_artifact(ARTIFACT)["verdict"] == pe.PASS
+    copy_path = _sealed_copy(tmp_path)
+    copy_path.write_bytes(copy_path.read_bytes() + b"\n")
+    convicts(pe.gate_artifact(copy_path), condition="frozen_bytes_length_mismatch",
+             because="one byte appended to a sealed artifact")
+
+
+def test_check_record_provenance_convicts_a_stripped_record_and_clears_a_whole_one(real):
+    env = real["environment"]
+    run = copy.deepcopy(real["raw"]["runs"][0])
+    assert pe.check_record_provenance(run, env)["verdict"] == pe.PASS
+    run["provenance"].pop("dispatches_executed")
+    convicts(pe.check_record_provenance(run, env),
+             condition="record_provenance_incomplete",
+             because="a timed Vulkan run that executed no dispatch timed something else")
+
+
+def test_admissible_output_convicts_a_refused_record_and_publishes_a_sound_one(real):
+    published = pe.admissible_output(real)
+    assert published["verdict"] == pe.PASS and published["subjects"]
+    refused = _mutate(real, lambda r: r["claim_limits"].__setitem__("closes_issue_69", True))
+    convicts(pe.admissible_output(refused), condition="claim_limit_violated",
+             because="an artifact that claims to close issue #69 publishes nothing")

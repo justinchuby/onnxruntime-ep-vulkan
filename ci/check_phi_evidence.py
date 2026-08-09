@@ -14,9 +14,21 @@ So the artifact is frozen and digest-sealed, and **this** is the only thing in t
 allowed to decide whether it may be published. Not the harness that produced it (a producer
 that grades its own output grades it kindly), not the prose (prose cannot be run), and not a
 second copy of the rules living in a test. The rules live in one function,
-``bench/phi_evidence.py::evidence_gate``; this file is a lane-facing wrapper that runs it and translates
-its answer into this repository's terminal-state vocabulary. ``ci/negative_control_phi_evidence.py``
-then attacks that one function directly, once per condition it can report.
+``bench/phi_evidence.py::evidence_gate``; this file is a lane-facing wrapper that calls
+``gate_artifact`` — exact bytes and exact byte length first, then that one function on the
+parsed content — and translates its answer into this repository's terminal-state vocabulary.
+``ci/negative_control_phi_evidence.py`` then attacks both directly, once per condition they
+can report.
+
+The byte check runs before the parse on purpose. A parse normalises: a CRLF-translated copy of
+the artifact re-serialises to the same content digest as the original, so a content digest
+alone cannot tell the two apart. The sidecar seal binds the file to its exact bytes *and* its
+exact length, hashed as read, so a line-ending rewrite is refused rather than waved through.
+
+Nothing printed below the verdict is read out of the record directly. It all comes from
+``admissible_output``, which on a refusal withholds every timing, ratio, separation, speedup,
+band edge and lower bound and scrubs numeric leaves from what remains. A refused row is not
+allowed to leave a success-shaped number in this log for someone to quote.
 
 WHY IT IS HOST-FREE
 ===================
@@ -106,49 +118,66 @@ def screen(argv: "list[str] | None" = None) -> int:
             f"without it this screen has no rules to apply and must not invent any.",
         )
 
+    verdict = pe.gate_artifact(args.artifact)
+
+    # Everything printed from here down comes out of `admissible_output`, never out of the
+    # record directly. On a refusal that function withholds every timing, ratio, separation,
+    # speedup, band edge and lower bound, so a refused row cannot be quoted out of this log.
     try:
         record = pe.load_frozen(args.artifact)
-    except pe.FrozenArtifactMissing as exc:
-        return report_instrument_error(
-            "artifact_absent",
-            f"{exc}\n"
-            f"  The evidence artifact is not in the tree. That is an outage of this screen, "
-            f"not a clean bill of health for the documentation that cites it.",
-        )
-    except pe.FrozenArtifactUnreadable as exc:
-        return report_instrument_error(
-            "artifact_unparseable",
-            f"{exc}\n"
-            f"  The bytes exist and are not JSON. Nothing was ruled on.",
-        )
+    except (pe.FrozenArtifactMissing, pe.FrozenArtifactUnreadable):
+        record = None
+    published = pe.admissible_output(record, verdict) if record is not None else {
+        "verdict": verdict["verdict"], "condition": verdict.get("condition"),
+        "detail": str(verdict.get("detail")), "subjects": [],
+    }
 
-    verdict = pe.evidence_gate(record)
     if args.json:
         Path(args.json).write_text(
-            json.dumps(verdict, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            json.dumps(published, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     if verdict["verdict"] == pe.ERROR:
         return report_instrument_error(
-            str(verdict.get("condition") or "gate_error"), str(verdict.get("detail")))
+            str(verdict.get("condition") or "gate_error"), str(published.get("detail")))
     if verdict["verdict"] != pe.PASS:
-        return report_fail(str(verdict.get("condition")), f"  {verdict.get('detail')}")
+        for row in published.get("subjects") or []:
+            print(f"{TAG}:   {row.get('subject')}: {row.get('status')} — "
+                  f"{row.get('admissible')}", flush=True)
+        return report_fail(str(verdict.get("condition")), f"  {published.get('detail')}")
 
-    subjects = [v.get("subject") for v in record.get("verdicts") or []]
-    print(f"{TAG}: artifact {Path(args.artifact).as_posix().split('/')[-1]} "
-          f"content_sha256={record['identity']['content_sha256']}", flush=True)
-    for v in record.get("verdicts") or []:
+    sealed = verdict.get("frozen_bytes") or {}
+    print(f"{TAG}: artifact {Path(args.artifact).name} "
+          f"exact_bytes_sha256={sealed.get('sha256_of_exact_bytes')} "
+          f"byte_length={sealed.get('byte_length')} "
+          f"content_sha256={published.get('content_sha256')}", flush=True)
+    subjects = published.get("subjects") or []
+    for v in subjects:
         pe_pt = v.get("point_estimate")
+        scope = v.get("band_scope") or {}
+        band = (f"read against the committed {scope.get('source')} band "
+                f"[{scope.get('lo')}, {scope.get('hi')}] and against no other band")
         print(f"{TAG}:   {v.get('subject')}: {v.get('verdict')} "
-              f"(point estimate {pe_pt:.4f}x, floor {v.get('floor'):.4f}x)"
+              f"(point estimate {pe_pt:.4f}x, floor {v.get('floor'):.4f}x; {band})"
               if pe_pt else f"{TAG}:   {v.get('subject')}: {v.get('verdict')}", flush=True)
-    print(f"{TAG}:   decode conclusion: "
-          f"{record['claim_limits']['decode_conclusion']}; "
-          f"{len(record.get('decode_observations') or [])} observation(s) carried, none "
-          f"superseding another", flush=True)
-    print(f"{TAG}:   CUDA comparison: {record['claim_limits']['cuda_comparison']}; "
-          f"closes_issue_69={record['claim_limits']['closes_issue_69']}", flush=True)
+    limits = published.get("claim_limits") or {}
+    observations = published.get("decode_observations") or []
+    print(f"{TAG}:   decode conclusion: {limits.get('decode_conclusion')}; "
+          f"{len(observations)} observation(s) carried, none superseding another", flush=True)
+    for obs in observations:
+        interval = obs.get("interval") or {}
+        extra = ""
+        if interval.get("lo") is not None and interval.get("hi") is not None:
+            extra += f" interval [{interval['lo']}, {interval['hi']}]"
+        if obs.get("power") is not None:
+            extra += f" power {obs['power']}"
+        extra += (" raw samples held here" if obs.get("raw_samples_held_here")
+                  else " raw samples NOT held here")
+        print(f"{TAG}:     {obs.get('id')}: {obs.get('point_estimate')}x "
+              f"{obs.get('verdict')}{extra}", flush=True)
+    print(f"{TAG}:   CUDA comparison: {limits.get('cuda_comparison')}; "
+          f"closes_issue_69={limits.get('closes_issue_69')}", flush=True)
     return report_pass(
-        f"{len(subjects)} verdict subject(s) admissible; {verdict['detail']}")
+        f"{len(subjects)} verdict subject(s) admissible; {published.get('detail')}")
 
 
 if __name__ == "__main__":

@@ -9204,6 +9204,28 @@ def _reseal_phi(record: dict) -> dict:
     return record
 
 
+def _write_sealed_phi(tmp_path, name: str, payload):
+    """Write a candidate artifact AND the byte seal that binds it to its exact bytes.
+
+    Every mutation arm below has to get past the byte layer to reach the content layer it is
+    actually aiming at, so each one is sealed over its own bytes. That is not a weakening: the
+    byte layer has its own arms directly beneath this helper, and sealing here is what proves
+    the content conditions are still reachable rather than masked by a missing sidecar.
+    """
+    import hashlib as _hashlib
+    import json as _json
+
+    p = write(tmp_path, name, payload)
+    raw = Path(p).read_bytes()
+    seal = {"artifact": Path(p).name,
+            "byte_length": len(raw),
+            "sha256_of_exact_bytes": _hashlib.sha256(raw).hexdigest(),
+            "normalisation": "none: hashed as read, in binary, before any parse"}
+    Path(str(p) + ".seal.json").write_bytes(
+        (_json.dumps(seal, indent=1, sort_keys=True) + "\n").encode("utf-8"))
+    return p
+
+
 def test_phi_evidence_gate_passes_on_the_committed_artifact():
     """The positive pole. Without it the negatives below prove only that it always fails."""
     r = run_check("check_phi_evidence.py")
@@ -9227,7 +9249,7 @@ def test_phi_evidence_gate_fails_on_a_hardware_reading_filed_as_lavapipe(tmp_pat
     """
     record = _phi_artifact()
     record["environment"]["device"]["driver_name"] = "llvmpipe (LLVM 17.0.6, 256 bits)"
-    p = write(tmp_path, "mislabelled.json", _reseal_phi(record))
+    p = _write_sealed_phi(tmp_path, "mislabelled.json", _reseal_phi(record))
     r = run_check("check_phi_evidence.py", "--artifact", str(p))
     assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
     assert "FAIL(condition=vulkan_implementation_mislabelled)" in r.stdout
@@ -9245,7 +9267,7 @@ def test_phi_evidence_gate_fails_when_a_named_decode_observation_is_dropped(tmp_
         o for o in record["decode_observations"]
         if "0.859" not in json.dumps(o)
     ]
-    p = write(tmp_path, "dropped.json", _reseal_phi(record))
+    p = _write_sealed_phi(tmp_path, "dropped.json", _reseal_phi(record))
     r = run_check("check_phi_evidence.py", "--artifact", str(p))
     assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
     assert "FAIL(condition=decode_observation_dropped)" in r.stdout
@@ -9263,7 +9285,7 @@ def test_phi_evidence_gate_fails_when_a_verdict_is_not_the_classifiers_own_answe
         if v["verdict"] != "IMPROVEMENT":
             v["verdict"] = "IMPROVEMENT"
             break
-    p = write(tmp_path, "relabelled.json", _reseal_phi(record))
+    p = _write_sealed_phi(tmp_path, "relabelled.json", _reseal_phi(record))
     r = run_check("check_phi_evidence.py", "--artifact", str(p))
     assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
     assert "FAIL(condition=verdict_disagrees_with_classifier)" in r.stdout
@@ -9273,7 +9295,7 @@ def test_phi_evidence_gate_fails_on_an_edited_artifact_that_still_reads_well(tmp
     """Not re-sealed: the identity arm, which is the one an editor forgets."""
     record = _phi_artifact()
     record["headline"]["note"] = "edited after freezing, and every claim still reads well"
-    p = write(tmp_path, "edited.json", record)
+    p = _write_sealed_phi(tmp_path, "edited.json", record)
     r = run_check("check_phi_evidence.py", "--artifact", str(p))
     assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
     assert "FAIL(condition=identity_digest_mismatch)" in r.stdout
@@ -9292,10 +9314,89 @@ def test_phi_evidence_missing_artifact_is_an_outage_not_a_clean_bill(tmp_path):
 
 def test_phi_evidence_unparseable_artifact_is_a_separate_outage(tmp_path):
     """Bytes that are not JSON are a different finding from bytes that are not there."""
-    p = write(tmp_path, "junk.json", "{ this is not json")
+    p = _write_sealed_phi(tmp_path, "junk.json", "{ this is not json")
     r = run_check("check_phi_evidence.py", "--artifact", str(p))
     assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
-    assert "ERROR(instrument=artifact_unparseable)" in r.stdout
+    assert "ERROR(instrument=artifact_unreadable)" in r.stdout
+
+
+def test_phi_evidence_refuses_an_artifact_with_no_byte_seal(tmp_path):
+    """A content digest cannot bind bytes. An unsealed artifact is refused, not trusted.
+
+    The content digest is taken over a re-serialised record, so it is blind to anything a
+    checkout can do to the file that survives a parse. Without the sidecar there is nothing in
+    the tree that says what bytes were committed, and the lane says so rather than assuming.
+    """
+    record = _phi_artifact()
+    p = write(tmp_path, "unsealed.json", record)          # deliberately NOT sealed
+    r = run_check("check_phi_evidence.py", "--artifact", str(p))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    assert "FAIL(condition=frozen_bytes_unsealed)" in r.stdout
+
+
+def test_phi_evidence_refuses_a_line_ending_translation_of_the_committed_artifact(tmp_path):
+    """CRLF is the mutation a content digest cannot see, so the byte layer has to see it.
+
+    The record parses identically and re-serialises to the same content digest; only the exact
+    bytes and the exact length differ. If the gate normalised before hashing, this would pass.
+    """
+    src = REPO_ROOT / "bench" / "results" / "phi35_evidence_v4.json"
+    raw = src.read_bytes()
+    p = tmp_path / "crlf.json"
+    p.write_bytes(raw.replace(b"\n", b"\r\n"))
+    (tmp_path / "crlf.json.seal.json").write_bytes(
+        (REPO_ROOT / "bench" / "results" / "phi35_evidence_v4.json.seal.json").read_bytes())
+    r = run_check("check_phi_evidence.py", "--artifact", str(p))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    assert ("FAIL(condition=frozen_bytes_length_mismatch)" in r.stdout
+            or "FAIL(condition=frozen_bytes_mismatch)" in r.stdout), r.stdout
+
+
+def test_phi_evidence_refusal_publishes_no_success_shaped_number(tmp_path):
+    """A refused row may not leave a quotable speedup in the lane log.
+
+    The failure mode this closes is mundane and common: a screen goes red, and the log it left
+    behind still contains "2.0976x" next to a subject name, which is what gets pasted into a
+    summary a week later. On a refusal the lane prints subjects and the condition, and no
+    timing, ratio, floor, band edge or speedup at all.
+    """
+    record = _phi_artifact()
+    record["environment"]["device"]["driver_name"] = "llvmpipe (LLVM 17.0.6, 256 bits)"
+    p = _write_sealed_phi(tmp_path, "refused.json", _reseal_phi(record))
+    r = run_check("check_phi_evidence.py", "--artifact", str(p))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    for leaked in ("2.0976", "2.09", "1.5893", "1.2812", "1.363869", "0.739547", "x)"):
+        assert leaked not in r.stdout, (
+            f"a refused artifact published {leaked!r}, which is a success-shaped number a "
+            f"reader can quote out of a red lane:\n{r.stdout}")
+    assert "REFUSED" in r.stdout
+
+
+def test_phi_evidence_lane_publishes_both_independent_decode_observations():
+    """The two disagreeing decode-p128 observations must be legible in the lane's own output.
+
+    Preserving them in the artifact is not enough if the only thing anyone reads — the CI log —
+    shows one number. Both are printed with their interval and power where they have one, and
+    the conclusion above them stays INCONCLUSIVE.
+    """
+    r = run_check("check_phi_evidence.py")
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+    assert "0.859x" in r.stdout, r.stdout
+    assert "0.9651x" in r.stdout, r.stdout
+    assert "interval [0.82, 1.136]" in r.stdout, r.stdout
+    assert "power 0.346" in r.stdout, r.stdout
+    assert "decode conclusion: INCONCLUSIVE" in r.stdout, r.stdout
+
+
+def test_phi_evidence_lane_scopes_every_verdict_to_the_band_it_was_read_against():
+    """A verdict with no band beside it reads as a fact about the world. It is not one."""
+    r = run_check("check_phi_evidence.py")
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+    for line in r.stdout.splitlines():
+        if "point estimate" not in line:
+            continue
+        assert "and against no other band" in line, (
+            f"a verdict was published without the band it was read against:\n{line}")
 
 
 def test_phi_evidence_negative_control_covers_every_condition_the_gate_declares():

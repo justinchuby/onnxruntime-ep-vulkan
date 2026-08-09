@@ -154,6 +154,128 @@ REQUIRED_DECODE_OBSERVATIONS = (
      "interval": {"level": 0.95, "lo": 0.820, "hi": 1.136}, "power": 0.346},
 )
 
+#: Every provenance field each timed record must carry *on its own face*.
+#:
+#: A run-level provenance block is not a nicety. The artifact-level `environment` block says
+#: what the sweep believed it was running; these say what each individual timed process
+#: actually loaded, resolved, enumerated and dispatched. The gate fails closed on all of them:
+#: deleting one is `record_provenance_incomplete`, and mutating one either breaks its agreement
+#: pair or contradicts the artifact-level identity it must match.
+REQUIRED_RECORD_PROVENANCE = (
+    "ep_library_sha256",
+    "ep_library_loaded_in_process",
+    "model_resolver",
+    "external_weights",
+    "device_name",
+    "shaders",
+    "dispatches_executed",
+    "provenance_agreement",
+)
+
+#: The agreement pairs every timed record must carry, and the rule each is recomputed under.
+#:
+#: The gate does not trust the recorded ``agree`` flag: it recomputes it from the recorded
+#: ``left`` and ``right`` under the recorded ``rule``, so mutating either side of a pair flips
+#: the recomputation and is caught, and mutating the flag alone disagrees with the recomputation
+#: and is also caught. Presence, type and value are three separate findings.
+REQUIRED_AGREEMENT_PAIRS = ("model_recorded_provenance", "ep_library_loaded", "device_name")
+AGREEMENT_RULES = ("equal", "contains")
+AGREE = "AGREE"
+DISAGREE = "DISAGREE"
+
+#: Keys whose presence in a *refused* row would republish the refused measurement.
+#:
+#: A refusal that still shows the timing, the ratio, the separation, the band or the floor has
+#: not refused anything: a reader lifts the number and drops the verdict. Sanitisation is
+#: therefore structural — the refused row keeps its subject and the reason it was refused, and
+#: every number goes.
+RESULT_SHAPED_KEYS = frozenset({
+    "series", "ratios", "ratio", "median", "min", "max", "point_estimate", "floor", "ceiling",
+    "speedup", "separation", "band", "band_lo", "band_hi", "lower_bound", "head_median_ms",
+    "baseline_median_ms", "samples_ms", "first_run_ms", "dispersion", "raw", "verdicts",
+    "calibration", "equivalence", "interval", "power",
+})
+
+#: What each layer of the frozen-artifact path actually does, stated per layer.
+#:
+#: This is copied verbatim into the record and the gate compares the copy against this constant,
+#: so a record that describes the loader as validating — or as stripping a block it does not
+#: strip — is refused. Every flag below is covered behaviourally in `bench/test_phi_evidence.py`
+#: by exercising the layer, never by reading its source text.
+LOADER_CONTRACT = {
+    "load_frozen": {
+        "reads_bytes": True,
+        "parses_json": True,
+        "validates_content_digest": False,
+        "validates_exact_bytes": False,
+        "validates_schema": False,
+        "strips_superseded_blocks": False,
+        "refuses_tampered_content": False,
+    },
+    "verify_frozen_bytes": {
+        "validates_exact_bytes": True,
+        "validates_byte_length": True,
+        "normalises_line_endings": False,
+        "refuses_tampered_content": True,
+    },
+    "verify_frozen_identity": {
+        "validates_content_digest": True,
+        "validates_exact_bytes": False,
+        "refuses_tampered_content": False,
+        "returns_a_verdict_instead": True,
+    },
+    "evidence_gate": {
+        "validates_content_digest": True,
+        "validates_exact_bytes": False,
+        "strips_superseded_blocks": False,
+        "refuses_superseded_blocks": True,
+        "refuses_tampered_content": True,
+    },
+    "gate_artifact": {
+        "validates_exact_bytes": True,
+        "validates_byte_length": True,
+        "validates_content_digest": True,
+        "refuses_tampered_content": True,
+    },
+}
+
+#: The compiled proof ledger's production consumers, by role, symbol and file.
+#:
+#: The ledger is not a diagnostic. It is baked into the binary with `include_str!` and read on
+#: three production paths, and a description that calls it diagnostic-only understates what a
+#: change to it does. Each row names the symbol a reader can go and check.
+PROOF_LEDGER_CONSUMERS = (
+    {"role": "registry",
+     "symbol": "registry::ledger_contains / registry::state_for",
+     "file": "rust/src/registry.rs",
+     "what": "the claim path: a Ready row whose proof key has no live entry is declined"},
+    {"role": "disclosure",
+     "symbol": "disclosure::disclose_ledger_demotions / disclose_ledger_faults_of",
+     "file": "rust/src/disclosure.rs",
+     "what": "every session discloses the ledger's demotions and faults to the ORT log sink"},
+    {"role": "pipeline-audit",
+     "symbol": "registry::audit_dispatch_specialisation",
+     "file": "rust/src/registry.rs",
+     "what": "the pipeline-creation path re-reads the ledger when a new (stem, spec) pair is "
+             "bound, and records a specialisation delta against the recorded frame"},
+)
+
+#: Bands other than the committed one, carried so no verdict reads as band-independent.
+#:
+#: A verdict is a statement about a subject *read against a band*. Saying a subject is
+#: indeterminate full stop is a claim about every band that might ever be committed, and this
+#: evidence cannot support one: a tighter band classifies more subjects, not fewer. The
+#: alternatives below are hypothetical and are labelled as such; the committed band is the
+#: measured one and is the only band any headline is read against.
+ALTERNATIVE_BANDS = (
+    {"name": "hypothetical-3pc", "lo": 0.97, "hi": 1.03,
+     "why": "a conventional +/-3% noise band, committed to nothing; carried so that a subject "
+            "whose classification depends on the band cannot be reported as if it did not"},
+    {"name": "hypothetical-10pc", "lo": 0.90, "hi": 1.10,
+     "why": "a deliberately loose band; a subject that survives it is not surviving on band "
+            "width"},
+)
+
 #: Phrases that claim more isolation than any mechanism here delivers.
 _OVERCLAIM_RE = re.compile(
     r"exclusive (?:gpu|device) (?:ownership|access|use)|"
@@ -241,7 +363,16 @@ def content_digest(record: dict) -> str:
 
 
 def freeze(record: dict, path: "Path | str") -> str:
-    """Stamp ``identity.content_sha256`` and write the record. Returns the digest.
+    """Stamp identity, write the record's bytes, write the byte seal. Returns the digest.
+
+    Three things are stamped, and only one of them is a judgement: ``identity.content_sha256``
+    (the content digest), ``identity.loader_contract`` (a verbatim copy of
+    :data:`LOADER_CONTRACT`, so a record cannot describe the loader as doing something the code
+    does not do) and the sidecar ``<artifact>.seal.json`` written by :func:`write_seal`, which
+    binds the artifact to its exact bytes and exact byte length.
+
+    The record is written in binary with LF endings and hashed as written, so the seal describes
+    the committed bytes rather than a re-serialisation of them.
 
     Freezing is a *write* operation and it validates nothing. A record that would fail the gate
     freezes perfectly well — which is deliberate: a failing measurement must be publishable as a
@@ -253,23 +384,34 @@ def freeze(record: dict, path: "Path | str") -> str:
     _require_mapping(record, "record")
     record.setdefault("identity", {})
     record["identity"].pop("content_sha256", None)
+    record["identity"]["loader_contract"] = json.loads(json.dumps(LOADER_CONTRACT))
     digest = content_digest(record)
     record["identity"]["content_sha256"] = digest
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False) + "\n",
-                 encoding="utf-8")
+    p.write_bytes(
+        (json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
+        .encode("utf-8"))
+    write_seal(p)
     return digest
 
 
 def load_frozen(path: "Path | str") -> dict:
     """Read the bytes at *path* and parse them as JSON. That is the entire contract.
 
-    **It performs no validation of any kind.** Not the digest, not the schema, not a single
-    claim. A record whose bytes were edited after freezing loads without complaint, and
-    `bench/test_phi_evidence.py` proves that by doing it rather than by asserting it about the
-    source text. Digest checking is :func:`verify_frozen_identity`; admissibility is
-    :func:`evidence_gate`.
+    **It performs no validation of any kind, and it strips nothing.** Not the digest, not the
+    exact bytes, not the schema, not a single claim — and not a superseded block either: a
+    record carrying one is returned carrying it, because deciding what a superseded block means
+    is the gate's job and a loader that quietly removed one would delete the evidence that the
+    record tried to supersede something. A record whose bytes were edited after freezing loads
+    without complaint, and `bench/test_phi_evidence.py` proves both halves of that by doing it
+    rather than by asserting it about the source text.
+
+    The layers that *do* check something, each covered behaviourally and each named in
+    :data:`LOADER_CONTRACT`: :func:`verify_frozen_bytes` (exact bytes and exact length),
+    :func:`verify_frozen_identity` (content digest, reported not enforced), :func:`evidence_gate`
+    (content admissibility, including refusing a superseded block) and :func:`gate_artifact`
+    (all of the above, in that order).
 
     The two failure modes it *does* have are both about the file rather than its content:
     absent (:class:`FrozenArtifactMissing`) and unparseable (:class:`FrozenArtifactUnreadable`).
@@ -281,6 +423,129 @@ def load_frozen(path: "Path | str") -> dict:
         return json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise FrozenArtifactUnreadable(f"{p}: {exc}") from exc
+
+
+def seal_path_for(path: "Path | str") -> Path:
+    """The sidecar that binds an artifact to its exact bytes: ``<artifact>.seal.json``.
+
+    :class:`EvidenceInstrumentError` on an empty path. A seal whose subject has no name is not a
+    seal, and silently returning ``.seal.json`` in the current directory would put one artifact's
+    binding next to a different artifact.
+    """
+    text = str(path).strip()
+    if not text:
+        raise EvidenceInstrumentError(
+            "seal_path_for was given an empty path: a byte seal must name the artifact it binds")
+    p = Path(path)
+    return p.with_suffix(p.suffix + ".seal.json")
+
+
+def seal_bytes(path: "Path | str") -> dict:
+    """sha256 and length of the **exact bytes on disk**. Nothing is normalised first.
+
+    Read in binary and hashed as-is. That is the entire point: a content digest taken over a
+    re-serialised record cannot tell a CRLF-translated copy from the original, because parsing
+    already threw the difference away. This can, and so a checkout that rewrote the line endings
+    of a frozen artifact is a refusal rather than a silent pass.
+
+    :class:`FrozenArtifactMissing` if the file is not there — an absent artifact is a different
+    finding from a mismatched one.
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise FrozenArtifactMissing(f"{p} does not exist")
+    raw = p.read_bytes()
+    return {"sha256_of_exact_bytes": hashlib.sha256(raw).hexdigest(),
+            "byte_length": len(raw),
+            "normalisation": "none: hashed as read, in binary, before any parse"}
+
+
+def write_seal(path: "Path | str") -> dict:
+    """Write ``<artifact>.seal.json`` next to a frozen artifact and return the seal."""
+    p = Path(path)
+    seal = dict(seal_bytes(p))
+    seal["artifact"] = p.name
+    seal["note"] = ("binds the artifact to its exact bytes and exact byte length. A line-ending "
+                    "translation changes both and is refused; it does not change the content "
+                    "digest, which is why the content digest alone was not enough.")
+    sp = seal_path_for(p)
+    sp.write_bytes((json.dumps(seal, indent=1, sort_keys=True) + "\n").encode("utf-8"))
+    return seal
+
+
+def verify_frozen_bytes(path: "Path | str") -> dict:
+    """Compare the artifact's exact bytes and exact length against its committed seal.
+
+    Returns ``{"verdict": MATCH|"DIVERGENT"|"UNSEALED", "condition": token|None, ...}`` and never
+    raises on a disagreement — a disagreement is a finding. Length is checked *before* the
+    digest so that a truncated or padded file is reported as the length problem it is rather
+    than as an unexplained digest mismatch.
+
+    :class:`FrozenArtifactMissing` if the artifact itself is absent.
+    """
+    p = Path(path)
+    observed = seal_bytes(p)
+    sp = seal_path_for(p)
+    if not sp.is_file():
+        return {"verdict": "UNSEALED", "condition": "frozen_bytes_unsealed",
+                "detail": f"{sp.name} is absent: nothing binds {p.name} to its exact bytes",
+                "observed": observed}
+    try:
+        declared = json.loads(sp.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {"verdict": "UNSEALED", "condition": "frozen_bytes_unsealed",
+                "detail": f"{sp.name} is not readable JSON: {exc}", "observed": observed}
+    want_len = declared.get("byte_length")
+    want_sha = declared.get("sha256_of_exact_bytes")
+    if not isinstance(want_len, int) or not isinstance(want_sha, str) or not want_sha:
+        return {"verdict": "UNSEALED", "condition": "frozen_bytes_unsealed",
+                "detail": f"{sp.name} declares no byte length and digest pair",
+                "observed": observed}
+    if observed["byte_length"] != want_len:
+        return {"verdict": "DIVERGENT", "condition": "frozen_bytes_length_mismatch",
+                "detail": (f"{p.name} is {observed['byte_length']} bytes; the seal binds it to "
+                           f"{want_len}. A {want_len - observed['byte_length']:+d}-byte "
+                           f"difference is a different file, and a line-ending translation is "
+                           f"the commonest way to produce one."),
+                "observed": observed, "declared": declared}
+    if observed["sha256_of_exact_bytes"] != want_sha:
+        return {"verdict": "DIVERGENT", "condition": "frozen_bytes_mismatch",
+                "detail": (f"{p.name} hashes to {observed['sha256_of_exact_bytes']}; the seal "
+                           f"binds it to {want_sha}. The bytes were hashed as read: nothing was "
+                           f"normalised, so this is a byte difference and not a formatting one."),
+                "observed": observed, "declared": declared}
+    return {"verdict": MATCH, "condition": None,
+            "detail": f"{p.name}: {want_len} bytes, sha256 {want_sha}",
+            "observed": observed, "declared": declared}
+
+
+def gate_artifact(path: "Path | str") -> dict:
+    """The authority as CI invokes it: exact bytes, then length, then content, then admissibility.
+
+    Byte binding runs **before** the parse, because a parse normalises. This is the entry point
+    `ci/check_phi_evidence.py` calls and the one whose verdict is quotable; :func:`evidence_gate`
+    remains the single authority on *content*, and this adds exactly one thing to it — that the
+    content it ruled on came from the bytes that were committed.
+    """
+    p = Path(path)
+    try:
+        bytes_verdict = verify_frozen_bytes(p)
+    except FrozenArtifactMissing as exc:
+        return {"verdict": ERROR, "condition": "artifact_absent", "detail": str(exc),
+                "checked": []}
+    if bytes_verdict["verdict"] != MATCH:
+        return {"verdict": FAIL, "condition": bytes_verdict["condition"],
+                "detail": bytes_verdict["detail"], "checked": ["frozen_bytes"]}
+    try:
+        record = load_frozen(p)
+    except FrozenArtifactUnreadable as exc:
+        return {"verdict": ERROR, "condition": "artifact_unreadable", "detail": str(exc),
+                "checked": ["frozen_bytes"]}
+    verdict = evidence_gate(record)
+    verdict["checked"] = ["frozen_bytes", *verdict.get("checked", [])]
+    verdict["frozen_bytes"] = {k: bytes_verdict["observed"][k]
+                               for k in ("sha256_of_exact_bytes", "byte_length")}
+    return verdict
 
 
 def verify_frozen_identity(record: dict) -> dict:
@@ -299,6 +564,297 @@ def verify_frozen_identity(record: dict) -> dict:
     recomputed = content_digest(record)
     return {"verdict": MATCH if recomputed == recorded else "DIVERGENT",
             "recorded": recorded, "recomputed": recomputed}
+
+
+# --------------------------------------------------------------------------------------------
+# Per-record provenance, and what a refused row is allowed to say
+# --------------------------------------------------------------------------------------------
+
+
+def _is_hex(value, length: int = 64) -> bool:
+    return (isinstance(value, str) and len(value) == length
+            and all(c in "0123456789abcdef" for c in value.lower()))
+
+
+def _agreement_holds(pair: dict) -> "bool | None":
+    """Recompute one agreement pair from its own recorded sides. ``None`` if unrecomputable."""
+    rule, left, right = pair.get("rule"), pair.get("left"), pair.get("right")
+    if rule not in AGREEMENT_RULES or not isinstance(left, str) or not isinstance(right, str):
+        return None
+    return left == right if rule == "equal" else left in right
+
+
+def check_record_provenance(run: dict, environment: dict) -> dict:
+    """Screen one timed record's own provenance block. Returns a verdict; never a raise on content.
+
+    ``{"verdict": PASS|FAIL, "condition": token|None, "detail": str}``. Two conditions, because
+    they have different owners: a missing or wrongly-typed field is
+    ``record_provenance_incomplete`` (the harness did not record it), and a field that
+    contradicts another recording of the same fact is ``record_provenance_disagrees`` (two
+    sources of the same fact do not agree, or somebody edited one of them).
+
+    Every field is checked *against something else*, which is what makes deletion and mutation
+    both fatal: the library digest against the artifact-level digest for that arm, the model
+    digest against the artifact-level model, the weights against the artifact-level weights, the
+    device name the EP reported against the device this harness independently enumerated, the
+    shader digests against the other records of the same arm, and each agreement flag against a
+    recomputation of the pair it summarises.
+
+    :class:`EvidenceInstrumentError` if handed a non-mapping: there is no record to screen.
+    """
+    _require_mapping(run, "run")
+    _require_mapping(environment, "environment")
+    where = f"{run.get('arm')}/{run.get('phase')}/M{run.get('m')}/past{run.get('past')}" \
+            f"/r{run.get('repeat')}"
+    prov = run.get("provenance")
+    if not isinstance(prov, dict):
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: no provenance block on the record itself"}
+    missing = [k for k in REQUIRED_RECORD_PROVENANCE if prov.get(k) is None]
+    if missing:
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: provenance is missing {sorted(missing)}"}
+
+    software = environment.get("software") or {}
+    arm_digest = {ARM_HEAD: software.get("ep_library_sha256"),
+                  ARM_HEAD_B: software.get("ep_library_sha256"),
+                  ARM_BASELINE: software.get("baseline_library_sha256")}.get(run.get("arm"))
+    lib_sha = prov.get("ep_library_sha256")
+    if not _is_hex(lib_sha):
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: ep_library_sha256 {lib_sha!r} is not a sha256"}
+    if arm_digest and lib_sha != arm_digest:
+        return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                "detail": (f"{where}: the record loaded library {lib_sha}, the artifact says "
+                           f"this arm is {arm_digest}")}
+
+    loaded = prov.get("ep_library_loaded_in_process")
+    if not isinstance(loaded, dict) or not isinstance(loaded.get("found"), bool):
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: ep_library_loaded_in_process carries no boolean 'found'"}
+    if not loaded.get("found"):
+        return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                "detail": (f"{where}: the module list of the process that took this timing does "
+                           f"not contain the library the record says it timed")}
+    if loaded.get("sha256") != lib_sha:
+        return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                "detail": (f"{where}: the library on disk hashes to {lib_sha} and the one "
+                           f"actually mapped into the timing process to {loaded.get('sha256')}")}
+
+    resolver = prov.get("model_resolver")
+    if not isinstance(resolver, dict):
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: model_resolver is not a mapping"}
+    for field in ("resolver", "provenance", "key", "sha256", "recorded_sha256"):
+        if not isinstance(resolver.get(field), str) or not resolver.get(field):
+            return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                    "detail": f"{where}: model_resolver.{field} is {resolver.get(field)!r}"}
+    agrees = resolver.get("agrees_with_recorded_provenance")
+    if not isinstance(agrees, bool):
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": (f"{where}: model_resolver.agrees_with_recorded_provenance is "
+                           f"{agrees!r}, which is not a boolean. 'Unknown' and 'agrees' are "
+                           f"different states and a benchmark may not publish under the first.")}
+    if not agrees:
+        return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                "detail": (f"{where}: the resolved model does not agree with the recorded "
+                           f"provenance for {resolver.get('key')}")}
+    if resolver.get("key") != HEADLINE_MODEL:
+        return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                "detail": f"{where}: model_resolver.key is {resolver.get('key')!r}"}
+    env_model = environment.get("model") or {}
+    if env_model.get("sha256") and resolver.get("sha256") != env_model.get("sha256"):
+        return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                "detail": (f"{where}: this record resolved model {resolver.get('sha256')}, the "
+                           f"artifact is about {env_model.get('sha256')}")}
+
+    weights = prov.get("external_weights")
+    if not isinstance(weights, dict) or not isinstance(weights.get("files"), list):
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: external_weights carries no file list"}
+    if not weights["files"]:
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": (f"{where}: external_weights lists no file; this model's weights are "
+                           f"2.1 GiB of external data and a record that names none has not "
+                           f"identified what it timed")}
+    if weights.get("scanned") is not True or weights.get("complete") is not True:
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": (f"{where}: external_weights scanned={weights.get('scanned')!r} "
+                           f"complete={weights.get('complete')!r}")}
+    for f in weights["files"]:
+        if not isinstance(f, dict) or not _is_hex(f.get("sha256")) \
+                or not isinstance(f.get("bytes"), int) or not isinstance(f.get("location"), str):
+            return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                    "detail": f"{where}: external weight entry {f!r} is not fully identified"}
+    env_weights = {(w.get("location"), w.get("sha256"), w.get("bytes"))
+                   for w in (env_model.get("weights") or [])}
+    if env_weights:
+        mine = {(f["location"], f["sha256"], f["bytes"]) for f in weights["files"]}
+        if mine != env_weights:
+            return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                    "detail": (f"{where}: external weight identity {sorted(mine)} is not the "
+                               f"artifact's {sorted(env_weights)}")}
+
+    device_name = prov.get("device_name")
+    if not isinstance(device_name, str) or not device_name.strip():
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: device_name is {device_name!r}"}
+    env_device = str((environment.get("device") or {}).get("name") or "")
+    if env_device and env_device not in device_name:
+        return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                "detail": (f"{where}: the EP ran on {device_name!r}; the artifact's adapter "
+                           f"identity is {env_device!r}. A number taken on one adapter may not "
+                           f"be published under another adapter's identity.")}
+
+    shaders = prov.get("shaders")
+    if not isinstance(shaders, dict):
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: shaders is not a mapping"}
+    count = shaders.get("count")
+    if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": (f"{where}: shaders.count is {count!r}; a Vulkan arm that dispatched "
+                           f"no shader did not run on the GPU")}
+    for field in ("digest", "source_digest"):
+        if not isinstance(shaders.get(field), str) or not shaders.get(field):
+            return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                    "detail": f"{where}: shaders.{field} is {shaders.get(field)!r}"}
+
+    dispatches = prov.get("dispatches_executed")
+    if not isinstance(dispatches, int) or isinstance(dispatches, bool) or dispatches <= 0:
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": (f"{where}: dispatches_executed is {dispatches!r}; a timed Vulkan run "
+                           f"that executed no dispatch timed something else")}
+
+    reported = run.get("providers_reported")
+    if not isinstance(reported, list) or not reported:
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: providers_reported is {reported!r}"}
+    if "VulkanExecutionProvider" not in reported:
+        return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                "detail": (f"{where}: the session reported providers {reported!r}. The EP did "
+                           f"not register, so this timing belongs to the CPU provider and is "
+                           f"filed under a Vulkan arm's name.")}
+
+    agreement = prov.get("provenance_agreement")
+    if not isinstance(agreement, dict):
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: provenance_agreement is not a mapping"}
+    pairs = agreement.get("pairs")
+    if not isinstance(pairs, list) or not pairs:
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: provenance_agreement carries no pairs"}
+    by_field = {p.get("field"): p for p in pairs if isinstance(p, dict)}
+    absent = [f for f in REQUIRED_AGREEMENT_PAIRS if f not in by_field]
+    if absent:
+        return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                "detail": f"{where}: provenance_agreement is missing pair(s) {absent}"}
+    for field in REQUIRED_AGREEMENT_PAIRS:
+        pair = by_field[field]
+        if not isinstance(pair.get("agree"), bool):
+            return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                    "detail": (f"{where}: agreement pair {field!r} records "
+                               f"agree={pair.get('agree')!r}, which is not a boolean")}
+        recomputed = _agreement_holds(pair)
+        if recomputed is None:
+            return {"verdict": FAIL, "condition": "record_provenance_incomplete",
+                    "detail": (f"{where}: agreement pair {field!r} cannot be recomputed: rule="
+                               f"{pair.get('rule')!r}, left/right are "
+                               f"{type(pair.get('left')).__name__}/"
+                               f"{type(pair.get('right')).__name__}")}
+        if recomputed != pair["agree"]:
+            return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                    "detail": (f"{where}: agreement pair {field!r} says agree={pair['agree']} "
+                               f"and recomputing it under rule {pair.get('rule')!r} says "
+                               f"{recomputed}")}
+        if not recomputed:
+            return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                    "detail": (f"{where}: {field!r} does not agree: {pair.get('left')!r} vs "
+                               f"{pair.get('right')!r}")}
+    if agreement.get("verdict") != AGREE:
+        return {"verdict": FAIL, "condition": "record_provenance_disagrees",
+                "detail": (f"{where}: provenance_agreement.verdict is "
+                           f"{agreement.get('verdict')!r}, not {AGREE!r}")}
+    return {"verdict": PASS, "condition": None,
+            "detail": f"{where}: {len(REQUIRED_RECORD_PROVENANCE)} provenance fields, "
+                      f"{len(REQUIRED_AGREEMENT_PAIRS)} agreement pairs recomputed"}
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _scrub_numbers(node):
+    """Drop every numeric leaf. A refusal publishes words, not measurements."""
+    if isinstance(node, dict):
+        return {k: _scrub_numbers(v) for k, v in node.items() if not _is_number(v)}
+    if isinstance(node, list):
+        return [_scrub_numbers(v) for v in node if not _is_number(v)]
+    return node
+
+
+def sanitise_refused_row(row: dict) -> dict:
+    """Reduce a refused subject to its name and the fact that it was refused.
+
+    A refused row keeps exactly four things: which subject it was, that it is ``REFUSED``, that
+    nothing about it is admissible, and the list of keys that were withheld so a reader can see
+    the shape of what is missing rather than guessing at it. Everything numeric — the timing,
+    the ratio series, the point estimate, the floor, the band edges, the separation — is gone,
+    because a refused measurement that still shows its number has been published.
+
+    :class:`EvidenceInstrumentError` on a non-mapping row.
+    """
+    _require_mapping(row, "row")
+    withheld = sorted(k for k in row if k in RESULT_SHAPED_KEYS or k == "verdict")
+    return {
+        "subject": str(row.get("subject") or "<unnamed subject>"),
+        "status": "REFUSED",
+        "admissible": "nothing: this row was refused and publishes no measurement",
+        "withheld": withheld,
+    }
+
+
+def admissible_output(record: dict, verdict: "dict | None" = None) -> dict:
+    """The only shape a caller may print. On a refusal it carries no measurement at all.
+
+    On ``PASS`` this is the published summary: the subjects with their verdicts and the numbers
+    behind them, the claim limits, and **both** independent decode observations with their
+    interval and power, because preserving them is part of what the record is for.
+
+    On ``FAIL`` or ``ERROR`` every one of those numbers is withheld. Not reformatted, not marked
+    provisional — withheld, and the returned payload is scrubbed of numeric leaves so that a
+    refused ratio cannot be lifted out of a "failed" report and quoted. What survives is the
+    subject names, the refusal condition and the detail that names it.
+    """
+    _require_mapping(record, "record")
+    v = verdict if verdict is not None else evidence_gate(record)
+    limits = record.get("claim_limits") or {}
+    if v.get("verdict") != PASS:
+        payload = {
+            "verdict": v.get("verdict"),
+            "condition": v.get("condition"),
+            "detail": str(v.get("detail")),
+            "subjects": [sanitise_refused_row(r) for r in (record.get("verdicts") or [])
+                         if isinstance(r, dict)],
+            "decode_conclusion": INCONCLUSIVE,
+            "cuda_comparison": str(limits.get("cuda_comparison")),
+            "note": ("a refused record publishes no timing, ratio, separation, speedup, band or "
+                     "lower bound. The observations it carries are not admissible either, "
+                     "because the record they were frozen with was refused."),
+        }
+        return _scrub_numbers(payload)
+    return {
+        "verdict": PASS,
+        "detail": str(v.get("detail")),
+        "content_sha256": ((record.get("identity") or {}).get("content_sha256")),
+        "subjects": [{"subject": r.get("subject"), "verdict": r.get("verdict"),
+                      "point_estimate": r.get("point_estimate"), "floor": r.get("floor"),
+                      "band_scope": r.get("band_scope")}
+                     for r in (record.get("verdicts") or [])],
+        "decode_observations": record.get("decode_observations"),
+        "decode_reconciliation": record.get("decode_observations_reconciliation"),
+        "claim_limits": limits,
+    }
 
 
 # --------------------------------------------------------------------------------------------
@@ -495,19 +1051,30 @@ def within_arm_dispersion(samples: "list[float]") -> dict:
 #: this tuple and demands one red per token, so a token with no reachable mutation is a finding.
 GATE_CONDITIONS = (
     "schema_unknown",
+    "frozen_bytes_unsealed",
+    "frozen_bytes_length_mismatch",
+    "frozen_bytes_mismatch",
     "identity_digest_mismatch",
+    "loader_contract_misdescribed",
     "device_identity_incomplete",
     "vulkan_implementation_mislabelled",
+    "record_provenance_incomplete",
+    "record_provenance_disagrees",
+    "discarded_runs_undisclosed",
     "isolation_overclaimed",
     "calibration_not_disjoint",
     "band_self_derived",
+    "verdict_band_unscoped",
     "equivalence_incomplete",
     "production_path_unwitnessed",
     "headline_scope_widened",
     "claim_limit_violated",
     "decode_observation_dropped",
+    "decode_observations_unreconciled",
     "dispersion_promoted",
     "proof_ledger_absent",
+    "proof_ledger_reachability_understated",
+    "refused_row_leaks_results",
     "private_path_disclosed",
     "verdict_disagrees_with_classifier",
 )
@@ -553,6 +1120,16 @@ def evidence_gate(record: dict) -> dict:
                      f"content digest {ident['verdict']}: recorded {ident['recorded']}, "
                      f"recomputed {ident['recomputed']}")
 
+    checked.append("loader_contract")
+    declared_contract = (record.get("identity") or {}).get("loader_contract")
+    if declared_contract != json.loads(json.dumps(LOADER_CONTRACT)):
+        return _fail("loader_contract_misdescribed",
+                     "identity.loader_contract does not match what the code does: "
+                     f"declared {json.dumps(declared_contract, sort_keys=True)[:300]}, "
+                     f"the layers behave as {json.dumps(LOADER_CONTRACT, sort_keys=True)[:300]}. "
+                     "A record may not describe the loader as validating, refusing or stripping "
+                     "something the loader does not.")
+
     env = record.get("environment") or {}
     device = env.get("device") or {}
     software = env.get("software") or {}
@@ -586,6 +1163,82 @@ def evidence_gate(record: dict) -> dict:
     if device.get("device_type") == "discrete-gpu" and impl != "hardware":
         return _fail("vulkan_implementation_mislabelled",
                      "a discrete GPU reading is a hardware-Vulkan reading")
+
+    # ---- per-record provenance, on every timed record -----------------------------------
+    checked.append("record_provenance")
+    raw_runs = ((record.get("raw") or {}).get("runs") or [])
+    if not raw_runs:
+        return _fail("record_provenance_incomplete",
+                     "the record carries no raw runs, so no timing has any provenance at all")
+    provenance_bearing = list(raw_runs)
+    for case in (record.get("equivalence") or []):
+        for arm in (case.get("arms") or []):
+            if isinstance(arm, dict) and arm.get("provenance") is not None:
+                provenance_bearing.append(arm)
+    for run in provenance_bearing:
+        if not isinstance(run, dict):
+            return _fail("record_provenance_incomplete",
+                         f"a raw run is a {type(run).__name__}, not a record")
+        screened = check_record_provenance(run, env)
+        if screened["verdict"] != PASS:
+            return _fail(screened["condition"], screened["detail"])
+
+    # ---- what was thrown away, and on what grounds -------------------------------------
+    checked.append("discarded_runs")
+    raw = record.get("raw") or {}
+    discarded = raw.get("discarded_runs")
+    if not isinstance(discarded, list):
+        return _fail("discarded_runs_undisclosed",
+                     "raw.discarded_runs is absent. A sweep that re-ran anything must say so; "
+                     "an artifact that shows only the attempts it kept cannot be audited for "
+                     "selection, and 'nothing was discarded' is spelled as an empty list.")
+    rule = raw.get("discard_rule")
+    if not isinstance(rule, str) or "structural" not in rule.lower():
+        return _fail("discarded_runs_undisclosed",
+                     f"raw.discard_rule is {rule!r}: the grounds on which an attempt may be "
+                     f"re-run must be stated and must be structural. A rule that consulted a "
+                     f"timing would be selection on the outcome.")
+    for entry in discarded:
+        if not isinstance(entry, dict):
+            return _fail("discarded_runs_undisclosed",
+                         f"a discarded attempt is a {type(entry).__name__}, not a record")
+        for field in ("reason", "providers_reported", "dispatches_executed", "samples_ms",
+                      "criterion", "phase", "m", "past"):
+            if field not in entry:
+                return _fail("discarded_runs_undisclosed",
+                             f"a discarded attempt does not disclose {field!r}; the samples it "
+                             f"produced and the grounds for refusing them are both part of the "
+                             f"disclosure, not just the count")
+        if not isinstance(entry.get("samples_ms"), list) or not entry["samples_ms"]:
+            return _fail("discarded_runs_undisclosed",
+                         "a discarded attempt discloses no samples; what was thrown away is "
+                         "exactly the thing a reader needs in order to check the grounds")
+
+    # ---- a refused row publishes nothing -----------------------------------------------------
+    #
+    # This runs early, before any check that recomputes a number out of a row. A row that has
+    # declared itself refused must not be handed to a recomputation at all: doing so would
+    # report the arithmetic problem the missing numbers cause, and bury the fact that a refused
+    # row was published in the first place.
+    checked.append("refused_row_sanitation")
+    for row in (list(record.get("verdicts") or [])
+                + list(record.get("equivalence") or [])
+                + list(record.get("decode_observations") or [])):
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "")
+        if status.upper() not in ("REFUSED", "WITHHELD", FAIL, ERROR):
+            continue
+        leaking = sorted(k for k in row if k in RESULT_SHAPED_KEYS)
+        if leaking:
+            return _fail("refused_row_leaks_results",
+                         f"{row.get('subject')!r} is marked {status!r} and still carries "
+                         f"{leaking}; a refused row that keeps its numbers has been published "
+                         f"with a disclaimer, which is not a refusal")
+        if row.get("verdict") in (IMPROVEMENT, REGRESSION, PASS, MATCH):
+            return _fail("refused_row_leaks_results",
+                         f"{row.get('subject')!r} is marked {status!r} and carries the "
+                         f"success-shaped verdict {row.get('verdict')!r}")
 
     # ---- isolation --------------------------------------------------------------------------
     checked.append("isolation_language")
@@ -655,6 +1308,44 @@ def evidence_gate(record: dict) -> dict:
         return _fail("band_self_derived",
                      f"band is derived from non-calibration subjects "
                      f"{sorted(derived - cal_subjects)}")
+
+    # ---- every verdict names the band it was read against ------------------------------------
+    checked.append("verdict_band_scope")
+    for v in verdicts:
+        scope = v.get("band_scope")
+        if not isinstance(scope, dict):
+            return _fail("verdict_band_unscoped",
+                         f"{v.get('subject')}: no band_scope. A verdict is a statement about a "
+                         f"subject read against a band, and one that does not name its band "
+                         f"reads as a statement about every band.")
+        if scope.get("lo") != band.get("lo") or scope.get("hi") != band.get("hi"):
+            return _fail("verdict_band_unscoped",
+                         f"{v.get('subject')}: band_scope [{scope.get('lo')}, {scope.get('hi')}] "
+                         f"is not the committed band [{band.get('lo')}, {band.get('hi')}]")
+        if scope.get("band_independent"):
+            return _fail("verdict_band_unscoped",
+                         f"{v.get('subject')}: band_scope claims the verdict is band-independent; "
+                         f"a narrower band classifies more subjects, not fewer, and this "
+                         f"evidence cannot speak for a band it did not measure")
+        alternatives = v.get("alternative_bands")
+        if not isinstance(alternatives, list) or not alternatives:
+            return _fail("verdict_band_unscoped",
+                         f"{v.get('subject')}: no alternative-band readings, so a verdict that "
+                         f"depends on the committed band's width is indistinguishable from one "
+                         f"that does not")
+        for alt in alternatives:
+            if not isinstance(alt, dict):
+                return _fail("verdict_band_unscoped",
+                             f"{v.get('subject')}: alternative band entry {alt!r} is not a "
+                             f"reading")
+            recomputed = classify_ratio(v.get("series") or {},
+                                        {"lo": alt.get("lo"), "hi": alt.get("hi")})
+            if recomputed["verdict"] != alt.get("verdict"):
+                return _fail("verdict_band_unscoped",
+                             f"{v.get('subject')}: under band {alt.get('name')!r} "
+                             f"[{alt.get('lo')}, {alt.get('hi')}] the record says "
+                             f"{alt.get('verdict')!r} and the classifier says "
+                             f"{recomputed['verdict']!r}")
 
     # ---- equivalence: every output, every compared arm ---------------------------------------
     checked.append("equivalence_completeness")
@@ -766,6 +1457,39 @@ def evidence_gate(record: dict) -> dict:
                          f"observation {obs.get('id')!r} reads as a decode win; the decode "
                          f"conclusion is {INCONCLUSIVE}")
 
+    # ---- the two disagreeing observations are reconciled, not arbitrated ---------------------
+    checked.append("decode_reconciliation")
+    reconciliation = record.get("decode_observations_reconciliation")
+    if not isinstance(reconciliation, dict):
+        return _fail("decode_observations_unreconciled",
+                     "the record carries disagreeing decode observations and no reconciliation: "
+                     "a reader is left to pick one, which is the arbitration this evidence "
+                     "cannot perform")
+    reconciled_ids = list(reconciliation.get("observation_ids") or [])
+    carried_ids = [o.get("id") for o in observations]
+    if sorted(reconciled_ids) != sorted(carried_ids):
+        return _fail("decode_observations_unreconciled",
+                     f"the reconciliation covers {sorted(reconciled_ids)} and the record "
+                     f"carries {sorted(carried_ids)}; an observation left out of the "
+                     f"reconciliation has been quietly dropped from the conclusion")
+    for required in REQUIRED_DECODE_OBSERVATIONS:
+        want = round(float(required["point_estimate"]), 4)
+        if not any(round(float(x), 4) == want
+                   for x in (reconciliation.get("point_estimates") or [])
+                   if isinstance(x, (int, float))):
+            return _fail("decode_observations_unreconciled",
+                         f"the reconciliation does not restate the {want}x observation; both "
+                         f"observations must survive in the reconciled statement, not only in "
+                         f"the list above it")
+    if reconciliation.get("conclusion") != INCONCLUSIVE:
+        return _fail("decode_observations_unreconciled",
+                     f"the reconciliation concludes {reconciliation.get('conclusion')!r}; the "
+                     f"strongest conclusion these observations support is {INCONCLUSIVE}")
+    if reconciliation.get("arbitrated"):
+        return _fail("decode_observations_unreconciled",
+                     "the reconciliation claims to have arbitrated between the observations; "
+                     "none of them has the power to overturn another")
+
     # ---- dispersion stays diagnostic --------------------------------------------------------
     checked.append("dispersion_role")
     for v in verdicts:
@@ -802,6 +1526,37 @@ def evidence_gate(record: dict) -> dict:
                          f"{case.get('subject')}: "
                          f"{enforcement['claimed_without_ledger_hit']} claimed node(s) had no "
                          f"ledger entry; this timing ran through an unproven kernel")
+
+    checked.append("proof_ledger_reachability")
+    reach = ledger.get("production_reachability")
+    if not isinstance(reach, dict):
+        return _fail("proof_ledger_reachability_understated",
+                     "the record does not say where the proof ledger is reached from in "
+                     "production; without that, a reader cannot tell an enforced artifact from "
+                     "a diagnostic one")
+    if reach.get("diagnostic_only") is not False:
+        return _fail("proof_ledger_reachability_understated",
+                     f"production_reachability.diagnostic_only is "
+                     f"{reach.get('diagnostic_only')!r}. This ledger is compiled into the binary "
+                     f"and read on the claim path, on every session's disclosure and on the "
+                     f"pipeline-creation audit; calling it diagnostic understates what changing "
+                     f"it does.")
+    consumers = reach.get("consumers")
+    if not isinstance(consumers, list):
+        return _fail("proof_ledger_reachability_understated",
+                     "production_reachability names no consumers")
+    roles = {c.get("role") for c in consumers if isinstance(c, dict)}
+    required_roles = {c["role"] for c in PROOF_LEDGER_CONSUMERS}
+    if not required_roles <= roles:
+        return _fail("proof_ledger_reachability_understated",
+                     f"production_reachability omits consumer role(s) "
+                     f"{sorted(required_roles - roles)}; each one is a production path that "
+                     f"reads this ledger")
+    for consumer in consumers:
+        if not isinstance(consumer, dict) or not consumer.get("symbol") \
+                or not consumer.get("file"):
+            return _fail("proof_ledger_reachability_understated",
+                         f"consumer {consumer!r} names no symbol and file a reader can check")
 
     # ---- no private paths -------------------------------------------------------------------
     checked.append("private_paths")
@@ -880,6 +1635,170 @@ def _redact(text: str) -> str:
     return _PRIVATE_PATH_RE.sub("<home>", str(text))
 
 
+def _loaded_modules() -> "list[str]":
+    """Every shared library actually mapped into *this* process, by path.
+
+    On Windows this is `EnumProcessModules`; elsewhere it is `/proc/self/maps`. It is the second
+    opinion on the library digest: the harness hashes a file on disk, and this says what the
+    process that produced the timing actually has mapped. The two are recorded as an agreement
+    pair rather than as one number trusted twice.
+    """
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.GetCurrentProcess.restype = wintypes.HANDLE
+            k32.GetCurrentProcess.argtypes = []
+            k32.K32EnumProcessModules.restype = wintypes.BOOL
+            k32.K32EnumProcessModules.argtypes = [wintypes.HANDLE,
+                                                  ctypes.POINTER(ctypes.c_void_p),
+                                                  wintypes.DWORD,
+                                                  ctypes.POINTER(wintypes.DWORD)]
+            k32.K32GetModuleFileNameExW.restype = wintypes.DWORD
+            k32.K32GetModuleFileNameExW.argtypes = [wintypes.HANDLE, ctypes.c_void_p,
+                                                    wintypes.LPWSTR, wintypes.DWORD]
+            handle = k32.GetCurrentProcess()
+            needed = wintypes.DWORD()
+            arr = (ctypes.c_void_p * 4096)()
+            if not k32.K32EnumProcessModules(handle, arr, ctypes.sizeof(arr),
+                                             ctypes.byref(needed)):
+                return []
+            count = min(needed.value // ctypes.sizeof(ctypes.c_void_p), 4096)
+            out = []
+            buf = ctypes.create_unicode_buffer(32768)
+            for i in range(count):
+                if k32.K32GetModuleFileNameExW(handle, arr[i], buf, len(buf)):
+                    out.append(buf.value)
+            return out
+        maps = Path("/proc/self/maps")
+        if maps.is_file():
+            return sorted({line.split()[-1] for line in maps.read_text().splitlines()
+                           if line.strip().endswith(".so") or ".so." in line})
+    except Exception:  # pragma: no cover - a probe that fails is recorded as not found
+        return []
+    return []
+
+
+def _read_counters(path: Path) -> dict:
+    """Parse the EP's own counters document. Absent or unparseable is a state, not a crash."""
+    if not path.is_file():
+        return {}
+    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        end = text.rfind("}")
+        while end > 0:
+            try:
+                return json.loads(text[:end + 1])
+            except json.JSONDecodeError:
+                end = text.rfind("}", 0, end)
+        return {}
+
+
+def _record_provenance(lib: "str | None", info: dict, counters: dict) -> dict:
+    """Assemble the provenance block this one timed process can vouch for itself.
+
+    Everything here is read *after* the timed run, in the process that took it: the digest of
+    the library on disk, the digest of the library the OS says is mapped into this process, the
+    resolver's own account of the model it handed over, the external-weight scan, and the EP's
+    own counters — the device it ran on, the shader set it dispatched and how many dispatches it
+    executed. The agreement pairs at the end are the cross-checks, each recomputable by anyone
+    holding the record.
+    """
+    lib_sha = _sha256_file(lib) if lib and Path(lib).is_file() else None
+    modules = _loaded_modules()
+    mapped = None
+    if lib:
+        want = os.path.normcase(os.path.abspath(lib))
+        for m in modules:
+            try:
+                if os.path.normcase(os.path.abspath(m)) == want:
+                    mapped = m
+                    break
+            except Exception:  # pragma: no cover
+                continue
+    mapped_sha = _sha256_file(mapped) if mapped else None
+    probe_name = ""
+    try:
+        import devices as device_mod
+
+        facts, _ = device_mod.probe()
+        probe_name = (facts[0].name or "") if facts else ""
+    except Exception:  # pragma: no cover - recorded as an empty side of the pair
+        probe_name = ""
+    ep_device_names = str(counters.get("running_device_names") or "")
+    shader_list = counters.get("shaders_dispatched")
+    pairs = [
+        {"field": "model_recorded_provenance", "rule": "equal",
+         "left": str(info.get("sha256") or ""), "right": str(info.get("recorded_sha256") or ""),
+         "what": "the model this process resolved against the digest recorded for it"},
+        {"field": "ep_library_loaded", "rule": "equal",
+         "left": str(lib_sha or ""), "right": str(mapped_sha or ""),
+         "what": "the library hashed on disk against the library this process has mapped"},
+        {"field": "device_name", "rule": "contains",
+         "left": probe_name, "right": ep_device_names,
+         "what": "the adapter this harness enumerated against the adapter the EP says it ran on"},
+    ]
+    for pair in pairs:
+        pair["agree"] = bool(_agreement_holds(pair))
+    prov = {
+        "ep_library_sha256": lib_sha,
+        "ep_library_loaded_in_process": {
+            "found": mapped is not None,
+            "path": _redact(mapped) if mapped else None,
+            "sha256": mapped_sha,
+            "modules_enumerated": len(modules),
+            "source": "EnumProcessModules" if os.name == "nt" else "/proc/self/maps",
+        },
+        "model_resolver": {
+            "resolver": info.get("resolver"),
+            "provenance": info.get("provenance"),
+            "key": info.get("key"),
+            "sha256": info.get("sha256"),
+            "recorded_sha256": info.get("recorded_sha256"),
+            "agrees_with_recorded_provenance": info.get("agrees_with_recorded_provenance"),
+        },
+        "external_weights": {
+            "scanned": bool((info.get("external_data") or {}).get("scanned")),
+            "complete": bool((info.get("external_data") or {}).get("complete")),
+            "files": [{"location": f["location"], "bytes": f["bytes"], "sha256": f["sha256"]}
+                      for f in (info.get("external_data") or {}).get("files", [])],
+        },
+        "device_name": ep_device_names,
+        "device_uuids": str(counters.get("running_device_uuids") or ""),
+        "shaders": {
+            "count": len(shader_list) if isinstance(shader_list, list) else shader_list,
+            "stems": shader_list if isinstance(shader_list, list) else None,
+            "digest": counters.get("shaders_dispatched_digest"),
+            "source_digest": counters.get("shaders_dispatched_source_digest"),
+            "spec_digest": counters.get("shaders_dispatched_spec_digest"),
+            "toolchain": counters.get("shader_toolchain"),
+        },
+        "dispatches_executed": counters.get("dispatches_executed"),
+        "counters": {
+            "abi_version": counters.get("abi_version"),
+            "source": "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE, written by the EP under test",
+            "compute_calls": counters.get("compute_calls"),
+            "claimed_nodes": counters.get("claimed_nodes"),
+            "ledger_entries": counters.get("ledger_entries"),
+            "ledger_hits": counters.get("ledger_hits"),
+        },
+        "provenance_agreement": {
+            "verdict": AGREE if all(p["agree"] for p in pairs) else DISAGREE,
+            "pairs": pairs,
+            "checked": len(pairs),
+            "rule": ("each pair is recomputed from its own recorded sides; the flag is a "
+                     "summary of the recomputation, never a substitute for it"),
+        },
+    }
+    return prov
+
+
 def _worker_main(argv: "list[str]") -> int:
     """One process, one arm, one case. Prints a JSON record on stdout.
 
@@ -897,6 +1816,7 @@ def _worker_main(argv: "list[str]") -> int:
     ap.add_argument("--scratch", required=True)
     ap.add_argument("--capture-outputs", default="")
     ap.add_argument("--claim-log", default="")
+    ap.add_argument("--counters", default="")
     ap.add_argument("--profile", action="store_true")
     args = ap.parse_args(argv)
 
@@ -981,6 +1901,10 @@ def _worker_main(argv: "list[str]") -> int:
                                "sha256": f["sha256"]}
                               for f in info["external_data"]["files"]]},
     }
+    if "VulkanExecutionProvider" in providers:
+        del sess
+        counters = _read_counters(Path(args.counters)) if args.counters else {}
+        rec["provenance"] = _record_provenance(lib, info, counters)
     if args.capture_outputs:
         np.savez(args.capture_outputs,
                  **{f"o{i}": np.asarray(a) for i, a in enumerate(outputs)})
@@ -1035,7 +1959,8 @@ def _summarise_claim_log(path: Path) -> dict:
 
 def _run_worker(phase: str, m: int, past: int, providers: str, lib: "str | None",
                 scratch: Path, *, iters: int, warmup: int, capture: "Path | None" = None,
-                profile: bool = False, claim_log: "Path | None" = None) -> dict:
+                profile: bool = False, claim_log: "Path | None" = None,
+                counters: "Path | None" = None) -> dict:
     env = dict(os.environ)
     if lib:
         env["ONNXRUNTIME_VULKAN_EP_LIB"] = lib
@@ -1046,6 +1971,11 @@ def _run_worker(phase: str, m: int, past: int, providers: str, lib: "str | None"
         env["ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"] = str(claim_log)
     else:
         env.pop("ONNXRUNTIME_EP_VULKAN_CLAIM_LOG", None)
+    if counters:
+        Path(counters).unlink(missing_ok=True)
+        env["ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"] = str(counters)
+    else:
+        env.pop("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE", None)
     cmd = [sys.executable, str(Path(__file__).resolve()), "--worker",
            "--phase", phase, "--m", str(m), "--past", str(past),
            "--providers", providers, "--iters", str(iters), "--warmup", str(warmup),
@@ -1054,6 +1984,8 @@ def _run_worker(phase: str, m: int, past: int, providers: str, lib: "str | None"
         cmd += ["--capture-outputs", str(capture)]
     if claim_log:
         cmd += ["--claim-log", str(claim_log)]
+    if counters:
+        cmd += ["--counters", str(counters)]
     if profile:
         cmd += ["--profile"]
     proc = subprocess.run(cmd, capture_output=True, env=env, text=True, errors="replace")
@@ -1065,6 +1997,69 @@ def _run_worker(phase: str, m: int, past: int, providers: str, lib: "str | None"
         f"worker {phase}/M{m}/past{past} on {providers} produced no record "
         f"(rc={proc.returncode}): {(proc.stderr or '')[-800:]}"
     )
+
+
+def _vulkan_actually_ran(rec: dict) -> "str | None":
+    """Return a reason string if a run that asked for Vulkan did not get it, else ``None``.
+
+    The criterion is **structural, never numeric**: it looks at which providers the session
+    reported and at how many dispatches the EP recorded, and it never looks at a timing. A rule
+    that discarded slow runs would be selection on the outcome; this one discards runs in which
+    the thing under test did not execute the model at all, which is a different fact and one the
+    artifact would otherwise average silently into the arm it belongs to.
+
+    Measured on this desk: one baseline repeat came back with ``providers_reported ==
+    ["CPUExecutionProvider"]`` and ``dispatches_executed == 0`` at less than half the median of
+    the two repeats either side of it. Nothing in the timing said so.
+    """
+    reported = rec.get("providers_reported") or []
+    if "VulkanExecutionProvider" not in reported:
+        return (f"session reported providers {reported!r}: the Vulkan EP did not register, so "
+                f"this run timed the CPU provider under a Vulkan arm's name")
+    prov = rec.get("provenance") or {}
+    dispatched = prov.get("dispatches_executed")
+    if dispatched == 0:
+        return ("the EP recorded dispatches_executed=0: a timed Vulkan run that executed no "
+                "dispatch timed something else")
+    if not isinstance(dispatched, int):
+        return (f"the EP recorded dispatches_executed={dispatched!r}, which is not a count; "
+                f"the run cannot be shown to have executed on the device")
+    return None
+
+
+def _run_worker_insisting(phase: str, m: int, past: int, providers: str, lib: "str | None",
+                          scratch: Path, *, discarded: list, attempts: int = 3,
+                          **kw) -> dict:
+    """`_run_worker`, but a Vulkan arm that did not run on Vulkan is retried rather than kept.
+
+    Every discarded attempt is appended to ``discarded``, with its reason and its samples, and
+    that list is frozen into the artifact. Nothing is dropped quietly: a reader can see exactly
+    how many attempts were refused and why, and can check that the reason is structural.
+    """
+    wants_vulkan = "VulkanExecutionProvider" in providers
+    last = None
+    for attempt in range(1, attempts + 1):
+        rec = _run_worker(phase, m, past, providers, lib, scratch, **kw)
+        if not wants_vulkan:
+            return rec
+        reason = _vulkan_actually_ran(rec)
+        if reason is None:
+            if attempt > 1:
+                rec["attempt"] = attempt
+            return rec
+        last = reason
+        discarded.append({
+            "phase": phase, "m": m, "past": past, "providers_requested": providers,
+            "library": _redact(str(lib)), "attempt": attempt, "reason": reason,
+            "providers_reported": rec.get("providers_reported"),
+            "dispatches_executed": (rec.get("provenance") or {}).get("dispatches_executed"),
+            "samples_ms": rec.get("samples_ms"),
+            "criterion": "structural: which providers registered and whether any dispatch ran. "
+                         "No timing was consulted, so this is not selection on the outcome.",
+        })
+        print(f"  ! discarded {phase}/M{m}/past{past} attempt {attempt}: {reason}", flush=True)
+    raise RuntimeError(
+        f"{phase}/M{m}/past{past} failed to run on Vulkan in {attempts} attempts: {last}")
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -1085,9 +2080,14 @@ def main(argv: "list[str] | None" = None) -> int:
     args = ap.parse_args(argv)
 
     if args.gate:
-        record = load_frozen(args.gate)
-        verdict = evidence_gate(record)
+        verdict = gate_artifact(args.gate)
         print(json.dumps(verdict, indent=1))
+        try:
+            record = load_frozen(args.gate)
+        except (FrozenArtifactMissing, FrozenArtifactUnreadable) as exc:
+            print(json.dumps({"admissible": None, "detail": str(exc)}, indent=1))
+            return 1
+        print(json.dumps(admissible_output(record, verdict), indent=1))
         return 0 if verdict["verdict"] == PASS else 1
     if not args.measure:
         ap.print_help()
@@ -1206,11 +2206,15 @@ def _measure(args) -> int:
     }
     started = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     runs: dict[tuple, list[dict]] = {}
+    discarded: list[dict] = []
 
     def take(arm: str, phase: str, m: int, past: int, repeat: int, **kw) -> dict:
         lib, providers = arms[arm]
-        rec = _run_worker(phase, m, past, providers, lib, scratch,
-                          iters=args.iters, warmup=args.warmup, **kw)
+        counters = scratch / f"counters_{arm}_{phase}_{m}_{past}_r{repeat}.json"
+        rec = _run_worker_insisting(phase, m, past, providers, lib, scratch,
+                                    discarded=discarded, iters=args.iters,
+                                    warmup=args.warmup, counters=counters, **kw)
+        counters.unlink(missing_ok=True)
         rec["arm"] = arm
         rec["repeat"] = repeat
         runs.setdefault((phase, m, past), []).append(rec)
@@ -1251,19 +2255,27 @@ def _measure(args) -> int:
         for arm, lib in ((ARM_HEAD, head_lib), (ARM_BASELINE, base_lib)):
             cand_npz = scratch / f"{arm}_{phase}_{m}_{past}.npz"
             claim_log = scratch / f"claims_{arm}_{phase}_{m}_{past}.jsonl"
-            rec = _run_worker(phase, m, past, "VulkanExecutionProvider,CPUExecutionProvider",
-                              lib, scratch, iters=1, warmup=0, capture=cand_npz, profile=True,
-                              claim_log=claim_log)
+            counters_path = scratch / f"eqcounters_{arm}_{phase}_{m}_{past}.json"
+            rec = _run_worker_insisting(phase, m, past,
+                                        "VulkanExecutionProvider,CPUExecutionProvider",
+                                        lib, scratch, discarded=discarded, iters=1, warmup=0,
+                                        capture=cand_npz, profile=True,
+                                        claim_log=claim_log, counters=counters_path)
             cmp_ = _compare_all_outputs(cand_npz, ref_npz, rec["output_names"])
             arms_rec.append({"arm": arm, "self": False, "verdict": cmp_["verdict"],
                              "outputs_compared": cmp_["outputs_compared"],
                              "gates": cmp_["gates"],
+                             "provenance": rec.get("provenance"),
+                             "providers_requested": rec.get("providers_requested"),
+                             "providers_reported": rec.get("providers_reported"),
+                             "phase": phase, "m": m, "past": past, "repeat": "equivalence",
                              "per_output": cmp_["per_output"]})
             if arm == ARM_HEAD:
                 witness = rec["witness"]
                 enforcement = rec.get("claim_log")
             cand_npz.unlink(missing_ok=True)
             claim_log.unlink(missing_ok=True)
+            counters_path.unlink(missing_ok=True)
             print(f"  {arm:14s} {subject}: {cmp_['verdict']} over "
                   f"{cmp_['outputs_compared']} outputs", flush=True)
         ref_npz.unlink(missing_ok=True)
@@ -1305,6 +2317,12 @@ def _measure(args) -> int:
                                 "is faster"
         cls = classify_ratio(series, band)
         pooled = [s for r in runs[key] if r["arm"] == ARM_HEAD for s in r["samples_ms"]]
+        alternatives = []
+        for alt in ALTERNATIVE_BANDS:
+            alt_cls = classify_ratio(series, {"lo": alt["lo"], "hi": alt["hi"]})
+            alternatives.append({"name": alt["name"], "lo": alt["lo"], "hi": alt["hi"],
+                                 "verdict": alt_cls["verdict"], "why": alt["why"],
+                                 "committed": False})
         verdicts.append({
             "subject": subject,
             "phase": phase, "m": m, "past": past,
@@ -1313,6 +2331,20 @@ def _measure(args) -> int:
             "point_estimate": cls.get("point_estimate"),
             "floor": cls.get("floor"),
             "basis": "paired-ratio-vs-calibration-band",
+            "band_scope": {
+                "lo": band.get("lo"), "hi": band.get("hi"),
+                "source": "calibration",
+                "subjects": [subject_label(p, mm, pp) for p, mm, pp in CALIBRATION_CASES],
+                "band_independent": False,
+                "statement": (
+                    f"this verdict is {cls['verdict']} read against the committed calibration "
+                    f"band [{band.get('lo')}, {band.get('hi')}] measured on this box in this "
+                    f"sitting, and against no other band. A different band is a different "
+                    f"question, which is why the readings under two hypothetical bands are "
+                    f"carried beside it rather than left to the reader to imagine."
+                ),
+            },
+            "alternative_bands": alternatives,
             "dispersion": within_arm_dispersion(pooled),
             "head_median_ms": statistics.median(medians(ARM_HEAD, key)),
             "baseline_median_ms": statistics.median(medians(ARM_BASELINE, key)),
@@ -1379,6 +2411,30 @@ def _measure(args) -> int:
         "attempted and none is available: the strongest supportable decode conclusion is "
         f"{INCONCLUSIVE}, and nothing here may be read as a decode win."
     )
+    decode_reconciliation = {
+        "subject": decode_subject,
+        "observation_ids": [o["id"] for o in decode_observations],
+        "point_estimates": [o["point_estimate"] for o in decode_observations],
+        "arbitrated": False,
+        "conclusion": INCONCLUSIVE,
+        "statement": (
+            "The decode-past-128 point has been observed at 0.859x (a bare point estimate with "
+            "no interval), at 0.9651x with a 95% interval of [0.820, 1.136] at a power of "
+            "0.346, and on this branch at "
+            + (f"{fresh_decode['series'].get('median'):.4f}x" if fresh_decode else "no value")
+            + " over its own paired repeats. All three are carried. None supersedes another: "
+            "the first has no interval to be overturned, the second's interval spans 1 at a "
+            "power that could not detect the effect it was looking for, and the third is three "
+            "paired repeats on one box. Reconciling them means stating that they disagree and "
+            "that the disagreement is unresolved, not choosing the one that reads best."
+        ),
+        "why_no_arbitration": (
+            "arbitration needs one observation with the power to overturn another. The 0.9651x "
+            "observation reports power 0.346, which is a statement that it would usually miss "
+            "the effect it was testing for; an observation that cannot detect an effect cannot "
+            "rule one out, and it certainly cannot rule out somebody else's."
+        ),
+    }
 
     ledger_path = _ROOT / "evidence" / "proof_ledger.jsonl"
     ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines() if \
@@ -1474,6 +2530,7 @@ def _measure(args) -> int:
         "equivalence": equivalence,
         "decode_observations": decode_observations,
         "decode_observations_note": decode_observations_note,
+        "decode_observations_reconciliation": decode_reconciliation,
         "claim_limits": {
             "cuda_comparison": "NONE",
             "closes_issue_69": False,
@@ -1495,6 +2552,22 @@ def _measure(args) -> int:
                 for v in sorted({str(e.get("verdict")) for e in ledger_entries})
             },
             "runtime_enforcement_observed_in": "equivalence[].runtime_enforcement",
+            "production_reachability": {
+                "diagnostic_only": False,
+                "compiled_in": (
+                    "rust/src/registry.rs includes evidence/proof_ledger.jsonl with include_str!, "
+                    "so the ledger in a running EP is the copy that was compiled, and editing "
+                    "the file changes nothing until the crate is rebuilt"
+                ),
+                "consumers": [dict(c) for c in PROOF_LEDGER_CONSUMERS],
+                "note": (
+                    "three production paths read this ledger: the claim path declines a Ready "
+                    "row whose proof key has no live entry, every session's disclosure reports "
+                    "its demotions and faults to the ORT log sink, and the pipeline-creation "
+                    "path re-reads it to record a specialisation delta when a new (stem, spec) "
+                    "pair is bound. It is enforcement data, not diagnostic data."
+                ),
+            },
             "why_here": (
                 "this ledger is baked into the artifact and re-checked per claim decision: the "
                 "EP declines a Ready row whose proof key has no entry. The equivalence pass "
@@ -1510,13 +2583,27 @@ def _measure(args) -> int:
                 {k: v for k, v in rec.items() if k != "witness"}
                 for key in runs for rec in runs[key]
             ],
+            "discarded_runs": discarded,
+            "discard_rule": (
+                "a run requested under a Vulkan arm that reported no VulkanExecutionProvider, or "
+                "whose EP recorded dispatches_executed=0, was re-run and the refused attempt is "
+                "listed here in full, samples included. The rule is structural — which providers "
+                "registered and whether any dispatch ran — and consults no timing, so it cannot "
+                "select for a faster or slower result. Every discarded attempt is disclosed here "
+                "rather than deleted, so the count is auditable: "
+                f"{len(discarded)} attempt(s) refused across this sweep."
+            ),
         },
     }
     out = Path(args.out)
     digest = freeze(record, out)
+    seal = seal_bytes(out)
     print(f"\nfrozen {out} content_sha256={digest}")
-    verdict = evidence_gate(load_frozen(out))
+    print(f"sealed  {seal_path_for(out).name} bytes={seal['byte_length']} "
+          f"sha256={seal['sha256_of_exact_bytes']}")
+    verdict = gate_artifact(out)
     print(json.dumps(verdict, indent=1))
+    print(json.dumps(admissible_output(load_frozen(out), verdict), indent=1))
     return 0 if verdict["verdict"] == PASS else 1
 
 
