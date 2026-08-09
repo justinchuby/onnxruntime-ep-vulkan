@@ -589,3 +589,90 @@ def test_resolve_model_negative_control_wrong_cache_key_is_not_found(tmp_path, m
 
     with pytest.raises(fd.FoundryDiscoveryError, match="no cached Foundry variant"):
         wr.resolve_model()
+
+
+# -- destination policy: running the probe must not mutate the tree by itself (issue #81) -------
+#
+# `probe_weight_reread.py` used to write `weight_reread_phi35.json` unconditionally to a
+# tracked path, so merely running it produced a tracked diff. It now reuses
+# `probe_ledger_loss.classify_destination` -- the one destination-classification primitive this
+# tree already has, fixed on its own PR #51 review -- rather than forking a second, divergent
+# copy of the same policy. These locks are on the CLI surface `main()` puts around that reuse,
+# not on `classify_destination` itself (which is `probe_ledger_loss.py`'s own regression lock).
+
+
+def test_default_destination_is_ephemeral_and_outside_the_repository(monkeypatch):
+    """No `--out`: `main()` must hand `_run` a scratch directory outside the repo, and remove
+    it again once `_run` returns -- so the *default* invocation never leaves anything behind,
+    tracked or not."""
+    seen = {}
+
+    def fake_run(out_dir):
+        seen["out_dir"] = out_dir
+        assert out_dir.is_dir()
+        destination = wr._probe_ledger_loss.classify_destination(wr.ROOT, out_dir)
+        assert destination.kind == wr._probe_ledger_loss.DEST_OUTSIDE
+        (out_dir / "weight_reread_phi35.json").write_text("{}", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(wr, "_run", fake_run)
+    rc = wr.main([])
+    assert rc == 0
+    assert not seen["out_dir"].exists(), "the ephemeral scratch directory must be removed on exit"
+
+
+def test_out_inside_the_repository_and_untracked_is_refused_without_record(monkeypatch):
+    """A tracked-surface destination is refused unless `--record` is given, and nothing the
+    probe would have written reaches disk."""
+    seen = {"called": False}
+
+    def fake_run(out_dir):
+        seen["called"] = True
+        return 0
+
+    monkeypatch.setattr(wr, "_run", fake_run)
+    rc = wr.main(["--out", str(RESULTS)])
+    assert rc == 4
+    assert not seen["called"], "the tracked-destination refusal must happen before any work runs"
+
+
+def test_out_inside_the_repository_is_accepted_with_record(tmp_path, monkeypatch):
+    """`--record` is the one way past the tracked-destination refusal, and the record lands
+    exactly where `--out` named -- `_run` is called with that directory, not silently
+    redirected to scratch."""
+    target = tmp_path  # tmp_path is outside the repo, but exercise the --record code path too
+    seen = {}
+
+    def fake_run(out_dir):
+        seen["out_dir"] = out_dir
+        return 0
+
+    monkeypatch.setattr(wr, "_run", fake_run)
+    rc = wr.main(["--out", str(target), "--record"])
+    assert rc == 0
+    assert seen["out_dir"] == target.resolve()
+    assert target.exists(), "an explicit --out directory must not be removed on exit"
+
+
+def test_record_without_out_is_refused_before_any_destination_is_classified(monkeypatch):
+    """`--record` alone names no directory, so it must refuse before `_run` is ever reached --
+    not fall back to the ephemeral default, which would silently discard the very reading
+    `--record` asked to keep."""
+    seen = {"called": False}
+    monkeypatch.setattr(wr, "_run", lambda out_dir: seen.__setitem__("called", True) or 0)
+
+    rc = wr.main(["--record"])
+    assert rc == 4
+    assert not seen["called"]
+
+
+def test_out_outside_the_repository_needs_no_record(tmp_path, monkeypatch):
+    """A destination genuinely outside the repository (the common ad hoc `--out` case) is never
+    a tracked-diff risk, so it must not require `--record`."""
+    seen = {}
+    monkeypatch.setattr(wr, "_run", lambda out_dir: (seen.__setitem__("out_dir", out_dir), 0)[1])
+
+    rc = wr.main(["--out", str(tmp_path)])
+    assert rc == 0
+    assert seen["out_dir"] == tmp_path.resolve()
+    assert tmp_path.exists(), "a caller-owned --out directory is never removed by main()"

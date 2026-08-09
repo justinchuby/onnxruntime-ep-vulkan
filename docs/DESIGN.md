@@ -5735,7 +5735,50 @@ arm you cannot measure honestly**, and it is also an arm you cannot bisect in th
 plumbing is locked by `rust/tests/row_tile_fallback.rs`, which lives outside `src/ops/` because
 `tests/layering.rs` forbids `unsafe` there and mutating process environment requires it.
 
-#### What is proven, and the one thing that is not
+#### The exact-tile override (issue #81)
+
+`GEMV_MAX_ROWS` only ever clamps the search; it cannot make the search evaluate a tile it would
+never reach on its own, and `(cols, rows) = (8, 4)` is exactly such a tile — §25.3 works out why it
+is legal, unreachable by any ceiling, and never selected regardless of `M`.
+`ONNXRUNTIME_EP_VULKAN_GEMV_TILE=<cols>,<rows>` asks `ops::quant::gemv_tile_choice` for an **exact**
+tile instead of clamping the search:
+
+* **Unset calls `gemv_tile` verbatim** — `gemv_tile_choice`'s unset arm is the same call
+  `matmul_nbits_gemv` always made, with no duplicated default spelled at the seam, so this switch
+  cannot drift from a future change to the selector.
+* **Malformed, non-UTF-8, wrong-field-count, overflowing, or zero-valued input refuses the
+  dispatch before it happens** (`GemvTileRefusal`, `EpError::Internal`), with the refusal counted
+  by `counters::record_gemv_tile_refusal` — surfaced as `gemv_tile_refusals` (a count) and
+  `gemv_tile_refusal_reason` (the latched `Display` text, `null` until the first refusal) in the
+  counters JSON — never a silent fallback to the selector. An A/B whose arms are not the tiles they
+  claim is the exact failure this instrument exists to prevent.
+* **Legality is the compiled production set** — `GEMV_MAX_COLS`, the **compiled** `GEMV_MAX_ROWS`
+  (not `gemv_max_rows`'s environment-adjusted ceiling — see the next bullet), `GEMV_MAX_TILE`, the
+  shared-reduction budget `GEMV_RED_WORDS` against this node's own workgroup size, and the
+  guaranteed x-grid floor `GEMV_MAX_GROUPS_X`. Nothing here is relaxed relative to what the shader
+  and its dispatch actually enforce.
+* **An explicit request intentionally overrides `GEMV_MAX_ROWS`, not the other way round.**
+  `GEMV_MAX_ROWS=1` plus `GEMV_TILE=8,4` dispatches `(8, 4)` — the override is checked against the
+  compiled ceiling, not the separate knob's current value, because asking for an exact tile is a
+  more specific instruction than clamping a search that is not running.
+* **`M <= 1` (decode) is a null control the override cannot touch.** A value is still parsed and
+  validated even at `M <= 1` — so a malformed value refuses a decode-shaped node too, never
+  silently ignored — but a legal one is set aside: decode never takes a row tile, with or without
+  the switch.
+* **A legal tile substitutes verbatim into specialisation constants 4 (`QB_COLS`) and 6
+  (`QB_ROWS`)** through the same `KernelRequest` vector `matmul_nbits_gemv` always built, so the
+  production pipeline key changes exactly as the switch says. `rust/tests/gemv_tile_seam.rs` drives
+  this through `registry::spec_for` and the translate closure on the production path, and
+  `rust/tests/row_tile_fallback.rs` (retargeted from the pre-issue-#81 tile picker to
+  `gemv_tile_choice`, the seam `matmul_nbits_gemv` actually calls) is the regression lock that a
+  future refactor of the delegation cannot silently bypass without turning red.
+* **No shader, no ceiling, and no ledger moved.** `GEMV_MAX_TILE`, `GEMV_RED_WORDS` and every other
+  compiled bound are unchanged; the counters JSON gains the refusal-reason and spec-constant fields
+  `counters::gemv_tile_spec_constants` reads back out.
+* **`(8, 4)` stays `UNMEASURED`.** The switch makes the tile *reachable*; it publishes no
+  performance number for it. §25.3 has the byte-traffic accounting, and none of it is a timing.
+
+
 
 Three levels, none of them a whole-model claim:
 

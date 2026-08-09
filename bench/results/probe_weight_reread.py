@@ -46,10 +46,17 @@ that the multiplicity is now measured: if two workgroups named the same blob, or
 named it twice, this probe now says so.
 
 Run:  python bench/results/probe_weight_reread.py
+      (writes weight_reread_phi35.json into an ephemeral scratch directory outside the
+      repository; nothing under version control is touched)
+
+      python bench/results/probe_weight_reread.py --out bench/results --record
+      (issue #81: the only way to refresh the tracked
+      bench/results/weight_reread_phi35.json -- see `_parse`/`main` below)
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -79,6 +86,15 @@ SHADER_INC = ROOT / "rust" / "shaders" / "include"
 sys.path.insert(0, str(ROOT / "rust" / "tools"))
 import foundry_discovery as _foundry_discovery  # noqa: E402
 import model_provenance as _model_provenance  # noqa: E402
+
+# Destination policy (issue #81 follow-up): this probe used to write its record unconditionally
+# to a tracked path (`bench/results/weight_reread_phi35.json`), so merely *running* it produced
+# a tracked diff. `probe_ledger_loss.py` already carries the one destination-classification
+# primitive this tree uses for "is `--out` a tracked path, by file identity, fail-closed on
+# uncertainty" (its own PR #51 review found and fixed the exact `try/except ValueError` bug a
+# copy here would otherwise be free to reintroduce) -- reused as-is rather than forked into a
+# second, divergent implementation.
+import probe_ledger_loss as _probe_ledger_loss  # noqa: E402
 
 # The exact model identity this probe measures against -- never a literal path. Morpheus's
 # PR #53 review caught this file claiming "nothing was hardcoded" while its own default MODEL
@@ -558,7 +574,81 @@ def positive_controls(mod: SpirvModule) -> dict:
 # -- main --------------------------------------------------------------------------------------
 
 
-def main() -> int:
+def _parse(argv: list[str] | None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        prog="probe_weight_reread.py",
+        description=(
+            "Executes the weight re-read amplification probe. Writes NOTHING into a tracked "
+            "path unless --record is given (issue #81)."
+        ),
+    )
+    p.add_argument(
+        "--out",
+        type=pathlib.Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Write weight_reread_phi35.json into DIR. Refused when DIR is inside the "
+            "repository and not git-ignored, unless --record is also given. Default: an "
+            "ephemeral scratch directory outside the repository, removed on exit -- so running "
+            "this probe never leaves a tracked diff by itself."
+        ),
+    )
+    p.add_argument(
+        "--record",
+        action="store_true",
+        help=(
+            "Explicit recording mode. The ONLY way to write a reading into a tracked path, "
+            "e.g. --out bench/results --record to refresh "
+            "bench/results/weight_reread_phi35.json. Requires --out."
+        ),
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse(argv)
+
+    if args.record and args.out is None:
+        # Mirrors `probe_ledger_loss.py`'s own reconciliation: --record names a deliberate act,
+        # not a default it can infer a path for.
+        print(
+            "ERROR(instrument=record_without_destination): --record names no directory. "
+            "Recording is deliberate by construction; it does not pick a path for you.",
+            flush=True,
+        )
+        return 4
+
+    ephemeral = args.out is None
+    if ephemeral:
+        out_dir = pathlib.Path(tempfile.mkdtemp(prefix="probe_weight_reread_")).resolve()
+    else:
+        out_dir = args.out.resolve()
+        destination = _probe_ledger_loss.classify_destination(ROOT, out_dir)
+        if destination.kind == _probe_ledger_loss.DEST_TRACKED_SURFACE and not args.record:
+            rel = destination.repo_relative if destination.repo_relative is not None else str(out_dir)
+            print(
+                f"ERROR(instrument=refused_tracked_destination): {rel} is inside the repository "
+                "and git does not ignore it, so writing this reading there would leave a tracked "
+                "diff merely from running the probe -- the failure mode issue #81's review "
+                "flagged for this exact file. Nothing was written.\n"
+                "  Ordinary use:  omit --out (ephemeral scratch outside the repository), or "
+                "point --out at a scratch path.\n"
+                "  Deliberate recording:  add --record, e.g. to refresh "
+                "bench/results/weight_reread_phi35.json.",
+                flush=True,
+            )
+            return 4
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        return _run(out_dir)
+    finally:
+        if ephemeral:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+
+def _run(out_dir: pathlib.Path) -> int:
     try:
         path, blob, digest = locate_module(SHADER_STEM)
         mod = SpirvModule(blob)
@@ -701,7 +791,7 @@ def main() -> int:
         print(f"ERROR(instrument): {e}", file=sys.stderr)
         return 4
 
-    out = ROOT / "bench" / "results" / "weight_reread_phi35.json"
+    out = out_dir / "weight_reread_phi35.json"
     out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
 
     print("WEIGHT RE-READ — executed against the compiled kernel, not asserted")

@@ -1093,6 +1093,20 @@ static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);
 /// Of those, the ones whose mandatory WARN reached ORT's own logging sink.
 static BROKEN_COMMITMENT_WARNS_TO_ORT: AtomicU64 = AtomicU64::new(0);
 
+/// Nodes an explicit `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` request refused before dispatch
+/// (`ops::quant::gemv_tile_choice`). Zero means either the variable was never set to an illegal
+/// value, or no `MatMulNBits` GEMV node ran in this process — the same absence-is-not-a-negative-
+/// result caveat every other zero-by-default counter here carries.
+static GEMV_TILE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+/// The most recent refusal's reason (`Display` of `ops::quant::GemvTileRefusal`), or `None` if
+/// this process has refused none.
+///
+/// Latched, not cleared on the next successful dispatch: the question a reader asks after seeing
+/// a nonzero [`GEMV_TILE_REFUSALS`] is "why", and the answer only has to survive until the next
+/// *explicit* request, not the next unset one — `reset()` is what clears it, exactly as every
+/// other latch in this file works.
+static GEMV_TILE_REFUSAL_REASON: Mutex<Option<String>> = Mutex::new(None);
+
 /// How many §8.9.7 session-creation disclosures ran in this process.
 ///
 /// The in-frame witness for [`claimed_form_evidence`]: zero here means the claim set was never
@@ -1763,6 +1777,22 @@ pub fn record_broken_commitment(delivered_to_ort_sink: bool) {
     dump_if_requested();
 }
 
+/// Record that an explicit `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` request was refused before dispatch.
+///
+/// `reason` is the `Display` text of the `ops::quant::GemvTileRefusal` that fired — recorded
+/// verbatim, not re-derived, so the counters artifact and the `EpError::Internal` the caller sees
+/// are guaranteed to say the same thing rather than two independent renderings of one decision.
+pub fn record_gemv_tile_refusal(reason: &str) {
+    GEMV_TILE_REFUSALS.fetch_add(1, ORD);
+    if let Ok(mut latch) = GEMV_TILE_REFUSAL_REASON.lock() {
+        *latch = Some(reason.to_string());
+    }
+    // Same R12 hazard as `record_broken_commitment`: this refusal propagates as an
+    // `EpError::Internal` out of `Compile`, which can end a session before any orderly teardown
+    // writes a snapshot on its own.
+    dump_if_requested();
+}
+
 /// Record that a Compute failure was **planted** by the fault-injection control rather than
 /// suffered. Counted separately and published separately so that an injected failure can never be
 /// read as a real one, in either direction.
@@ -2304,6 +2334,66 @@ fn gemv_packed_spec_constant() -> &'static str {
     }
 }
 
+/// Index of `QB_COLS` in `q_gemv.comp`'s specialisation-constant vector (see
+/// [`GEMV_PACKED_SPEC_INDEX`]'s doc comment for the vector's shape — the vector now has a 7th
+/// element, `QB_ROWS`, appended by issue #7 before this field's own reader was added).
+const GEMV_TILE_COLS_SPEC_INDEX: usize = 4;
+/// Index of `QB_ROWS` in the same vector.
+const GEMV_TILE_ROWS_SPEC_INDEX: usize = 6;
+
+/// The resolved `(QB_COLS, QB_ROWS)` tile this run bound for `q_gemv`, as a comparable string.
+///
+/// Same four-state shape as [`gemv_packed_spec_constant`] immediately above, for the identical
+/// reason: "no GEMV pipeline was built" and "one was built with `(0, 0)`" are different facts,
+/// `"MIXED"` covers a process that built two distinct tiles (a Phi-3.5 run's five shapes all
+/// resolve to `(16, 2)` today, but an `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` A/B, or one shape
+/// overridden and another left to select, could deliberately build two), and `"UNRECORDED"` covers
+/// a recorded GEMV pipeline whose constant vector is shorter than this field's index — a shape
+/// this reader does not understand, which is not the same claim as reading a `0`.
+fn gemv_tile_spec_constants() -> String {
+    let mut seen: Option<(u32, u32)> = None;
+    for key in pipeline_variants() {
+        let Some((stem, consts)) = key.split_once(':') else {
+            continue;
+        };
+        if !stem.contains(GEMV_STEM_MARK) {
+            continue;
+        }
+        let fields: Vec<&str> = consts.split(',').collect();
+        let parsed = (
+            fields
+                .get(GEMV_TILE_COLS_SPEC_INDEX)
+                .and_then(|s| s.parse::<u32>().ok()),
+            fields
+                .get(GEMV_TILE_ROWS_SPEC_INDEX)
+                .and_then(|s| s.parse::<u32>().ok()),
+        );
+        let (Some(c), Some(r)) = parsed else {
+            return "UNRECORDED".to_string();
+        };
+        match seen {
+            None => seen = Some((c, r)),
+            Some(prev) if prev != (c, r) => return "MIXED".to_string(),
+            Some(_) => {}
+        }
+    }
+    match seen {
+        None => "UNOBSERVABLE".to_string(),
+        Some((c, r)) => format!("{c},{r}"),
+    }
+}
+
+/// `gemv_tile_refusal_reason` as a raw JSON value: a quoted, escaped string, or the bare token
+/// `null` — the same absence convention `model_output_equivalence_record` uses, and for the same
+/// reason: a reader must never have to special-case "no value was ever latched" against "a value
+/// was latched and it happens to be empty".
+fn gemv_tile_refusal_reason_json() -> String {
+    match GEMV_TILE_REFUSAL_REASON.lock().ok().and_then(|g| g.clone()) {
+        Some(reason) => format!("\"{}\"", json_escape(&reason)),
+        None => "null".to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // kv_cache_convention — which KV convention the dispatch was actually built with
 // JSON-only, no `abi_version` bump, for the same reason as `pipeline_variants` above: the C
@@ -2504,6 +2594,10 @@ pub fn reset() {
     NET_BENEFIT_OVERRIDE_REASONS.store(0, ORD);
     BROKEN_COMMITMENTS.store(0, ORD);
     BROKEN_COMMITMENT_WARNS_TO_ORT.store(0, ORD);
+    GEMV_TILE_REFUSALS.store(0, ORD);
+    if let Ok(mut latch) = GEMV_TILE_REFUSAL_REASON.lock() {
+        *latch = None;
+    }
     SESSION_DISCLOSURES.store(0, ORD);
     CLAIMED_FORMS_PROVEN.store(0, ORD);
     CLAIMED_FORMS_DEVICE_UNATTRIBUTED.store(0, ORD);
@@ -2630,6 +2724,9 @@ impl VulkanEpCounters {
              \"shader_toolchain\": \"{}\",\n  \
              \"pipeline_variants\": {},\n  \
              \"gemv_packed_spec_constant\": \"{}\",\n  \
+             \"gemv_tile_spec_constants\": \"{}\",\n  \
+             \"gemv_tile_refusals\": {},\n  \
+             \"gemv_tile_refusal_reason\": {},\n  \
              \"shaders_dispatched_spec_digest\": \"{}\",\n  \
              \"specialisation_delta_forms\": {},\n  \
              \"specialisation_unrecorded_forms\": {},\n  \
@@ -2722,6 +2819,9 @@ impl VulkanEpCounters {
             json_escape(crate::registry::toolchain_identity()),
             pipeline_variants_json(),
             gemv_packed_spec_constant(),
+            gemv_tile_spec_constants(),
+            GEMV_TILE_REFUSALS.load(ORD),
+            gemv_tile_refusal_reason_json(),
             specialisation_digest_json(),
             specialisation_delta_forms_json(),
             specialisation_unrecorded_forms_json(),
@@ -4329,6 +4429,112 @@ mod tests {
             "the row tile is witnessed by the variant vector itself"
         );
         reset();
+    }
+
+    /// [`gemv_tile_spec_constants`] reads indices 4 (`cols`) and 6 (`rows`) — distinct from
+    /// [`gemv_packed_spec_constant`]'s index 5 — and shares its exact four-state shape
+    /// (UNOBSERVABLE / one value / MIXED / UNRECORDED). This is the production pipeline witness
+    /// issue #81's B3 needs: a legal `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` request must be provable to
+    /// have reached the compiled pipeline, not merely the value `matmul_nbits_gemv` computed.
+    #[test]
+    fn gemv_tile_spec_constants_reads_indices_4_and_6_distinctly_from_the_packed_field() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        assert_eq!(
+            gemv_tile_spec_constants(),
+            "UNOBSERVABLE",
+            "no GEMV pipeline was built yet"
+        );
+
+        // [wg, bits, block, has_zp, cols, packed, rows] = [32, 4, 32, 0, 8, 1, 4] — an explicit
+        // ENV_GEMV_TILE=8,4 override reaching the compiled pipeline.
+        record_pipeline_variant("q_gemv_f16", &[32, 4, 32, 0, 8, 1, 4]);
+        assert_eq!(
+            gemv_tile_spec_constants(),
+            "8,4",
+            "must read cols from index 4 and rows from index 6, not the packed field at index 5"
+        );
+        assert_eq!(
+            gemv_packed_spec_constant(),
+            "1",
+            "the two witnesses must not interfere with each other's index"
+        );
+
+        // A second, distinct tile in the same process: MIXED, exactly as `gemv_packed_spec_constant`
+        // goes MIXED when two distinct values of *its* field are recorded.
+        record_pipeline_variant("q_gemv_f16", &[32, 4, 32, 0, 16, 1, 2]);
+        assert_eq!(
+            gemv_tile_spec_constants(),
+            "MIXED",
+            "one process built (8,4) and (16,2); naming either misattributes the other's traffic"
+        );
+
+        reset();
+        record_pipeline_variant("q_gemv_f16", &[64, 4, 32]);
+        assert_eq!(
+            gemv_tile_spec_constants(),
+            "UNRECORDED",
+            "a constant vector too short to hold index 6 is a shape this reader does not \
+             understand, not a recorded (cols, 0)"
+        );
+        assert_eq!(
+            pipeline_variants(),
+            vec!["q_gemv_f16:64,4,32".to_string()],
+            "the short vector is still recorded verbatim in the raw variant list"
+        );
+        reset();
+
+        record_pipeline_variant("ew_binary_add_f32", &[256, 1]);
+        assert_eq!(
+            gemv_tile_spec_constants(),
+            "UNOBSERVABLE",
+            "a non-GEMV pipeline must not be read as a recorded tile"
+        );
+        reset();
+    }
+
+    /// [`record_gemv_tile_refusal`] latches exactly one reason string (the most recent one wins,
+    /// mirroring [`record_broken_commitment`]'s R12 rationale) and reaches the JSON as an
+    /// escaped, quoted string — never the bare `null` token that means "no refusal happened".
+    #[test]
+    fn record_gemv_tile_refusal_increments_the_latch_and_reaches_the_json() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        assert_eq!(GEMV_TILE_REFUSALS.load(ORD), 0);
+        assert_eq!(gemv_tile_refusal_reason_json(), "null");
+
+        record_gemv_tile_refusal("ONNXRUNTIME_EP_VULKAN_GEMV_TILE fields must be nonzero");
+        assert_eq!(GEMV_TILE_REFUSALS.load(ORD), 1);
+        assert_eq!(
+            gemv_tile_refusal_reason_json(),
+            "\"ONNXRUNTIME_EP_VULKAN_GEMV_TILE fields must be nonzero\""
+        );
+
+        // A second refusal: the counter accumulates, the latch reports the most recent reason.
+        record_gemv_tile_refusal("a different reason, with \"quotes\" to escape");
+        assert_eq!(GEMV_TILE_REFUSALS.load(ORD), 2);
+        assert_eq!(
+            gemv_tile_refusal_reason_json(),
+            "\"a different reason, with \\\"quotes\\\" to escape\"",
+            "the JSON string must escape embedded quotes, not merely wrap them"
+        );
+
+        let json = snapshot().to_json();
+        assert!(json.contains("\"gemv_tile_refusals\": 2"), "{json}");
+        assert!(
+            json.contains("\"gemv_tile_refusal_reason\": \"a different reason"),
+            "{json}"
+        );
+
+        reset();
+        assert_eq!(GEMV_TILE_REFUSALS.load(ORD), 0);
+        assert_eq!(
+            gemv_tile_refusal_reason_json(),
+            "null",
+            "reset must clear the latch, not merely the counter"
+        );
     }
 
     /// The verdict vocabulary is duplicated in `tests/ops/_verdict.py`. Duplicated vocabularies

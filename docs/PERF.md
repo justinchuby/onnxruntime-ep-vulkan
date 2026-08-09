@@ -4287,12 +4287,42 @@ Every one of Phi-3.5's five distinct MatMulNBits shapes selects `(cols=16, rows=
 reaches coverage 1.000000 in both arms. `M = 5` landing on 3 rather than 2.5 is the tail tile being
 counted honestly: `ceil(5/2) = 3`, and the third tile does a full pass to compute one row.
 
-**The `M = 4` row is where the tile is currently leaving something.** `gemv_tile` picks `rows = 2`,
-not 4, and the reason is arithmetic rather than caution: when `cols | N` the byte model's weight
-term depends only on `rows` and its activation term only on `rows/cols`, so `(16, 2)` and `(8, 4)`
-name *exactly the same bytes* and the strict-improvement rule keeps the first. `(16, 4)` would be
-strictly better and is refused by `cols * rows = 64 > 32`. Raising the accumulator budget is the
-obvious next lever and is not taken here.
+**The `M = 4` row is where a wrong equal-traffic claim was previously published here (issue #81,
+Fact Checker finding B3) — corrected below rather than repeated.** `gemv_tile` picks `rows = 2`,
+not 4, for `(cols, rows) = (16, 2)` over the alternative `(8, 4)` (the only other candidate the
+search reaches at this `N`: `cols * rows <= 32` forces `cols` down to 8 once `rows` reaches 4, and
+`(16, 4)` is refused outright by `cols * rows = 64 > 32`). The two arms are **not** the same by
+"the weight term depends only on `rows`" alone — that half of the old claim is right, and it is
+also not the whole story:
+
+* **Weight bytes** — `ceil(M/rows) * N * K * bits/8`, independent of `cols` whenever `cols | N` —
+  depend on `rows` alone, and `(16, 2)` names **strictly more** weight bytes than `(8, 4)` for every
+  `M >= 3`; they tie only at the trivial `M <= 2` (both round up to one pass). At `M = 4`,
+  `by_shape_prefill`'s own `tiled_named_bytes` for this shape is the **witnessed** `(16, 2)` figure,
+  **9,437,184 B**; `(8, 4)` at the same `M`, cols and K is `ceil(4/4) * 3072 * 3072 * 4/8 =
+  4,718,592 B` — half, and this second figure is a **MODEL** value, because `(8, 4)` is never the
+  tile `gemv_tile` selects and so is never the tile this probe's SPIR-V walk actually visits.
+* **Total named bytes** (`gemv_named_bytes` — weight *and* activation, the quantity the
+  strict-improvement search itself compares) tie between `(16, 2)` and `(8, 4)` only where the
+  activation term's growth exactly offsets the weight term's shrinkage. Deriving it: with
+  `W = bits`, `A = a_bytes`, `total(cols, rows) = ceil(M/rows) * N * K/8 * (W + rows * A * 8 /
+  cols)`, so `total(16, 2) = ceil(M/2) * N * K/8 * (W + A)` and `total(8, 4) = ceil(M/4) * N * K/8
+  * (W + 4A)`. The two coefficients `(W + A)` and `(W + 4A)` are equal to within the same factor of
+  two **only when `W = 2A`** — which is an artifact fact about this graph (`bits = 4`,
+  `a_bytes = 2` for its fp16 activations, and `4 == 2 x 2`), not a general property of the tile
+  pair — and given that relation the tie condition collapses to `ceil(M/2) = 2 * ceil(M/4)`, which
+  holds **iff `M \equiv 0` or `3 (mod 4)`** (checked exhaustively for `M = 1..200` in
+  `rust/src/ops/quant.rs`'s unit tests). At the three `M` this probe actually witnesses, `M = 2, 4,
+  5`: **only `M = 4` ties** (`total(8,4)/total(16,2) = 1.00`); `M = 2` is `2.00` and `M = 5` is
+  `1.33`, so the equal-traffic reading in the withdrawn draft did not generalise even across its own
+  three witnessed points, let alone to `M = 128` or an arbitrary prefill width. `M = 128` is
+  equal-total for the same reason `M = 4` is: `128 mod 4 == 0`.
+* **Even at a tying `M`, `(8, 4)` is not selected.** The search's rule is `got < best_bytes` —
+  strict improvement — and `(16, 2)` is evaluated (and, for `M >= 2`, accepted over the `rows = 1`
+  base case) before `(8, 4)` is ever computed; a tie leaves the incumbent in place. So `(8, 4)` is
+  unreachable by this selector at **any** `M`, tying or not, and exercising it at all is exactly
+  what `ONNXRUNTIME_EP_VULKAN_GEMV_TILE=8,4` is for (issue #81). It remains **UNMEASURED** — legal,
+  distinct from `(16, 2)`, and with no performance number published anywhere in this document.
 
 ### 25.4 What it is worth on a clock
 
@@ -4705,20 +4735,26 @@ Two facts fall out, and both were surprises:
 
 * **`q_gemv` decode time is flat at ~17.5 ms at every cache length.** All of decode's growth is
   GQA. The quantised GEMM is not the decode problem; it is not even a large part of it.
-* **Weight streaming is a minority cost at width.** The tiled and untiled arms differ *only* in how
-  many passes they make over the same 2.291 GB of packed weights — `M` passes untiled against
-  `ceil(M/4)` tiled — so differencing them gives a marginal streaming bandwidth. Eight prefill `M`
-  points yield **seven** differential points: `M = 1` yields none, because both arms make exactly
-  one pass there and Δpasses is zero. Over those seven (`M = 2 … 128`, from
-  `real_model_latency_before_gqa.json`) the readings are **199.7, 244.5, 242.8, 238.8, 226.8,
-  222.5, 217.4 GB/s** — range **200–245**, median **227**, and above the ~192 GB/s spec sheet at
-  every point, which is what L2 reuse looks like. `M = 2` is the low end and the noisiest point
-  (one differenced pass, no averaging); the six points from `M = 4` up sit in 217–245. One full
-  weight pass costs 9.4–11.5 ms (median 10.1). At `M = 128` the tiled arm makes 32 passes, so
-  streaming is ~323 ms of the 3004.55 ms tiled time — **~11%**.
+* **Weight streaming is a minority cost at width — but the marginal-bandwidth reading below is
+  withdrawn, not re-derived (issue #81, Fact Checker finding B3/§25.3).** The tiled and untiled arms
+  differ *only* in how many passes they make over the same 2.291 GB of packed weights — `M` passes
+  untiled against **`ceil(M/2)` tiled** (the incumbent selector's `(cols, rows) = (16, 2)`, as
+  §25.3's own `tiled_amplification` column already reads: `1 / 2 / 3` at `M = 2, 4, 5`, i.e.
+  `ceil(M/2)`; **not** the `ceil(M/4)` this subsection previously stated — that divisor belongs to
+  `(8, 4)`, a tile the selector never reaches). A prior version of this subsection differenced the
+  `real_model_latency_before_gqa.json` timings against the wrong `ceil(M/4)` pass count and
+  published a derived marginal-bandwidth series (seven points spanning "199.7 … 217.4 GB/s", a
+  "200–245" range, a "227" median, a "~323 ms" streaming estimate at `M = 128`, and a "~11%" share
+  of that case's tiled time) that used roughly double the true weight-pass count at every point.
+  **All of those figures are withdrawn in full and are not replaced here.** Nothing in this tree
+  reproduces them with the corrected divisor as part of this change — doing so would be a new
+  measurement, not a correction, and issue #81 does not license one. What survives is only the
+  `ceil(M/2)` pass count itself, and only for the incumbent `(16, 2)` — never for `(8, 4)`, which
+  stays **UNMEASURED**.
 
 So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — would be
-optimising a tenth of the wide-prefill cost. The data said to go elsewhere, so this branch did.
+optimising a cost this document no longer quotes a share for. The data said to go elsewhere before
+the wrong-divisor withdrawal, and nothing here reopens that question with a corrected number.
 
 ### 26.5 The finding: one lane per subgroup
 

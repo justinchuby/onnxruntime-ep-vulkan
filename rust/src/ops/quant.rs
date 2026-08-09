@@ -517,6 +517,260 @@ fn gemv_tile_with(
     best
 }
 
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+// `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` — a strict, fail-closed *request*, not a ceiling
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+//
+// `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` above is deliberately lenient: a typo means "the
+// default", because a performance ceiling that refuses to run on a bad value is worse than one
+// that quietly clamps. This variable has the opposite job and therefore the opposite polarity.
+// Its purpose is to let a probe or an A/B *name the exact pipeline it wants*, so that a witness
+// reading `spec_constants` back out of `counters::pipeline_variants()` after the run is a witness
+// of the tile that was actually asked for, not of whatever `gemv_tile`'s own search happened to
+// pick. A knob that can silently substitute a different tile for the one written down defeats
+// that purpose as completely as one that silently substitutes the default — so every malformed,
+// out-of-range, or illegal value refuses the node *before* a pipeline is built or a buffer bound,
+// rather than falling back to anything.
+//
+// unset ⇒ [`gemv_tile`] runs verbatim. There is no second, duplicated default here: the unset arm
+// of [`gemv_tile_choice`] calls the exact function `matmul_nbits_gemv` always called.
+
+/// `ONNXRUNTIME_EP_VULKAN_GEMV_TILE=<cols>,<rows>` — see the module-level note above.
+pub const ENV_GEMV_TILE: &str = "ONNXRUNTIME_EP_VULKAN_GEMV_TILE";
+
+/// The `maxComputeWorkGroupCount[0]` every Vulkan 1.1 implementation is required to offer.
+///
+/// Mirrors [`GEMV_MAX_GROUPS_Y`], for the other grid axis. Production's own dispatch
+/// (`workgroups[0] = ceil(N / cols)` in [`matmul_nbits_gemv`]) does not clamp against this today,
+/// because no `(cols, rows)` pair [`gemv_tile`]'s own search can return ever pushes it that high
+/// on a claimed shape — `cols` only ever gets *smaller* than [`gemv_cols`]'s unclamped seed, which
+/// already keeps `ceil(N / cols)` workgroups-worth of parallelism. An explicit
+/// `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` request is not bound by that search, so [`gemv_tile_legality`]
+/// checks the override against this floor explicitly — the override path is therefore *stricter*
+/// than the unset path here, never looser, and the pre-existing gap in the unset path is
+/// unaffected (documented, not fixed, in this change: no shader or production-dispatch edit).
+const GEMV_MAX_GROUPS_X: u32 = 65_535;
+
+/// Why an explicit [`ENV_GEMV_TILE`] request was refused before dispatch.
+///
+/// Every variant is `Display`-able to the exact string [`crate::counters::record_gemv_tile_refusal`]
+/// latches, so the counters artifact and the `EpError::Internal` message the caller sees say the
+/// same thing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GemvTileRefusal {
+    /// The raw environment value was not valid UTF-8. Read via `env::var_os` rather than
+    /// `env::var().ok()` specifically so this state is distinguishable from "unset" — a lossy
+    /// read would fold a mangled value into either "unset" (wrong: something was there) or a
+    /// silently-substituted lossy string (wrong: exactly the fallback this variable must not do).
+    NonUtf8,
+    /// The value did not split into exactly two comma-separated fields. Carries the field count
+    /// actually found (0 only for a value that is impossible to produce via `split`, 1 for "no
+    /// comma" or the empty string, 3+ for extra fields).
+    WrongFieldCount(usize),
+    /// A field was not `[1-9][0-9]*` or `0` — empty, signed, hex-prefixed, whitespace-padded, or
+    /// leading-zero-padded (`"016"`). Leading `'0'` alone is the [`Zero`](Self::Zero) variant, not
+    /// this one.
+    MalformedField,
+    /// A field parsed as all-digits but does not fit in `u32`.
+    Overflow,
+    /// A field was the literal value `0`. Lexically valid, semantically illegal: no tile has zero
+    /// columns or zero rows.
+    Zero,
+    /// `cols` was in range but exceeds [`GEMV_MAX_COLS`], the shader's register budget.
+    IllegalCols { cols: u32 },
+    /// `rows` exceeds [`GEMV_MAX_ROWS`] — checked against the **compiled** constant, not
+    /// [`gemv_max_rows`]'s environment-adjusted ceiling. An explicit, legal request is meant to
+    /// override that ceiling on purpose (see [`gemv_tile_choice`]), so legality for it is judged
+    /// against what the shader can actually hold, not against the separate knob's current value.
+    IllegalRows { cols: u32, rows: u32 },
+    /// `cols * rows` exceeds [`GEMV_MAX_TILE`], the accumulator register budget.
+    IllegalTile { cols: u32, rows: u32 },
+    /// `wg * cols` exceeds [`GEMV_RED_WORDS`], the shared-memory reduction budget for this node's
+    /// own workgroup size.
+    IllegalReduction { cols: u32, rows: u32, wg: u32 },
+    /// `ceil(N / cols)` exceeds [`GEMV_MAX_GROUPS_X`] for this node's own `N`. See the constant's
+    /// doc comment: this is a stricter-than-production check that exists only on this path.
+    IllegalGroupsX { cols: u32, n: u64 },
+}
+
+impl std::fmt::Display for GemvTileRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonUtf8 => write!(f, "{ENV_GEMV_TILE} is not valid UTF-8"),
+            Self::WrongFieldCount(n) => write!(
+                f,
+                "{ENV_GEMV_TILE} must be exactly `<cols>,<rows>` (one comma, two fields), found {n} field(s)"
+            ),
+            Self::MalformedField => write!(
+                f,
+                "{ENV_GEMV_TILE} fields must be `0` or `[1-9][0-9]*` — no sign, no leading zero, no whitespace"
+            ),
+            Self::Overflow => write!(f, "{ENV_GEMV_TILE} field does not fit in u32"),
+            Self::Zero => write!(f, "{ENV_GEMV_TILE} fields must be nonzero"),
+            Self::IllegalCols { cols } => write!(
+                f,
+                "{ENV_GEMV_TILE} cols={cols} exceeds the compiled maximum {GEMV_MAX_COLS}"
+            ),
+            Self::IllegalRows { cols, rows } => write!(
+                f,
+                "{ENV_GEMV_TILE}={cols},{rows}: rows={rows} exceeds the compiled maximum {GEMV_MAX_ROWS}"
+            ),
+            Self::IllegalTile { cols, rows } => write!(
+                f,
+                "{ENV_GEMV_TILE}={cols},{rows}: cols*rows={} exceeds the accumulator budget {GEMV_MAX_TILE}",
+                cols * rows
+            ),
+            Self::IllegalReduction { cols, rows, wg } => write!(
+                f,
+                "{ENV_GEMV_TILE}={cols},{rows}: wg*cols={} exceeds the shared-reduction budget {GEMV_RED_WORDS} (wg={wg})",
+                wg * cols
+            ),
+            Self::IllegalGroupsX { cols, n } => write!(
+                f,
+                "{ENV_GEMV_TILE} cols={cols}: ceil(N/cols)={} exceeds the guaranteed grid floor {GEMV_MAX_GROUPS_X} (N={n})",
+                n.div_ceil(u64::from(*cols))
+            ),
+        }
+    }
+}
+
+/// Strictly parse one field: `0` or `[1-9][0-9]*`, nothing else.
+fn parse_strict_u32(field: &str) -> Result<u32, GemvTileRefusal> {
+    if field.is_empty() || !field.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(GemvTileRefusal::MalformedField);
+    }
+    if field.len() > 1 && field.as_bytes()[0] == b'0' {
+        return Err(GemvTileRefusal::MalformedField);
+    }
+    field.parse::<u32>().map_err(|_| GemvTileRefusal::Overflow)
+}
+
+/// Parse `<cols>,<rows>` strictly. See [`GemvTileRefusal`] for the exact grammar and every way
+/// this refuses rather than falling back.
+fn parse_gemv_tile(raw: &std::ffi::OsStr) -> Result<(u32, u32), GemvTileRefusal> {
+    let s = raw.to_str().ok_or(GemvTileRefusal::NonUtf8)?;
+    let fields: Vec<&str> = s.split(',').collect();
+    if fields.len() != 2 {
+        return Err(GemvTileRefusal::WrongFieldCount(fields.len()));
+    }
+    let cols = parse_strict_u32(fields[0])?;
+    let rows = parse_strict_u32(fields[1])?;
+    if cols == 0 || rows == 0 {
+        return Err(GemvTileRefusal::Zero);
+    }
+    Ok((cols, rows))
+}
+
+/// Legality for an explicit [`ENV_GEMV_TILE`] request, for this node's own `wg` and `n`.
+///
+/// Exactly the bounds the compiled shader and the dispatch it is built from actually enforce —
+/// no more (this does not require `cols | n`, because [`gemv_cols`]'s tail-tile path is a real,
+/// correct, always-available code path in `q_gemv.comp`, not a shape the shader cannot run — and
+/// no less (every one of [`GEMV_MAX_COLS`], the **compiled** [`GEMV_MAX_ROWS`], [`GEMV_MAX_TILE`],
+/// [`GEMV_RED_WORDS`] and [`GEMV_MAX_GROUPS_X`] is checked).
+fn gemv_tile_legality(cols: u32, rows: u32, wg: u32, n: u64) -> Result<(), GemvTileRefusal> {
+    if cols == 0 || cols > GEMV_MAX_COLS {
+        return Err(GemvTileRefusal::IllegalCols { cols });
+    }
+    if rows == 0 || rows > GEMV_MAX_ROWS {
+        return Err(GemvTileRefusal::IllegalRows { cols, rows });
+    }
+    if cols.saturating_mul(rows) > GEMV_MAX_TILE {
+        return Err(GemvTileRefusal::IllegalTile { cols, rows });
+    }
+    if wg.saturating_mul(cols) > GEMV_RED_WORDS {
+        return Err(GemvTileRefusal::IllegalReduction { cols, rows, wg });
+    }
+    if n.div_ceil(u64::from(cols)) > u64::from(GEMV_MAX_GROUPS_X) {
+        return Err(GemvTileRefusal::IllegalGroupsX { cols, n });
+    }
+    Ok(())
+}
+
+/// Which of the three mechanisms produced a `(cols, rows)` tile, for tests and witnesses that need
+/// to tell them apart even when the numbers happen to coincide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GemvTileSource {
+    /// `m <= 1`: the decode null control. The tile is always `(gemv_cols(n, wg), 1)` here, and an
+    /// [`ENV_GEMV_TILE`] value — set or unset, legal or not-yet-checked — never changes it. A
+    /// harness that only compared numbers could not tell "decode, unaffected" apart from "the
+    /// override happened to ask for the same thing"; this variant is that distinction made
+    /// explicit and testable.
+    Decode,
+    /// `ENV_GEMV_TILE` unset at `m > 1`: [`gemv_tile`] ran verbatim, unmodified.
+    Selected,
+    /// An explicit, legal `ENV_GEMV_TILE` request at `m > 1`: it was substituted for the search.
+    Overridden,
+}
+
+/// The `(cols, rows)` tile [`matmul_nbits_gemv`] actually dispatches, given the raw
+/// [`ENV_GEMV_TILE`] value (or `None` if unset).
+///
+/// This is the seam: `matmul_nbits_gemv` calls this instead of [`gemv_tile`] directly, so a test
+/// that drives it — or drives `matmul_nbits_gemv` itself through `registry::spec_for` — observes
+/// exactly what production does. Three rules, checked in this order:
+///
+/// 1. **`m <= 1` is the decode null control and always wins.** A request is still parsed and
+///    validated here (so a malformed value refuses even a decode-shaped node — this mechanism
+///    never silently ignores an illegal value, at any `m`), but a *legal* one is deliberately set
+///    aside rather than applied: decode never takes a row tile, full stop.
+/// 2. **Unset is [`gemv_tile`], verbatim.** No duplicated default: this arm is the same call
+///    `matmul_nbits_gemv` always made.
+/// 3. **A legal request at `m > 1` is substituted whole**, checked against the *compiled* maxima
+///    ([`gemv_tile_legality`]) rather than [`gemv_max_rows`]'s environment-adjusted ceiling — an
+///    explicit `ENV_GEMV_TILE` intentionally overrides `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS`
+///    rather than refusing on the contradiction between the two variables.
+fn gemv_tile_choice_with(
+    m: u64,
+    n: u64,
+    k: u64,
+    bits: u32,
+    a_bytes: u64,
+    wg: u32,
+    raw: Option<&std::ffi::OsStr>,
+) -> Result<((u32, u32), GemvTileSource), GemvTileRefusal> {
+    let Some(raw) = raw else {
+        let tile = gemv_tile(m, n, k, bits, a_bytes, wg);
+        let source = if m <= 1 {
+            GemvTileSource::Decode
+        } else {
+            GemvTileSource::Selected
+        };
+        return Ok((tile, source));
+    };
+    let (cols, rows) = parse_gemv_tile(raw)?;
+    gemv_tile_legality(cols, rows, wg, n)?;
+    if m <= 1 {
+        return Ok(((gemv_cols(n, wg), 1), GemvTileSource::Decode));
+    }
+    Ok(((cols, rows), GemvTileSource::Overridden))
+}
+
+/// [`gemv_tile_choice_with`], reading [`ENV_GEMV_TILE`] from the process environment.
+///
+/// Split the same way [`gemv_tile`]/[`gemv_tile_with`] and [`gemv_max_rows`]/[`clamp_max_rows`]
+/// already are, for the same reason: the environment read is the one line `rust/tests/*.rs` has
+/// to cover from outside `src/ops/`'s `unsafe`-forbidding layer, and everything else is a pure
+/// function unit-testable in place.
+pub fn gemv_tile_choice(
+    m: u64,
+    n: u64,
+    k: u64,
+    bits: u32,
+    a_bytes: u64,
+    wg: u32,
+) -> Result<((u32, u32), GemvTileSource), GemvTileRefusal> {
+    gemv_tile_choice_with(
+        m,
+        n,
+        k,
+        bits,
+        a_bytes,
+        wg,
+        std::env::var_os(ENV_GEMV_TILE).as_deref(),
+    )
+}
+
 /// Translate `MatMulNBits` into one block-dequantising GEMV dispatch.
 fn matmul_nbits_gemv(
     spec: &OpSpec,
@@ -597,14 +851,27 @@ fn matmul_nbits_gemv(
 
     let wg = gemv_workgroup(blocks_per_col as u64);
     let a_bytes = dtype.byte_size() as u64;
-    let (cols, rows) = gemv_tile(
+    // FAIL CLOSED before anything downstream reads `cols`/`rows`: an explicit
+    // `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` that is malformed, non-UTF-8, out of range, or otherwise
+    // illegal refuses this node here rather than substituting any default. `resolve`/`bind_output`
+    // above only assign buffer tokens; no pipeline is built and no dispatch recorded until below.
+    let (cols, rows) = match gemv_tile_choice(
         m_total.max(0) as u64,
         n as u64,
         k as u64,
         bits as u32,
         a_bytes,
         wg,
-    );
+    ) {
+        Ok((tile, _source)) => tile,
+        Err(reason) => {
+            crate::counters::record_gemv_tile_refusal(&reason.to_string());
+            return Err(EpError::Internal(format!(
+                "`{}` refused an explicit {ENV_GEMV_TILE}: {reason}",
+                node.op_type
+            )));
+        }
+    };
     let mut push = Vec::with_capacity(16);
     for v in [m_total, k, n, blocks_per_col] {
         push.extend_from_slice(&(v as u32).to_le_bytes());
@@ -1354,6 +1621,393 @@ mod tests {
                 "junk {junk:?} means default"
             );
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    // `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` — strict parsing, exact-bound legality, and the
+    // three-way `gemv_tile_choice_with` combinator. Opposite polarity from `GEMV_MAX_ROWS`
+    // above: every one of these refuses rather than falling back to a default.
+    // ──────────────────────────────────────────────────────────────────────────────────────
+
+    /// Every accepted string is exactly `[1-9][0-9]*,[1-9][0-9]*` or `0,<same>` / `<same>,0` (the
+    /// latter two are legal *grammar*, refused later as [`GemvTileRefusal::Zero`] — a distinct
+    /// concern from whether the field parses at all).
+    #[test]
+    fn the_parser_accepts_exactly_the_strict_grammar() {
+        assert_eq!(parse_gemv_tile(std::ffi::OsStr::new("16,2")), Ok((16, 2)));
+        assert_eq!(parse_gemv_tile(std::ffi::OsStr::new("8,4")), Ok((8, 4)));
+        assert_eq!(parse_gemv_tile(std::ffi::OsStr::new("1,1")), Ok((1, 1)));
+        // No leading zero except the bare digit `0` itself.
+        assert_eq!(parse_gemv_tile(std::ffi::OsStr::new("10,20")), Ok((10, 20)));
+    }
+
+    #[test]
+    fn the_parser_refuses_every_malformed_shape_before_dispatch() {
+        // Field count: missing comma, extra commas, empty string. `","` itself splits into two
+        // (empty) fields, so it is a `MalformedField` case below, not a field-count case here.
+        for (s, expect_fields) in [("", 1), ("16", 1), ("16,2,4", 3), ("16,2,", 3)] {
+            assert_eq!(
+                parse_gemv_tile(std::ffi::OsStr::new(s)),
+                Err(GemvTileRefusal::WrongFieldCount(expect_fields)),
+                "input {s:?}"
+            );
+        }
+        // Malformed fields: sign, leading zero, whitespace, radix prefix, non-digit, empty field
+        // (including both fields empty, `","`).
+        for s in [
+            "-16,2", "+16,2", "016,2", "16,02", " 16,2", "16, 2", "0x10,2", "16,two", ",2", "16,",
+            ",",
+        ] {
+            assert_eq!(
+                parse_gemv_tile(std::ffi::OsStr::new(s)),
+                Err(GemvTileRefusal::MalformedField),
+                "input {s:?}"
+            );
+        }
+        // Overflow: all-digit but does not fit u32.
+        assert_eq!(
+            parse_gemv_tile(std::ffi::OsStr::new("4294967296,2")),
+            Err(GemvTileRefusal::Overflow)
+        );
+        assert_eq!(
+            parse_gemv_tile(std::ffi::OsStr::new("16,99999999999999999999")),
+            Err(GemvTileRefusal::Overflow)
+        );
+        // Zero: lexically valid, semantically illegal.
+        assert_eq!(
+            parse_gemv_tile(std::ffi::OsStr::new("0,2")),
+            Err(GemvTileRefusal::Zero)
+        );
+        assert_eq!(
+            parse_gemv_tile(std::ffi::OsStr::new("16,0")),
+            Err(GemvTileRefusal::Zero)
+        );
+        assert_eq!(
+            parse_gemv_tile(std::ffi::OsStr::new("0,0")),
+            Err(GemvTileRefusal::Zero)
+        );
+    }
+
+    /// Non-UTF-8 is refused as its own reason, never folded into "unset" or lossily substituted.
+    /// Constructed platform-natively (`OsString` from an unpaired UTF-16 surrogate on Windows)
+    /// rather than assumed, so this proves the real `OsStr::to_str` boundary, not a stand-in.
+    #[test]
+    fn a_non_utf8_value_refuses_rather_than_being_treated_as_unset() {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            // 0xD800 is a lone high surrogate: not representable as UTF-8, valid as a Windows
+            // environment-variable byte sequence.
+            let raw = std::ffi::OsString::from_wide(&[0xD800]);
+            assert!(
+                raw.to_str().is_none(),
+                "test fixture must actually be invalid UTF-8"
+            );
+            assert_eq!(parse_gemv_tile(&raw), Err(GemvTileRefusal::NonUtf8));
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let raw = std::ffi::OsStr::from_bytes(&[0xFF, 0xFE, b',', b'2']);
+            assert_eq!(parse_gemv_tile(raw), Err(GemvTileRefusal::NonUtf8));
+        }
+    }
+
+    /// Legality checks exactly the bounds the compiled shader and dispatch enforce — the
+    /// **compiled** `GEMV_MAX_ROWS`, not `gemv_max_rows()`'s environment-adjusted ceiling, and no
+    /// requirement that `cols | n` or `rows | m` (both are real, correct, always-available tail-
+    /// tile code paths in `q_gemv.comp`, not shapes the shader cannot run).
+    #[test]
+    fn legality_matches_every_compiled_bound_and_nothing_else() {
+        let wg = gemv_workgroup(96); // K=3072, block 32 -> 96 blocks/col
+        let n = 3072u64;
+
+        // Exactly at each ceiling *alone*: legal.
+        assert!(gemv_tile_legality(GEMV_MAX_COLS, 1, wg, n).is_ok());
+        assert!(gemv_tile_legality(1, GEMV_MAX_ROWS, wg, n).is_ok());
+        // The two per-field ceilings can never be requested *together*: `GEMV_MAX_COLS *
+        // GEMV_MAX_ROWS` (16*4=64) exceeds `GEMV_MAX_TILE` (32) regardless of `wg` — this is the
+        // accumulator budget, not a mistake in either individual bound.
+        assert_eq!(
+            gemv_tile_legality(GEMV_MAX_COLS, GEMV_MAX_ROWS, wg, n),
+            Err(GemvTileRefusal::IllegalTile { cols: 16, rows: 4 }),
+            "16*4=64 > GEMV_MAX_TILE=32, independent of wg"
+        );
+        // One past each ceiling: illegal, and the *specific* reason names the field that failed.
+        assert_eq!(
+            gemv_tile_legality(GEMV_MAX_COLS + 1, 1, wg, n),
+            Err(GemvTileRefusal::IllegalCols {
+                cols: GEMV_MAX_COLS + 1
+            })
+        );
+        assert_eq!(
+            gemv_tile_legality(1, GEMV_MAX_ROWS + 1, wg, n),
+            Err(GemvTileRefusal::IllegalRows {
+                cols: 1,
+                rows: GEMV_MAX_ROWS + 1
+            })
+        );
+        // wg*cols over the shared-reduction budget for a large workgroup.
+        assert_eq!(
+            gemv_tile_legality(16, 1, 256, n),
+            Err(GemvTileRefusal::IllegalReduction {
+                cols: 16,
+                rows: 1,
+                wg: 256
+            }),
+            "256*16=4096 > GEMV_RED_WORDS=2048"
+        );
+        // groupCountX over the guaranteed floor: only reachable with a very wide N and a narrow
+        // `cols`, exactly the shape the unset search never produces on its own.
+        let huge_n = u64::from(GEMV_MAX_GROUPS_X) + 1;
+        assert_eq!(
+            gemv_tile_legality(1, 1, wg, huge_n),
+            Err(GemvTileRefusal::IllegalGroupsX { cols: 1, n: huge_n })
+        );
+        assert!(
+            gemv_tile_legality(2, 1, wg, huge_n).is_ok(),
+            "doubling cols must have halved groupCountX back under the floor"
+        );
+
+        // `cols`/`rows` not dividing `n`/`m` is legal — the tail-tile path is real.
+        assert!(gemv_tile_legality(5, 3, wg, 3072).is_ok());
+    }
+
+    /// `m <= 1` is the decode null control: an unset variable, an unset-but-legal value's numeric
+    /// effect, and a legal explicit override at decode all coincide on the *number*, but only the
+    /// `Selected`/`Overridden` split at `m > 1` is affected by the environment; the `Decode`
+    /// variant marks that decode was never actually consulting it.
+    #[test]
+    fn decode_ignores_a_legal_override_but_still_validates_it() {
+        let wg = gemv_workgroup(96);
+        let (n, k, bits, a_bytes) = (3072u64, 3072u64, 4u32, 2u64);
+        let expect_decode = (gemv_cols(n, wg), 1u32);
+
+        // Unset at m=1: decode geometry, tagged `Decode`.
+        assert_eq!(
+            gemv_tile_choice_with(1, n, k, bits, a_bytes, wg, None),
+            Ok((expect_decode, GemvTileSource::Decode))
+        );
+        // A legal override at m=1: parsed and validated, but its *value* is set aside — decode
+        // gets its usual geometry, not `(8, 4)`.
+        let legal = std::ffi::OsStr::new("8,4");
+        assert_eq!(
+            gemv_tile_choice_with(1, n, k, bits, a_bytes, wg, Some(legal)),
+            Ok((expect_decode, GemvTileSource::Decode)),
+            "a legal override must not move decode off its null-control geometry"
+        );
+        // An *illegal* override still refuses at m=1 — validation is unconditional, only the
+        // application of a legal value is conditional on m>1.
+        let illegal = std::ffi::OsStr::new("999,2");
+        assert_eq!(
+            gemv_tile_choice_with(1, n, k, bits, a_bytes, wg, Some(illegal)),
+            Err(GemvTileRefusal::IllegalCols { cols: 999 }),
+            "decode must not silently swallow an illegal request either"
+        );
+    }
+
+    /// Unset at `m > 1` is exactly [`gemv_tile`] — no duplicated default logic.
+    #[test]
+    fn unset_at_prefill_is_byte_identical_to_the_existing_selector() {
+        let wg = gemv_workgroup(96);
+        let (n, k, bits, a_bytes) = (3072u64, 3072u64, 4u32, 2u64);
+        for m in [2u64, 3, 4, 5, 8, 32, 128] {
+            assert_eq!(
+                gemv_tile_choice_with(m, n, k, bits, a_bytes, wg, None),
+                Ok((
+                    gemv_tile(m, n, k, bits, a_bytes, wg),
+                    GemvTileSource::Selected
+                )),
+                "m={m}"
+            );
+        }
+    }
+
+    /// A legal override at `m > 1` is substituted whole, checked against the **compiled**
+    /// `GEMV_MAX_ROWS` — an explicit request is meant to win over
+    /// `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS`'s ceiling, not be refused by it. This function never
+    /// reads that other variable at all (see its absence from every parameter/body here); the
+    /// end-to-end proof that this reaches all the way through the real environment and the real
+    /// `matmul_nbits_gemv` seam lives in `rust/tests/gemv_tile_seam.rs`.
+    #[test]
+    fn an_explicit_legal_override_is_substituted_at_the_compiled_ceiling() {
+        let wg = gemv_workgroup(96);
+        let (n, k, bits, a_bytes) = (3072u64, 3072u64, 4u32, 2u64);
+        let over = std::ffi::OsStr::new("8,4"); // rows=4 == the compiled GEMV_MAX_ROWS
+        assert_eq!(
+            gemv_tile_choice_with(8, n, k, bits, a_bytes, wg, Some(over)),
+            Ok(((8, 4), GemvTileSource::Overridden))
+        );
+        // `(16, 2)` is what the unset search would have picked for this exact shape; the override
+        // producing something different is the point being proven, not an accident of the shape.
+        assert_eq!(
+            gemv_tile_choice_with(8, n, k, bits, a_bytes, wg, None).map(|(t, _)| t),
+            Ok((16, 2))
+        );
+    }
+
+    /// An illegal override at `m > 1` refuses with the exact reason the legality function raised
+    /// — no substitution, no silent fallback to the unset search.
+    #[test]
+    fn an_illegal_override_at_prefill_refuses_rather_than_falling_back() {
+        let wg = gemv_workgroup(96);
+        let (n, k, bits, a_bytes) = (3072u64, 3072u64, 4u32, 2u64);
+        let over = std::ffi::OsStr::new("16,8"); // rows=8 > compiled GEMV_MAX_ROWS=4
+        assert_eq!(
+            gemv_tile_choice_with(8, n, k, bits, a_bytes, wg, Some(over)),
+            Err(GemvTileRefusal::IllegalRows { cols: 16, rows: 8 })
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    // The equal-traffic mathematics (issue #81's B3): weight bytes depend only on `rows` (via
+    // `ceil(M/rows)`, when `cols | n`); `(16, 2)` and `(8, 4)` tie on weight traffic only at the
+    // two smallest `M` where both `ceil(M/2)` and `ceil(M/4)` are trivially `1` (`M ∈ {1, 2}`),
+    // and for every `M >= 3` `(16, 2)` names strictly *more* weight bytes than `(8, 4)` — but the
+    // ratio is `ceil(M/2)/ceil(M/4)`, which is **not** a constant 2x (it is 1.5x at M=5, 6, 2x at
+    // M=3, 4, 7, 8, ...). They are equal on *total named bytes* only under `bits == 2 * a_bytes`
+    // and `M ≡ 0 or 3 (mod 4)`.
+    // ──────────────────────────────────────────────────────────────────────────────────────
+
+    /// Weight bytes are a function of `rows` alone (for `cols | n`): `(16, 2)` makes `ceil(M/2)`
+    /// weight passes and `(8, 4)` makes `ceil(M/4)`. These trivially agree at `M ∈ {1, 2}` (both
+    /// `ceil(*, 2)` == `ceil(*, 4)` == 1 there) and — exhaustively verified below, not asserted —
+    /// never agree again for any `M` in `3..=200`, with a ratio that is *not* a fixed 2x. This is
+    /// the exact claim PR #92 got backwards ("both make `ceil(M/2)` passes") and Niobe's B3
+    /// rejected: weight traffic is never governed by `cols` at all, and the two arms' weight
+    /// bytes are equal only in the degenerate `M <= 2` case, never as a general rule.
+    #[test]
+    fn weight_traffic_depends_on_rows_alone_and_ties_only_at_m_le_2() {
+        let (n, k, bits) = (4096u64, 4096u64, 4u32);
+        let weight_only =
+            |cols: u32, rows: u32, m: u64| gemv_named_bytes(m, n, k, bits, 0, cols, rows);
+        for m in 1u64..=200 {
+            let w_16_2 = weight_only(16, 2, m);
+            let w_8_4 = weight_only(8, 4, m);
+            let expect_16_2 =
+                u128::from(m.div_ceil(2)) * u128::from(n) * u128::from(k) * u128::from(bits) / 8;
+            let expect_8_4 =
+                u128::from(m.div_ceil(4)) * u128::from(n) * u128::from(k) * u128::from(bits) / 8;
+            assert_eq!(w_16_2, expect_16_2, "m={m}");
+            assert_eq!(w_8_4, expect_8_4, "m={m}");
+            if m <= 2 {
+                assert_eq!(
+                    w_16_2, w_8_4,
+                    "m={m}: both ceil(m/2) and ceil(m/4) are 1 at this M — a degenerate tie, not \
+                     a general equal-weight-traffic rule"
+                );
+            } else {
+                assert!(
+                    w_16_2 > w_8_4,
+                    "m={m}: (16,2) must name strictly more weight bytes than (8,4) once M>2"
+                );
+            }
+        }
+        // The ratio is not a constant 2x: it tracks ceil(m/2)/ceil(m/4) exactly, which takes at
+        // least two distinct values across this range.
+        let ratio = |m: u64| weight_only(16, 2, m) as f64 / weight_only(8, 4, m) as f64;
+        assert!(
+            (ratio(3) - 2.0).abs() < 1e-9,
+            "m=3: ceil(3/2)=2, ceil(3/4)=1 -> 2.0x"
+        );
+        assert!(
+            (ratio(5) - 1.5).abs() < 1e-9,
+            "m=5: ceil(5/2)=3, ceil(5/4)=2 -> 1.5x"
+        );
+    }
+
+    /// Independently derived equality condition for **total named bytes** (weight + activation)
+    /// between `(16, 2)` and `(8, 4)`, for `bits=4, a_bytes=2` (int4 weights, fp16 activations —
+    /// the Phi-3.5 shape this issue is about): equality holds iff `M ≡ 0 or 3 (mod 4)`.
+    ///
+    /// Proof sketch (`bits == 2 * a_bytes` is the load-bearing sub-condition):
+    /// `total(cols,rows) = ceil(M/rows)*N*K*bits/8 + ceil(M/rows)*(N/cols)*rows*K*a_bytes`. With
+    /// `cols*a_bytes` held so that `(16,2)` and `(8,4)` both reduce their activation term to
+    /// `ceil(M/rows) * rows * (K*a_bytes) * (N/cols)`, and `bits=4=2*a_bytes` makes the weight
+    /// term at rows=2 equal to `2 * ceil(M/2) * (base)`. Writing `M = 4q + r`, `ceil(M/2)` and
+    /// `2*ceil(M/4)` agree exactly at `r ∈ {0, 3}` and differ at `r ∈ {1, 2}` — verified
+    /// exhaustively below rather than asserted.
+    #[test]
+    fn total_named_bytes_ties_between_16_2_and_8_4_iff_m_is_0_or_3_mod_4() {
+        // Phi-3.5's own shape: bits=4 (int4), a_bytes=2 (fp16). `bits == 2*a_bytes` is exactly the
+        // sub-condition the proof needs; changing either constant below must be expected to move
+        // the equality residues, which is exactly why this is computed, not hard-coded.
+        let (n, k, bits, a_bytes) = (4096u64, 4096u64, 4u32, 2u64);
+        assert_eq!(
+            bits,
+            2 * u32::try_from(a_bytes).unwrap(),
+            "the load-bearing sub-condition"
+        );
+
+        let total =
+            |cols: u32, rows: u32, m: u64| gemv_named_bytes(m, n, k, bits, a_bytes, cols, rows);
+        let mut ties = Vec::new();
+        let mut differs = Vec::new();
+        for m in 1u64..=200 {
+            let a = total(16, 2, m);
+            let b = total(8, 4, m);
+            if a == b {
+                ties.push(m);
+            } else {
+                differs.push((m, a, b));
+            }
+            let residue_predicts_tie = m % 4 == 0 || m % 4 == 3;
+            assert_eq!(
+                a == b,
+                residue_predicts_tie,
+                "m={m} (m mod 4 = {}): total bytes {a} vs {b}, predicted tie={residue_predicts_tie}",
+                m % 4
+            );
+        }
+        assert!(
+            !ties.is_empty() && !differs.is_empty(),
+            "both regimes must be witnessed"
+        );
+
+        // The exact witnessed values from issue #81's own probe range, quoted precisely rather
+        // than approximated: M=2 ties at 2.00x, M=4 exact tie, M=5 at 1.33x (4/3).
+        let ratio = |m: u64| total(8, 4, m) as f64 / total(16, 2, m) as f64;
+        assert!(
+            (ratio(2) - 2.0).abs() < 1e-9,
+            "M=2 ratio must be exactly 2.00"
+        );
+        assert_eq!(total(16, 2, 4), total(8, 4, 4), "M=4 is an exact tie");
+        assert!(
+            (ratio(5) - 4.0 / 3.0).abs() < 1e-9,
+            "M=5 ratio must be exactly 4/3 (1.33..)"
+        );
+        // M=128 (≡0 mod 4, Phi-3.5's own prefill width) ties — the only M an equal-traffic A/B
+        // may use; it does not generalise to M2 or M5, which is the exact overgeneralisation
+        // B3 rejected.
+        assert_eq!(
+            total(16, 2, 128),
+            total(8, 4, 128),
+            "M=128 ties (128 mod 4 == 0)"
+        );
+    }
+
+    /// Planted-mutant guard: if the weight term's divisor were changed to depend on `cols`
+    /// (the exact wrong shape of PR #92's claim — "both make `ceil(M/2)` passes"), this fails.
+    /// Left as an explicit computed assertion, not a hard-coded number, so a future edit to
+    /// [`gemv_named_bytes`] that reintroduces that coupling is caught here rather than only in a
+    /// manually-planted mutation run.
+    #[test]
+    fn planted_wrong_claim_both_make_ceil_m_over_2_weight_passes_is_false() {
+        let (n, k, bits) = (4096u64, 4096u64, 4u32);
+        let m = 5u64; // the sharpest witnessed counterexample: ratio 1.33x, not 1.0x
+        let weight_16_2 = gemv_named_bytes(m, n, k, bits, 0, 16, 2);
+        let weight_8_4 = gemv_named_bytes(m, n, k, bits, 0, 8, 4);
+        let wrong_claim_both_ceil_m_over_2 =
+            u128::from(m.div_ceil(2)) * u128::from(n) * u128::from(k) * u128::from(bits) / 8;
+        assert_eq!(
+            weight_16_2, wrong_claim_both_ceil_m_over_2,
+            "(16,2) really does make ceil(M/2) weight passes"
+        );
+        assert_ne!(
+            weight_8_4, wrong_claim_both_ceil_m_over_2,
+            "(8,4) at M=5 makes ceil(5/4)=2 weight passes, not ceil(5/2)=3 — the false claim \
+             PR #92 made and Niobe's B3 rejected must not hold here"
+        );
     }
 
     #[test]

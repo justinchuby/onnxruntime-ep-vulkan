@@ -15,7 +15,14 @@
 //! it restores the pre-tile decode geometry without a rebuild. A fallback nobody has demonstrated
 //! is a paragraph, not a fallback.
 
-use onnxruntime_vulkan_ep::ops::quant::{gemv_tile, gemv_workgroup};
+// `tile()` below drives `gemv_tile_choice` — the exact function `matmul_nbits_gemv` calls — not
+// `gemv_tile` directly. A prior version of this test called `gemv_tile` directly, which made it a
+// dead seam relative to production: a change that broke `matmul_nbits_gemv`'s delegation to
+// `gemv_tile_choice` (e.g. calling something else, or calling `gemv_tile` with the wrong
+// arguments) would have left every assertion here green, because none of them touched the actual
+// function production calls. Driving `gemv_tile_choice` with `ONNXRUNTIME_EP_VULKAN_GEMV_TILE`
+// left unset makes this test observe the real delegation: it fails if that call is ever replaced.
+use onnxruntime_vulkan_ep::ops::quant::{ENV_GEMV_TILE, gemv_tile_choice, gemv_workgroup};
 
 const VAR: &str = "ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS";
 
@@ -26,7 +33,12 @@ const BITS: u32 = 4;
 const A_BYTES: u64 = 2;
 
 fn tile(m: u64) -> (u32, u32) {
-    gemv_tile(m, N, K, BITS, A_BYTES, gemv_workgroup(K / 32))
+    gemv_tile_choice(m, N, K, BITS, A_BYTES, gemv_workgroup(K / 32))
+        .expect(
+            "ONNXRUNTIME_EP_VULKAN_GEMV_TILE is unset throughout this file; gemv_tile_choice \
+                 must fall through to gemv_tile verbatim and never refuse",
+        )
+        .0
 }
 
 /// Everything in one test, deliberately: `cargo test` runs the tests in a file on several threads
@@ -34,9 +46,13 @@ fn tile(m: u64) -> (u32, u32) {
 #[test]
 fn the_environment_can_pin_the_row_tile_back_to_the_decode_geometry() {
     let wg = gemv_workgroup(K / 32);
-    // SAFETY: this is the only test in this binary and it is the only writer of this variable in
-    // the process; the value is removed again before the test returns.
+    // SAFETY: this is the only test in this binary and it is the only writer of these variables
+    // in the process; both are removed again before the test returns. `ENV_GEMV_TILE` is not this
+    // test's subject — it is cleared so a stray value in the ambient environment cannot make
+    // `gemv_tile_choice` refuse or substitute a tile, which would defeat the point of driving the
+    // real seam here.
     unsafe { std::env::remove_var(VAR) };
+    unsafe { std::env::remove_var(ENV_GEMV_TILE) };
 
     let default_decode = tile(1);
     let default_prefill = tile(8);
