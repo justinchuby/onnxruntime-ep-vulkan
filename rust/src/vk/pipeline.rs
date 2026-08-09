@@ -514,22 +514,43 @@ fn build_spec_info_data(
 mod tests {
     use super::*;
 
-    /// A real, spec-sanctioned forced failure of `vkAllocateDescriptorSets`, run against a live
-    /// device: the pool is created with `max_sets(1)`, the first allocation succeeds and the
-    /// second must fail with `ERROR_OUT_OF_POOL_MEMORY`.
+    /// An attempted live-device falsifier for the failure arm of `vkAllocateDescriptorSets`: the
+    /// pool is created with `max_sets(1)`, the first allocation succeeds, and a second allocation
+    /// is attempted from the exhausted pool.
     ///
     /// # Why this test and not a source check (issue #88 / blocker B2)
     ///
     /// The gate this replaces read `pipeline.rs` and asserted that the counter increment appeared
     /// after the success token. That is satisfied by any file whose tokens are in that order,
     /// including one in which the increment has been moved into the failure arm. This drives the
-    /// production function, forces the production failure, and asserts on the published counter.
+    /// production function and, when it can force the production failure, asserts on the
+    /// published counter.
     ///
-    /// Portability: pool exhaustion is a runtime error every conformant Vulkan 1.1 implementation
-    /// must report (`VK_ERROR_OUT_OF_POOL_MEMORY`), not undefined behaviour, and nothing here
-    /// depends on a vendor, a device kind or an extension. The test skips — loudly — when no
-    /// loader, ICD or capable device is present, because a skipped test that says why is a
-    /// different fact from a passing one.
+    /// # Portability (corrected; see issue #88 revision N+1)
+    ///
+    /// The Vulkan 1.1 spec (§14.2.3, `vkAllocateDescriptorSets`) says an allocation that would
+    /// exceed a pool's `maxSets` or per-type descriptor counts **may** fail with
+    /// `VK_ERROR_OUT_OF_POOL_MEMORY` or `VK_ERROR_FRAGMENTED_POOL` — not that it *must*. An
+    /// implementation is free to satisfy an allocation from a `max_sets(1)` pool's slack (e.g. an
+    /// arena-style allocator that does not track `maxSets` exactly), and remain fully conformant.
+    /// This was previously asserted as an unconditional requirement ("every conformant Vulkan 1.1
+    /// implementation must report..."), which is false and was refuted empirically: Linux
+    /// lavapipe (Mesa 26.1.3) legitimately accepts the second allocation, while Windows lavapipe
+    /// and NVIDIA/AMD drivers observed so far refuse it. Neither behaviour is a bug.
+    ///
+    /// Because the forced failure is not spec-guaranteed, this test cannot assert it as a
+    /// precondition. When the device accepts the second allocation, exhaustion was never
+    /// observed and the test reports a **loud, non-fatal, inconclusive** result (via `eprintln!`)
+    /// rather than failing the lane or passing vacuously. The counter-invariance assertion — a
+    /// failed allocation must never move the success counter — is retained and enforced **only**
+    /// when an actual forced failure is observed on this device. The host-free seam mutation
+    /// battery in `counters.rs` (`descriptor_pool_outcome`/`descriptor_set_write_outcome` driven
+    /// with real `None`/`Some` values plus ten held-out mis-wired reimplementations) remains the
+    /// authoritative, portable, behavioural proof of counter polarity; this test is a best-effort
+    /// live-device corroboration on top of it, not a replacement for it.
+    ///
+    /// The test still skips — loudly — when no loader, ICD or capable device is present, because
+    /// a skipped test that says why is a different fact from a passing one.
     #[test]
     fn a_forced_descriptor_set_allocation_failure_leaves_the_success_counter_untouched() {
         use crate::vk::device::Device;
@@ -618,21 +639,44 @@ mod tests {
             "one written descriptor set must count exactly once"
         );
 
-        // ── Forced failure arm: the pool was created with max_sets(1). ──
-        // SAFETY: same contract as above; the call is expected to fail, not to be invalid.
+        // ── Attempted forced-failure arm: the pool was created with max_sets(1). ──
+        //
+        // The spec (§14.2.3) permits, but does not require, this allocation to fail: an
+        // implementation MAY satisfy it from slack the pool happens to have. If it does, the
+        // forced failure this test exists to exercise was not observed on this device, and
+        // asserting `second.is_none()` unconditionally would assert spec-unguaranteed behaviour
+        // — exactly the defect corrected here (issue #88 revision N+1 / reviewer blocker B1).
+        // SAFETY: same contract as above; the call may succeed or fail, both are valid outcomes.
         let second = unsafe { pool.allocate_and_write(layout, &buffers) };
-        assert!(
-            second.is_none(),
-            "a pool created with max_sets(1) must refuse a second allocation with \
-             VK_ERROR_OUT_OF_POOL_MEMORY — if this device accepted it, the forced failure did \
-             not occur and the assertion below would be vacuous"
-        );
-        let after_failure = crate::counters::resources::descriptor_sets_written();
-        assert_eq!(
-            after_failure, after_success,
-            "a FAILED descriptor-set allocation moved the success counter \
-             {after_success} -> {after_failure}"
-        );
+        match second {
+            None => {
+                // Forced failure was observed: the counter-invariance assertion is meaningful
+                // and is enforced.
+                let after_failure = crate::counters::resources::descriptor_sets_written();
+                assert_eq!(
+                    after_failure, after_success,
+                    "a FAILED descriptor-set allocation moved the success counter \
+                     {after_success} -> {after_failure}"
+                );
+            }
+            Some(_) => {
+                // This device satisfied a second allocation from a max_sets(1) pool — a
+                // spec-conformant outcome (e.g. observed on Linux lavapipe / Mesa 26.1.3). The
+                // forced failure this test exists to exercise did not occur here, so the
+                // counter-invariance assertion below would be checking nothing. Report loudly
+                // and inconclusively rather than asserting an unguaranteed precondition or
+                // passing silently as if the invariant had been exercised.
+                eprintln!(
+                    "[INCONCLUSIVE] a_forced_descriptor_set_allocation_failure...: this device \
+                     satisfied a second allocation from a max_sets(1) descriptor pool, so no \
+                     forced failure occurred (Vulkan §14.2.3 permits but does not require \
+                     vkAllocateDescriptorSets to fail when a pool is exhausted). This device did \
+                     not fall into the failure arm this test corroborates; the portable, \
+                     device-free proof of counter polarity in counters.rs (the seam mutation \
+                     battery) remains authoritative and is unaffected."
+                );
+            }
+        }
 
         // SAFETY: nothing was submitted, so no set is in use; everything here was created by us.
         unsafe {

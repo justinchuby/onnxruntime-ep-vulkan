@@ -6757,9 +6757,17 @@ The gates are behavioural: a forced `None` must leave the counter unchanged; ten
 mis-wired reimplementations (`count_on_failure`, `count_always`, `count_never`, `count_twice`,
 `swallow`, `fabricate`, and four boolean analogues) run through the *same* protocol and every one
 must go red; and a held-out **correct** implementation must pass it, so a protocol that rejects
-everything is itself detected. On top of that, `vk/pipeline.rs` exhausts a real `max_sets(1)`
-descriptor pool on a live device and asserts the counter does not move. `queue_submits_completed`
-counts only submissions that reached fence completion, and its existing guard is preserved.
+everything is itself detected. This seam mutation battery is entirely device-free and is the
+**authoritative** proof of counter polarity. On top of it, `vk/pipeline.rs` additionally attempts
+to exhaust a real `max_sets(1)` descriptor pool on a live device as a best-effort corroboration.
+The Vulkan 1.1 spec (§14.2.3) permits, but does not require, `vkAllocateDescriptorSets` to fail
+when a pool is exhausted, so this live-device attempt is not guaranteed to observe a failure on
+every implementation — Linux lavapipe (Mesa 26.1.3) legitimately satisfies the second allocation,
+while Windows lavapipe and the drivers checked so far refuse it. When exhaustion is not observed,
+the test reports a loud, non-fatal inconclusive result instead of asserting spec-unguaranteed
+behaviour; the counter-invariance check is enforced only when a forced failure actually occurs.
+`queue_submits_completed` counts only submissions that reached fence completion, and its existing
+guard is preserved.
 
 **`RecordPath` is wired, and the answer is that this engine does not amortise.**
 `vk::session::dispatch_ort` now resolves `FIRST_RECORD` against a session-held set of recorded
@@ -6769,9 +6777,15 @@ like `RERECORD`, which means *a re-record caused by a shape-key change* and is a
 every `Compute`, so there is no replay path to take, and the summary says so rather than letting a
 zero read as "replays were rare". Absence prints `UNOBSERVED`, never `0`.
 
-**Portability.** Nothing added here is device-specific or above Vulkan 1.1. The callback boundary
-is host-side `Instant` arithmetic on the microsecond axis every other host span already uses; the
-resource counters are folded at existing call sites; no new extension, feature or limit is queried.
+**Portability.** The tracing and counters instrumentation itself is device-independent and
+requires nothing above Vulkan 1.1: the callback boundary is host-side `Instant` arithmetic on the
+microsecond axis every other host span already uses, the resource counters are folded at existing
+call sites, and no new extension, feature or limit is queried. The one exception is the live-device
+descriptor-pool falsifier in `vk/pipeline.rs::tests`, which is deliberately **not** claimed as
+portable in this sense: the Vulkan 1.1 spec permits an implementation to satisfy an allocation a
+`max_sets(1)` pool would be expected to refuse, so whether that test observes the failure it
+targets is device-dependent, and it degrades to a loud inconclusive result rather than asserting a
+behaviour the spec does not guarantee.
 
 **Extent, stated.** The ABI is bumped to version 9 with the eight new fields **appended** and the
 layout hash registered, so no existing offset moves. The four resource counters and the four

@@ -1341,10 +1341,18 @@ the post-return broken-commitment disclosure. It therefore covers the FFI status
 `OrtNodeComputeInfo`, because there is nothing to attribute in that case and no subgraph identity
 to attribute it to. The span is scope-based; **no claim is made about a number of return paths.**
 
-**Portability.** Nothing here is device-specific or above Vulkan 1.1: the callback boundary is
-host-side `Instant` arithmetic on the same microsecond axis every other host span uses, and the
-four new resource counters are incremented from the existing call sites. No new Vulkan feature,
-extension or limit is required or queried.
+**Portability.** The tracing/counters instrumentation is device-independent and requires nothing
+above Vulkan 1.1: the callback boundary is host-side `Instant` arithmetic on the same microsecond
+axis every other host span uses, and the four new resource counters are incremented from the
+existing call sites. No new Vulkan feature, extension or limit is required or queried. The
+authoritative, portable proof that the counters only move on success is the host-free seam
+mutation battery in `counters.rs` (real `None`/`Some` values through the seam plus ten held-out
+mis-wired reimplementations). A best-effort live-device corroboration in `vk/pipeline.rs::tests`
+additionally attempts to exhaust a real `max_sets(1)` descriptor pool, but that attempt is *not*
+portable in the same sense: Vulkan 1.1 §14.2.3 permits, but does not require, an implementation to
+fail such an allocation, and Linux lavapipe (Mesa 26.1.3) legitimately accepts it while Windows
+lavapipe refuses it. When exhaustion is not observed, the test reports a loud inconclusive result
+instead of asserting spec-unguaranteed behaviour.
 
 **Limitations, stated.** (1) No run with this instrument in the binary has been captured, so no
 outer residual has been measured on any device and none is quoted. (2) The outer residual is a
