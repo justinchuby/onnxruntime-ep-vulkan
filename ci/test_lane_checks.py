@@ -1626,6 +1626,223 @@ def test_history_reading_op_test_jobs_check_out_full_history_issue_24():
 
 
 # ---------------------------------------------------------------------------------------
+# ISSUE #104 -- exit 2 from ci/check_ledger_census.py must fail the REAL shipped lane, not
+# a duplicated test-only rule. The known limit that names this gap
+# (`ledger_census_is_unobservable_in_a_shallow_clone`, ci/open_reds.json) closes only once
+# BOTH halves of its own closes_when are true: the workflow declares fetch-depth 0 for this
+# job (already covered above, issue #24) AND a lane test asserts that exit 2 fails the lane
+# -- which is what the tests below add.
+# ---------------------------------------------------------------------------------------
+
+
+def _ledger_census_step_block() -> str:
+    """The `run:`/comment text of the real 'Proof-ledger census' step, isolated from its
+    neighbours -- the exact production step issue #104 asks this suite to exercise,
+    rather than a reinvented rule (same pattern as `_landing_step_block` below)."""
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    start = ci_text.index(
+        "- name: Proof-ledger census (has a proof ever gone missing?)"
+    )
+    end = ci_text.index("- name: Proof-ledger census negative control", start)
+    return ci_text[start:end]
+
+
+def test_ci_yml_contains_no_continue_on_error_issue_104():
+    """Mechanical form of the prose at the top of ci.yml (issue #104): the file claims
+    `continue-on-error` appears NOWHERE in it as a live directive, and that claim is now a
+    check rather than only a comment somebody could let drift. A step marked
+    `continue-on-error: true` turns any exit code -- including check_ledger_census.py's
+    exit 2 -- into a green step, which is exactly the failure mode the census's
+    `history_is_complete()` guard exists to make impossible; the workflow-level absence of
+    the switch is what lets that guard's exit code reach the lane's own colour at all.
+
+    This deliberately checks live (non-comment) lines only: the file's own top-of-file
+    banner and a second job's comment block both SAY `continue-on-error` as prose, twice,
+    to make exactly this claim -- a bare substring check would be falsified by the prose
+    that states the rule, not by a violation of it.
+    """
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    live_lines = "\n".join(
+        line for line in ci_text.splitlines() if not line.strip().startswith("#")
+    )
+    assert "continue-on-error" not in live_lines, (
+        "ci.yml's own top-of-file prose claims this switch appears nowhere in the file as "
+        "a live directive; its presence anywhere turns a step's real exit code into a "
+        "green regardless of what the step reported, silently, per step"
+    )
+
+
+def test_ledger_census_step_is_a_bare_run_with_no_error_suppression_issue_104():
+    """The real production step, not a reinvented rule (issue #104). Asserts on the exact
+    'Proof-ledger census' step's text: it must still invoke check_ledger_census.py with no
+    `continue-on-error` on the step and no shell-level error swallowing on the `run:` line
+    itself (`||`, `;`, `&&`, a redirect) -- any of which would make a genuine exit 2 (or
+    any other non-zero exit) invisible to the job, and therefore to the lane."""
+    step = _ledger_census_step_block()
+    assert "check_ledger_census.py" in step, "the step's own command moved or was renamed"
+    assert "continue-on-error" not in step, (
+        "the ledger-census step is marked continue-on-error -- a real truncated-history "
+        "exit 2 (or any other failure) would no longer fail the job"
+    )
+    run_match = re.search(r"run:[ \t]*python ci/check_ledger_census\.py[^\n]*", step)
+    assert run_match is not None, f"could not find the exact run line in:\n{step}"
+    run_line = run_match.group(0)
+    for suppressor in ("||", ";", "&&", ">"):
+        assert suppressor not in run_line, (
+            f"the ledger-census run line contains {suppressor!r}, which can swallow or "
+            f"redirect its real exit code before the job sees it: {run_line!r}"
+        )
+
+
+def _shallow_clone_of_this_repo(tmp_path: Path) -> Path:
+    """A genuine `--depth 1` clone of this worktree's own history -- the real defect
+    shape issue #104's two-polarity proof replays, not a synthetic `.git/shallow` file
+    hand-written to resemble one (same reasoning as
+    `test_negative_control_reports_unobservable_not_a_pass_on_a_shallow_clone` above)."""
+    shallow = tmp_path / "shallow_ledger_census"
+    clone = subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", "--no-local", REPO_ROOT.as_uri(), str(shallow)],
+        capture_output=True, text=True,
+    )
+    assert clone.returncode == 0, f"scratch shallow clone failed: {clone.stderr}"
+    return shallow
+
+
+def test_ledger_census_exit_2_on_truncated_history_fails_the_real_lane_step_issue_104(tmp_path):
+    """The two-polarity production-path proof issue #104 asks for, run against the exact
+    command the shipped `lane-checks` job executes (extracted by
+    `_ledger_census_step_block`, not reinvented here).
+
+    POSITIVE: run it against this checkout's own full history. A `git rev-list
+    --full-history` denominator is available, so the truncated-history guard must NOT
+    fire -- whatever the census's own verdict on the ledger turns out to be, it must not
+    be an instrument outage.
+
+    NEGATIVE: run the SAME command against a genuine `--depth 1` clone. The guard must
+    fire, with exit 2 and the named token -- and, because a bare `run:` step with no
+    `continue-on-error` and no shell-level suppression (asserted immediately above) fails
+    its job on any non-zero exit, that exit 2 is exactly what fails the real workflow
+    lane, not merely the script in isolation.
+    """
+    step = _ledger_census_step_block()
+    run_match = re.search(r"run:[ \t]*(python ci/check_ledger_census\.py[^\n]*)", step)
+    assert run_match is not None, f"could not find the exact run line in:\n{step}"
+    command = run_match.group(1).strip()
+    assert command == "python ci/check_ledger_census.py --json bench/results/ledger-census.json", (
+        f"the shipped command text changed to {command!r} -- update this proof (or update "
+        "the workflow if this copy is now stale) rather than silently drift apart from the "
+        "workflow it exists to cover"
+    )
+    argv = command.split()[1:]  # drop the interpreter name, keep the script + its own flags
+
+    positive = subprocess.run(
+        [sys.executable, *argv], cwd=str(REPO_ROOT), capture_output=True, text=True,
+    )
+    assert positive.returncode != 2, (
+        f"the full-history checkout reported ERROR(instrument=truncated_history) -- "
+        f"either this worktree really is shallow (unexpected) or the guard is "
+        f"over-firing:\n{positive.stdout}\n{positive.stderr}"
+    )
+    assert "ERROR(instrument=truncated_history)" not in positive.stdout
+
+    shallow = _shallow_clone_of_this_repo(tmp_path)
+    negative = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "ci" / "check_ledger_census.py"),
+         "--repo", str(shallow), "--json", str(tmp_path / "shallow-ledger-census.json")],
+        capture_output=True, text=True,
+    )
+    assert negative.returncode == 2, (
+        f"a genuinely shallow checkout must make this exact production command exit 2, "
+        f"the one exit code that is neither PASS nor a green FAIL, so a bare `run:` step "
+        f"with no continue-on-error fails the job on it:\n{negative.stdout}\n{negative.stderr}"
+    )
+    assert "ERROR(instrument=truncated_history)" in negative.stdout, negative.stdout
+
+
+def test_mutating_the_guard_to_mask_exit_2_would_pass_a_shallow_clone_issue_104(tmp_path):
+    """Falsifiability arm: prove the NEGATIVE half of the test above is not vacuously
+    green.
+
+    Mutates a scratch copy of check_ledger_census.py so the truncated-history branch
+    returns 0 (a clean pass) instead of 2, and re-runs it against the same kind of shallow
+    clone the test above used. If this repository's guard were ever weakened this way, the
+    exit code the test above asserts on would go from 2 to 0 -- silently, on any lane not
+    asserting on the exact code -- turning the production-path proof from
+    red-on-a-shallow-clone (correct) into green-on-a-shallow-clone: the exact failure named
+    by both issue #104 and the known limit
+    ``ledger_census_is_unobservable_in_a_shallow_clone``.
+    """
+    src = (CI_DIR / "check_ledger_census.py").read_text(encoding="utf-8")
+    old = (
+        '    if not complete and not args.allow_shallow:\n'
+        '        print(f"ERROR(instrument=truncated_history): {LEDGER_REL} census cannot run here.")\n'
+        '        print(f"  {why}")\n'
+        '        print(\n'
+        '            "  This is deliberately NOT a PASS and NOT a FAIL. The screen\'s whole claim is "\n'
+        '            "about what the history contains; with the history truncated it has no "\n'
+        '            "denominator, and an answer computed from a denominator that silently shrank is "\n'
+        '            "the failure this screen exists to prevent, arriving through the clone depth."\n'
+        '        )\n'
+        '        return 2\n'
+    )
+    assert src.count(old) == 1, (
+        "the truncated-history guard's exact text moved or changed -- update this "
+        "mutation target to match it, rather than silently stop exercising the branch it "
+        "means to falsify"
+    )
+    mutant_src = src.replace(old, old.replace("return 2\n", "return 0\n", 1), 1)
+    assert mutant_src != src, "mutation did not apply"
+
+    # Written as a sibling of the real script (not under tmp_path): check_ledger_census.py
+    # resolves its own directory at import time and inserts it on sys.path to reach
+    # proof_retirement.py et al. A copy dropped anywhere else fails on that import before
+    # it ever reaches the branch this test means to exercise.
+    mutant_path = CI_DIR / "_mutant_check_ledger_census_issue_104.py"
+    mutant_path.write_text(mutant_src, encoding="utf-8")
+    try:
+        shallow = _shallow_clone_of_this_repo(tmp_path)
+        mutated = subprocess.run(
+            [sys.executable, str(mutant_path), "--repo", str(shallow),
+             "--json", str(tmp_path / "mutant-shallow-ledger-census.json")],
+            capture_output=True, text=True,
+        )
+    finally:
+        mutant_path.unlink(missing_ok=True)
+    assert mutated.returncode == 0, (
+        "this mutant is supposed to mask the truncated-history guard's exit 2 down to a "
+        f"clean 0 -- if it did not, the mutation is not exercising the branch this test "
+        f"means to falsify:\n{mutated.stdout}\n{mutated.stderr}"
+    )
+    assert "ERROR(instrument=truncated_history)" in mutated.stdout, (
+        "the mutant should still PRINT the truncated-history message (only the exit code "
+        "is masked) -- otherwise this exercises a different mutation than the one this "
+        "docstring names"
+    )
+
+
+def test_mutating_ci_yml_to_swallow_the_ledger_census_step_turns_the_structural_test_red_issue_104():
+    """Falsifiability arm for the structural (non-subprocess) test above: prove that a
+    `continue-on-error: true` reintroduced onto the real ledger-census step would be
+    caught, by applying the exact same assertion logic
+    `test_ledger_census_step_is_a_bare_run_with_no_error_suppression_issue_104` uses to a
+    text-mutated copy of the step, rather than merely asserting the mutation string is
+    absent today."""
+    step = _ledger_census_step_block()
+    old = "run: python ci/check_ledger_census.py --json bench/results/ledger-census.json"
+    assert step.count(old) == 1, "the step's run line moved or changed -- update this mutant"
+    mutated_step = step.replace(old, old + "\n        continue-on-error: true", 1)
+    assert mutated_step != step
+
+    # Re-apply the real test's own assertion against the mutated text and show it now
+    # fails where it passed a moment ago against the unmutated step.
+    with pytest.raises(AssertionError):
+        assert "continue-on-error" not in mutated_step, (
+            "the ledger-census step is marked continue-on-error -- a real truncated-"
+            "history exit 2 (or any other failure) would no longer fail the job"
+        )
+
+
+# ---------------------------------------------------------------------------------------
 # ISSUE #24 -- a real import-closure contract, not a string search.
 #
 # Morpheus's round-N review of PR #32 (APPROVE WITH REQUIRED FIXES) rejected the first
