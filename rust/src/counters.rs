@@ -65,7 +65,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// [`COUNTERS_LAYOUT_HASH`], which the compiler computes from the actual field offsets: a layout
 /// change that does not appear in [`COUNTERS_LAYOUT_REGISTRY`] under this version fails the build.
 /// See [`counters_layout_hash`].
-pub const COUNTERS_ABI_VERSION: u32 = 8;
+pub const COUNTERS_ABI_VERSION: u32 = 9;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -745,6 +745,41 @@ pub struct VulkanEpCounters {
     /// parse time, so the form read as `KEY-ABSENT` and was indistinguishable from a form nobody
     /// had ever proven.
     pub subject_changed_declines: u64,
+    /// `vkCreateDescriptorPool` calls that returned a pool. **ABI version 9** (issue #88).
+    ///
+    /// See [`resources`] for why the four resource counters are written by one seam each and by
+    /// nothing else.
+    pub descriptor_pools_created: u64,
+    /// Descriptor sets allocated **and written** — `vkAllocateDescriptorSets` followed by
+    /// `vkUpdateDescriptorSets`, counted only once both have happened. **ABI version 9.**
+    ///
+    /// One counter for the pair on purpose: an allocated-but-unwritten set is not a usable set,
+    /// and a counter that says otherwise reports a resource the dispatch cannot bind.
+    pub descriptor_sets_written: u64,
+    /// `vkAllocateCommandBuffers` calls that returned a command buffer. **ABI version 9.**
+    pub command_buffers_allocated: u64,
+    /// Queue submissions that reached fence completion — `vkQueueSubmit` succeeded **and** the
+    /// subsequent `vkWaitForFences` returned success. **ABI version 9.**
+    ///
+    /// A submit that was accepted and then lost the device is not a completed submit, which is
+    /// why this is counted after the wait rather than at the submit call.
+    pub queue_submits_completed: u64,
+    /// Compute calls that recorded this subgraph's command buffer for the **first** time.
+    /// **ABI version 9.** See [`crate::trace::RecordPath`].
+    pub record_path_first_record: u64,
+    /// Compute calls that replayed a cached command buffer. **ABI version 9.**
+    ///
+    /// **Zero by construction in this engine** — `dispatch_ort` re-records on every call, so
+    /// there is no replay path to take. It is published anyway because the other three counters
+    /// are only readable *against* it: without this field, "no replays happened" and "this build
+    /// has no replay path" would share a spelling (R12).
+    pub record_path_replay: u64,
+    /// Compute calls re-recorded because the **input shape key changed**. **ABI version 9.**
+    pub record_path_rerecord: u64,
+    /// Compute calls that recorded again because no cached command buffer exists at all — the
+    /// steady state of this engine, and a different fact from `record_path_rerecord`.
+    /// **ABI version 9.**
+    pub record_path_recorded_again: u64,
 }
 }
 
@@ -856,6 +891,11 @@ pub const COUNTERS_LAYOUT_REGISTRY: &[(u32, u64)] = &[
     // that can no longer happen — and `subject_changed_declines` appends the population that used
     // to be invisible because a stale entry was deleted at parse time and read as `KEY-ABSENT`.
     (8, 0xdf71_f4e6_a592_71b3),
+    // v9 = issue #88. Eight appended fields: the four resource-lifecycle successes
+    // (`descriptor_pools_created`, `descriptor_sets_written`, `command_buffers_allocated`,
+    // `queue_submits_completed`) and the four-way record-path breakdown. Append-only; nothing
+    // above moved, so a v8 reader that respects `struct_size` still reads every field it knows.
+    (9, 0x2c9b_58a3_8ce6_4930),
 ];
 
 /// The build fails here when the struct changed and the version did not.
@@ -1190,6 +1230,179 @@ pub fn record_subgraph(live: bool) {
 
 pub fn record_compute_call() {
     COMPUTE_CALLS.fetch_add(1, ORD);
+}
+
+/// Vulkan resource-lifecycle successes, and the **only** code in this crate that can write them.
+///
+/// # Why this module exists at all (issue #88, reviewer blocker B2)
+///
+/// The first attempt at these counters put a `fetch_add` next to each successful `vkCreate*` /
+/// `vkAllocate*` call and defended it with a *lexical* gate: a test that read the source and
+/// checked the increment appeared after the success token. That gate is green for any file in
+/// which the increment merely *appears* in the right order — including one where the increment
+/// has been moved into the failure arm, which is the single defect it was written to prevent.
+///
+/// The fix is structural rather than textual. Each counter is a `static` **private to this
+/// module**, and the only write to it lives in a seam that takes the call's outcome and returns
+/// it unchanged:
+///
+/// ```ignore
+/// let pool = counters::resources::descriptor_pool_outcome(match create(...) {
+///     Ok(p) => Some(p),
+///     Err(e) => { log::error!("..."); None }
+/// });
+/// ```
+///
+/// Three properties follow, none of which depend on where any line sits in a file:
+///
+/// 1. **A failure cannot increment a success counter**, because the seam counts the
+///    success-shaped value and nothing else can reach the static.
+/// 2. **Deleting the seam call cannot inflate a counter** — it can only make it read zero, which
+///    is a visible, falsifiable state rather than a plausible one.
+/// 3. The seam is *value-preserving*, so a call site cannot silently change behaviour by adding
+///    it: `f(x)` and `x` are interchangeable to the compiler, which is what lets both arms route
+///    through it.
+///
+/// The behavioural gates for all of this are in this file's `mod tests`
+/// (`resource_seam_protocol`), together with held-out mutants (`count_always`,
+/// `count_on_failure`, `count_never`, `count_twice`, `swallow`) that each turn the shipped
+/// protocol red.
+///
+/// # These are successes, and only successes
+///
+/// There is deliberately no `descriptor_pool_failures` here. A failure counter shaped like a
+/// success counter invites `pools_created + pools_failed` arithmetic on numbers that are not a
+/// partition of anything a caller asked for. Failures are already visible: they log at `error`
+/// and they propagate to `compute_failures`.
+pub mod resources {
+    use super::{AtomicU64, ORD};
+
+    /// `vkCreateDescriptorPool` calls that returned a pool.
+    static DESCRIPTOR_POOLS_CREATED: AtomicU64 = AtomicU64::new(0);
+    /// Descriptor sets that were allocated *and* written.
+    static DESCRIPTOR_SETS_WRITTEN: AtomicU64 = AtomicU64::new(0);
+    /// `vkAllocateCommandBuffers` calls that returned a command buffer.
+    static COMMAND_BUFFERS_ALLOCATED: AtomicU64 = AtomicU64::new(0);
+    /// Submissions that reached fence completion.
+    static QUEUE_SUBMITS_COMPLETED: AtomicU64 = AtomicU64::new(0);
+
+    /// Publish the outcome of a descriptor-pool creation. Returns `outcome` unchanged.
+    ///
+    /// Call on **both** arms. `None` is counted as nothing, which is the point.
+    pub fn descriptor_pool_outcome<T>(outcome: Option<T>) -> Option<T> {
+        if outcome.is_some() {
+            DESCRIPTOR_POOLS_CREATED.fetch_add(1, ORD);
+        }
+        outcome
+    }
+
+    /// Publish the outcome of a descriptor-set allocation **and write**. Returns `outcome`
+    /// unchanged.
+    ///
+    /// Must be called after `vkUpdateDescriptorSets`, not after the allocation: an allocated set
+    /// with no descriptors written is not a set any dispatch can bind, and counting it would
+    /// report a resource that does not exist in the sense the caller means.
+    pub fn descriptor_set_write_outcome<T>(outcome: Option<T>) -> Option<T> {
+        if outcome.is_some() {
+            DESCRIPTOR_SETS_WRITTEN.fetch_add(1, ORD);
+        }
+        outcome
+    }
+
+    /// Publish the outcome of a command-buffer allocation. Returns `outcome` unchanged.
+    pub fn command_buffer_outcome<T>(outcome: Option<T>) -> Option<T> {
+        if outcome.is_some() {
+            COMMAND_BUFFERS_ALLOCATED.fetch_add(1, ORD);
+        }
+        outcome
+    }
+
+    /// Publish whether a submission reached fence completion. Returns `completed` unchanged.
+    ///
+    /// `true` only when `vkQueueSubmit` succeeded *and* the fence wait returned success. A lost
+    /// device fails the wait and therefore is not counted here, which is what keeps this number
+    /// from disagreeing with `device_losses`.
+    pub fn queue_submit_outcome(completed: bool) -> bool {
+        if completed {
+            QUEUE_SUBMITS_COMPLETED.fetch_add(1, ORD);
+        }
+        completed
+    }
+
+    pub fn descriptor_pools_created() -> u64 {
+        DESCRIPTOR_POOLS_CREATED.load(ORD)
+    }
+    pub fn descriptor_sets_written() -> u64 {
+        DESCRIPTOR_SETS_WRITTEN.load(ORD)
+    }
+    pub fn command_buffers_allocated() -> u64 {
+        COMMAND_BUFFERS_ALLOCATED.load(ORD)
+    }
+    pub fn queue_submits_completed() -> u64 {
+        QUEUE_SUBMITS_COMPLETED.load(ORD)
+    }
+
+    pub(super) fn reset() {
+        DESCRIPTOR_POOLS_CREATED.store(0, ORD);
+        DESCRIPTOR_SETS_WRITTEN.store(0, ORD);
+        COMMAND_BUFFERS_ALLOCATED.store(0, ORD);
+        QUEUE_SUBMITS_COMPLETED.store(0, ORD);
+    }
+}
+
+/// One slot per [`crate::trace::RecordPath`], indexed by the same private mapping the tracer's
+/// summary uses.
+static RECORD_PATHS: [AtomicU64; 4] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+/// Fold one `Compute` call's recording path into the process counters.
+///
+/// Called unconditionally by [`crate::trace::VulkanTracer::record_path`], including on runs with
+/// no tracing: whether the engine re-records the command buffer on every inference is a fact
+/// about the build, not about the observability flags someone happened to set.
+pub fn record_command_buffer_path(path: crate::trace::RecordPath) {
+    RECORD_PATHS[record_path_slot(path)].fetch_add(1, ORD);
+}
+
+/// The `RecordPath` → slot mapping, declared once here and matched against the tracer's in
+/// `trace::tests`. Not derived from `RecordPath::ALL`'s order at runtime, because a `const`
+/// reordering there would silently re-label every published counter.
+fn record_path_slot(path: crate::trace::RecordPath) -> usize {
+    use crate::trace::RecordPath as P;
+    match path {
+        P::FirstRecord => 0,
+        P::Replay => 1,
+        P::Rerecord => 2,
+        P::RecordedAgain => 3,
+    }
+}
+
+/// The four record-path counts, in slot order.
+pub fn record_path_counts() -> [u64; 4] {
+    [
+        RECORD_PATHS[0].load(ORD),
+        RECORD_PATHS[1].load(ORD),
+        RECORD_PATHS[2].load(ORD),
+        RECORD_PATHS[3].load(ORD),
+    ]
+}
+
+/// Three-state token for the record-path breakdown, because four zeros are ambiguous.
+///
+/// `UNOBSERVED` — no `Compute` call reached the recording decision, so the four counts are the
+/// absence of a measurement rather than a measurement of zero (R7/R12). `MEASURED` — at least one
+/// did. A reader that only sees the integers cannot tell "the engine recorded nothing" from "the
+/// instrument never ran", and those have opposite implications for every number beside them.
+pub fn record_path_state() -> &'static str {
+    if record_path_counts().iter().all(|&n| n == 0) {
+        "UNOBSERVED"
+    } else {
+        "MEASURED"
+    }
 }
 
 pub fn record_compute_failure() {
@@ -2444,6 +2657,7 @@ pub fn snapshot() -> VulkanEpCounters {
     // is two readers of one fact, which is how the pair could have been swapped in one of them
     // and stayed plausible in both.
     let (outputs_device_resident, outputs_host_resident) = output_residency();
+    let paths = record_path_counts();
     VulkanEpCounters {
         struct_size: std::mem::size_of::<VulkanEpCounters>() as u32,
         abi_version: COUNTERS_ABI_VERSION,
@@ -2466,6 +2680,14 @@ pub fn snapshot() -> VulkanEpCounters {
         device_unattributed_claims: DEVICE_UNATTRIBUTED_CLAIMS.load(ORD),
         proven_elsewhere_claims: PROVEN_ELSEWHERE_CLAIMS.load(ORD),
         subject_changed_declines: SUBJECT_CHANGED_DECLINES.load(ORD),
+        descriptor_pools_created: resources::descriptor_pools_created(),
+        descriptor_sets_written: resources::descriptor_sets_written(),
+        command_buffers_allocated: resources::command_buffers_allocated(),
+        queue_submits_completed: resources::queue_submits_completed(),
+        record_path_first_record: paths[0],
+        record_path_replay: paths[1],
+        record_path_rerecord: paths[2],
+        record_path_recorded_again: paths[3],
     }
 }
 
@@ -2530,6 +2752,10 @@ pub fn reset() {
     DEVICE_UNATTRIBUTED_CLAIMS.store(0, ORD);
     PROVEN_ELSEWHERE_CLAIMS.store(0, ORD);
     SUBJECT_CHANGED_DECLINES.store(0, ORD);
+    resources::reset();
+    for slot in &RECORD_PATHS {
+        slot.store(0, ORD);
+    }
     if let Ok(mut seen) = DEVICE_UNATTRIBUTED_FORMS.lock() {
         seen.clear();
     }
@@ -2599,6 +2825,15 @@ impl VulkanEpCounters {
              \"broken_commitment_warn_channel\": \"{}\",\n  \
              \"compute_failures_injected\": {},\n  \
              \"queue_submit_contentions\": {},\n  \
+             \"descriptor_pools_created\": {},\n  \
+             \"descriptor_sets_written\": {},\n  \
+             \"command_buffers_allocated\": {},\n  \
+             \"queue_submits_completed\": {},\n  \
+             \"record_path_first_record\": {},\n  \
+             \"record_path_replay\": {},\n  \
+             \"record_path_rerecord\": {},\n  \
+             \"record_path_recorded_again\": {},\n  \
+             \"record_path_state\": \"{}\",\n  \
              \"fault_injection\": \"{}\",\n  \
              \"proven_key_lookups\": {},\n  \
              \"ledger_hits\": {},\n  \
@@ -2683,6 +2918,15 @@ impl VulkanEpCounters {
             broken_commitment_channel(),
             COMPUTE_FAILURES_INJECTED.load(ORD),
             QUEUE_SUBMIT_CONTENTIONS.load(ORD),
+            self.descriptor_pools_created,
+            self.descriptor_sets_written,
+            self.command_buffers_allocated,
+            self.queue_submits_completed,
+            self.record_path_first_record,
+            self.record_path_replay,
+            self.record_path_rerecord,
+            self.record_path_recorded_again,
+            record_path_state(),
             if crate::ep::fault_injection_active() {
                 "ACTIVE"
             } else {
@@ -3061,6 +3305,394 @@ pub unsafe fn fill(out: *mut c_void, out_bytes: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------------------------------------------------------------------------------------
+    // Issue #88 / blocker B2 — the resource seams, tested by behaviour and by held-out mutation
+    // ---------------------------------------------------------------------------------------
+
+    /// The contract every resource seam must satisfy, expressed once.
+    ///
+    /// This is the *protocol*, not a test: the shipped seams are run through it, and so are a
+    /// battery of deliberately-wrong mutants that must each fail it. A gate that only ever sees
+    /// the correct implementation cannot tell "this passes" from "this always passes", which is
+    /// precisely how the lexical find-order guards this replaces went green while the defect they
+    /// named — an increment living in the failure arm — stayed expressible.
+    ///
+    /// Returns `Err(reason)` rather than panicking so the mutation controls can assert failure.
+    fn check_option_seam(
+        label: &str,
+        seam: &dyn Fn(Option<u32>) -> Option<u32>,
+        read: &dyn Fn() -> u64,
+    ) -> Result<(), String> {
+        // ── Arm 1: the FORCED FAILURE. The success counter must not move. ──
+        let before = read();
+        let passed_through = seam(None);
+        if passed_through.is_some() {
+            return Err(format!(
+                "{label}: the seam invented a value on the failure arm"
+            ));
+        }
+        let after_failure = read();
+        if after_failure != before {
+            return Err(format!(
+                "{label}: a FAILED outcome moved the success counter {before} -> {after_failure}"
+            ));
+        }
+
+        // ── Arm 2: the success. Exactly one increment, and the value survives. ──
+        let sentinel = 0x5eed_u32;
+        let passed_through = seam(Some(sentinel));
+        if passed_through != Some(sentinel) {
+            return Err(format!(
+                "{label}: the seam must return its argument unchanged, got {passed_through:?}"
+            ));
+        }
+        let after_success = read();
+        if after_success != before + 1 {
+            return Err(format!(
+                "{label}: a SUCCESSFUL outcome moved the counter {before} -> {after_success}, \
+                 expected exactly +1"
+            ));
+        }
+
+        // ── Arm 3: a second failure after a success. Still no movement. ──
+        if seam(None).is_some() {
+            return Err(format!(
+                "{label}: the seam invented a value on the failure arm"
+            ));
+        }
+        let after_second_failure = read();
+        if after_second_failure != after_success {
+            return Err(format!(
+                "{label}: a FAILED outcome after a success moved the counter \
+                 {after_success} -> {after_second_failure}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The same contract for the boolean seam (`queue_submit_outcome`).
+    fn check_bool_seam(
+        label: &str,
+        seam: &dyn Fn(bool) -> bool,
+        read: &dyn Fn() -> u64,
+    ) -> Result<(), String> {
+        let before = read();
+        if seam(false) {
+            return Err(format!("{label}: the seam turned a failure into a success"));
+        }
+        let after_failure = read();
+        if after_failure != before {
+            return Err(format!(
+                "{label}: an INCOMPLETE submission moved the success counter \
+                 {before} -> {after_failure}"
+            ));
+        }
+        if !seam(true) {
+            return Err(format!("{label}: the seam turned a success into a failure"));
+        }
+        let after_success = read();
+        if after_success != before + 1 {
+            return Err(format!(
+                "{label}: a COMPLETED submission moved the counter {before} -> {after_success}, \
+                 expected exactly +1"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Descriptor-pool creation: forcing the failure leaves `descriptor_pools_created` unchanged.
+    ///
+    /// The seam here is the same function `DispatchDescriptorPool::new` routes **both** of its
+    /// arms through, and the static it writes is private to `counters::resources`, so this is a
+    /// statement about the only code in the crate that can move that number.
+    #[test]
+    fn a_failed_descriptor_pool_creation_never_moves_the_success_counter() {
+        let _g = crate::allocator::ledger::test_lock();
+        check_option_seam(
+            "descriptor_pool",
+            &resources::descriptor_pool_outcome::<u32>,
+            &resources::descriptor_pools_created,
+        )
+        .unwrap();
+    }
+
+    /// Descriptor-set allocation/write: the failure arm of `allocate_and_write` returns through
+    /// this seam with `None`, and the success arm only after `vkUpdateDescriptorSets`.
+    #[test]
+    fn a_failed_descriptor_set_allocation_never_moves_the_success_counter() {
+        let _g = crate::allocator::ledger::test_lock();
+        check_option_seam(
+            "descriptor_set_write",
+            &resources::descriptor_set_write_outcome::<u32>,
+            &resources::descriptor_sets_written,
+        )
+        .unwrap();
+    }
+
+    /// Command-buffer allocation: `CommandPool::new` destroys the pool and returns through this
+    /// seam with `None`.
+    #[test]
+    fn a_failed_command_buffer_allocation_never_moves_the_success_counter() {
+        let _g = crate::allocator::ledger::test_lock();
+        check_option_seam(
+            "command_buffer",
+            &resources::command_buffer_outcome::<u32>,
+            &resources::command_buffers_allocated,
+        )
+        .unwrap();
+    }
+
+    /// Queue submit: counted after the fence wait, so a failed wait (including a lost device) is
+    /// not a completed submission. This guard already worked before issue #88 and is preserved.
+    #[test]
+    fn an_incomplete_queue_submission_never_moves_the_success_counter() {
+        let _g = crate::allocator::ledger::test_lock();
+        check_bool_seam(
+            "queue_submit",
+            &resources::queue_submit_outcome,
+            &resources::queue_submits_completed,
+        )
+        .unwrap();
+    }
+
+    /// HELD-OUT MUTATION CONTROLS: every way a success counter can be mis-wired must turn the
+    /// shipped protocol red.
+    ///
+    /// These mutants never ship — they exist only here — and they are run through
+    /// `check_option_seam`, the *same* function the four gates above use. If someone weakens the
+    /// protocol to make a real seam pass, this test starts passing mutants and goes red itself.
+    /// That is the property the replaced lexical guards did not have: a source-position check is
+    /// satisfied by any file whose tokens are in the right order, including one where the
+    /// increment has moved into the failure arm.
+    #[test]
+    fn the_seam_protocol_rejects_every_way_an_increment_can_be_mis_wired() {
+        let _g = crate::allocator::ledger::test_lock();
+        static MUTANT: AtomicU64 = AtomicU64::new(0);
+        let read = || MUTANT.load(ORD);
+
+        // The exact defect B2 names: the increment moved into the failure arm.
+        let count_on_failure = |o: Option<u32>| {
+            if o.is_none() {
+                MUTANT.fetch_add(1, ORD);
+            }
+            o
+        };
+        // Counts both arms — a "success" counter that is really a call counter.
+        let count_always = |o: Option<u32>| {
+            MUTANT.fetch_add(1, ORD);
+            o
+        };
+        // The increment deleted: the counter is stuck at zero and reads as "nothing happened".
+        let count_never = |o: Option<u32>| o;
+        // Double-counted success — an inflated resource tally.
+        let count_twice = |o: Option<u32>| {
+            if o.is_some() {
+                MUTANT.fetch_add(2, ORD);
+            }
+            o
+        };
+        // Counts correctly but is not value-preserving, so routing a call site through it would
+        // silently change production behaviour.
+        let swallow = |o: Option<u32>| {
+            if o.is_some() {
+                MUTANT.fetch_add(1, ORD);
+            }
+            None
+        };
+        // Counts correctly on the success arm but fabricates a value on the failure arm.
+        let fabricate = |o: Option<u32>| {
+            if o.is_some() {
+                MUTANT.fetch_add(1, ORD);
+                o
+            } else {
+                Some(0)
+            }
+        };
+
+        /// The seam's own shape, named once so the mutant table below reads as a table.
+        type OptionSeam<'a> = &'a dyn Fn(Option<u32>) -> Option<u32>;
+
+        let mutants: [(&str, OptionSeam); 6] = [
+            ("count_on_failure", &count_on_failure),
+            ("count_always", &count_always),
+            ("count_never", &count_never),
+            ("count_twice", &count_twice),
+            ("swallow", &swallow),
+            ("fabricate", &fabricate),
+        ];
+        for (name, m) in mutants {
+            MUTANT.store(0, ORD);
+            assert!(
+                check_option_seam(name, m, &read).is_err(),
+                "the shipped seam protocol accepted the `{name}` mutant — it has no teeth, and \
+                 the four resource gates above are decorative"
+            );
+        }
+
+        // Inversion control: a correct implementation, held out from production, must PASS the
+        // same protocol. Without this, a protocol that rejects everything would look strong.
+        MUTANT.store(0, ORD);
+        let correct = |o: Option<u32>| {
+            if o.is_some() {
+                MUTANT.fetch_add(1, ORD);
+            }
+            o
+        };
+        check_option_seam("held_out_correct", &correct, &read)
+            .expect("the protocol must accept a correct implementation, or it rejects everything");
+    }
+
+    /// The boolean protocol needs its own mutants: `queue_submit_outcome` has a different shape.
+    #[test]
+    fn the_bool_seam_protocol_rejects_every_way_a_submit_count_can_be_mis_wired() {
+        let _g = crate::allocator::ledger::test_lock();
+        static MUTANT: AtomicU64 = AtomicU64::new(0);
+        let read = || MUTANT.load(ORD);
+
+        let count_on_failure = |b: bool| {
+            if !b {
+                MUTANT.fetch_add(1, ORD);
+            }
+            b
+        };
+        let count_always = |b: bool| {
+            MUTANT.fetch_add(1, ORD);
+            b
+        };
+        let count_never = |b: bool| b;
+        let force_success = |_b: bool| {
+            MUTANT.fetch_add(1, ORD);
+            true
+        };
+
+        let mutants: [(&str, &dyn Fn(bool) -> bool); 4] = [
+            ("count_on_failure", &count_on_failure),
+            ("count_always", &count_always),
+            ("count_never", &count_never),
+            ("force_success", &force_success),
+        ];
+        for (name, m) in mutants {
+            MUTANT.store(0, ORD);
+            assert!(
+                check_bool_seam(name, m, &read).is_err(),
+                "the shipped bool-seam protocol accepted the `{name}` mutant"
+            );
+        }
+
+        MUTANT.store(0, ORD);
+        let correct = |b: bool| {
+            if b {
+                MUTANT.fetch_add(1, ORD);
+            }
+            b
+        };
+        check_bool_seam("held_out_correct", &correct, &read)
+            .expect("the protocol must accept a correct implementation");
+    }
+
+    /// The four resource counters reach the published surfaces — the C ABI struct and the JSON —
+    /// and `reset()` clears them.
+    ///
+    /// R10: a counter that increments but never reaches an artifact is not an instrument.
+    #[test]
+    fn the_resource_counters_reach_the_abi_struct_and_the_json_and_reset_clears_them() {
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        assert_eq!(snapshot().descriptor_pools_created, 0);
+        resources::descriptor_pool_outcome(Some(1u8));
+        resources::descriptor_set_write_outcome(Some(1u8));
+        resources::command_buffer_outcome(Some(1u8));
+        resources::queue_submit_outcome(true);
+
+        let snap = snapshot();
+        assert_eq!(snap.descriptor_pools_created, 1);
+        assert_eq!(snap.descriptor_sets_written, 1);
+        assert_eq!(snap.command_buffers_allocated, 1);
+        assert_eq!(snap.queue_submits_completed, 1);
+
+        let json = snap.to_json();
+        for key in [
+            "descriptor_pools_created",
+            "descriptor_sets_written",
+            "command_buffers_allocated",
+            "queue_submits_completed",
+        ] {
+            assert!(
+                json.contains(&format!("\"{key}\": 1")),
+                "{key} did not reach the JSON artifact:\n{json}"
+            );
+        }
+
+        reset();
+        let cleared = snapshot();
+        assert_eq!(cleared.descriptor_pools_created, 0);
+        assert_eq!(cleared.descriptor_sets_written, 0);
+        assert_eq!(cleared.command_buffers_allocated, 0);
+        assert_eq!(cleared.queue_submits_completed, 0);
+    }
+
+    /// The record-path breakdown is published, and its three-state token distinguishes
+    /// "unobserved" from "measured as zero".
+    #[test]
+    fn the_record_path_breakdown_is_published_and_absence_is_not_zero() {
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        assert_eq!(
+            record_path_state(),
+            "UNOBSERVED",
+            "four zeros with no Compute call is the absence of a measurement, not a measurement"
+        );
+
+        record_command_buffer_path(crate::trace::RecordPath::FirstRecord);
+        record_command_buffer_path(crate::trace::RecordPath::RecordedAgain);
+        record_command_buffer_path(crate::trace::RecordPath::RecordedAgain);
+
+        assert_eq!(record_path_state(), "MEASURED");
+        assert_eq!(record_path_counts(), [1, 0, 0, 2]);
+        let snap = snapshot();
+        assert_eq!(snap.record_path_first_record, 1);
+        assert_eq!(snap.record_path_replay, 0);
+        assert_eq!(snap.record_path_rerecord, 0);
+        assert_eq!(snap.record_path_recorded_again, 2);
+        let json = snap.to_json();
+        assert!(json.contains("\"record_path_recorded_again\": 2"), "{json}");
+        assert!(
+            json.contains("\"record_path_state\": \"MEASURED\""),
+            "{json}"
+        );
+        reset();
+        assert!(
+            snapshot()
+                .to_json()
+                .contains("\"record_path_state\": \"UNOBSERVED\"")
+        );
+    }
+
+    /// Slot mapping: the counter's `RecordPath` → index map and the tracer's must agree, and each
+    /// path must land in its own slot.
+    #[test]
+    fn every_record_path_lands_in_its_own_published_slot() {
+        let _g = crate::allocator::ledger::test_lock();
+        for path in crate::trace::RecordPath::ALL {
+            reset();
+            record_command_buffer_path(path);
+            let counts = record_path_counts();
+            assert_eq!(
+                counts.iter().sum::<u64>(),
+                1,
+                "{path:?} incremented {} slots",
+                counts.iter().filter(|&&n| n > 0).count()
+            );
+            assert_eq!(
+                counts[record_path_slot(path)],
+                1,
+                "{path:?} landed in the wrong slot"
+            );
+            assert_eq!(record_path_state(), "MEASURED");
+        }
+        reset();
+    }
 
     /// The layout table is the struct's, field for field, and the offsets are the compiler's.
     ///

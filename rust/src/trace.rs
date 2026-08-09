@@ -35,29 +35,65 @@
 //!   own recording. It is a legitimate and important number — it is what the user waits for —
 //!   but it is an upper bound on kernel time, never the kernel time. [`Phase::FenceWait`].
 //! * **Transfers are explicit and they are ours to count.** Staging upload and readback are
-//!   separate spans with byte counts ([`Phase::Upload`], [`Phase::Readback`]), because on a
+//!   counted separately with byte counts ([`Phase::Upload`], [`Phase::Readback`]), because on a
 //!   discrete GPU they are frequently the whole story and a benchmark that hides them is
-//!   marketing (charter, and `DESIGN.md` §9.2).
-//! * **Recording is amortised, not per-inference.** `ENGINE.md` §6.1 records once and replays
-//!   the same `VkCommandBuffer`, so the first inference pays [`Phase::Record`] and the rest do
-//!   not. [`RecordPath`] distinguishes the two, and a shape-key change that forces a
-//!   re-record is called out as [`RecordPath::Rerecord`] — the Vulkan analogue of MLX's
-//!   compile-cache `RETRACE`.
+//!   marketing (charter, and `DESIGN.md` §9.2). They are folded into the summary by
+//!   [`VulkanTracer::record_transfer`] and **emit no span of their own** — see
+//!   [`Phase::emits_span`].
+//! * **Recording is NOT amortised in this engine, and now the instrument says so.**
+//!   `ENGINE.md` §6.1 describes a record-once / replay-many model. This engine does not implement
+//!   it: `dispatch_ort` resets and re-records the whole command buffer on every `Compute` call,
+//!   so [`RecordPath::Replay`] is unreachable here by construction and
+//!   [`RecordPath::RecordedAgain`] is what every call after the first reports. That is a
+//!   different fact from [`RecordPath::Rerecord`], which names a re-record *caused by a shape-key
+//!   change* — the Vulkan analogue of MLX's compile-cache `RETRACE`. Do not read a zero in the
+//!   replay column as "replays were rare"; it is zero because there is no replay path.
 //! * **Real GPU time comes from the device's own clock or not at all.** See below.
 //!
 //! # The span vocabulary
 //!
-//! | Span | cat | Clock | What it means |
-//! |---|---|---|---|
-//! | `vulkan.subgraph` | `ep` | host | One fused subgraph's whole `Compute` call. |
-//! | `vulkan.compile` | `ep.phase` | host | `Compile`: plan build, pipeline/SPIR-V creation, descriptor layout. Once per subgraph. |
-//! | `vulkan.prepack` | `ep.phase` | host | Weight prepack + upload of block-quantised initializers. Once per `PackKey`. |
-//! | `vulkan.record` | `ep.phase` | host | The `Compute` recording bracket. **Despite the name, dominated by the staging upload it contains (~96-98% on Phi-3.5), not by command recording (1-3%).** See `Phase::Record::caveat`. |
-//! | `vulkan.upload` | `ep.phase` | host | Host→device staging copy of inference inputs. Carries `bytes`. |
-//! | `vulkan.submit` | `ep.phase` | host | **`vkQueueSubmit` only.** Host bookkeeping. Measures no GPU work. |
-//! | `vulkan.fence_wait` | `ep.phase` | host | CPU blocked on the fence. Upper bound on GPU time, not GPU time. |
-//! | `vulkan.readback` | `ep.phase` | host | Device→host copy of outputs. Carries `bytes`. |
-//! | `vulkan.gpu.*` | `gpu` | **device** | GPU execution, from `VkQueryPool` timestamp queries only. Emitted on a separate device lane. |
+//! Three tiers, and they are **strictly nested but never interchangeable**. Read
+//! [`the two-level attribution model`](#the-two-level-attribution-model) below before subtracting
+//! anything.
+//!
+//! | Span | cat | tier | Clock | What it means |
+//! |---|---|---|---|---|
+//! | `vulkan.ort_compute_callback` | `ep.compute_call` | callback | host | The **whole `OrtNodeComputeInfo::Compute` callback body**, opened inside the `extern "C"` entry point and closed as it returns to ORT. Carries `outcome`. |
+//! | `vulkan.subgraph` | `ep` | dispatch | host | The **engine dispatch only** (`vk::session::dispatch_ort`). Entered after the callback's null/liveness/binding checks and **never opened at all** when one of them refuses. It is NOT the whole `Compute` call. |
+//! | `vulkan.compile` | `ep.phase` | phase | host | `Compile`: plan build, pipeline/SPIR-V creation, descriptor layout. Once per subgraph. |
+//! | `vulkan.prepack` | `ep.phase` | phase | host | Weight prepack + upload of block-quantised initializers. Once per `PackKey`. |
+//! | `vulkan.record` | `ep.phase` | phase | host | The `Compute` recording bracket. **Despite the name, dominated by the staging upload it contains (~96-98% on Phi-3.5), not by command recording (1-3%).** See `Phase::Record::caveat`. |
+//! | `vulkan.submit` | `ep.phase` | phase | host | **`vkQueueSubmit` only.** Host bookkeeping. Measures no GPU work. |
+//! | `vulkan.fence_wait` | `ep.phase` | phase | host | CPU blocked on the fence. Upper bound on GPU time, not GPU time. |
+//! | `vulkan.desc_alloc`, `vulkan.pipeline_lookup`, `vulkan.cmd_upload` | `ep.phase` | phase | host | Sub-phases **nested inside `vulkan.record`**; they carry `nested_in=record`. |
+//! | `vulkan.gpu.*` | `gpu` | — | **device** | GPU execution, from `VkQueryPool` timestamp queries only. Emitted on a separate device lane. |
+//!
+//! ## Phases that are folded into the summary but emit NO span
+//!
+//! [`Phase::Upload`] and [`Phase::Readback`] appear in the printed summary table and in
+//! [`Summary::phase_us`], but **production never calls [`VulkanTracer::phase`] for them**: the
+//! engine reports them through [`VulkanTracer::record_transfer`], which folds a duration without
+//! opening a span. A trace-JSON reader will therefore find no `vulkan.upload` / `vulkan.readback`
+//! events, and an analyser must not treat their absence as "no transfer happened". This is stated
+//! here because listing them as emitted spans is exactly the error that made
+//! `Phase::Readback::nested_in()` claim a parent it never had.
+//!
+//! ## The two-level attribution model
+//!
+//! Issue #88 asks where the host cost of a `Compute` call goes. There are **two** residuals and
+//! they live at different levels. They are disjoint quantities about different intervals, they
+//! have different denominators, and **they must never be added to each other or substituted for
+//! each other**:
+//!
+//! * **outer** = `Σ vulkan.ort_compute_callback − Σ vulkan.subgraph` — everything the callback
+//!   body does *around* the engine dispatch: ORT context reads, liveness and binding checks,
+//!   status construction, the post-return broken-commitment disclosure, and any call that
+//!   refused before a dispatch was attempted. Denominator: the callback total.
+//! * **inner** = `Σ vulkan.subgraph − Σ (top-level ep.phase spans)` — everything the dispatch
+//!   does *around* its own top-level phases. Denominator: the dispatch total.
+//!
+//! `bench/phases.py::two_level_attribution` computes both, labels them, and refuses to report
+//! either when the spans it needs are missing, empty, escaping, overlapping or unknown.
 //!
 //! # GPU timing
 //!
@@ -125,6 +161,32 @@ pub const ARG_BYTES: &str = "bytes";
 pub const ARG_FLOPS: &str = "flops";
 /// Trace arg key: selected shader variant.
 pub const ARG_VARIANT: &str = "kernel_variant";
+/// Trace arg key: which code region a span brackets, named in the source's own vocabulary.
+///
+/// Present so that an analyser identifies a span by a declared property rather than by matching
+/// its name, which is what let `vulkan.subgraph` be read as "the whole Compute call" for as long
+/// as its docstring said so.
+pub const ARG_BOUNDARY: &str = "boundary";
+/// Trace arg key: the level of the two-level attribution model this span belongs to.
+///
+/// One of [`TIER_CALLBACK`], [`TIER_DISPATCH`], [`TIER_PHASE`]. A residual computed between two
+/// spans of the *same* tier is a bug; carrying the tier is what makes that mechanically
+/// detectable instead of a naming convention.
+pub const ARG_TIER: &str = "tier";
+/// Trace arg key: what the ORT `Compute` callback returned. See [`ComputeOutcome`].
+pub const ARG_OUTCOME: &str = "outcome";
+
+/// [`ARG_BOUNDARY`] value for the `extern "C"` ORT `Compute` callback body (`ep::compute`).
+pub const BOUNDARY_ORT_COMPUTE_CALLBACK: &str = "ort_compute_callback";
+/// [`ARG_BOUNDARY`] value for the engine dispatch (`vk::session::dispatch_ort`).
+pub const BOUNDARY_ENGINE_DISPATCH: &str = "engine_dispatch";
+
+/// [`ARG_TIER`] value: the outer level — the whole callback body.
+pub const TIER_CALLBACK: &str = "callback";
+/// [`ARG_TIER`] value: the middle level — one engine dispatch, strictly inside a callback.
+pub const TIER_DISPATCH: &str = "dispatch";
+/// [`ARG_TIER`] value: the inner level — one phase, strictly inside a dispatch.
+pub const TIER_PHASE: &str = "phase";
 
 /// The `device` arg value for host-side spans. Deliberately not `"gpu"`: a host span that claims
 /// to be GPU work is how a trace starts lying.
@@ -161,6 +223,10 @@ pub enum Phase {
     /// Weight prepack (CPU repack) plus the upload of the packed bytes. Once per `PackKey`.
     Prepack,
     /// Host→device staging copy of this inference's inputs.
+    ///
+    /// **Summary-only: production emits no `vulkan.upload` span.** The engine reports this
+    /// through [`VulkanTracer::record_transfer`], which folds a duration into the summary
+    /// without opening a span. See the module docs.
     Upload,
     /// The `Compute` recording bracket. The name is historical: this span's host wall time is
     /// **dominated by the staging upload nested inside it** (measured 96-98% of the phase on
@@ -184,6 +250,10 @@ pub enum Phase {
     /// `vkWaitForFences`. Queue latency + GPU execution, an *upper bound* on kernel time.
     FenceWait,
     /// Device→host copy of this inference's outputs.
+    ///
+    /// **Summary-only: production emits no `vulkan.readback` span**, and — unlike
+    /// [`Phase::Upload`] — this work does **not** happen inside the `record` bracket. See
+    /// [`Phase::nested_in`].
     Readback,
 }
 
@@ -216,19 +286,22 @@ impl Phase {
             Phase::Prepack => "host: CPU repack + staging upload of weights; once per PackKey",
             Phase::Upload => {
                 "host: staging copy; on a discrete GPU this is PCIe time and users pay it. \
-                 NESTED INSIDE `record` — already counted there, do not add to the sibling total"
+                 NESTED INSIDE `record` — already counted there, do not add to the sibling total. \
+                 SUMMARY-ONLY: no `vulkan.upload` span is emitted; this row is folded in through \
+                 record_transfer"
             }
             Phase::Record => {
                 "host: the whole vkBeginCommandBuffer..vkEndCommandBuffer bracket. It CONTAINS \
-                 `upload`/`cmd_upload` (the staging memcpy), `readback`, `desc_alloc` and \
-                 `pipeline_lookup`, so it is an INCLUSIVE interval and its name describes its \
-                 bracket, not its content (R11). The split is regime-dependent and must be read \
-                 from the child rows of THIS run, never from a remembered ratio: with a cold \
-                 weight cache `cmd_upload` dominates it (measured 1148 of 1185 ms on Phi-3.5's \
-                 first Compute), and with a warm cache the children collapse to ~1-2 ms and the \
-                 UNNAMED RESIDUAL — the vkCmd* calls themselves — is ~90% of it. The summary \
-                 prints that residual as its own row, but CUMULATIVELY over all calls, so it \
-                 mixes the two regimes; the per-call split is only in the trace spans"
+                 `upload`/`cmd_upload` (the staging memcpy), `desc_alloc` and `pipeline_lookup`, \
+                 so it is an INCLUSIVE interval and its name describes its bracket, not its \
+                 content (R11). It does NOT contain `readback`, which runs after the fence wait. \
+                 The split is regime-dependent and must be read from the child rows of THIS run, \
+                 never from a remembered ratio: with a cold weight cache `cmd_upload` dominates \
+                 it (measured 1148 of 1185 ms on Phi-3.5's first Compute), and with a warm cache \
+                 the children collapse to ~1-2 ms and the UNNAMED RESIDUAL — the vkCmd* calls \
+                 themselves — is ~90% of it. The summary prints that residual as its own row, but \
+                 CUMULATIVELY over all calls, so it mixes the two regimes; the per-call split is \
+                 only in the trace spans"
             }
             Phase::DescAlloc => {
                 "host/sub-record: vkCreateDescriptorPool + vkAllocateDescriptorSets + \
@@ -254,8 +327,11 @@ impl Phase {
                 "host: queue latency + GPU execution — an UPPER BOUND on kernel time, not kernel time"
             }
             Phase::Readback => {
-                "host: device->host copy; counts toward end-to-end latency. NESTED INSIDE \
-                 `record` — already counted there, do not add to the sibling total"
+                "host: device->host copy; counts toward end-to-end latency. TOP-LEVEL, NOT nested \
+                 in `record`: production reads outputs back AFTER the record bracket closes, \
+                 after vkQueueSubmit and after the fence wait (see vk/session.rs). \
+                 SUMMARY-ONLY: no `vulkan.readback` span is emitted; this row is folded in \
+                 through record_transfer"
             }
         }
     }
@@ -277,13 +353,27 @@ impl Phase {
     pub fn nested_in(self) -> Option<Phase> {
         match self {
             // `vk::session` opens Phase::Record before vkBeginCommandBuffer and drops it after
-            // vkEndCommandBuffer; the input staging loop and the output readback both run inside
-            // that bracket. See session.rs (Record guard) — this is a fact about the call graph,
-            // not a policy, and it must be re-checked if that guard moves.
-            Phase::Upload | Phase::Readback => Some(Phase::Record),
+            // vkEndCommandBuffer; the input staging loop runs inside that bracket. See
+            // session.rs (Record guard) — this is a fact about the call graph, not a policy, and
+            // it must be re-checked if that guard moves.
+            Phase::Upload => Some(Phase::Record),
             // Switch's per-dispatch sub-phases, added in `692e7d0`. They are documented in their
             // own caveats as "sub-record" and they are opened inside the Record guard.
             Phase::DescAlloc | Phase::PipelineLookup | Phase::CmdUpload => Some(Phase::Record),
+            // READBACK IS NOT A CHILD OF `record`, AND SAYING SO WAS A FALSE STRUCTURAL CLAIM.
+            //
+            // It was declared `Some(Phase::Record)` alongside `Upload` because the two look
+            // symmetrical from the enum. They are not symmetrical in the engine: the staging
+            // upload is recorded into the command buffer inside the bracket, while the output
+            // download happens in `dispatch_ort` *after* `drop(_record_guard)`, *after*
+            // `vkQueueSubmit`, and *after* the fence wait — the outputs do not exist until the
+            // GPU has drained. The false parentage made `SIBLING TOTAL` drop a genuine
+            // top-level interval and told every aggregator that reads `nested_in` to subtract
+            // readback from a bracket that never contained it.
+            //
+            // `Readback` therefore has no parent. It is disjoint from `record`, `submit` and
+            // `fence_wait`, which is what makes summing the siblings legitimate.
+            Phase::Readback => None,
             // EXHAUSTIVE ON PURPOSE — do not add a `_` arm. A catch-all here classifies every
             // future phase as a top-level sibling by default, which means a new sub-phase gets
             // silently added into SIBLING TOTAL and double-counts its parent. That is how three
@@ -292,6 +382,35 @@ impl Phase {
             Phase::Compile | Phase::Prepack | Phase::Record | Phase::Submit | Phase::FenceWait => {
                 None
             }
+        }
+    }
+
+    /// Whether production opens a `vulkan.<phase>` span for this phase, or only folds a duration
+    /// into the summary.
+    ///
+    /// # Why a reader needs this
+    ///
+    /// The module's span table used to list `vulkan.upload` and `vulkan.readback` as emitted
+    /// spans. They are not: `vk::session` reports both through
+    /// [`VulkanTracer::record_transfer`], which never touches the trace document. An analyser
+    /// that looks for them in the JSON finds nothing and — with no way to tell "this phase never
+    /// emits" from "this phase did not run" — reports a transfer-free inference. Absence of a
+    /// span is not absence of the work (R7), and this predicate is what makes the difference
+    /// checkable instead of remembered.
+    ///
+    /// Exhaustive on purpose, for the same reason [`Phase::nested_in`] is.
+    pub fn emits_span(self) -> bool {
+        match self {
+            // Summary-only: folded in by `record_transfer`, no `ph:"X"` event exists.
+            Phase::Upload | Phase::Readback => false,
+            Phase::Compile
+            | Phase::Prepack
+            | Phase::Record
+            | Phase::DescAlloc
+            | Phase::PipelineLookup
+            | Phase::CmdUpload
+            | Phase::Submit
+            | Phase::FenceWait => true,
         }
     }
 
@@ -327,15 +446,32 @@ impl Phase {
 
 /// Which recording path one `Compute` call took — the Vulkan analogue of MLX's compile-cache
 /// state, over `ENGINE.md` §6.1's record-once / replay-many model.
+///
+/// **This engine does not implement that model.** `vk::session::dispatch_ort` calls
+/// `CommandPool::begin`, which resets the single pre-allocated command buffer, on every
+/// `Compute`. There is no cached `VkCommandBuffer` to replay, so [`RecordPath::Replay`] is
+/// unreachable from production and the steady state is [`RecordPath::RecordedAgain`]. Keeping
+/// `Replay` in the vocabulary is deliberate: the column has to exist for its zero to mean
+/// anything, and the day a replay path lands the instrument is already there.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RecordPath {
     /// First recording of this subgraph's command buffer.
     FirstRecord,
-    /// Replayed the cached `VkCommandBuffer` — the steady-state path.
+    /// Replayed the cached `VkCommandBuffer` — the steady-state path in a record-once engine.
+    /// **Never reported by this engine**; see the type docs.
     Replay,
     /// Re-recorded because the input shape key changed. A benchmark that reports a median over
     /// runs where this fired is measuring the recording path, not the steady state.
     Rerecord,
+    /// Recorded from scratch again because this engine holds **no cached command buffer at all**
+    /// — not a replay, and not a shape-driven re-record.
+    ///
+    /// Separate from [`RecordPath::Rerecord`] because the two have different causes and different
+    /// fixes: a `Rerecord` says the benchmark's shapes are not steady, and a `RecordedAgain` says
+    /// the engine never had a steady state to leave. Folding this into `Rerecord` would have
+    /// reported every Phi-3.5 inference as a shape-key change, which is a false statement about
+    /// the model.
+    RecordedAgain,
 }
 
 impl RecordPath {
@@ -344,6 +480,54 @@ impl RecordPath {
             RecordPath::FirstRecord => "FIRST_RECORD",
             RecordPath::Replay => "REPLAY",
             RecordPath::Rerecord => "RERECORD",
+            RecordPath::RecordedAgain => "RECORDED_AGAIN",
+        }
+    }
+
+    /// Index into [`Summary::record_paths`]. One mapping, declared once.
+    fn slot(self) -> usize {
+        match self {
+            RecordPath::FirstRecord => 0,
+            RecordPath::Replay => 1,
+            RecordPath::Rerecord => 2,
+            RecordPath::RecordedAgain => 3,
+        }
+    }
+
+    /// Every path, in reporting order. Index `i` is the path whose `slot()` is `i`.
+    pub const ALL: [RecordPath; 4] = [
+        RecordPath::FirstRecord,
+        RecordPath::Replay,
+        RecordPath::Rerecord,
+        RecordPath::RecordedAgain,
+    ];
+}
+
+/// What the ORT `Compute` callback returned, as seen at the callback boundary.
+///
+/// Carried as the `outcome` arg on `vulkan.ort_compute_callback`. An analyser must not silently
+/// drop a non-`Ok` call from an attribution total — a refused call is host cost that a user paid
+/// — but it must not blend it into a "time per successful inference" either, which is why the
+/// state is on the span rather than inferred from a counter difference.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ComputeOutcome {
+    /// The callback did not reach its own return — a panic unwound through the guard, or the
+    /// caller forgot to resolve the outcome. **The default**, so a lost outcome fails closed as
+    /// "unknown" instead of silently reading as success.
+    #[default]
+    Unresolved,
+    /// The callback returned a null `OrtStatusPtr`.
+    Ok,
+    /// The callback returned an `OrtStatus` — a broken commitment (`ep::disclose_broken_commitment`).
+    Failed,
+}
+
+impl ComputeOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ComputeOutcome::Unresolved => "unresolved",
+            ComputeOutcome::Ok => "ok",
+            ComputeOutcome::Failed => "failed",
         }
     }
 }
@@ -577,8 +761,8 @@ struct Summary {
     /// `qualified_op -> (count, last reason)` for declined nodes — Mouse's backlog.
     declined: BTreeMap<String, (u64, String)>,
 
-    /// `[first_record, replay, rerecord]`.
-    record_paths: [u64; 3],
+    /// One slot per [`RecordPath`], indexed by `RecordPath::slot()`.
+    record_paths: [u64; 4],
     /// Shape keys already seen, per subgraph tag, so a REPLAY on a new key is called what it is.
     seen_shape_keys: HashMap<String, HashSet<String>>,
 
@@ -791,12 +975,26 @@ impl VulkanTracer {
 
     // --- Execution view ----------------------------------------------------------------
 
-    /// Span around one fused subgraph's whole `Compute` call.
+    /// Span around the **engine dispatch** for one fused subgraph — `vk::session::dispatch_ort`,
+    /// and nothing else.
     ///
-    /// Host wall time. On a Vulkan EP this covers upload, record-or-replay, submit, fence wait
-    /// and readback — i.e. it is the end-to-end latency of the subgraph *as the caller
-    /// experiences it*, which is the number a user pays, and which is deliberately not called
-    /// "GPU time" anywhere.
+    /// # What this is NOT
+    ///
+    /// It is **not** the `Compute` call. This span opens inside `dispatch_ort`, which the
+    /// callback reaches only after ORT's kernel context has been read and after the bound-count,
+    /// bound-size and addressability checks have all passed; a `Compute` that refuses at any of
+    /// those never opens this span at all, and the fault-injection control never reaches it
+    /// either. Its docstring said "one fused subgraph's whole `Compute` call" from the day it
+    /// landed, which is how an analyser came to compute a "cost outside the dispatch" of exactly
+    /// zero by definition.
+    ///
+    /// The callback body is [`VulkanTracer::ort_compute_callback`]
+    /// (`vulkan.ort_compute_callback`). This span nests strictly inside it, and the difference
+    /// between the two is the *outer* residual of the two-level attribution model (module docs).
+    ///
+    /// Host wall time. Within the dispatch this covers upload, recording, submit, fence wait and
+    /// readback — the latency of the dispatch *as the caller experiences it*, which is
+    /// deliberately not called "GPU time" anywhere.
     pub fn subgraph_region(&self, node_count: usize) -> SpanGuard {
         if !self.is_enabled() {
             return self.ctx.span("vulkan.subgraph", "ep");
@@ -804,8 +1002,53 @@ impl VulkanTracer {
         self.ctx.span("vulkan.subgraph", "ep").with_args(
             Args::new()
                 .with("nodes", node_count as u64)
+                // Machine-readable tier, so an analyser never has to infer the level from the
+                // span name. `boundary` names the code region; `tier` names the level in the
+                // attribution model. A residual computed from two spans of the same tier is a
+                // bug, and these args are what makes that checkable.
+                .with(ARG_BOUNDARY, BOUNDARY_ENGINE_DISPATCH)
+                .with(ARG_TIER, TIER_DISPATCH)
                 .with(ARG_DEVICE, DEVICE_HOST),
         )
+    }
+
+    /// Span around the **whole ORT `Compute` callback body** — the outer level of the two-level
+    /// attribution model (module docs).
+    ///
+    /// # Exactly where the clock opens and closes
+    ///
+    /// `ep::compute` is the `extern "C"` function ORT calls. The guard is created there, after
+    /// the one branch that cannot be timed truthfully (a null `OrtNodeComputeInfo`, which leaves
+    /// no `OrtApi` to report through and which ORT never produces), and dropped as `compute`
+    /// returns. It therefore contains:
+    ///
+    /// * `crate::guard_ffi_status` and all of `compute_impl` — the fault-injection control, the
+    ///   null-context check, the liveness check, all three binding checks, the dispatch, and the
+    ///   construction of any `OrtStatus`;
+    /// * `ep::disclose_broken_commitment`, which runs *after* `compute_impl` returns and is
+    ///   therefore host cost inside the callback that no dispatch-level span can see.
+    ///
+    /// It excludes only the null-`OrtNodeComputeInfo` guard above it. No claim is made here about
+    /// how many ways `compute_impl` can return: the guard is scope-based, so a return that nobody
+    /// enumerated is still inside it.
+    ///
+    /// # Outcome
+    ///
+    /// The outcome is not known until the callback is about to return, so it is set on the guard
+    /// rather than at construction, and it defaults to [`ComputeOutcome::Unresolved`] — a panic
+    /// that unwinds past the resolve point leaves the span honestly labelled instead of quietly
+    /// labelled as a success.
+    ///
+    /// Returns a guard that emits nothing when tracing is off; the guard is otherwise the only
+    /// producer of `vulkan.ort_compute_callback`.
+    pub fn ort_compute_callback(&self, subgraph_id: u64, node_count: usize) -> ComputeCallGuard {
+        ComputeCallGuard {
+            enabled: self.is_enabled(),
+            subgraph_id,
+            node_count,
+            start: Instant::now(),
+            outcome: ComputeOutcome::Unresolved,
+        }
     }
 
     /// Start a timing phase: a span plus a summary fold on drop. `None` (zero cost) when nothing
@@ -821,6 +1064,7 @@ impl VulkanTracer {
             .with_args(
                 Args::new()
                     .with(ARG_DEVICE, DEVICE_HOST)
+                    .with(ARG_TIER, TIER_PHASE)
                     .with("caveat", phase.caveat())
                     // Machine-readable parentage. An aggregator that sums `ph:"X"` spans by name
                     // must skip any span carrying `nested_in`, or it attributes a child's cost to
@@ -857,6 +1101,12 @@ impl VulkanTracer {
     /// key and the call is reclassified as [`RecordPath::Rerecord`] — the signal that a
     /// benchmark's "steady state" is not steady. Pass an empty `shape_key` for subgraphs with no
     /// dynamic shapes.
+    ///
+    /// The resolved path is folded into the process counters **unconditionally**, for the same
+    /// reason [`Self::record_transfer`] counts bytes unconditionally: the run that gets quoted is
+    /// the one nobody set `ONNXRUNTIME_EP_VULKAN_TRACE` on, and "was the command buffer
+    /// re-recorded every inference?" is not a question a reader should have to re-run the model
+    /// to answer.
     pub fn record_path(
         &self,
         subgraph_tag: &str,
@@ -864,10 +1114,13 @@ impl VulkanTracer {
         shape_key: &str,
         node_count: usize,
     ) -> RecordPath {
-        if !self.active() {
-            return path;
-        }
-        let resolved = {
+        let resolved = if !self.active() {
+            // No shape-key history is kept when nothing is listening. Production passes an empty
+            // shape key — for which the resolution below is the identity — so the counters read
+            // the same either way, and the summary's history is not worth a mutex on the compute
+            // path of a run that asked for no observability.
+            path
+        } else {
             let mut s = self.summary();
             let resolved = match path {
                 RecordPath::Replay if !shape_key.is_empty() => {
@@ -889,14 +1142,13 @@ impl VulkanTracer {
                     .or_default()
                     .insert(shape_key.to_string());
             }
-            let idx = match resolved {
-                RecordPath::FirstRecord => 0,
-                RecordPath::Replay => 1,
-                RecordPath::Rerecord => 2,
-            };
+            let idx = resolved.slot();
             s.record_paths[idx] += 1;
             resolved
         };
+        // ONE call site, after the branch, so the counter and the summary can never disagree
+        // about which path was taken.
+        crate::counters::record_command_buffer_path(resolved);
         if self.is_enabled() {
             let mut args = Args::new()
                 .with("path", resolved.as_str())
@@ -1180,24 +1432,28 @@ impl VulkanTracer {
                 out.push_str(&format!("              - {op} x{n}: {reason}\n"));
             }
         }
-        // `Tracer::record_path` has no production caller (audited 2026-07-30: zero call sites
-        // outside this file; the classifier is unit-tested, which is why review never caught it).
-        // Printing "first-record=0 replay=0 rerecord=0" reads as "this run recorded nothing",
-        // which is a measurement. It is not one. It is the absence of a measurement, and the
-        // difference matters here more than most: `Phase::Record`'s caveat asserted that recording
-        // is "amortised across replays", and this is the only instrument that could falsify that.
+        // `Tracer::record_path` was unwired until issue #88: it had zero production call sites,
+        // and printing "first-record=0 replay=0 rerecord=0" read as "this run recorded nothing",
+        // which is a measurement. It is not one — it is the absence of a measurement. The NOT
+        // WIRED branch is kept because it is still the truthful thing to print for a session that
+        // never dispatched, and because the distinction it draws is the one this instrument
+        // exists for.
         if s.record_paths.iter().all(|&n| n == 0) {
             out.push_str(
-                "  compute:  record-path breakdown NOT WIRED — Tracer::record_path() has no \
-                 production caller, so first-record/replay/rerecord are unmeasured, NOT zero. \
-                 Nothing in this build can tell you whether command buffers are re-recorded per \
-                 inference or replayed.\n",
+                "  compute:  record-path breakdown UNOBSERVED — no Compute call reached the \
+                 recording decision in this session, so first-record/replay/rerecord/\
+                 recorded-again are unmeasured, NOT zero.\n",
             );
         } else {
-            out.push_str(&format!(
-                "  compute:  first-record={} replay={} rerecord={}\n",
-                s.record_paths[0], s.record_paths[1], s.record_paths[2]
-            ));
+            out.push_str("  compute:  ");
+            for p in RecordPath::ALL {
+                out.push_str(&format!("{}={} ", p.as_str(), s.record_paths[p.slot()]));
+            }
+            out.push_str(
+                "\n            (REPLAY is 0 by construction: dispatch_ort resets and re-records \
+                 the command buffer on every Compute, so there is no replay path to take. Read \
+                 that 0 as `no such path`, not as `replays were rare`.)\n",
+            );
         }
         out.push_str(&format!(
             "  transfer: upload {} calls / {:.2} MiB; readback {} calls / {:.2} MiB\n",
@@ -1239,15 +1495,15 @@ impl VulkanTracer {
             let overlap = get(Phase::CmdUpload).1 > 0 && get(Phase::Upload).1 > 0;
 
             out.push_str(
-                "  host time (wall clock on the CPU thread). `upload`/`readback` are NESTED \
-                 INSIDE `record` — do NOT add this column:\n",
+                "  host time (wall clock on the CPU thread). `upload` is NESTED INSIDE `record` \
+                 — do NOT add this column. Rows marked [summary-only] emit no trace span:\n",
             );
             for phase in Phase::ALL {
                 let Some((us, calls)) = s.phase_us.get(&phase) else {
                     continue;
                 };
                 out.push_str(&format!(
-                    "              {}{:<11} {:>10} us (x{}) — {}\n",
+                    "              {}{:<11} {:>10} us (x{}){} — {}\n",
                     if phase.is_sibling() {
                         "    "
                     } else {
@@ -1256,6 +1512,14 @@ impl VulkanTracer {
                     phase.as_str(),
                     us,
                     calls,
+                    // DERIVED, not restated. A phase folded in by `record_transfer` has no
+                    // `ph:"X"` event, so a reader who greps the trace JSON for `vulkan.readback`
+                    // finds nothing and must not read that absence as "no readback happened".
+                    if phase.emits_span() {
+                        ""
+                    } else {
+                        " [summary-only: no span]"
+                    },
                     phase.caveat()
                 ));
             }
@@ -1354,9 +1618,16 @@ impl VulkanTracer {
                     s.boundary_bytes_per_inference,
                 )
                 .with("boundary_time_fraction", s.boundary_time_fraction)
-                .with("first_record", s.record_paths[0])
-                .with("replay", s.record_paths[1])
-                .with("rerecord", s.record_paths[2])
+                .with(
+                    "first_record",
+                    s.record_paths[RecordPath::FirstRecord.slot()],
+                )
+                .with("replay", s.record_paths[RecordPath::Replay.slot()])
+                .with("rerecord", s.record_paths[RecordPath::Rerecord.slot()])
+                .with(
+                    "recorded_again",
+                    s.record_paths[RecordPath::RecordedAgain.slot()],
+                )
                 .with("upload_bytes", s.upload_bytes)
                 .with("readback_bytes", s.readback_bytes)
                 .with("gpu_time_measured", s.gpu_measured);
@@ -1552,6 +1823,66 @@ pub struct PhaseGuard {
 impl Drop for PhaseGuard {
     fn drop(&mut self) {
         tracer().record_phase(self.phase, self.start.elapsed());
+    }
+}
+
+/// RAII guard for the **outer** attribution level: the whole ORT `Compute` callback body.
+///
+/// Emits one `vulkan.ort_compute_callback` complete event on drop, carrying the outcome. Not a
+/// [`SpanGuard`] because the outcome is only knowable at the end of the callback, and a span
+/// whose args are fixed at construction cannot carry it.
+///
+/// The guard is created even when tracing is off (it is one `Instant::now()` and a bool) so that
+/// the production call site has no `if traced { … }` branch to get wrong; `Drop` emits nothing
+/// unless the trace document is being written.
+#[must_use = "a ComputeCallGuard times the callback body only while alive; hold it until the \
+              callback returns"]
+pub struct ComputeCallGuard {
+    enabled: bool,
+    subgraph_id: u64,
+    node_count: usize,
+    start: Instant,
+    outcome: ComputeOutcome,
+}
+
+impl ComputeCallGuard {
+    /// Record what the callback is about to return to ORT.
+    ///
+    /// Call this on the *only* path that returns to ORT. Anything that unwinds past it leaves
+    /// [`ComputeOutcome::Unresolved`] on the span, which is the honest label for a callback whose
+    /// return nobody observed.
+    pub fn set_outcome(&mut self, outcome: ComputeOutcome) {
+        self.outcome = outcome;
+    }
+
+    /// The outcome the span will carry if it were dropped now. Exists so a test can assert on the
+    /// fail-closed default without waiting for the emission.
+    pub fn outcome(&self) -> ComputeOutcome {
+        self.outcome
+    }
+}
+
+impl Drop for ComputeCallGuard {
+    fn drop(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        let t = tracer();
+        t.ctx.complete(
+            "vulkan.ort_compute_callback",
+            "ep.compute_call",
+            self.start,
+            self.start.elapsed(),
+            Some(
+                Args::new()
+                    .with(ARG_DEVICE, DEVICE_HOST)
+                    .with(ARG_BOUNDARY, BOUNDARY_ORT_COMPUTE_CALLBACK)
+                    .with(ARG_TIER, TIER_CALLBACK)
+                    .with(ARG_OUTCOME, self.outcome.as_str())
+                    .with("subgraph_id", self.subgraph_id)
+                    .with("nodes", self.node_count as u64),
+            ),
+        );
     }
 }
 
@@ -1793,7 +2124,28 @@ mod tests {
     #[test]
     fn nested_phases_are_declared_both_structurally_and_in_their_caveat() {
         assert_eq!(Phase::Upload.nested_in(), Some(Phase::Record));
-        assert_eq!(Phase::Readback.nested_in(), Some(Phase::Record));
+        // READBACK IS NOT NESTED, and this line used to assert that it was.
+        //
+        // Nothing in the engine ever made it true: `dispatch_ort` drops the `Phase::Record`
+        // guard, submits, waits on the fence, and only then downloads the outputs. The
+        // assertion passed because it was checking the enum against itself — both halves of
+        // the claim lived in this file, and neither of them was `vk::session`. It is inverted
+        // here so that restoring the false parentage goes red.
+        assert_eq!(
+            Phase::Readback.nested_in(),
+            None,
+            "readback happens after the record bracket closes, after submit and after the fence \
+             wait; declaring it a child of `record` subtracts it from a bracket that never \
+             contained it"
+        );
+        assert!(
+            Phase::Readback.caveat().contains("TOP-LEVEL"),
+            "the caveat a reader sees must agree with the structure"
+        );
+        assert!(
+            !Phase::Record.caveat().contains("`readback`, `desc_alloc`"),
+            "`record`'s caveat must not list readback among the children it contains"
+        );
         for p in Phase::ALL {
             match p.nested_in() {
                 Some(parent) => {
@@ -1834,6 +2186,133 @@ mod tests {
             );
         }
         assert_eq!(Phase::FenceWait.as_str(), "fence_wait");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Issue #88 — the two-level attribution vocabulary
+    // ---------------------------------------------------------------------------------------
+
+    /// `RecordPath` slots are a published wire position (`counters.rs` mirrors them into the C
+    /// ABI), so a reorder of the enum must not silently re-label four counters.
+    #[test]
+    fn record_path_slots_are_unique_stable_and_agree_with_the_reporting_order() {
+        let mut seen = HashSet::new();
+        for (i, p) in RecordPath::ALL.iter().enumerate() {
+            assert!(seen.insert(p.slot()), "duplicate slot for {p:?}");
+            assert_eq!(p.slot(), i, "{p:?} is not at its own reporting position");
+            assert!(p.slot() < 4);
+        }
+        assert_eq!(RecordPath::FirstRecord.slot(), 0);
+        assert_eq!(RecordPath::Replay.slot(), 1);
+        assert_eq!(RecordPath::Rerecord.slot(), 2);
+        assert_eq!(RecordPath::RecordedAgain.slot(), 3);
+    }
+
+    /// `RecordedAgain` and `Rerecord` are different facts and must not share a token: one says
+    /// the engine has no cache, the other says the benchmark's shapes moved.
+    #[test]
+    fn recorded_again_is_not_spelled_like_a_shape_driven_rerecord() {
+        let tags: Vec<&str> = RecordPath::ALL.iter().map(|p| p.as_str()).collect();
+        let unique: HashSet<&&str> = tags.iter().collect();
+        assert_eq!(
+            unique.len(),
+            tags.len(),
+            "duplicate record-path token: {tags:?}"
+        );
+        assert_ne!(
+            RecordPath::RecordedAgain.as_str(),
+            RecordPath::Rerecord.as_str()
+        );
+    }
+
+    /// A callback guard that is never told its outcome must not read as a success.
+    #[test]
+    fn an_unresolved_compute_callback_never_reads_as_a_success() {
+        let g = tracer().ort_compute_callback(7, 2);
+        assert_eq!(
+            g.outcome(),
+            ComputeOutcome::Unresolved,
+            "the default must fail closed: a panic that unwinds past the resolve point would \
+             otherwise label a lost call `ok`"
+        );
+        assert_eq!(ComputeOutcome::default(), ComputeOutcome::Unresolved);
+        drop(g);
+
+        let mut g = tracer().ort_compute_callback(7, 2);
+        g.set_outcome(ComputeOutcome::Failed);
+        assert_eq!(g.outcome(), ComputeOutcome::Failed);
+        assert_eq!(ComputeOutcome::Failed.as_str(), "failed");
+        assert_eq!(ComputeOutcome::Ok.as_str(), "ok");
+        assert_eq!(ComputeOutcome::Unresolved.as_str(), "unresolved");
+    }
+
+    /// The two attribution levels must be distinguishable by a declared property, not by span
+    /// name, and the callback tier must not share a token with the dispatch tier.
+    #[test]
+    fn the_two_attribution_levels_carry_distinct_tier_tokens() {
+        let tiers = [TIER_CALLBACK, TIER_DISPATCH, TIER_PHASE];
+        let unique: HashSet<&&str> = tiers.iter().collect();
+        assert_eq!(unique.len(), 3, "tier tokens must be distinguishable");
+        assert_ne!(BOUNDARY_ORT_COMPUTE_CALLBACK, BOUNDARY_ENGINE_DISPATCH);
+        // The callback span name must not be a prefix of, or prefixed by, the dispatch span
+        // name: an analyser that matches on `startswith` would otherwise fold the levels.
+        assert!(!"vulkan.ort_compute_callback".starts_with("vulkan.subgraph"));
+        assert!(!"vulkan.subgraph".starts_with("vulkan.ort_compute_callback"));
+    }
+
+    /// The phases production emits as spans, and the ones it only folds into the summary.
+    ///
+    /// This is the structural half of B3: `upload` and `readback` were listed in the module's
+    /// span table as emitted spans and are not. An analyser that trusts the table looks for
+    /// `vulkan.readback` in the trace, finds nothing, and reports a transfer-free inference.
+    #[test]
+    fn only_the_phases_production_opens_a_span_for_are_declared_as_emitting() {
+        assert!(!Phase::Upload.emits_span());
+        assert!(!Phase::Readback.emits_span());
+        for p in [
+            Phase::Compile,
+            Phase::Prepack,
+            Phase::Record,
+            Phase::DescAlloc,
+            Phase::PipelineLookup,
+            Phase::CmdUpload,
+            Phase::Submit,
+            Phase::FenceWait,
+        ] {
+            assert!(p.emits_span(), "{p:?} is opened by production as a span");
+        }
+        // Every summary-only phase must say so in its caveat, so the fact survives into the
+        // artifact a human reads.
+        for p in Phase::ALL {
+            if !p.emits_span() {
+                assert!(
+                    p.caveat().contains("SUMMARY-ONLY"),
+                    "{p:?} emits no span but its caveat does not disclose that"
+                );
+            }
+        }
+    }
+
+    /// The sibling set is what may be summed. Readback rejoining it is the visible consequence
+    /// of B3, and it is asserted here so a silent revert changes a number this test reads.
+    #[test]
+    fn readback_is_a_top_level_sibling_and_record_no_longer_claims_it() {
+        let siblings: Vec<&str> = Phase::ALL
+            .iter()
+            .filter(|p| p.is_sibling())
+            .map(|p| p.as_str())
+            .collect();
+        assert!(
+            siblings.contains(&"readback"),
+            "readback partitions the dispatch's wall time with record/submit/fence_wait: {siblings:?}"
+        );
+        assert!(siblings.contains(&"record"));
+        assert!(siblings.contains(&"submit"));
+        assert!(siblings.contains(&"fence_wait"));
+        assert!(
+            !siblings.contains(&"upload"),
+            "upload really is inside the record bracket and must stay out of the sibling total"
+        );
     }
 
     #[test]

@@ -33,6 +33,7 @@ use crate::logging;
 use crate::ops::partition;
 use crate::registry::{self, NodeView};
 use crate::sys::{self, ort};
+use crate::trace;
 
 /// Session options this EP understands, all prefixed `ep.` (`DESIGN.md` §2.4).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2550,6 +2551,22 @@ unsafe extern "C" fn compute(
     // SAFETY: `p` is a compute-info this crate produced; see `this_info`.
     let info = unsafe { this_info(p) };
     let api = info.ort_api;
+
+    // THE OUTER LEVEL OF THE #88 ATTRIBUTION MODEL OPENS HERE, AND THIS IS PRECISELY WHERE.
+    //
+    // Everything below it is inside the span: the FFI panic guard, all of `compute_impl` —
+    // fault injection, the null-context check, the liveness check, every binding check, the
+    // engine dispatch, and the construction of any `OrtStatus` — and, crucially,
+    // `disclose_broken_commitment`, which runs *after* `compute_impl` returns and is host cost
+    // no dispatch-level span can see. The only thing excluded is the null-`OrtNodeComputeInfo`
+    // guard above, which has no `OrtApi` to report through and which ORT does not produce.
+    //
+    // The guard is scope-based, so it does not depend on anyone enumerating the ways
+    // `compute_impl` can return; a return path added tomorrow is inside it too.
+    let subgraph_id = info.subgraph_id;
+    let node_count = info.plan.nodes.len();
+    let mut call_span = trace::tracer().ort_compute_callback(subgraph_id, node_count);
+
     // SAFETY: `api` is the process-wide table, live for the process's lifetime.
     let status = unsafe {
         crate::guard_ffi_status(api, "Compute", || compute_impl(info, state, kernel_context))
@@ -2562,7 +2579,17 @@ unsafe extern "C" fn compute(
     //
     // SAFETY: `api` is live; `status` is either null or a status we still own at this point and
     // hand to ORT unchanged on the next line.
-    unsafe { disclose_broken_commitment(api, info.subgraph_id, &info.plan.nodes, status) };
+    unsafe { disclose_broken_commitment(api, subgraph_id, &info.plan.nodes, status) };
+
+    // Resolved from the value ORT is about to receive, on the one path that returns it. A panic
+    // that unwinds past this point leaves `ComputeOutcome::Unresolved` on the span rather than
+    // labelling a lost call as a success.
+    call_span.set_outcome(if status.is_null() {
+        trace::ComputeOutcome::Ok
+    } else {
+        trace::ComputeOutcome::Failed
+    });
+    drop(call_span);
     status
 }
 

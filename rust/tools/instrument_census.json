@@ -34,12 +34,14 @@
     "trace.rs::op_span",
     "trace.rs::op_timer_start",
     "trace.rs::record_op_meta",
-    "trace.rs::record_path",
     "trace.rs::transfer_totals"
   ],
   "ambiguous": [
+    "counters.rs::command_buffer_outcome",
+    "counters.rs::descriptor_pool_outcome",
     "counters.rs::extract_equivalence",
-    "counters.rs::extract_equivalence_record"
+    "counters.rs::extract_equivalence_record",
+    "trace.rs::outcome"
   ],
   "harness_uninvoked": [
     "tests/ops/_models.py::assert_qdq_reference_oracle_safe"
@@ -159,10 +161,10 @@
     "uninvoked_notes": [
       {
         "instrument": "trace.rs::Tracer::record_path",
-        "artifact": "trace summary line `compute: first-record=N replay=N rerecord=N`; now prints `record-path breakdown NOT WIRED` when all three are zero",
-        "excludes": "everything. Zero production callers. It is the ONLY instrument that could falsify Phase::Record's former caveat that recording is 'amortised across replays'; that caveat shipped in every ph:\"X\" span for weeks and was false.",
-        "disposition": "FLAGGED \u2014 wiring it requires a vk/session.rs edit (Switch's file). Artifact now says NOT WIRED instead of printing zeros.",
-        "owner": "switch"
+        "artifact": "trace summary block `record-path breakdown` over RecordPath::ALL, plus the counters JSON keys `record_path_first_record` / `record_path_replay` / `record_path_rerecord` / `record_path_recorded_again` and the three-state token `record_path_state`",
+        "excludes": "nothing any more. RESOLVED 2026-08-09T04:33:34.895-07:00 (issue #88, Morpheus): wired from vk/session.rs::dispatch_ort, which resolves FIRST_RECORD vs RECORDED_AGAIN from a session-held set of already-recorded subgraph ids. REPLAY stays 0 by construction \u2014 cmd_pool.begin() resets the single pre-allocated buffer every Compute, so this engine has no replay path \u2014 and the summary says so rather than letting a zero be read as 'replays were rare'.",
+        "disposition": "RESOLVED \u2014 the row is retained as the record of what an uninvoked instrument cost: this was the only instrument that could falsify Phase::Record's former 'amortised across replays' caveat, and that caveat shipped in every ph:\"X\" span for weeks while it had no caller. Absence now prints UNOBSERVED, never zero.",
+        "owner": "morpheus"
       },
       {
         "instrument": "trace.rs::record_op_meta / op_span / op_timer_start / note_thread",

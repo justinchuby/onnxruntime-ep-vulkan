@@ -1508,6 +1508,14 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            descriptor_pools_created: 0,
+            descriptor_sets_written: 0,
+            command_buffers_allocated: 0,
+            queue_submits_completed: 0,
+            record_path_first_record: 0,
+            record_path_replay: 0,
+            record_path_rerecord: 0,
+            record_path_recorded_again: 0,
         }
         .to_json()
     }
@@ -1558,6 +1566,14 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            descriptor_pools_created: 0,
+            descriptor_sets_written: 0,
+            command_buffers_allocated: 0,
+            queue_submits_completed: 0,
+            record_path_first_record: 0,
+            record_path_replay: 0,
+            record_path_rerecord: 0,
+            record_path_recorded_again: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_MATCH)
     }
@@ -1587,6 +1603,14 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            descriptor_pools_created: 0,
+            descriptor_sets_written: 0,
+            command_buffers_allocated: 0,
+            queue_submits_completed: 0,
+            record_path_first_record: 0,
+            record_path_replay: 0,
+            record_path_rerecord: 0,
+            record_path_recorded_again: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_DIVERGENT)
     }
@@ -2002,6 +2026,14 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            descriptor_pools_created: 0,
+            descriptor_sets_written: 0,
+            command_buffers_allocated: 0,
+            queue_submits_completed: 0,
+            record_path_first_record: 0,
+            record_path_replay: 0,
+            record_path_rerecord: 0,
+            record_path_recorded_again: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_UNATTRIBUTED);
         std::fs::write(&f, doc).expect("write");
@@ -2086,6 +2118,14 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            descriptor_pools_created: 0,
+            descriptor_sets_written: 0,
+            command_buffers_allocated: 0,
+            queue_submits_completed: 0,
+            record_path_first_record: 0,
+            record_path_replay: 0,
+            record_path_rerecord: 0,
+            record_path_recorded_again: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_SPLIT_FRAME);
         std::fs::write(&f, doc).expect("write");

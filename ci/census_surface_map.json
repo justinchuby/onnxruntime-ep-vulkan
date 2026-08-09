@@ -456,6 +456,62 @@
       "owner": "Mouse"
     },
     {
+      "kind": "counter",
+      "id": "descriptor_pools_created",
+      "disposition": "uncensused",
+      "reason": "Success-only count of VkDescriptorPool creations, incremented ONLY through counters::resources::descriptor_pool_outcome (rust/src/counters.rs), a value-preserving seam whose backing static is module-private, so there is no reachable write a later edit could move into a failure arm. Gated behaviourally, not lexically: counters.rs asserts that a forced None leaves it unchanged, six held-out mis-wired reimplementations run through the same protocol must all go red, and rust/src/vk/pipeline.rs exhausts a real max_sets(1) pool on a live device. The census graph does construct descriptor pools, but no census MECHANISM reads this counter, so it is recorded as a gap rather than credited to one. Owed by Morpheus: a census mechanism that reads it across the clean/inject arms.",
+      "owner": "Morpheus"
+    },
+    {
+      "kind": "counter",
+      "id": "descriptor_sets_written",
+      "disposition": "uncensused",
+      "reason": "Success-only count of descriptor sets allocated AND written - the seam is called after vkUpdateDescriptorSets, so a set allocated but never written is not counted. Same private-static seam construction and the same behavioural gates as descriptor_pools_created, including the live-device forced allocation failure in rust/src/vk/pipeline.rs. No census mechanism reads it; owed by Morpheus.",
+      "owner": "Morpheus"
+    },
+    {
+      "kind": "counter",
+      "id": "command_buffers_allocated",
+      "disposition": "uncensused",
+      "reason": "Success-only count of vkAllocateCommandBuffers results, through counters::resources::command_buffer_outcome in rust/src/vk/cmd.rs. Same private-static seam construction and the same behavioural gates and held-out mutation controls. No census mechanism reads it; owed by Morpheus.",
+      "owner": "Morpheus"
+    },
+    {
+      "kind": "counter",
+      "id": "queue_submits_completed",
+      "disposition": "uncensused",
+      "reason": "Success-only count of queue submissions that REACHED FENCE COMPLETION, incremented after the fence wait in rust/src/vk/cmd.rs through counters::resources::queue_submit_outcome(bool). A submit that was issued but whose fence timed out or errored is not counted, so this is deliberately not a count of vkQueueSubmit calls. No census mechanism reads it; owed by Morpheus.",
+      "owner": "Morpheus"
+    },
+    {
+      "kind": "counter",
+      "id": "record_path_first_record",
+      "disposition": "uncensused",
+      "reason": "Count of Compute calls that recorded a command buffer for a subgraph id this session had not recorded before. Resolved in rust/src/vk/session.rs::dispatch_ort from a session-held set of recorded subgraph ids and folded through trace.rs::record_path. Published beside record_path_state, which reads UNOBSERVED rather than 0 when nothing has been recorded, so absence is never read as a measurement. No census mechanism reads it; owed by Morpheus.",
+      "owner": "Morpheus"
+    },
+    {
+      "kind": "counter",
+      "id": "record_path_replay",
+      "disposition": "uncensused",
+      "reason": "Count of Compute calls that replayed an already-recorded command buffer. ZERO BY CONSTRUCTION in this engine: cmd_pool.begin() resets the single pre-allocated buffer on every Compute, so there is no replay path to take. The column is published so that its zero is readable and cannot be mistaken for a rare event, and trace.rs::log_summary says so in the artifact. No census mechanism reads it; owed by Morpheus.",
+      "owner": "Morpheus"
+    },
+    {
+      "kind": "counter",
+      "id": "record_path_rerecord",
+      "disposition": "uncensused",
+      "reason": "Count of re-records CAUSED BY A SHAPE-KEY CHANGE - the Vulkan analogue of a compile-cache RETRACE. This engine holds no shape keys, so this is a different fact from record_path_recorded_again and must not be read as it. No census mechanism reads it; owed by Morpheus.",
+      "owner": "Morpheus"
+    },
+    {
+      "kind": "counter",
+      "id": "record_path_recorded_again",
+      "disposition": "uncensused",
+      "reason": "Count of Compute calls that recorded from scratch because the engine holds no cached command buffer for that subgraph. NOT a shape-driven re-record and NOT a replay. It exists so that the absence of recording amortisation in this engine is stated by an instrument rather than inferred from a zero in the replay column. No census mechanism reads it; owed by Morpheus.",
+      "owner": "Morpheus"
+    },
+    {
       "kind": "env_switch",
       "id": "ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS",
       "disposition": "uncensused",
