@@ -359,6 +359,7 @@
     "bench/real_model.py::phi35_cases",
     "bench/real_model.py::phi35_feeds",
     "bench/real_model.py::recorded_sha256",
+    "bench/real_model.py::recorded_source_metadata",
     "bench/real_model.py::repo_cache_dir",
     "bench/real_model.py::sha256_file",
     "bench/real_model.py::softmax",

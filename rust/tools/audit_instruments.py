@@ -450,6 +450,11 @@ BENCH_INSTRUMENT_FILES = [
     # run is admissible as evidence about device utilisation. Those are verdicts about a
     # measurement, which is this list's criterion.
     "real_model.py",
+    # Arrived with issue #78 (Link, clean-room replacement of rejected PRs #79/#83 — the
+    # MiniLM provenance pin). Screened rather than held out because `write_public_json`
+    # and `runtime_path` render a verdict about a record — whether it is safe to publish,
+    # whether a real path was ever attached to it — rather than merely converting one.
+    "public_paths.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -504,6 +509,12 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_paired_ratio.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_ceiling.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_real_model.py": "test module — a caller, screened as polarity, not as an instrument.",
+    # Arrived with issue #78 (Link, clean-room replacement of rejected PRs #79/#83 — the
+    # MiniLM provenance pin). A caller/self-test of `public_paths.py`, not itself an
+    # instrument that renders a verdict about a measurement.
+    "test_public_paths.py": (
+        "test module — a caller, screened as polarity, not as an instrument."
+    ),
     # Arrived with Switch's fa5f514 and was the frame arm's second live catch. Worth naming
     # what it cost before it was declared: the frame arm runs BEFORE the uninvoked census, so
     # `audit_instruments --check` failed on the frame and never printed

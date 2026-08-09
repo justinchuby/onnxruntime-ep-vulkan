@@ -55,6 +55,7 @@ for _p in (str(_BENCH), str(_ROOT), str(_ROOT / "rust" / "tools")):
         sys.path.insert(0, _p)
 
 import real_model as rm  # noqa: E402
+import public_paths as pp  # noqa: E402
 
 COUNTERS_ENV = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
 CLAIM_LOG_ENV = "ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"
@@ -171,7 +172,7 @@ def run_matrix(args, model_rec: dict, cases, arms, device) -> dict:
     import numpy as np
     import onnxruntime as ort
 
-    path = Path(model_rec["path"])
+    path = pp.runtime_path(model_rec)
     feeds_by_case = {}
     digests = {}
     for case in cases:
@@ -336,11 +337,27 @@ def diagnose_worker(argv) -> int:
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
 
+    # Resolved and capability-gated BEFORE `onnxruntime` is imported (issue #78, blocker #4):
+    # a provenance-only model (`MINILM`: no case/feed builder exists yet, #74/#75/#76) is
+    # refused here, by name, rather than reaching `rm.build_feeds` and failing with a bare
+    # `ValueError` deep inside a subprocess that has already paid for an ORT import.
+    spec = rm.MODELS[a.model]
+    model_rec = rm.resolve_model(spec)
+    if model_rec["capability"] != "full":
+        rec = {
+            "arm": a.arm, "model": a.model, "capability": model_rec["capability"],
+            "provenance_ok": model_rec["provenance_ok"],
+            "provenance_state": model_rec["provenance_state"],
+            "error": f"{a.model!r} is capability={model_rec['capability']!r}: provenance is "
+                     f"resolved and verified above, but no case/feed builder exists for it, "
+                     f"so diagnose_worker refuses rather than importing onnxruntime for it",
+        }
+        pp.write_public_json(Path(a.out), rec)
+        return 2
+
     import numpy as np
     import onnxruntime as ort
 
-    spec = rm.MODELS[a.model]
-    model_rec = rm.resolve_model(spec)
     arm = {x.name: x for x in rm.ARMS}[a.arm]
     case = rm.Case(a.model, a.phase, a.m, a.past,
                    tokens=(a.m if a.phase == "prefill" else (1 if a.phase == "decode" else None)),
@@ -352,18 +369,18 @@ def diagnose_worker(argv) -> int:
         lib = os.environ.get(EP_LIB_ENV)
         if not lib or not Path(lib).is_file():
             rec["error"] = f"{EP_LIB_ENV} unset or missing"
-            Path(a.out).write_text(json.dumps(rec), encoding="utf-8")
+            pp.write_public_json(Path(a.out), rec)
             return 2
         try:
             ort.register_execution_provider_library(rm.EP_NAME, str(Path(lib).resolve()))
         except Exception as exc:
             if "already registered" not in str(exc):
                 rec["error"] = f"registration failed: {exc}"
-                Path(a.out).write_text(json.dumps(rec), encoding="utf-8")
+                pp.write_public_json(Path(a.out), rec)
                 return 2
 
     feeds = rm.build_feeds(case, np)
-    sess = _session(ort, Path(model_rec["path"]), arm, a.device, profiling=True)
+    sess = _session(ort, pp.runtime_path(model_rec), arm, a.device, profiling=True)
     rec["providers"] = list(sess.get_providers())
     for _ in range(a.iters):
         sess.run(None, feeds)
@@ -371,7 +388,7 @@ def diagnose_worker(argv) -> int:
     rec["profile"] = _profile_provider_counts(sess, ort)
     rec["fallback"] = rm.fallback_diagnosis((rec["profile"] or {}).get("counts"))
     del sess
-    Path(a.out).write_text(json.dumps(rec, indent=2), encoding="utf-8")
+    pp.write_public_json(Path(a.out), rec)
     return 0
 
 
@@ -381,17 +398,47 @@ def run_diagnostics(args, models, device) -> dict:
     A subprocess per arm and not a loop, for the reason `phi35.py` already states: the counters
     file is written from a process-exit hook, so a process that has not torn down has not written
     it, and ORT's EP registration is process-global.
+
+    Issue #78, blocker #4: EVERY model key passed in is resolved and its provenance verified
+    right here, unconditionally, before any worker is spawned — not only the ones with a
+    diagnostic plan below. A provenance-only model (`MINILM`, no case/feed builder yet) gets
+    no ``runs`` entries, but it is never simply absent from this report: its resolved/verified
+    (or refused/unavailable) state is recorded in ``provenance``, by name, so "no cases" and
+    "unchecked" cannot be misread as the same thing.
     """
     scratch = Path(args.scratch)
     scratch.mkdir(parents=True, exist_ok=True)
     out: dict = {"device": {"index": device.index, "name": device.name}, "runs": []}
+
+    provenance: dict = {}
+    for key in models:
+        spec = rm.MODELS[key]
+        try:
+            rec = rm.resolve_model(spec)
+        except rm.ModelUnavailable as exc:
+            provenance[key] = {"resolved": False, "provenance_ok": None, "error": str(exc)}
+            continue
+        except rm.ModelProvenanceRefused as exc:
+            provenance[key] = {
+                "resolved": True, "provenance_ok": False, "provenance_state": "refused",
+                "reasons": exc.reasons,
+            }
+            continue
+        provenance[key] = {
+            "resolved": True,
+            "capability": rec["capability"],
+            "provenance_ok": rec["provenance_ok"],
+            "provenance_state": rec["provenance_state"],
+        }
+    out["provenance"] = provenance
+
     plan = []
     for key in models:
-        if key == rm.PHI35.key:
-            plan += [(key, "prefill", 1, 0), (key, "prefill", 8, 0), (key, "prefill", 128, 0),
-                     (key, "decode", 1, 1024)]
-        else:
-            plan += [(key, "batch", 1, 0), (key, "batch", 16, 0)]
+        # No `else` fallback: a key with no entry in `DIAGNOSTIC_PLANS` (issue #78's
+        # `MINILM`, provenance-only) gets no diagnostic cases at all, rather than silently
+        # inheriting MobileNetV2's batch plan the way a bare `if/else` would.
+        for (phase, m, past) in rm.DIAGNOSTIC_PLANS.get(key, ()):
+            plan.append((key, phase, m, past))
     for (key, phase, m, past) in plan:
         for arm in rm.ARMS:
             tag = f"{key}_{phase}_{m}_{past}_{arm.name}".replace("/", "_")
@@ -439,11 +486,18 @@ def environment_record(device, args) -> dict:
 
     import environment as env_mod
 
+    # Issue #78, blocker #3: both of these are real absolute filesystem paths (an installed
+    # venv's `site-packages`, and wherever the caller's `ONNXRUNTIME_VULKAN_EP_LIB` points),
+    # and this record is written straight into a committed artifact. Rooted through the one
+    # public-path helper (`public_paths.root_public_path`) rather than written raw — this is
+    # the exact shape of leak already committed in `bench/results/rust-model-runner/
+    # mobilenetv2-12.json` (a literal `C:\Users\...` path), and this function is the other
+    # place it can happen on every single run rather than once.
     lib = os.environ.get(EP_LIB_ENV)
     rec = {
         "onnxruntime": ort.__version__,
-        "onnxruntime_lib": str(Path(ort.__file__).resolve().parent / "capi"),
-        "ep_library": lib,
+        "onnxruntime_lib": pp.root_public_path(Path(ort.__file__).resolve().parent / "capi"),
+        "ep_library": pp.root_public_path(lib) if lib else None,
         "ep_library_sha256": rm.sha256_file(lib) if lib and Path(lib).is_file() else None,
         "python": sys.version.split()[0],
         "os": f"{platform.system()} {platform.release()} {platform.version()}",
@@ -485,7 +539,14 @@ def environment_record(device, args) -> dict:
         },
     }
     try:
-        rec["build"] = env_mod.build_info()
+        build = env_mod.build_info()
+        # `environment.build_info()` is shared harness-wide infrastructure (also used by
+        # `bench.py`/`phi35.py`/`transfer_calibration.py`) and is left untouched; its "lib"
+        # field is a real absolute path, so it is rooted to its public form HERE, locally, for
+        # this artifact only, rather than by editing the shared module for every caller.
+        if isinstance(build, dict) and isinstance(build.get("lib"), str) and build["lib"]:
+            build = dict(build, lib=pp.root_public_path(build["lib"]))
+        rec["build"] = build
     except Exception as exc:  # pragma: no cover - environment dependent
         rec["build"] = {"error": str(exc)}
     return rec
@@ -556,7 +617,7 @@ def main(argv=None) -> int:
             "environment": environment_record(device, args),
             **run_diagnostics(args, keys, device),
         }
-        out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        pp.write_public_json(out_path, report)
         print(f"\n  wrote {out_path}")
         return 0
 
@@ -566,6 +627,7 @@ def main(argv=None) -> int:
 
     models_out = []
     failures = []
+    skipped = []
     for key in keys:
         spec = rm.MODELS[key]
         try:
@@ -578,9 +640,25 @@ def main(argv=None) -> int:
             continue
         print(f"[real] {key}: {model_rec['path']}", flush=True)
         print(f"[real]   sha256 {model_rec['sha256']} ({model_rec['provenance']}, "
-              f"agrees_with_recorded={model_rec['agrees_with_recorded_provenance']})", flush=True)
-        cases = (rm.phi35_cases(prefill_m, decode_past) if key == rm.PHI35.key
-                 else rm.mobilenet_cases(batch))
+              f"agrees_with_recorded={model_rec['agrees_with_recorded_provenance']}, "
+              f"pinned={model_rec['pinned']}, provenance_ok={model_rec['provenance_ok']})",
+              flush=True)
+        cases = rm.cases_for(spec, prefill_m=prefill_m, decode_past=decode_past, batch=batch)
+        if cases is None:
+            # Issue #78: a provenance-only model (`MINILM`) is resolved and verified above —
+            # it is never simply missing from this report — but it has no case/feed builder
+            # yet (#74/#75/#76), so it is recorded here, by name, rather than benchmarked
+            # with another model's cases or dropped from the artifact entirely.
+            print(f"[real] {key}: capability={model_rec['capability']!r}, no case/feed "
+                  f"builder yet; provenance verified, not benchmarked", flush=True)
+            skipped.append({
+                "model": key,
+                "capability": model_rec["capability"],
+                "provenance_ok": model_rec["provenance_ok"],
+                "provenance_state": model_rec["provenance_state"],
+                "reason": "no case/feed builder wired for this model yet (#74/#75/#76)",
+            })
+            continue
         models_out.append(run_matrix(args, model_rec, cases, rm.ARMS, device))
 
     report = {
@@ -590,6 +668,7 @@ def main(argv=None) -> int:
         "environment": environment_record(device, args),
         "models": models_out,
         "unavailable_models": failures,
+        "skipped_models": skipped,
         "second_device": {
             "present": False,
             "detail": "vulkaninfo reports exactly one Vulkan device on this box; there is no "
@@ -597,7 +676,7 @@ def main(argv=None) -> int:
                       "than left to inference.",
         },
     }
-    out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    pp.write_public_json(out_path, report)
     _print_tables(report)
     print(f"\n  wrote {out_path}")
     return 1 if failures else 0

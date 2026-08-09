@@ -1,0 +1,18 @@
+{
+  "schema": "provenance-sidecar/1",
+  "tool": "manual (issue #78 provenance verification; no GPU/EP involved, no ort-model-runner run)",
+  "model": "all-MiniLM-L6-v2",
+  "model_provenance": "pinned",
+  "source_repo": "sentence-transformers/all-MiniLM-L6-v2",
+  "source_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+  "source_file": "onnx/model.onnx",
+  "onnx_file": "<model-cache>/all-MiniLM-L6-v2.onnx",
+  "onnx_sha256": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+  "onnx_bytes": 90405214,
+  "external_data": {
+    "expected_locations": [],
+    "note": "the verified artifact carries no external-data blobs; the .onnx hash covers all weights"
+  },
+  "note": "This sidecar was written by hand from the pinned identity in issue #78, not produced by rust/modelrunner's ort-model-runner (which has no manifest entry for this model — it is capability=\"provenance_only\" and is never fed to a session). `bench/real_model.py::verify_source_metadata` reads source_repo/source_revision/source_file/onnx_bytes from here and checks them, unconditionally, against the pin and against the freshly resolved file's own sha256/size/external-data scan on every `resolve_model` call; a missing or drifted sidecar field, or a substituted file, refuses (`ModelProvenanceRefused`) rather than reporting `provenance_ok=True`.",
+  "cached_substitute_warning": "the mutable-metadata cache entry commonly returned for this repo/file (sha256 prefix 759c3cd2...) is NOT this pin and must never be accepted as a match for the immutable revision above."
+}
