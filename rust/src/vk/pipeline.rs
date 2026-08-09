@@ -364,12 +364,15 @@ impl DispatchDescriptorPool {
                 }
             }
         };
+        // Counted here rather than at the call site: the `return None` above leaves without
+        // touching this line, so a pool that failed to create can never be counted as one that
+        // did.
+        crate::counters::dispatch_resources::on_pool_created();
         Some(DispatchDescriptorPool {
             ash_device: ash_device.clone(),
             pool,
         })
     }
-
     /// Allocate one descriptor set for the given layout, then write storage-buffer descriptors
     /// for each buffer in `buffers`.
     ///
@@ -397,8 +400,10 @@ impl DispatchDescriptorPool {
                 }
             }
         };
+        // The unit is *sets*, not *calls*: `allocate_descriptor_sets` returns a vector, and a
+        // caller that later asks for several at once must not read as one.
+        crate::counters::dispatch_resources::on_sets_allocated(sets.len() as u64);
         let set = sets[0];
-
         // Write one VkDescriptorBufferInfo + VkWriteDescriptorSet per binding.
         let buffer_infos: Vec<vk::DescriptorBufferInfo> = buffers
             .iter()

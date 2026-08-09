@@ -33,6 +33,7 @@ use crate::logging;
 use crate::ops::partition;
 use crate::registry::{self, NodeView};
 use crate::sys::{self, ort};
+use crate::trace;
 
 /// Session options this EP understands, all prefixed `ep.` (`DESIGN.md` §2.4).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2568,7 +2569,34 @@ unsafe extern "C" fn compute(
 
 /// # Safety
 /// `kernel_context` must be the live context ORT passed to `Compute`.
+///
+/// This is the **total-attribution bracket** and nothing else. It opens the one span that is
+/// entitled to be called a whole `Compute` — [`trace::VulkanTracer::compute_call_region`] — before
+/// any check runs, and resolves it on the single return path, so every refusal inside
+/// [`compute_call_body`] is inside the span and is labelled `failed` rather than looking like a
+/// complete decomposition. When tracing is off the whole bracket is one relaxed atomic load, a
+/// `None`, and two moves.
 unsafe fn compute_impl(
+    info: &mut SubgraphComputeInfo,
+    state: *mut c_void,
+    kernel_context: *mut ort::OrtKernelContext,
+) -> ort::OrtStatusPtr {
+    let mut call = trace::tracer().compute_call_region(info.plan.nodes.len());
+    // SAFETY: the caller's contract for `kernel_context` is forwarded unchanged.
+    let status = unsafe { compute_call_body(info, state, kernel_context) };
+    if let Some(guard) = call.as_mut() {
+        guard.resolve(if status.is_null() {
+            trace::ComputeOutcome::Ok
+        } else {
+            trace::ComputeOutcome::Failed
+        });
+    }
+    status
+}
+
+/// # Safety
+/// `kernel_context` must be the live context ORT passed to `Compute`.
+unsafe fn compute_call_body(
     info: &mut SubgraphComputeInfo,
     _state: *mut c_void,
     kernel_context: *mut ort::OrtKernelContext,

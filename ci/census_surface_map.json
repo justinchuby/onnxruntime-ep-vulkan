@@ -39,6 +39,34 @@
     },
     {
       "kind": "counter",
+      "id": "descriptor_pools_created",
+      "disposition": "uncensused",
+      "reason": "Counts successful vkCreateDescriptorPool calls (issue #88). No census mechanism reads it: the census observes dispatch outcomes, not the Vulkan objects a dispatch had to allocate first, so 'descriptor allocation churned' is not a state it can report.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "counter",
+      "id": "descriptor_sets_allocated",
+      "disposition": "uncensused",
+      "reason": "Counts descriptor sets from successful vkAllocateDescriptorSets calls (issue #88). No census mechanism reads it, for the same reason as descriptor_pools_created.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "counter",
+      "id": "command_buffers_allocated",
+      "disposition": "uncensused",
+      "reason": "Counts command buffers from successful vkAllocateCommandBuffers calls (issue #88). No census mechanism reads it; the census reads recording outcomes, not command-buffer supply.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "counter",
+      "id": "queue_submits_completed",
+      "disposition": "uncensused",
+      "reason": "Counts submissions whose vkQueueSubmit AND fence wait both returned success (issue #88). No census mechanism reads it. Deliberately NOT named queue_submits: a counter incremented at the call site would report attempts as completions, so a failed create or submit must not move it.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "counter",
       "id": "subgraphs_live",
       "disposition": "censused",
       "reason": "The partitioner line reads this delta and names it.",

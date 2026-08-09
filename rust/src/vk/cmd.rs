@@ -97,6 +97,10 @@ impl CommandPool {
             }
         };
 
+        // Allocation, not recording, and only on the path where the driver returned buffers: the
+        // error arm above destroys the pool and leaves.
+        crate::counters::dispatch_resources::on_command_buffers_allocated(cmds.len() as u64);
+
         Some(CommandPool {
             ash_device: ash_device.clone(),
             pool,

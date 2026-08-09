@@ -133,6 +133,44 @@ def is_leaf_phase(phase: str) -> bool:
 #: `X` (complete) events on the host lane that bound one `Compute` call.
 SUBGRAPH = "vulkan.subgraph"
 
+#: The span that brackets the **whole ORT ``Compute`` callback** (``trace.rs``,
+#: ``VulkanTracer::compute_call_region``), opened as the first statement of the callback body and
+#: closed on every return.
+#:
+#: It is *not* :data:`SUBGRAPH`. ``vulkan.subgraph`` starts inside the engine, at ``dispatch_ort``,
+#: after the binding checks ORT's callback runs first; the difference between the two is real host
+#: cost that no phase span names. Reading ``vulkan.subgraph`` as a ``Compute`` total — which this
+#: module's own upstream docstring did until issue #88 — understates the caller-visible wall by
+#: however long those checks take, which is exactly the quantity the attribution was asked for.
+COMPUTE_CALL = "vulkan.compute_call"
+
+#: Value of the ``boundary`` arg every :data:`COMPUTE_CALL` span carries.
+#:
+#: A named constant rather than a description, because the whole value of that span is *where it
+#: starts*, and a consumer that cannot check where it starts is trusting prose. A span without
+#: this arg is from a build that predates the boundary move and is not a total.
+COMPUTE_CALL_BOUNDARY = "ort_compute_callback"
+
+#: The ``outcome`` values a :data:`COMPUTE_CALL` span may carry, and whether each one admits a
+#: residual.
+#:
+#: Only ``ok`` does. A ``failed`` or ``unresolved`` call left the callback early, so its phase
+#: spans are a *prefix* of the vocabulary rather than a *decomposition* of it: subtracting them
+#: from the total yields a number that looks like unattributed host cost and is actually the work
+#: the call never did. That number is the one thing issue #88 says must never be fabricated.
+COMPUTE_CALL_OUTCOMES = {"ok": True, "failed": False, "unresolved": False}
+
+#: Trace ``cat`` of a phase span. ``trace.rs`` puts every ``Phase`` span in this category.
+PHASE_CAT = "ep.phase"
+
+#: Every span name this module is able to account for, as one object.
+#:
+#: Returned *by identity* from :func:`unknown_phase_spans` on the accept polarity, so a caller
+#: cannot be handed a look-alike set that happens to compare equal.
+KNOWN_SPAN_NAMES = frozenset(
+    [f"vulkan.{p}" for p in HOST_PHASES] + [SUBGRAPH, COMPUTE_CALL]
+)
+
 #: Prefix of a device-lane span produced from `VkQueryPool` results.
 GPU_PREFIX = "vulkan.gpu."
 
@@ -218,6 +256,228 @@ def phase_spans(events: "list[dict]") -> "list[dict]":
     ]
     out.sort(key=lambda s: s["ts"])
     return out
+
+
+def unknown_phase_spans(events: "list[dict]") -> "tuple[frozenset | None, str]":
+    """Certify that this module recognises **every** ``ep.phase`` span in the trace.
+
+    A **total** instrument (see ``bench/_polarity.py``): returns ``(KNOWN_SPAN_NAMES, why)`` when
+    the trace's phase vocabulary is one this module can account for, and ``(None, why)`` naming
+    the offenders when it is not.
+
+    WHY THIS EXISTS
+    ===============
+    :func:`phase_spans` filters with ``e["name"] in names``, where ``names`` is built from
+    :data:`HOST_PHASES`. That is a **silent drop**. A phase added to ``trace.rs`` and not added
+    here does not produce a warning, a red row or an empty result — it produces a table that is
+    quietly missing a column, and every share computed from that table is a percentage of the
+    wrong denominator. The failure is invisible in exactly the artifact someone would publish.
+
+    It is not hypothetical. Adding one sibling phase to ``trace.rs`` without adding it here
+    yields a report whose sibling total is short by that phase's whole cost, whose residual
+    silently absorbs it, and whose ``phase_containment`` still says PASS because the missing
+    spans were never handed to it.
+
+    So the mirror between ``trace.rs::Phase`` and :data:`HOST_PHASES` gets a falsifier that fires
+    on the *artifact*, not on the source: any ``cat: "ep.phase"`` span whose name is not in
+    :data:`KNOWN_SPAN_NAMES` is a phase this module cannot account for, and the whole phase table
+    is refused rather than published short.
+
+    FAIL CLOSED
+    ===========
+    A refusal is not a warning. Issue #88 requires that an unknown phase remove the attribution
+    claim, because a decomposition missing one of its parts is not a decomposition — it is a
+    subset wearing one's clothes, and the reader cannot see which.
+
+    ``why`` always names what was checked, on both polarities, so a green artifact records the
+    vocabulary it was green against rather than the fact that something passed.
+    """
+    seen: "dict[str, int]" = {}
+    for e in events:
+        if e.get("ph") != "X":
+            continue
+        name = e.get("name")
+        if not isinstance(name, str):
+            continue
+        # `cat` is authoritative when present: it is what `trace.rs` sets, and it distinguishes a
+        # phase span from the `ep.path` INSTANT named `vulkan.compute[<PATH>]`, which shares a
+        # prefix with `vulkan.compute_call` and means something else entirely.
+        cat = e.get("cat")
+        if cat is not None:
+            if cat != PHASE_CAT:
+                continue
+        elif not name.startswith("vulkan.") or name.startswith(GPU_PREFIX):
+            continue
+        if name not in KNOWN_SPAN_NAMES:
+            seen[name] = seen.get(name, 0) + 1
+
+    if seen:
+        offenders = ", ".join(
+            f"{n} x{c}" for n, c in sorted(seen.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        return None, (
+            f"refused: {len(seen)} phase span name(s) this module cannot account for: "
+            f"{offenders}. HOST_PHASES has {len(HOST_PHASES)} entries and trace.rs emits at "
+            f"least one more, so phase_spans() would drop these silently and every share "
+            f"computed from the table would be a percentage of the wrong denominator. Add the "
+            f"phase to HOST_PHASES (and to SUB_RECORD_PHASES/PHASE_CHILDREN if it is nested) "
+            f"before any number from this trace is published."
+        )
+    return KNOWN_SPAN_NAMES, (
+        f"every ep.phase span in this trace is one of the {len(HOST_PHASES)} names in "
+        f"HOST_PHASES; the trace.rs<->phases.py mirror holds for this artifact"
+    )
+
+
+def compute_call_attribution(
+    events: "list[dict]", slack: float = CONTAINMENT_SLACK
+) -> "tuple[dict | None, str]":
+    """Decompose each **whole ``Compute`` callback** into named siblings plus a computed residual.
+
+    A **total** instrument: ``(rows, why)`` or ``(None, why)``.
+
+    THE THREE TIERS, AND WHY THEY ARE NOT INTERCHANGEABLE
+    ====================================================
+    * **Total** — the :data:`COMPUTE_CALL` span. The wall an ORT caller pays.
+    * **Sibling** — ``ep.phase`` spans with ``nested_in == "none"``, disjoint by construction and
+      therefore summable. All of them live inside ``vulkan.subgraph``, which lives inside the
+      total.
+    * **Child** — ``ep.phase`` spans with a ``nested_in`` parent. **Never** added to the sibling
+      total; their cost is already inside their parent's.
+
+    ``residual = total - Σ sibling``. It is **computed, never assumed zero**, and it is real host
+    cost this vocabulary does not name: ORT-side callback entry, the binding checks, and the
+    ``dispatch_ort`` prologue/epilogue outside every phase.
+
+    WHERE IT REFUSES
+    ================
+    * **No total span** — the trace is from a build before the boundary move, or tracing captured
+      only the engine. There is no total to subtract from, so there is no residual.
+    * **Wrong or missing ``boundary`` arg** — the span exists but does not declare where it
+      starts. A total whose boundary is unverifiable is prose.
+    * **An unknown phase** — delegated to :func:`unknown_phase_spans`. A decomposition missing a
+      part is not a decomposition.
+    * **An escaped sibling** — a sibling span that starts inside the total and ends after it.
+      Skipping it (which a plain containment filter does) moves its whole cost into the residual
+      and reports it as unattributed host cost.
+    * **Oversubscription** — ``Σ sibling > total * (1 + slack)`` on any admissible call. Siblings
+      are wall-clock intervals inside the total; exceeding it is a contradiction in the
+      instrument, so the whole table is withheld rather than a negative residual reported.
+      Refused **independently** of the outcome check: an oversubscribed ``ok`` call is still a
+      broken instrument.
+    * **No admissible call** — every call in the trace ended ``failed`` or ``unresolved``. Their
+      phase spans are prefixes, not decompositions.
+
+    Inadmissible calls are counted and disclosed in ``why``; they are never dropped silently and
+    never contribute a residual.
+    """
+    known, known_why = unknown_phase_spans(events)
+    if known is None:
+        return None, f"cannot attribute: {known_why}"
+
+    totals = [
+        {
+            "ts": e["ts"],
+            "end": e["ts"] + e.get("dur", 0),
+            "dur": e.get("dur", 0),
+            "args": e.get("args") or {},
+        }
+        for e in events
+        if e.get("ph") == "X" and e.get("name") == COMPUTE_CALL
+    ]
+    if not totals:
+        return None, (
+            f"refused: no {COMPUTE_CALL!r} span in this trace. Without it there is no "
+            f"caller-visible total, and {SUBGRAPH!r} is not a substitute — it starts inside the "
+            f"engine, after the binding checks, so subtracting siblings from it yields a "
+            f"residual that silently excludes the very cost this instrument was built to find."
+        )
+    totals.sort(key=lambda c: c["ts"])
+
+    bad_boundary = [
+        c for c in totals if c["args"].get("boundary") != COMPUTE_CALL_BOUNDARY
+    ]
+    if bad_boundary:
+        got = sorted({repr(c["args"].get("boundary")) for c in bad_boundary})
+        return None, (
+            f"refused: {len(bad_boundary)} of {len(totals)} {COMPUTE_CALL!r} span(s) do not "
+            f"declare boundary={COMPUTE_CALL_BOUNDARY!r} (saw {', '.join(got)}). A total whose "
+            f"start point cannot be checked is a claim, not a measurement."
+        )
+
+    siblings = [p for p in sibling_phases(phase_spans(events))]
+    rows = []
+    inadmissible: "dict[str, int]" = {}
+    oversubscribed = []
+    escaped = []
+    for i, c in enumerate(totals):
+        outcome = c["args"].get("outcome", "unresolved")
+        inside = [p for p in siblings if p["ts"] >= c["ts"] and p["end"] <= c["end"]]
+        # A sibling that STARTS inside the total and ends after it is a structural violation, not
+        # a span to skip. Dropping it — which a plain containment filter does — removes its whole
+        # cost from the sibling sum, inflates the residual by exactly that much, and reports the
+        # result as "unattributed host cost". That is the silent drop this module already had
+        # once, moved one level up.
+        out = [p for p in siblings if c["ts"] <= p["ts"] < c["end"] and p["end"] > c["end"]]
+        if out:
+            escaped.append((i, out[0]["phase"], out[0]["end"] - c["end"]))
+        sibling_us = sum(p["dur"] for p in inside)
+        # Oversubscription is checked on EVERY call, admissible or not: it is a statement about
+        # the instrument, not about the call, and a refused call whose siblings exceed its own
+        # total means the spans are not nested the way the model says they are.
+        if c["dur"] > 0 and sibling_us > c["dur"] * (1.0 + slack):
+            oversubscribed.append((i, sibling_us, c["dur"]))
+        if not COMPUTE_CALL_OUTCOMES.get(outcome, False):
+            inadmissible[outcome] = inadmissible.get(outcome, 0) + 1
+            continue
+        rows.append(
+            {
+                "index": i,
+                "total_ms": c["dur"] / 1000.0,
+                "sibling_ms": sibling_us / 1000.0,
+                "residual_ms": (c["dur"] - sibling_us) / 1000.0,
+                "phases": {p["phase"]: p["dur"] / 1000.0 for p in inside},
+                "outcome": outcome,
+            }
+        )
+
+    if escaped:
+        i, phase, over_us = escaped[0]
+        return None, (
+            f"refused: {len(escaped)} call(s) contain a sibling phase span that ESCAPES the "
+            f"total it started inside (call {i}: {phase!r} ends {over_us} us after the "
+            f"{COMPUTE_CALL!r} span closes). The total is opened before every check and closed on "
+            f"every return, so no phase inside it can outlive it — a span that does means the "
+            f"trace's spans are not nested the way this model says, and skipping it would move "
+            f"its entire cost into the 'unattributed' row."
+        )
+    if oversubscribed:
+        i, s, d = oversubscribed[0]
+        return None, (
+            f"refused: {len(oversubscribed)} of {len(totals)} call(s) are OVERSUBSCRIBED — the "
+            f"disjoint sibling spans inside them sum to more than the total they are inside "
+            f"(call {i}: {s / 1000.0:.3f} ms of siblings in a {d / 1000.0:.3f} ms total, slack "
+            f"{slack:.0%}). That is a contradiction in the instrument, not a measurement of "
+            f"anything, and it would surface as a negative 'unattributed' row."
+        )
+    if not rows:
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(inadmissible.items()))
+        return None, (
+            f"refused: none of the {len(totals)} Compute call(s) in this trace ended `ok` "
+            f"({detail}). A refused or partial call's phase spans are a prefix of the "
+            f"vocabulary, not a decomposition of it, so no residual may be computed from them."
+        )
+
+    skipped = (
+        " " + ", ".join(f"{v} call(s) excluded as {k}" for k, v in sorted(inadmissible.items()))
+        if inadmissible
+        else " no calls excluded"
+    )
+    return rows, (
+        f"{len(rows)} admissible Compute call(s) decomposed against a "
+        f"boundary={COMPUTE_CALL_BOUNDARY!r} total; residual = total - Σ disjoint siblings, "
+        f"computed per call and never assumed zero;{skipped}."
+    )
 
 
 def phase_nesting(phases: "list[dict]") -> dict:

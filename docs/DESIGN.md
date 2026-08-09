@@ -6581,6 +6581,133 @@ push is a second, staler answer to a question already being asked live — and s
 what it delivered. `--record` remains for a deliberate archival reading; anything it writes carries
 the frame above, so such a reading can go stale *detectably* instead of silently.
 
+### 9.5 Host-cost attribution for `Compute` (issue #88) — Tank
+
+Issue #88's complaint is narrow and correct: in production we could say how long a *dispatch* took,
+but not how much of an ORT `Compute` callback that dispatch actually accounted for. The gap between
+the two — argument validation, plan lookup, the binding checks ORT itself does not time for us —
+was invisible, and invisible cost is the cost that gets silently attributed to whatever *is*
+measured. This section describes the attribution model that closes it, and is written to be checkable
+against the code rather than believed.
+
+#### 9.5.1 Three tiers, and one boundary that is named honestly
+
+The trace emits three tiers of span. They are not interchangeable and the difference between the
+first two is the whole point of this section.
+
+| Tier | Span | Boundary in code | Meaning |
+|---|---|---|---|
+| **Total** | `vulkan.compute_call` | opened as the first statement of `ep.rs::compute_impl`, closed by RAII on **every** return path | one whole ORT `Compute` callback, including the checks and the failure returns |
+| **Sibling** | `vulkan.subgraph` | `session.rs::dispatch_ort` entry → return | the **instrumented dispatch success path** — *not* a whole `Compute` |
+| **Child** | `vulkan.record`, `vulkan.submit`, `vulkan.fence_wait`, `vulkan.desc_alloc`, `vulkan.pipeline_lookup`, `vulkan.cmd_upload`, … | inside the dispatch | one phase of the dispatch |
+
+The second row is the honest correction. Before this change `subgraph_region`'s docstring called
+itself "one fused subgraph's whole `Compute` call"; it never was. `dispatch_ort` is reached only
+*after* `compute_impl` has resolved its context, looked up the plan and passed its binding checks, so
+`vulkan.subgraph` structurally cannot contain them, and on any early-return failure path it is never
+opened at all. **Requirement, stated as a rule: no span may claim to bracket a callback it does not
+bracket on the failure paths as well as the success path.** `vulkan.compute_call` earns the claim
+because it is opened before the first check and closed by `Drop`; `vulkan.subgraph` no longer makes
+it.
+
+`vulkan.compute_call` carries `boundary: "ort_compute_callback"` (`trace.rs::COMPUTE_CALL_BOUNDARY`)
+as a span argument. That string is not decoration: `bench/phases.py::compute_call_attribution`
+**refuses** a total span that does not carry it, so a future span that borrows the name without the
+boundary cannot quietly inherit the claim.
+
+The disabled path stays free. `compute_call_region` returns `Option<ComputeCallGuard>` and returns
+`None` when the tracer is off, before any clock read, allocation or formatting — one predictable
+branch, which is what §7's compatibility-and-cost posture requires of an always-compiled instrument.
+
+#### 9.5.2 The residual is computed, never assumed zero
+
+Attribution is arithmetic over the tiers, done in `bench/phases.py::compute_call_attribution`:
+
+```
+residual = Total − Σ Sibling          (siblings are disjoint by construction)
+```
+
+`residual` is the **unattributed host cost** — issue #88's actual quarry. Three properties are load
+bearing:
+
+1. **It is computed, not assumed.** A row of zero is a measurement; a missing row is not.
+2. **It is admissible only on `outcome == "ok"`.** `vulkan.compute_call` carries an `outcome` arg
+   (`unresolved` by default, resolved to `ok`/`failed` from the returned `OrtStatus`). On a failed or
+   unresolved call the elapsed time is the time until the failure, and subtracting siblings from it
+   yields a number with no referent. Such calls are counted and *disclosed* in the refusal string
+   rather than dropped. The admissibility rule is spelled **once**, in
+   `bench/phases.py::COMPUTE_CALL_OUTCOMES`; `ComputeOutcome` deliberately does not carry a second
+   copy, because two spellings of one rule is how a rule drifts.
+3. **A negative residual is oversubscription, and is refused independently of outcome.** Siblings
+   summing past their total means the spans are not describing what we think they describe. This is
+   checked before the outcome filter so that a broken clock cannot be laundered into an `ok` row.
+
+Two further refusals exist because both were found by their own tests rather than reasoned about:
+
+- **Unknown phases.** `unknown_phase_spans` refuses on any `cat: "ep.phase"` span whose name is not
+  in `KNOWN_SPAN_NAMES`, naming the offenders. A phase the arithmetic has never heard of is cost of
+  unknown parentage; counting it as residual would report a new instrument as unattributed host work.
+- **Escaped siblings.** A sibling that *starts* inside the total and *ends* outside it is refused,
+  not skipped. Skipping it — which the first draft did — silently moved its entire cost into the
+  residual and labelled it host cost. This is the same silent-drop class as the `HOST_PHASES` hole,
+  one level up.
+
+**Fail-closed is the default for the public artifact.** Any of the above refusals removes the
+attribution numbers entirely rather than degrading them; there is no partial attribution row.
+
+#### 9.5.3 The phase table, and where the host upload memcpy actually lives
+
+The nesting below is what the code does, verified by reading it, and is guarded executably by
+`trace.rs::the_host_upload_memcpy_is_declared_inside_record_and_not_in_an_allocation_phase`.
+
+| Phase | Nested in | What it covers |
+|---|---|---|
+| `vulkan.record` | — | command-buffer recording **and the preparation of the upload commands and their data** |
+| `vulkan.cmd_upload` | `vulkan.record` | **the host memcpy into staging** plus the `vkCmdCopyBuffer` that consumes it |
+| `vulkan.desc_alloc` | `vulkan.record` | descriptor pool/set allocation for this dispatch |
+| `vulkan.pipeline_lookup` | `vulkan.record` | pipeline cache lookup |
+| `vulkan.submit` | — | queue submission |
+| `vulkan.fence_wait` | — | waiting on the submission fence |
+
+**The host upload memcpy is inside `record`/`cmd_upload`. There is no allocation phase that contains
+it, and there is no `buffer_alloc` phase in this engine — allocation is allocation only.** The
+`record` row above discloses the nested upload command and data preparation explicitly, because a
+`record` row that mentioned only "recording" would understate what a reader is being charged for.
+`Phase::Record`'s own `caveat()` names the memcpy for the same reason. The guard asserts the phases
+naming a memcpy are exactly `{record, cmd_upload}` and that `Record.nested_in()` is `None`; it goes
+red if a third phase claims the memcpy or if `record` is re-parented.
+
+There is a naming hazard worth stating once: the instant event `vulkan.compute[<PATH>]` shares a
+prefix with the span `vulkan.compute_call`. **Neither may ever be matched by prefix.** The span
+vocabulary table in `trace.rs`'s module header carries the same warning.
+
+#### 9.5.4 Dispatch resource counters, and what "completed" means
+
+Four `u64` counters are appended to `VulkanEpCounters` (ABI **9**; appended-only, so every offset a
+prefix reader already knows is preserved by the `min(out_bytes, size_of)` writeback):
+
+| Counter | Incremented |
+|---|---|
+| `descriptor_pools_created` | after a **successful** `vkCreateDescriptorPool` |
+| `descriptor_sets_allocated` | after a **successful** `vkAllocateDescriptorSets`, by the number allocated |
+| `command_buffers_allocated` | after a **successful** `vkAllocateCommandBuffers`, by the number allocated |
+| `queue_submits_completed` | only after `vkQueueSubmit` **and** its fence wait both return successfully |
+
+The last one is named `queue_submits_completed`, not `queue_submits`, because that is what it counts.
+A counter incremented at the call site rather than on the success side reports attempts as
+completions, and a submission that failed to create or failed to submit is not a submission the GPU
+did anything with. `create_and_submit` returns `Option<Fence>` and `wait_fence_then_destroy` returns
+`bool`; both must succeed before the counter moves.
+
+#### 9.5.5 Why the pre-dispatch cost is a residual and not a new phase
+
+It would have been easy to wrap the pre-dispatch checks in a new `ep.phase` span. It would also have
+been wrong here: `bench/phases.py::phase_containment` treats a phase span found outside every
+`vulkan.subgraph` as an **orphan**, and a phase covering the pre-dispatch checks is by definition
+outside the dispatch. Adding one would have turned the containment contract red — the contract
+documented in `PERF.md`, which this change leaves intact and true. The pre-dispatch cost therefore
+surfaces where issue #88 asked for it: as the computed residual.
+
 ---
 
 ## 10. Milestones

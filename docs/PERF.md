@@ -1006,17 +1006,24 @@ comparison and that refusal stands.
 
 ### 9.3 The phase split
 
-Shares are of **time inside `Compute`** — the sum of `vulkan.subgraph` spans. That is the EP's
-own view of its execution and is **not** process wall time; ORT's graph execution, the CPU EP's
+Shares are of **time inside the instrumented dispatch success path** — the sum of `vulkan.subgraph`
+spans. That span begins at `dispatch_ort`, i.e. *after* `Compute`'s argument resolution, plan lookup
+and binding checks, so it is **not** a whole `Compute` callback and must not be described as one
+(DESIGN §9.5.1). It is also **not** process wall time; ORT's graph execution, the CPU EP's
 nodes between islands and session setup are all outside it. These shares may not be restated as
 shares of the benchmark's wall clock.
+
+The cost between the `Compute` callback entry and `dispatch_ort` is not lost: `vulkan.compute_call`
+brackets the whole callback and `bench/phases.py::compute_call_attribution` reports
+`Total − Σ Sibling` as a **computed** unattributed-host-cost residual (DESIGN §9.5.2). No numbers
+from that instrument are quoted in this document yet — see §9.3.1.
 
 The timed pass runs with tracing **off**; the split comes from a separate instrumented pass, and
 `tracing_overhead_ratio` (traced median ÷ untraced median) is measured rather than assumed:
 1.0207× on NVIDIA, 0.8659× on Intel. The Intel figure being below 1.0 is not negative overhead —
 it means the machine state moved between the two passes, and it is reported for that reason.
 
-**NVIDIA RTX 4060 Laptop** — 48563.24 ms inside `Compute`, 561 subgraph invocations:
+**NVIDIA RTX 4060 Laptop** — 48563.24 ms inside the dispatch path, 561 subgraph invocations:
 
 | phase | total | share | n | median |
 |---|---|---|---|---|
@@ -1028,7 +1035,7 @@ it means the machine state moved between the two passes, and it is reported for 
 | unattributed inside `Compute` | 818.63 ms | 1.7% | — | — |
 | **GPU kernels (sum)** | **6110.00 ms** | **12.6%** | 5457 | — |
 
-**Intel Iris Xe** — 72148.67 ms inside `Compute`, 561 subgraph invocations:
+**Intel Iris Xe** — 72148.67 ms inside the dispatch path, 561 subgraph invocations:
 
 | phase | total | share | n | median |
 |---|---|---|---|---|
@@ -1054,6 +1061,36 @@ Per-kernel GPU time (summed from the per-span `gpu_ns` float, **not** from the i
 reads, buffer allocation and descriptor-pool work before recording, plus the readback memcpy and
 the writes into ORT's output tensors after the fence. **A phase split whose parts do not sum to
 the whole should say so.**
+
+#### 9.3.1 Two different residuals — do not conflate them (issue #88)
+
+The `unattributed` row above is the residual **inside** `vulkan.subgraph`: dispatch time that no
+child phase covers. Issue #88 is about a *different*, outer residual — the time inside the ORT
+`Compute` callback that is outside `vulkan.subgraph` entirely (argument resolution, plan lookup,
+binding checks, and every early-return failure path). Those two numbers answer different questions
+and must never be added or substituted for one another.
+
+`vulkan.compute_call` (DESIGN §9.5) now brackets the callback so the outer residual is measurable:
+
+```
+unattributed host cost = Σ vulkan.compute_call − Σ vulkan.subgraph
+```
+
+**No value for it is quoted in this document.** The measurement is instrumented and its analyser
+(`bench/phases.py::compute_call_attribution`) is screened by the instrument census in both
+polarities, but no attributed run has been reproduced under an exclusive GPU lock with the model,
+DLL, device, path and equivalence witnesses this document requires of a number. Per §10.0's gate, an
+un-witnessed number is not published. The analyser fails closed for the same reason: unknown phases,
+an escaped sibling, oversubscription, a missing boundary argument or a non-`ok` outcome all remove
+the attribution rather than degrade it.
+
+Two reading rules apply when such numbers are eventually published here:
+
+- **Per-call percentage medians need not sum to 100%.** A median of ratios is not a ratio of
+  medians. A table of per-call medians that sums to 97% or 103% is arithmetically ordinary and must
+  be disclosed as such — **not** reconciled by inventing a residual row to absorb the difference.
+- The residual is admissible only on calls whose `outcome` is `ok`. Refused and inadmissible calls
+  are counted and disclosed, never silently dropped.
 
 ### 9.4 The 68% is not `vkCmd*`. It is `memcpy`. — the finding Switch needs
 

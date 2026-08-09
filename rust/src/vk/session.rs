@@ -9,7 +9,7 @@
 //! The dispatch path here is the same sequence as `dispatch_integration.rs` but reads from and
 //! writes to ORT-allocated CPU tensor buffers rather than test-generated data.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ash::vk;
@@ -698,6 +698,16 @@ pub(crate) struct VulkanSession {
     /// the outer dimension is 0 — it is only present to satisfy the descriptor-write constraint.
     /// Freed explicitly in `Drop` before `alloc` drops.
     zero_elem_placeholder: Option<GpuBuffer>,
+    /// `(subgraph_id, shape_key)` pairs this session has already recorded a command buffer for.
+    ///
+    /// **Populated only while the tracer is active** (see the `record_path` call in
+    /// `dispatch_ort`), because it is a diagnostic ledger and not part of dispatch: on the default
+    /// configuration the set stays empty and costs one branch per `Compute`. It exists because
+    /// `Tracer::record_path` can only reclassify a *claimed* `Replay`, and this engine never
+    /// claims one — it re-records every call — so the honest `FirstRecord` / `Rerecord` split has
+    /// to be decided by whoever knows whether this shape has been through here before, which is
+    /// the session.
+    recorded_shape_keys: HashSet<(u64, String)>,
 }
 
 /// Is the output-side device bind active for this process?
@@ -958,6 +968,7 @@ impl VulkanSession {
             instance,
             weight_caches: HashMap::new(),
             zero_elem_placeholder,
+            recorded_shape_keys: HashSet::new(),
         })
     }
 
@@ -2659,6 +2670,42 @@ impl VulkanSession {
         // Phase::Record ends when the recording guard is dropped (before we submit).
         drop(_record_guard);
 
+        // The recording path this call took, reported from production for the first time
+        // (issue #88: `Tracer::record_path` was instrumented and never invoked outside tests,
+        // so the census listed it `uninvoked` — an instrument nobody can be misled by, and
+        // nobody can be informed by either).
+        //
+        // What is honest to report here: this engine has **no replay path**. Every `Compute`
+        // runs the `vkBeginCommandBuffer`..`vkEndCommandBuffer` bracket above. So the first call
+        // for a given `(subgraph, shape key)` is a `FirstRecord` and every later one is a
+        // `Rerecord` — never a `Replay`. Reporting `Replay` here and letting `record_path`'s
+        // shape-key resolution demote it would produce the same two labels through a claim this
+        // code cannot make, and would silently start reporting `Replay` the moment a shape
+        // repeats.
+        //
+        // Gated on `t.active()` so the default configuration pays one relaxed atomic load and a
+        // branch: no key formatting, no set insertion, no allocation.
+        if t.active() {
+            let shape_key = actual_input_byte_sizes
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join("x");
+            let first = self
+                .recorded_shape_keys
+                .insert((subgraph_id, shape_key.clone()));
+            t.record_path(
+                &format!("subgraph{subgraph_id}"),
+                if first {
+                    trace::RecordPath::FirstRecord
+                } else {
+                    trace::RecordPath::Rerecord
+                },
+                &shape_key,
+                kernels.len(),
+            );
+        }
+
         // Bracket the GPU execution in host monotonic time for the calibration anchor.
         // host_t0 = just before queue_submit; host_t1 = just after wait_for_fences.
         // The GPU kernel(s) execute somewhere in [host_t0, host_t1]; the midpoint is the
@@ -2703,6 +2750,16 @@ impl VulkanSession {
             ok
         };
         let host_t1 = onnx_runtime_tracer::absolute_now_us();
+
+        // D3 / issue #88. `queue_submits_completed` moves here and nowhere else. The three
+        // earlier candidates are all wrong for the same reason: `create_and_submit` returning
+        // `None` (fence creation or `vkQueueSubmit` failed) and `wait_fence_then_destroy`
+        // returning `false` (the wait failed, or the device was lost) both leave the host holding
+        // a submission that executed nothing it may attribute work to. Counting at the call
+        // instead of at the completion is how a lane that computed nothing reports throughput.
+        if fence_ok {
+            crate::counters::dispatch_resources::on_submit_completed();
+        }
 
         if !fence_ok {
             self.free_all([

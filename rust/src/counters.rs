@@ -65,7 +65,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// [`COUNTERS_LAYOUT_HASH`], which the compiler computes from the actual field offsets: a layout
 /// change that does not appear in [`COUNTERS_LAYOUT_REGISTRY`] under this version fails the build.
 /// See [`counters_layout_hash`].
-pub const COUNTERS_ABI_VERSION: u32 = 8;
+pub const COUNTERS_ABI_VERSION: u32 = 9;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -745,6 +745,31 @@ pub struct VulkanEpCounters {
     /// parse time, so the form read as `KEY-ABSENT` and was indistinguishable from a form nobody
     /// had ever proven.
     pub subject_changed_declines: u64,
+    /// `vkCreateDescriptorPool` calls that returned a pool. **ABI version 9.**
+    ///
+    /// Counted at the creation site, not at the call site, so a pool that failed to create is not
+    /// counted as one that did.
+    pub descriptor_pools_created: u64,
+    /// Descriptor sets returned by a successful `vkAllocateDescriptorSets`. **ABI version 9.**
+    ///
+    /// The unit is *sets*, not *calls*: one allocate can return several. A failed allocate
+    /// contributes nothing.
+    pub descriptor_sets_allocated: u64,
+    /// Command buffers returned by a successful `vkAllocateCommandBuffers`. **ABI version 9.**
+    ///
+    /// Allocation, not recording. A command buffer that was allocated and then abandoned because
+    /// `vkBeginCommandBuffer` failed is still an allocation and is still counted here — the pool
+    /// paid for it.
+    pub command_buffers_allocated: u64,
+    /// Submissions that reached the host as **completed GPU work**. **ABI version 9.**
+    ///
+    /// Incremented only after `vkQueueSubmit` returned success *and* the fence wait returned
+    /// success. It is deliberately not a count of `vkQueueSubmit` calls: a submit that failed, or
+    /// one whose fence wait failed or lost the device, executed nothing the host may attribute
+    /// work to, and counting it would make a lane that computed nothing report throughput. The
+    /// name says `completed` for the same reason — a reader who wants attempted submissions is
+    /// asking a different question, and must not be able to answer it by accident from this field.
+    pub queue_submits_completed: u64,
 }
 }
 
@@ -856,6 +881,13 @@ pub const COUNTERS_LAYOUT_REGISTRY: &[(u32, u64)] = &[
     // that can no longer happen — and `subject_changed_declines` appends the population that used
     // to be invisible because a stale entry was deleted at parse time and read as `KEY-ABSENT`.
     (8, 0xdf71_f4e6_a592_71b3),
+    // v9 = issue #88. Four appended `u64`s — `descriptor_pools_created`,
+    // `descriptor_sets_allocated`, `command_buffers_allocated`, `queue_submits_completed` — so a
+    // decode-time host-cost attribution can say whether a phase span's duration corresponds to
+    // work that was actually requested of the driver. Appended, not inserted, so a reader holding
+    // a v8 prefix keeps every offset it knows; the version still moves, because from a stale
+    // reader's side an append and an insertion are told apart only by luck (see the struct docs).
+    (9, 0x4939_1e10_967d_184b),
 ];
 
 /// The build fails here when the struct changed and the version did not.
@@ -1039,6 +1071,10 @@ static DEVICE_UNATTRIBUTED_CLAIMS: AtomicU64 = AtomicU64::new(0);
 static PROVEN_ELSEWHERE_CLAIMS: AtomicU64 = AtomicU64::new(0);
 /// Nodes declined because the entry's subject moved (§8.9.19).
 static SUBJECT_CHANGED_DECLINES: AtomicU64 = AtomicU64::new(0);
+static DESCRIPTOR_POOLS_CREATED: AtomicU64 = AtomicU64::new(0);
+static DESCRIPTOR_SETS_ALLOCATED: AtomicU64 = AtomicU64::new(0);
+static COMMAND_BUFFERS_ALLOCATED: AtomicU64 = AtomicU64::new(0);
+static QUEUE_SUBMITS_COMPLETED: AtomicU64 = AtomicU64::new(0);
 /// `key entry-device=<label> running-device=<names> reason=<why>`, first-seen order.
 ///
 /// The count says how many claims rest on an unattributable frame; this says which forms and why.
@@ -1483,6 +1519,68 @@ pub fn record_source_cosmetic_claim(key: &str, recorded: &str, current: &str) {
         if !seen.iter().any(|r| r == &row) {
             seen.push(row);
         }
+    }
+}
+
+/// The Vulkan dispatch resources one `Compute` call consumed.
+///
+/// Four counts that answer "what did the engine actually ask the driver for, and how much of it
+/// came back". They are separated from the timing phases on purpose: a phase says how long
+/// something took, and these say whether it happened at all. A phase span with a plausible
+/// duration and a zero count behind it is an instrument reporting on a code path that did not run.
+///
+/// Every one of them is incremented **after** the Vulkan call returned success. The rule is not
+/// stylistic: a failed `vkAllocateDescriptorSets` counted as an allocation, or a failed
+/// `vkQueueSubmit` counted as a submission, turns a lane that computed nothing into a lane that
+/// reports resource consumption and throughput, and the failure becomes invisible in exactly the
+/// artifact someone would use to notice it.
+pub mod dispatch_resources {
+    use super::{
+        COMMAND_BUFFERS_ALLOCATED, DESCRIPTOR_POOLS_CREATED, DESCRIPTOR_SETS_ALLOCATED, ORD,
+        QUEUE_SUBMITS_COMPLETED,
+    };
+    #[cfg(test)]
+    use std::sync::atomic::AtomicU64;
+
+    /// One `vkCreateDescriptorPool` **that returned a pool**.
+    pub fn on_pool_created() {
+        DESCRIPTOR_POOLS_CREATED.fetch_add(1, ORD);
+    }
+
+    /// `n` descriptor sets returned by a **successful** `vkAllocateDescriptorSets`.
+    pub fn on_sets_allocated(n: u64) {
+        DESCRIPTOR_SETS_ALLOCATED.fetch_add(n, ORD);
+    }
+
+    /// `n` command buffers returned by a **successful** `vkAllocateCommandBuffers`.
+    pub fn on_command_buffers_allocated(n: u64) {
+        COMMAND_BUFFERS_ALLOCATED.fetch_add(n, ORD);
+    }
+
+    /// One submission whose `vkQueueSubmit` **and** whose fence wait both returned success.
+    ///
+    /// There is deliberately no counterpart for an attempted submission. `compute_failures` and
+    /// `device_losses` already carry the failure population, and a second, subtly different
+    /// failure count would let a reader compute an "attempt rate" the engine never measured.
+    pub fn on_submit_completed() {
+        QUEUE_SUBMITS_COMPLETED.fetch_add(1, ORD);
+    }
+
+    /// Read-only accessors, for tests that need to observe a delta without a snapshot.
+    #[cfg(test)]
+    pub(crate) fn read(a: &AtomicU64) -> u64 {
+        a.load(ORD)
+    }
+
+    /// The four counters, in declaration order, for a test that wants a tuple.
+    #[cfg(test)]
+    pub(crate) fn all() -> (u64, u64, u64, u64) {
+        (
+            read(&DESCRIPTOR_POOLS_CREATED),
+            read(&DESCRIPTOR_SETS_ALLOCATED),
+            read(&COMMAND_BUFFERS_ALLOCATED),
+            read(&QUEUE_SUBMITS_COMPLETED),
+        )
     }
 }
 
@@ -2466,6 +2564,10 @@ pub fn snapshot() -> VulkanEpCounters {
         device_unattributed_claims: DEVICE_UNATTRIBUTED_CLAIMS.load(ORD),
         proven_elsewhere_claims: PROVEN_ELSEWHERE_CLAIMS.load(ORD),
         subject_changed_declines: SUBJECT_CHANGED_DECLINES.load(ORD),
+        descriptor_pools_created: DESCRIPTOR_POOLS_CREATED.load(ORD),
+        descriptor_sets_allocated: DESCRIPTOR_SETS_ALLOCATED.load(ORD),
+        command_buffers_allocated: COMMAND_BUFFERS_ALLOCATED.load(ORD),
+        queue_submits_completed: QUEUE_SUBMITS_COMPLETED.load(ORD),
     }
 }
 
@@ -2530,6 +2632,10 @@ pub fn reset() {
     DEVICE_UNATTRIBUTED_CLAIMS.store(0, ORD);
     PROVEN_ELSEWHERE_CLAIMS.store(0, ORD);
     SUBJECT_CHANGED_DECLINES.store(0, ORD);
+    DESCRIPTOR_POOLS_CREATED.store(0, ORD);
+    DESCRIPTOR_SETS_ALLOCATED.store(0, ORD);
+    COMMAND_BUFFERS_ALLOCATED.store(0, ORD);
+    QUEUE_SUBMITS_COMPLETED.store(0, ORD);
     if let Ok(mut seen) = DEVICE_UNATTRIBUTED_FORMS.lock() {
         seen.clear();
     }
@@ -2614,6 +2720,10 @@ impl VulkanEpCounters {
              \"device_unattributed_forms\": {},\n  \
              \"proven_elsewhere_claims\": {},\n  \
              \"subject_changed_declines\": {},\n  \
+             \"descriptor_pools_created\": {},\n  \
+             \"descriptor_sets_allocated\": {},\n  \
+             \"command_buffers_allocated\": {},\n  \
+             \"queue_submits_completed\": {},\n  \
              \"proven_elsewhere_forms\": {},\n  \
              \"source_cosmetic_forms\": {},\n  \
              \"subject_changed_forms\": {},\n  \
@@ -2702,6 +2812,10 @@ impl VulkanEpCounters {
             device_unattributed_forms_json(),
             PROVEN_ELSEWHERE_CLAIMS.load(ORD),
             SUBJECT_CHANGED_DECLINES.load(ORD),
+            DESCRIPTOR_POOLS_CREATED.load(ORD),
+            DESCRIPTOR_SETS_ALLOCATED.load(ORD),
+            COMMAND_BUFFERS_ALLOCATED.load(ORD),
+            QUEUE_SUBMITS_COMPLETED.load(ORD),
             proven_elsewhere_forms_json(),
             source_cosmetic_forms_json(),
             subject_changed_forms_json(),

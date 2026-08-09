@@ -49,15 +49,37 @@
 //!
 //! | Span | cat | Clock | What it means |
 //! |---|---|---|---|
-//! | `vulkan.subgraph` | `ep` | host | One fused subgraph's whole `Compute` call. |
+//! | `vulkan.compute_call` | `ep` | host | **The whole ORT `Compute` callback**, opened as the first statement of the callback body and closed on every return, including every refusal. Carries `outcome`. This is the only span entitled to be called a `Compute` total. |
+//! | `vulkan.subgraph` | `ep` | host | The **instrumented dispatch success path** — `dispatch_ort` entry to `dispatch_ort` return. Strictly nested inside `vulkan.compute_call`, and strictly narrower than it: the binding checks that run before dispatch are outside this span. |
 //! | `vulkan.compile` | `ep.phase` | host | `Compile`: plan build, pipeline/SPIR-V creation, descriptor layout. Once per subgraph. |
 //! | `vulkan.prepack` | `ep.phase` | host | Weight prepack + upload of block-quantised initializers. Once per `PackKey`. |
-//! | `vulkan.record` | `ep.phase` | host | The `Compute` recording bracket. **Despite the name, dominated by the staging upload it contains (~96-98% on Phi-3.5), not by command recording (1-3%).** See `Phase::Record::caveat`. |
-//! | `vulkan.upload` | `ep.phase` | host | Host→device staging copy of inference inputs. Carries `bytes`. |
+//! | `vulkan.record` | `ep.phase` | host | The `Compute` recording bracket, `vkBeginCommandBuffer`..`vkEndCommandBuffer`. **Despite the name, dominated by the staging upload prepared inside it (~96-98% on Phi-3.5), not by command recording (1-3%).** The host upload `memcpy` is nested here as `vulkan.cmd_upload` — it is *not* buffer allocation. See `Phase::Record::caveat`. |
+//! | `vulkan.desc_alloc` | `ep.phase` | host | **Nested inside `record`.** `vkCreateDescriptorPool` + `vkAllocateDescriptorSets` + `vkUpdateDescriptorSets`. |
+//! | `vulkan.pipeline_lookup` | `ep.phase` | host | **Nested inside `record`.** `PipelineCache::get_or_create`. |
+//! | `vulkan.cmd_upload` | `ep.phase` | host | **Nested inside `record`.** Host `memcpy` into staging + `vkCmdCopyBuffer` recording for all inputs. This is where host upload cost lives; buffer allocation is a different, unmeasured region. |
+//! | `vulkan.upload` | `ep.phase` | host | **Nested inside `record`.** Host→device staging copy of inference inputs. Carries `bytes`. |
 //! | `vulkan.submit` | `ep.phase` | host | **`vkQueueSubmit` only.** Host bookkeeping. Measures no GPU work. |
 //! | `vulkan.fence_wait` | `ep.phase` | host | CPU blocked on the fence. Upper bound on GPU time, not GPU time. |
-//! | `vulkan.readback` | `ep.phase` | host | Device→host copy of outputs. Carries `bytes`. |
+//! | `vulkan.readback` | `ep.phase` | host | **Nested inside `record`.** Device→host copy of outputs. Carries `bytes`. |
+//! | `vulkan.compute[<PATH>]` | `ep.path` | — | **Instant, not a span.** The recording path one `Compute` took. Shares a prefix with `vulkan.compute_call` and means something else; match on the exact name or the `cat`, never on a prefix. |
 //! | `vulkan.gpu.*` | `gpu` | **device** | GPU execution, from `VkQueryPool` timestamp queries only. Emitted on a separate device lane. |
+//!
+//! # The attribution model
+//!
+//! There are exactly three tiers and they are not interchangeable:
+//!
+//! * **Total** — `vulkan.compute_call`. The wall an ORT caller pays for one `Compute`.
+//! * **Sibling** — the `ep.phase` spans with `nested_in: "none"`. Disjoint by construction, so
+//!   they may be summed. Every one of them is inside `vulkan.subgraph`, which is inside the
+//!   total; none of them covers the pre-dispatch binding checks.
+//! * **Child** — the `ep.phase` spans with `nested_in: "<parent>"`. **Never summable with their
+//!   parent**, because their cost is already inside it.
+//!
+//! `Total - Σ Sibling` is a **residual that is computed, never assumed to be zero**. It is real
+//! host cost this vocabulary does not name (binding checks, ORT-side entry, the `dispatch_ort`
+//! prologue and epilogue), and it is only meaningful on a call whose `outcome` is `ok`: a refused
+//! call left the span early and its sibling set is a prefix, not a decomposition. A negative
+//! residual is oversubscription — a contradiction in the instrument, never a number to report.
 //!
 //! # GPU timing
 //!
@@ -325,11 +347,87 @@ impl Phase {
     ];
 }
 
+/// How one ORT `Compute` callback ended, as carried on the `vulkan.compute_call` span.
+///
+/// The default is [`ComputeOutcome::Unresolved`] and it is load-bearing: the guard is opened
+/// before any check runs and is resolved by exactly one statement on the way out. A path that
+/// leaves the callback without passing through that statement — a panic converted to a status by
+/// `guard_ffi_status`, a future early return someone forgets to route — publishes `unresolved`,
+/// and every consumer treats `unresolved` the same way it treats `failed`: not a decomposition.
+///
+/// The failure mode this removes is the one that matters for a public number: a partial call
+/// whose phase spans are a *prefix* of the vocabulary looking exactly like a complete call whose
+/// phase spans are a *decomposition* of it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ComputeOutcome {
+    /// The callback has not reached its resolution point. See the type docs.
+    #[default]
+    Unresolved,
+    /// The callback returned a null `OrtStatus`: ORT was handed a completed inference.
+    Ok,
+    /// The callback returned a non-null `OrtStatus`. Some phases may have run; the set of them
+    /// that did is a prefix of the vocabulary and must not be read as an attribution.
+    Failed,
+}
+
+impl ComputeOutcome {
+    /// Stable lowercase tag written into the span's `outcome` arg.
+    ///
+    /// The admissibility rule this tag feeds — *only `ok` admits a residual* — is enforced where
+    /// the residual is actually computed, in `bench/phases.py::COMPUTE_CALL_OUTCOMES`. It is
+    /// deliberately not duplicated as a predicate here: a second copy in a language that never
+    /// subtracts anything would be an instrument nobody invokes, and two spellings of one rule is
+    /// how they drift.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ComputeOutcome::Unresolved => "unresolved",
+            ComputeOutcome::Ok => "ok",
+            ComputeOutcome::Failed => "failed",
+        }
+    }
+}
+
+/// The value carried in the `boundary` arg of every `vulkan.compute_call` span.
+///
+/// Named rather than described so a consumer can assert on it: the whole point of this span is
+/// *where it starts*, and a reader that cannot check where it starts is trusting prose.
+pub const COMPUTE_CALL_BOUNDARY: &str = "ort_compute_callback";
+
+/// Guard for the whole ORT `Compute` callback. See [`VulkanTracer::compute_call_region`].
+///
+/// Resolve it with [`ComputeCallGuard::resolve`] on the way out. Dropping it writes the args and
+/// closes the span; an unresolved drop is recorded honestly rather than assumed successful.
+#[must_use = "the compute-call span is recorded only while the guard is alive"]
+pub struct ComputeCallGuard {
+    nodes: usize,
+    outcome: ComputeOutcome,
+    // Dropped after `Drop::drop` runs, so the args written there land on this span.
+    span: SpanGuard,
+}
+
+impl ComputeCallGuard {
+    /// Record how the callback ended. Called once, on the single return path.
+    pub fn resolve(&mut self, outcome: ComputeOutcome) {
+        self.outcome = outcome;
+    }
+}
+
+impl Drop for ComputeCallGuard {
+    fn drop(&mut self) {
+        self.span.set_args(
+            Args::new()
+                .with("nodes", self.nodes as u64)
+                .with(ARG_DEVICE, DEVICE_HOST)
+                .with("boundary", COMPUTE_CALL_BOUNDARY)
+                .with("outcome", self.outcome.as_str()),
+        );
+    }
+}
+
 /// Which recording path one `Compute` call took — the Vulkan analogue of MLX's compile-cache
 /// state, over `ENGINE.md` §6.1's record-once / replay-many model.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RecordPath {
-    /// First recording of this subgraph's command buffer.
+pub enum RecordPath {    /// First recording of this subgraph's command buffer.
     FirstRecord,
     /// Replayed the cached `VkCommandBuffer` — the steady-state path.
     Replay,
@@ -667,6 +765,28 @@ impl VulkanTracer {
         }
     }
 
+    /// A tracer wired to an in-memory collector, for tests that need to read back the events an
+    /// instrument actually emitted rather than trust its docstring.
+    #[cfg(test)]
+    fn for_test(enabled: bool) -> Self {
+        let (ctx, mem) = if enabled {
+            let (ctx, mem) = TraceContext::in_memory();
+            (ctx, Some(mem))
+        } else {
+            (TraceContext::noop(), None)
+        };
+        VulkanTracer {
+            ctx,
+            mem,
+            path: None,
+            counters: Mutex::new(Vec::new()),
+            op_times: Mutex::new(HashMap::new()),
+            summary: Mutex::new(Summary::default()),
+            verbose: false,
+            gpu_timestamps_requested: false,
+        }
+    }
+
     /// Whether JSON tracing is enabled — the hot-path gate.
     #[inline]
     pub fn is_enabled(&self) -> bool {
@@ -791,12 +911,38 @@ impl VulkanTracer {
 
     // --- Execution view ----------------------------------------------------------------
 
-    /// Span around one fused subgraph's whole `Compute` call.
+    /// Span around the **whole ORT `Compute` callback**, from the first statement of the callback
+    /// body to its return, on every path including every refusal.
     ///
-    /// Host wall time. On a Vulkan EP this covers upload, record-or-replay, submit, fence wait
-    /// and readback — i.e. it is the end-to-end latency of the subgraph *as the caller
-    /// experiences it*, which is the number a user pays, and which is deliberately not called
-    /// "GPU time" anywhere.
+    /// This is the only span in this module entitled to be described as a `Compute` total.
+    /// [`subgraph_region`](Self::subgraph_region) is narrower — it starts inside the engine, after
+    /// the binding checks — and calling *that* one a whole `Compute` (as this module's own
+    /// docstring did until this change) overstates its coverage by however long the checks take,
+    /// which is exactly the cost this instrument was asked to make visible.
+    ///
+    /// `None` when nothing is listening. The disabled path is one relaxed atomic load and a
+    /// branch: no clock read, no allocation, no formatting. The args are built once, on drop, and
+    /// only for a guard that exists.
+    #[inline]
+    pub fn compute_call_region(&self, node_count: usize) -> Option<ComputeCallGuard> {
+        if !self.is_enabled() {
+            return None;
+        }
+        Some(ComputeCallGuard {
+            nodes: node_count,
+            outcome: ComputeOutcome::default(),
+            span: self.ctx.span("vulkan.compute_call", "ep"),
+        })
+    }
+
+    /// Span around the engine's **instrumented dispatch success path** — `dispatch_ort` entry to
+    /// `dispatch_ort` return.
+    ///
+    /// Host wall time. It covers upload, record-or-replay, submit, fence wait and readback. It
+    /// does **not** cover the ORT callback's binding checks, which run before the engine is
+    /// entered: for the caller-visible total use [`compute_call_region`](Self::compute_call_region)
+    /// and read the two together. Deliberately not called "GPU time" anywhere, and — since this
+    /// change — deliberately not called the whole `Compute` call either.
     pub fn subgraph_region(&self, node_count: usize) -> SpanGuard {
         if !self.is_enabled() {
             return self.ctx.span("vulkan.subgraph", "ep");
@@ -1562,6 +1708,284 @@ impl Drop for PhaseGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── issue #88: the total boundary, and the guards that keep its name honest ─────────────
+
+    /// The instrument is only worth having if the span it emits says where it starts, what it
+    /// covers, and how the call ended. Read it back from the collector rather than from prose.
+    #[test]
+    fn the_compute_call_span_publishes_its_boundary_and_a_resolved_outcome() {
+        let t = VulkanTracer::for_test(true);
+        {
+            let mut g = t.compute_call_region(7).expect("tracing is on");
+            g.resolve(ComputeOutcome::Ok);
+        }
+        let events = t.mem.as_ref().unwrap().events();
+        let span = events
+            .iter()
+            .find(|e| e.name == "vulkan.compute_call")
+            .expect("the total span must be emitted under its own name");
+        assert_eq!(span.cat, "ep", "the total is an `ep` span, not an `ep.phase`");
+        let args = span.args.as_ref().expect("args are written on drop");
+        assert_eq!(
+            args.get("boundary").and_then(|v| v.as_str()),
+            Some(COMPUTE_CALL_BOUNDARY),
+            "a consumer must be able to CHECK where this span starts, not read that it does"
+        );
+        assert_eq!(args.get("outcome").and_then(|v| v.as_str()), Some("ok"));
+        assert_eq!(args.get("nodes").and_then(|v| v.as_u64()), Some(7));
+    }
+
+    /// The whole point of the outcome arg: a call that left early must not look complete.
+    #[test]
+    fn an_unresolved_or_failed_compute_call_is_never_published_as_complete() {
+        for (resolve, want) in [
+            (None, "unresolved"),
+            (Some(ComputeOutcome::Failed), "failed"),
+        ] {
+            let t = VulkanTracer::for_test(true);
+            {
+                let mut g = t.compute_call_region(1).unwrap();
+                if let Some(o) = resolve {
+                    g.resolve(o);
+                }
+            }
+            let events = t.mem.as_ref().unwrap().events();
+            let span = events
+                .iter()
+                .find(|e| e.name == "vulkan.compute_call")
+                .unwrap();
+            let outcome = span
+                .args
+                .as_ref()
+                .and_then(|a| a.get("outcome"))
+                .and_then(|v| v.as_str());
+            assert_eq!(
+                outcome,
+                Some(want),
+                "a call that never reached its resolution point must say so; defaulting to `ok` \
+                 is how a refusal acquires a complete-looking attribution"
+            );
+        }
+        // …and the tag every consumer keys its admissibility rule on is stable.
+        assert_eq!(ComputeOutcome::Ok.as_str(), "ok");
+        assert_eq!(ComputeOutcome::Failed.as_str(), "failed");
+        assert_eq!(ComputeOutcome::Unresolved.as_str(), "unresolved");
+        assert_eq!(ComputeOutcome::default(), ComputeOutcome::Unresolved);
+    }
+
+    /// Requirement 6: the disabled path is a branch, not a span.
+    #[test]
+    fn the_compute_call_region_costs_nothing_when_nothing_is_listening() {
+        let t = VulkanTracer::for_test(false);
+        assert!(
+            t.compute_call_region(3).is_none(),
+            "a disabled tracer must hand back no guard at all — an inert guard would still run \
+             Drop, build Args and format three values on every Compute"
+        );
+        assert!(!t.is_enabled());
+    }
+
+    /// D4 / the name collision. `vulkan.compute_call` (span, `ep`) and `vulkan.compute[<PATH>]`
+    /// (instant, `ep.path`) share a prefix and mean different things. A consumer that matches on
+    /// a prefix will read a recording-path marker as a total.
+    #[test]
+    fn the_total_span_and_the_record_path_instant_are_told_apart_by_name_and_cat() {
+        let t = VulkanTracer::for_test(true);
+        {
+            let mut g = t.compute_call_region(1).unwrap();
+            g.resolve(ComputeOutcome::Ok);
+        }
+        t.record_path("subgraph0", RecordPath::FirstRecord, "4x4", 1);
+        let events = t.mem.as_ref().unwrap().events();
+        let totals: Vec<_> = events
+            .iter()
+            .filter(|e| e.name == "vulkan.compute_call")
+            .collect();
+        let paths: Vec<_> = events
+            .iter()
+            .filter(|e| e.cat == "ep.path")
+            .collect();
+        assert_eq!(totals.len(), 1, "exactly one total span per call");
+        assert_eq!(paths.len(), 1, "the record-path marker is still emitted");
+        assert!(
+            paths[0].name.starts_with("vulkan.compute["),
+            "the record-path instant keeps its published name; got {:?}",
+            paths[0].name
+        );
+        assert_ne!(
+            paths[0].name, totals[0].name,
+            "the two must never collide on the exact name"
+        );
+        assert_ne!(paths[0].cat, totals[0].cat, "…nor on the cat");
+        assert!(
+            events
+                .iter()
+                .filter(|e| e.name.starts_with("vulkan.compute"))
+                .count()
+                > 1,
+            "a PREFIX match sees both, which is exactly why neither may be matched by prefix"
+        );
+    }
+
+    /// D2, made executable. DESIGN's §9.5 row for `record` claims the host upload memcpy is
+    /// nested inside it, in `cmd_upload`, and that buffer allocation is a different region. The
+    /// claim is only worth making if the production phase table says the same thing.
+    #[test]
+    fn the_host_upload_memcpy_is_declared_inside_record_and_not_in_an_allocation_phase() {
+        assert_eq!(
+            Phase::CmdUpload.nested_in(),
+            Some(Phase::Record),
+            "the memcpy phase is a CHILD of record; a sibling would be summed with its parent"
+        );
+        assert!(
+            Phase::CmdUpload.caveat().contains("memcpy"),
+            "cmd_upload's caveat must name the copy it contains"
+        );
+        assert!(
+            Phase::Record.caveat().contains("cmd_upload"),
+            "record's row must DISCLOSE the upload preparation nested in it — a reader who sees \
+             only `record` would attribute a staging memcpy to command recording"
+        );
+        // There is no allocation phase in this vocabulary, and none of the ten phases may quietly
+        // become one by claiming the memcpy. Exactly two rows may name it: `cmd_upload`, which
+        // measures it, and `record`, which discloses that it is nested inside. Any third row
+        // naming a host memcpy is a second claim on the same cost.
+        let naming_memcpy: Vec<&str> = Phase::ALL
+            .iter()
+            .filter(|p| p.caveat().contains("memcpy"))
+            .map(|p| p.as_str())
+            .collect();
+        assert_eq!(
+            naming_memcpy,
+            vec!["record", "cmd_upload"],
+            "the host upload memcpy is measured by `cmd_upload` and disclosed by its parent \
+             `record`, and by nothing else; DESIGN §9.5 says the same and an allocation row \
+             saying it would be a second claim on one cost"
+        );
+        assert_eq!(
+            Phase::Record.nested_in(),
+            None,
+            "`record` names the memcpy as a PARENT disclosing a child, so it must be a sibling"
+        );
+    }
+
+    /// D3, made executable, without a Vulkan device. The rule is about a *position in the source*
+    /// — the increment must be downstream of the fence result — so the guard reads the source.
+    /// A mutation that moves the call next to `vkQueueSubmit` turns this red.
+    #[test]
+    fn queue_submits_are_counted_only_after_the_fence_returned_success() {
+        let src = include_str!("vk/session.rs");
+        let calls: Vec<_> = src.match_indices("on_submit_completed()").collect();
+        assert_eq!(
+            calls.len(),
+            1,
+            "exactly one production increment of queue_submits_completed; found {}",
+            calls.len()
+        );
+        let at = calls[0].0;
+        let before = &src[..at];
+        // The nearest preceding conditional must be the fence result, not the submit result.
+        let fence_gate = before
+            .rfind("if fence_ok {")
+            .expect("the increment must be inside an `if fence_ok` block");
+        let host_t1 = before
+            .rfind("let host_t1 = onnx_runtime_tracer::absolute_now_us();")
+            .expect("the increment must be after the fence wait has been timed out");
+        assert!(
+            host_t1 < fence_gate && fence_gate < at,
+            "order must be: fence wait completes -> host_t1 -> `if fence_ok` -> increment. A \
+             submission counted before the fence returns is a submission the host cannot know \
+             executed anything."
+        );
+        assert!(
+            !before[fence_gate..].contains('}'),
+            "the increment must be the guarded statement itself, not a statement after the block"
+        );
+        // And the counter is a real counter, not a constant.
+        let (_, _, _, before_n) = crate::counters::dispatch_resources::all();
+        crate::counters::dispatch_resources::on_submit_completed();
+        let (_, _, _, after_n) = crate::counters::dispatch_resources::all();
+        assert_eq!(after_n, before_n + 1);
+    }
+
+    /// The three resource counters must be incremented on the success side of their Vulkan call.
+    /// Same reasoning as the fence gate above, same held-out mutation: move the call up past the
+    /// `return None` and the test goes red.
+    #[test]
+    fn dispatch_resource_counters_sit_downstream_of_the_call_that_can_fail() {
+        for (src, needle, err) in [
+            (
+                include_str!("vk/pipeline.rs"),
+                "on_pool_created()",
+                "vkCreateDescriptorPool failed",
+            ),
+            (
+                include_str!("vk/pipeline.rs"),
+                "on_sets_allocated(",
+                "vkAllocateDescriptorSets failed",
+            ),
+            (
+                include_str!("vk/cmd.rs"),
+                "on_command_buffers_allocated(",
+                "vkAllocateCommandBuffers failed",
+            ),
+        ] {
+            let at = src
+                .find(needle)
+                .unwrap_or_else(|| panic!("no production call to {needle}"));
+            let fail = src
+                .find(err)
+                .unwrap_or_else(|| panic!("no failure arm mentioning {err}"));
+            assert!(
+                fail < at,
+                "{needle} must come after the failure arm for {err}; counting before it means a \
+                 driver refusal is reported as resource consumption"
+            );
+        }
+    }
+
+    /// Requirement 1: the three tiers are distinct and the sibling set is disjoint. A phase that
+    /// is inside another phase may never be summed with it, and the total is neither.
+    #[test]
+    fn the_attribution_tiers_are_disjoint_and_the_total_is_not_a_phase() {
+        let siblings: Vec<&str> = Phase::ALL
+            .iter()
+            .filter(|p| p.is_sibling())
+            .map(|p| p.as_str())
+            .collect();
+        let children: Vec<&str> = Phase::ALL
+            .iter()
+            .filter(|p| !p.is_sibling())
+            .map(|p| p.as_str())
+            .collect();
+        assert!(!siblings.is_empty() && !children.is_empty());
+        for c in &children {
+            assert!(
+                !siblings.contains(c),
+                "{c} cannot be both a sibling and a child"
+            );
+        }
+        // Every child's parent is itself a sibling: one level of nesting, so `Σ siblings` is a
+        // complete partition of the named cost and the residual is everything else.
+        for p in Phase::ALL {
+            if let Some(parent) = p.nested_in() {
+                assert!(
+                    parent.is_sibling(),
+                    "{}'s parent {} must be a sibling, or Σ siblings is not a partition",
+                    p.as_str(),
+                    parent.as_str()
+                );
+            }
+        }
+        // The total is not in the phase vocabulary at all — it cannot be summed by accident.
+        assert!(
+            !Phase::ALL
+                .iter()
+                .any(|p| format!("vulkan.{}", p.as_str()) == "vulkan.compute_call"),
+            "the total must not be reachable as a phase"
+        );
+    }
 
     // The residual is a subtraction, so the test that matters is that its VALUE VARIES WITH ITS
     // INPUT in both regimes (R10) — a residual that is always ~90% would be a constant wearing a

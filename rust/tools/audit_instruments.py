@@ -492,7 +492,12 @@ BENCH_HELD_OUT: dict[str, str] = {
     # BENCH_INSTRUMENT_FILES.
     "test_perf_claims.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_phases.py": "test module.",
-    "test_plausible_but_wrong.py": "test module.",
+    # Arrived with issue #88 (the whole-Compute attribution boundary). Supplies both polarities
+    # for `phases.py::unknown_phase_spans` and `phases.py::compute_call_attribution` through
+    # `_polarity.py`, plus eight planted mutants. A caller and a screen, not an instrument.
+    "test_compute_attribution.py": (
+        "test module — a caller, screened as polarity, not as an instrument."
+    ),    "test_plausible_but_wrong.py": "test module.",
     "test_run_disturbance.py": "test module.",
     "test_tenancy_signature.py": "test module.",
     "test_win_gpu_counters.py": "test module.",

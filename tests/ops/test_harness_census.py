@@ -275,6 +275,45 @@ def test_identify_by_uuid_is_screened_in_the_real_repository() -> None:
     assert got[0]["reject"] >= 1 and got[0]["accept"] >= 1, got[0]
 
 
+def test_the_issue_88_attribution_instruments_are_screened_in_the_real_repository() -> None:
+    """D1. The two total instruments issue #88 added must be ``screened``, on the files on disk.
+
+    ``bench/phases.py::unknown_phase_spans`` closes a **silent drop**: ``phase_spans`` filters on
+    ``HOST_PHASES`` membership, so a phase added to ``trace.rs`` and not added there disappears
+    from the table with no warning and every share becomes a percentage of the wrong denominator.
+    ``compute_call_attribution`` computes the unattributed residual that issue #88 asked for.
+
+    Both are *total* instruments — they return ``(value, why)`` and never raise — so the only way
+    the census can see their polarities is through ``bench/_polarity.py``.  Baselining them as
+    ``unfalsified`` would be exactly the second option ``_polarity.py``'s header refuses: turning
+    an open question into a permanent one.  This test is what stops that from being available.
+
+    ``bench/test_compute_attribution.py`` supplies both polarities in the always-on lane (no
+    device, no model, no ``skipif``) and backs them with a mutation battery.
+    """
+    audit = _load_audit()
+    rows = audit.harness_survey(
+        tests_root=audit.BENCH,
+        files=audit.BENCH_INSTRUMENT_FILES,
+        fn_re=audit.BENCH_FN,
+        prefix="bench",
+    )
+    by_fn = {r["fn"]: r for r in rows}
+    for fn in ("unknown_phase_spans", "compute_call_attribution"):
+        got = by_fn.get(fn)
+        assert got is not None, (
+            f"the bench screen does not see bench/phases.py::{fn} at all. It is a module-public "
+            f"top-level function of a declared instrument module, so BENCH_FN should select it — "
+            f"if it does not, the screen stopped covering phases.py and that is the bigger find."
+        )
+        assert got["state"] == "screened", (
+            f"{fn} is {got['state']}: {got}. bench/test_compute_attribution.py is supposed to "
+            f"supply both polarities in the always-on lane, the reject side through "
+            f"bench/_polarity.py::refuses and the accept side through ::selects."
+        )
+        assert got["reject"] >= 1 and got["accept"] >= 1, got
+
+
 # ---------------------------------------------------------------------------
 # The real repository
 # ---------------------------------------------------------------------------
