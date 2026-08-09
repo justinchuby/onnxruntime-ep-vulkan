@@ -5315,3 +5315,271 @@ pytest bench/test_crossbuild_decode_window.py -q
 from the stored records alone, failing if any published figure differs. It reads the workload set
 from the records rather than from today's source constant, so it cannot pass by re-deriving a
 different experiment. Everything in this section is therefore checkable without hardware.
+
+## 29. Issue #96, third arm: PR #97's decode kernel, measured independently (2026-08-09)
+
+> §27 belongs to PR #95 and is not merged. §28 is the issue #96 baseline-vs-candidate
+> investigation. This section is the third arm added to that investigation after PR #97 appeared,
+> and it was measured by the same instrument under a second pre-registration.
+
+§28 asked whether `85fbda2` regressed Phi-3.5 decode against `c96e7d9` and found that it did not:
+`past=128` came back at 1.001x over 54 whole processes. PR #97 (`fc1b163`, for issue #90) then
+landed a *different* answer to the same underlying problem — a new shader,
+`rust/shaders/glsl/gqa_decode_f16.comp`, that parallelises decode GQA across the KV axis. This
+section is that shader measured as a third arm by somebody who did not write it.
+
+Ratio convention throughout, as in §28: **`baseline_median_ms / candidate_median_ms`, so > 1 means
+the second-named arm is faster.**
+
+### 29.1 What was compared, and why a third arm needed a driver
+
+Three libraries, each built from a clean worktree, each with a distinct digest:
+
+| arm | commit | `onnxruntime_vulkan_ep.dll` sha256 (first 16) | bytes |
+|---|---|---|---|
+| 1 baseline | `c96e7d9` | `655a247c29a85858` | 2,560,000 |
+| 2 candidate | `85fbda2` | `3b210b016179011a` | 2,563,072 |
+| 3 PR #97 | `fc1b163` | `705c52d239e1d470` | 2,580,992 |
+
+Arm 2 is identical to `main` in compiled terms (`git diff 85fbda2 origin/main -- rust/src
+rust/shaders rust/Cargo.*` is empty), so **arm 2 vs arm 3 isolates PR #97 exactly** and arm 1 vs
+arm 3 adds PR #72's workgroup-size change on top. Both pairings were run.
+
+The third arm was realised as two *pairings* of the §28 instrument rather than as an N-arm rewrite
+of it, so the frozen file stays byte-identical and its own guard suite keeps passing against it.
+That mattered more than expected, because of the following.
+
+**The frozen instrument could not see PR #97's kernel.** §28's production-path witness matches
+`v.split(":")[0] == "gqa_f16"` on the EP's pipeline-variant counters. PR #97 renames the decode
+kernel to `gqa_decode_f16`. So on an arm-3 build the extractor returned an empty list and the
+admissibility gate refused *every* GQA row — correctly, by its own rule, since an arm that
+produces no recognised GQA witness has not been shown to take the production path. This is the
+frozen instrument being right about its own scope, not a bug in it; it was written when one GQA
+kernel existed. The first arm-3 attempt was stopped as soon as this was diagnosed. It produced no
+published number and none of its timings appear anywhere.
+
+The repair is a *widening* of the extractor only: `gqa_witness_multi` recognises both kernel
+names, and the gate is untouched — it still demands the measured witness equal exactly the one
+string predeclared for that `(arm, workload)`. A build that dispatched both kernels, the wrong
+KV-parallel factor, or no GQA kernel at all is still refused. Widening something a gate reads is
+exactly the change that can silently turn a refusal into a pass, so it carries its own mutation
+battery in `bench/test_pr97_third_arm.py`.
+
+### 29.2 The KV-parallel factor was predicted before it was measured
+
+PR #97 picks a KV-parallel width `W` per pipeline from *static cache capacity*, not from the live
+sequence length: the largest power of two `W <= GQA_DECODE_MAX_KV_PARALLEL (16)` for which
+`(past_len_max + seq_len) // W >= GQA_DECODE_MIN_WORK_PER_LANE (32)`. That rule was reimplemented
+from PR #97's source rather than imported from it, and the resulting table was published in the
+addendum pre-registration **before any arm-3 process was timed**:
+
+| `past` | 0 | 32 | 64 | 128 | 256 | 512 | 1024 |
+|---|---|---|---|---|---|---|---|
+| predicted `W` | 1 | 1 | 2 | 4 | 8 | 16 | 16 |
+
+Every admissible arm-3 record produced exactly the predicted witness — `witness_audit.all_agree`
+is `true` in both pairings, over 54 records each. A disagreement was declared a refusal, not a
+footnote: it would have meant this analysis and the shipped binary disagreed about which pipeline
+ran.
+
+Two consequences worth stating because they change what the rows mean:
+
+* **`past=32` is an internal control by PR #97's own construction** — the rule selects `W=1` there,
+  so the new kernel runs serially over KV.
+* **Prefill `M=1` is a treatment row for arm 3, not a null.** PR #97 routes on `seq_len == 1`
+  unconditionally, so the `M=1` prefill workload takes the new kernel too. Only MobileNetV2
+  remains a genuine no-GQA control in this pairing. §28's M1-as-null reasoning does not carry over.
+
+### 29.3 Result: PR #97 is faster, at every length the equivalence gate admits
+
+Pre-registered protocol, unchanged from §28: 3 whole-process repeats, interleaved arm order
+(candidate first on even repeats), 5 warmups / 20 timed iterations, one process per
+`(workload, arm, repeat)`, every inherited `ONNXRUNTIME_EP_VULKAN_*` stripped from every child,
+under the OS-level exclusive GPU lock (acquired and waited for; nothing was ever killed).
+
+54 records per pairing, 36 admissible, 18 refused. 964.3 s and 964.8 s under the lock.
+
+| `past` | arm 2 → arm 3 | verdict | arm 1 → arm 3 | verdict |
+|---|---|---|---|---|
+| MobileNetV2 N1 | 1.015 `[0.921, 1.047]` | NEUTRAL | 1.047 `[0.927, 1.060]` | NEUTRAL |
+| MobileNetV2 N16 | 0.987 `[0.948, 1.014]` | NEUTRAL | 1.000 `[0.996, 1.007]` | NEUTRAL |
+| prefill M1 past0 | 1.136 `[0.893, 1.266]` | INDETERMINATE | 0.883 `[0.842, 0.971]` | INDETERMINATE |
+| 32 | — | REFUSED | — | REFUSED |
+| 64 | — | REFUSED | — | REFUSED |
+| **128** | **1.164** `[1.116, 1.317]` | **FASTER** | 1.204 `[1.021, 1.219]` | INDETERMINATE |
+| 256 | — | REFUSED | — | REFUSED |
+| **512** | **1.538** `[1.527, 1.568]` | **FASTER** | **1.383** `[1.336, 1.644]` | **FASTER** |
+| **1024** | **1.445** `[1.401, 1.653]` | **FASTER** | **1.466** `[1.308, 1.581]` | **FASTER** |
+
+Bands: 0.0633 (arm 2 → 3) and 0.0666 (arm 1 → 3), each derived from the no-GQA controls' own
+per-workload half-range as §28 defines, with a 0.05 floor. `NO-SLOW-LENGTH` in both pairings: no
+measured KV length is slower under PR #97.
+
+The `past=128` row is `FASTER` against arm 2 with every one of its three repeats above 1.11, and
+`INDETERMINATE` against arm 1 only because one repeat dipped to 1.021, inside that pairing's band.
+The two pairings agree in direction and roughly in magnitude everywhere, which is what §28's
+finding that arms 1 and 2 are indistinguishable at `past=128` (1.001x) predicts they should do.
+
+**PR #97 does not resolve the reported `past=128` regression, because §28 established there was no
+`past=128` regression to resolve.** That verdict was declared *unreachable* in the addendum
+pre-registration before any arm-3 timing was taken, precisely so a large and genuine speedup could
+not be retro-fitted as a fix for a defect that does not exist. It is an improvement on a path that
+was never broken.
+
+### 29.4 The improvement localises to the decode GQA kernel
+
+Attribution at `past ∈ {64, 128, 256}` on the arm 2 → arm 3 pairing, tracer on in every process,
+using the EP's own `ONNXRUNTIME_EP_VULKAN_TRACE` / `_TRACE_GPU` — present unchanged in both trees.
+No unmerged instrumentation from any other branch is used anywhere in this section. Only
+`past=128` yielded an admissible pair.
+
+| quantity | arm 2 (`gqa_f16`) | arm 3 (`gqa_decode_f16`) |
+|---|---|---|
+| decode-GQA device time | 40,004.67 µs | 23,489.85 µs |
+| total device time | 61,531.25 µs | 46,328.18 µs |
+| GQA share of device time | 0.650 | 0.507 |
+
+The kernel is renamed, so there is **no same-name ratio to take**. Two weaker but honest statements
+are available: the GQA share of device time falls by 0.143, and the two different kernels occupying
+the same position in the graph stand at 1.703x like-for-role (baseline µs / candidate µs). Device
+total falls by 15.2 ms while decode-GQA falls by 16.5 ms — the whole of the device-side improvement
+is at the GQA kernel, and the untouched kernels moved slightly the *other* way (1.041–1.062,
+candidate/baseline, i.e. marginally slower) rather than shifting with it.
+
+So: PR #97 lowers GQA kernel time **and** the whole model moves with it. It is not a kernel-only
+win that the end-to-end number fails to see.
+
+> A defect found and fixed here, recorded because it survived one round of reading: this section's
+> first attribution arithmetic compared `us_ratio_same_workload` (baseline/candidate) against the
+> untouched-control spread (candidate/baseline) — reciprocal conventions. On a 1.7x effect it gave
+> the right verdict anyway, which is how it survived. On a small effect it would have inverted.
+> Both quantities are now published side by side with their conventions named, the band test uses
+> the control convention on both sides, and `test_a_kernel_inside_the_control_spread_is_not_moved_either_way`
+> fails on the old code.
+
+### 29.5 What the refusals mean, and what they cost
+
+`past ∈ {32, 64, 256}` refused in **both** arms of **both** pairings, on output equivalence, in
+every repeat. This is the same pre-existing refusal §28 diagnosed: the harness's own
+`PHI35_MAX_PROB_DELTA = 0.02` budget (`bench/real_model.py`), against measured deltas of 0.0327,
+0.0511 and 0.0295 at those lengths versus 0.0170 at `past=128`. It is a property of the model,
+harness and reference — not of PR #97, and not of PR #72.
+
+It is not free, though. It means the three lengths where `W ∈ {1, 2, 8}` — **including `past=32`,
+the one length where PR #97's own rule selects the serial `W=1` geometry** — carry no speed figure
+at all. The rows are marked `INCOMPARABLE`, never estimated. PR #97 is therefore demonstrated at
+`W ∈ {4, 16}` and undemonstrated at `W ∈ {1, 2, 8}`.
+
+### 29.6 The `KV_PARALLEL=1` kill switch is not bit-identical
+
+PR #97 documents `ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL=1` as a way to force the kernel back
+to a single KV lane. That is a falsifiable claim about a shipped escape hatch, so it was tested
+rather than repeated: one library, two configurations, digests compared.
+
+| `past` | host-rule `W` | verdict | default digest | forced-1 digest |
+|---|---|---|---|---|
+| 32 | 1 | UNTESTED (equivalence refusal) | — | — |
+| 64 | 2 | UNTESTED (equivalence refusal) | — | — |
+| 128 | 4 | **BITS-DIFFER** | `e69799ef4770` | `5060c852a31b` |
+| 256 | 8 | UNTESTED (equivalence refusal) | — | — |
+| 512 | 16 | **BITS-DIFFER** | `8e28e4ca9299` | `f050585a4825` |
+| 1024 | 16 | **BITS-DIFFER** | `0aea09ee97c2` | `73756946d838` |
+
+Each configuration reproduced its *own* digest exactly across both repeats, so this is
+deterministic, not noise. The override demonstrably took effect: the witness reads
+`gqa_decode_f16:1` in every forced-1 process.
+
+**This is a documentation defect, not a correctness defect.** Both configurations passed the
+harness equivalence gate with verdict `MATCH` at all three lengths. Combining an online-softmax
+reduction across `W` lanes is a different floating-point summation order from never splitting it,
+and reassociation legitimately changes low bits without changing the answer. "Different bits" and
+"different answer" are separate findings and the artifact records both, so a reader can tell which
+one they are looking at. The claim that should be made for this switch is *numerically equivalent
+within tolerance*, not *identical*.
+
+Note that `past=32` — the positive control, where the host rule already picks `W=1` and the two
+configurations must agree trivially — is one of the lengths the equivalence budget refuses. The
+control is unavailable, and that weakens this section: the harness cannot prove from these runs
+alone that the digest difference comes from the shader rather than from the override plumbing.
+
+### 29.7 Static SPIR-V: a `W=1` pipeline still declares the full 16-lane workgroup allocation
+
+§28's SPIR-V instrument diffs two compilations of the *same* shader and does not apply here — PR
+#97 adds a new file, and a `spirv-diff` between two unrelated shaders is noise dressed as evidence.
+What is answerable statically is the shape of the new module, compiled with the flags read off
+`rust/build.rs` (`-fshader-stage=compute --target-env=vulkan1.1 -O`) and then frozen at each `W`
+with `spirv-opt --set-spec-const-default-value 0:W --freeze-spec-const`.
+
+| `W` | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| workgroup memory declared | 9,856 B | 9,856 B | 9,856 B | 9,856 B | 9,856 B |
+| instructions | 943 | 943 | 943 | 943 | 943 |
+| barriers | 2 | 2 | 2 | 2 | 2 |
+
+For context, and *not* as a diff: `gqa_f16` declares **0 B** of workgroup memory and contains **0**
+barriers; `gqa_decode_f16` declares 9,856 B and contains 2. The dominant term is a single 8,192 B
+variable — `shared float s_acc[MAX_KV_PARALLEL][MAX_HEAD_DIM]`, i.e. 16 × 128 × 4.
+
+The finding is that **the allocation does not shrink at `W=1`**. `MAX_KV_PARALLEL` is a
+preprocessor `#define`, not the specialisation constant the host actually varies, so freezing
+SpecId 0 to 1 folds nothing: a serial pipeline still declares the full 16-lane footprint and pays
+that occupancy input for 15 lanes it will not use. Sizing the shared arrays by the specialisation
+constant would let the `W=1` case — which the host rule selects for every short context — stop
+paying for parallelism it did not ask for.
+
+**This is a static module observation and it stops there.** SPIR-V is an intermediate form; the
+driver recompiles it to machine code and decides register allocation, scratch spilling and final
+occupancy there. Nothing in this section can prove what the GPU executed, and the length where the
+prediction would be tested (`past=32`, `W=1`) is the one the equivalence budget refuses. It is a
+hypothesis for #90 to test, not a result.
+
+### 29.8 Scope, and what this is not
+
+* No production code was changed. This section adds measurement instruments, artifacts and guards.
+* Nothing here was taken from PR #97's own reported figures; every number was produced locally
+  from an independently built tree. Where this analysis and PR #97's description disagree — the
+  kill-switch identity claim — the disagreement is reported with the evidence for it.
+* The model file is named `phi-3.5-mini-instruct-cuda-int4-rtn-block-32`. That is a filename from
+  its publisher. **Nothing here measures, or claims to measure, CUDA.** All device work is Vulkan
+  compute on the recorded device.
+* One device, one driver, one OS. `NO-SLOW-LENGTH` and the ratios above are statements about this
+  configuration.
+
+### 29.9 Reproducing this section
+
+```
+python bench/results/probe_pr97_third_arm.py \
+    --baseline-lib <85fbda2 dll> --candidate-lib <fc1b163 dll> \
+    --baseline-commit 85fbda2 --candidate-commit fc1b163 \
+    --out bench/results/pr97_vs_candidate.json
+
+python bench/results/probe_pr97_third_arm.py --attribution ...   # per-kernel, tracer on
+python bench/results/probe_pr97_killswitch.py --lib <fc1b163 dll> --commit fc1b163 ...
+python bench/results/spirv_gqa_decode_pr97.py --decode-shader ... --legacy-shader ...
+```
+
+Without a GPU, the published figures are still checkable:
+
+```
+python bench/results/probe_pr97_third_arm.py --resummarize bench/results/pr97_vs_candidate.json --check
+python bench/results/probe_pr97_third_arm.py --resummarize bench/results/pr97_vs_baseline.json  --check
+python bench/results/probe_pr97_third_arm.py --resummarize bench/results/pr97_attribution.json  --check
+python -m pytest bench/test_pr97_third_arm.py
+```
+
+`--resummarize` re-derives every published band, verdict, window claim, witness audit and
+attribution figure from the stored records alone and fails if any of them differs. The guard suite
+opens no device and reads no library.
+
+| artifact | sha256 (first 32) | bytes |
+|---|---|---|
+| `bench/results/pr97_vs_candidate.json` | `2d2db18ccd50f6197927e9921509b0d7` | 282,612 |
+| `bench/results/pr97_vs_baseline.json` | `0f9e797b7425fc0bbe1dd7012718ee2e` | 280,778 |
+| `bench/results/pr97_attribution.json` | `002f001825cf38e2818d67bc8bf32de9` | 101,063 |
+| `bench/results/pr97_killswitch.json` | `01ac2b5edaec00dbdd18993244fe865b` | 112,497 |
+| `bench/results/spirv_gqa_decode_pr97.json` | `52234724a6e08fb73aed4657eaf55456` | 8,490 |
+
+Addendum pre-registration:
+`bench/results/prereg_pr97_third_arm.md`, sha256
+`1410a4002fc9eff4f6cad183b1979be634dd37725403762e1521da306b66ef5b`, 9,787 B — published to issue
+#96 before any arm-3 process was timed.

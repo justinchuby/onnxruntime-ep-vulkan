@@ -538,6 +538,15 @@ BENCH_HELD_OUT: dict[str, str] = {
         "mutation battery that keeps a refused cross-build record from ever holding a "
         "`speed` field."
     ),
+    # Arrived 2026-08-08 (Switch) with the issue #96 PR #97 third arm. Same shape as the
+    # module above and held out for the same reason; declared separately because PR #97
+    # renames the decode kernel, and the widening that lets the frozen extractor see the
+    # new name is a change to something a gate reads.
+    "test_pr97_third_arm.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries the "
+        "recomputation of PR #97's host-side KV-parallel rule and the refusals the widened "
+        "witness extractor must still make."
+    ),
     "test_devices_identity.py": (
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."

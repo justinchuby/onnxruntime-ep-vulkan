@@ -1,0 +1,284 @@
+{
+  "instrument": "spirv_gqa_decode_pr97.py",
+  "issue": 96,
+  "question": "What does PR #97's gqa_decode_f16 module declare statically, and does freezing the KV-parallel spec constant to 1 shrink it?",
+  "commit": "fc1b163548a307e3b1be6d996673842203ebba25",
+  "tools": {
+    "glslc": "shaderc v2026.2 v2026.2",
+    "spirv-dis": "SPIRV-Tools v2026.2 v2026.2.rc2-1-g2ec8457a",
+    "spirv-val": "SPIRV-Tools v2026.2 v2026.2.rc2-1-g2ec8457a",
+    "spirv-opt": "SPIRV-Tools v2026.2 v2026.2.rc2-1-g2ec8457a"
+  },
+  "glslc_flags": [
+    "-fshader-stage=compute",
+    "--target-env=vulkan1.1",
+    "-O"
+  ],
+  "glslc_flags_provenance": "rust/build.rs, the same flags the shipped library is built with",
+  "legacy_gqa_f16_for_context": {
+    "note": "Included only to size the two modules against each other. These are DIFFERENT shaders; no line-level diff between them would mean anything.",
+    "spv_sha256": "d6e7eb008b59dd2f7563c8369583cdfecf189428ae56c25da8c2487c3f9e87cf",
+    "spv_bytes": 16108,
+    "disassembly_sha256": "44c776ad871a8defa45de3728fd644fac9dcd51f934a3461d789c7af79e22528",
+    "spirv_val": "PASS",
+    "instruction_count": 995,
+    "workgroup_memory": {
+      "per_variable_bytes": {},
+      "total_bytes": 0,
+      "variable_count": 0
+    },
+    "function_scope_memory": {
+      "per_variable_bytes": {
+        "%413": 512,
+        "%421": 512,
+        "%429": 512,
+        "%437": 512
+      },
+      "total_bytes": 2048,
+      "variable_count": 4
+    },
+    "barriers": 0,
+    "branches": 147,
+    "loop_merges": 16,
+    "spec_constants": 1
+  },
+  "decode_unspecialised": {
+    "spv_sha256": "191647cd0a7c9111399818fbefc44fe2e6952839310b8347f1e6d6e705e3f2cc",
+    "spv_bytes": 15116,
+    "disassembly_sha256": "5128eb876d5185df25e197e9b64d1789173f27c434c6456f12e8fadb2fab0f16",
+    "spirv_val": "PASS",
+    "instruction_count": 944,
+    "workgroup_memory": {
+      "per_variable_bytes": {
+        "%416": 512,
+        "%524": 512,
+        "%530": 512,
+        "%851": 64,
+        "%855": 64,
+        "%870": 8192
+      },
+      "total_bytes": 9856,
+      "variable_count": 6
+    },
+    "function_scope_memory": {
+      "per_variable_bytes": {
+        "%399": 512,
+        "%407": 512,
+        "%590": 512,
+        "%949": 512
+      },
+      "total_bytes": 2048,
+      "variable_count": 4
+    },
+    "barriers": 2,
+    "branches": 141,
+    "loop_merges": 20,
+    "spec_constants": 1
+  },
+  "decode_per_kv_parallel": {
+    "1": {
+      "spv_sha256": "31ecf636adab39263d67be84765e8e6c14623d552e7bfbe101654833f6491664",
+      "spv_bytes": 15100,
+      "disassembly_sha256": "35620a5aa8bb74437e573b9021f90b7c2c9a632ce2f89c1f52ba630ab9ef0763",
+      "spirv_val": "PASS",
+      "instruction_count": 943,
+      "workgroup_memory": {
+        "per_variable_bytes": {
+          "%416": 512,
+          "%524": 512,
+          "%530": 512,
+          "%851": 64,
+          "%855": 64,
+          "%870": 8192
+        },
+        "total_bytes": 9856,
+        "variable_count": 6
+      },
+      "function_scope_memory": {
+        "per_variable_bytes": {
+          "%399": 512,
+          "%407": 512,
+          "%590": 512,
+          "%949": 512
+        },
+        "total_bytes": 2048,
+        "variable_count": 4
+      },
+      "barriers": 2,
+      "branches": 141,
+      "loop_merges": 20,
+      "spec_constants": 0
+    },
+    "2": {
+      "spv_sha256": "348417fc16766705511c353836c7d2ebded88f2ad13bf543bd5d4404be24f75d",
+      "spv_bytes": 15100,
+      "disassembly_sha256": "0f4a9696d36dd61e56abba759668876b55c2f22ad754d61f1ca575675a46ee25",
+      "spirv_val": "PASS",
+      "instruction_count": 943,
+      "workgroup_memory": {
+        "per_variable_bytes": {
+          "%416": 512,
+          "%524": 512,
+          "%530": 512,
+          "%851": 64,
+          "%855": 64,
+          "%870": 8192
+        },
+        "total_bytes": 9856,
+        "variable_count": 6
+      },
+      "function_scope_memory": {
+        "per_variable_bytes": {
+          "%399": 512,
+          "%407": 512,
+          "%590": 512,
+          "%949": 512
+        },
+        "total_bytes": 2048,
+        "variable_count": 4
+      },
+      "barriers": 2,
+      "branches": 141,
+      "loop_merges": 20,
+      "spec_constants": 0
+    },
+    "4": {
+      "spv_sha256": "fd737c30c5ef420bdaa8ace968a3f7197b7064f485ff0afecf9c8a5c98bd076e",
+      "spv_bytes": 15100,
+      "disassembly_sha256": "78d153ee5995a9338982629180ab3409aab0cc9c69249f77dc48909eef7b5f5d",
+      "spirv_val": "PASS",
+      "instruction_count": 943,
+      "workgroup_memory": {
+        "per_variable_bytes": {
+          "%416": 512,
+          "%524": 512,
+          "%530": 512,
+          "%851": 64,
+          "%855": 64,
+          "%870": 8192
+        },
+        "total_bytes": 9856,
+        "variable_count": 6
+      },
+      "function_scope_memory": {
+        "per_variable_bytes": {
+          "%399": 512,
+          "%407": 512,
+          "%590": 512,
+          "%949": 512
+        },
+        "total_bytes": 2048,
+        "variable_count": 4
+      },
+      "barriers": 2,
+      "branches": 141,
+      "loop_merges": 20,
+      "spec_constants": 0
+    },
+    "8": {
+      "spv_sha256": "33df9901815f3e282207e31232d7dec18a4ae5234269b43fdf7bb8abaa307ca5",
+      "spv_bytes": 15100,
+      "disassembly_sha256": "d6ac51bd7b175521b62d41b4053da4245b8772f905a1167463d5823a9f0240c1",
+      "spirv_val": "PASS",
+      "instruction_count": 943,
+      "workgroup_memory": {
+        "per_variable_bytes": {
+          "%416": 512,
+          "%524": 512,
+          "%530": 512,
+          "%851": 64,
+          "%855": 64,
+          "%870": 8192
+        },
+        "total_bytes": 9856,
+        "variable_count": 6
+      },
+      "function_scope_memory": {
+        "per_variable_bytes": {
+          "%399": 512,
+          "%407": 512,
+          "%590": 512,
+          "%949": 512
+        },
+        "total_bytes": 2048,
+        "variable_count": 4
+      },
+      "barriers": 2,
+      "branches": 141,
+      "loop_merges": 20,
+      "spec_constants": 0
+    },
+    "16": {
+      "spv_sha256": "3f83cbd4f51649d583ddedf5cd7b0b9eeaa5668c0e0bd708f40ce484a4d5711c",
+      "spv_bytes": 15100,
+      "disassembly_sha256": "c6c48e69c88336f9274d0127faa149d1130c142c72444404eb99b4f8aa5f3b86",
+      "spirv_val": "PASS",
+      "instruction_count": 943,
+      "workgroup_memory": {
+        "per_variable_bytes": {
+          "%416": 512,
+          "%524": 512,
+          "%530": 512,
+          "%851": 64,
+          "%855": 64,
+          "%870": 8192
+        },
+        "total_bytes": 9856,
+        "variable_count": 6
+      },
+      "function_scope_memory": {
+        "per_variable_bytes": {
+          "%399": 512,
+          "%407": 512,
+          "%590": 512,
+          "%949": 512
+        },
+        "total_bytes": 2048,
+        "variable_count": 4
+      },
+      "barriers": 2,
+      "branches": 141,
+      "loop_merges": 20,
+      "spec_constants": 0
+    }
+  },
+  "findings": {
+    "workgroup_bytes_by_W": {
+      "1": 9856,
+      "2": 9856,
+      "4": 9856,
+      "8": 9856,
+      "16": 9856
+    },
+    "workgroup_allocation_is_independent_of_W": true,
+    "workgroup_bytes_note": "The shader sizes its shared arrays with `#define MAX_KV_PARALLEL 16`, a preprocessor constant, not with specialisation constant 0. If the figure above is flat across W, a W=1 pipeline declares the same workgroup memory as a W=16 pipeline and pays the same occupancy input for lanes it will not use.",
+    "instruction_count_by_W": {
+      "1": 943,
+      "2": 943,
+      "4": 943,
+      "8": 943,
+      "16": 943
+    },
+    "w1_vs_w16_instruction_delta": 0,
+    "barriers_by_W": {
+      "1": 2,
+      "2": 2,
+      "4": 2,
+      "8": 2,
+      "16": 2
+    },
+    "function_scope_bytes_by_W": {
+      "1": 2048,
+      "2": 2048,
+      "4": 2048,
+      "8": 2048,
+      "16": 2048
+    },
+    "decode_vs_legacy_instruction_ratio": 0.949
+  },
+  "limits": [
+    "Static module only. The driver recompiles SPIR-V to machine code; register allocation, scratch spilling and final occupancy are decided there and are not observable here.",
+    "Declared workgroup bytes are not necessarily allocated bytes; a driver may pad.",
+    "`gqa_f16` and `gqa_decode_f16` are different shaders. Nothing here is a diff."
+  ]
+}
