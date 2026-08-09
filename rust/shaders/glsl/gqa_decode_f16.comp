@@ -1,0 +1,447 @@
+// `com.microsoft::GroupQueryAttention` — DECODE ONLY, with the KV/past dimension split across the
+// invocations of one workgroup.
+//
+// # What this file is, and what it deliberately is not
+//
+// `gqa_f16.comp` is the general kernel: one invocation per `(batch, query_head, query_seq_pos)`,
+// no barriers, no shared memory, a plain serial online softmax over the whole cache.  It is frozen
+// by this change — not one byte of it moves — and it remains the kernel for **every** shape except
+// the one this file names.  This file is a second, narrower module, and the narrowing is the
+// entire safety argument: at `seq_len == 1` three of `gqa_f16`'s branches are dead by arithmetic,
+// not by assumption, and what is left is short enough to parallelise without inheriting the
+// prefill correctness surface.
+//
+// The dead branches, and why they are dead rather than omitted:
+//
+//   * `s_local` is `gid % S` with `S == 1`, so `s_local == 0` identically.  `tok_pos` is
+//     `past_len + s_local`, so `tok_pos == past_len`.
+//   * `gqa_f16`'s attention loop runs `t` over `[0, tok_pos]` and splits it three ways:
+//     `t < past_len` (the cache), `t == tok_pos` (this token's own key) and
+//     `past_len <= t < tok_pos` (a key belonging to a *sibling query position of the same
+//     dispatch*, recomputed from `packed_qkv` because reading it back out of `present` is a
+//     data race).  With `tok_pos == past_len` that third interval is EMPTY.  The race, and the
+//     recompute that repairs it, cannot arise here — which is why this kernel may use barriers
+//     at all without re-opening the question `gqa_f16` settled by removing the read.
+//   * `copy_leader`'s `s_local == 0` conjunct is a tautology, so it reduces to
+//     `present_len != past_stride && kv_write_leader`.
+//
+// Nothing here is a re-derivation of `gqa_f16`'s arithmetic with a wider workgroup: a wider
+// workgroup on `gqa_f16` is `local_size_x_id = 0`, it already exists, it is `gqa_local_size`'s
+// job, and MEASURED it makes decode SLOWER (see `ops::attention::gqa_local_size`'s table: 32
+// invocations at `local = 32` cost 209.19 ms against 135.56 ms at `local = 1`).  Packing more
+// invocations into a workgroup does not help when there are only `B * Nq = 32` of them; what
+// helps is giving each of those 32 units of work MORE lanes, and the only axis with enough
+// extent to split is the KV/past dimension.  That axis is not partitionable without a combine,
+// and the combine is what this file adds.
+//
+// # The mapping
+//
+//   one workgroup  <->  one `(batch b, query head h)` pair.  `gl_NumWorkGroups.x == B * Nq`.
+//   W invocations  <->  a strided partition of `t` over `[0, tok_pos]`:  `t = lane, lane + W,
+//                       lane + 2W, ...`.  `W` is specialisation constant 0.
+//
+// Strided (`t = lane; t <= tok_pos; t += W`) rather than blocked (`t = lane * chunk .. `) for
+// two reasons that are both about portability rather than taste:
+//
+//   1. **Load balance is exact for every past length.**  Lane occupancy differs by at most one
+//      iteration whatever `tok_pos` is, so there is no shape at which one lane runs the whole
+//      cache while the rest wait at the barrier.  A blocked split has to round, and the rounding
+//      is worst exactly where the kernel matters (short caches, where the tail lane owns the
+//      remainder).
+//   2. **Adjacent lanes read adjacent KV rows.**  Whatever the hardware's SIMD width is — and
+//      this kernel is forbidden from knowing it — consecutive `lane` values touch consecutive
+//      `t`, so the per-`d` loads of `past_key[.., t, d]` are contiguous across lanes.  A blocked
+//      split puts them a whole chunk apart.
+//
+// # The combine, and why it is exact rather than approximate
+//
+// Each lane runs the SAME online softmax `gqa_f16` runs, restricted to its own subset of `t`:
+// it holds `(m, s, a)` with `m = max_t score_t`, `s = sum_t exp(score_t - m)` and
+// `a[d] = sum_t exp(score_t - m) * V[t][d]`.  Two such triples merge into the triple for the
+// union of their `t` sets, exactly, with no error term:
+//
+//     m' = max(m1, m2)
+//     s' = s1 * exp(m1 - m') + s2 * exp(m2 - m')
+//     a'[d] = a1[d] * exp(m1 - m') + a2[d] * exp(m2 - m')
+//
+// This is the flash-decoding / FlashAttention-2 combine, evaluated at workgroup scope instead of
+// across dispatches.  It is ALGEBRAICALLY exact and it is NOT bit-identical to the serial loop,
+// because floating-point addition is not associative and the partition changes the summation
+// order.  That is declared, not hidden: `docs/DESIGN.md` §8.14 states the tolerance, and
+// `W == 1` is not this kernel at all — the host dispatches `gqa_f16` unchanged, so the
+// production serial path stays bit-exact by *not running this file*.
+//
+// Empty lanes are not a special case.  A lane with no `t` (only possible when
+// `W > tok_pos + 1`) carries `m = -1e30`, `s = 0`, `a = 0`; the merge multiplies its zeros by
+// `exp(-1e30 - m') == 0` and adds nothing.  Lane 0 always owns `t = 0`, so the final `s` is
+// never zero and the reciprocal below is never a division by zero.
+//
+// # Portability: Vulkan 1.1 core, and nothing else
+//
+//   * **No subgroup anything.**  No `GL_KHR_shader_subgroup*`, no ballot, no shuffle, no
+//     assumption that a workgroup is a lockstep unit.  The reduction is `shared` memory plus
+//     `barrier()`, which is core since Vulkan 1.0.
+//   * **Shared memory: 8,320 bytes**, fixed, independent of `W` and of `head_dim`
+//     (`16*4 + 16*4 + 16*128*4`).  Vulkan 1.1 requires `maxComputeSharedMemorySize >= 16384`, so
+//     this fits inside the guaranteed floor with 8,064 bytes — 49.2% — to spare on EVERY
+//     conformant implementation, lavapipe included.  The constant array bounds are what make that
+//     a property of the specification rather than of the device: sizing the arrays from `W` would
+//     make the reported usage depend on a host decision, and a host decision cannot be checked by
+//     reading this file.
+//   * **`W <= 16` for the same reason**, and it is a consequence rather than a taste: at
+//     `W = 32` the accumulator alone is `32*128*4 = 16384` bytes, which is the whole guaranteed
+//     floor with nothing left for `sh_m`/`sh_s`.  `ops::attention::GQA_DECODE_MAX_KV_LANES`
+//     states the same number on the host and its unit test cites this arithmetic.
+//     `maxComputeWorkGroupInvocations` is required to be at least 128, so 16 is inside that
+//     floor by a factor of 8 as well.
+//   * **Every `barrier()` is reached by every invocation of the workgroup.**  The only early
+//     return is `b >= batch_size`, which depends on `gl_WorkGroupID.x` alone — the same value for
+//     all W lanes — so it is workgroup-uniform and cannot leave a lane behind at a barrier.  The
+//     reduction's trip count is `ceil(log2(W))` where `W` is a specialisation constant, so it too
+//     is uniform, and the `barrier()` sits OUTSIDE the `if` in the loop body, never inside it.
+//   * **`head_dim <= 128`**, checked on the host (`GQA_DECODE_MAX_HEAD_DIM`), which is the bound
+//     `gqa_f16`'s own `float q[128]` already assumed.  A wider head falls back to `gqa_f16`.
+//
+// # Push constants and bindings are `gqa_f16`'s, unchanged
+//
+// Byte-for-byte the same 36-byte block and the same 9 bindings in the same order, so
+// `translate_gqa` builds one push vector and one binding list for both kernels and there is no
+// second layout to drift.  `vk/session.rs`'s KV-convention witness reads offsets 24 and 28 of
+// whichever of the two stems ran.
+//
+//   offset  0: batch_size   u32
+//   offset  4: seq_len      u32   (always 1 here — the host guarantees it and `main` re-checks)
+//   offset  8: num_heads    u32
+//   offset 12: kv_num_heads u32
+//   offset 16: head_dim     u32
+//   offset 20: rotary_dim   u32
+//   offset 24: present_len  u32
+//   offset 28: past_stride  u32
+//   offset 32: scale        f32
+//
+//   binding 0 packed_qkv, 1 past_key, 2 past_value, 3 seqlens_k, 4 cos_cache, 5 sin_cache,
+//   binding 6 attn_output, 7 present_key, 8 present_value
+
+#version 450
+#extension GL_EXT_shader_16bit_storage : require
+
+// Specialisation id 0 — `W`, the number of KV lanes in a workgroup.  Chosen by
+// `ops::attention::gqa_decode_kv_lanes`, always a power of two in `[2, 16]` when this module is
+// dispatched at all.  The default of 1 is not a production value: it exists so that a pipeline
+// built without the constant degenerates to a correct single-lane run rather than to a zero-lane
+// one, and the host never asks for it (`W == 1` dispatches `gqa_f16` instead).
+layout(local_size_x_id = 0, local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+// The compile-time ceilings the shared allocation is sized from.  See the portability note above:
+// these are constants, not specialisation constants, precisely so that the 8,320-byte figure is
+// readable here and cannot be moved by a host decision.
+const uint W_MAX = 16u;
+const uint D_MAX = 128u;
+
+layout(push_constant) uniform PC {
+    uint  batch_size;
+    uint  seq_len;
+    uint  num_heads;
+    uint  kv_num_heads;
+    uint  head_dim;
+    uint  rotary_dim;
+    uint  present_len;
+    uint  past_stride;
+    float scale;
+} pc;
+
+layout(set = 0, binding = 0, std430) readonly buffer BufQKV  { uint d[]; } qkv;
+layout(set = 0, binding = 1, std430) readonly buffer BufPK   { uint d[]; } past_k;
+layout(set = 0, binding = 2, std430) readonly buffer BufPV   { uint d[]; } past_v;
+layout(set = 0, binding = 3, std430) readonly buffer BufSeq  { int  d[]; } seqlens;
+layout(set = 0, binding = 4, std430) readonly buffer BufCos  { uint d[]; } cos_buf;
+layout(set = 0, binding = 5, std430) readonly buffer BufSin  { uint d[]; } sin_buf;
+// Not `writeonly`: the half-word writes are read-modify-write atomics, exactly as in `gqa_f16`.
+layout(set = 0, binding = 6, std430) buffer BufOut   { uint d[]; } attn_out;
+layout(set = 0, binding = 7, std430) buffer BufPresK { uint d[]; } pres_k;
+layout(set = 0, binding = 8, std430) buffer BufPresV { uint d[]; } pres_v;
+
+// --------------------------------------------------------------------------
+// The workgroup's combine state.  8,320 bytes, see the header.
+// --------------------------------------------------------------------------
+shared float sh_m[W_MAX];
+shared float sh_s[W_MAX];
+shared float sh_a[W_MAX * D_MAX];
+
+// --------------------------------------------------------------------------
+// Scalar f16 helpers — identical to `gqa_f16`'s, per buffer because GLSL cannot parameterise a
+// buffer block.
+// --------------------------------------------------------------------------
+float f16_qkv(uint i) {
+    vec2 p = unpackHalf2x16(qkv.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_pk(uint i) {
+    vec2 p = unpackHalf2x16(past_k.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_pv(uint i) {
+    vec2 p = unpackHalf2x16(past_v.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_cos(uint i) {
+    vec2 p = unpackHalf2x16(cos_buf.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_sin(uint i) {
+    vec2 p = unpackHalf2x16(sin_buf.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+
+// The atomics protect the *neighbouring half-word*, which two different writers can share when
+// `head_dim` is odd.  Same rule, same reason, same code as `gqa_f16`.
+void wr_out(uint i, float v) {
+    uint bits = packHalf2x16(vec2(v, v));
+    if ((i & 1u) == 0u) {
+        atomicAnd(attn_out.d[i >> 1u], 0xFFFF0000u);
+        atomicOr (attn_out.d[i >> 1u], bits & 0x0000FFFFu);
+    } else {
+        atomicAnd(attn_out.d[i >> 1u], 0x0000FFFFu);
+        atomicOr (attn_out.d[i >> 1u], bits & 0xFFFF0000u);
+    }
+}
+void wr_presk(uint i, float v) {
+    uint bits = packHalf2x16(vec2(v, v));
+    if ((i & 1u) == 0u) {
+        atomicAnd(pres_k.d[i >> 1u], 0xFFFF0000u);
+        atomicOr (pres_k.d[i >> 1u], bits & 0x0000FFFFu);
+    } else {
+        atomicAnd(pres_k.d[i >> 1u], 0x0000FFFFu);
+        atomicOr (pres_k.d[i >> 1u], bits & 0xFFFF0000u);
+    }
+}
+void wr_presv(uint i, float v) {
+    uint bits = packHalf2x16(vec2(v, v));
+    if ((i & 1u) == 0u) {
+        atomicAnd(pres_v.d[i >> 1u], 0xFFFF0000u);
+        atomicOr (pres_v.d[i >> 1u], bits & 0x0000FFFFu);
+    } else {
+        atomicAnd(pres_v.d[i >> 1u], 0x0000FFFFu);
+        atomicOr (pres_v.d[i >> 1u], bits & 0xFFFF0000u);
+    }
+}
+
+void main() {
+    uint W    = gl_WorkGroupSize.x;   // the resolved specialisation constant
+    uint lane = gl_LocalInvocationID.x;
+    uint wg   = gl_WorkGroupID.x;
+
+    uint Nq  = pc.num_heads;
+    uint Nkv = pc.kv_num_heads;
+    uint D   = pc.head_dim;
+    uint rh  = pc.rotary_dim >> 1u;
+
+    // One workgroup per (b, h).  `wg` is the only input to this decode, so `b` is
+    // WORKGROUP-UNIFORM and the guard below cannot strand a lane at a barrier.
+    uint b = wg / Nq;
+    uint h = wg % Nq;
+    // FAIL CLOSED.  The host dispatches exactly `B * Nq` workgroups, so this never fires in
+    // production; it is here for the same reason `gqa_f16`'s is, and because a guard that only
+    // exists when it is needed is a guard nobody checks.
+    if (b >= pc.batch_size) return;
+    // The host promises `seq_len == 1` and refuses to bind this module otherwise
+    // (`gqa_decode_kv_lanes` returns 1 for every other `seq_len`, and 1 dispatches `gqa_f16`).
+    // Re-checked here because the promise is on the other side of an ABI: a push constant that
+    // says otherwise means the host and this file disagree, and the safe reading of a
+    // disagreement is to write nothing.  Uniform for the whole dispatch, so barrier-safe.
+    if (pc.seq_len != 1u) return;
+    if (D > D_MAX || W > W_MAX) return;
+
+    uint kv_h       = h / (Nq / Nkv);
+    int  seqlens_b  = seqlens.d[int(b)];
+    // `seqlens_k[b]` is `total_sequence_length - 1`, and `total = past + seq_len`, so the past
+    // extent is `seqlens_k[b] + 1 - seq_len`.  With `seq_len == 1` that is `seqlens_k[b]` — the
+    // one place the decode-only assumption `gqa_f16` had to unlearn is actually true.  It is
+    // still written out in full so the two files read the same.
+    uint past_len   = uint(max(seqlens_b + 1 - int(pc.seq_len), 0));
+    uint tok_pos    = past_len;              // s_local == 0
+    uint total_len  = tok_pos + 1u;          // causal: [0 .. tok_pos]
+
+    // ------------------------------------------------------------------
+    // 1./2. Q for this (b, h), rotated.  Every lane computes it: it is `O(D)` against the
+    //       loop's `O(total_len/W * D)`, it is the same arithmetic on the same read-only bytes
+    //       in every lane, and sharing it would cost a shared array and one more barrier.
+    // ------------------------------------------------------------------
+    uint qkv_row = b * (Nq + 2u * Nkv) * D;   // (b * S + 0) * (...) * D, with S == 1
+    uint q_base  = qkv_row + h * D;
+    uint k_base  = qkv_row + Nq * D + kv_h * D;
+    uint v_base  = qkv_row + (Nq + Nkv) * D + kv_h * D;
+
+    float q[D_MAX];
+    float acc[D_MAX];
+    for (uint d = 0u; d < D; d++) {
+        q[d]   = f16_qkv(q_base + d);
+        acc[d] = 0.0;
+    }
+    {
+        uint cos_row = tok_pos * rh;
+        for (uint ri = 0u; ri < rh; ri++) {
+            float c  = f16_cos(cos_row + ri);
+            float sn = f16_sin(cos_row + ri);
+            float qx = q[ri];
+            float qy = q[ri + rh];
+            q[ri]      = qx * c - qy * sn;
+            q[ri + rh] = qy * c + qx * sn;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3. present_key/value at `tok_pos`, written by ONE lane of the group leader.
+    //
+    //    `gqa_f16` writes this from the `h % group_size == 0` leader, because `present` is
+    //    indexed by `kv_h` and all G query heads of a KV group name the same words with the same
+    //    values.  That deduplication is preserved.  What is new is that a workgroup now has W
+    //    lanes and they would all be leaders, so the write is additionally pinned to `lane == 0`
+    //    — the same one-writer-per-word discipline, one level down.
+    //
+    //    The rotated K is streamed rather than materialised: `gqa_f16` keeps `k_new[128]` because
+    //    it needs it again for the self-key dot product, and this kernel does not (the lane that
+    //    owns `t == tok_pos` recomputes it from `packed_qkv`, which is read-only input, exactly
+    //    as `gqa_f16`'s sibling-key branch does).  Two 128-float private arrays saved per lane,
+    //    times W lanes.
+    // ------------------------------------------------------------------
+    uint group_size      = Nq / Nkv;
+    bool kv_write_leader = (h % group_size) == 0u;
+    if (kv_write_leader && lane == 0u && tok_pos < pc.present_len) {
+        uint pb = (b * Nkv + kv_h) * pc.present_len * D + tok_pos * D;
+        for (uint ri = 0u; ri < rh; ri++) {
+            float c  = f16_cos(tok_pos * rh + ri);
+            float sn = f16_sin(tok_pos * rh + ri);
+            float kx = f16_qkv(k_base + ri);
+            float ky = f16_qkv(k_base + ri + rh);
+            wr_presk(pb + ri,      kx * c - ky * sn);
+            wr_presk(pb + ri + rh, ky * c + kx * sn);
+        }
+        for (uint d = 2u * rh; d < D; d++) {
+            wr_presk(pb + d, f16_qkv(k_base + d));
+        }
+        for (uint d = 0u; d < D; d++) {
+            wr_presv(pb + d, f16_qkv(v_base + d));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3a. The growing-cache past copy, fused into the loop below exactly as `gqa_f16` fuses it.
+    //     `s_local == 0` is a tautology here, so the predicate loses that conjunct and nothing
+    //     else.  Each past `t` is loaded by exactly one lane, so each is copied exactly once and
+    //     the W lanes share the work rather than repeating it.
+    // ------------------------------------------------------------------
+    bool copy_leader = pc.present_len != pc.past_stride && kv_write_leader;
+    uint copy_dst    = (b * Nkv + kv_h) * pc.present_len * D;
+
+    // ------------------------------------------------------------------
+    // 4. This lane's slice of the online softmax.
+    // ------------------------------------------------------------------
+    float max_s = -1.0e30;
+    float sum_e = 0.0;
+
+    for (uint t = lane; t < total_len; t += W) {
+        float dot = 0.0;
+        if (t < past_len) {
+            uint kv_base = (b * Nkv + kv_h) * pc.past_stride * D + t * D;
+            if (copy_leader) {
+                for (uint d = 0u; d < D; d++) {
+                    float kv = f16_pk(kv_base + d);
+                    dot += q[d] * kv;
+                    wr_presk(copy_dst + t * D + d, kv);
+                }
+            } else {
+                for (uint d = 0u; d < D; d++) dot += q[d] * f16_pk(kv_base + d);
+            }
+        } else {
+            // `t == tok_pos`: this token's own key.  Recomputed from `packed_qkv` — a read-only
+            // dispatch input — rather than read back from `present_key`, which lane 0 of this
+            // very workgroup may still be writing.  There is no barrier between step 3 and here
+            // and there must not be one: adding it would make the write ordering the correctness
+            // argument, and `gqa_f16` already established that reading `present` back is the
+            // wrong shape of fix even when the writer is a workgroup sibling.
+            for (uint ri = 0u; ri < rh; ri++) {
+                float c  = f16_cos(tok_pos * rh + ri);
+                float sn = f16_sin(tok_pos * rh + ri);
+                float kx = f16_qkv(k_base + ri);
+                float ky = f16_qkv(k_base + ri + rh);
+                dot += q[ri] * (kx * c - ky * sn) + q[ri + rh] * (ky * c + kx * sn);
+            }
+            for (uint d = 2u * rh; d < D; d++) dot += q[d] * f16_qkv(k_base + d);
+        }
+        float sc = dot * pc.scale;
+
+        if (sc > max_s) {
+            float factor = exp(max_s - sc);
+            for (uint d = 0u; d < D; d++) acc[d] *= factor;
+            sum_e *= factor;
+            max_s = sc;
+        }
+        float e = exp(sc - max_s);
+        sum_e += e;
+
+        if (t < past_len) {
+            uint kv_base = (b * Nkv + kv_h) * pc.past_stride * D + t * D;
+            if (copy_leader) {
+                for (uint d = 0u; d < D; d++) {
+                    float vv = f16_pv(kv_base + d);
+                    acc[d] += e * vv;
+                    wr_presv(copy_dst + t * D + d, vv);
+                }
+            } else {
+                for (uint d = 0u; d < D; d++) acc[d] += e * f16_pv(kv_base + d);
+            }
+        } else {
+            for (uint d = 0u; d < D; d++) acc[d] += e * f16_qkv(v_base + d);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 5. Combine the W partial triples.
+    //
+    //    Publish, then a tree reduction with `ceil(log2(W))` rounds.  The trip count is a
+    //    function of the specialisation constant alone, so it is identical in every lane; the
+    //    `barrier()` is the last statement of the loop BODY, not of the `if`, so every lane
+    //    executes every barrier the same number of times.  That is the whole uniformity
+    //    obligation and it is discharged structurally rather than by inspection.
+    //
+    //    The stride form `(lane & (2*stride - 1)) == 0` is correct for any `W`, power of two or
+    //    not, and `partner < W` retires the odd tail.  The host only ever asks for powers of two,
+    //    and this does not rely on that.
+    // ------------------------------------------------------------------
+    sh_m[lane] = max_s;
+    sh_s[lane] = sum_e;
+    for (uint d = 0u; d < D; d++) sh_a[lane * D_MAX + d] = acc[d];
+    memoryBarrierShared();
+    barrier();
+
+    for (uint stride = 1u; stride < W; stride <<= 1u) {
+        uint partner = lane + stride;
+        if ((lane & ((stride << 1u) - 1u)) == 0u && partner < W) {
+            float m1 = sh_m[lane];
+            float m2 = sh_m[partner];
+            float mm = max(m1, m2);
+            float w1 = exp(m1 - mm);
+            float w2 = exp(m2 - mm);
+            sh_m[lane] = mm;
+            sh_s[lane] = sh_s[lane] * w1 + sh_s[partner] * w2;
+            for (uint d = 0u; d < D; d++) {
+                sh_a[lane * D_MAX + d] =
+                    sh_a[lane * D_MAX + d] * w1 + sh_a[partner * D_MAX + d] * w2;
+            }
+        }
+        memoryBarrierShared();
+        barrier();
+    }
+
+    // ------------------------------------------------------------------
+    // 6. attn_output[b, 0, h*D .. (h+1)*D - 1].  Lane 0 owns the whole row, so the atomics in
+    //    `wr_out` never contend inside a workgroup and contend across workgroups only when `D`
+    //    is odd — the same condition, and the same reason, as in `gqa_f16`.
+    // ------------------------------------------------------------------
+    if (lane == 0u) {
+        float inv_s = 1.0 / sh_s[0];
+        uint  ob    = b * Nq * D + h * D;
+        for (uint d = 0u; d < D; d++) wr_out(ob + d, sh_a[d] * inv_s);
+    }
+}

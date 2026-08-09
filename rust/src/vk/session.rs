@@ -2258,7 +2258,14 @@ impl VulkanSession {
             // `past_stride` (offset 28) are equal exactly when `present` aliases `past`; the
             // kernel's own `copy_leader` predicate is that same comparison, so this reads the
             // condition the shader reads rather than a parallel restatement of it.
-            if eff_shader == "gqa_f16" && eff_push_constants.len() >= 32 {
+            //
+            // BOTH GQA modules, because they share one push block byte for byte. Naming only the
+            // first one made this counter go blind on exactly the shapes it is most needed for:
+            // `gqa_decode_f16` runs only at `seq_len == 1`, which is the whole of a generation
+            // loop, and a KV-convention instrument that reports nothing during decode reports
+            // nothing at all.
+            if matches!(eff_shader, "gqa_f16" | "gqa_decode_f16") && eff_push_constants.len() >= 32
+            {
                 let present_len = u32::from_le_bytes([
                     eff_push_constants[24],
                     eff_push_constants[25],

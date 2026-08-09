@@ -2196,6 +2196,27 @@ fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
         Some(stem) if !stem.is_empty() => stem.to_string(),
         _ => "metadata".to_string(),
     };
+    // -- The dispatch-set suffix ----------------------------------------------------------
+    //
+    // A row that declares `aux_module_stems` can dispatch a module the line above did not name,
+    // and *which* one it dispatches is decided from runtime extents this view has not seen. So
+    // for those rows the variant component names a **set**, and the two possible sets must be
+    // two different strings — otherwise one proof key would cover both a run that executed only
+    // the primary module and a run that executed the alternative, and the ledger's subject
+    // digest (which is taken over the stems a proof run actually dispatched) would describe one
+    // of them while being consulted for both.
+    //
+    // The bare stem keeps its exact previous spelling for every node whose dispatch set is
+    // provably `{stem}`, which is what preserves every key already in the ledger. `@kvpar` is
+    // appended when the alternative *may* be reached, and it is deliberately the fail-safe
+    // reading: an undecidable extent (`-1`, which is what a symbolic dimension reports) counts as
+    // reachable. Over-declaring costs a form one more module in its proof; under-declaring would
+    // let a node execute a module its evidence never ran.
+    let stem = if dispatch_set_includes_alternative(view, spec) {
+        format!("{stem}@kvpar")
+    } else {
+        stem
+    };
     match crate::ops::common::selector::source_for(spec.op_type) {
         Some(crate::ops::common::selector::SelectorSource::Attrs(_)) => {
             // An unresolvable selector is a node the predicate declines; the key still has to be a
@@ -2208,6 +2229,79 @@ fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
         }
         _ => stem,
     }
+}
+
+/// Might this node dispatch one of its row's [`Kernel::aux_module_stems`]?
+///
+/// **The answer is `true` whenever it is not sure**, and that direction is the whole design. The
+/// component this feeds is a proof key: a key that under-declares the dispatch set lets a node
+/// execute a module its evidence never ran, which is the exact defect §8.9.23 found in `Conv`'s
+/// `metadata` variant, one level down. A key that over-declares costs its form a larger subject
+/// — the proof run has to dispatch both modules — and nothing else.
+///
+/// Only `GroupQueryAttention` declares an alternative today, and the facts that make it
+/// *unreachable* are the three the selector refuses on. Each is read from the node's **declared**
+/// shapes, where `-1` means symbolic and therefore unknown:
+///
+///   * `packed_qkv`'s sequence extent, statically known and not 1 — `gqa_decode_f16` is written
+///     against `seq_len == 1` and [`crate::ops::attention::gqa_decode_kv_lanes`] refuses every
+///     other value outright;
+///   * `past_key`'s head dimension, statically known and outside the module's `D_MAX`;
+///   * `past_key`'s cache extent, statically known and too short for even two lanes to be worth
+///     their merge.
+///
+/// The arena is **not** consulted, and that is deliberate: it is a process-wide environment flag,
+/// so consulting it would make the proof key of a fixed graph depend on how the process was
+/// started, and a key that moves with the environment cannot be looked up in a checked-in ledger.
+/// Reading it as "off" is the reachable direction, so the fail-safe rule above still holds.
+fn dispatch_set_includes_alternative(view: &NodeView<'_>, spec: &'static OpSpec) -> bool {
+    if spec.kernel.aux_stems().is_empty() {
+        return false;
+    }
+    if spec.op_type != "GroupQueryAttention" {
+        // A future row with an alternative must state its own reachability rule here rather than
+        // inherit GQA's. Until it does, the fail-safe reading applies and every one of its nodes
+        // carries the suffix — visible, and never silently wrong.
+        return true;
+    }
+    let ins = view.input_types();
+    let dim = |slot: usize, axis: usize| -> Option<i64> {
+        ins.get(slot)
+            .and_then(|t| t.as_ref())
+            .and_then(|e| e.shape.as_ref())
+            .and_then(|s| s.get(axis).copied())
+            .filter(|d| *d >= 0)
+    };
+    // packed_qkv is [B, S, (Nq + 2*Nkv) * D].
+    if let Some(seq_len) = dim(0, 1)
+        && seq_len != 1
+    {
+        return false;
+    }
+    // past_key is [B, Nkv, past, D].
+    let head_dim = dim(3, 3);
+    if let Some(d) = head_dim
+        && (d <= 0 || d > i64::from(crate::ops::attention::GQA_DECODE_MAX_HEAD_DIM))
+    {
+        return false;
+    }
+    if let Some(past) = dim(3, 2) {
+        // Ask the selector itself, at the `seq_len` this branch has already established is the
+        // only reachable one, so the boundary cannot drift away from the dispatch site. The head
+        // dimension is unknown here only when it is symbolic, and a symbolic one is fed the
+        // module's own maximum — the value that keeps the answer reachable.
+        let hd = head_dim.unwrap_or(i64::from(crate::ops::attention::GQA_DECODE_MAX_HEAD_DIM));
+        let lanes = crate::ops::attention::gqa_decode_kv_lanes(
+            1,
+            u32::try_from(past).unwrap_or(u32::MAX),
+            u32::try_from(hd).unwrap_or(u32::MAX),
+            false,
+        );
+        if lanes < 2 {
+            return false;
+        }
+    }
+    true
 }
 
 /// `shape_class ∈ {static, runtime-extent}` as §8.9 spells it, over the four classes we compute.
@@ -3849,11 +3943,35 @@ fn form_is_provable(key: &ProofKey) -> bool {
     use crate::ops::common::variants::{
         variant_is_declared, variant_is_generated, variant_is_loadable,
     };
-    form_provable_from(
+    let mut ok = form_provable_from(
         variant_is_declared(stem),
         variant_is_generated(stem),
         variant_is_loadable(stem),
-    )
+    );
+    // A `@kvpar` key names a dispatch SET, so its provability is the conjunction over the set.
+    // Without this the predicate would read a shaderless build as able to prove a form whose
+    // alternative module is missing — the same under-claim `Conv` produced through `metadata`,
+    // arriving through the suffix instead of through the stem.
+    if key
+        .variant_component()
+        .is_some_and(|v| v.split('@').any(|p| p == "kvpar"))
+    {
+        for spec in all_specs() {
+            if !spec.kernel.aux_stems().is_empty()
+                && spec.caps.iter().any(|d| spec.kernel.stem(d) == Some(stem))
+            {
+                for aux in spec.kernel.aux_stems() {
+                    ok = ok
+                        && form_provable_from(
+                            variant_is_declared(aux),
+                            variant_is_generated(aux),
+                            variant_is_loadable(aux),
+                        );
+                }
+            }
+        }
+    }
+    ok
 }
 
 /// Answer [`form_is_provable`] for a list of keys, as text, for a caller outside this process.

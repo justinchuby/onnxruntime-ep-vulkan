@@ -5052,3 +5052,412 @@ transition can never be declared, because
 correctly requires every declared transition to end at what the build computes. Rebuilding the
 stack on `main` is the only fix; merging `main` is not, because CI screens `refs/pull/N/merge`,
 which has the same shape.
+
+## 27. Decode: splitting the KV walk across lanes — the 93.5% §26.7 named (issue #90, 2026-08-09)
+
+§26.7's first limitation is the whole subject of this section:
+
+> **Decode is still bad, and this change does not fix it.** At `past = 1024` the EP is 0.31x the
+> CPU EP and `gqa_f16` holds 93.5% of GPU time. There is no packing to do at 32 invocations. The
+> next lever is parallelism over the **KV sequence** inside a workgroup with a reduction […] It
+> should be opened now; it has evidence.
+
+`rust/shaders/glsl/gqa_decode_f16.comp` is that lever. `docs/DESIGN.md` §8.14 derives it — one
+workgroup per `(batch, head)`, `W` lanes striding the cache, an online-softmax tree reduction in
+8,320 bytes of shared memory, `W <= 16` by the Vulkan 1.1 16 KiB floor rather than by a sweep.
+This section is what it measured and, at least as importantly, **what it refuses to say**.
+
+Artifact: `bench/results/gqa_decode_kv_parallel.json`. Everything below is read off it.
+
+### 27.1 The protocol, predeclared
+
+Two arms differing in **exactly one environment variable**,
+`ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL` — unset is the new kernel, `=1` is the kill switch
+and the previous dispatch. One subprocess per `(case, arm, repeat)`. **2 warm-up inferences
+dropped**, 4 timed, 3 repeats, arm order reversed on odd repeats. Kernel time is the EP's own GPU
+timestamp-query total attributed by shader stem, so the arms are also distinguishable by *which*
+stem appears — `vulkan.gpu.gqa_decode_f16` against `vulkan.gpu.gqa_f16` — and that pipeline
+witness is checked on every point rather than assumed.
+
+**The record is raw, not summarised.** Every point publishes `per_inference_us` with the dropped
+warm-ups kept *separately* alongside the timed series, `gqa_per_inference_us`, the per-repeat
+medians, and a flattened `raw_samples_us` per arm. A summary in this file is always a function of
+a series that is also in this file, and `_publishable()` refuses any arm that arrives without
+`raw_samples_us`. Every point additionally carries a record-level `witness`: the EP library's
+sha256 and byte size, the provider list, the environment override in force, and an ISO timestamp —
+so a point can be attributed to a binary and a moment without trusting the document header.
+
+**The device is locked, cooperatively, and the lock says what it does not do.** The probe takes a
+machine-wide advisory file lock keyed on the device index before the first subprocess and holds it
+until this artifact is written, recording `acquired`, `contended`, `wait_s`,
+`other_participants_at_entry` and `held_at_report_s`. It is honest about its own semantics: it
+**excludes any other process that takes this same lock** and it **does not exclude** a compositor,
+another EP, or a squad session that never adopted the protocol. That is precisely why the
+dispersion gate below is a *separate and independently sufficient* condition and not a
+belt-and-braces nicety.
+
+The tolerance was fixed **before** any arm ran, and it is one object shared by both scopes below —
+neither scope gets a looser band:
+
+| output | rtol | atol |
+|---|---|---|
+| `logits` | 1e-2 | 1e-2 |
+| `present.*` | 1e-2 | 1e-2 |
+
+**Equivalence is checked on every timed repeat, and the published verdict is the worst one.** A
+case that was correct once and measured three times publishes nothing:
+`equivalent_every_repeat` is ANDed into the case verdict and is one of the two new refusal
+conditions this revision added.
+
+`ci/check_run_disturbance.py` is the standing form of the occupancy question; this box has **no
+exclusive GPU reservation and this artifact does not claim one**, so the conditions are stated
+instead: per-arm relative standard deviation is recorded on every point and a point above
+**rsd 0.10** is refused rather than published. (That gate is not decorative — an earlier run of
+this same probe refused `past = 128` at rsd 0.392 because a build was running on the box. The
+numbers below were taken on a quiet one.)
+
+### 27.2 What the subject actually is
+
+An independent audit of the rejected #97 found that its headline number was an **aggregate of GPU
+timestamps across all `gqa_decode_f16` layer dispatches** of a real model — a third quantity that
+is neither whole-model latency nor the cost of an isolated invocation, and which was being read as
+if it were one of those two. This file therefore binds its subject explicitly, in the artifact
+itself (`subject_binding`) and here:
+
+> **The number is:** the sum of the GPU timestamp intervals attributed to the GQA shader module,
+> **per inference**, on a graph containing **exactly one** `GroupQueryAttention` node.
+
+It is **not**:
+
+* whole-model latency — no section of this artifact publishes one;
+* the cost of a single isolated shader *invocation* — one inference is one dispatch of
+  `batch * num_heads` workgroups and the interval covers the whole dispatch;
+* an aggregate over the 32 layer dispatches of a real model — that is a different quantity, and it
+  is the one #97's headline was built on;
+* wall time — `process_wall_s` appears per point as context and is never a numerator or a
+  denominator anywhere in the file.
+
+The three aggregation levels are all published and each is a function of the one below it: raw
+`per_inference_us` → `by_kernel_us` (mean of the timed inferences) → `median_us` (median across
+repeats).
+
+### 27.2.1 Equivalence first, and the structural rule
+
+**Requirement, restated because the rejected PR #97 broke it:** that artifact carried
+`equivalence_complete=false`, `all_equivalent=false`, a `DIVERGENT` verdict at `past = 128` and a
+probe exit code of 1 — and kept its `WIN` rows anyway. In this probe a speed field is not a value
+that can be present next to a failure; **`_publishable()` is the only gate and
+`_apply_structural_removal()` is the only place a speed field is ever attached.** On refusal the
+case does not get `kernel_speedup`, does not get `verdict`, and loses `median_us` from both arms.
+What survives is the raw `samples_us` and the dispersion, because an observation is not a claim.
+
+Refusal triggers, all predeclared: non-equivalence at the tolerance above, **non-equivalence on
+any single timed repeat**, an output *subset* (comparing fewer tensors than exist), a missing or
+crossed pipeline witness, `rsd > 0.10`, **a missing raw sample series**, or no timed sample.
+
+This artifact's own top-level `equivalence_complete` is **false**, and that is not the #97 defect
+repeating itself — it is the conservative AND across *every* scope in the file, and one scope
+(whole-model, §27.4) refused. The difference is what happens next: #97 kept `WIN` rows underneath
+its false flag; here the refusing scope is *structurally emptied* and the artifact publishes
+`equivalence.by_scope` plus `headline.bound_to_scope` so no reader has to infer which scope a
+number belongs to.
+
+Three held-out mutations in `bench/results/gqa_decode_kv_parallel_mutations.json` keep the gate
+load-bearing, and two of them are **two-sided** — the clean fixture must publish *and* the
+one-field-spoiled fixture must refuse *and name the spoiled field*, so neither a refuse-everything
+nor a publish-everything gate can pass:
+
+| mutation | what it removes | expected |
+|---|---|---|
+| `REFUSAL` | forces `_publishable` to return `True` | a `kernel_speedup` appears on the `DIVERGENT` case |
+| `PER_REPEAT` | spoils `equivalent_every_repeat` on one repeat | must refuse and name it |
+| `RAW_SAMPLES` | drops `raw_samples_us` from one arm | must refuse and name it |
+
+### 27.3 Node scope — what is measured, and what may therefore be published
+
+One `GroupQueryAttention` node alone in a graph at Phi-3.5's own shape: `num_heads = 32`,
+`kv_heads = 32`, `head_dim = 96`, `rotary_dim = 96`, `seq_len = 1`. This is the scope the kernel
+time is measured on, so it is the scope the equivalence is measured on — the two are the same
+object, which is the property §26.2's instrument bugs were about.
+
+**All three cases EQUIVALENT on all three timed repeats, all three outputs compared, none
+skipped:**
+
+| case | `attn_out` worst abs | worst rel | ULP (max / >1 ULP) | `present_key` | `present_value` |
+|---|---|---|---|---|---|
+| past=128 | 1.91e-06 (3,072 el) | 1.91e-04 | **1 / 0** | **bitwise identical** (396,288 el) | **bitwise identical** |
+| past=512 | 9.54e-07 (3,072 el) | 9.54e-05 | **1 / 0** | **bitwise identical** (1,575,936 el) | **bitwise identical** |
+| past=1024 | 1.91e-06 (3,072 el) | 1.91e-04 | **1 / 0** | **bitwise identical** (3,148,800 el) | **bitwise identical** |
+
+`elements_outside_tolerance` is **0** on every output of every case and on every repeat, and
+`finite_masks_match` is true on all of them — the non-finite policy is *compared*, not assumed. The
+ULP column is the strongest statement in the artifact and is stronger than the absolute residual:
+at every `past`, **no element of `attn_out` is more than one f16 ULP from the serial kernel**, i.e.
+the two kernels differ only in the last representable bit or not at all. The KV cache the kernel
+writes is *bit-for-bit* the serial kernel's.
+
+Per-output diagnostics recorded for every comparison, because #97's had none of them: absolute and
+relative residual, ULP distance (max/mean/p99/`elements_beyond_1_ulp`), a non-finite census on both
+sides plus the policy text, and — on output 0 only, recorded and explicitly **never the
+criterion** — top-1/5/10 set agreement and whether the reference's top1−top2 margin survives.
+Argmax agreement is not what decides anything here; the elementwise band is.
+
+Only because that passed does the timing get published:
+
+| case | serial `gqa_f16` | parallel `gqa_decode_f16` | `W` chosen | kernel speed-up |
+|---|---|---|---|---|
+| decode past=128 | 1.356 ms | 0.915 ms | 4 | **1.48x** |
+| decode past=512 | 5.102 ms | 1.143 ms | 16 | **4.46x** |
+| decode past=1024 | 10.116 ms | 2.054 ms | 16 | **4.92x** |
+
+The shape of that column is the design: at `past = 128` the selector picks `W = 4` and the walk is
+short enough that fixed cost dominates; by `past = 1024` it is `W = 16` and the 1,025-token serial
+walk has become a 65-token one plus four reduction rounds. Per-arm relative standard deviation is
+under 1% in every cell, which is what earns these rows the right to be quoted to three digits.
+
+**Exactly what these numbers are:** GQA kernel GPU time, for one isolated node, on one device, at
+**the `W` the selector chooses for that `past`**. They are **not** a whole-model speed claim,
+**not** a cross-device claim, **not** a `W`-generic ratio, **not** a statement about issue #96's
+`past = 128` cross-build question, and **not** a projection onto a model ceiling.
+
+### 27.3.1 `W = 1` is the prior binary — proven against the prior binary
+
+Requirement 1 says the `W = 1` path must be bitwise-equivalent to prior production. A single build
+cannot honestly assert that about itself, so the probe builds a second release DLL from the
+**merge-base commit** and compares two binaries, refusing to run if the two files turn out to be
+byte-identical.
+
+| | result |
+|---|---|
+| `past` lengths | 13, spanning the `past = 63` selector threshold (0, 1, 7, 31, 61, 62, 63, 64, 127, 128, 255, 511, 1024) |
+| forced `W = 1` vs base build | **bitwise identical on all three outputs at all 13 lengths** (`max_abs = 0.0`) |
+| pipeline witness | forced `W = 1` dispatched `vulkan.gpu.gqa_f16` **only** — the decode module never appeared |
+| shipped default (`auto`) vs base | identical at `past <= 62`, differs at `past >= 63` — **the selector boundary, measured** |
+| `distinct_binaries` | true (subject `df8ffea3…`, base `d17cbf2b…`) |
+
+The last two rows are the point. The `auto` arm is *expected to differ* above the threshold and
+that row is labelled context rather than a check — but the fact that it flips exactly at 63 and
+nowhere else is independent evidence that the boundary is where §8.14 says it is.
+
+### 27.3.2 The prefill path, witnessed at **this** head
+
+#97's prefill evidence predated the PR. This one is generated by the same probe run that produced
+everything else in this file, against the same base build:
+
+| `past` | `seq_len` | outputs | decode module | subject/base kernel time |
+|---|---|---|---|---|
+| 0 | 2 | bitwise identical | never dispatched | 1.002 |
+| 0 | 8 | bitwise identical | never dispatched | 0.987 |
+| 0 | 64 | bitwise identical | never dispatched | 1.001 |
+| 128 | 2 | bitwise identical | never dispatched | 1.001 |
+| 128 | 8 | bitwise identical | never dispatched | 1.002 |
+| 128 | 128 | bitwise identical | never dispatched | 0.993 |
+
+`gqa_f16` is unchanged by a byte on this branch (`git diff <base>..HEAD -- rust/shaders/glsl/gqa_f16.comp`
+is empty), and this table is the runtime form of the same statement: at `seq_len > 1` the selector
+refuses, the serial module runs, the answers are bit-for-bit the previous build's, and the time
+does not move.
+
+### 27.3.3 The forced-`W` ladder — and why no `W`-generic ratio is quotable
+
+#97 was corrected for advertising "3.4x–8x at W16" when its own records showed the 3.4886x figure
+was `W = 8` at `past = 128`. The lesson is not "use better numbers", it is that **a ratio quoted
+without both coordinates is not a measurement**. So the ladder is published as a table of
+`(past, W)` cells, each cell labelled with whether production would ever reach it, cells visited in
+a **seeded permutation order** per `(past, repeat)` with `positions_in_run` recorded (#97 ran a
+fixed W1→W2→W4→W8→W16 order at every point), and a `speedup_vs_W1` attached only when the pipeline
+witness, the equivalence and the dispersion gate all hold:
+
+| `past` | W=1 | W=2 | W=4 | W=8 | W=16 |
+|---|---|---|---|---|---|
+| 128 | 1.000 | 0.872 | **1.476** ← shipped | 2.296 | 3.462 |
+| 512 | 1.000 | 0.879 | 1.665 | 2.884 | **4.466** ← shipped |
+| 1024 | 1.000 | 0.885 | 1.703 | 3.084 | **4.931** ← shipped |
+| 2048 | 1.000 | 0.862 | 1.613 | 3.010 | **5.144** ← shipped |
+
+Every cell is equivalent to its own `W = 1` cell. Three things in this table are worth saying out
+loud:
+
+* **`W = 2` never pays — it costs at every `past` measured.** 0.872 / 0.879 / 0.885 / 0.862 at
+  `past` 128 / 512 / 1024 / 2048, with no trend towards break-even as the walk lengthens: splitting
+  the walk two ways does not amortise the reduction's fixed cost at any length this kernel is
+  reachable at. This is a real, reproducible regression in a cell the selector never picks — `auto`
+  goes 1 → 4 at the threshold and never selects 2 — but it is reported rather than hidden, and it is
+  the reason a `W`-generic statement would be false in both directions.
+* **The `past = 2048` row is the least settled in the table.** Its `W = 2` cell carries a 6.6%
+  per-arm relative standard deviation, and its `W = 1` cell 1.1%, against ≤ 0.25% in every other
+  cell of every other row. Those two cells are therefore quoted at lower confidence, and the
+  dispersion is recorded per cell in `forced_w_ladder` rather than smoothed away. `past = 2048` is
+  also outside the node-scope table above, so nothing in §27.3 depends on it.
+* **This ladder does not reproduce #97's `W = 16` column.** The independently corrected values for
+  that artifact were 4.1347 / 6.1849 / 7.0732 / 8.0288 at `past` 128/512/1024/2048; this
+  independent rebuild measures **3.462 / 4.466 / 4.931 / 5.144** on the same class of device. No
+  attempt is made here to reconcile the two — different kernel, different harness, different
+  warm-up and ordering discipline — but **none of #97's ratios are inherited, cited as support, or
+  reused**, and the numbers above are the only ones this project stands behind.
+
+The cell marked *shipped* is the only one production reaches at that `past` with no environment
+override. Nothing in this table licenses a sentence of the form "W=16 gives Nx".
+
+### 27.4 Whole-model scope — REFUSED, and the refusal is the result
+
+The same change, measured on the real 32-layer Phi-3.5 int4 graph, **fails the predeclared
+tolerance and therefore publishes no speed number at any past:**
+
+| case | worst \|parallel-serial\| | on | speed field |
+|---|---|---|---|
+| decode/M1/past128 | 0.523438 | logits | **WITHHELD** |
+| decode/M1/past512 | 0.523438 | logits | **WITHHELD** |
+| decode/M1/past1024 | 0.357422 | logits | **WITHHELD** |
+
+This is recorded as `DIVERGENT`. It is **not** relabelled a tolerance residual, and no argument
+below converts it into one.
+
+The kernel-time observations at those points survive as observations only, stripped of medians and
+verdicts. **They may not be cited as a result of this change** — they are in the artifact because
+deleting a measurement you dislike is worse than refusing to conclude from it.
+
+#### Three controls, and one of them came back against this change
+
+| control | question | reading |
+|---|---|---|
+| **NULL** — parallel vs parallel | is the instrument deterministic? | **HOLDS.** 65/65 outputs bitwise identical, `logits_max_abs = 0.0`. Had this failed, the whole section would be void. |
+| **CROSS-KERNEL** — `GEMV_MAX_ROWS` 1 vs 4, GQA serial in both | is whole-model divergence just what this instrument reports for *any* accepted kernel change? | **NEGATIVE for this change.** That pair is **bitwise identical** (`logits_max_abs = 0.0`, 0/65 outside tolerance). The divergence is *not* generic, and this control gives this change **no cover whatsoever.** |
+| **LANE-SENSITIVITY** — `W = 2` vs `W = 16`, both the new kernel | is the model's output invariant under reassociation of *this* sum at all? | **NO.** Two lane counts that are *both correct by construction* differ by **0.6585** on logits, 36/65 outputs outside tolerance — **larger** than the 0.5234 that this report refuses on. |
+
+The cross-kernel control is reported because it was predeclared, not because it helped; it did the
+opposite, and it is quoted here at the same size as the results that flatter the change.
+
+#### The depth profile, which explains without excusing
+
+Per-layer worst `|parallel - serial|` on `present.*` at `past = 128`:
+
+| layer | 0 | 1 | 5 | 13 | 21 | 26 | 31 | logits |
+|---|---|---|---|---|---|---|---|---|
+| worst | **0.0** | 0.00195 | 0.0156 | 0.0156 | 0.0314 | 0.0825 | 0.1699 | 0.5234 |
+
+**Layer 0 is bitwise identical.** That is the kernel's own output before any downstream layer has
+touched it, and it agrees with §27.3's node-scope result: the kernel writes the same cache. The
+disagreement appears at layer 1 and compounds at a median **1.065x per layer** through the fp16
+residual stack.
+
+Put beside the lane-sensitivity control, the honest reading is narrow and it is a limit rather than
+an exoneration: **this model has no whole-model output that is invariant under any reassociation of
+the attention sum**, so serial-vs-parallel divergence at 0.52 sits inside a family that already
+contains 0.66 between two configurations of the *same* correct kernel. That makes the whole-model
+comparison **not adjudicable by this instrument** — which is a reason to publish nothing at that
+scope, not a reason to publish anyway. The node scope, where the comparison *is* adjudicable, is
+the only scope with a number in it.
+
+### 27.5 Limitations, stated rather than implied
+
+* **One device.** RTX A1000 only. `W` is portable *by construction* (a spec constant chosen from
+  model shapes, sized against the Vulkan 1.1 16 KiB shared-memory floor), but its best *value* is a
+  property of the machine — which is why `ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_PARALLEL` exists.
+* **Kernel time only, node scope only.** The only speed numbers published here are §27.3's. A
+  whole-model speed claim needs the approved wall-share attribution that **issue #88 v2** owns, and
+  this file makes none.
+* **`past = 128` cross-build behaviour is issue #96's question, not this one.** This artifact times
+  the GQA kernel at `past = 128` on this box and says nothing about why any cross-build difference
+  exists or whether this change resolves it. **No p128 regression-resolution claim is made.**
+
+  That question is open **in both directions**, and this file is careful not to close it by
+  citation. The two prior measurements of it disagree, and neither is load-bearing here:
+
+  | source | p128 ratio | interval | status in this file |
+  |---|---|---|---|
+  | issue #95 | 0.859 | none published | **descriptive only** — a point estimate with no interval, carrying no inferential weight |
+  | PR #99, exact `cf6e3f5` | 0.9651 | 95% CI **[0.820, 1.136]** | **inconclusive on its own terms** — the interval spans 1.0, so it excludes neither "no change" nor #95's 0.859 |
+
+  Read together they are **conflicting and inconclusive**, not a converging pair. And **PR #99 at
+  `cf6e3f5` was rejected**, so its "does not reproduce" / "no regression" reading is not an
+  available premise: it is not cited, not inherited, and nothing in §27 rests on it. The rejection
+  does not convert into evidence of the opposite conclusion either — a withdrawn negative result
+  leaves the question where it was, which is open.
+
+  So while the p128 evidence is divergent this change **fails closed**: it publishes no p128
+  cross-build claim in either direction, and `past = 128` stays in every control (§27.3, §27.3.3,
+  §27.4) precisely so that it can never be quietly dropped from the comparison at the point where
+  it is least flattering. Issue **#96** owns the resolution, independently and without input from
+  here.
+
+  One distinction worth stating plainly, because the same number appears on both sides of it:
+  §27.3's **1.48x at `past = 128`** is *same-build, node-scope, kernel GPU time on this box*. The
+  ratios above estimate a *cross-build, whole-model* quantity. They are not the same measurement,
+  and §27.3's row neither corroborates nor refutes either of them.
+* **No CUDA parity claim, no cross-device gain claim, no model ceiling projection.**
+* **GPU time is a timestamp-query total, not an occupancy counter.** It says the kernel finished
+  sooner. The lane-occupancy explanation is consistent with it and with §26.7's arithmetic, but this
+  harness cannot read a hardware occupancy counter and does not claim to.
+* **Wall clock on this box is `STEADY_UNCERTIFIED` (§20).** `process_wall_s` is context, never
+  evidence; every number in §27.3 is GPU time.
+* **The KV arena is refused, not measured.** Under the arena the past extent is a capacity rather
+  than a length, so the selector declines and the previous kernel runs. That is declared remaining
+  debt in `ci/census_surface_map.json`, not a silent gap.
+* **The device lock is cooperative, and only cooperative.** It serialises other participants in
+  this protocol and nothing else — a compositor or a non-participating benchmark is not excluded.
+  `protocol.gpu_lock.does_not_exclude` says so in the artifact. The dispersion gate is the
+  independent second condition and is what actually stands between a disturbed run and a published
+  number.
+* **The forced-`W` ladder is a table of cells, not a source of a `W`-generic ratio.** Production
+  selects `W` from the KV extent, so at any given `past` exactly one cell is the shipped behaviour.
+  `W = 2` being slower than `W = 1` is measured and reported; it is not reachable by `auto`.
+* **No claim is inherited from any rejected artifact.** From **#97**: its ratios, its "harness-only
+  divergence" reasoning and its early relative-error inflation story are not used as support
+  anywhere in this file. From **#99** (`cf6e3f5`): its "does not reproduce" / "no regression"
+  reading of `past = 128` is not used either, per the bullet above. Where this rebuild measures the
+  same quantity it publishes its own number, and where the two disagree (§27.3.3) the disagreement
+  is stated rather than reconciled. A rejected artifact is treated as neither support nor
+  counter-evidence — it is simply not a premise.
+* **The recorded DLL sha256 is an identity, not a reproduction recipe.** The `MSVC` release link
+  used here is **not** byte-reproducible: relinking the identical source tree produces a different
+  file hash every time (verified — three relinks of one clean tree gave three distinct sha256s).
+  So `provenance.ep_library_sha256` says *exactly which bytes produced these numbers*, and lets a
+  reviewer bind an artifact to a binary they have been handed; it does **not** let them rebuild the
+  tree and expect a match, and any screen that compares a fresh build's hash to this field will be
+  wrong for a reason that has nothing to do with this change. The reproducible identities are the
+  commit, `provenance.ep_library_bytes`, the toolchain record, and the proof-ledger's
+  `source_digest` / `shader_digest` / `spec_digest` triple — those *are* content-addressed and a
+  rebuild does reproduce them.
+* **The `past = 2048` ladder row is noisier than the rest.** Per-arm dispersion there reaches 6.6%
+  at `W = 2` against ≤ 0.25% elsewhere; it is quoted with that caveat, is outside the node-scope
+  table entirely, and nothing else in this file rests on it.
+* **The early-divergence question is left open, not explained away.** This file does **not** claim
+  that any observed synthetic divergence is a harness artefact. §27.4's cross-kernel control came
+  back NEGATIVE, which is recorded as measured and gives this change no cover.
+
+### 27.6 Reproduce
+
+The `W = 1` identity and prefill passes need a **second** release DLL built from the merge-base
+commit; the probe refuses to run those passes if the two libraries are byte-identical.
+
+```
+git worktree add <scratch> $(git merge-base origin/main HEAD)
+cargo build --release --manifest-path <scratch>/rust/Cargo.toml
+
+python bench/results/probe_gqa_decode_kv_parallel.py \
+    --past 128,512,1024 --repeats 3 --iters 10 --warmups 2 \
+    --base-lib <scratch>/rust/target/release/onnxruntime_vulkan_ep.dll \
+    --ladder-past 128,512,1024,2048 --ladder-w 1,2,4,8,16
+python tests/ops/probe_gqa_decode_kv_parallel_mutations.py
+python -m pytest tests/ops/test_gqa_decode_kv_parallel.py
+```
+
+`--iters 10` (8 timed inferences per point after 2 dropped warm-ups) is what the committed artifact
+was generated with. An earlier run at `--iters 4` left only two timed samples per prefill cell, and
+one of the twelve caught a single scheduling spike (`[1418, 2063]` µs against a base arm of
+`[1413, 1419]`) which pushed that cell outside the ±10% band and made the probe withhold the whole
+prefill pass — outputs still bitwise identical, only the timing gate tripped. The response was to
+raise the **sample count**, which is not a goalpost: every band and gate in §27.2.1 (the tolerance,
+`rsd > 0.10`, ±10% on prefill, the pipeline witness, per-repeat equivalence) is unchanged, and the
+artifact in this repository is the **first** run at the higher count, not a best-of. Refusals are
+reported when they happen; §27.4 is one that was not re-run away.
+
+Artifacts: `bench/results/gqa_decode_kv_parallel.json`,
+`bench/results/gqa_decode_kv_parallel_mutations.json`. The probe exits **1** when it withheld
+anything, **2** when it refused to run, and **3** if its own leak screen tripped — it declines to
+write an artifact containing an absolute filesystem root, so the model, both EP libraries and the
+scratch worktree are recorded by identity and sha256 rather than by path. #97's public JSON leaked
+two absolute private paths and hashed a DLL at a mutable, missing location; this one cannot,
+because the screen runs over the assembled document before it is written and returns exit 3 rather
+than a file.
