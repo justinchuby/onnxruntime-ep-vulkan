@@ -101,6 +101,12 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Landing-simulation negative control", "hostfree.landing_simulation_negative_control"),
     ("Landing simulation", "hostfree.landing_simulation"),
     ("Ledger-loss probe", "hostfree.ledger_loss_probe"),
+    # Same ordering hazard, one more time: "Phi-3.5 evidence gate negative control" and
+    # "Phi-3.5 frozen evidence gate" share the "evidence gate" fragment, so the control is
+    # listed first. A control that silently maps onto the screen it controls disappears
+    # from this census while the workflow still reads fully classified.
+    ("Phi-3.5 evidence gate negative control", "hostfree.phi_evidence_negative_control"),
+    ("Phi-3.5 frozen evidence gate", "hostfree.phi_evidence"),
     ("Open reds", "hostfree.open_reds"),
     # Same ordering hazard again: "GH-invocation auth negative control" does not
     # substring "GH-invocation auth screen" (they diverge at "negative control" vs.

@@ -137,3 +137,49 @@ Evidence is now **content-addressed**: `ci/fixtures/cleanroom-redaction/*.pysrc`
 manifest, refused on mismatch, with a LANDING arm that runs in a tree with no `.git` and
 `ci/simulate_squash_cleanroom_redaction.py` that proves it against a real squash with the reflog
 expired and the objects pruned. 12/12 replay arms fire with the rejected refs gone.
+
+---
+
+## Issue #69, revision 4 — clean-room rebuild of the Phi-3.5 evidence (rejected #102)
+
+Morpheus rejected `c39bdbb` on PR #102. Link and Morpheus were both locked out, so I owned this
+revision alone, in a fresh sibling worktree branched from exact `origin/main` (`8701812`). I never
+read #102, #95, or any of their commits, branches or worktrees — everything below was measured or
+written from `origin/main` and issue #69.
+
+Three blockers had to be answered independently, and answering them honestly changed the design:
+
+- **Decode is INCONCLUSIVE, and stays that way.** Two independent observations exist — `0.859x`
+  and `0.9651x` (95% CI `[0.820, 1.136]`, power `0.346`). Neither supersedes the other. My own
+  fresh reproduction landed a third, `0.999x` with a floor of `0.903x`, and the temptation was to
+  let the friendlier number stand in for the older ones. The gate now refuses that by name:
+  `REQUIRED_DECODE_OBSERVATIONS`. I found this because the negative-control arm that *deletes* one
+  named observation came back GREEN — my third observation was quietly covering for it.
+- **An RTX A1000 is not lavapipe.** The record carries driver name, driver version, API version,
+  device type, UUID, LUID, PCI address and device count, and the gate fails
+  `vulkan_implementation_mislabelled` if a discrete adapter is described in software terms.
+- **`load_frozen()` validates nothing.** It reads and parses; identity checking lives in
+  `verify_frozen_identity()`. The docstring says so and a behavioural test proves it by feeding
+  `load_frozen()` a tampered artifact and asserting it returns happily.
+
+What the instruments caught that 47 green tests did not:
+
+1. **Calibration was not disjoint by content.** `prefill/M1/past0` and `decode/M1/past0` feed
+   byte-identical tensors — same M, same empty past. The band was counting one measurement twice.
+   Subject *labels* were disjoint; the *feeds* were not. The gate now compares
+   `feeds_digest_by_subject`, and I re-measured the whole sweep rather than keep the first sample.
+2. **The bench instrument census keys rows by bare function name.** My `gate` collided with
+   `bench/contention.py::gate` and flipped that row to `screened` without a single test touching
+   it. I renamed mine to `evidence_gate`. The collision class is pre-existing (`load`, `describe`,
+   `audit` already collide) and belongs to the census owner, not to me.
+3. **A verdict-returning instrument had no reject polarity.** `refuses()` wants a raise; my gate is
+   total and returns `FAIL`. Rather than baseline twelve `unfalsified` rows I added
+   `bench/_polarity.py::convicts`, registered it in `VALUE_REJECT_FN`, and gave it synthetic
+   two-polarity tests of its own.
+
+The lesson worth keeping: **the strongest result in the sweep is the one you must be most careful
+not to widen.** M=128 came back at `2.103x` and M=64 at `1.597x` — better than expected — and the
+headline is still one model, one prefill family, one adapter, one box. No compatible CUDA result
+exists, so #69 stays open and the PR says `Refs #69`. The gate has a `headline_scope_widened`
+condition precisely because the pressure to generalise arrives *after* a good measurement, not
+before it.

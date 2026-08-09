@@ -1021,6 +1021,87 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.phi_evidence",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Phi-3.5 frozen evidence gate (host-free)",
+        watches=(
+            "The committed frozen artifact bench/results/phi35_evidence_v4.json and every "
+            "claim it publishes: content digest over canonical bytes, execution-provider / "
+            "adapter identity completeness, hardware-Vulkan vs software-lavapipe labelling, "
+            "cooperative-exclusion-only locking language, calibration subjects disjoint from "
+            "verdict subjects BY RECORDED FEEDS DIGEST, band not self-derived, all 65 model "
+            "outputs compared rather than output 0 alone, an external production-path "
+            "witness, single-model headline scope, no CUDA/closure claim, both independent "
+            "decode observations carried with neither superseding the other, dispersion kept "
+            "diagnostic, the runtime proof-ledger enforcement summary present, no private "
+            "path in the committed bytes, and every recorded verdict re-derived from the raw "
+            "per-repeat ratios by the symmetric classifier."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "ci/negative_control_phi_evidence.py breaks exactly one thing per condition in "
+            "bench/phi_evidence.py::GATE_CONDITIONS and requires the named conviction; it "
+            "also walks the tuple and fails on any token no arm attacks."
+        ),
+        arm_healthy=(
+            "PHI-EVIDENCE: PASS — 4 verdict subject(s) admissible, band from 3 disjoint "
+            "calibration subjects"
+        ),
+        arm_broken=(
+            "PHI-EVIDENCE: FAIL(condition=vulkan_implementation_mislabelled) on an RTX A1000 "
+            "reading relabelled 'llvmpipe' — the exact defect that rejected the previous "
+            "revision. Two further convictions were OBSERVED rather than planted: deleting "
+            "one named decode observation passed until REQUIRED_DECODE_OBSERVATIONS existed, "
+            "because the branch's own third observation silently stood in for it; and "
+            "prefill/M1/past0 vs decode/M1/past0 feed byte-identical tensors, so a band "
+            "'pooled from two subjects' was one measurement counted twice under two names."
+        ),
+        observed="2026-08-09",
+        misses=(
+            "It cannot re-measure. The raw samples are the artifact's own, so this screen "
+            "refuses an artifact whose CLAIMS do not follow from the SAMPLES it carries, and "
+            "says nothing about whether those samples were taken well. Re-measurement is "
+            "`python bench/phi_evidence.py --measure` and needs the GPU and the 2.3 GB model.",
+            "One workstation, one adapter, one driver. Every conclusion is scoped to the "
+            "recorded identity and nothing here makes it a statement about other hardware.",
+            "One model. It gates a Phi-3.5 headline and is blind by construction to whether "
+            "any other model behaves the same way — which is why widening the headline scope "
+            "is itself one of the conditions it convicts on.",
+        ),
+    ),
+    Check(
+        id="hostfree.phi_evidence_negative_control",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Phi-3.5 evidence gate negative control",
+        watches=(
+            "Whether bench/phi_evidence.py::evidence_gate still convicts what it claims to "
+            "convict and acquits what it claims to acquit: 29 arms, 6 OBSERVED / 23 PLANTED, "
+            "plus a coverage arm requiring one attack per declared condition and a second "
+            "requiring no arm to aim at a condition the gate cannot report."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Each arm IS the mutation: a deep copy of the real committed artifact with one "
+            "thing broken and the identity re-sealed, so the conviction cannot come from the "
+            "digest by accident."
+        ),
+        arm_healthy="29/29 arms behaved as declared (6 OBSERVED, 23 PLANTED)",
+        arm_broken=(
+            "the first run of the decode-observation arms was RED against the then-shipped "
+            "gate, which is the arm working: 'at least two observations' let a third one "
+            "stand in for a deleted named one."
+        ),
+        observed="2026-08-09",
+        misses=(
+            "Every arm is built from ONE healthy artifact, so it proves the gate reads the "
+            "fields it names and not that those fields are the right ones to read.",
+            "A condition can be attacked and still be weaker than its name suggests: the "
+            "coverage arm counts tokens, not the strength of each clause.",
+        ),
+    ),
+    Check(
         id="hostfree.landing_simulation",
         falsifier=FALSIFIER_PLANTED,
         lane=LANE_HOSTFREE,

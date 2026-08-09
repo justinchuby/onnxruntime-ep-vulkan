@@ -252,6 +252,132 @@ def test_value_polarity_behind_a_gpu_gate_earns_nothing(tmp_path: Path) -> None:
     assert _state_of(audit, root, fn="check_thing") == "unfalsified"
 
 
+# ---------------------------------------------------------------------------
+# VERDICT POLARITY — the third instrument shape (added 2026-08-09, Niobe, issue #69)
+#
+# `refuses`/`selects` model a total instrument whose refusal is `(None, why)`.  A GATE has a
+# different shape: under R13 a detection is a VERDICT, so `bench/phi_evidence.py::evidence_gate`
+# returns `{"verdict": "FAIL", "condition": ...}` and never raises about content.  Neither
+# existing source can see that, so the most heavily attacked instrument in the tree scored
+# `reject_polarity=0`.  `convicts` closes it, and gets the same treatment as `refuses` did:
+# synthetic trees differing in exactly one thing, and the screen must disagree about them.
+# ---------------------------------------------------------------------------
+
+# A VERDICT-RETURNING instrument. It never raises; its refusal is the token it returns.
+_VERDICT_OWNER_SRC = '''
+def check_gate_thing(x):
+    if x > 0:
+        return {"verdict": "PASS", "condition": None}
+    return {"verdict": "FAIL", "condition": "not_positive"}
+'''
+
+# Both polarities genuinely exercised, and both invisible to every earlier model: there is no
+# `pytest.raises` and no `refuses(...)`, and nothing in the AST tells `assert v == "FAIL"`
+# apart from `assert v == "PASS"`.
+_VERDICT_NO_POLARITY_TEST = '''
+import _models as m
+
+def test_passes():
+    assert m.check_gate_thing(1)["verdict"] == "PASS"
+
+def test_fails():
+    assert m.check_gate_thing(-1)["verdict"] == "FAIL"
+'''
+
+# The same two observations, declared through the enforcing helper.
+_VERDICT_POLARITY_TEST = '''
+import _models as m
+from _polarity import convicts
+
+def test_passes():
+    assert m.check_gate_thing(1)["verdict"] == "PASS"
+
+def test_fails():
+    assert convicts(m.check_gate_thing(-1), condition="not_positive") == "not_positive"
+'''
+
+# ...and behind a GPU gate it must earn nothing, exactly as the other two sources do not.
+_VERDICT_GATED_POLARITY_TEST = '''
+import _models as m
+from _polarity import convicts
+
+def test_passes(require_vulkan):
+    assert m.check_gate_thing(1)["verdict"] == "PASS"
+
+def test_fails(require_vulkan):
+    assert convicts(m.check_gate_thing(-1), condition="not_positive") == "not_positive"
+'''
+
+
+def _build_verdict_tree(root: Path, test_src: str) -> Path:
+    ops = root / "ops"
+    ops.mkdir(parents=True, exist_ok=True)
+    (ops / "_models.py").write_text(_VERDICT_OWNER_SRC, encoding="utf-8")
+    (ops / "test_it.py").write_text(test_src, encoding="utf-8")
+    return root
+
+
+def test_a_verdict_instrument_with_no_declared_polarity_is_unfalsified(tmp_path: Path) -> None:
+    """NEGATIVE POLARITY for the third source: two real observations, no declaration."""
+    audit = _load_audit()
+    root = _build_verdict_tree(tmp_path / "t_verdict_bare", _VERDICT_NO_POLARITY_TEST)
+    assert _state_of(audit, root, fn="check_gate_thing") == "unfalsified"
+
+
+def test_a_verdict_instrument_declared_through_convicts_is_screened(tmp_path: Path) -> None:
+    """POSITIVE POLARITY for the third source. The trees differ in one thing only."""
+    audit = _load_audit()
+    root = _build_verdict_tree(tmp_path / "t_verdict_declared", _VERDICT_POLARITY_TEST)
+    assert _state_of(audit, root, fn="check_gate_thing") == "screened"
+
+
+def test_verdict_polarity_behind_a_gpu_gate_earns_nothing(tmp_path: Path) -> None:
+    """The gate rule is not weakened by the third source either."""
+    audit = _load_audit()
+    root = _build_verdict_tree(tmp_path / "t_verdict_gated", _VERDICT_GATED_POLARITY_TEST)
+    assert _state_of(audit, root, fn="check_gate_thing") == "unfalsified"
+
+
+def test_convicts_raises_when_the_instrument_did_not_refuse() -> None:
+    """What makes the credit legitimate: the helper enforces, at run time.
+
+    A screen that credited a bare marker would be the Guard D shape with the sign flipped.
+    ``convicts`` is not a marker — it goes red both when the verdict was not a refusal and
+    when the refusal named a different condition than the caller did, and the second clause is
+    what stops a gate that fails EVERYTHING from reading as a healthy one.
+    """
+    sys.path.insert(0, str(_REPO / "bench"))
+    try:
+        from _polarity import PolarityError, convicts
+    finally:
+        sys.path.pop(0)
+    with pytest.raises(PolarityError):
+        convicts({"verdict": "PASS"})
+    with pytest.raises(PolarityError):
+        convicts({"verdict": "FAIL", "condition": "a"}, condition="b")
+    with pytest.raises(PolarityError):
+        convicts("not a mapping")
+    assert convicts({"verdict": "FAIL", "condition": "a"}, condition="a") == "a"
+
+
+def test_the_phi_evidence_gate_is_screened_in_the_real_repository() -> None:
+    """The fact the discrimination above was built to establish, on the files on disk."""
+    audit = _load_audit()
+    rows = audit.harness_survey(
+        tests_root=audit.BENCH,
+        files=audit.BENCH_INSTRUMENT_FILES,
+        fn_re=audit.BENCH_FN,
+        prefix="bench",
+    )
+    got = [r for r in rows if r["fn"] == "evidence_gate"]
+    assert got, "the bench screen no longer sees evidence_gate at all"
+    assert got[0]["state"] == "screened", (
+        f"evidence_gate is {got[0]['state']}: {got[0]}. bench/test_phi_evidence.py supplies "
+        "both polarities in the always-on lane, the reject side through "
+        "bench/_polarity.py::convicts."
+    )
+
+
 def test_identify_by_uuid_is_screened_in_the_real_repository() -> None:
     """The fact the discrimination above was built to establish, on the files on disk.
 

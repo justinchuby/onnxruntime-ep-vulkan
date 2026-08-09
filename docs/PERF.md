@@ -5052,3 +5052,248 @@ transition can never be declared, because
 correctly requires every declared transition to end at what the build computes. Rebuilding the
 stack on `main` is the only fix; merging `main` is not, because CI screens `refs/pull/N/merge`,
 which has the same shape.
+
+
+## 27. Phi-3.5 against the pre-#72 Vulkan baseline, regenerated from scratch (2026-08-09)
+
+This section is a **clean-room replacement**. Its predecessor was rejected, and none of that
+revision's bytes, artifacts, branches or derivations were read, fetched, diffed against or carried
+forward into it. Everything below was re-measured on `main` at
+`8701812c17b993061d084e686f2d7abeac2d839e`, and the reasoning was rebuilt from the questions
+rather than from the previous answers.
+
+It is also deliberately **narrower** than a reader might want. It measures one model, on one box,
+against one earlier commit of this EP. It does not compare against CUDA, it does not close
+issue #69, and its decode reading is not a result.
+
+### 27.1 What is compared, and against what
+
+Two builds of this EP, from two commits, timed against each other on the same box in the same
+sitting:
+
+| arm | source commit | `.dll` sha256 | role |
+|---|---|---|---|
+| `vulkan_head` | `8701812c17b993061d084e686f2d7abeac2d839e` (`main` at measurement time) | `65a02c96a5ac3749…adb88b5a` | subject |
+| `vulkan_pre72` | `c96e7d94ff706d26ee6a1bd9bb084c0ade426820` | `7b1f1726fefb3934…db16ea72` | baseline |
+| `vulkan_head_b` | as `vulkan_head` | same binary | calibration partner |
+| `cpu` | — | — | equivalence reference |
+
+`c96e7d9` is not an arbitrary older commit. It is the **parent of PR #72** (`0cfa362`, portable
+subgroup-sized GQA workgroups) — the last tree in which the Vulkan EP still dispatched GQA one
+invocation per workgroup, and therefore the last defensible *pre-#72 Vulkan baseline* rather than
+a point chosen because it flatters the comparison.
+
+`8701812` is the `main` this branch measured. `main` has since advanced; the difference between
+`8701812` and the commit this branch is based on is **CI-only** — it touches `ci/` and
+`ci/open_reds.json` and no Rust, shader, or bench source — so the compiled subject is unchanged.
+That is stated rather than assumed: the head arm's identity in the artifact is the commit that was
+actually built (`8701812`) and its `.dll` digest, not "whatever `main` is today".
+
+The two `.dll` digests differ and are recorded because they differ. What is claimed across the
+arms is **source** identity, never binary identity: this repository's Windows `.dll` is not
+byte-reproducible across forced rebuilds (`.squad/decisions.md`), so the honest statement is "two
+named commits, separately compiled", and the artifact says exactly that in
+`environment.software.binary_reproducibility`.
+
+**Model.** The Foundry-resolved Phi-3.5 int4 file, hashed graph *and* weights:
+
+| file | sha256 | bytes |
+|---|---|---|
+| `phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx` | `3dbdd4b5f4d487da…704dac3f` | 26,180,848 |
+| ↳ external weights `…onnx.data` | `9ce390a75dd00614…20e92217` | 2,291,238,912 |
+
+**Hardware, and what class of Vulkan it is.** This is the field the rejected revision got wrong,
+so it is recorded from the ICD rather than from what the run expected to be talking to:
+
+| field | value |
+|---|---|
+| adapter | `NVIDIA RTX A1000` |
+| device type | `discrete-gpu` |
+| Vulkan driver name | `NVIDIA` |
+| driver version | `573.44` |
+| Vulkan API version | `1.4.303` |
+| UUID / LUID / PCI | `aadf33d4d118155fcc60c22b5c352463` / `7adf070000000000` / `0000:9f:00.0` |
+| implementation class | **hardware** |
+| second Vulkan device | none enumerated |
+| host | Windows 11 (AMD64), ONNX Runtime 1.28.0, Python 3.12.10 |
+
+**This is a hardware Vulkan reading on discrete silicon. It is not lavapipe, and it must never be
+filed as one.** `lavapipe`/`llvmpipe` are software rasterisers; a number taken on one is a
+statement about a CPU implementation of Vulkan and belongs in a different row of a different
+table. `bench/phi_evidence.py` derives `implementation_type` from the driver name and device type
+reported by the ICD, and the gate refuses the record in **both** directions — a hardware reading
+labelled software, and a software reading labelled hardware. The second direction matters more
+than the first: it is the flattering one.
+
+**Isolation, stated as the mechanism and no further.** The harness serialises its own points and
+asks cooperating processes in this repository's harness family to stand down while a point is
+timed. That is all it does. It acquires **no device-level lock, and nothing here reserves the
+GPU** — a non-cooperating process is not excluded and cannot be. §20 therefore applies in full and
+wall clock is `STEADY_UNCERTIFIED`. Arms are interleaved *because* the box cannot be assumed
+quiet.
+
+**Method.** 3 repeats × 5 timed iterations, 2 warmups discarded, **one fresh process and one fresh
+session per (arm, case, repeat)**, arm order alternated per repeat. A process per point is not
+fastidiousness: the two builds are two different `.dll` files and cannot coexist in one process.
+The published per-repeat number is the median of that repeat's five timed iterations; the
+published ratio is the **median of the per-repeat paired ratios**, and the `[min, max]` of those
+ratios travels with it. Session build time and first-run time are recorded separately and folded
+into neither.
+
+### 27.2 Calibration: a band measured where no verdict is read
+
+Three subjects are timed **head against head** — the identical binary in both arms — so their true
+ratio is 1 by construction and everything observed away from 1 is the harness and the box:
+
+| calibration subject | per-repeat ratios (arm B ÷ arm A) |
+|---|---|
+| `prefill/M1/past0` | 0.9959, 1.0467, 0.9045 |
+| `prefill/M8/past0` | 1.0317, 1.0275, 1.0239 |
+| `decode/M1/past16` | 1.0312, 1.0376, 1.0380 |
+
+**Band: [0.9045, 1.0467]**, n = 9, median 1.0312. It is the full observed span rather than a
+standard deviation: with three repeats per subject a parametric interval would be an assumption
+wearing a measurement's clothes.
+
+Two properties are load-bearing and both are enforced rather than promised:
+
+* **The calibration subjects are disjoint from the verdict subjects.** A band derived from the
+  verdict's own repeats cannot widen on the data that would contradict the verdict, which makes it
+  a restatement of the verdict rather than a check on it.
+* **Disjoint by input, not merely by label.** The first sweep taken for this section used
+  `decode/M1/past0` alongside `prefill/M1/past0`. Those are different names for byte-identical
+  feeds, and the band was quietly counting one measurement twice. The gate now compares the
+  recorded `feeds_digest` of every subject and convicts on a collision; that is what caught it, on
+  the real artifact, before this section was written. The shipped set uses `decode/M1/past16` and
+  all seven subjects hash distinctly.
+
+### 27.3 The result
+
+Ratios are **pre-#72 median ÷ head median**, so above 1 means the current head is faster. A subject
+earns `IMPROVEMENT` only when **every** repeat's ratio clears the band's upper edge, and
+`REGRESSION` only when every repeat falls below its lower edge — the same clause reciprocated, so
+the classifier cannot be generous in one direction and strict in the other.
+
+| subject | head (ms) | pre-#72 (ms) | per-repeat ratios | point estimate | floor | verdict |
+|---|---|---|---|---|---|---|
+| `prefill/M32/past0` | 347.5 | 460.6 | 1.3517, 1.3214, 1.3240 | **1.324x** | 1.321x | `IMPROVEMENT` |
+| `prefill/M64/past0` | 691.0 | 1099.4 | 1.5729, 1.5969, 1.6020 | **1.597x** | 1.573x | `IMPROVEMENT` |
+| `prefill/M128/past0` | 1427.8 | 3001.9 | 2.1204, 2.1005, 2.1028 | **2.103x** | 2.100x | `IMPROVEMENT` |
+| `decode/M1/past128` | 88.9 | 88.8 | 0.9027, 1.1386, 0.9993 | 0.999x | 0.903x | `INDETERMINATE` |
+
+What may be said, and nothing beyond it: **on this model, on this box, prefill at M = 128 is about
+2.1× the pre-#72 baseline, and the effect grows with `M`** — 1.32× at 32, 1.60× at 64, 2.10× at
+128 — which is the shape expected of a change to how much work each GQA workgroup does per pass.
+The prefill floors (1.321x, 1.573x, 2.100x) are the conservative statements: the *worst* repeat of
+each subject, not its best.
+
+An earlier sweep the same morning, discarded for the calibration defect in §27.2 and therefore not
+committed (an inadmissible artifact does not get to sit in the tree), read 1.310x / 1.593x /
+2.122x / 1.005x on the same four subjects. It is mentioned because it is a second independent pass
+and it agrees; it is not quoted as evidence, because it did not pass the gate.
+
+### 27.4 Decode is not a result, and two prior observations say so with it
+
+Three observations of decode at `past = 128` exist and they do not agree:
+
+| observation | point estimate | interval | power | raw samples held here |
+|---|---|---|---|---|
+| independent, prior | 0.859x | — | — | no |
+| independent, prior | 0.9651x | 95% CI [0.820, 1.136] | 0.346 | no |
+| this branch | 0.999x | observed span [0.903, 1.139] | — | yes |
+
+**Neither prior observation supersedes the other, and this branch's does not supersede either.**
+The 0.9651x reading's interval spans 1 at a power of 0.346 — a measurement with a two-thirds
+chance of missing a real effect cannot overturn anything, including itself — and the 0.859x
+reading carries no interval at all, so there is nothing to test it against. This branch's own
+three repeats straddle the calibration band in both directions.
+
+**The strongest conclusion decode supports is `INCONCLUSIVE`.** Nothing in this repository may
+read decode as a win, and the gate enforces that as three separate refusals: dropping either prior
+observation, stripping the interval and power off the one that has them, and declaring any of them
+superseded by another are all convictions (`ci/negative_control_phi_evidence.py`). A later,
+friendlier third observation is explicitly not allowed to stand in for a deleted one, which is why
+the gate names the two values rather than counting to two.
+
+### 27.5 All 65 outputs, and a witness that the EP actually ran
+
+**Every output tensor is compared, not output 0.** Phi-3.5 emits logits plus 32 × 2 `present.*` KV
+blocks. A gate that reads the logits alone is blind to exactly the tensors a decode question is
+about. For each of the four verdict subjects, both Vulkan arms are compared against a CPU-EP
+reference over all 65 outputs — 8 independent comparisons plus 4 reference self-checks
+(`self: true`, recorded so the table has no hole, and not evidence) — under this repository's
+existing budgets:
+
+* logits: argmax equal, top-10 identical, `max_abs` ≤ 5% of the reference's own logit scale, max
+  softmax probability delta ≤ 0.02, reference not all-zero;
+* each `present.*` block: no element above 8× the floor (16 fp16 ULP of the reference's own scale
+  + 0.05·|ref|), at most 1e-4 of elements above the floor at all.
+
+All 520 per-output verdicts are `MATCH`.
+
+**Production-path witness.** Equivalence on its own does not prove the EP ran — a silent fallback
+to CPU produces perfect agreement. Each case therefore carries ONNX Runtime's **own** profile,
+written by the runtime rather than by the EP under test, attributing executed nodes to providers:
+2 fused node executions on `VulkanExecutionProvider` against 16 on `CPUExecutionProvider`.
+"Requested the provider and it executed nothing" is a distinct, named conviction.
+
+**Runtime enforcement of the proof ledger.** Every equivalence run also sets
+`ONNXRUNTIME_EP_VULKAN_CLAIM_LOG`, so the compiled artifact records its own §8.9 claim decisions
+during the very run being measured: **363 decisions, 355 claimed across 7 op forms and 8 distinct
+proof keys, 355 of them backed by a ledger entry and 0 without**; declines were 4 `dtype`, 3
+`not-registered`, 1 `unproven`. The ledger itself is `evidence/proof_ledger.jsonl`, sha256
+`e5540e90370092c4…d711c0c`, 133 entries, all `MATCH`, self-declared count agreeing. This is in the
+artifact rather than beside it because a claimed node with no ledger entry behind it would mean the
+timings above ran through an unproven kernel — and `bench/test_phi_evidence.py` re-hashes the
+ledger in the tree against the digest the artifact recorded, so the two cannot drift apart quietly.
+
+### 27.6 What this does *not* say
+
+* **No CUDA comparison exists.** None was taken, none is implied, and issue #69 — which asks this
+  EP to compete with ORT's CUDA execution provider — **remains open**. The artifact carries
+  `claim_limits.cuda_comparison: "NONE"` and `closes_issue_69: false`, and the gate refuses any
+  other value.
+* **One model, one box, one driver.** `headline.generalises` is `false`. Nothing here is a
+  statement about models with different attention shapes, about other adapters, or about lavapipe
+  lanes.
+* **No claim of an idle machine.** See the isolation paragraph in §27.1.
+* **Offline within-arm dispersion is diagnostic only.** It is recorded per subject (RSD 0.0092 /
+  0.0121 / 0.0082 / 0.0569) because an arm that wandered is a run worth re-taking, but it may not
+  move a verdict: a tight arm and a true arm are different properties, and dispersion cannot tell
+  them apart. The gate convicts if a verdict is rebased onto it.
+* **The gate cannot tell you the measurement was right.** It reads what was recorded. If the
+  harness mismeasured, every field is consistent and wrong together. What it prevents is a
+  recorded measurement being *published as something other than what it recorded*.
+
+### 27.7 The artifact, the gate, and how to falsify all of it
+
+The evidence is frozen and digest-sealed at `bench/results/phi35_evidence_v4.json`, content sha256
+`d5a2214b78508e198ff5a2cfc9a59f4c9f6fe2e410f6d734b7fe301e3d34bc34`. It preserves all 42 timed runs
+unaggregated in `raw.runs`, each with its own samples, session-build time, first-run time, feeds
+digest and provider report.
+
+| surface | what it is |
+|---|---|
+| `bench/phi_evidence.py` | the measurement harness **and** the single authoritative `evidence_gate()`. `load_frozen()` reads bytes and parses JSON — it validates nothing, deliberately; `verify_frozen_identity()` checks the seal and `evidence_gate()` decides admissibility |
+| `ci/check_phi_evidence.py` | the lane-facing wrapper. Host-free: no GPU, no ORT, no model |
+| `ci/negative_control_phi_evidence.py` | 29 arms — one planted defect per condition the gate claims it can report, plus live symmetry and dispersion controls. A condition with no arm is itself a failure |
+| `bench/test_phi_evidence.py` | behavioural two-polarity tests. They drive the functions and observe what they do; none of them asserts that a docstring contains a word |
+
+Reproduce (about ten minutes of GPU time, plus two release builds):
+
+```
+git worktree add ../pre72 c96e7d94ff706d26ee6a1bd9bb084c0ade426820
+cargo build --release --manifest-path ../pre72/rust/Cargo.toml
+cargo build --release --manifest-path rust/Cargo.toml
+python bench/phi_evidence.py --measure \
+  --head-lib     rust/target/release/onnxruntime_vulkan_ep.dll \
+  --baseline-lib ../pre72/rust/target/release/onnxruntime_vulkan_ep.dll \
+  --repeats 3 --iters 5 --warmup 2 \
+  --out bench/results/phi35_evidence_v4.json
+python ci/check_phi_evidence.py
+python ci/negative_control_phi_evidence.py
+```
+
+A re-run will not reproduce the digest — it is a seal over *this* measurement, not a claim that the
+measurement is deterministic — and it should not reproduce the milliseconds either. What it should
+reproduce is the **verdicts**, and if it does not, the measured truth is the one to publish.

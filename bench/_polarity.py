@@ -52,11 +52,34 @@ This says nothing about whether the *inputs* a test feeds the instrument actuall
 thing under test.  Neither does ``pytest.raises``.  That property is earned by the mutation
 battery, the same way ``tests/ops/test_guard_d.py`` earns it for the harness domain, and it
 is not claimed here.
+
+A THIRD SHAPE: THE VERDICT-RETURNING INSTRUMENT
+==============================================
+2026-08-09 (Niobe, issue #69).  ``refuses``/``selects`` model a total instrument whose
+refusal is ``(None, why)``.  A *gate* has a third shape: it returns
+``{"verdict": FAIL, "condition": ..., "detail": ...}``, because under R13 a detection is a
+verdict and only a failure to observe is an exception.  ``bench/phi_evidence.py`` is built
+that way on purpose — ``evidence_gate`` never raises about content — and the consequence for
+this screen was that the most heavily attacked instrument in the tree scored
+``reject_polarity=0``: nothing it does looks like ``pytest.raises``.
+
+``convicts`` closes that the same way ``refuses`` closed the first gap, and on the same
+terms: it *enforces*.  It raises ``PolarityError`` unless the result really is a refusing
+verdict, and unless the condition token matches the one the caller named.  A gate mutated to
+wave everything through cannot pass through it, which is what makes crediting it a polarity
+this screen observed rather than one it was told about.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+#: Verdict tokens that mean "this instrument declined to certify".  ``INDETERMINATE`` is here
+#: for the same reason ``FAIL`` is: a classifier that can only ever say IMPROVEMENT has no
+#: reject polarity, and the way that defect looks from outside is a run where everything won.
+REFUSAL_VERDICTS = frozenset(
+    {"FAIL", "ERROR", "INDETERMINATE", "INCONCLUSIVE", "DIVERGENT", "UNMEASURED", "REGRESSION"}
+)
 
 
 class PolarityError(AssertionError):
@@ -122,3 +145,35 @@ def selects(result: Any, expected: Any, *, because: str = "") -> Any:
             f"the instrument identified a device{ctx} but gave no reason ({why!r})."
         )
     return value
+
+
+def convicts(result: Any, *, condition: str | None = None, because: str = "") -> str:
+    """Assert a verdict-returning instrument DECLINED, and return the condition it named.
+
+    The reject polarity for a gate.  ``result`` must be a mapping carrying a ``verdict`` in
+    :data:`REFUSAL_VERDICTS`; when ``condition`` is given it must match exactly, so a gate that
+    convicts on the wrong grounds is a red rather than a pass.  That last clause is the whole
+    point: a gate with one over-eager clause fails everything, and a test that only checked
+    "it said FAIL" would call that health.
+    """
+    ctx = f" ({because})" if because else ""
+    if not isinstance(result, dict):
+        raise PolarityError(
+            f"convicts{ctx}: a verdict-returning instrument must return a mapping with a "
+            f"`verdict` key; got {type(result).__name__} {result!r}."
+        )
+    verdict = result.get("verdict")
+    if verdict not in REFUSAL_VERDICTS:
+        raise PolarityError(
+            f"expected a REFUSING verdict{ctx}, but the instrument returned {verdict!r} and "
+            f"said: {result.get('detail') or result.get('reason')!r}. This is the polarity that "
+            f"catches an instrument which certifies everything."
+        )
+    got = result.get("condition")
+    if condition is not None and got != condition:
+        raise PolarityError(
+            f"the instrument refused{ctx} on the WRONG grounds: condition={got!r}, expected "
+            f"{condition!r}. A gate that convicts on any mutation, including one it was not "
+            f"built to see, has not been shown to read the thing it names."
+        )
+    return got if isinstance(got, str) else str(verdict)

@@ -9171,3 +9171,164 @@ def test_weakening_full_window_evaluation_turns_the_closure_arm_green(
         f"distinguishing window semantics from head semantics:\n{out}"
     )
     assert "PASS: every completed applicable run" in out, out
+# ---------------------------------------------------------------------------
+# check_phi_evidence.py — the Phi-3.5 frozen-evidence gate, from the lane's side
+#
+# The gate itself is bench/phi_evidence.py::evidence_gate and it is attacked once per
+# condition by ci/negative_control_phi_evidence.py. What THESE tests add is the thing a
+# unit test of the gate cannot show: that the LANE STEP translates the gate's verdicts
+# into the three terminal states R13 requires, and that a lane green really means the
+# committed artifact was ruled on rather than absent, unreadable or silently skipped.
+# ---------------------------------------------------------------------------
+
+
+def _phi_artifact() -> dict:
+    import json as _json
+
+    path = REPO_ROOT / "bench" / "results" / "phi35_evidence_v4.json"
+    return _json.loads(path.read_text(encoding="utf-8"))
+
+
+def _reseal_phi(record: dict) -> dict:
+    """Re-stamp the content digest so a mutation is convicted on its MERITS, not its hash."""
+    import hashlib as _hashlib
+    import json as _json
+
+    shallow = dict(record)
+    identity = dict(shallow.get("identity") or {})
+    identity.pop("content_sha256", None)
+    shallow["identity"] = identity
+    payload = _json.dumps(shallow, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False).encode("utf-8")
+    record.setdefault("identity", {})["content_sha256"] = _hashlib.sha256(payload).hexdigest()
+    return record
+
+
+def test_phi_evidence_gate_passes_on_the_committed_artifact():
+    """The positive pole. Without it the negatives below prove only that it always fails."""
+    r = run_check("check_phi_evidence.py")
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+    assert "PHI-EVIDENCE: PASS" in r.stdout
+    # A PASS that names nothing is indistinguishable from a PASS that ruled on nothing.
+    assert "content_sha256=" in r.stdout
+    assert "INCONCLUSIVE" in r.stdout, (
+        "the lane's own output no longer carries the decode conclusion; a reader of the log "
+        "could take the prefill result as a general win, which is the claim this gate refuses"
+    )
+    assert "closes_issue_69=False" in r.stdout
+
+
+def test_phi_evidence_gate_fails_on_a_hardware_reading_filed_as_lavapipe(tmp_path):
+    """The negative pole, and the exact defect that rejected the previous revision.
+
+    A discrete NVIDIA adapter relabelled as a software rasteriser is not a small mistake: it
+    turns a hardware measurement into a claim about a CPU implementation of Vulkan, which is a
+    different subject entirely.
+    """
+    record = _phi_artifact()
+    record["environment"]["device"]["driver_name"] = "llvmpipe (LLVM 17.0.6, 256 bits)"
+    p = write(tmp_path, "mislabelled.json", _reseal_phi(record))
+    r = run_check("check_phi_evidence.py", "--artifact", str(p))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    assert "FAIL(condition=vulkan_implementation_mislabelled)" in r.stdout
+
+
+def test_phi_evidence_gate_fails_when_a_named_decode_observation_is_dropped(tmp_path):
+    """Both independent decode observations must survive, and neither may supersede the other.
+
+    This is the arm that found a real hole: "at least two observations" was satisfied by the
+    branch's own third, fresher observation standing in for a deleted one, which is how a
+    disagreement quietly becomes a consensus.
+    """
+    record = _phi_artifact()
+    record["decode_observations"] = [
+        o for o in record["decode_observations"]
+        if "0.859" not in json.dumps(o)
+    ]
+    p = write(tmp_path, "dropped.json", _reseal_phi(record))
+    r = run_check("check_phi_evidence.py", "--artifact", str(p))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    assert "FAIL(condition=decode_observation_dropped)" in r.stdout
+
+
+def test_phi_evidence_gate_fails_when_a_verdict_is_not_the_classifiers_own_answer(tmp_path):
+    """The published conclusion must follow from the raw samples, every time it is read.
+
+    The gate re-derives each verdict from the artifact's per-repeat ratios rather than
+    believing the recorded token, so an artifact edited to say IMPROVEMENT where its own
+    numbers say INDETERMINATE is convicted by its own raw material.
+    """
+    record = _phi_artifact()
+    for v in record["verdicts"]:
+        if v["verdict"] != "IMPROVEMENT":
+            v["verdict"] = "IMPROVEMENT"
+            break
+    p = write(tmp_path, "relabelled.json", _reseal_phi(record))
+    r = run_check("check_phi_evidence.py", "--artifact", str(p))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    assert "FAIL(condition=verdict_disagrees_with_classifier)" in r.stdout
+
+
+def test_phi_evidence_gate_fails_on_an_edited_artifact_that_still_reads_well(tmp_path):
+    """Not re-sealed: the identity arm, which is the one an editor forgets."""
+    record = _phi_artifact()
+    record["headline"]["note"] = "edited after freezing, and every claim still reads well"
+    p = write(tmp_path, "edited.json", record)
+    r = run_check("check_phi_evidence.py", "--artifact", str(p))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    assert "FAIL(condition=identity_digest_mismatch)" in r.stdout
+
+
+def test_phi_evidence_missing_artifact_is_an_outage_not_a_clean_bill(tmp_path):
+    """R13's third state. An absent subject is ERROR(instrument), never PASS.
+
+    This is the distinction that keeps a deleted artifact from reading as a green lane: the
+    screen has nothing to rule on, and saying so is the honest answer.
+    """
+    r = run_check("check_phi_evidence.py", "--artifact", str(tmp_path / "nope.json"))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
+    assert "ERROR(instrument=artifact_absent)" in r.stdout
+
+
+def test_phi_evidence_unparseable_artifact_is_a_separate_outage(tmp_path):
+    """Bytes that are not JSON are a different finding from bytes that are not there."""
+    p = write(tmp_path, "junk.json", "{ this is not json")
+    r = run_check("check_phi_evidence.py", "--artifact", str(p))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
+    assert "ERROR(instrument=artifact_unparseable)" in r.stdout
+
+
+def test_phi_evidence_negative_control_covers_every_condition_the_gate_declares():
+    """The mutation battery is itself in the lane, and it fails on an unattacked condition.
+
+    A gate grows conditions faster than anyone attacks them. The control walks
+    GATE_CONDITIONS and goes red on a token no arm aims at, so adding a rule and forgetting
+    to falsify it is not possible quietly.
+    """
+    r = run_check("negative_control_phi_evidence.py")
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+    assert "NEGATIVE-CONTROL: PASS" in r.stdout
+    assert "arms behaved as declared" in r.stdout
+    assert "OBSERVED" in r.stdout and "PLANTED" in r.stdout, (
+        "the control no longer distinguishes a defect it planted from one it found; that "
+        "ratio is the difference between 'this works on the shape it was written for' and "
+        "'this has caught something real'"
+    )
+
+
+def test_phi_evidence_claims_are_bounded_in_the_committed_artifact():
+    """The claim limits are data in the artifact, not a promise in a docstring.
+
+    Issue #69 is about beating ORT's CUDA EP. No compatible CUDA measurement exists, so the
+    artifact must say so in the fields the gate reads — and must not be able to say otherwise
+    while the gate is green.
+    """
+    record = _phi_artifact()
+    limits = record["claim_limits"]
+    assert limits["cuda_comparison"] == "NONE"
+    assert limits["closes_issue_69"] is False
+    assert limits["decode_conclusion"] == "INCONCLUSIVE"
+    assert len(record["decode_observations"]) >= 2
+    blob = json.dumps(record).lower()
+    for overclaim in ("beats cuda", "faster than cuda", "cuda parity", "closes #69"):
+        assert overclaim not in blob, f"the frozen artifact overclaims: {overclaim!r}"
