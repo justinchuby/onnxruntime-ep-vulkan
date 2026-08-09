@@ -23,16 +23,44 @@ an observation with a URL in it.
 
 WHAT IT DOES
 ============
-One `gh` call:
+It fills a window of N **applicable** runs and rules on that window's colour.
 
-    gh run list --branch main --limit N --json conclusion,status,headSha,displayTitle,url,workflowName
+    gh run list --branch main --limit <raw> --json conclusion,status,headSha,...,event,headBranch
 
-and it rules in R13 vocabulary:
+"Applicable" means a run that actually answers this question: workflow `CI` (the one
+badge.svg'd in README.md, `--workflow` overridable), `event == push` (`--events`
+overridable), `headBranch == <branch>`, and not a `skipped` completed run — a skipped run
+verified nothing about the tree, so counting it would let a workflow that never executed
+stand in for a reading of main's colour.
 
-  every completed run on main succeeded      -> PASS
-  any completed run on main failed/cancelled -> FAIL(condition=main_is_red), exit 1,
-                                                with the run URL and the head sha
-  gh absent / unauthenticated / offline      -> ERROR(instrument=github_unreachable), exit 4
+The raw `--limit` is NOT the window. It is escalated (50 -> 200 -> 500) until N applicable
+runs have been collected, because the naive top-N of *anything* can be — and on
+2026-08-08 was — fully evicted by high-volume issue automation (`Squad Triage`, `Squad
+Issue Assign`, `Squad Heartbeat (Ralph)`, all `event: issues`, none ever a BAD
+conclusion). At that moment this screen read ten bot runs, found no failure among them,
+and printed PASS while three unresolved CI reds sat just outside the window it looked at.
+A window that bot traffic can dilute is not an observation of main's colour; it is a coin
+flip on how much bot traffic landed between two reads. So: the window is over applicable
+runs, and an under-filled window is DECLINED, never truncated into a green.
+
+Every source — the live `gh` calls, `--from-json`, `--from-json-map` — is a page fetcher
+handed to ONE loop (`collect_applicable_window`). There is exactly one implementation of
+filter/escalate/decide in this file, so a test that drives any source drives the same
+decision code the production path runs. That is deliberate: the previous shape of this fix
+had three copies of that logic, and every test drove a copy that production did not use.
+
+It rules in R13 vocabulary:
+
+  every completed applicable run succeeded    -> PASS
+  any completed applicable run failed         -> FAIL(condition=main_is_red), exit 1,
+                                                 with the run URL and the head sha
+  fewer than N applicable runs in all history -> ERROR(instrument=insufficient_history), 4
+  escalation cap reached without N            -> ERROR(instrument=search_capped), 4
+  window has zero COMPLETED applicable runs   -> ERROR(instrument=no_completed_evidence), 4
+  a run record that is not an object, or a
+    payload that is not an array of them      -> ERROR(instrument=malformed_payload), 4
+  the whole-screen time budget ran out        -> ERROR(instrument=deadline_exhausted), 4
+  gh absent / unauthenticated / API error     -> ERROR(instrument=github_unreachable), 4
 
 WHAT IT DELIBERATELY DOES NOT DO
 ================================
@@ -44,7 +72,10 @@ that held for ten pushes while everybody believed the opposite.
 
 It does not gate on `in_progress` runs. A run that has not finished has not failed, and
 blocking on it would make the screen a wait rather than a reading. It reports them so the
-reader knows the answer is partial.
+reader knows the answer is partial. But a window in which *nothing* has completed carries
+no evidence at all, and that is ERROR(instrument=no_completed_evidence), not a PASS with a
+footnote: zero completed runs is a denominator of zero, and "no completed run failed" is
+true of a branch nobody has ever built.
 
 It does not read the *badge*. A badge is an image of the default workflow's latest
 conclusion on the default branch and it silently omits every other workflow. This asks
@@ -52,11 +83,19 @@ for the runs.
 
 COST
 ====
-One network round trip, typically under a second, requiring `gh` on PATH and an
-authenticated token with `repo` read. No build, no toolchain, no device. That is cheap
-enough that "I did not run it" cannot be a schedule argument — which matters, because the
-gate it replaces ("I remembered to look") costs nothing at all and was still skipped ten
-times running.
+Up to three network round trips, not one: the raw `--limit` escalates 50 -> 200 -> 500
+until the applicable window is full, so a repo with heavy non-CI automation pays two or
+three `gh run list` calls instead of one (on 2026-08-08 this branch needed two — a raw 50
+contained zero applicable runs, a raw 200 contained twenty-seven). The whole screen runs
+under a single end-to-end deadline (`--deadline-seconds`, default 90s) shared across every
+call, so the worst case is bounded by that one number rather than by 3x an independent
+per-call timeout — and it is set below the 120s `timeout` the `main_is_green` register
+entry declares, so a slow GitHub produces this screen's own
+ERROR(instrument=deadline_exhausted) rather than the register's opaque ERROR(timeout).
+Requires `gh` on PATH and an authenticated token with `repo` read. No build, no toolchain,
+no device. That is still cheap enough that "I did not run it" cannot be a schedule
+argument — which matters, because the gate it replaces ("I remembered to look") costs
+nothing at all and was still skipped ten times running.
 
 WIRING
 ======
@@ -75,6 +114,8 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+from typing import Callable, NamedTuple
 
 EXIT_PASS = 0
 EXIT_FAIL_CONDITION = 1
@@ -82,7 +123,50 @@ EXIT_USAGE = 2
 EXIT_ERROR_INSTRUMENT = 4
 
 BAD = {"failure", "timed_out", "cancelled", "startup_failure", "action_required"}
-FIELDS = "conclusion,status,headSha,displayTitle,url,workflowName,createdAt"
+SKIPPED = "skipped"
+FIELDS = (
+    "conclusion,status,headSha,displayTitle,url,workflowName,createdAt,event,"
+    "headBranch,databaseId"
+)
+
+# The instrument vocabulary. Every declined read names exactly one of these, and they are
+# deliberately distinct: "I could not reach GitHub", "GitHub answered with something that
+# is not a run list", "there is not enough history to fill the window", "I stopped looking
+# rather than paginate forever", "nothing in the window has finished", and "I ran out of
+# time" are six different states, and collapsing them would make the reason a reader gets
+# useless for deciding what to do next. None of them is a green.
+INSTRUMENT_UNREACHABLE = "github_unreachable"
+INSTRUMENT_MALFORMED = "malformed_payload"
+INSTRUMENT_INSUFFICIENT = "insufficient_history"
+INSTRUMENT_CAPPED = "search_capped"
+INSTRUMENT_NO_EVIDENCE = "no_completed_evidence"
+INSTRUMENT_DEADLINE = "deadline_exhausted"
+
+# The window this screen reads is defined over APPLICABLE runs, not the naive top-N of
+# whatever `gh run list` hands back. "Applicable" means: the workflow that actually
+# exercises the tree on a push to the target branch — by default the `CI` workflow
+# (`.github/workflows/ci.yml`, the one badge.svg'd in README.md) triggered by `event ==
+# push` on `headBranch == <branch>`. Every other workflow in this repo's
+# `.github/workflows/` is either issue/PR-bot automation (`Squad Triage`, `Squad Issue
+# Assign`, `Squad Heartbeat (Ralph)` — all `on: issues`, never a reading of the tree) or
+# opt-in (`conformance.yml`, `workflow_dispatch` only). None of those answer the question
+# this screen exists to answer, and a naive unfiltered window can be fully displaced by
+# them.
+DEFAULT_APPLICABLE_WORKFLOW = "CI"
+DEFAULT_APPLICABLE_EVENTS = frozenset({"push"})
+
+# When a page does not contain enough applicable runs, fetch progressively more raw
+# history rather than accept a truncated read. Capped, so a repo whose automation
+# out-runs its pushes by more than 50:1 makes this screen fail closed (ERROR, not a
+# silent green) instead of paginating forever.
+RAW_FETCH_STEPS = (50, 200, 500)
+
+# One end-to-end budget for the whole screen, shared by every `gh` call it makes. It is
+# NOT a per-call timeout: three independent 60s per-call timeouts would let a slow GitHub
+# push this screen to 180s, past the 120s `timeout` its own `main_is_green` register entry
+# declares, and the register would then report ERROR(timeout) — an outage of the harness
+# rather than this screen's own, much more informative, deadline_exhausted.
+DEFAULT_DEADLINE_SECONDS = 90.0
 
 KNOWN_LIMITS = {
     "github_unreachable_is_unobservable_not_green": (
@@ -92,9 +176,9 @@ KNOWN_LIMITS = {
         "depending on it is UNOBSERVABLE rather than clean. That is the honest answer and it "
         "is still a gap: the failure this screen exists to prevent is a reader proceeding "
         "without a colour, and offline is a state in which no colour exists to give them. It "
-        "is bounded (one API call, ~1s, `repo` read scope) and it cannot silently invert "
-        "into a green. See ci/open_reds.json known_limits "
-        "id=main_is_green_cannot_be_read_without_a_network."
+        "is bounded (up to three `gh run list` calls under one shared deadline, `repo` read "
+        "scope) and it cannot silently invert into a green. See ci/open_reds.json "
+        "known_limits id=main_is_green_cannot_be_read_without_a_network."
     ),
 }
 
@@ -127,41 +211,329 @@ def _annotate(level: str, title: str, message: str) -> None:
         print(f"::{level} title={title}::{one}")
 
 
-def fetch(branch: str, limit: int, source: str | None) -> tuple[list[dict] | None, str]:
-    """Return (runs, error). `runs is None` means the instrument did not reach GitHub."""
-    if source:
+class Deadline:
+    """One end-to-end time budget for the whole screen.
+
+    Every `gh` call this screen makes draws from the same budget rather than getting its
+    own independent timeout, so the worst-case wall time of the escalating search is the
+    budget itself and not the number of steps times a per-call limit. That is what makes
+    the register's declared `timeout` an upper bound this screen respects instead of a
+    number it can quietly exceed."""
+
+    def __init__(self, seconds: float, clock: Callable[[], float] = time.monotonic) -> None:
+        self.seconds = float(seconds)
+        self._clock = clock
+        self._start = clock()
+
+    def remaining(self) -> float:
+        return self.seconds - (self._clock() - self._start)
+
+    def expired(self) -> bool:
+        return self.remaining() <= 0.0
+
+    def spent(self) -> float:
+        return self._clock() - self._start
+
+
+class Page(NamedTuple):
+    """What a page fetcher hands back for one requested raw `limit`.
+
+    `instrument is None` means the fetch succeeded and `payload` is the *undissected*
+    thing the source produced — normally the array `gh ... --json` prints, but possibly a
+    JSON `null`, which is why success is signalled by the absent instrument and not by a
+    non-None payload. The payload is deliberately not validated here: validation,
+    filtering, escalation and the decision all live in `collect_applicable_window`, so
+    that no source can drift into having its own private idea of what a run list is."""
+
+    payload: object | None
+    error: str
+    instrument: str | None
+
+
+class LiveRunListFetcher:
+    """THE production source: `gh run list` against github.com.
+
+    This is the fetcher `check_main_is_green.py` uses when it is doing its actual job,
+    and the loop it is handed to is the same loop `--from-json`/`--from-json-map` drive.
+    A test that swaps a `gh` shim onto PATH exercises this class and everything after
+    it — which is the point: a seam nobody's production path crosses proves nothing
+    about production."""
+
+    kind = "live"
+
+    def __init__(self, branch: str, deadline: Deadline) -> None:
+        self.branch = branch
+        self.deadline = deadline
+        self.calls: list[int] = []
+
+    def describe(self, limit: int) -> str:
+        return f"`gh run list --branch {self.branch} --limit {limit}`"
+
+    def __call__(self, limit: int) -> Page:
+        self.calls.append(limit)
+        gh = shutil.which("gh")
+        if gh is None:
+            return Page(None, "`gh` is not on PATH, so the colour of the branch was not "
+                              "read", INSTRUMENT_UNREACHABLE)
+        budget = self.deadline.remaining()
+        if budget <= 0:
+            return Page(None, f"the {self.deadline.seconds:g}s budget for this screen was "
+                              f"spent before {self.describe(limit)} could be issued",
+                        INSTRUMENT_DEADLINE)
+        argv = ["gh", "run", "list", "--branch", self.branch, "--limit", str(limit),
+                "--json", FIELDS]
+        # Invoke the RESOLVED absolute path, not the bare name. On Windows CreateProcess
+        # only appends `.exe`, so a `gh` that is a `.bat`/`.cmd` wrapper — or a shim a
+        # test drops on PATH to drive this exact code path with no network — is found by
+        # shutil.which() above and then not started at all, turning a scripted GitHub
+        # into a spurious `gh could not be started`. Resolving keeps the guard and the
+        # call talking about the same binary.
+        argv[0] = gh
         try:
-            with open(source, encoding="utf-8") as fh:
+            proc = subprocess.run(
+                argv,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=budget,
+            )
+        except subprocess.TimeoutExpired:
+            return Page(None, f"{self.describe(limit)} did not answer inside the "
+                              f"{budget:.1f}s left of this screen's "
+                              f"{self.deadline.seconds:g}s budget", INSTRUMENT_DEADLINE)
+        except OSError as exc:
+            return Page(None, f"`gh run list` could not be started: {exc}",
+                        INSTRUMENT_UNREACHABLE)
+        if proc.returncode != 0:
+            return Page(None, f"{self.describe(limit)} exited {proc.returncode}: "
+                              f"{(proc.stderr or '').strip()[:400]}", INSTRUMENT_UNREACHABLE)
+        try:
+            return Page(json.loads(proc.stdout), "", None)
+        except json.JSONDecodeError as exc:
+            return Page(None, f"{self.describe(limit)} printed something that is not JSON: "
+                              f"{exc}", INSTRUMENT_MALFORMED)
+
+
+class FixedJsonFetcher:
+    """`--from-json`: one fixed page, the same for every requested limit.
+
+    A file is all the history there is, so when the loop asks for a bigger page and gets
+    the same (shorter-than-asked-for) list back, its ordinary `this page was not full`
+    rule concludes `history exhausted` without needing a rule of its own. That is why
+    this class carries no filter, no escalation and no verdict."""
+
+    kind = "from-json"
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.calls: list[int] = []
+
+    def describe(self, limit: int) -> str:
+        return f"--from-json {self.path}"
+
+    def __call__(self, limit: int) -> Page:
+        self.calls.append(limit)
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                return Page(json.load(fh), "", None)
+        except OSError as exc:
+            return Page(None, f"cannot read --from-json {self.path}: {exc}",
+                        INSTRUMENT_UNREACHABLE)
+        except json.JSONDecodeError as exc:
+            return Page(None, f"--from-json {self.path} is not JSON: {exc}",
+                        INSTRUMENT_MALFORMED)
+
+
+class JsonMapFetcher:
+    """`--from-json-map`: a JSON object keyed by the raw limit each page simulates.
+
+    Lets a test script the *sequence* of pages an escalating search would see without a
+    network. A key that is absent is an empty page, which the loop reads as `this source
+    has nothing more`, exactly as a short page from `gh` would be."""
+
+    kind = "from-json-map"
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.calls: list[int] = []
+
+    def describe(self, limit: int) -> str:
+        return f"--from-json-map {self.path} key {str(limit)!r}"
+
+    def __call__(self, limit: int) -> Page:
+        self.calls.append(limit)
+        try:
+            with open(self.path, encoding="utf-8") as fh:
                 doc = json.load(fh)
         except OSError as exc:
-            return None, f"cannot read --from-json {source}: {exc}"
+            return Page(None, f"cannot read --from-json-map {self.path}: {exc}",
+                        INSTRUMENT_UNREACHABLE)
         except json.JSONDecodeError as exc:
-            return None, f"--from-json {source} is not JSON: {exc}"
-        if not isinstance(doc, list):
-            return None, f"--from-json {source} must be the array `gh ... --json` prints"
-        return doc, ""
+            return Page(None, f"--from-json-map {self.path} is not JSON: {exc}",
+                        INSTRUMENT_MALFORMED)
+        if not isinstance(doc, dict):
+            return Page(None, f"--from-json-map {self.path} must be a JSON object keyed by "
+                              "the raw limit each page simulates", INSTRUMENT_MALFORMED)
+        return Page(doc.get(str(limit), []), "", None)
 
-    if shutil.which("gh") is None:
-        return None, "`gh` is not on PATH, so the colour of the branch was not read"
-    try:
-        proc = subprocess.run(
-            ["gh", "run", "list", "--branch", branch, "--limit", str(limit),
-             "--json", FIELDS],
-            capture_output=True, text=True, encoding="utf-8", timeout=60,
-        )
-    except subprocess.TimeoutExpired:
-        return None, "`gh run list` did not answer within 60s"
-    except OSError as exc:
-        return None, f"`gh run list` could not be started: {exc}"
-    if proc.returncode != 0:
-        return None, f"`gh run list` exited {proc.returncode}: {proc.stderr.strip()[:400]}"
-    try:
-        doc = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        return None, f"`gh run list --json` printed something that is not JSON: {exc}"
-    if not isinstance(doc, list):
-        return None, "`gh run list --json` did not print an array"
-    return doc, ""
+
+def _coerce_rows(payload: object, origin: str) -> tuple[list[dict] | None, str]:
+    """The one place a payload becomes a list of run records.
+
+    A `gh --json` payload is an array of objects. Anything else — a bare object, a
+    string, `null`, or an array with a non-object (or `null`) element in it — is a
+    payload this screen cannot read, and reading it anyway is how an AttributeError ends
+    up on stderr wearing exit 1, the same exit code a genuine red uses. That collision is
+    the whole reason this returns a named instrument instead of raising."""
+    if not isinstance(payload, list):
+        return None, (f"{origin} did not produce the array `gh ... --json` prints; it "
+                      f"produced {type(payload).__name__}")
+    for i, row in enumerate(payload):
+        if not isinstance(row, dict):
+            return None, (f"{origin} element {i} is {type(row).__name__}, not a run "
+                          "object; a list this screen cannot read is not a list of "
+                          "successful runs")
+    return list(payload), ""
+
+
+def _run_identity(run: dict) -> object | None:
+    """A stable identity for one run, or None when the record carries none.
+
+    Used to keep a duplicated record from filling two slots of the window: a window of
+    ten in which the same run appears twice is a window of nine, and if the duplicate is
+    green it has quietly diluted the sample the screen rules on."""
+    ident = run.get("databaseId")
+    if ident is not None:
+        return ("databaseId", ident)
+    url = run.get("url") or ""
+    if url:
+        return ("url", url)
+    return None
+
+
+def _is_applicable(run: dict, branch: str, workflow: str, events: frozenset[str]) -> bool:
+    """A run answers the question this screen asks only if it is a `workflow` run,
+    triggered by one of `events`, on `branch` itself, and actually ran. `skipped` is
+    excluded even though it is `status: completed`: a skipped run verified nothing about
+    the tree, so counting it toward the window would let a workflow that never executed
+    stand in for a reading of main's colour — the same substitution this screen exists to
+    refuse for an unread badge."""
+    if (run.get("workflowName") or "") != workflow:
+        return False
+    if (run.get("event") or "") not in events:
+        return False
+    if (run.get("headBranch") or "") != branch:
+        return False
+    if (run.get("status") or "") == "completed" and (run.get("conclusion") or "") == SKIPPED:
+        return False
+    return True
+
+
+class Window(NamedTuple):
+    """`runs is None` means the window could NOT be filled, and `instrument` names why.
+    A window that could not be filled is never a colour — that is the entire contract."""
+
+    runs: list[dict] | None
+    error: str
+    instrument: str | None
+    meta: dict
+
+
+def collect_applicable_window(
+    fetch_page: Callable[[int], Page],
+    *,
+    need: int,
+    branch: str,
+    workflow: str,
+    events: frozenset[str],
+    steps: tuple[int, ...] = RAW_FETCH_STEPS,
+    deadline: Deadline | None = None,
+) -> Window:
+    """THE loop. Filter, escalate, decide — once, for every source.
+
+    `fetch_page(limit) -> Page` is the only thing that differs between production (`gh`)
+    and the two file-driven sources, and none of them gets an opinion about applicability,
+    escalation, or when a partial read becomes an error. That is not tidiness: the
+    previous shape of this fix carried three copies of this logic, one per source, and
+    the shipped tests all drove copies that production never executed — so deleting the
+    filter from the live copy, or making the live copy return a truncated raw window at
+    the cap, left every test green while reintroducing the exact defect being fixed.
+
+    Returns a Window whose `runs` is the newest `need` applicable runs, or `None` with a
+    named instrument. It never returns fewer than `need` runs and never substitutes raw
+    (unfiltered) runs for missing applicable ones: a diluted window truncated back to ten
+    is the defect, not a fallback for it."""
+    meta: dict = {
+        "raw_scanned": 0, "steps_tried": 0, "steps": tuple(steps),
+        "applicable_found": 0, "duplicates_dropped": 0, "last_page_size": 0,
+    }
+    ladder = tuple(s for s in steps if s >= need) or (need,)
+    meta["steps"] = ladder
+
+    for step in ladder:
+        if deadline is not None and deadline.expired():
+            return Window(None, (
+                f"this screen's {deadline.seconds:g}s budget was spent after "
+                f"{meta['steps_tried']} page(s); the window was never filled"
+            ), INSTRUMENT_DEADLINE, meta)
+
+        page = fetch_page(step)
+        meta["steps_tried"] += 1
+        if page.instrument is not None:
+            return Window(None, page.error, page.instrument, meta)
+
+        rows, err = _coerce_rows(page.payload, _describe(fetch_page, step))
+        if rows is None:
+            return Window(None, err, INSTRUMENT_MALFORMED, meta)
+
+        meta["last_page_size"] = len(rows)
+        meta["raw_scanned"] = max(meta["raw_scanned"], len(rows))
+
+        applicable: list[dict] = []
+        seen: set[object] = set()
+        for run in rows:
+            if not _is_applicable(run, branch, workflow, events):
+                continue
+            ident = _run_identity(run)
+            if ident is not None:
+                if ident in seen:
+                    meta["duplicates_dropped"] += 1
+                    continue
+                seen.add(ident)
+            applicable.append(run)
+        meta["applicable_found"] = len(applicable)
+
+        if len(applicable) >= need:
+            return Window(applicable[:need], "", None, meta)
+
+        if len(rows) < step:
+            # The source returned fewer runs than asked for: that is every run there is,
+            # and a bigger raw limit cannot find more of them.
+            return Window(None, (
+                f"only {len(applicable)} applicable run(s) of {need} needed were found "
+                f"across all {len(rows)} run(s) that exist for `{branch}` (history "
+                "exhausted)"
+            ), INSTRUMENT_INSUFFICIENT, meta)
+
+    return Window(None, (
+        f"only {meta['applicable_found']} applicable run(s) of {need} needed were found "
+        f"after scanning the last {ladder[-1]} run(s) on `{branch}`; the search is capped "
+        "there rather than paginated indefinitely, and an under-filled window is declined "
+        "rather than truncated into a colour"
+    ), INSTRUMENT_CAPPED, meta)
+
+
+def _describe(fetch_page: object, limit: int) -> str:
+    describe = getattr(fetch_page, "describe", None)
+    return describe(limit) if callable(describe) else f"the run source (limit {limit})"
+
+
+def make_fetcher(args, deadline: Deadline):
+    """Pick the page fetcher. This is the ONLY place the three sources differ, and none of
+    them carries any of the decision logic they feed."""
+    if args.from_json_map:
+        return JsonMapFetcher(args.from_json_map)
+    if args.from_json:
+        return FixedJsonFetcher(args.from_json)
+    return LiveRunListFetcher(args.branch, deadline)
 
 
 def screen(argv: list[str] | None = None) -> int:
@@ -172,7 +544,43 @@ def screen(argv: list[str] | None = None) -> int:
         "--from-json",
         dest="from_json",
         help="read the run list from a file instead of calling gh; this is how the "
-             "two-polarity test drives both colours without a network.",
+             "two-polarity test drives both colours without a network. It is a FIXED "
+             "page — the same list for every raw limit the search asks for — so the "
+             "escalating loop reads it as `this is all the history there is`.",
+    )
+    ap.add_argument(
+        "--from-json-map",
+        dest="from_json_map",
+        help="read escalating raw pages from a JSON object keyed by the raw limit each "
+             "page simulates, instead of calling gh; this scripts the SEQUENCE of pages "
+             "an escalating search sees, with no network. It feeds the same loop the "
+             "live `gh` path feeds.",
+    )
+    ap.add_argument(
+        "--workflow",
+        default=DEFAULT_APPLICABLE_WORKFLOW,
+        help="the workflow name that answers this question (default: %(default)s, the "
+             "one badge.svg'd in README.md). Runs from any other workflow — including "
+             "issue automation like Squad Triage — are not applicable and are excluded "
+             "from the window no matter how recent they are.",
+    )
+    ap.add_argument(
+        "--events",
+        default=",".join(sorted(DEFAULT_APPLICABLE_EVENTS)),
+        help="comma-separated GitHub event names that answer this question (default: "
+             "%(default)s). A run triggered by `issues`, `schedule`, or "
+             "`workflow_dispatch` is not a reading of a push to the branch.",
+    )
+    ap.add_argument(
+        "--deadline-seconds",
+        dest="deadline_seconds",
+        type=float,
+        default=DEFAULT_DEADLINE_SECONDS,
+        help="one end-to-end budget for the whole screen, shared by every gh call it "
+             "makes (default: %(default)s). Deliberately below the timeout the "
+             "main_is_green register entry declares, so a slow GitHub yields this "
+             "screen's ERROR(instrument=deadline_exhausted) rather than the register's "
+             "ERROR(timeout).",
     )
     ap.add_argument(
         "--assert-known-limit",
@@ -194,26 +602,45 @@ def screen(argv: list[str] | None = None) -> int:
         print("MAIN-GREEN: ERROR(instrument=usage) --limit must be >= 1")
         return EXIT_USAGE
 
-    runs, err = fetch(args.branch, args.limit, args.from_json)
+    events = frozenset(e.strip() for e in args.events.split(",") if e.strip())
+    if not events:
+        print("MAIN-GREEN: ERROR(instrument=usage) --events must name at least one event")
+        return EXIT_USAGE
+
+    if args.deadline_seconds <= 0:
+        print("MAIN-GREEN: ERROR(instrument=usage) --deadline-seconds must be > 0")
+        return EXIT_USAGE
+
+    deadline = Deadline(args.deadline_seconds)
+    window = collect_applicable_window(
+        make_fetcher(args, deadline),
+        need=args.limit,
+        branch=args.branch,
+        workflow=args.workflow,
+        events=events,
+        deadline=deadline,
+    )
+    runs, err, meta = window.runs, window.error, window.meta
     if runs is None:
-        print("MAIN-GREEN: ERROR(instrument=github_unreachable)")
+        instrument = window.instrument or INSTRUMENT_UNREACHABLE
+        print(f"MAIN-GREEN: ERROR(instrument={instrument})")
         print(f"  {err}")
+        print(
+            f"  This screen's window is the last {args.limit} run(s) of workflow "
+            f"`{args.workflow}` triggered by event(s) {sorted(events)} on "
+            f"`{args.branch}` — not the last {args.limit} run(s) of any workflow or "
+            f"event. {meta['steps_tried']} raw page(s) were read (largest "
+            f"{meta['raw_scanned']} run(s)) and the window was not filled."
+        )
         print(
             f"  The colour of `{args.branch}` was NOT observed. This is UNOBSERVABLE, not "
             "green: a local gate run says nothing about the branch's CI, and the ten "
             "consecutive red pushes that made this screen necessary were all made by "
-            "someone holding a green local transcript."
+            "someone holding a green local transcript. An under-filled window is declined "
+            "for the same reason an unreachable GitHub is — a read that did not happen "
+            "must never render as a read that came back clean."
         )
         _annotate("error", "main colour unread", err)
-        return EXIT_ERROR_INSTRUMENT
-
-    if not runs:
-        print("MAIN-GREEN: ERROR(instrument=no_runs_listed)")
-        print(
-            f"  GitHub listed zero workflow runs for `{args.branch}`. A branch with no runs "
-            "has not been screened; that is not the same as a branch that passed."
-        )
-        _annotate("error", "main colour unread", f"no runs listed for {args.branch}")
         return EXIT_ERROR_INSTRUMENT
 
     completed = [r for r in runs if (r.get("status") or "") == "completed"]
@@ -221,11 +648,32 @@ def screen(argv: list[str] | None = None) -> int:
     red = [r for r in completed if (r.get("conclusion") or "") in BAD]
 
     head = runs[0]
-    print(f"MAIN-GREEN census of `{args.branch}`: {len(runs)} run(s) listed, "
+    print(f"MAIN-GREEN census of `{args.branch}` (applicable = workflow "
+          f"`{args.workflow}`, event(s) {sorted(events)}): {len(runs)} run(s) in window, "
           f"{len(completed)} completed, {len(pending)} still running, {len(red)} RED")
+    print(f"  window filled from {meta['steps_tried']} raw page(s), largest "
+          f"{meta['raw_scanned']} run(s)"
+          + (f", {meta['duplicates_dropped']} duplicate record(s) dropped"
+             if meta["duplicates_dropped"] else ""))
     print(f"  latest: {head.get('workflowName', '?')} — {head.get('conclusion') or head.get('status')}")
     print(f"          {head.get('headSha', '')[:12]}  {head.get('displayTitle', '')}")
     print(f"          {head.get('url', '')}")
+
+    if not completed:
+        print("")
+        print(f"MAIN-GREEN: ERROR(instrument={INSTRUMENT_NO_EVIDENCE})")
+        print(
+            f"  All {len(runs)} applicable run(s) in the window are still in flight; not "
+            "one of them has finished. `no completed run failed` is true of a branch that "
+            "has never been built, so a full window with an empty completed set carries no "
+            "evidence about the colour of "
+            f"`{args.branch}` and is declined rather than reported green."
+        )
+        _annotate(
+            "error", "main colour unread",
+            f"{len(runs)} applicable run(s), none completed",
+        )
+        return EXIT_ERROR_INSTRUMENT
 
     if red:
         print("")
@@ -263,7 +711,8 @@ def screen(argv: list[str] | None = None) -> int:
         )
 
     print("")
-    print(f"PASS: every completed run on `{args.branch}` in the last {len(runs)} succeeded.")
+    print(f"PASS: every completed applicable run on `{args.branch}` in the window of "
+          f"{len(runs)} succeeded.")
     if args.for_merge:
         print(f"MERGE REPORT SENTENCE: `{args.branch}` is GREEN at "
               f"{head.get('headSha', '')[:12]} — {head.get('url', '')}"
