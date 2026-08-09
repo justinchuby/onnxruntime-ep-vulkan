@@ -623,7 +623,7 @@ pub fn ew_select(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
 
 /// A variadic elementwise op lowered to a chain of binaries. `Sum`, `Max`, `Min`, `Mean`.
 ///
-/// `OP_COVERAGE.md` §5.5's compose-before-bespoke rule in its smallest form: N-ary reduction over
+/// `OP_COVERAGE.md` §5.6's compose-before-bespoke rule in its smallest form: N-ary reduction over
 /// the same template rather than an N-input shader. The cap keeps the dispatch chain bounded.
 ///
 /// **The enforced bound is what the lowering implements, not what it is designed for.**

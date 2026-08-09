@@ -374,25 +374,884 @@ impl Island {
     }
 }
 
-/// Ops heavy enough that a single one of them justifies an island.
+/// Ops heavy enough that, *when they carry a resident weight*, a single one of them justifies an
+/// island. See [`is_anchor`] for the node-level predicate; this is the family-level one.
 ///
-/// A lone `Add` is never worth a round-trip; a single `MatMul` on LLM-sized weights always is.
-/// The list is the §4 inventory's "L/XL, compute-bound" rows.
-pub fn is_anchor(qualified_op: &str) -> bool {
-    matches!(
-        qualified_op,
-        "MatMul"
-            | "Gemm"
-            | "Conv"
-            | "ConvTranspose"
-            | "Attention"
-            | "com.microsoft::MatMulNBits"
-            | "com.microsoft::GroupQueryAttention"
-            | "com.microsoft::MultiHeadAttention"
-            | "com.microsoft::Attention"
-            | "com.microsoft::QMoE"
-            | "com.microsoft::LinearAttention"
-    )
+/// A lone `Add` is never worth a round-trip; a single weight-bearing `MatMul` on LLM-sized
+/// weights always is. The list is the §4 inventory's "L/XL, compute-bound" rows.
+///
+/// **This list alone decides FLOP estimation at the `ep.rs` call site and must not be perturbed
+/// by anything below.** Tightening [`is_anchor`]'s admission rule (below) changes which nodes of
+/// these families count as anchors; it must never change which nodes this list recognises as
+/// heavy, because the FLOP estimate is keyed off family membership, not off weight presence, and
+/// the two are deliberately kept on separate predicates so that one cannot silently move the
+/// other's number.
+pub const HEAVY_OP_FAMILIES: &[&str] = &[
+    "MatMul",
+    "Gemm",
+    "Conv",
+    "ConvTranspose",
+    "Attention",
+    "com.microsoft::MatMulNBits",
+    "com.microsoft::GroupQueryAttention",
+    "com.microsoft::MultiHeadAttention",
+    "com.microsoft::Attention",
+    "com.microsoft::QMoE",
+    "com.microsoft::LinearAttention",
+];
+
+/// Whether `qualified_op` is one of [`HEAVY_OP_FAMILIES`] — the predicate FLOP estimation keys
+/// off, independent of weight presence. See the constant's doc comment for why this must stay
+/// separate from [`is_anchor`].
+pub fn is_heavy_op_family(qualified_op: &str) -> bool {
+    HEAVY_OP_FAMILIES.contains(&qualified_op)
+}
+
+/// Total, two-state answer to "does this node carry a resident (constant) weight operand?"
+///
+/// Two states only, by construction — there is no third variant to add, and every classifier in
+/// this module that produces one is written so it cannot fail to produce either `Present` or
+/// `Absent`. That totality is what makes a schema gap, a null slot, an out-of-range index, or an
+/// ORT status error indistinguishable in their effect from a genuinely-absent weight: all of them
+/// fail closed to `Absent`, because there is no fourth state for them to fail into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeightOperand {
+    /// At least one of the op's schema-designated weight sites holds a constant initializer.
+    Present,
+    /// None of the op's schema-designated weight sites holds a constant initializer — including
+    /// the case where the op designates no weight site at all (e.g. `GroupQueryAttention`).
+    Absent,
+}
+
+/// Why one input of one op family is, or is not, a resident constant weight site.
+///
+/// This is the *reason*, catalogued once per input in [`WEIGHT_SITE_AUDIT`] against the pinned
+/// upstream schema — not a live classification of any particular node. [`designates_weight`]
+/// says which reasons make an input a candidate weight site; [`weight_sites`] is the derived
+/// index list an actual node is checked against.
+///
+/// [`designates_weight`]: WeightSiteReason::designates_weight
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeightSiteReason {
+    /// The resident constant weight block this op's own arithmetic is proportional to.
+    Weight,
+    /// A per-block or per-channel scale that reconstructs a quantized weight above — sized with
+    /// the weight it scales, not with the model's runtime state.
+    WeightScale,
+    /// A per-block or per-channel zero-point that reconstructs a quantized weight above.
+    WeightZeroPoint,
+    /// The weight operand at a named positional index (e.g. `MatMul`/`Gemm`/`Conv`'s second
+    /// input) that the ONNX schema declares with **no extents at all** — so it cannot be told
+    /// apart from an activation by shape, only by position and by the op's own convention. This
+    /// is the "named positional exception" the audit trusts instead of a shape test.
+    Positional,
+    /// A runtime activation tensor: the data the op computes over, not a resident parameter.
+    Activation,
+    /// An additive bias or projection term present in the schema that is not the site the op's
+    /// arithmetic is proportional to (materially smaller than the weight beside it).
+    Bias,
+    /// An attention mask or other boolean/selection tensor supplied fresh per inference.
+    Mask,
+    /// A runtime sequence-length scalar or vector.
+    Length,
+    /// A KV cache or recurrent-state tensor: mutated every step, not a resident weight.
+    Cache,
+    /// A scale that (de)quantizes a runtime KV-cache entry — not a resident weight.
+    CacheScale,
+    /// A precomputed position-indexed table (e.g. RoPE `cos_cache`/`sin_cache`), sized by
+    /// runtime sequence length rather than by model capacity, and excluded from the designated
+    /// set on that basis even where it is held constant across a run.
+    PositionalTable,
+    /// A runtime index/id tensor (e.g. `position_ids`).
+    RuntimeIndex,
+    /// An MoE routing tensor — router probabilities in, or output-aggregation weights out — that
+    /// this fused op consumes at runtime. The router's own trained weight is a separate `MatMul`
+    /// upstream of this op and is audited there, not here.
+    Routing,
+    /// A single per-head or per-tensor scalar correction that does not scale with the op's own
+    /// FLOPs (e.g. `GroupQueryAttention`'s `head_sink`: one float per head, not a weight block).
+    /// The pinned schema documents this as a runtime-supplied smoothing term; it does not state,
+    /// and this audit does not claim, anything about whether that value was itself learned.
+    PerChannelScalar,
+    /// A normalization gain vector (RMSNorm/LayerNorm-style) fused into the op's own inputs.
+    /// Literally named "weight" upstream, and excluded here on a stated, checkable basis: its
+    /// size is O(head_size), not O(hidden_size²), so it is not the parameter block the op's own
+    /// matmul/attention arithmetic is proportional to — the same size argument that excludes
+    /// `Bias` above, applied to a gain instead of an offset.
+    NormGain,
+    /// A per-expert dequantization correction applied to the *whole* reconstructed weight tensor
+    /// (one scalar per expert). Excluded from `WeightScale` because it does not scale with the
+    /// weight tensor's own size the way a per-block scale does — it is a single trailing
+    /// correction, not a reconstruction table.
+    GlobalScale,
+    /// A scale that (de)quantizes the op's own runtime *activation* input — not its weight.
+    ActivationScale,
+    /// A block-scale tensor (MXFP-style) for a runtime activation input — not its weight. This
+    /// is the reason MANDATORY fix #1 requires: QMoE's `fc1_act_block_scale` /
+    /// `fc2_act_block_scale` are real schema inputs that must be catalogued and are not resident
+    /// weight sites.
+    ActivationBlockScale,
+    /// An input the schema itself marks deprecated / retained only for compatibility.
+    Deprecated,
+}
+
+impl WeightSiteReason {
+    /// Whether this reason makes the input a candidate resident weight site.
+    ///
+    /// This is a property of the *reason*, catalogued once here — [`weight_sites`] is the
+    /// derived per-family index list, and a test asserts the two agree. That agreement proves
+    /// the two tables were not typo'd apart from each other; it does **not** prove either table
+    /// is a complete or correct reading of the upstream schema — only independent per-family
+    /// input-count pins ([`EXPECTED_INPUT_COUNTS`]) checked against a source citation
+    /// ([`SCHEMA_SOURCES`]) can catch a row silently missing from both at once.
+    pub const fn designates_weight(self) -> bool {
+        matches!(
+            self,
+            WeightSiteReason::Weight
+                | WeightSiteReason::WeightScale
+                | WeightSiteReason::WeightZeroPoint
+                | WeightSiteReason::Positional
+        )
+    }
+}
+
+/// One row of the weight-site audit: one input, of one op family, read against the pinned
+/// upstream schema and assigned a reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchemaInput {
+    /// The qualified op name, matching [`HEAVY_OP_FAMILIES`].
+    pub family: &'static str,
+    /// The input's positional index in the upstream schema.
+    pub index: usize,
+    /// The input's schema name (for cross-reference against the pinned source, not matched at
+    /// runtime — ORT graphs carry positional inputs, not named ones).
+    pub name: &'static str,
+    /// Why this input is, or is not, a resident weight site.
+    pub reason: WeightSiteReason,
+}
+
+/// Where each family's schema was read, pinned to an exact commit so a citation cannot silently
+/// start pointing at a different upstream revision.
+///
+/// `(family, repo-relative file, line range as audited, pinned commit)`. The commit is
+/// `onnx/onnxruntime@da9b5e364c465de65c49d91e696cd6485270757f` (tagged `v1.28.0`) for every
+/// `com.microsoft::*` row; the four bare ai.onnx families and `Attention` are read from the
+/// `onnx` 1.22.0 package's own schema registry (`onnx.defs.get_schema`), which is that project's
+/// own source of truth for these opsets — there is no vendored `.cc` file for core ONNX ops in
+/// this repository to cite a line range in.
+pub const SCHEMA_SOURCES: &[(&str, &str, &str, &str)] = &[
+    (
+        "MatMul",
+        "onnx package (defs.get_schema); no vendored source",
+        "n/a — read via installed `onnx==1.22.0`",
+        "ai.onnx opset 13",
+    ),
+    (
+        "Gemm",
+        "onnx package (defs.get_schema); no vendored source",
+        "n/a — read via installed `onnx==1.22.0`",
+        "ai.onnx opset 13",
+    ),
+    (
+        "Conv",
+        "onnx package (defs.get_schema); no vendored source",
+        "n/a — read via installed `onnx==1.22.0`",
+        "ai.onnx opset 22",
+    ),
+    (
+        "ConvTranspose",
+        "onnx package (defs.get_schema); no vendored source",
+        "n/a — read via installed `onnx==1.22.0`",
+        "ai.onnx opset 22",
+    ),
+    (
+        "Attention",
+        "onnx package (defs.get_schema); no vendored source",
+        "n/a — read via installed `onnx==1.22.0`",
+        "ai.onnx opset 24",
+    ),
+    (
+        "com.microsoft::Attention",
+        "onnxruntime/core/graph/contrib_ops/bert_defs.cc",
+        "491-583",
+        "da9b5e364c465de65c49d91e696cd6485270757f (v1.28.0)",
+    ),
+    (
+        "com.microsoft::MultiHeadAttention",
+        "onnxruntime/core/graph/contrib_ops/bert_defs.cc",
+        "1096-1191",
+        "da9b5e364c465de65c49d91e696cd6485270757f (v1.28.0)",
+    ),
+    (
+        "com.microsoft::GroupQueryAttention",
+        "onnxruntime/core/graph/contrib_ops/bert_defs.cc",
+        "1216-1369",
+        "da9b5e364c465de65c49d91e696cd6485270757f (v1.28.0)",
+    ),
+    (
+        "com.microsoft::LinearAttention",
+        "onnxruntime/core/graph/contrib_ops/bert_defs.cc",
+        "2373-2506",
+        "da9b5e364c465de65c49d91e696cd6485270757f (v1.28.0)",
+    ),
+    (
+        "com.microsoft::MatMulNBits",
+        "onnxruntime/core/graph/contrib_ops/contrib_defs.cc",
+        "3648-3707",
+        "da9b5e364c465de65c49d91e696cd6485270757f (v1.28.0)",
+    ),
+    (
+        "com.microsoft::QMoE",
+        "onnxruntime/core/graph/contrib_ops/contrib_defs.cc",
+        "1470-1663",
+        "da9b5e364c465de65c49d91e696cd6485270757f (v1.28.0)",
+    ),
+];
+
+/// Independently pinned expected input arity per family, read off the same schemas as
+/// [`SCHEMA_SOURCES`] and [`WEIGHT_SITE_AUDIT`] but **not derived from either of them.**
+///
+/// This is MANDATORY fix #3's actual mechanism. Checking that [`WEIGHT_SITE_AUDIT`]'s indices
+/// for a family run `0..N` contiguously (pseudo-completeness "from zero") cannot detect a row
+/// deleted from the *end* of the table, because the remaining rows are still contiguous from
+/// zero — they just stop one short. A count that comes from the same table it is supposed to be
+/// checking cannot fail when that table is truncated. This table is transcribed separately, by
+/// hand, from the pinned source, specifically so that deleting `WEIGHT_SITE_AUDIT`'s last QMoE
+/// row (input 20) leaves this constant unchanged at 21 while the audit's own row count for QMoE
+/// drops to 20 — a mismatch a test asserts must not occur.
+pub const EXPECTED_INPUT_COUNTS: &[(&str, usize)] = &[
+    ("MatMul", 2),
+    ("Gemm", 3),
+    ("Conv", 3),
+    ("ConvTranspose", 3),
+    ("Attention", 7),
+    ("com.microsoft::Attention", 7),
+    ("com.microsoft::MultiHeadAttention", 10),
+    ("com.microsoft::GroupQueryAttention", 16),
+    ("com.microsoft::LinearAttention", 6),
+    ("com.microsoft::MatMulNBits", 6),
+    ("com.microsoft::QMoE", 21),
+];
+
+/// The weight-site audit: one row per input, per heavy-op-family, read against the pinned
+/// upstream schema (see [`SCHEMA_SOURCES`]) and assigned a [`WeightSiteReason`].
+///
+/// # What is automated here, and what is not — MANDATORY fix #4, stated so it cannot be misread
+///
+/// **Automated:** every row below is checked by CI for internal consistency — that its indices
+/// per family are unique, cover `0..EXPECTED_INPUT_COUNTS[family]` with no gap, and that
+/// [`weight_sites`] (the shipped per-family index list `is_anchor` actually consults) is exactly
+/// the subset of these rows whose reason [`designates_weight`](WeightSiteReason::designates_weight).
+/// `cargo test` fails if any of that drifts.
+///
+/// **Not automated, and not claimed to be:** whether a given `reason` is the *semantically
+/// correct* reading of what the pinned schema's prose says about that input, and whether this
+/// table is a *complete* transcription of the upstream `.cc` file, are both established by
+/// manual, disclosed transcription against the exact commit and line range in [`SCHEMA_SOURCES`]
+/// — the same way a person reads a diff. No tool in this repository fetches ONNX Runtime source
+/// over the network or parses its C++ at build or test time; there is no CI job that would
+/// notice if the *next* pinned commit added input 21 to `QMoE`. Table-against-table equality
+/// (the automated part above) proves the shipped list and this audit were not typo'd apart from
+/// each other; it does not and cannot prove either one is a correct or complete reading of
+/// upstream — only a human re-reading the cited lines can do that, which is why the exact commit
+/// and line range are recorded next to every family instead of only in a commit message.
+pub const WEIGHT_SITE_AUDIT: &[SchemaInput] = &[
+    // -- MatMul (ai.onnx, opset 13): A, B. B is the sole weight, by named positional exception. --
+    SchemaInput {
+        family: "MatMul",
+        index: 0,
+        name: "A",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "MatMul",
+        index: 1,
+        name: "B",
+        reason: WeightSiteReason::Positional,
+    },
+    // -- Gemm (ai.onnx, opset 13): A, B, C. C is an optional bias, not the weight. --
+    SchemaInput {
+        family: "Gemm",
+        index: 0,
+        name: "A",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "Gemm",
+        index: 1,
+        name: "B",
+        reason: WeightSiteReason::Positional,
+    },
+    SchemaInput {
+        family: "Gemm",
+        index: 2,
+        name: "C",
+        reason: WeightSiteReason::Bias,
+    },
+    // -- Conv (ai.onnx, opset 22): X, W, B. --
+    SchemaInput {
+        family: "Conv",
+        index: 0,
+        name: "X",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "Conv",
+        index: 1,
+        name: "W",
+        reason: WeightSiteReason::Positional,
+    },
+    SchemaInput {
+        family: "Conv",
+        index: 2,
+        name: "B",
+        reason: WeightSiteReason::Bias,
+    },
+    // -- ConvTranspose (ai.onnx, opset 22): X, W, B. --
+    SchemaInput {
+        family: "ConvTranspose",
+        index: 0,
+        name: "X",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "ConvTranspose",
+        index: 1,
+        name: "W",
+        reason: WeightSiteReason::Positional,
+    },
+    SchemaInput {
+        family: "ConvTranspose",
+        index: 2,
+        name: "B",
+        reason: WeightSiteReason::Bias,
+    },
+    // -- Attention (ai.onnx, opset 24): Q, K, V are already-projected activations; no weight. --
+    SchemaInput {
+        family: "Attention",
+        index: 0,
+        name: "Q",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "Attention",
+        index: 1,
+        name: "K",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "Attention",
+        index: 2,
+        name: "V",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "Attention",
+        index: 3,
+        name: "attn_mask",
+        reason: WeightSiteReason::Mask,
+    },
+    SchemaInput {
+        family: "Attention",
+        index: 4,
+        name: "past_key",
+        reason: WeightSiteReason::Cache,
+    },
+    SchemaInput {
+        family: "Attention",
+        index: 5,
+        name: "past_value",
+        reason: WeightSiteReason::Cache,
+    },
+    SchemaInput {
+        family: "Attention",
+        index: 6,
+        name: "nonpad_kv_seqlen",
+        reason: WeightSiteReason::Length,
+    },
+    // -- com.microsoft::Attention (bert_defs.cc:491-583): weights is the merged QKV weight. --
+    SchemaInput {
+        family: "com.microsoft::Attention",
+        index: 0,
+        name: "input",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::Attention",
+        index: 1,
+        name: "weights",
+        reason: WeightSiteReason::Weight,
+    },
+    SchemaInput {
+        family: "com.microsoft::Attention",
+        index: 2,
+        name: "bias",
+        reason: WeightSiteReason::Bias,
+    },
+    SchemaInput {
+        family: "com.microsoft::Attention",
+        index: 3,
+        name: "mask_index",
+        reason: WeightSiteReason::Mask,
+    },
+    SchemaInput {
+        family: "com.microsoft::Attention",
+        index: 4,
+        name: "past",
+        reason: WeightSiteReason::Cache,
+    },
+    SchemaInput {
+        family: "com.microsoft::Attention",
+        index: 5,
+        name: "attention_bias",
+        reason: WeightSiteReason::Bias,
+    },
+    SchemaInput {
+        family: "com.microsoft::Attention",
+        index: 6,
+        name: "past_sequence_length",
+        reason: WeightSiteReason::Length,
+    },
+    // -- com.microsoft::MultiHeadAttention (bert_defs.cc:1096-1191): query/key/value are already
+    // projected; no weight input exists on this op at all. --
+    SchemaInput {
+        family: "com.microsoft::MultiHeadAttention",
+        index: 0,
+        name: "query",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::MultiHeadAttention",
+        index: 1,
+        name: "key",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::MultiHeadAttention",
+        index: 2,
+        name: "value",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::MultiHeadAttention",
+        index: 3,
+        name: "bias",
+        reason: WeightSiteReason::Bias,
+    },
+    SchemaInput {
+        family: "com.microsoft::MultiHeadAttention",
+        index: 4,
+        name: "key_padding_mask",
+        reason: WeightSiteReason::Mask,
+    },
+    SchemaInput {
+        family: "com.microsoft::MultiHeadAttention",
+        index: 5,
+        name: "attention_bias",
+        reason: WeightSiteReason::Bias,
+    },
+    SchemaInput {
+        family: "com.microsoft::MultiHeadAttention",
+        index: 6,
+        name: "past_key",
+        reason: WeightSiteReason::Cache,
+    },
+    SchemaInput {
+        family: "com.microsoft::MultiHeadAttention",
+        index: 7,
+        name: "past_value",
+        reason: WeightSiteReason::Cache,
+    },
+    SchemaInput {
+        family: "com.microsoft::MultiHeadAttention",
+        index: 8,
+        name: "past_sequence_length",
+        reason: WeightSiteReason::Length,
+    },
+    SchemaInput {
+        family: "com.microsoft::MultiHeadAttention",
+        index: 9,
+        name: "cache_indirection",
+        reason: WeightSiteReason::Cache,
+    },
+    // -- com.microsoft::GroupQueryAttention (bert_defs.cc:1216-1369): 16 inputs (0-15). Inputs
+    // 14/15 (q_norm_weight/k_norm_weight) are the completeness gap this branch is named for —
+    // PR #89's audit stopped at input 13. Neither is a designated weight site (see `NormGain`),
+    // and this op designates none: `weight_sites("com.microsoft::GroupQueryAttention")` is `[]`. --
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 0,
+        name: "query",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 1,
+        name: "key",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 2,
+        name: "value",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 3,
+        name: "past_key",
+        reason: WeightSiteReason::Cache,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 4,
+        name: "past_value",
+        reason: WeightSiteReason::Cache,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 5,
+        name: "seqlens_k",
+        reason: WeightSiteReason::Length,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 6,
+        name: "total_sequence_length",
+        reason: WeightSiteReason::Length,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 7,
+        name: "cos_cache",
+        reason: WeightSiteReason::PositionalTable,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 8,
+        name: "sin_cache",
+        reason: WeightSiteReason::PositionalTable,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 9,
+        name: "position_ids",
+        reason: WeightSiteReason::RuntimeIndex,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 10,
+        name: "attention_bias",
+        reason: WeightSiteReason::Bias,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 11,
+        name: "head_sink",
+        reason: WeightSiteReason::PerChannelScalar,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 12,
+        name: "k_scale",
+        reason: WeightSiteReason::CacheScale,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 13,
+        name: "v_scale",
+        reason: WeightSiteReason::CacheScale,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 14,
+        name: "q_norm_weight",
+        reason: WeightSiteReason::NormGain,
+    },
+    SchemaInput {
+        family: "com.microsoft::GroupQueryAttention",
+        index: 15,
+        name: "k_norm_weight",
+        reason: WeightSiteReason::NormGain,
+    },
+    // -- com.microsoft::LinearAttention (bert_defs.cc:2373-2506): decay/beta are runtime gates
+    // computed from activations (sigmoid/log-space), not resident weights. No weight input. --
+    SchemaInput {
+        family: "com.microsoft::LinearAttention",
+        index: 0,
+        name: "query",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::LinearAttention",
+        index: 1,
+        name: "key",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::LinearAttention",
+        index: 2,
+        name: "value",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::LinearAttention",
+        index: 3,
+        name: "past_state",
+        reason: WeightSiteReason::Cache,
+    },
+    SchemaInput {
+        family: "com.microsoft::LinearAttention",
+        index: 4,
+        name: "decay",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::LinearAttention",
+        index: 5,
+        name: "beta",
+        reason: WeightSiteReason::Activation,
+    },
+    // -- com.microsoft::MatMulNBits (contrib_defs.cc:3648-3707): B/scales/zero_points reconstruct
+    // the quantized weight; g_idx is deprecated; bias is not the weight. --
+    SchemaInput {
+        family: "com.microsoft::MatMulNBits",
+        index: 0,
+        name: "A",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::MatMulNBits",
+        index: 1,
+        name: "B",
+        reason: WeightSiteReason::Weight,
+    },
+    SchemaInput {
+        family: "com.microsoft::MatMulNBits",
+        index: 2,
+        name: "scales",
+        reason: WeightSiteReason::WeightScale,
+    },
+    SchemaInput {
+        family: "com.microsoft::MatMulNBits",
+        index: 3,
+        name: "zero_points",
+        reason: WeightSiteReason::WeightZeroPoint,
+    },
+    SchemaInput {
+        family: "com.microsoft::MatMulNBits",
+        index: 4,
+        name: "g_idx",
+        reason: WeightSiteReason::Deprecated,
+    },
+    SchemaInput {
+        family: "com.microsoft::MatMulNBits",
+        index: 5,
+        name: "bias",
+        reason: WeightSiteReason::Bias,
+    },
+    // -- com.microsoft::QMoE (contrib_defs.cc:1470-1663): 21 inputs (0-20). Inputs 19/20
+    // (fc1_act_block_scale/fc2_act_block_scale) are MANDATORY fix #1's gap — PR #89's audit
+    // stopped at input 18, one short of the schema's actual end. Both are activation-side MXFP
+    // block scales, not weight sites. --
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 0,
+        name: "input",
+        reason: WeightSiteReason::Activation,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 1,
+        name: "router_probs",
+        reason: WeightSiteReason::Routing,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 2,
+        name: "fc1_experts_weights",
+        reason: WeightSiteReason::Weight,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 3,
+        name: "fc1_scales",
+        reason: WeightSiteReason::WeightScale,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 4,
+        name: "fc1_experts_bias",
+        reason: WeightSiteReason::Bias,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 5,
+        name: "fc2_experts_weights",
+        reason: WeightSiteReason::Weight,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 6,
+        name: "fc2_scales",
+        reason: WeightSiteReason::WeightScale,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 7,
+        name: "fc2_experts_bias",
+        reason: WeightSiteReason::Bias,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 8,
+        name: "fc3_experts_weights",
+        reason: WeightSiteReason::Weight,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 9,
+        name: "fc3_scales",
+        reason: WeightSiteReason::WeightScale,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 10,
+        name: "fc3_experts_bias",
+        reason: WeightSiteReason::Bias,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 11,
+        name: "fc1_zero_points",
+        reason: WeightSiteReason::WeightZeroPoint,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 12,
+        name: "fc2_zero_points",
+        reason: WeightSiteReason::WeightZeroPoint,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 13,
+        name: "fc3_zero_points",
+        reason: WeightSiteReason::WeightZeroPoint,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 14,
+        name: "router_weights",
+        reason: WeightSiteReason::Routing,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 15,
+        name: "fc1_global_scale",
+        reason: WeightSiteReason::GlobalScale,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 16,
+        name: "fc2_global_scale",
+        reason: WeightSiteReason::GlobalScale,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 17,
+        name: "fc1_act_scale",
+        reason: WeightSiteReason::ActivationScale,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 18,
+        name: "fc2_act_scale",
+        reason: WeightSiteReason::ActivationScale,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 19,
+        name: "fc1_act_block_scale",
+        reason: WeightSiteReason::ActivationBlockScale,
+    },
+    SchemaInput {
+        family: "com.microsoft::QMoE",
+        index: 20,
+        name: "fc2_act_block_scale",
+        reason: WeightSiteReason::ActivationBlockScale,
+    },
+];
+
+/// The shipped, hand-maintained per-family list of designated weight-site indices — what
+/// [`classify_weight_operand`] actually consults at the production call site.
+///
+/// Deliberately **not** computed from [`WEIGHT_SITE_AUDIT`] at compile time (there is no build
+/// step here to do that derivation in, and pretending a `const fn` filter over the audit table
+/// is "the rule deriving the table mechanically" would repeat MANDATORY fix #9's overclaim in
+/// code instead of prose). Kept in sync with the audit by a test that filters
+/// [`WEIGHT_SITE_AUDIT`] for [`designates_weight`](WeightSiteReason::designates_weight) rows and
+/// asserts the two lists are equal, per family. Any op family not listed here (including one not
+/// in [`HEAVY_OP_FAMILIES`] at all) designates no weight sites and returns `&[]`.
+pub fn weight_sites(qualified_op: &str) -> &'static [usize] {
+    match qualified_op {
+        "MatMul" | "Gemm" | "Conv" | "ConvTranspose" => &[1],
+        "com.microsoft::Attention" => &[1],
+        "com.microsoft::MatMulNBits" => &[1, 2, 3],
+        "com.microsoft::QMoE" => &[2, 3, 5, 6, 8, 9, 11, 12, 13],
+        // `Attention` (bare, ai.onnx), `com.microsoft::MultiHeadAttention`,
+        // `com.microsoft::GroupQueryAttention` and `com.microsoft::LinearAttention` all
+        // designate no weight site: their arithmetic runs entirely over already-projected
+        // runtime activations, caches and (for GQA) small per-head norm/scale terms.
+        _ => &[],
+    }
+}
+
+/// Classify whether a node of the given qualified op carries a resident weight, from a
+/// caller-supplied per-input constant-ness reader.
+///
+/// `is_constant_at` is expected to be **total**: it must answer `false` — never panic, never a
+/// third value — for a missing input, an out-of-range index, a null slot, an ORT status error,
+/// or a genuinely non-constant (runtime) tensor. [`crate::registry::NodeView::input_is_constant`]
+/// already has exactly this contract, which is what makes this function itself total: it has no
+/// branch that can produce anything other than [`WeightOperand::Present`] or
+/// [`WeightOperand::Absent`], because every site it visits comes from [`weight_sites`] and every
+/// answer it receives is a plain `bool`.
+///
+/// # MANDATORY fix #5 — `weight_sites` omission is the actual fail-closed mechanism
+///
+/// This function only ever asks about indices in [`weight_sites`]`(qualified_op)`. An input the
+/// pinned schema has not yet grown, an index this audit has not (yet) catalogued, or a family
+/// entirely absent from [`HEAVY_OP_FAMILIES`], are all handled the same way: they are never
+/// asked about, so they can never contribute a `Present`. There is deliberately no catch-all
+/// "undeclared inputs are covered" variant anywhere in this module — that would be a claim about
+/// inputs this code has never read, which is exactly the false generality MANDATORY fix #5
+/// forbids. The true statement is narrower and is asserted here instead: **an input this table
+/// does not name is invisible to this classifier, not covered by it.**
+pub fn classify_weight_operand(
+    qualified_op: &str,
+    mut is_constant_at: impl FnMut(usize) -> bool,
+) -> WeightOperand {
+    if weight_sites(qualified_op)
+        .iter()
+        .any(|&i| is_constant_at(i))
+    {
+        WeightOperand::Present
+    } else {
+        WeightOperand::Absent
+    }
+}
+
+/// The partition anchor rule, **as a node property**: a heavy family *and* a resident constant
+/// weight at one of its schema-designated sites (see [`WEIGHT_SITE_AUDIT`]).
+///
+/// The second argument exists so that a name-only call is inexpressible: there is no overload
+/// and no default that lets a caller ask "is `MatMul` an anchor?" without also supplying whether
+/// *this particular node* actually carries a weight. A caller wanting that answer must go through
+/// [`classify_weight_operand`] (or an equivalent reader) first, which is the point — `is_anchor`
+/// cannot be satisfied by an op name alone, only by a name together with evidence about one
+/// instance of it.
+pub fn is_anchor(qualified_op: &str, weight: WeightOperand) -> bool {
+    is_heavy_op_family(qualified_op) && weight == WeightOperand::Present
 }
 
 /// The thresholds the rule is expressed in.
@@ -1045,13 +1904,511 @@ mod tests {
     }
 
     #[test]
-    fn anchors_are_the_heavy_ops_only() {
-        assert!(is_anchor("MatMul"));
-        assert!(is_anchor("Conv"));
-        assert!(is_anchor("com.microsoft::MatMulNBits"));
-        assert!(is_anchor("com.microsoft::GroupQueryAttention"));
-        assert!(!is_anchor("Add"));
-        assert!(!is_anchor("Reshape"));
+    fn heavy_op_families_are_unchanged_from_the_old_bare_name_list() {
+        // FLOP estimation is keyed off this predicate and must stay bit-identical across the
+        // `is_anchor` redesign (MANDATORY: "heavy-family FLOP set bit-identical to main").
+        assert!(is_heavy_op_family("MatMul"));
+        assert!(is_heavy_op_family("Conv"));
+        assert!(is_heavy_op_family("com.microsoft::MatMulNBits"));
+        assert!(is_heavy_op_family("com.microsoft::GroupQueryAttention"));
+        assert!(is_heavy_op_family("com.microsoft::QMoE"));
+        assert!(!is_heavy_op_family("Add"));
+        assert!(!is_heavy_op_family("Reshape"));
+        assert_eq!(HEAVY_OP_FAMILIES.len(), 11);
+    }
+
+    #[test]
+    fn is_anchor_requires_both_heavy_family_and_a_present_weight() {
+        // Name-only call is inexpressible: both arguments are required, and a heavy family with
+        // no weight present is not an anchor.
+        assert!(is_anchor("MatMul", WeightOperand::Present));
+        assert!(!is_anchor("MatMul", WeightOperand::Absent));
+        assert!(!is_anchor("Add", WeightOperand::Present));
+        assert!(!is_anchor("Add", WeightOperand::Absent));
+    }
+
+    #[test]
+    fn activation_only_matmul_is_not_an_anchor() {
+        // The bug issue #73 exists to fix: a MatMul whose weight-site input is a runtime
+        // activation (both operands non-constant, e.g. Q @ K^T) must not be admitted as an
+        // anchor purely because its op name is "MatMul".
+        let weight =
+            classify_weight_operand("MatMul", |_i| false /* neither operand is constant */);
+        assert_eq!(weight, WeightOperand::Absent);
+        assert!(!is_anchor("MatMul", weight));
+    }
+
+    #[test]
+    fn weight_bearing_matmul_is_an_anchor() {
+        let weight = classify_weight_operand("MatMul", |i| i == 1 /* B is constant */);
+        assert_eq!(weight, WeightOperand::Present);
+        assert!(is_anchor("MatMul", weight));
+    }
+
+    #[test]
+    fn classify_weight_operand_fails_closed_on_missing_out_of_range_null_and_non_constant() {
+        // All four failure modes collapse to the same total answer: Absent. There is no way for
+        // `is_constant_at` returning false (for whatever reason) to produce anything else.
+        assert_eq!(
+            classify_weight_operand("MatMul", |_| false),
+            WeightOperand::Absent,
+            "missing/out-of-range/null/status-error all present as `false` from the reader"
+        );
+        // A reader that panics outside the designated site proves only `weight_sites` indices
+        // are ever consulted.
+        assert_eq!(
+            classify_weight_operand("MatMul", |i| {
+                assert_eq!(i, 1, "MatMul must only be asked about its designated site");
+                false
+            }),
+            WeightOperand::Absent
+        );
+    }
+
+    #[test]
+    fn group_query_attention_designates_no_weight_site_even_if_every_input_is_constant() {
+        // GQA's norm-gain/cache-scale/positional-table inputs (14, 15, 12, 13, 7, 8) are real
+        // schema inputs but none is a designated weight site: a reader that reports every input
+        // constant still classifies Absent, because `weight_sites` for this family is `[]`.
+        let weight = classify_weight_operand("com.microsoft::GroupQueryAttention", |_i| true);
+        assert_eq!(weight, WeightOperand::Absent);
+        assert!(!is_anchor("com.microsoft::GroupQueryAttention", weight));
+        assert!(weight_sites("com.microsoft::GroupQueryAttention").is_empty());
+    }
+
+    #[test]
+    fn qmoe_is_present_only_from_its_nine_designated_weight_sites() {
+        // Sites 2,3,5,6,8,9,11,12,13 (fc1/fc2/fc3 weights + scales + zero-points). None of the
+        // other 12 inputs (0,1,4,7,10,14..20, including the two new activation block scales)
+        // may trigger `Present`.
+        for &site in &[2usize, 3, 5, 6, 8, 9, 11, 12, 13] {
+            let weight = classify_weight_operand("com.microsoft::QMoE", |i| i == site);
+            assert_eq!(
+                weight,
+                WeightOperand::Present,
+                "site {site} must designate a weight"
+            );
+        }
+        for &site in &[0usize, 1, 4, 7, 10, 14, 15, 16, 17, 18, 19, 20] {
+            let weight = classify_weight_operand("com.microsoft::QMoE", |i| i == site);
+            assert_eq!(
+                weight,
+                WeightOperand::Absent,
+                "site {site} must NOT designate a weight"
+            );
+        }
+    }
+
+    #[test]
+    fn qmoe_schema_end_inputs_19_and_20_are_catalogued_as_activation_block_scales() {
+        // MANDATORY fix #1: the pinned schema has 21 inputs (0-20), not 19. Inputs 19/20 are
+        // present in the audit and are explicitly NOT weight sites.
+        let row19 = WEIGHT_SITE_AUDIT
+            .iter()
+            .find(|r| r.family == "com.microsoft::QMoE" && r.index == 19)
+            .expect("input 19 must be catalogued");
+        let row20 = WEIGHT_SITE_AUDIT
+            .iter()
+            .find(|r| r.family == "com.microsoft::QMoE" && r.index == 20)
+            .expect("input 20 must be catalogued");
+        assert_eq!(row19.name, "fc1_act_block_scale");
+        assert_eq!(row20.name, "fc2_act_block_scale");
+        assert!(!row19.reason.designates_weight());
+        assert!(!row20.reason.designates_weight());
+        assert_eq!(row19.reason, WeightSiteReason::ActivationBlockScale);
+        assert_eq!(row20.reason, WeightSiteReason::ActivationBlockScale);
+    }
+
+    #[test]
+    fn expected_input_counts_are_independent_of_the_audit_table_row_count() {
+        // MANDATORY fix #3, verified directly: the completeness check compares two
+        // independently-authored sources (this constant, and the audit table), not the audit
+        // table's own maximum index against itself.
+        for &(family, expected) in EXPECTED_INPUT_COUNTS {
+            let got = WEIGHT_SITE_AUDIT
+                .iter()
+                .filter(|r| r.family == family)
+                .count();
+            assert_eq!(
+                got, expected,
+                "family {family}: audit has {got} rows, pinned schema says {expected}"
+            );
+        }
+        // Every heavy family has a pinned expected count, and vice versa.
+        for &family in HEAVY_OP_FAMILIES {
+            assert!(
+                EXPECTED_INPUT_COUNTS.iter().any(|&(f, _)| f == family),
+                "family {family} is heavy but has no pinned expected input count"
+            );
+        }
+    }
+
+    #[test]
+    fn mutation_proof_deleting_qmoe_input_20_would_fail_the_count_contract() {
+        // MANDATORY: "Explicit mutation: deleting the final QMoE row (site 20) must fail both
+        // Rust/Python relevant guards." Proven here without touching the shipped table: simulate
+        // the deletion by filtering it out of a local copy and show the same comparison this
+        // module's real test performs would then fail.
+        let mutated: Vec<&SchemaInput> = WEIGHT_SITE_AUDIT
+            .iter()
+            .filter(|r| !(r.family == "com.microsoft::QMoE" && r.index == 20))
+            .collect();
+        let mutated_count = mutated
+            .iter()
+            .filter(|r| r.family == "com.microsoft::QMoE")
+            .count();
+        let expected = EXPECTED_INPUT_COUNTS
+            .iter()
+            .find(|&&(f, _)| f == "com.microsoft::QMoE")
+            .unwrap()
+            .1;
+        assert_ne!(
+            mutated_count, expected,
+            "a deleted trailing row must desynchronise from the independently-pinned count"
+        );
+        assert_eq!(mutated_count, 20);
+        assert_eq!(expected, 21);
+    }
+
+    #[test]
+    fn weight_sites_agrees_with_the_audit_table_but_that_only_proves_internal_agreement() {
+        // MANDATORY fix #9: this proves `weight_sites()` (the shipped, hand-maintained list) and
+        // `WEIGHT_SITE_AUDIT` (the catalogued reasons) were not typo'd apart from each other. It
+        // does NOT and cannot prove either is a complete or correct reading of upstream — see the
+        // doc comment on `WEIGHT_SITE_AUDIT` for what would be needed for that (a human re-read
+        // against the pinned commit/line range in `SCHEMA_SOURCES`).
+        for &family in HEAVY_OP_FAMILIES {
+            let mut derived: Vec<usize> = WEIGHT_SITE_AUDIT
+                .iter()
+                .filter(|r| r.family == family && r.reason.designates_weight())
+                .map(|r| r.index)
+                .collect();
+            derived.sort_unstable();
+            assert_eq!(
+                derived,
+                weight_sites(family),
+                "family {family}: derived weight sites disagree with the shipped list"
+            );
+        }
+    }
+
+    #[test]
+    fn audit_indices_are_unique_and_contiguous_from_zero_per_family() {
+        // A necessary but NOT sufficient completeness check (see `EXPECTED_INPUT_COUNTS` doc
+        // comment for why contiguity-from-zero alone cannot catch a trailing omission).
+        for &family in HEAVY_OP_FAMILIES {
+            let mut indices: Vec<usize> = WEIGHT_SITE_AUDIT
+                .iter()
+                .filter(|r| r.family == family)
+                .map(|r| r.index)
+                .collect();
+            indices.sort_unstable();
+            let expected: Vec<usize> = (0..indices.len()).collect();
+            assert_eq!(
+                indices, expected,
+                "family {family}: audit indices are not 0..N contiguous"
+            );
+        }
+    }
+
+    #[test]
+    fn every_schema_source_family_is_a_heavy_op_family_and_vice_versa() {
+        for &family in HEAVY_OP_FAMILIES {
+            assert!(
+                SCHEMA_SOURCES.iter().any(|&(f, ..)| f == family),
+                "family {family} has no SCHEMA_SOURCES provenance row"
+            );
+        }
+    }
+
+    #[test]
+    fn qmoe_schema_source_range_is_the_full_1470_1663_span_not_the_truncated_1469_1641() {
+        // MANDATORY fix #2: the previous PR cited a truncated range that ended before the
+        // schema's actual close (`propagateShapeAndTypeFromFirstInput));` at line 1663).
+        let (_, file, range, commit) = SCHEMA_SOURCES
+            .iter()
+            .find(|&&(f, ..)| f == "com.microsoft::QMoE")
+            .expect("QMoE must have a schema source row");
+        assert_eq!(*file, "onnxruntime/core/graph/contrib_ops/contrib_defs.cc");
+        assert_eq!(*range, "1470-1663");
+        assert!(commit.contains("da9b5e364c465de65c49d91e696cd6485270757f"));
+    }
+
+    #[test]
+    fn no_activation_cache_mask_length_routing_bias_positional_table_or_scalar_is_a_weight_site() {
+        // MANDATORY: "No activation/cache/mask/length/routing/bias/positional table/per-channel
+        // scalar designated as the resident weight block."
+        let never_weight = [
+            WeightSiteReason::Activation,
+            WeightSiteReason::Cache,
+            WeightSiteReason::CacheScale,
+            WeightSiteReason::Mask,
+            WeightSiteReason::Length,
+            WeightSiteReason::Routing,
+            WeightSiteReason::Bias,
+            WeightSiteReason::PositionalTable,
+            WeightSiteReason::PerChannelScalar,
+            WeightSiteReason::NormGain,
+            WeightSiteReason::RuntimeIndex,
+            WeightSiteReason::GlobalScale,
+            WeightSiteReason::ActivationScale,
+            WeightSiteReason::ActivationBlockScale,
+            WeightSiteReason::Deprecated,
+        ];
+        for reason in never_weight {
+            assert!(
+                !reason.designates_weight(),
+                "{reason:?} must not designate a weight"
+            );
+        }
+        for row in WEIGHT_SITE_AUDIT {
+            if never_weight.contains(&row.reason) {
+                assert!(
+                    !row.reason.designates_weight(),
+                    "{}[{}] ({}) leaked into the designated set",
+                    row.family,
+                    row.index,
+                    row.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn com_microsoft_attention_designates_only_its_merged_weight_at_index_1() {
+        assert_eq!(weight_sites("com.microsoft::Attention"), &[1]);
+        let weight = classify_weight_operand("com.microsoft::Attention", |i| i == 1);
+        assert_eq!(weight, WeightOperand::Present);
+        let weight_bias_only =
+            classify_weight_operand("com.microsoft::Attention", |i| i == 2 /* bias */);
+        assert_eq!(weight_bias_only, WeightOperand::Absent);
+    }
+
+    #[test]
+    fn multi_head_attention_and_linear_attention_and_bare_attention_designate_no_weight_site() {
+        for family in [
+            "com.microsoft::MultiHeadAttention",
+            "com.microsoft::LinearAttention",
+            "Attention",
+        ] {
+            assert!(
+                weight_sites(family).is_empty(),
+                "{family} must designate no weight site"
+            );
+            assert_eq!(
+                classify_weight_operand(family, |_| true),
+                WeightOperand::Absent
+            );
+        }
+    }
+
+    #[test]
+    fn matmulnbits_designates_weight_scale_and_zero_point_but_not_bias_or_g_idx() {
+        assert_eq!(weight_sites("com.microsoft::MatMulNBits"), &[1, 2, 3]);
+        assert_eq!(
+            classify_weight_operand("com.microsoft::MatMulNBits", |i| i == 4 /* g_idx */),
+            WeightOperand::Absent
+        );
+        assert_eq!(
+            classify_weight_operand("com.microsoft::MatMulNBits", |i| i == 5 /* bias */),
+            WeightOperand::Absent
+        );
+        assert_eq!(
+            classify_weight_operand(
+                "com.microsoft::MatMulNBits",
+                |i| i == 3 /* zero_points */
+            ),
+            WeightOperand::Present
+        );
+    }
+
+    #[test]
+    fn runtime_activation_at_a_candidate_positional_site_is_not_mistaken_for_a_weight() {
+        // MANDATORY fix #11: the site table names *candidate* positions; it is
+        // `input_is_constant` (simulated here by the closure) that supplies the actual proof. A
+        // MatMul whose site-1 operand is runtime data (e.g. two activations multiplying each
+        // other) must classify Absent even though index 1 is MatMul's designated site.
+        let weight = classify_weight_operand("MatMul", |i| {
+            // Site 1 exists and is read, but it is runtime data, so the reader answers false.
+            let _ = i;
+            false
+        });
+        assert_eq!(weight, WeightOperand::Absent);
+    }
+
+    #[test]
+    fn monotonicity_claim_never_reverses_to_reject_and_reject_never_reverses_to_claim() {
+        // Uses the real shipped `evaluate`, not a re-implementation. Adding anchors to an island
+        // can only move a verdict from Reject toward Claim, never the reverse, holding bytes and
+        // flops fixed apart from the anchor-driven FLOP floor.
+        let policy = Policy::default();
+        let model = TransferModel::DISCRETE;
+        let no_anchor = Island {
+            nodes: 1,
+            anchors: 0,
+            flops: 4096,
+            input_bytes: 4096 * 4,
+            output_bytes: 4096 * 4,
+            symbolic_boundary_slots: 0,
+        };
+        let with_anchor = Island {
+            anchors: 1,
+            flops: 2 * 4096 * 4096,
+            ..no_anchor.clone()
+        };
+        let before = evaluate(&no_anchor, &model, &policy);
+        let after = evaluate(&with_anchor, &model, &policy);
+        assert!(
+            !before.is_claim(),
+            "witness precondition: baseline island must not be claimed"
+        );
+        assert!(
+            after.is_claim(),
+            "adding a real anchor must move Reject -> Claim"
+        );
+        // The reverse direction is asserted structurally: `evaluate`'s anchor-exemption arm is an
+        // unconditional early return that only ever produces `Claim`, so there is no path in the
+        // shipped function from `anchors > 0 && anchor_exemption` back to a `Reject`.
+    }
+
+    #[test]
+    fn gate_order_is_unchanged_size_then_anchor_exemption_then_economics() {
+        // A too-small island with an anchor is claimed (anchor exemption overrides size), and an
+        // anchor-bearing island that would fail economics is still claimed (exemption runs
+        // before economics) -- both prove the existing order, not a new one.
+        let policy = Policy::default();
+        let tiny_anchor_island = Island {
+            nodes: 1,
+            anchors: 1,
+            flops: 2 * 4096 * 4096,
+            input_bytes: 4,
+            output_bytes: 4,
+            symbolic_boundary_slots: 0,
+        };
+        assert_eq!(
+            evaluate(&tiny_anchor_island, &TransferModel::DISCRETE, &policy),
+            Verdict::Claim,
+            "size gate must not fire ahead of the anchor exemption"
+        );
+        let transfer_heavy_anchor_island = Island {
+            nodes: 1,
+            anchors: 1,
+            flops: 1,
+            input_bytes: 64 * 1024 * 1024,
+            output_bytes: 64 * 1024 * 1024,
+            symbolic_boundary_slots: 0,
+        };
+        assert_eq!(
+            evaluate(
+                &transfer_heavy_anchor_island,
+                &TransferModel::DISCRETE,
+                &policy
+            ),
+            Verdict::Claim,
+            "economics gate must not fire ahead of the anchor exemption"
+        );
+    }
+
+    /// Walk every text-ish file in the repo, skipping build/VCS/vendor directories, and count
+    /// occurrences of a literal needle.
+    ///
+    /// This is the derivation MANDATORY fix #6 requires instead of an asserted number: it scans
+    /// the whole tree rather than a hand-picked file list, so a citation added anywhere tomorrow
+    /// — not only in the four files known truthful today — changes what this test sees.
+    fn scan_repo_for_literal(root: &std::path::Path, needle: &str) -> Vec<String> {
+        const SKIP_DIRS: &[&str] = &["target", ".git", "node_modules", ".venv", "__pycache__"];
+        const EXTS: &[&str] = &["md", "rs", "py"];
+        let mut hits = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if path.is_dir() {
+                    if !SKIP_DIRS.contains(&name.as_ref()) {
+                        stack.push(path);
+                    }
+                    continue;
+                }
+                let has_ext = EXTS.iter().any(|e| name.ends_with(&format!(".{e}")));
+                if !has_ext {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (i, line) in text.lines().enumerate() {
+                    if line.contains(needle) {
+                        hits.push(format!("{}:{}", path.display(), i + 1));
+                    }
+                }
+            }
+        }
+        hits
+    }
+
+    /// The section-5.5 citation needle, built from an escape rather than spelled literally in
+    /// this file's own source — otherwise this test's *own* comments discussing the citation
+    /// count would themselves be counted as citations by [`scan_repo_for_literal`], which scans
+    /// this very file. The value is identical to the four-character section mark + "5.5" that a
+    /// real citation contains; only the *representation in this source file* differs.
+    const SECTION_5_5_NEEDLE: &str = "\u{a7}5.5";
+
+    #[test]
+    fn the_section_5_5_citation_set_is_exactly_four_and_all_truthful() {
+        // MANDATORY fix #6: there were 5 textual section-5.5 occurrences before this branch;
+        // `rust/src/ops/common/claim.rs` cited it for the compose-before-bespoke rule, which is
+        // actually documented under OP_COVERAGE.md's section 5.6 (fixed by this branch, see
+        // claim.rs). This test derives the count mechanically rather than asserting it as prose:
+        // it does not call four live citations without a scan proving there are exactly four.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let hits = scan_repo_for_literal(&root, SECTION_5_5_NEEDLE);
+        assert_eq!(
+            hits.len(),
+            4,
+            "expected exactly 4 literal section-5.5 occurrences repo-wide, found: {hits:#?}"
+        );
+        // Every occurrence must be one of the four locations independently verified truthful:
+        // two self-citations to headings actually named "5.5", and two citations from other
+        // files pointing at DESIGN.md's real section-5.5 heading ("`Compile` — plan build and
+        // prepacking"). A fifth occurrence anywhere, or one of these four moving, fails this.
+        let expect_suffixes = [
+            "docs\\DESIGN.md:1667",
+            "docs\\OP_COVERAGE.md:4378",
+            "docs\\OP_COVERAGE.md:5629",
+            "rust\\src\\registry.rs:4309",
+        ];
+        for suffix in expect_suffixes {
+            assert!(
+                hits.iter()
+                    .any(|h| h.replace('\\', "/").ends_with(&suffix.replace('\\', "/"))),
+                "expected a section-5.5 citation ending in {suffix}, got: {hits:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_stray_section_5_5_citation_survives_in_claim_rs() {
+        // Mutation-adjacent guard: if claim.rs's citation ever regresses back to section 5.5 for
+        // the compose-before-bespoke rule, this fails loudly rather than silently re-admitting
+        // the miscitation MANDATORY fix #6 removed.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let claim_rs = root.join("rust/src/ops/common/claim.rs");
+        let text = std::fs::read_to_string(&claim_rs).expect("claim.rs must exist");
+        let five_six = format!("{}5.6's compose-before-bespoke rule", "\u{a7}");
+        let five_five = format!("{}'s compose-before-bespoke rule", SECTION_5_5_NEEDLE);
+        assert!(
+            text.contains(&five_six),
+            "claim.rs must cite section 5.6 for the compose-before-bespoke rule"
+        );
+        assert!(
+            !text.contains(&five_five),
+            "claim.rs must not miscite section 5.5 for the compose-before-bespoke rule"
+        );
     }
 
     #[test]

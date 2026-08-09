@@ -779,12 +779,32 @@ mod tests {
         assert!(spec.blind_axes.contains(&"transB"));
     }
 
-    /// `Gemm` is already an anchor in the partitioner, which is why a lone one at a model's tail
-    /// is claimable at all. If that ever changed, this row would go live and never be used.
+    /// `Gemm` is already a heavy op family in the partitioner, and — when its weight operand
+    /// (`B`) is a constant, which it is for a lone `Gemm` at a model's tail — an anchor, which is
+    /// why a lone one at a model's tail is claimable at all. If that ever changed, this row would
+    /// go live and never be used.
+    ///
+    /// This also proves the negative half of issue #73's fix directly: the same op name with a
+    /// non-constant weight operand (both operands runtime activations) is *not* an anchor, so a
+    /// name-only check can no longer be satisfied here.
     #[test]
-    fn gemm_is_a_partition_anchor() {
-        assert!(crate::ops::partition::is_anchor("Gemm"));
-        assert!(crate::ops::partition::is_anchor("MatMul"));
+    fn gemm_is_a_partition_anchor_only_with_a_constant_weight_operand() {
+        use crate::ops::partition::{WeightOperand, classify_weight_operand, is_anchor};
+
+        assert!(crate::ops::partition::is_heavy_op_family("Gemm"));
+        assert!(crate::ops::partition::is_heavy_op_family("MatMul"));
+
+        let gemm_weight_present = classify_weight_operand("Gemm", |i| i == 1 /* B */);
+        assert_eq!(gemm_weight_present, WeightOperand::Present);
+        assert!(is_anchor("Gemm", gemm_weight_present));
+
+        let matmul_weight_present = classify_weight_operand("MatMul", |i| i == 1 /* B */);
+        assert_eq!(matmul_weight_present, WeightOperand::Present);
+        assert!(is_anchor("MatMul", matmul_weight_present));
+
+        let activation_only = classify_weight_operand("MatMul", |_| false);
+        assert_eq!(activation_only, WeightOperand::Absent);
+        assert!(!is_anchor("MatMul", activation_only));
     }
 
     // ---------------------------------------------------------------------------------------

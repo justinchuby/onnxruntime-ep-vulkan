@@ -1301,13 +1301,18 @@ defaults — is a fact about **3a**, `TOO_SMALL`. It establishes that *stage 3* 
 It does not establish that **3c** has ever decided anything outside a probe, and I can find no
 artifact in which it has.
 
-**(ii) The diagnosis inverts once you read `is_anchor`.** The anchor set is `MatMul`, `Gemm`,
-`Conv`, `ConvTranspose`, `Attention`, `MatMulNBits`, `GroupQueryAttention`, `MultiHeadAttention`,
-`QMoE`, `LinearAttention` (`partition.rs:308`). **Every non-trivial island of any transformer
-contains at least one.** So "the economics model does not decide our partition" is not a Phi-3.5
-accident and is not a discovered defect — **it is the design, working.** 3c was written to kill
-cheap elementwise scatter whose tensors outweigh its arithmetic, and Phi-3.5's fused island is not
-that. The doc comment at `partition.rs:458` says so in as many words.
+**(ii) The diagnosis inverts once you read `is_anchor`.** The heavy-op-family set is `MatMul`,
+`Gemm`, `Conv`, `ConvTranspose`, `Attention`, `MatMulNBits`, `GroupQueryAttention`,
+`MultiHeadAttention`, `QMoE`, `LinearAttention` (`partition.rs:308` at the time of this ruling —
+the constant has since moved and its citation is converted rather than repaired, per this section's
+own line-number convention below: it is `HEAVY_OP_FAMILIES` at `partition.rs:389`, and see §5.4.2
+for why membership in this list is no longer, on its own, sufficient for `is_anchor`). **Every
+non-trivial island of any transformer contains at least one.** So "the economics model does not
+decide our partition" is not a Phi-3.5 accident and is not a discovered defect — **it is the
+design, working.** 3c was written to kill cheap elementwise scatter whose tensors outweigh its
+arithmetic, and Phi-3.5's fused island is not that. The doc comment at `partition.rs:458` (at the
+time of this ruling; `evaluate`'s doc comment carrying the same sentence now lives at
+`partition.rs:1390`, and the citation is converted rather than repaired) says so in as many words.
 
 **So what is actually wrong is narrower, and I want it stated without inflation.** Three things:
 
@@ -1481,7 +1486,9 @@ convention (`ESTIMATED_…`), so the fix is to make the old one match it, not to
   wrong. **Owner: Mouse, with the `Verdict::Claim` reason field, same change.**
 
 **On line-number citations — a convention for this document, arrived at from today's other
-ruling.** My `partition.rs:475` no longer resolves; the early return is at 536. **A line number is a
+ruling.** My `partition.rs:475` no longer resolves; the early return is at 536 — and, by the
+weight-site audit of §5.4.2, it has moved again, to `partition.rs:1407`, which is exactly this
+paragraph's own point restated by the file it describes. **A line number is a
 reference that decays without failing** — it does not error, it silently points at something else,
 which is `'<absent>'`'s defect in a different costume (§10.0.1 R13 amendment 1). **This document
 cites a symbol — `partition.rs::evaluate`'s anchor-exemption early return — and a line number only
@@ -1497,6 +1504,112 @@ M0/M1 have a defined behaviour before Niobe's measurements exist. `CoverageRepor
 the same `(kept, dropped)` pair, is what produces `largest_island_flops` for §10.0's milestone
 reporting — the rule and its metric live in one module deliberately, because their drifting apart is
 exactly how a coverage number becomes a lie.
+
+#### 5.4.2 `is_anchor` was a name test, not a weight test — RULING (2026-08-08T19:35:40-07:00)
+
+**The finding (issue #73).** §5.4.1's own citation of the heavy-op-family list, quoted two
+subsections up, is the tell: the predicate the exemption actually consulted was `is_anchor(op:
+&str) -> bool`, membership-only against a fixed name list. A node whose qualified op is `MatMul`
+satisfied it **whether or not any input held a resident constant weight.** An activation-only
+`MatMul` — both operands runtime tensors, the shape one transformer block's own hidden state takes
+against another's, no initializer anywhere on either input — read as an anchor purely because of
+its op-type string. **A name is not a weight**, and stage 3b's warrant (§5.4.1: "an anchor is by
+definition heavy enough to justify a boundary on its own") is a claim about *heavy arithmetic over a
+resident parameter*, not about an op-type token. The two rejected attempts at a fix (PR #89 and,
+before it, three further clean-room attempts, none of which reached a mergeable state) each
+narrowed the name list or added a shape heuristic; neither changed what kind of thing `is_anchor`
+was asked to decide from, and PR #89's schema table additionally undercounted `QMoE` by two inputs
+and cited a truncated source range — both audited and corrected below.
+
+**The fix does not touch heavy-family FLOP estimation.** `is_heavy_op_family` (`partition.rs:406`)
+is the exact set from §5.4.1(ii), bit-for-bit, and is the only predicate `ep.rs`'s FLOP estimate
+reads — MANDATORY per this section's own governing brief ("heavy-family FLOP set bit-identical to
+main; gate ordering unchanged"), and proven by a dedicated test
+(`heavy_op_families_are_unchanged_from_the_old_bare_name_list`). Stage 3's order is also unchanged:
+3a still reads `island.anchors`, 3b still returns before `transfer_ns`/`compute_ns` are read, 3c is
+still reached only when 3b does not fire. What changed is **what `island.anchors` counts** —
+`ep.rs`'s `GetCapability` loop now increments it only when a node is *both* a heavy-op family
+member *and* classified `WeightOperand::Present` by an evidence-bearing reader, not by name alone.
+
+**The instrument: a total classifier over an audited per-family site table, not a shape guess.**
+
+- **`WeightOperand`** (`partition.rs`) is a two-state enum, `Present` / `Absent` — total, no third
+  state. Missing, out-of-range, null, status-error, and non-constant all fold into `Absent`; the
+  classifier **fails closed** by construction, not by a caller remembering to check a `Result`.
+- **`WeightSiteReason`** catalogues *why* a schema input is or is not the resident weight —
+  `Weight`, `WeightScale`, `WeightZeroPoint`, and `Positional` (the named positional exception:
+  `MatMul`/`Gemm`/`Conv`'s un-shaped second input) all `designates_weight()`; `Activation`, `Bias`,
+  `Mask`, `Length`, `Cache`, `CacheScale`, `PositionalTable`, `RuntimeIndex`, `Routing`,
+  `PerChannelScalar`, `NormGain`, `GlobalScale`, `ActivationScale`, `ActivationBlockScale`, and
+  `Deprecated` do not. No activation, cache, mask, length, routing, bias, positional table, or
+  per-channel scalar is ever the designated weight for any family in this table — that is the
+  admission rule this table exists to make checkable rather than asserted.
+- **`WEIGHT_SITE_AUDIT`** is the full per-family, per-input transcription (84 rows across all 11
+  heavy-op families) against the pinned ORT source at `da9b5e364c465de65c49d91e696cd6485270757f`
+  (ORT v1.28.0); `SCHEMA_SOURCES` records the exact file and line range audited for each family.
+  Two corrections against PR #89's table live here: `com.microsoft::QMoE` has **21** inputs (indices
+  0–20, `contrib_defs.cc:1470`–`1663`, not the 19 previously audited and not the truncated
+  `1469–1641` range previously cited) — inputs 19 (`fc1_act_block_scale`) and 20
+  (`fc2_act_block_scale`) are catalogued `ActivationBlockScale`, not weight, and are not designated;
+  and `com.microsoft::GroupQueryAttention` has **16** inputs (indices 0–15,
+  `bert_defs.cc:1216`–`1369`), with 14 (`q_norm_weight`) and 15 (`k_norm_weight`) catalogued
+  `NormGain` — an O(head_size) RMS-norm gain, not the O(hidden_size²) resident weight block the
+  admission rule is about — so **GQA designates no weight site at all**, table-verified rather than
+  hand-asserted, and unchanged from PR #89 on this one point.
+- **`EXPECTED_INPUT_COUNTS`** is a second, independently-authored constant — pinned arity per
+  family, transcribed from the same source read, but **not** computed from `WEIGHT_SITE_AUDIT`'s
+  own row count. A test checks the two agree; because they are independent sources, a trailing
+  row silently dropped from the audit (the deleted-QMoE-input-20 mutation this branch's tests
+  simulate) changes the audit's count without changing the expectation, and the disagreement is
+  what turns the test red. Contiguity-from-zero alone — indices `0..N` present with no gap — cannot
+  catch this: a table missing only its last row is still contiguous from zero. This is the
+  per-family expected-count contract MANDATORY fix #3 asked for, replacing the contiguity check
+  rather than only supplementing it.
+- **`weight_sites(qualified_op) -> &'static [usize]`** is the shipped, hand-maintained table
+  `classify_weight_operand` actually reads. It is **not** derived from `WEIGHT_SITE_AUDIT` at
+  build time — there is no `build.rs` doing that — and the test proving the two agree
+  (`weight_sites_agrees_with_the_audit_table_but_that_only_proves_internal_agreement`) is named and
+  commented to say exactly that: **table-to-table equality proves the shipped table and the audit
+  table were not typo'd apart from each other; it proves nothing about whether either one is
+  complete against upstream, or whether a reason code was assigned correctly.** That distinction —
+  MANDATORY fix #9 — is why this document does not call the relationship "mechanical derivation."
+- **`classify_weight_operand(qualified_op, is_constant_at)`** asks the constant-ness oracle only at
+  the indices `weight_sites` names. This is also the resolution of the old `X_UNDECLARED` question
+  (MANDATORY fix #5): there is no catch-all variant claiming to cover future or undeclared inputs.
+  An input outside the designated set — whether catalogued under a non-weight reason or entirely
+  unaudited — is simply never asked about, so it can never contribute `Present`. The omission
+  **is** the fail-closed mechanism, not a documented feature working as claimed; a family added to
+  `HEAVY_OP_FAMILIES` without a corresponding `weight_sites` entry designates no weight site by the
+  same omission, and is exercised by a dedicated test.
+- **`is_anchor(qualified_op: &str, weight: WeightOperand) -> bool`** now requires both arguments —
+  `is_heavy_op_family(qualified_op) && weight == WeightOperand::Present`. A name-only call is not
+  merely discouraged, it does not type-check: there is no one-argument `is_anchor` left to call.
+  The caller must first produce a `WeightOperand` from `classify_weight_operand`, which is the only
+  function that reads node-level constant-ness at all.
+
+**What this does and does not prove about a running node.** `input_is_constant` at the classifier's
+call site is the same oracle the rest of the registry already trusts for constant folding; this
+change does not introduce a new source of truth about constancy, only a new consumer of the
+existing one, gated on the audited site rather than on any position. **The site table names
+*candidate* weight-bearing positions, not proof that every runtime node populates one** — a
+`MatMul` whose weight-site input is itself runtime-computed (say, a LoRA delta materialised on
+device) still classifies `Absent` and correctly fails the exemption; the safety property is the
+independent constant-ness gate, not the table. Symmetrically, a `MatMul`/`Gemm` fed a genuine
+constant weight at its named positional site (index 1 — see `Positional` above) is `Present` and
+correctly claims the exemption, which is the behaviour issue #73 asked for and stage 3b's warrant
+was always meant to cover.
+
+**What is still owed, stated rather than concealed.** `weight_sites` and `WEIGHT_SITE_AUDIT` are
+hand-transcribed against a pinned commit, checked into this repository as scratch reads during
+audit and not re-fetched by CI (no network access at test time). `EXPECTED_INPUT_COUNTS` guards the
+one property a network-free CI run can still check without re-deriving the whole schema: that the
+*count* the audit ships matches the *count* independently transcribed, so a silent trailing
+omission turns a test red rather than shipping quietly. It does **not** prove upstream ORT has not
+changed the schema again since the pinned commit; that would need either network access at test
+time or a committed schema snapshot with a digest and a generator, neither of which this branch
+adds. Falsifier, and it is the honest one: **a future ORT release renumbers or adds inputs to one
+of these 11 families, and nothing in this repository observes the drift until the next manual
+audit.** **Owner: Link.**
 
 ### 5.5 `Compile` — plan build and prepacking
 

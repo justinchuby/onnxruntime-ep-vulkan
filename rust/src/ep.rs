@@ -1281,8 +1281,10 @@ unsafe fn get_capability_impl(
             // SAFETY: api live; node is a live graph node.
             let view = unsafe { NodeView::new(api, node) };
             let qual = view.qualified_name();
-            if partition::is_anchor(&qual) {
-                island.anchors += 1;
+            // FLOP estimation is keyed off family membership alone (`is_heavy_op_family`),
+            // independent of weight presence, so that tightening the anchor admission rule
+            // below can never silently move this number — see that function's doc comment.
+            if partition::is_heavy_op_family(&qual) {
                 // Anchor flop estimate: 2 × K × N for a matmul-family op.
                 // Conservative minimum: 2 × 3072 × 3072 when shapes are unavailable.
                 island.flops = island.flops.saturating_add(2 * 3072 * 3072);
@@ -1292,6 +1294,16 @@ unsafe fn get_capability_impl(
                 let out_slots = unsafe { node_slots(api, node, Slots::Outputs) };
                 let out_bytes: u64 = out_slots.iter().map(|&s| slot_bytes(s)).sum();
                 island.flops = island.flops.saturating_add(out_bytes / 2);
+            }
+
+            // Anchor admission is a node property: a heavy family AND a resident constant
+            // weight at one of that family's schema-designated sites
+            // (`partition::WEIGHT_SITE_AUDIT`) — never the op name alone. This is the fix for
+            // issue #73: an activation-only `MatMul` (e.g. Q @ Kᵀ, both operands runtime
+            // tensors) must not be admitted as an anchor merely because its op name matches.
+            let weight = partition::classify_weight_operand(&qual, |i| view.input_is_constant(i));
+            if partition::is_anchor(&qual, weight) {
+                island.anchors += 1;
             }
 
             // Boundary activation bytes: only non-constant inputs that cross the island edge.

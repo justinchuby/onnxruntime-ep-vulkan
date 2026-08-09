@@ -46,10 +46,15 @@ The baseline is per-node too: a node counts as claimable only if the log says *t
 claimed. The old baseline treated all 364 `Add` nodes as claimable when 182 were.
 
 Islands are connected components over the graph's data edges, restricted to claimable nodes.
-The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; `--anchors` mirrors its
-anchor exemption. Neither is the partitioner -- this is a *ranking* instrument, and it says so:
-it reports island structure, and the partitioner's cost model is the thing that finally decides.
-The number to read is the **delta**, which is much more robust than either absolute.
+The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; the anchor set mirrors
+its anchor exemption and is read directly from `ops::partition::HEAVY_OP_FAMILIES` (see
+`load_heavy_op_families` below) rather than a second, hand-copied list -- there is no `--anchors`
+flag, deliberately, because the counterfactual should rank against whatever the shipped
+predicate actually recognises today, not against a value a caller can drift out of sync with it.
+Neither this floor nor this anchor set is the partitioner -- this is a *ranking* instrument, and
+it says so: it reports island structure, and the partitioner's cost model is the thing that
+finally decides. The number to read is the **delta**, which is much more robust than either
+absolute.
 
 NO CLOCK.
 
@@ -65,10 +70,51 @@ import argparse
 import collections
 import json
 import pathlib
+import re
 
-# Mirrors `ops::partition::is_anchor` closely enough to rank with. Not authoritative; the
-# partitioner in the DLL is. Kept short and named so a reader can check it against that list.
-DEFAULT_ANCHORS = ("Conv", "Gemm", "MatMul", "MatMulNBits", "Attention", "GroupQueryAttention")
+# The Rust source of truth for the family-level heavy-op predicate this instrument mirrors.
+# Resolved relative to this file rather than the working directory, so `--out`/`--model`
+# arguments elsewhere on disk do not change which `partition.rs` gets read.
+_PARTITION_RS = pathlib.Path(__file__).resolve().parents[1] / "src" / "ops" / "partition.rs"
+
+
+def load_heavy_op_families(path: pathlib.Path = _PARTITION_RS) -> tuple[str, ...]:
+    """Reads `ops::partition::HEAVY_OP_FAMILIES` out of the Rust source itself.
+
+    This used to be a hand-copied tuple (`DEFAULT_ANCHORS`) naming six of the eleven families the
+    production predicate actually recognises, with no mechanism keeping the two in agreement --
+    exactly the drift this counterfactual instrument exists to warn about in every *other* op.
+    Parsing the constant's own source closes that gap for this file too, and it **fails closed**:
+    a missing file, an unmatched constant, or a constant that parses to zero entries all raise
+    rather than silently falling back to a shorter or stale list, because a counterfactual ranked
+    against the wrong anchor set would misreport which op is worth registering next.
+
+    `HEAVY_OP_FAMILIES` entries carry a `domain::` prefix for contrib ops (e.g.
+    `com.microsoft::MatMulNBits`); ONNX's `NodeProto.op_type` never does (the domain is the
+    separate `NodeProto.domain` field), so the prefix is stripped to match what this script
+    actually reads off the graph and the claim log.
+    """
+    if not path.is_file():
+        raise RuntimeError(
+            f"ERROR(instrument): {path} does not exist -- cannot read `HEAVY_OP_FAMILIES` from "
+            "the Rust source. Refusing to fall back to a hardcoded list that could silently "
+            "drift from the production predicate."
+        )
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"pub const HEAVY_OP_FAMILIES:\s*&\[&str\]\s*=\s*&\[(.*?)\];", text, re.DOTALL)
+    if not m:
+        raise RuntimeError(
+            f"ERROR(instrument): could not find `HEAVY_OP_FAMILIES` in {path} -- its declaration "
+            "shape has changed and this parser has not been updated to match. Refusing to fall "
+            "back to a hardcoded list that could silently drift from the production predicate."
+        )
+    names = re.findall(r'"([^"]*)"', m.group(1))
+    if not names:
+        raise RuntimeError(
+            f"ERROR(instrument): `HEAVY_OP_FAMILIES` in {path} parsed to zero entries -- the "
+            "regex matched the constant but found no quoted strings inside it."
+        )
+    return tuple(n.rsplit("::", 1)[-1] for n in names)
 
 
 def islands(nodes, keepset: set[int], producer) -> list[list[str]]:
@@ -187,7 +233,7 @@ def main() -> int:
         )
         return 2
 
-    anchors = set(DEFAULT_ANCHORS)
+    anchors = set(load_heavy_op_families())
     base_keep = {i for i, n in enumerate(nodes) if claimed_node.get(n.name)}
     base_comps = islands(nodes, base_keep, producer)
     base_n, base_k = retained(base_comps, args.min_nodes, anchors)

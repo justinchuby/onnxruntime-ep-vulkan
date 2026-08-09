@@ -1972,6 +1972,15 @@ remains 0.0 until Niobe wires VkQueryPool timestamps for calibration.
   `if island.anchors > 0 { return Verdict::Claim }` — ensures any island containing MatMulNBits
   or GQA is always claimed. On Phi-3.5 (353 claimed, 1 island, 225 anchors), the gate never
   declines. Falsifier: bench/phi35.py → 0 claimed nodes would indicate a broken anchor exemption.
+
+  > **Amendment 2026-08-08T19:35:40-07:00 (issue #73) — 225 is withdrawn; the exact figure is
+  > 193.** §7.17(c) below derives `32 / 193` from the same graph and cites it as `the declined
+  > anchors over the total anchors`; `bench/results/_claim_log_phi35_r15_after.jsonl` confirms
+  > 161 MatMulNBits + 32 GroupQueryAttention = 193 claimed anchor nodes on this model, with no
+  > other family contributing one. **225 was never re-derived from a committed collection and
+  > does not match either source; it is relabelled here rather than silently corrected, and this
+  > paragraph's own count should be read as 193, not 225.** This does not change the finding
+  > itself — the gate still never declines on Phi-3.5 — only the cardinality quoted for it.
 - *Under-declination* (gate declines nothing): `test_partition_gate.py`. A non-anchor two-cluster
   model must produce `[partition]` codes. If it does not, the gate is inert. Falsifier: the test
   asserting `claims["Sigmoid"]["code"] == "partition"` goes red.
