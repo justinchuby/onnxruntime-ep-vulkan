@@ -6009,6 +6009,58 @@ What does it **not** need?
   nothing; the selector never asks it to. A wider head is not a slow path here, it is an
   out-of-bounds one.
 
+#### The sentinel, and the non-finite policy
+
+Two things about the merge are stated in the shader header because they are correctness
+arguments, not implementation notes, and because a reviewer asked for both to be explicit rather
+than inferred.
+
+**The empty-lane sentinel is inside the representable domain, by derivation.** A lane that draws
+no `t` publishes `m = -1e30, s = 0`. For that to be an exact identity under the combine it has to
+be *below every achievable score*, not merely "very negative". Inputs are f16, so
+`|q · k| <= head_dim * 65504^2` and with `head_dim <= 128` the largest magnitude any score can
+reach is `128 * 65504^2 * |scale| ~ 5.5e11 * |scale|`. For every `scale` this project can produce
+(`1/sqrt(head_dim)`, so `<= 1`), `-1e30` is more than eighteen orders of magnitude below the
+floor. An empty lane therefore can never win the `max`, its `s = 0` adds nothing to the
+denominator, and its zeroed accumulator adds nothing to the numerator — the identity is exact,
+not approximate. Lane 0 additionally always owns `t = 0`, so at least one lane is non-empty for
+every reachable `total_len >= 1` and the denominator can never be `0/0`.
+
+**Non-finite inputs propagate, exactly as `gqa_f16` already does.** This kernel adopts the serial
+kernel's policy verbatim rather than inventing a sanitising one, because a fallback that silently
+repairs a `NaN` the production path would have propagated is a *behaviour change* hiding inside a
+performance change.
+
+| input | serial | this kernel | why they agree |
+|---|---|---|---|
+| `NaN` score | propagates | propagates | `NaN > max_s` is false, so `max_s` survives; `exp(NaN - max_s)` is `NaN`; `NaN` enters `s` and `acc` and never leaves |
+| `+INF` score | propagates | propagates | the rescale branch computes `exp(INF - INF)` = `NaN` |
+| `-INF` score | absorbed | absorbed | `exp(-INF - max_s)` = `0`, contributes nothing — this is the same arithmetic as the empty-lane sentinel |
+
+GLSL leaves `max(NaN, x)` implementation-defined, which would matter if the result depended on
+it. It does not: non-finiteness is **absorbing** under this combine, so whichever operand a driver
+returns, the row's `s` and `acc` are already contaminated and the published row is non-finite
+either way. The guarantee is therefore stated per row and all-or-nothing: **a row is non-finite in
+this kernel exactly when it is non-finite in the serial kernel**, and never in a different set of
+rows. Because `sh_m`, `sh_s` and `sh_a` are workgroup-local and one workgroup is exactly one
+`(b, h)` pair, contamination cannot cross into another head — a property the tests assert
+directly by poisoning one KV head of a grouped-query layout and requiring the other group to come
+back both finite *and* numerically equal to serial.
+
+#### `W = 1` is the prior binary, proven against the prior binary
+
+Requirement 1 says `W = 1` must be bitwise-equivalent to prior production. That is not something
+a single build can honestly assert about itself, so the probe proves it **across two binaries**:
+the release DLL from this head, and a release DLL built from the merge-base commit, with the
+probe refusing to run if the two files are byte-identical. At 13 `past` lengths spanning the
+selector threshold, all three outputs — `attn_out`, `present.key`, `present.value` — are compared
+bitwise, not within tolerance. The same pass records the *shipped* default (`auto`) against the
+base build, which is expected to be identical below the `past = 63` threshold and to differ at or
+above it; that asymmetry is itself the evidence that the selector boundary is where the design
+says it is. A companion pass does the same at `seq_len > 1` to show the prefill path at **this**
+head is untouched: bitwise-identical outputs, the decode module never dispatched, and time within
+±10%.
+
 #### The selector, and why the boundary is `== 1` and not `<= n`
 
 `ops::attention::gqa_decode_kv_lanes(seq_len, past_len_max, head_dim, kv_arena) -> u32`, where the
@@ -6108,8 +6160,12 @@ suppressed. Both polarities are exercised: removing the entry produces
 #### What is proven, and what is refused
 
 The equivalence and performance record is `bench/results/gqa_decode_kv_parallel.json`; §27 of
-`docs/PERF.md` reads it. Two things belong here because they are design facts, not measurements:
+`docs/PERF.md` reads it. Four things belong here because they are design facts, not measurements:
 
+* **`W = 1` is the prior binary.** Two distinct release DLLs, 13 `past` lengths, all three
+  outputs, **bitwise** — not within tolerance. See above.
+* **The prefill path at this head is untouched.** Six `seq_len > 1` shapes, bitwise identical
+  against the base build, with the decode module absent from the dispatch record.
 * **The kernel writes the same KV cache.** On the real Phi-3.5 graph, layer 0's `present.key` and
   `present.value` are **bitwise identical** between the two arms.
 * **Whole-model outputs still diverge, and no whole-model claim is made.** The disagreement first

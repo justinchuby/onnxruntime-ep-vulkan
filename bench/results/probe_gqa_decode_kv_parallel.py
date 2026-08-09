@@ -157,9 +157,11 @@ from __future__ import annotations
 
 import argparse
 import collections
+import datetime
 import hashlib
 import json
 import os
+import random
 import re
 import statistics
 import subprocess
@@ -198,6 +200,15 @@ ARMS = (
 #: without it.
 DEFAULT_PAST = (128, 512, 1024)
 MANDATORY_PAST = 128
+
+#: Past lengths for the fallback-identity pass. Deliberately dense AROUND the selector's
+#: threshold (W>=2 first appears at total 64, i.e. past 63) and wide on either side, so the pass
+#: covers both the region where the shipped default is the refusal and the region where it is not.
+FALLBACK_PAST = (0, 1, 7, 31, 61, 62, 63, 64, 127, 128, 255, 511, 1024)
+
+#: Prefill shapes. `seq_len` 2 and 8 bracket the held-out mutation `== 1` -> `<= 8`; 64 and 128
+#: are real prefill chunk sizes. Past 0 is a first chunk, past 128 a continuation.
+PREFILL_CASES = ((0, 2), (0, 8), (0, 64), (128, 2), (128, 8), (128, 128))
 
 #: PREDECLARED per-output tolerance. Written before any run of this probe, and not to be edited
 #: to turn a row green — the whole point of declaring it in source is that widening it is a diff
@@ -246,6 +257,186 @@ _ROOT_LEAK_PATTERNS = (
     re.compile(r"^\\\\[A-Za-z0-9_.-]+\\"),
     re.compile(r"(^|[\s\"'(=])/(home|Users|root|mnt|media)/"),
 )
+
+#: Where the cooperative device lock lives. Overridable so a CI box can point it at a volume that
+#: every job on that box shares; the DEFAULT is per-user rather than per-checkout on purpose,
+#: because the thing being excluded is other *worktrees* on this machine, and a lock inside one
+#: worktree excludes nothing.
+LOCK_DIR_ENV = "ONNXRUNTIME_EP_VULKAN_PROBE_LOCK_DIR"
+
+#: How long to wait for the device before giving up. A probe that measures while another probe
+#: measures produces a number about the box, not about the kernel; a probe that waits forever
+#: never reports. 45 minutes is longer than any single run of this file.
+LOCK_TIMEOUT_S = 45 * 60
+
+
+# ---------------------------------------------------------------------------------------------
+# Cooperative device lock
+# ---------------------------------------------------------------------------------------------
+
+
+class DeviceLock:
+    """Machine-wide, device-indexed, COOPERATIVE exclusion between measurement probes.
+
+    WHAT THIS IS
+    ------------
+    An advisory lock file plus a participant registry. Any process that takes the same lock
+    before touching the device is serialised against this one. That is the whole mechanism, and
+    the word `cooperative` in the artifact is load-bearing: this excludes *participants in this
+    protocol* and nothing else. It cannot exclude a compositor, a browser, a CUDA job, or a
+    sibling squad session that has not adopted the lock.
+
+    WHY IT IS RECORDED RATHER THAN ASSUMED
+    --------------------------------------
+    The rejected artifact reported timings with no statement about occupancy at all, so a reader
+    could not tell a kernel improvement from an idle box. Recording `contended` and `wait_s`
+    makes the occupancy question answerable from the artifact: a run that never waited and saw
+    no other participant is a different claim from a run that queued behind three of them, and
+    the difference is now visible instead of inferred from how clean the numbers look.
+
+    This DOES NOT replace the dispersion gate. Two independent conditions have to hold: nobody
+    else in the protocol was measuring (this lock), and the samples this run took were tight
+    (`DISPERSION_CEILING`). Either one alone is defeatable.
+    """
+
+    def __init__(self, device: int):
+        base = os.environ.get(LOCK_DIR_ENV)
+        root = (
+            Path(base)
+            if base
+            else Path(os.environ.get("LOCALAPPDATA") or Path.home())
+            / "onnxruntime-ep-vulkan"
+            / "probe-locks"
+        )
+        root.mkdir(parents=True, exist_ok=True)
+        self.device = device
+        self._path = root / f"gpu-device-{device}.lock"
+        self._registry = root / f"gpu-device-{device}.participants"
+        self._fh = None
+        self._t_acquired = None
+        self.witness: dict = {}
+
+    def _participants(self) -> int:
+        """Live holders of the registry, excluding this process. Stale entries are reaped."""
+        live = []
+        try:
+            raw = self._registry.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            raw = []
+        for line in raw:
+            line = line.strip()
+            if not line or not line.isdigit():
+                continue
+            pid = int(line)
+            if pid == os.getpid():
+                continue
+            try:
+                if sys.platform == "win32":
+                    out = subprocess.run(
+                        ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                        capture_output=True,
+                        text=True,
+                    ).stdout
+                    alive = str(pid) in out
+                else:
+                    os.kill(pid, 0)
+                    alive = True
+            except Exception:  # noqa: BLE001
+                alive = False
+            if alive:
+                live.append(pid)
+        return len(live)
+
+    def _register(self, add: bool) -> None:
+        try:
+            pids = [
+                p.strip()
+                for p in self._registry.read_text(encoding="utf-8").splitlines()
+                if p.strip().isdigit()
+            ]
+        except OSError:
+            pids = []
+        me = str(os.getpid())
+        pids = [p for p in pids if p != me]
+        if add:
+            pids.append(me)
+        try:
+            self._registry.write_text("\n".join(pids), encoding="utf-8")
+        except OSError:
+            pass
+
+    def acquire(self, timeout_s: int = LOCK_TIMEOUT_S) -> dict:
+        t0 = time.perf_counter()
+        others = self._participants()
+        self._fh = open(self._path, "a+b")  # noqa: SIM115 — held for the run
+        contended = False
+        acquired = False
+        deadline = t0 + timeout_s
+        while time.perf_counter() < deadline:
+            try:
+                self._lock_nb()
+                acquired = True
+                break
+            except OSError:
+                contended = True
+                time.sleep(0.5)
+        self._t_acquired = time.perf_counter()
+        if acquired:
+            self._register(True)
+        else:
+            self._fh.close()
+            self._fh = None
+        self.witness = {
+            "mechanism": "advisory file lock (msvcrt.locking on Windows, fcntl.flock on POSIX)",
+            "scope": f"machine-wide, keyed on device index {self.device}",
+            "semantics": "COOPERATIVE",
+            "acquired": acquired,
+            "contended": contended,
+            "wait_s": round(self._t_acquired - t0, 3),
+            "other_participants_at_entry": others,
+            "excludes": "any other process that takes this same lock before using the device",
+            "does_not_exclude": (
+                "processes that have not adopted this protocol — a compositor, another EP, or a "
+                "squad session running its own benchmark without the lock. This is why the "
+                "dispersion gate is a SEPARATE and independently sufficient condition."
+            ),
+        }
+        if not acquired:
+            self.witness["timed_out_after_s"] = timeout_s
+        return self.witness
+
+    def _lock_nb(self) -> None:
+        if sys.platform == "win32":
+            import msvcrt
+
+            self._fh.seek(0)
+            msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def release(self) -> dict:
+        if self._fh is not None:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    self._fh.seek(0)
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            self._fh.close()
+            self._fh = None
+            self._register(False)
+        if self._t_acquired is not None:
+            self.witness["held_s"] = round(time.perf_counter() - self._t_acquired, 3)
+        self.witness["participants_at_exit"] = self._participants()
+        return self.witness
 
 
 # ---------------------------------------------------------------------------------------------
@@ -448,15 +639,102 @@ def _run_outputs(py: str, scratch: Path, past: int, arm_env, device: int, tag: s
     )
 
 
+def _ulp_distance(np, a, b):
+    """Distance in representable steps, at the ORIGINAL dtype, not at f32.
+
+    An absolute difference does not say whether a number moved one step or ten thousand, and at
+    f16 the step size varies by four orders of magnitude across the range. Reinterpreting the
+    bits as a sign-magnitude integer and converting to two's complement makes adjacent floats
+    adjacent integers, so `|ia - ib|` counts representable values between them. Non-finite lanes
+    are excluded and reported separately rather than folded in as enormous integers.
+    """
+    if a.dtype not in (np.float16, np.float32) or a.dtype != b.dtype:
+        return None
+    itype = np.int16 if a.dtype == np.float16 else np.int32
+    sign_bit = np.array(
+        1 << (15 if a.dtype == np.float16 else 31), dtype=np.uint16 if a.dtype == np.float16 else np.uint32
+    )
+
+    def to_ordered(x):
+        u = x.view(np.uint16 if x.dtype == np.float16 else np.uint32).astype(np.int64)
+        neg = u >= int(sign_bit)
+        return np.where(neg, int(sign_bit) - u, u)
+
+    finite = np.isfinite(a) & np.isfinite(b)
+    if not finite.any():
+        return {"max": None, "note": "no jointly finite element"}
+    ia = to_ordered(a)[finite]
+    ib = to_ordered(b)[finite]
+    d = np.abs(ia - ib)
+    _ = itype
+    return {
+        "max": int(d.max()),
+        "mean": float(d.mean()),
+        "p99": int(np.percentile(d, 99)),
+        "elements_beyond_1_ulp": int((d > 1).sum()),
+        "dtype": str(a.dtype),
+    }
+
+
+def _nonfinite_census(np, x) -> dict:
+    return {
+        "nan": int(np.isnan(x).sum()),
+        "posinf": int(np.isposinf(x).sum()),
+        "neginf": int(np.isneginf(x).sum()),
+    }
+
+
+def _topk_agreement(np, cand, ref, ks=(1, 5, 10)) -> dict:
+    """Rank agreement plus the MARGIN, on the last row of the leading output.
+
+    Top-k agreement on its own is as weak as argmax on its own: two distributions can agree on
+    their ordering while differing everywhere. The margin is the part that carries information —
+    `top1 - top2` in the reference says how much slack the ordering had, so a run that keeps the
+    ordering with a margin of 1e-4 is reporting something quite different from one that keeps it
+    with a margin of 3.
+    """
+    if cand.shape != ref.shape or cand.size == 0:
+        return {"measured": False, "reason": "shape mismatch or empty"}
+    c = cand.reshape(-1, cand.shape[-1])[-1].astype(np.float32)
+    r = ref.reshape(-1, ref.shape[-1])[-1].astype(np.float32)
+    if not (np.isfinite(c).all() and np.isfinite(r).all()):
+        return {"measured": False, "reason": "non-finite row"}
+    out: dict = {"measured": True, "vocab": int(r.size)}
+    for k in ks:
+        if k > r.size:
+            continue
+        ci = set(np.argsort(-c)[:k].tolist())
+        ri = set(np.argsort(-r)[:k].tolist())
+        out[f"top{k}_set_agrees"] = ci == ri
+        out[f"top{k}_overlap"] = len(ci & ri)
+    order = np.argsort(-r)
+    out["reference_top1_minus_top2"] = float(r[order[0]] - r[order[1]]) if r.size > 1 else None
+    out["candidate_at_reference_top1"] = float(c[order[0]])
+    out["margin_survives"] = (
+        bool(c[order[0]] - c[order[1]] > 0) if r.size > 1 else None
+    )
+    out["note"] = (
+        "recorded, never the criterion: the elementwise band below is what decides equivalence"
+    )
+    return out
+
+
 def _compare_outputs(np, cand, ref, names) -> dict:
     """Every element of every output, at the predeclared tolerance. Bitwise recorded separately.
 
     Returns a dict whose `equivalent` field is the ONLY thing `_publishable` consults. The
     per-output detail is kept so a refusal names what failed rather than merely that something
     did.
+
+    Each output carries, in addition to the pass/fail: bitwise identity, the finite-mask
+    comparison, absolute AND relative worst-case, the ULP histogram, and a non-finite census of
+    both sides. The rejected artifact reported a single scalar per case, which cannot distinguish
+    "moved one representable step" from "moved into a different exponent", and cannot see a NaN
+    at all when the NaN is on both sides.
     """
     per_output = []
     worst = {"name": None, "max_abs": 0.0}
+    worst_rel = {"name": None, "max_rel": 0.0}
     all_bitwise = True
     for i, (c, r) in enumerate(zip(cand, ref)):
         name = names[i] if i < len(names) else f"output_{i}"
@@ -477,6 +755,16 @@ def _compare_outputs(np, cand, ref, names) -> dict:
         bad = (~np.isclose(a, b, rtol=band["rtol"], atol=band["atol"])) & finite
         n_bad = int(bad.sum())
         max_abs = float(np.abs(a[finite] - b[finite]).max()) if finite.any() else 0.0
+        # Relative error with a denominator floor, so a reference element of 0 does not report
+        # an infinite relative error for an absolute difference of one ULP.
+        if finite.any():
+            denom = np.maximum(np.abs(b[finite]), band["atol"])
+            rel = np.abs(a[finite] - b[finite]) / denom
+            max_rel = float(rel.max())
+        else:
+            max_rel = 0.0
+        cand_nf = _nonfinite_census(np, a)
+        ref_nf = _nonfinite_census(np, b)
         rec.update(
             {
                 "bitwise_identical": bitwise,
@@ -486,17 +774,35 @@ def _compare_outputs(np, cand, ref, names) -> dict:
                 "elements": int(a.size),
                 "elements_outside_tolerance": n_bad,
                 "max_abs_diff": max_abs,
+                "max_rel_diff": max_rel,
+                "ulp": _ulp_distance(np, c, r),
+                "nonfinite": {
+                    "candidate": cand_nf,
+                    "reference": ref_nf,
+                    "policy": (
+                        "propagate. The kernel neither sanitises nor screens NaN/Inf; it "
+                        "reproduces the serial kernel elementwise. Equivalence therefore "
+                        "requires the finite MASKS to match — a candidate that turned a finite "
+                        "element non-finite, or a non-finite element finite, fails here "
+                        "regardless of the numeric band."
+                    ),
+                },
                 "equivalent": bool(finite_match and n_bad == 0),
             }
         )
+        if i == 0:
+            rec["rank"] = _topk_agreement(np, c, r)
         if max_abs > worst["max_abs"]:
             worst = {"name": name, "max_abs": max_abs}
+        if max_rel > worst_rel["max_rel"]:
+            worst_rel = {"name": name, "max_rel": max_rel}
         per_output.append(rec)
     return {
         "outputs_total": len(ref),
         "outputs_compared": len(per_output),
         "all_bitwise_identical": all_bitwise,
         "worst": worst,
+        "worst_relative": worst_rel,
         "per_output": per_output,
         "equivalent": bool(
             per_output
@@ -564,14 +870,21 @@ def equivalence_pass(py: str, scratch: Path, pasts, device: int) -> list:
 # ---------------------------------------------------------------------------------------------
 
 
-def _kernel_us(trace_path: Path, iters: int) -> dict:
-    """Per-inference GPU microseconds per kernel, with the first inference dropped as warm-up.
+def _kernel_us(trace_path: Path, iters: int, warmups: int = 1) -> dict:
+    """RAW per-inference GPU microseconds per kernel, with the first `warmups` inferences dropped.
 
     The tracer emits one `cat == "gpu"` event per dispatch in submission order, so for a kernel
     that runs `n` times per inference the event list partitions into `iters` runs of `n`. Dropping
-    bucket 0 removes pipeline creation, first-touch allocation and cold caches from the sample. A
-    count that does not divide is an instrument error and the point is discarded — averaging over
-    a partition that is not a partition is how a warm-up leaks into a headline.
+    the leading buckets removes pipeline creation, first-touch allocation and cold caches from the
+    sample. A count that does not divide is an instrument error and the point is discarded —
+    averaging over a partition that is not a partition is how a warm-up leaks into a headline.
+
+    WHY THE RAW SERIES IS KEPT AND NOT ONLY THE MEAN
+    ------------------------------------------------
+    A mean of a mean of a mean cannot be audited: the reader cannot see whether one inference
+    carried the point, whether the series drifted, or whether the "sample" was a single number
+    wearing three hats. `per_inference_us` is the untouched series this point was computed from,
+    and everything else in this record is a function of it.
     """
     d = json.loads(trace_path.read_text(encoding="utf-8"))
     events = d["traceEvents"] if isinstance(d, dict) else d
@@ -579,31 +892,46 @@ def _kernel_us(trace_path: Path, iters: int) -> dict:
     for e in events:
         if e.get("ph") == "X" and e.get("cat") == "gpu":
             by_name[e.get("name", "?")].append(e.get("dur", 0))
-    out: dict = {"warmup_inferences": 1, "timed_inferences": iters - 1, "by_kernel_us": {}}
+    timed_n = iters - warmups
+    out: dict = {
+        "warmup_inferences": warmups,
+        "timed_inferences": timed_n,
+        "by_kernel_us": {},
+        "per_inference_us": {},
+    }
     total = 0.0
     for name, durs in by_name.items():
-        if iters <= 1 or len(durs) % iters != 0:
+        if timed_n <= 0 or len(durs) % iters != 0:
             out.setdefault("instrument_errors", []).append(
                 f"{name}: {len(durs)} events do not partition into {iters} inferences"
             )
             continue
         per = len(durs) // iters
-        timed = durs[per:]
-        us = sum(timed) / (iters - 1)
-        out["by_kernel_us"][name] = us
+        # One value per inference: the sum of that inference's dispatches of this kernel.
+        series = [sum(durs[i * per : (i + 1) * per]) for i in range(iters)]
+        timed = series[warmups:]
+        out["by_kernel_us"][name] = statistics.mean(timed)
+        out["per_inference_us"][name] = {
+            "warmup_dropped": series[:warmups],
+            "timed": timed,
+        }
         out.setdefault("dispatches_per_inference", {})[name] = per
-        total += us
+        total += out["by_kernel_us"][name]
     out["graph_total_us"] = total
     out["gqa_us"] = out["by_kernel_us"].get(PARALLEL_EVENT, 0.0) + out["by_kernel_us"].get(
         SERIAL_EVENT, 0.0
     )
+    gqa_series = out["per_inference_us"].get(PARALLEL_EVENT) or out["per_inference_us"].get(
+        SERIAL_EVENT
+    )
+    out["gqa_per_inference_us"] = list(gqa_series["timed"]) if gqa_series else []
     out["gqa_kernels_seen"] = sorted(
         k for k in out["by_kernel_us"] if k in (PARALLEL_EVENT, SERIAL_EVENT)
     )
     return out
 
 
-def _time_point(py, scratch, past, arm_name, arm_env, device, iters, repeat) -> dict:
+def _time_point(py, scratch, past, arm_name, arm_env, device, iters, repeat, warmups=1) -> dict:
     trace = scratch / f"kvpar_trace_{past}_{arm_name}_{repeat}.json"
     diag = scratch / f"kvpar_diag_{past}_{arm_name}_{repeat}.json"
     counters = scratch / f"kvpar_counters_{past}_{arm_name}_{repeat}.json"
@@ -647,7 +975,7 @@ def _time_point(py, scratch, past, arm_name, arm_env, device, iters, repeat) -> 
     if not trace.is_file():
         rec["error"] = f"no trace; worker exit {proc.returncode}"
         return rec
-    rec.update(_kernel_us(trace, iters))
+    rec.update(_kernel_us(trace, iters, warmups))
     if counters.is_file():
         try:
             c = json.loads(counters.read_text(encoding="utf-8"))
@@ -673,6 +1001,10 @@ def _arm_summary(points, expected_event) -> dict:
     summary: dict = {
         "points": points,
         "samples_us": [p["gqa_us"] for p in ok],
+        # The untouched per-inference series behind `samples_us`, flattened across repeats. This
+        # is the audit trail: `median_us` is a function of `samples_us`, and `samples_us` is a
+        # function of THIS. `_publishable` refuses a case whose arms do not carry it.
+        "raw_samples_us": [v for p in ok for v in (p.get("gqa_per_inference_us") or [])],
         "expected_kernel": expected_event,
         "kernels_seen": sorted(seen),
         "witness_ok": bool(ok) and seen == {expected_event},
@@ -699,7 +1031,7 @@ def _arm_summary(points, expected_event) -> dict:
     return summary
 
 
-def timing_pass(py, scratch, pasts, device, iters, repeats) -> list:
+def timing_pass(py, scratch, pasts, device, iters, repeats, warmups=1) -> list:
     records = []
     for past in pasts:
         arms: dict = {name: [] for name, _, _ in ARMS}
@@ -708,7 +1040,7 @@ def timing_pass(py, scratch, pasts, device, iters, repeats) -> list:
         for r in range(repeats):
             order = list(ARMS) if r % 2 == 0 else list(reversed(ARMS))
             for name, env, _event in order:
-                pt = _time_point(py, scratch, past, name, env, device, iters, r)
+                pt = _time_point(py, scratch, past, name, env, device, iters, r, warmups)
                 arms[name].append(pt)
                 print(
                     f"[kvpar] timing past={past} arm={name:8s} r{r}: "
@@ -733,7 +1065,7 @@ def timing_pass(py, scratch, pasts, device, iters, repeats) -> list:
 # ---------------------------------------------------------------------------------------------
 
 
-def build_node_model(past: int) -> bytes:
+def build_node_model(past: int, seq_len: int = None) -> bytes:
     """Phi-3.5's own GQA node, alone in a graph. Same op, same attributes, same shape.
 
     WHY THE CLAIM LIVES HERE AND NOT ON THE WHOLE MODEL
@@ -756,11 +1088,13 @@ def build_node_model(past: int) -> bytes:
 
     import numpy as np
 
+    if seq_len is None:
+        seq_len = NODE_SHAPE["seq_len"]
     nh = NODE_SHAPE["num_heads"]
     nkv = NODE_SHAPE["kv_heads"]
     hd = NODE_SHAPE["head_dim"]
     rot = NODE_SHAPE["rotary_dim"]
-    s = NODE_SHAPE["seq_len"]
+    s = seq_len
     packed = (nh + 2 * nkv) * hd
     max_seq = past + s + 1
     f16 = TensorProto.FLOAT16
@@ -802,14 +1136,14 @@ def build_node_model(past: int) -> bytes:
     return model.SerializeToString()
 
 
-def build_node_feeds(past: int):
+def build_node_feeds(past: int, seq_len: int = None):
     import numpy as np
 
     nh = NODE_SHAPE["num_heads"]
     nkv = NODE_SHAPE["kv_heads"]
     hd = NODE_SHAPE["head_dim"]
     rot = NODE_SHAPE["rotary_dim"]
-    s = NODE_SHAPE["seq_len"]
+    s = NODE_SHAPE["seq_len"] if seq_len is None else seq_len
     packed = (nh + 2 * nkv) * hd
     max_seq = past + s + 1
     rng = np.random.default_rng(NODE_SEED + past)
@@ -820,7 +1154,9 @@ def build_node_feeds(past: int):
         "packed_qkv": (rng.standard_normal((1, s, packed)) * 0.1).astype(np.float16),
         "past_key": (rng.standard_normal((1, nkv, past, hd)) * 0.1).astype(np.float16),
         "past_value": (rng.standard_normal((1, nkv, past, hd)) * 0.1).astype(np.float16),
-        "seqlens_k": np.array([past], dtype=np.int32),
+        # `seqlens_k` is total-minus-one, so `past_len = seqlens_k + 1 - seq_len` recovers `past`
+        # at any `seq_len`. Getting this wrong would silently move the prefill arm's KV extent.
+        "seqlens_k": np.array([past + s - 1], dtype=np.int32),
         "total_seq": np.array(past + s, dtype=np.int32),
         "cos_cache": np.cos(ang).astype(np.float16),
         "sin_cache": np.sin(ang).astype(np.float16),
@@ -832,6 +1168,7 @@ def node_worker(argv) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--worker-node", action="store_true")
     ap.add_argument("--past", type=int, required=True)
+    ap.add_argument("--seq-len", type=int, default=1)
     ap.add_argument("--iters", type=int, default=4)
     ap.add_argument("--device", type=int, default=0)
     ap.add_argument("--out", required=True)
@@ -851,8 +1188,8 @@ def node_worker(argv) -> int:
             print(f"registration failed: {exc}", file=sys.stderr)
             return 2
 
-    model = build_node_model(a.past)
-    feeds = build_node_feeds(a.past)
+    model = build_node_model(a.past, a.seq_len)
+    feeds = build_node_feeds(a.past, a.seq_len)
     opts = ort.SessionOptions()
     opts.log_severity_level = 3
     opts.add_session_config_entry("ep.device_index", str(a.device))
@@ -868,6 +1205,15 @@ def node_worker(argv) -> int:
                 "providers": providers,
                 "output_names": [o.name for o in sess.get_outputs()],
                 "count": len(outs),
+                "seq_len": a.seq_len,
+                "past": a.past,
+                # Record-level provenance: which binary actually produced THESE bytes. The
+                # document root records the subject build, but a record that cannot name its own
+                # library cannot be cross-checked against the root, and the fallback-identity
+                # pass deliberately runs two DIFFERENT libraries.
+                "ep_library_sha256": hashlib.sha256(Path(lib).read_bytes()).hexdigest(),
+                "ep_library_bytes": Path(lib).stat().st_size,
+                "recorded_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
                 ENV_KV_PARALLEL: os.environ.get(ENV_KV_PARALLEL, "<unset>"),
             }
         ),
@@ -877,7 +1223,7 @@ def node_worker(argv) -> int:
     return 0
 
 
-def _run_node(py, scratch, past, arm_env, device, iters, tag):
+def _run_node(py, scratch, past, arm_env, device, iters, tag, seq_len=1, lib=None, warmups=1):
     out = scratch / f"kvpar_node_{past}_{tag}.npz"
     meta = Path(str(out) + ".meta.json")
     trace = scratch / f"kvpar_node_trace_{past}_{tag}.json"
@@ -888,12 +1234,15 @@ def _run_node(py, scratch, past, arm_env, device, iters, tag):
     env.pop(ENV_KV_PARALLEL, None)
     if arm_env is not None:
         env[ENV_KV_PARALLEL] = arm_env
+    if lib is not None:
+        env[EP_LIB_ENV] = str(lib)
     env[TRACE_ENV] = str(trace)
     env[TRACE_GPU_ENV] = "1"
     env[COUNTERS_ENV] = str(counters)
     t0 = time.perf_counter()
     proc = subprocess.run(
         [py, str(Path(__file__).resolve()), "--worker-node", "--past", str(past),
+         "--seq-len", str(seq_len),
          "--iters", str(iters), "--device", str(device), "--out", str(out)],
         cwd=str(_ROOT), env=env, capture_output=True,
     )
@@ -903,14 +1252,21 @@ def _run_node(py, scratch, past, arm_env, device, iters, tag):
             f"{proc.stderr.decode(errors='replace')[-800:]}\n"
         )
         return None
-    timing = _kernel_us(trace, iters)
+    timing = _kernel_us(trace, iters, warmups)
     timing["process_wall_s"] = round(time.perf_counter() - t0, 3)
     trace.unlink(missing_ok=True)
-    return {"outputs": out, "meta": json.loads(meta.read_text(encoding="utf-8")),
-            "timing": timing}
+    meta_d = json.loads(meta.read_text(encoding="utf-8"))
+    if counters.is_file():
+        try:
+            c = json.loads(counters.read_text(encoding="utf-8"))
+            timing["shaders_dispatched"] = c.get("shaders_dispatched")
+            timing["pipeline_variants"] = c.get("pipeline_variants")
+        except json.JSONDecodeError:
+            pass
+    return {"outputs": out, "meta": meta_d, "timing": timing}
 
 
-def node_pass(py, scratch, pasts, device, iters, repeats) -> list:
+def node_pass(py, scratch, pasts, device, iters, repeats, warmups=1) -> list:
     """Equivalence and kernel time on the isolated production GQA node, same protocol as above."""
     import numpy as np
 
@@ -919,52 +1275,404 @@ def node_pass(py, scratch, pasts, device, iters, repeats) -> list:
         rec: dict = {"case": f"node/decode/past{past}", "past": past,
                      "shape": dict(NODE_SHAPE, past=past)}
         arms: dict = {name: [] for name, _, _ in ARMS}
-        ref_outputs = None
-        cand_outputs = None
+        per_repeat: "dict[int, dict]" = {}
         names: list = []
         for r in range(repeats):
             order = list(ARMS) if r % 2 == 0 else list(reversed(ARMS))
+            captured: dict = {}
             for name, env, _event in order:
-                got = _run_node(py, scratch, past, env, device, iters, f"{name}_{r}")
+                got = _run_node(py, scratch, past, env, device, iters, f"{name}_{r}",
+                                warmups=warmups)
                 if got is None:
                     arms[name].append({"repeat": r, "error": "worker failed"})
                     continue
                 pt = dict(got["timing"], repeat=r)
+                pt["witness"] = {
+                    "ep_library_sha256": got["meta"].get("ep_library_sha256"),
+                    "ep_library_bytes": got["meta"].get("ep_library_bytes"),
+                    "recorded_at": got["meta"].get("recorded_at"),
+                    "env": got["meta"].get(ENV_KV_PARALLEL),
+                    "providers": got["meta"].get("providers"),
+                }
                 arms[name].append(pt)
-                if r == 0:
-                    with np.load(got["outputs"]) as z:
-                        vals = [z[k] for k in sorted(z.files)]
-                    if name == "serial":
-                        ref_outputs = vals
-                    else:
-                        cand_outputs = vals
-                    names = got["meta"].get("output_names") or []
+                with np.load(got["outputs"]) as z:
+                    captured[name] = [z[k] for k in sorted(z.files)]
+                names = got["meta"].get("output_names") or names
                 print(
                     f"[kvpar] node past={past} arm={name:8s} r{r}: "
                     f"gqa={pt.get('gqa_us', 0):9.1f} us",
                     flush=True,
                 )
-        if ref_outputs is not None and cand_outputs is not None:
-            eq = _compare_outputs(np, cand_outputs, ref_outputs, names)
+            # EVERY repeat is compared, not only the first. A kernel whose race surfaces once in
+            # three runs is exactly the kernel a first-repeat-only check clears.
+            if "serial" in captured and "parallel" in captured:
+                per_repeat[r] = _compare_outputs(np, captured["parallel"], captured["serial"], names)
+        if per_repeat:
+            # The published equivalence is the WORST repeat, so a single divergent repeat cannot
+            # be averaged away by two clean ones.
+            worst_r = min(per_repeat, key=lambda k: (per_repeat[k]["equivalent"],
+                                                     -per_repeat[k]["worst"]["max_abs"]))
+            eq = dict(per_repeat[worst_r])
             eq["scope"] = (
                 "the GroupQueryAttention node itself, in isolation — the same thing the kernel "
                 "time below is measured on"
             )
+            eq["repeats_compared"] = len(per_repeat)
+            eq["equivalent_every_repeat"] = all(v["equivalent"] for v in per_repeat.values())
+            eq["reported_repeat"] = worst_r
+            eq["per_repeat"] = {
+                str(k): {
+                    "equivalent": v["equivalent"],
+                    "all_bitwise_identical": v["all_bitwise_identical"],
+                    "worst_max_abs": v["worst"]["max_abs"],
+                    "worst_max_rel": v.get("worst_relative", {}).get("max_rel"),
+                }
+                for k, v in sorted(per_repeat.items())
+            }
+            # A single repeat's verdict is not the case's verdict.
+            eq["equivalent"] = bool(eq["equivalent"] and eq["equivalent_every_repeat"])
         else:
             eq = {"equivalent": False, "reason": "one or both arms failed to produce outputs",
-                  "outputs_total": 0, "outputs_compared": 0}
+                  "outputs_total": 0, "outputs_compared": 0, "repeats_compared": 0,
+                  "equivalent_every_repeat": False}
         rec["equivalence"] = eq
         rec["arms"] = {name: _arm_summary(arms[name], event) for name, _env, event in ARMS}
         verdict = "EQUIVALENT" if eq.get("equivalent") else "DIVERGENT"
         extra = " (bitwise)" if eq.get("all_bitwise_identical") else ""
-        print(f"[kvpar] node equivalence past={past}: {verdict}{extra}", flush=True)
+        print(
+            f"[kvpar] node equivalence past={past}: {verdict}{extra} "
+            f"({eq.get('repeats_compared', 0)} repeats compared)",
+            flush=True,
+        )
         records.append(rec)
     return records
 
+def _auto_lanes(past: int, seq_len: int = 1) -> int:
+    """The host selector's auto rule, restated so the artifact can say which W it expected.
 
-# ---------------------------------------------------------------------------------------------
-# Whole-model frame: a null that can fail, and a calibration this change does not define
-# ---------------------------------------------------------------------------------------------
+    Mirrors `ops::attention::gqa_decode_kv_lanes_with` for the auto (no-override) path. It is a
+    RESTATEMENT and not the authority: `tests/ops/test_gqa_decode_kv_parallel.py` pins the host
+    rule directly, and the pipeline witness in each record says which module actually ran.
+    """
+    total = past + seq_len
+    lanes = 1
+    while lanes * 2 <= 16 and total // (lanes * 2) >= 32:
+        lanes *= 2
+    return lanes
+
+
+def fallback_identity_pass(py, scratch, pasts, device, base_lib, subject_lib) -> dict:
+    """W=1 against PRIOR PRODUCTION, bit for bit, at this exact head.
+
+    WHAT THIS ANSWERS
+    -----------------
+    Requirement 1 says W=1 must be bitwise-equivalent to prior production or must dispatch the
+    prior shader. In this design it does the latter — `gqa_decode_kv_lanes_with` returns 1 and
+    the host dispatches `gqa_f16` untouched — so identity holds *by construction*. By
+    construction is an argument, not a measurement, and the argument has a gap: the subject build
+    also changed `variant_key`, the pipeline cache key and the aux-stem plumbing, any of which
+    could perturb the serial path without touching its shader.
+
+    So this pass runs TWO DIFFERENT BINARIES: the base build from the merge-base commit, which
+    has never heard of this feature, and the subject build with the lane count pinned to 1. Same
+    device, same feeds, same graph. Every element of all three outputs must be bitwise identical,
+    and the subject must be witnessed running `gqa_f16` and never `gqa_decode_f16`.
+
+    `auto_vs_base` is the same comparison with NOTHING set — the shipped default. Below the
+    selector's threshold it must be bitwise identical too, because the default IS the refusal
+    there; at and above the threshold it is expected to differ and is recorded as such, so the
+    row cannot be read as a failure.
+    """
+    import numpy as np
+
+    cases = []
+    for past in pasts:
+        row: dict = {"past": past, "auto_lanes_expected": _auto_lanes(past)}
+        base = _run_node(py, scratch, past, None, device, 2, f"fbbase_{past}", lib=base_lib)
+        w1 = _run_node(py, scratch, past, "1", device, 2, f"fbw1_{past}", lib=subject_lib)
+        auto = _run_node(py, scratch, past, None, device, 2, f"fbauto_{past}", lib=subject_lib)
+        if base is None or w1 is None or auto is None:
+            row["measured"] = False
+            row["reason"] = "an arm failed to produce outputs"
+            cases.append(row)
+            continue
+        with np.load(base["outputs"]) as z:
+            ref = [z[k] for k in sorted(z.files)]
+        with np.load(w1["outputs"]) as z:
+            cand = [z[k] for k in sorted(z.files)]
+        with np.load(auto["outputs"]) as z:
+            auto_vals = [z[k] for k in sorted(z.files)]
+        names = base["meta"].get("output_names") or []
+        row["measured"] = True
+        row["base_library_sha256"] = base["meta"].get("ep_library_sha256")
+        row["subject_library_sha256"] = w1["meta"].get("ep_library_sha256")
+        row["distinct_binaries"] = (
+            row["base_library_sha256"] != row["subject_library_sha256"]
+        )
+        eq = _compare_outputs(np, cand, ref, names)
+        row["forced_w1_vs_base"] = {
+            "all_bitwise_identical": eq["all_bitwise_identical"],
+            "per_output_bitwise": {
+                o["name"]: o["bitwise_identical"] for o in eq["per_output"]
+            },
+            "worst": eq["worst"],
+            "equivalent": eq["equivalent"],
+        }
+        eq_auto = _compare_outputs(np, auto_vals, ref, names)
+        expect_identical = row["auto_lanes_expected"] == 1
+        row["auto_vs_base"] = {
+            "expectation": (
+                "BITWISE IDENTICAL — the selector refuses here, so the default is the old path"
+                if expect_identical
+                else "EXPECTED TO DIFFER — the selector engages here; this row is context, "
+                "not a check"
+            ),
+            "all_bitwise_identical": eq_auto["all_bitwise_identical"],
+            "worst": eq_auto["worst"],
+            "meets_expectation": bool(
+                eq_auto["all_bitwise_identical"] == expect_identical
+                or (not expect_identical)
+            ),
+        }
+        row["witness"] = {
+            "base_kernels": sorted(base["timing"].get("by_kernel_us", {})),
+            "forced_w1_kernels": sorted(w1["timing"].get("by_kernel_us", {})),
+            "auto_kernels": sorted(auto["timing"].get("by_kernel_us", {})),
+            "forced_w1_ran_serial_module_only": (
+                sorted(w1["timing"].get("gqa_kernels_seen") or []) == [SERIAL_EVENT]
+            ),
+        }
+        ok = (
+            row["forced_w1_vs_base"]["all_bitwise_identical"]
+            and row["witness"]["forced_w1_ran_serial_module_only"]
+            and row["distinct_binaries"]
+            and row["auto_vs_base"]["meets_expectation"]
+        )
+        row["holds"] = bool(ok)
+        print(
+            f"[kvpar] fallback identity past={past}: "
+            f"{'BITWISE IDENTICAL' if row['forced_w1_vs_base']['all_bitwise_identical'] else 'DIFFERS'}"
+            f" (auto W={row['auto_lanes_expected']})",
+            flush=True,
+        )
+        cases.append(row)
+    measured = [c for c in cases if c.get("measured")]
+    return {
+        "what": (
+            "W=1 in the subject build against the base build from the merge-base commit, on the "
+            "isolated node, all three outputs, bitwise"
+        ),
+        "why": (
+            "the refusal path is only as good as its identity to what shipped before, and "
+            "'it dispatches the same shader' is a claim about the host, which this pass tests "
+            "rather than assumes"
+        ),
+        "cases": cases,
+        "pasts_covered": len(cases),
+        "holds": bool(measured) and all(c.get("holds") for c in measured),
+        "complete": len(measured) == len(cases),
+    }
+
+
+def prefill_pass(py, scratch, cases_in, device, base_lib, subject_lib, iters, warmups) -> dict:
+    """Prefill at THIS head: unchanged outputs, unchanged module, unchanged time.
+
+    The rejected artifact carried a prefill witness produced before the change existed, which
+    cannot speak for the head under review. This runs prefill on the subject build, at its
+    shipped default, against the base build — same graph, same feeds — and asserts three things
+    a prefill regression would break: the outputs are bitwise identical, the decode module is
+    never dispatched, and the kernel time does not move outside the dispersion band.
+    """
+    import numpy as np
+
+    rows = []
+    for past, seq_len in cases_in:
+        row: dict = {"past": past, "seq_len": seq_len,
+                     "selector_expectation": "REFUSE (seq_len != 1)"}
+        base = _run_node(py, scratch, past, None, device, iters, f"pfbase_{past}_{seq_len}",
+                         seq_len=seq_len, lib=base_lib, warmups=warmups)
+        subj = _run_node(py, scratch, past, None, device, iters, f"pfsubj_{past}_{seq_len}",
+                         seq_len=seq_len, lib=subject_lib, warmups=warmups)
+        if base is None or subj is None:
+            row["measured"] = False
+            row["reason"] = "an arm failed"
+            rows.append(row)
+            continue
+        with np.load(base["outputs"]) as z:
+            ref = [z[k] for k in sorted(z.files)]
+        with np.load(subj["outputs"]) as z:
+            cand = [z[k] for k in sorted(z.files)]
+        eq = _compare_outputs(np, cand, ref, base["meta"].get("output_names") or [])
+        b_us = base["timing"].get("gqa_us", 0.0)
+        s_us = subj["timing"].get("gqa_us", 0.0)
+        seen = sorted(subj["timing"].get("gqa_kernels_seen") or [])
+        row.update(
+            {
+                "measured": True,
+                "bitwise_identical": eq["all_bitwise_identical"],
+                "worst": eq["worst"],
+                "subject_kernels_seen": seen,
+                "decode_module_never_dispatched": PARALLEL_EVENT not in seen,
+                "base_gqa_us": b_us,
+                "subject_gqa_us": s_us,
+                "subject_over_base": (s_us / b_us) if b_us else None,
+                "base_per_inference_us": base["timing"].get("gqa_per_inference_us"),
+                "subject_per_inference_us": subj["timing"].get("gqa_per_inference_us"),
+            }
+        )
+        ratio = row["subject_over_base"]
+        row["time_unmoved"] = bool(ratio is not None and abs(ratio - 1.0) <= DISPERSION_CEILING)
+        row["holds"] = bool(
+            row["bitwise_identical"]
+            and row["decode_module_never_dispatched"]
+            and row["time_unmoved"]
+        )
+        print(
+            f"[kvpar] prefill past={past} M={seq_len}: "
+            f"{'bitwise' if row['bitwise_identical'] else 'DIFFERS'}, "
+            f"decode module {'absent' if row['decode_module_never_dispatched'] else 'PRESENT'}, "
+            f"t_subj/t_base={ratio if ratio is None else round(ratio, 4)}",
+            flush=True,
+        )
+        rows.append(row)
+    measured = [r for r in rows if r.get("measured")]
+    return {
+        "what": "prefill (seq_len > 1) on the subject build vs the base build, at this head",
+        "criterion": (
+            "bitwise-identical outputs, the decode module never dispatched, and kernel time "
+            f"within +/-{DISPERSION_CEILING:.0%} of the base build"
+        ),
+        "cases": rows,
+        "holds": bool(measured) and all(r.get("holds") for r in measured),
+        "complete": len(measured) == len(rows),
+    }
+
+
+def w_ladder_pass(py, scratch, pasts, ws, device, iters, repeats, warmups) -> dict:
+    """Forced-W ladder: one measured cell per (past, W), in RANDOMISED order.
+
+    WHY THE ORDER IS RANDOMISED
+    ---------------------------
+    The rejected artifact walked W1 -> W2 -> W4 -> W8 -> W16 in that fixed order at every point,
+    which aliases lane count against position in the run: a box that warms up, throttles, or is
+    progressively disturbed writes a monotone artefact straight into the ladder and it reads as
+    a lane-count effect. The order here is a seeded permutation per (past, repeat), so position
+    is decorrelated from W and the seed keeps it reproducible.
+
+    WHY THESE NUMBERS ARE NOT THE HEADLINE
+    --------------------------------------
+    Production does not run a forced W. The selector picks W from the KV extent, so the shipped
+    behaviour at a given past is ONE cell of this table — `auto_lanes` names which. The ladder
+    exists to show the shape of the scaling and to make a W-generic ratio impossible to quote:
+    every cell is labelled with its own W and its own past, and no cell is aggregated with
+    another.
+    """
+    import numpy as np
+
+    rows = []
+    for past in pasts:
+        cells: "dict[int, list]" = {w: [] for w in ws}
+        outs: "dict[int, list]" = {}
+        names: list = []
+        for r in range(repeats):
+            order = list(ws)
+            random.Random(NODE_SEED + past * 131 + r).shuffle(order)
+            for w in order:
+                got = _run_node(py, scratch, past, str(w), device, iters,
+                                f"lad_{past}_w{w}_{r}", warmups=warmups)
+                if got is None:
+                    cells[w].append({"repeat": r, "error": "worker failed"})
+                    continue
+                pt = dict(got["timing"], repeat=r, position_in_run=order.index(w))
+                pt["witness"] = {
+                    "ep_library_sha256": got["meta"].get("ep_library_sha256"),
+                    "recorded_at": got["meta"].get("recorded_at"),
+                    "env": got["meta"].get(ENV_KV_PARALLEL),
+                }
+                cells[w].append(pt)
+                if w not in outs:
+                    with np.load(got["outputs"]) as z:
+                        outs[w] = [z[k] for k in sorted(z.files)]
+                    names = got["meta"].get("output_names") or names
+        base_us = None
+        row: dict = {"past": past, "auto_lanes": _auto_lanes(past), "cells": {}}
+        for w in ws:
+            pts = [p for p in cells[w] if p.get("gqa_us")]
+            if not pts:
+                row["cells"][str(w)] = {"measured": False}
+                continue
+            samples = [p["gqa_us"] for p in pts]
+            raw = [v for p in pts for v in (p.get("gqa_per_inference_us") or [])]
+            expected = SERIAL_EVENT if w == 1 else PARALLEL_EVENT
+            seen = sorted({k for p in pts for k in (p.get("gqa_kernels_seen") or [])})
+            cell: dict = {
+                "measured": True,
+                "W": w,
+                "median_us": statistics.median(samples),
+                "per_repeat_us": samples,
+                "raw_per_inference_us": raw,
+                # Position of this cell within its repeat's permutation. If a cell's advantage
+                # tracked its position rather than its W, this is where that would show.
+                "positions_in_run": [p.get("position_in_run") for p in pts],
+                "rsd": (statistics.pstdev(samples) / statistics.mean(samples))
+                if len(samples) > 1 and statistics.mean(samples)
+                else None,
+                "expected_kernel": expected,
+                "kernels_seen": seen,
+                "witness_ok": seen == [expected],
+                "is_the_shipped_choice_at_this_past": w == row["auto_lanes"],
+            }
+            if w in outs and 1 in outs:
+                eq = _compare_outputs(np, outs[w], outs[1], names)
+                cell["equivalence"] = {
+                    "against": "W=1 (the serial module) at the same past",
+                    "equivalent": eq["equivalent"],
+                    "all_bitwise_identical": eq["all_bitwise_identical"],
+                    "worst": eq["worst"],
+                    "worst_relative": eq.get("worst_relative"),
+                }
+            row["cells"][str(w)] = cell
+        base_cell = row["cells"].get("1", {})
+        base_us = base_cell.get("median_us")
+        for key, cell in row["cells"].items():
+            if not cell.get("measured"):
+                continue
+            eq_ok = cell.get("equivalence", {}).get("equivalent", False) or key == "1"
+            disp_ok = cell.get("rsd") is None or cell["rsd"] <= DISPERSION_CEILING
+            if base_us and cell.get("witness_ok") and eq_ok and disp_ok:
+                cell["speedup_vs_W1"] = base_us / cell["median_us"]
+            else:
+                cell["speedup_withheld_because"] = [
+                    r
+                    for r, bad in (
+                        ("no W=1 reference", not base_us),
+                        ("pipeline witness failed", not cell.get("witness_ok")),
+                        ("not equivalent to W=1", not eq_ok),
+                        ("dispersion above ceiling", not disp_ok),
+                    )
+                    if bad
+                ]
+        rows.append(row)
+        shipped = row["cells"].get(str(row["auto_lanes"]), {})
+        print(
+            f"[kvpar] ladder past={past}: auto W={row['auto_lanes']} "
+            f"shipped-cell speedup="
+            f"{round(shipped.get('speedup_vs_W1'), 3) if shipped.get('speedup_vs_W1') else 'withheld'}",
+            flush=True,
+        )
+    return {
+        "what": "kernel time per (past, forced W) on the isolated node, randomised order",
+        "reading": (
+            "every cell is a (past, W) pair and nothing here is a W-generic ratio. The cell "
+            "marked `is_the_shipped_choice_at_this_past` is the only one production would "
+            "reach at that past with no environment override."
+        ),
+        "order": "seeded permutation of W per (past, repeat); position recorded per point",
+        "cells_are_speedups_against": "the W=1 cell at the SAME past, which runs gqa_f16",
+        "rows": rows,
+    }
+
+
 
 
 def _model_divergence(py, scratch, past, device, env_a, env_b, tag) -> dict:
@@ -1181,6 +1889,22 @@ def _publishable(eq_rec: dict, timing_rec: dict) -> "tuple[bool, list]":
                 f"only {eq.get('outputs_compared')} of {eq.get('outputs_total')} outputs were "
                 f"compared; a subset is not an equivalence result"
             )
+        # Every timed repeat has to have been checked, and every one of them has to have held.
+        # A case whose correctness was established once and then measured three times is a case
+        # where two of the three measured runs are unverified.
+        if eq.get("repeats_compared") is not None:
+            if not eq.get("repeats_compared"):
+                reasons.append("no repeat of this case had its outputs compared")
+            elif not eq.get("equivalent_every_repeat"):
+                bad = [
+                    k
+                    for k, v in (eq.get("per_repeat") or {}).items()
+                    if not v.get("equivalent")
+                ]
+                reasons.append(
+                    f"equivalence did not hold on every timed repeat (failed on repeat(s) "
+                    f"{', '.join(bad) or '?'}); a per-run speed number needs per-run correctness"
+                )
     for name, arm in (timing_rec.get("arms") or {}).items():
         if not arm.get("witness_ok"):
             reasons.append(
@@ -1195,6 +1919,11 @@ def _publishable(eq_rec: dict, timing_rec: dict) -> "tuple[bool, list]":
             )
         if arm.get("median_us") in (None, 0):
             reasons.append(f"arm '{name}' produced no timed GQA sample")
+        if not arm.get("raw_samples_us"):
+            reasons.append(
+                f"arm '{name}' published no raw per-inference series; a summary whose samples "
+                f"are not in the artifact cannot be audited"
+            )
     return (not reasons), reasons
 
 
@@ -1357,6 +2086,13 @@ def main(argv=None) -> int:
     ap.add_argument("--iters", type=int, default=4, help="inferences per point; the first is "
                                                          "dropped as warm-up")
     ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--warmups", type=int, default=2,
+                    help="inferences dropped at the head of every point")
+    ap.add_argument("--base-lib", default=None,
+                    help="EP library built from the merge-base commit. Required for the "
+                         "fallback-identity and prefill passes, which compare two BINARIES.")
+    ap.add_argument("--ladder-w", default="1,2,4,8,16")
+    ap.add_argument("--ladder-past", default="128,512,1024,2048")
     ap.add_argument("--scratch", default=str(_BENCH / "results" / "_issue90_scratch"))
     ap.add_argument("--skip-whole-model", action="store_true",
                     help="node scope only. Never for a committed artifact: the whole-model "
@@ -1372,8 +2108,12 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return 2
-    if args.iters < 2:
-        print("[kvpar] refusing: --iters must be >= 2 (one warm-up + one timed)", file=sys.stderr)
+    if args.iters - args.warmups < 1:
+        print(
+            f"[kvpar] refusing: --iters {args.iters} leaves no timed inference after "
+            f"{args.warmups} warm-ups",
+            file=sys.stderr,
+        )
         return 2
 
     lib = os.environ.get(EP_LIB_ENV)
@@ -1408,11 +2148,51 @@ def main(argv=None) -> int:
     print(f"[kvpar] subject {subject['ep_library']} sha256 {subject['ep_library_sha256'][:16]} "
           f"@ {subject['commit'][:12]} ({subject['branch']})")
     print(f"[kvpar] model {model_public['key']} sha256 {str(model_public['onnx_sha256'])[:16]}")
-    print(f"[kvpar] cases past={pasts} iters={args.iters} repeats={args.repeats}\n")
+    print(f"[kvpar] cases past={pasts} iters={args.iters} warmups={args.warmups} "
+          f"repeats={args.repeats}\n")
 
+    base_lib = None
+    if args.base_lib:
+        base_lib = Path(args.base_lib).resolve()
+        if not base_lib.is_file():
+            print(f"[kvpar] refusing: --base-lib {args.base_lib} is not a file", file=sys.stderr)
+            return 2
+        base_sha = hashlib.sha256(base_lib.read_bytes()).hexdigest()
+        if base_sha == subject["ep_library_sha256"]:
+            print(
+                "[kvpar] refusing: --base-lib is byte-identical to the subject library. The "
+                "fallback-identity pass exists to compare TWO binaries; comparing one binary "
+                "with itself would report identity that proves nothing.",
+                file=sys.stderr,
+            )
+            return 2
+
+    lock = DeviceLock(args.device)
+    lock_witness = lock.acquire()
+    if not lock_witness.get("acquired"):
+        print(
+            "[kvpar] refusing: could not take the cooperative device lock within "
+            f"{LOCK_TIMEOUT_S}s. Another participant is measuring on this device and a timing "
+            "taken now would be a number about the box.",
+            file=sys.stderr,
+        )
+        return 2
+    if lock_witness.get("contended"):
+        print(f"[kvpar] device lock: waited {lock_witness['wait_s']}s behind another participant")
+    try:
+        return _run_all(args, pasts, py, scratch, subject, model_public, lib_path, base_lib,
+                        lock, lock_witness)
+    finally:
+        lock.release()
+
+
+def _run_all(args, pasts, py, scratch, subject, model_public, lib_path, base_lib, lock,
+             lock_witness) -> int:
+    _t_start = time.perf_counter()
     # ---- Scope 1: the node the claim is about --------------------------------------------
     print("[kvpar] ===== NODE SCOPE (the GroupQueryAttention node in isolation) =====")
-    node_records = node_pass(py, scratch, pasts, args.device, args.iters, args.repeats)
+    node_records = node_pass(py, scratch, pasts, args.device, args.iters, args.repeats,
+                             args.warmups)
     node_cases = _apply_structural_removal(
         node_records,
         [{"case": r["case"], "past": r["past"], "arms": r["arms"]} for r in node_records],
@@ -1422,6 +2202,39 @@ def main(argv=None) -> int:
         "ceiling — that needs the approved wall-share attribution issue #88 v2 owns.",
     )
 
+    # ---- Scope 1b: the refusal path, against prior production ----------------------------
+    fallback: dict = {}
+    prefill: dict = {}
+    if base_lib is not None:
+        print("\n[kvpar] ===== FALLBACK IDENTITY (W=1 vs the base build) =====")
+        fallback = fallback_identity_pass(
+            py, scratch, FALLBACK_PAST, args.device, base_lib, lib_path
+        )
+        print("\n[kvpar] ===== PREFILL AT THIS HEAD (seq_len > 1) =====")
+        prefill = prefill_pass(
+            py, scratch, PREFILL_CASES, args.device, base_lib, lib_path, args.iters, args.warmups
+        )
+    else:
+        fallback = {
+            "measured": False,
+            "reason": "--base-lib was not supplied, so no second binary was available",
+            "consequence": "this artifact makes NO bitwise-identity claim for the W=1 path",
+        }
+        prefill = dict(fallback)
+
+    # ---- Scope 1c: the forced-W ladder ----------------------------------------------------
+    print("\n[kvpar] ===== FORCED-W LADDER (randomised order) =====")
+    ladder = w_ladder_pass(
+        py,
+        scratch,
+        [int(x) for x in args.ladder_past.split(",") if x],
+        [int(x) for x in args.ladder_w.split(",") if x],
+        args.device,
+        args.iters,
+        args.repeats,
+        args.warmups,
+    )
+
     # ---- Scope 2: the whole model, where the refusal lives -------------------------------
     model_cases: list = []
     frame: dict = {}
@@ -1429,7 +2242,8 @@ def main(argv=None) -> int:
         print("\n[kvpar] ===== WHOLE-MODEL SCOPE (Phi-3.5-mini, 32 layers) =====")
         equivalence = equivalence_pass(py, scratch, pasts, args.device)
         print()
-        timing = timing_pass(py, scratch, pasts, args.device, args.iters, args.repeats)
+        timing = timing_pass(py, scratch, pasts, args.device, args.iters, args.repeats,
+                             args.warmups)
         print()
         model_cases = _apply_structural_removal(
             equivalence,
@@ -1444,6 +2258,15 @@ def main(argv=None) -> int:
     )
     model_equivalent = bool(model_cases) and all("refusal" not in c for c in model_cases)
 
+    # The lock is still held here — the report is written inside the critical section — so the
+    # hold time is recorded as "so far" rather than as a final figure.
+    lock_witness = dict(lock_witness)
+    lock_witness["held_at_report_s"] = round(time.perf_counter() - _t_start, 1)
+    lock_witness["covers"] = (
+        "every measurement in this artifact: the lock is taken before the first subprocess and "
+        "released after this document is written"
+    )
+
     report: dict = {
         "schema": SCHEMA,
         "issue": ISSUE,
@@ -1451,6 +2274,28 @@ def main(argv=None) -> int:
                       "re-derivation, not a re-run of that one.",
         "subject": "rust/shaders/glsl/gqa_decode_f16.comp dispatched by "
                    "ops::attention::gqa_decode_kv_lanes",
+        "subject_binding": {
+            "what_the_numbers_measure": (
+                "the sum of the GPU timestamp intervals attributed to the GQA shader module, "
+                "per inference, on a graph containing exactly one GroupQueryAttention node"
+            ),
+            "what_they_are_not": [
+                "NOT whole-model latency — no section of this artifact publishes one",
+                "NOT the cost of a single isolated shader invocation — one inference is one "
+                "dispatch of batch*num_heads workgroups, and the recorded interval covers the "
+                "whole dispatch",
+                "NOT an aggregate over the 32 layer dispatches of a real model — that is a "
+                "different quantity, and the rejected artifact's headline was built on it "
+                "while being read as if it were one of the other two",
+                "NOT wall time — process_wall_s appears per point as context and is never a "
+                "numerator or a denominator anywhere in this file",
+            ],
+            "aggregation": (
+                "per inference: raw series in `per_inference_us`; mean of the timed inferences "
+                "in `by_kernel_us`; median across repeats in `median_us`. Each level is a "
+                "function of the one below it and all three are published."
+            ),
+        },
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "provenance": subject,
         "model": model_public,
@@ -1463,22 +2308,31 @@ def main(argv=None) -> int:
             ],
             "only_difference_between_arms": ENV_KV_PARALLEL,
             "iters_per_point": args.iters,
-            "warmup_inferences_dropped": 1,
-            "timed_inferences_per_point": args.iters - 1,
+            "warmup_inferences_dropped": args.warmups,
+            "timed_inferences_per_point": args.iters - args.warmups,
             "repeats": args.repeats,
-            "interleaving": "arm order reversed on odd repeats",
+            "interleaving": "arm order reversed on odd repeats; the forced-W ladder uses a "
+                            "seeded permutation per (past, repeat) and records each point's "
+                            "position in its run",
+            "raw_samples_published": (
+                "yes — `per_inference_us.timed` on every point and `raw_samples_us` on every "
+                "arm. Every summary in this file is a function of a series that is in this file."
+            ),
             "process_isolation": "one subprocess per (case, arm, repeat); ORT registers an EP "
                                  "process-globally and the EP writes counters from an exit hook",
             "kernel_time_source": "EP GPU timestamp queries (ONNXRUNTIME_EP_VULKAN_TRACE_GPU), "
-                                  "attributed by shader module stem",
+                                  "attributed by shader module stem; see `subject_binding` for "
+                                  "exactly what the resulting number is and is not",
             "predeclared_tolerance": TOLERANCE,
             "tolerance_is_shared": "the node scope and the whole-model scope are judged by the "
                                    "SAME tolerance object. Neither scope has a looser band.",
+            "per_repeat_equivalence": (
+                "every timed repeat of every node case has its outputs compared, and the "
+                "published verdict is the WORST repeat. A case that was correct once and "
+                "measured three times publishes nothing."
+            ),
             "dispersion_ceiling_rsd": DISPERSION_CEILING,
-            "gpu_lock": "NONE. This box has no exclusive GPU reservation and this artifact does "
-                        "not claim one. The occupancy conditions are stated instead: per-arm "
-                        "dispersion above, and ci/check_run_disturbance.py as the standing "
-                        "version of the same question.",
+            "gpu_lock": lock_witness,
         },
         "node_scope": {
             "what": "one GroupQueryAttention node, Phi-3.5's own shape, alone in a graph",
@@ -1486,6 +2340,9 @@ def main(argv=None) -> int:
             "equivalence_complete": node_equivalent,
             "cases": node_cases,
         },
+        "fallback_identity": fallback,
+        "prefill_at_this_head": prefill,
+        "forced_w_ladder": ladder,
         "whole_model_scope": {
             "what": "Phi-3.5-mini-instruct int4, 32 layers, decode step",
             "equivalence_complete": model_equivalent,
@@ -1507,6 +2364,43 @@ def main(argv=None) -> int:
             ),
         },
         "equivalence_complete": node_equivalent and (model_equivalent or args.skip_whole_model),
+        "equivalence": {
+            "reading": (
+                "The top-level `equivalence_complete` is the conservative AND across every scope "
+                "in this file, so it is FALSE whenever any scope refused. It is not a licence to "
+                "read a speed number next to it. The rejected artifact carried a false global "
+                "flag AND kept per-case WIN verdicts; here the flag being false is a SUMMARY of "
+                "which scopes were structurally emptied, and no scope that failed equivalence "
+                "retains a speed or verdict field. Check `by_scope` before reading anything."
+            ),
+            "by_scope": {
+                "node_scope": {
+                    "equivalence_complete": node_equivalent,
+                    "publishes_speed": bool(
+                        node_equivalent
+                        and node_cases
+                        and all("kernel_speedup" in c for c in node_cases)
+                    ),
+                },
+                "whole_model_scope": {
+                    "equivalence_complete": model_equivalent,
+                    "publishes_speed": False,
+                    "note": "skipped" if args.skip_whole_model else "ran and refused",
+                },
+                "fallback_identity": {
+                    "equivalence_complete": bool(fallback.get("holds")),
+                    "criterion": "bitwise, all three outputs, subject W=1 vs the base build",
+                    "publishes_speed": False,
+                },
+                "prefill_at_this_head": {
+                    "equivalence_complete": bool(prefill.get("holds")),
+                    "criterion": "bitwise, all three outputs, subject vs the base build at "
+                                 "seq_len > 1",
+                    "publishes_speed": False,
+                },
+            },
+            "headline_is_bound_to": "node_scope",
+        },
         "limitations": [
             "ONE DEVICE (RTX A1000). Nothing here supports a cross-device claim; W is a "
             "portable-by-construction spec constant, but its best value is a property of the "
@@ -1521,15 +2415,40 @@ def main(argv=None) -> int:
             "it says the kernel finished sooner, not why.",
             "Wall clock on this box is STEADY_UNCERTIFIED (PERF.md §20); process_wall_s is "
             "context, never evidence.",
+            "The device lock is COOPERATIVE. It serialises other participants in this protocol "
+            "and nothing else; see protocol.gpu_lock for what it does not exclude. The "
+            "dispersion gate is the independent second condition.",
+            "The forced-W ladder is a table of (past, W) cells and is NOT a source of a "
+            "W-generic ratio. Production selects W from the KV extent, so at any given past "
+            "exactly one cell is the shipped behaviour and it is flagged as such.",
         ],
     }
     if node_equivalent and node_cases and all("kernel_speedup" in c for c in node_cases):
         speedups = [c["kernel_speedup"] for c in node_cases if c.get("kernel_speedup")]
         report["headline"] = {
-            "claim": "decode-time GQA kernel GPU time, one isolated node, one RTX A1000",
+            "claim": (
+                "GPU-timestamp time of the GQA shader module, per inference, on a graph of one "
+                "GroupQueryAttention node, on one RTX A1000"
+            ),
+            "per_past": {
+                str(c["past"]): c["kernel_speedup"]
+                for c in node_cases
+                if c.get("kernel_speedup")
+            },
             "kernel_speedup_min": min(speedups),
             "kernel_speedup_max": max(speedups),
-            "scope": "kernel-only, node-scoped, single-device. Not a model-level claim.",
+            "scope": (
+                "kernel-only, node-scoped, single-device, at the W the SELECTOR CHOOSES for each "
+                "past. Not a model-level claim, not a W-generic claim, and not a claim about any "
+                "other device."
+            ),
+            "read_with": "subject_binding, which states what this number is not",
+            "bound_to_scope": "node_scope",
+            "not_covered_by_this_number": (
+                "whole_model_scope refused equivalence and publishes no speed field; this "
+                "headline says nothing about it. The top-level equivalence_complete is the "
+                "AND across scopes and is therefore false; see `equivalence.by_scope`."
+            ),
         }
 
     leaks = _screen_for_leaked_roots(report)
@@ -1552,6 +2471,16 @@ def main(argv=None) -> int:
     if frame and frame.get("null_control", {}).get("holds") is False:
         print("[kvpar] the null control did not hold; the whole-model frame is void",
               file=sys.stderr)
+        return 1
+    if fallback.get("measured") is not False and not fallback.get("holds"):
+        print(
+            "[kvpar] the W=1 fallback is NOT bitwise identical to the base build; the refusal "
+            "path does not reproduce prior production",
+            file=sys.stderr,
+        )
+        return 1
+    if prefill.get("measured") is not False and not prefill.get("holds"):
+        print("[kvpar] prefill moved at this head", file=sys.stderr)
         return 1
     return 0
 

@@ -76,6 +76,38 @@
 // `exp(-1e30 - m') == 0` and adds nothing.  Lane 0 always owns `t = 0`, so the final `s` is
 // never zero and the reciprocal below is never a division by zero.
 //
+// The `-1e30` sentinel is provably below every score this kernel can ever see, and that is a
+// property of the input dtype rather than a hope about the data.  Every `score` is
+// `dot(q, k) * scale` where `q` and `k` are decoded f16, so `|q[d]|, |k[d]| <= 65504`, the sum
+// runs over `d < D_MAX == 128`, and `scale` arrives as an f32 push constant.  Hence
+// `|score| <= 128 * 65504^2 * |scale| ~= 5.5e11 * |scale|`, which stays below `1e30` for any
+// `|scale| < 1.8e18` — and `scale` is `1/sqrt(head_dim)`-shaped, i.e. at most 1.  An empty
+// lane therefore cannot tie with, let alone outrank, a real score, so `max(m1, m2)` can never
+// select the sentinel over a token that actually exists.
+//
+// # Non-finite policy: propagate, exactly as the serial kernel propagates
+//
+// This kernel does NOT sanitise, clamp or screen NaN/Inf.  It reproduces `gqa_f16`'s behaviour
+// element for element, and the reason it is written down here is that a cooperative kernel has
+// one failure mode a serial kernel does not: contaminating a row it was not asked to touch.
+//
+//   * A NaN score leaves `sc > max_s` false (every comparison against NaN is false), so `max_s`
+//     survives, and then `e = exp(NaN - max_s)` is NaN, so `sum_e` and `acc` become NaN.  The
+//     serial loop does exactly this.
+//   * `sc = +INF` takes the rescale branch, drives `factor = exp(max_s - INF) = 0`, and lands on
+//     `e = exp(INF - INF) = NaN`.  The serial loop does exactly this too.
+//   * `sc = -INF` fails `sc > max_s` and contributes `e = 0`.  It is absorbed, in both kernels.
+//   * In the merge, `max(m1, m2)` with a NaN operand is implementation-defined in GLSL — and it
+//     does not matter, because the lane that produced the NaN already carries NaN in `s` and `a`,
+//     so either choice of `m'` yields NaN in `s'` and `a'`.  Non-finiteness is absorbing under
+//     this combine.
+//
+// The consequence is a per-row, all-or-nothing rule that the tests assert directly: a non-finite
+// score anywhere in `(b, h)` makes all of `(b, h)`'s `attn_out` non-finite in BOTH kernels, and
+// it can reach no other `(b, h)`, because `sh_m`/`sh_s`/`sh_a` are workgroup-local and one
+// workgroup is exactly one `(b, h)`.  `present_key` and `present_value` are copies of the
+// inputs and are not on the softmax path at all, so they are unaffected either way.
+//
 // # Portability: Vulkan 1.1 core, and nothing else
 //
 //   * **No subgroup anything.**  No `GL_KHR_shader_subgroup*`, no ballot, no shuffle, no

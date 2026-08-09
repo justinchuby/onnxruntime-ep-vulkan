@@ -252,6 +252,7 @@ def _run_refusal_mutation(env) -> dict:
     divergent = [{
         "past": 128,
         "equivalence": {"equivalent": False, "outputs_total": 65, "outputs_compared": 65,
+                        "repeats_compared": 3, "equivalent_every_repeat": False,
                         "worst": {"name": "logits", "max_abs": 0.523438},
                         "reason": "past-128 DIVERGENT"},
     }]
@@ -260,8 +261,10 @@ def _run_refusal_mutation(env) -> dict:
         "past": 128,
         "arms": {
             "parallel": {"median_us": 23610.0, "witness_ok": True, "repeatable": True,
+                         "raw_samples_us": [23610.0, 23600.0, 23620.0],
                          "expected_kernel": probe.PARALLEL_EVENT, "graph_total_us": 41600.0},
             "serial": {"median_us": 35780.0, "witness_ok": True, "repeatable": True,
+                       "raw_samples_us": [35780.0, 35770.0, 35790.0],
                        "expected_kernel": probe.SERIAL_EVENT, "graph_total_us": 54290.0},
         },
     }]
@@ -304,6 +307,126 @@ def _run_refusal_mutation(env) -> dict:
     return rec
 
 
+def _clean_publishable_fixture(probe):
+    """A case that SHOULD publish: equivalent on every repeat, witnessed, tight, raw series kept.
+
+    Every gate mutation below is this fixture with exactly one field spoiled, so a gate that
+    refuses everything fails the clean half and a gate that refuses nothing fails the spoiled
+    half. Neither degenerate gate can pass.
+    """
+    eq = [{
+        "past": 128,
+        "equivalence": {
+            "equivalent": True,
+            "outputs_total": 3,
+            "outputs_compared": 3,
+            "repeats_compared": 3,
+            "equivalent_every_repeat": True,
+            "per_repeat": {
+                "0": {"equivalent": True}, "1": {"equivalent": True}, "2": {"equivalent": True}
+            },
+            "worst": {"name": "attn_out", "max_abs": 1.9e-06},
+        },
+    }]
+    timing = [{
+        "case": "node/decode/past128",
+        "past": 128,
+        "arms": {
+            "parallel": {"median_us": 925.0, "witness_ok": True, "repeatable": True,
+                         "raw_samples_us": [925.0, 924.0, 926.0],
+                         "expected_kernel": probe.PARALLEL_EVENT, "graph_total_us": 925.0},
+            "serial": {"median_us": 1353.0, "witness_ok": True, "repeatable": True,
+                       "raw_samples_us": [1353.0, 1352.0, 1354.0],
+                       "expected_kernel": probe.SERIAL_EVENT, "graph_total_us": 1353.0},
+        },
+    }]
+    return eq, timing
+
+
+def _spoil_per_repeat(eq, timing):
+    eq[0]["equivalence"]["equivalent_every_repeat"] = False
+    eq[0]["equivalence"]["per_repeat"]["1"]["equivalent"] = False
+
+
+def _spoil_raw_samples(eq, timing):
+    timing[0]["arms"]["parallel"].pop("raw_samples_us")
+
+
+GATE_MUTATIONS = [
+    (
+        "PER_REPEAT",
+        "a case whose equivalence failed on ONE of its three timed repeats",
+        _spoil_per_repeat,
+        "every timed repeat",
+    ),
+    (
+        "RAW_SAMPLES",
+        "an arm that publishes a median with no raw per-inference series behind it",
+        _spoil_raw_samples,
+        "raw per-inference series",
+    ),
+]
+
+
+def _run_gate_mutation(name, description, spoil, expect_reason) -> dict:
+    """Two-sided: the clean fixture must publish, the spoiled fixture must refuse.
+
+    There is no monkeypatching here on purpose. Patching a check out proves only that the check
+    runs; running the SAME gate against a clean case and a case that differs in exactly one field
+    proves the check is both load-bearing (spoiled is refused) and non-vacuous (clean is
+    published). A gate hard-wired to refuse, or to publish, fails one half or the other.
+    """
+    rec = {
+        "mutation": name,
+        "breaks": description,
+        "file": "bench/results/probe_gqa_decode_kv_parallel.py",
+        "selection": "in-process",
+    }
+    sys.path.insert(0, str(_ROOT / "bench" / "results"))
+    try:
+        import probe_gqa_decode_kv_parallel as probe
+    except Exception as exc:  # noqa: BLE001
+        rec.update({"outcome": "ERROR(instrument)", "detail": f"import failed: {exc}"})
+        return rec
+
+    eq, timing = _clean_publishable_fixture(probe)
+    clean = probe._apply_structural_removal(copy.deepcopy(eq), copy.deepcopy(timing), "control")
+    if "kernel_speedup" not in clean[0]:
+        rec.update({
+            "outcome": "ERROR(instrument)",
+            "detail": (
+                "the clean fixture did not publish a speed field, so this gate refuses "
+                f"everything and the spoiled half would prove nothing: "
+                f"{clean[0].get('refusal', {}).get('reasons')}"
+            ),
+        })
+        return rec
+
+    eq_bad, timing_bad = _clean_publishable_fixture(probe)
+    spoil(eq_bad, timing_bad)
+    spoiled = probe._apply_structural_removal(eq_bad, timing_bad, "control")
+    refused = "kernel_speedup" not in spoiled[0] and "refusal" in spoiled[0]
+    reasons = spoiled[0].get("refusal", {}).get("reasons", [])
+    named = any(expect_reason in r for r in reasons)
+    rec.update({
+        "outcome": "CAUGHT" if (refused and named) else "MISSED",
+        "detail": (
+            f"clean fixture published kernel_speedup={clean[0].get('kernel_speedup'):.4f}; "
+            f"spoiled fixture "
+            + (
+                f"refused with {reasons!r}"
+                if refused
+                else f"PUBLISHED kernel_speedup={spoiled[0].get('kernel_speedup')}"
+            )
+        ),
+        "note": (
+            "CAUGHT means the same gate published the clean case and refused the case that "
+            "differs from it in exactly one field, naming that field."
+        ),
+    })
+    return rec
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--only", default="", help="comma-separated mutation names")
@@ -316,6 +439,8 @@ def main(argv=None) -> int:
             print(f"{m.name:10s} {m.breaks}")
         for n in PY_MUTATIONS:
             print(f"{n:10s} the evidence probe's structural removal")
+        for n, d, _s, _r in GATE_MUTATIONS:
+            print(f"{n:10s} {d}")
         return 0
 
     wanted = {s.strip().upper() for s in args.only.split(",") if s.strip()}
@@ -344,6 +469,13 @@ def main(argv=None) -> int:
         rec = _run_refusal_mutation(env)
         print(f"[mut] REFUSAL: {rec['outcome']}", flush=True)
         rows.append(rec)
+    for name, desc, spoil, expect in GATE_MUTATIONS:
+        if wanted and name not in wanted:
+            continue
+        print(f"[mut] {name}: {desc}", flush=True)
+        rec = _run_gate_mutation(name, desc, spoil, expect)
+        print(f"[mut] {name}: {rec['outcome']}", flush=True)
+        rows.append(rec)
 
     print("[mut] restoring and rebuilding the unmutated tree ...", flush=True)
     built, err = _build(env)
@@ -361,12 +493,19 @@ def main(argv=None) -> int:
         "restored_build_error": "" if built else err[-400:],
         "mutations": rows,
     }
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    out_path = Path(args.out)
+    if not out_path.is_absolute():
+        out_path = (Path.cwd() / out_path).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
     missed = [r for r in rows if r["outcome"] == "MISSED"]
     errors = [r for r in rows if r["outcome"].startswith("ERROR")]
-    print(f"\nwitness: {Path(args.out).relative_to(_ROOT).as_posix()}")
+    try:
+        shown = out_path.relative_to(_ROOT).as_posix()
+    except ValueError:
+        shown = out_path.name
+    print(f"\nwitness: {shown}")
     print(f"  CAUGHT  {len([r for r in rows if r['outcome'].startswith('CAUGHT')])}")
     print(f"  MISSED  {len(missed)}")
     print(f"  ERROR   {len(errors)}")

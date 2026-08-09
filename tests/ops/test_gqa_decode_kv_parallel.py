@@ -658,6 +658,121 @@ def test_denominator_never_collapses_at_the_longest_cache(tmp_path, vulkan_devic
     _compare(vk, m.run_cpu(model, feeds), "W=16 denominator")
 
 
+@pytest.mark.parametrize("poison", ["nan", "posinf", "neginf"])
+def test_nonfinite_propagates_exactly_as_the_serial_kernel(
+    poison: str, tmp_path, vulkan_device_available
+) -> None:
+    """The declared policy is PROPAGATE, and propagate means *identically to `gqa_f16`*.
+
+    # What is being asserted
+
+    The shader header states that this kernel neither sanitises nor screens non-finite values,
+    and that a non-finite score makes its whole `(batch, head)` row non-finite in both kernels.
+    That is a claim with two halves and this test takes the first: the finite MASK of the
+    parallel arm equals the finite mask of the serial arm, elementwise, on every output.
+
+    A merge that quietly dropped a lane would pass a numeric tolerance on ordinary inputs while
+    failing here, because the dropped lane is exactly the one carrying the poison.
+
+    # Why the mask and not the values
+
+    NaN != NaN, so a value comparison cannot express "these two kernels agree". The mask can,
+    and it is the strictly stronger statement in this regime: agreeing about *which* elements
+    are non-finite is what makes the two kernels substitutable.
+    """
+    past = 127  # W = 4 by the selector's ladder
+    model = _build(past_seq=past)
+    feeds = _feeds(past_seq=past, seed=hash(poison) % 4096)
+    value = {"nan": np.nan, "posinf": np.inf, "neginf": -np.inf}[poison]
+    pk = feeds["past_key"].copy()
+    # One element, in kv head 0, at a token no lane can skip without changing the answer.
+    pk[0, 0, past // 2, 0] = np.float16(value)
+    feeds["past_key"] = pk
+    where = f"poison={poison}"
+
+    par, c_par = _run_with_witness(model, feeds, tmp_path, f"nf_{poison}")
+    _assert_decode_pipeline(c_par, 4, where)
+    ser, c_ser = _run_with_witness(model, feeds, tmp_path, f"nf_{poison}_ser", override="1")
+    _assert_serial_pipeline(c_ser, f"{where} (serial arm)")
+
+    for i, name in enumerate(("attn_out", "present_key", "present_value")):
+        a = par[i].astype(np.float32)
+        s = ser[i].astype(np.float32)
+        assert np.array_equal(np.isfinite(a), np.isfinite(s)), (
+            f"{where}/{name}: the parallel and serial kernels disagree about WHICH elements are "
+            f"non-finite. parallel has {int((~np.isfinite(a)).sum())} non-finite elements, "
+            f"serial has {int((~np.isfinite(s)).sum())}. The declared policy is to propagate "
+            f"exactly as the serial kernel does."
+        )
+    # present_key/present_value are copies of the inputs and never touch the softmax, so the
+    # poison must arrive there bit for bit — including its NaN payload.
+    for i, name in ((1, "present_key"), (2, "present_value")):
+        assert np.array_equal(par[i].view(np.uint8), ser[i].view(np.uint8)), (
+            f"{where}/{name}: the copied KV is not bitwise identical between the two kernels, "
+            f"so the copy path changed under the split"
+        )
+
+
+def test_a_nonfinite_row_cannot_contaminate_another_row(tmp_path, vulkan_device_available) -> None:
+    """The second half of the policy: non-finiteness is confined to its own `(batch, head)`.
+
+    # Why a cooperative kernel needs this test and a serial one does not
+
+    `gqa_f16` cannot leak across heads because it has no shared state at all. This kernel has
+    `sh_m`, `sh_s` and `sh_a`, and the argument that a poisoned head cannot reach a clean one is
+    that one workgroup is exactly one `(batch, head)`. That argument is about the DISPATCH shape
+    and the shared-memory declaration together, which is precisely the kind of pairing that a
+    later refactor breaks silently.
+
+    # The construction
+
+    8 query heads over 2 KV heads, so KV head 0 backs query heads 0-3 and KV head 1 backs 4-7.
+    Poisoning KV head 0 must make heads 0-3 non-finite and must leave heads 4-7 both finite AND
+    numerically equal to the serial kernel's answer for the same feeds. If the reduction ever
+    read another workgroup's slot, heads 4-7 would be the first casualty.
+    """
+    past = 255  # W = 8
+    num_heads, kv_heads, head_dim = 8, 2, 32
+    model = _build(past_seq=past, num_heads=num_heads, kv_heads=kv_heads, head_dim=head_dim)
+    feeds = _feeds(
+        past_seq=past, num_heads=num_heads, kv_heads=kv_heads, head_dim=head_dim, seed=7
+    )
+    pk = feeds["past_key"].copy()
+    pk[0, 0, 3, 0] = np.float16(np.nan)
+    feeds["past_key"] = pk
+
+    par, c_par = _run_with_witness(model, feeds, tmp_path, "nf_row")
+    _assert_decode_pipeline(c_par, 8, "cross-row contamination")
+    ser, c_ser = _run_with_witness(model, feeds, tmp_path, "nf_row_ser", override="1")
+    _assert_serial_pipeline(c_ser, "cross-row contamination (serial arm)")
+
+    # attn_out is (batch, seq_len, num_heads * head_dim): split it back into heads.
+    a = par[0].astype(np.float32).reshape(1, 1, num_heads, head_dim)
+    s = ser[0].astype(np.float32).reshape(1, 1, num_heads, head_dim)
+    group = num_heads // kv_heads
+    poisoned = list(range(group))
+    clean = list(range(group, num_heads))
+
+    for h in poisoned:
+        assert not np.isfinite(a[0, 0, h]).all(), (
+            f"head {h} is backed by the poisoned KV head and should have gone non-finite, but "
+            f"the parallel kernel returned all-finite values — a lane carrying the poisoned "
+            f"token was dropped"
+        )
+    for h in clean:
+        assert np.isfinite(a[0, 0, h]).all(), (
+            f"head {h} shares no KV with the poisoned head, yet the parallel kernel returned a "
+            f"non-finite value for it. Shared memory leaked across workgroups."
+        )
+        assert np.allclose(a[0, 0, h], s[0, 0, h], rtol=1e-2, atol=1e-2), (
+            f"head {h} is uncontaminated but does not match the serial kernel: "
+            f"max |par-ser| = {float(np.abs(a[0, 0, h] - s[0, 0, h]).max()):.6g}"
+        )
+    assert np.array_equal(np.isfinite(a), np.isfinite(s)), (
+        "the two kernels disagree about the finite mask at head granularity"
+    )
+
+
 # ---------------------------------------------------------------------------------------------
 # 4. The selector boundary — the refusal polarity
 # ---------------------------------------------------------------------------------------------
