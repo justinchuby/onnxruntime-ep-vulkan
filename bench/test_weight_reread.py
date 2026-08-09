@@ -27,6 +27,10 @@ from __future__ import annotations
 
 import json
 import sys
+import hashlib
+import pathlib
+import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -589,3 +593,92 @@ def test_resolve_model_negative_control_wrong_cache_key_is_not_found(tmp_path, m
 
     with pytest.raises(fd.FoundryDiscoveryError, match="no cached Foundry variant"):
         wr.resolve_model()
+
+
+# -- the write seam: a default run may not dirty tracked evidence (issue #81) -------------------
+#
+# The defect: `main()` ended in an unconditional `write_text` to `bench/results/
+# weight_reread_phi35.json`, a committed witness. Nothing about running the probe said so, so a
+# default invocation left a modified tracked file behind, and `git status` could not distinguish
+# "re-measured deliberately" from "overwritten in passing". These lock the fix: the destination
+# is an argument with an untracked default, and the record itself is screened for absolute local
+# paths before it is written rather than after somebody notices one in review.
+
+
+def test_the_default_destination_is_not_the_committed_witness():
+    """The whole defect in one assertion."""
+    assert wr.parse_args([]).out is None
+    assert wr.DEFAULT_OUT != wr.WITNESS
+    assert wr.WITNESS == RECORD
+    rel = wr.DEFAULT_OUT.relative_to(wr.ROOT).as_posix()
+    assert rel.startswith("bench/results/local/"), rel
+
+
+def test_the_untracked_default_is_actually_untracked():
+    """`bench/results/local/` being ignored is what makes the default safe; asserting the
+    path shape alone would pass just as well against a directory git happens to track."""
+    proc = subprocess.run(
+        ["git", "check-ignore", "-q", str(wr.DEFAULT_OUT)],
+        cwd=str(wr.ROOT), capture_output=True,
+    )
+    assert proc.returncode == 0, (
+        f"{wr.DEFAULT_OUT} is not ignored by git, so a default probe run would still dirty "
+        "the working tree -- .gitignore and DEFAULT_OUT have drifted apart"
+    )
+
+
+def test_the_witness_is_still_reachable_but_only_by_naming_it():
+    """The fix must not make the committed witness unrefreshable -- that would trade one
+    defect for another. It makes refreshing it explicit."""
+    assert wr.parse_args(["--out", str(wr.WITNESS)]).out == wr.WITNESS
+
+
+def test_public_path_keeps_repo_paths_and_drops_external_directories():
+    assert wr.public_path(wr.ROOT / "bench" / "results" / "x.json") == "bench/results/x.json"
+    outside = pathlib.Path(tempfile.gettempdir()).resolve() / "somewhere" / "phi35.onnx"
+    assert wr.public_path(outside) == "<external>/phi35.onnx"
+
+
+@pytest.mark.parametrize("planted", [
+    "C:\\Users\\someone\\.foundry\\model.onnx",
+    "/home/someone/.cache/model.onnx",
+    "/Users/someone/model.onnx",
+    "\\\\fileserver\\share\\model.onnx",
+    "resolved from /home/someone/cache in passing",
+])
+def test_assert_public_refuses_a_planted_absolute_path(planted):
+    """Every branch of the screen, including one buried in a sentence rather than standing
+    alone as a field value."""
+    with pytest.raises(InstrumentError, match="absolute local path"):
+        wr.assert_public({"identity": {"onnx_file": planted}})
+
+
+def test_assert_public_walks_lists_and_names_where_it_found_it():
+    with pytest.raises(InstrumentError, match=r"\$\.by_shape\[1\]\.note"):
+        wr.assert_public({"by_shape": [{"note": "fine"}, {"note": "/home/x/y.onnx"}]})
+
+
+def test_assert_public_admits_the_shapes_a_real_record_carries():
+    """Negative control on the screen: relative paths, ratios and prose that merely contains
+    a slash must pass, or the guard would be unusable and get deleted."""
+    wr.assert_public({
+        "subject": {"module_path": "rust/target/release/build/out/spv/q_gemv.spv"},
+        "windows": {"module_path": "rust\\target\\release\\build\\out\\spv\\q_gemv.spv"},
+        "identity": {"onnx_file": "<external>/phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"},
+        "prose": "bytes/second, and/or the read/write split",
+        "numbers": [1, 2.5, None, True],
+    })
+
+
+def test_the_record_identity_is_published_through_the_scrubber(tmp_path, monkeypatch):
+    """FUNCTIONAL, not a source scan: point PHI35_MODEL at a file outside the tree and the
+    stamped `onnx_file` must be the reduced form, while `onnx_sha256` -- the field that
+    actually identifies the bytes -- is unchanged and still computed from them."""
+    pinned = tmp_path / "pinned_phi35.onnx"
+    pinned.write_bytes(b"not a real onnx file, just a presence marker")
+    monkeypatch.setenv("PHI35_MODEL", str(pinned))
+
+    identity = wr._result_identity(wr.resolve_model())
+    assert identity["onnx_file"] == "<external>/pinned_phi35.onnx"
+    assert identity["onnx_sha256"] == hashlib.sha256(pinned.read_bytes()).hexdigest()
+    wr.assert_public(identity)

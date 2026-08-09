@@ -5758,6 +5758,101 @@ CPU reference to compare a Vulkan run against**, so nothing here is an end-to-en
 
 ---
 
+### 8.12.1 The exact tile request — a measurement seam, not a tuning knob (issue #81)
+
+§8.12's selector requires a **strict** improvement over the incumbent candidate. That is the right
+rule — it makes the tile search fail-closed, so a shape with no better tiling keeps the decode
+geometry — and it has one consequence that turns out to matter: **two candidates that name the same
+number of bytes are not both reachable.** The incumbent wins and the challenger cannot be selected
+by any input the selector accepts.
+
+`(cols, rows) = (16, 2)` and `(8, 4)` are exactly such a pair on Phi-3.5's projection shapes. The
+condition is arithmetic and it is not universal — it is derived and exhausted in
+`ops::quant::tests::the_16x2_and_8x4_tie_is_conditional_on_m_and_on_the_dtype_ratio`:
+
+* the two totals are `ceil(M/2) * (W + 2A)` and `ceil(M/4) * (W + 8A)`, so their brackets are in
+  ratio 2 **exactly when `bits == 2 * a_bytes`** — q4 with fp16 activations can tie; q4 with fp32
+  activations never can, at any `M`;
+* given the ratio, the tie is `ceil(M/2) == 2 * ceil(M/4)`, i.e. **`M mod 4 ∈ {0, 3}`**.
+
+The two tiles name the same traffic and differ in *register pressure and reduction depth*, which
+the byte model does not price. Whether that difference is worth anything is a question about a
+device, and answering it needs both arms runnable on one binary. Neither existing control can do
+it: `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` is a **ceiling**, so setting it to 4 changes nothing and
+setting it to 2 forbids the arm under test, and `..._GEMV_PACKED` selects a load width, not a tile.
+
+#### The surface
+
+`ONNXRUNTIME_EP_VULKAN_GEMV_TILE=<cols>,<rows>`. Three states, deliberately kept apart:
+
+| state | meaning | behaviour |
+|---|---|---|
+| absent | nobody asked | `gemv_tile_requested` delegates to `gemv_tile_with` — **byte-for-byte the default search**, structurally, not by the rules happening to agree |
+| a legal pair | asked for a tile the search could have picked | that pair reaches `QB_COLS` and `QB_ROWS` |
+| anything else | asked for something illegal, mistyped, or not UTF-8 | **refuses before dispatch** |
+
+Collapsing any pair of those onto each other is the failure this shape exists to prevent: "nobody
+asked" read as "asked for the default" makes an unarmed instrument indistinguishable from an armed
+one, and "asked for nonsense" read as "nobody asked" turns a typo into a silently different
+measurement whose numbers get attributed to the arm the operator thought they selected.
+
+#### Why refusal, when §8.12's ceiling deliberately does not refuse
+
+They are different kinds of value and the asymmetry is the point. A ceiling is a *bound*: a typo in
+it can only make the tile smaller, every value is safe, and the safe reading of a typo in a
+performance knob is "the default, and keep running". An exact request is an *identity*: if it
+silently became the default, the operator would attribute the default arm's numbers to the arm they
+asked for, and no artifact would say otherwise. So `matmul_nbits_gemv` returns `EpError::Internal`
+before `ctx.dispatch` and records the refusal through
+`counters::record_gemv_tile_override_refused`, surfaced as the JSON-only
+`gemv_tile_override_refusals` array — the same treatment `pipeline_variants` got, and for the same
+reason (three hand-maintained ctypes mirrors make a mid-struct insertion expensive), so there is no
+`abi_version` bump. Each row names the rule by a stable token and carries the shape, because the
+same pair is legal on one node of a graph and illegal on the next.
+
+Non-UTF-8 is read through `std::env::var_os` rather than `std::env::var` precisely so that it lands
+in the refusal state instead of being flattened into "absent" by an `Err` nobody matched on.
+
+#### The override widens nothing
+
+`gemv_tile_legality` holds an *asked-for* pair to every rule `gemv_tile_with` already enforces on
+its own candidates: power-of-two `cols` and `rows`, `cols <= GEMV_MAX_COLS`, `rows <=
+GEMV_MAX_ROWS`, `rows <=` the `GEMV_MAX_ROWS` ceiling **currently in force**, `cols * rows <=
+GEMV_MAX_TILE`, `wg * cols <= GEMV_RED_WORDS`, `cols` divides `N`, at least `GEMV_MIN_WORKGROUPS`
+workgroups left, and no row tile at `M <= 1`. So no value of this variable can reach a geometry the
+selector could not already have selected, the §8.12 fail-closed host guard is still in front of
+`ctx.dispatch`, the shader's spec-constant guard is unchanged, and the portability argument above —
+no shared memory, no new feature, no device-dependent decision, Vulkan 1.1 core — carries over
+unaltered.
+
+Precedence is explicit rather than implied: an exact request that exceeds the ceiling **refuses**
+(`rows_above_ceiling_in_force`) instead of being demoted to fit it. Two controls disagreeing is a
+fact the operator should see, not one the EP should resolve on their behalf.
+
+#### What is proven
+
+`rust/tests/gemv_tile_override.rs` starts at `registry::spec_for` — the lookup `Compile` itself
+uses — drives the row's own `translate` pointer with a recording `DispatchContext`, and asserts the
+`KernelRequest.spec_constants` the handler **actually built**. That is the distinction that makes
+it worth having: `rust/tests/row_tile_fallback.rs` and the `ops::quant` unit tests all call the
+selector directly, so an edit that unwired the handler from the selector would leave every one of
+them green. This one fails.
+
+**What is not proven, stated rather than implied:** that a Vulkan pipeline was created with an
+overridden tile. `src/vk/session.rs` carries the effective vector into `vkCreateComputePipelines`
+and that needs a device. What the test does reach is the production recorder: feeding the two
+handler-built vectors through `counters::record_pipeline_variant` yields two distinct pipeline
+keys, so the override is observable as a distinct pipeline rather than collapsing onto the
+default's. The remaining link is a device lane's to close, and `ci/census_surface_map.json` records
+it as `uncensused/Tank` with that gap named — the census's six-node elementwise graph carries no
+`MatMulNBits` node, so no run of it could build a `q_gemv` pipeline whatever this switch says.
+
+**No performance claim accompanies this.** The seam makes the A/B runnable; running it is separate
+work. `docs/PERF.md` §26.4.1 publishes the byte model, marks every figure `MODEL`, and says in
+terms that it has measured nothing.
+
+---
+
 ### 8.13 The GQA workgroup size — one lane per subgroup was 1/32 of the machine (issue #56)
 
 `gqa_f16.comp` declared `layout(local_size_x = 1, local_size_y = 1, local_size_z = 1)`. That is

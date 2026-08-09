@@ -52,7 +52,7 @@ WHAT THE ISLAND IS MADE OF
 The remaining budget is everything that is *not* weights. That budget is dominated by a term
 nobody has costed, and it is not intermediates.
 
-Run:  python bench/results/probe_weight_reread.py   # first: produces the measured record
+Run:  python bench/results/probe_weight_reread.py --out bench/results/weight_reread_phi35.json
       python bench/results/probe_island_bytes.py
 """
 
@@ -343,7 +343,8 @@ def weight_reread(record: pathlib.Path = REREAD_RECORD) -> dict:
     """
     if not record.exists():
         return {"verdict": "UNWITNESSED",
-                "why": f"no {record.name}; run bench/results/probe_weight_reread.py first"}
+                "why": f"no {record.name}; run bench/results/probe_weight_reread.py "
+                       f"--out bench/results/{record.name} first"}
     doc = json.loads(record.read_text(encoding="utf-8"))
     controls = doc.get("positive_controls", {})
     if not controls.get("witnessed"):

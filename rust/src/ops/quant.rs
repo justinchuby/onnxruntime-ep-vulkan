@@ -517,6 +517,299 @@ fn gemv_tile_with(
     best
 }
 
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+// The tile override — a measurement instrument, deliberately not a tuning knob (issue #81)
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The exact-pair tile request. `"cols,rows"`.
+///
+/// # Why this exists at all, and why it is not `GEMV_MAX_ROWS` with a different name
+///
+/// [`gemv_tile_with`] requires a **strict** improvement, so when two candidates name the same
+/// bytes the incumbent keeps the tile. `(16, 2)` and `(8, 4)` are exactly such a pair on the
+/// Phi-3.5 projection shapes — see [`gemv_tile`]'s own tests for the condition, which is
+/// arithmetic rather than universal — and `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` cannot separate
+/// them: it lowers the row *ceiling*, and lowering the ceiling to 4 changes nothing while lowering
+/// it to 2 forbids the arm under test. So the equal-traffic A/B that isolates register pressure
+/// from bandwidth has no surface to run on. This is that surface, and nothing more: it selects a
+/// tile the search could already have selected, it never widens what the shader may be asked for,
+/// and unset it is not in the code path at all.
+///
+/// # The three states are three different facts
+///
+/// `Unset` is not `Exact { .. }` with default values and it is not `Unparseable`. Collapsing
+/// "nobody asked" onto "somebody asked for the default" is how an instrument stops being able to
+/// report that it was never armed; collapsing "somebody asked for nonsense" onto "nobody asked" is
+/// how a typo becomes a silently different measurement. Both collapses are refused here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileRequest {
+    /// The variable is absent. The byte-model search runs exactly as it did before this existed.
+    Unset,
+    /// A syntactically well-formed pair. Whether it is *legal* for a given shape is a separate
+    /// question, answered by [`gemv_tile_legality`].
+    Exact {
+        /// Requested `QB_COLS`.
+        cols: u32,
+        /// Requested `QB_ROWS`.
+        rows: u32,
+    },
+    /// The variable is present and is not a pair this parser accepts — including the case where
+    /// the operating system holds bytes that are not UTF-8.
+    Unparseable,
+}
+
+/// Why an override was refused. One variant per rule, so the diagnostic names the rule rather
+/// than restating the numbers and leaving the reader to work out which bound was hit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileRefusalReason {
+    /// The value is not `"<cols>,<rows>"` in canonical decimal.
+    Unparseable,
+    /// `cols` is not a power of two. The paired non-atomic store in `q_gemv.comp` needs evenness,
+    /// and every tile the search can emit is a power of two.
+    ColsNotPowerOfTwo,
+    /// `rows` is not a power of two, for the same reason.
+    RowsNotPowerOfTwo,
+    /// `cols > GEMV_MAX_COLS` — the shader's column register budget.
+    ColsAboveCap,
+    /// `rows > GEMV_MAX_ROWS` — the activation window the tiled arm holds per row.
+    RowsAboveCap,
+    /// `rows` exceeds the ceiling `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` currently imposes. The
+    /// exact request does not silently outrank the ceiling; it refuses so the operator can see
+    /// that two controls disagree.
+    RowsAboveCeilingInForce,
+    /// `cols * rows > GEMV_MAX_TILE` — the accumulator array the shader sizes by `QB_MAX_TILE`.
+    TileAboveAccumulatorBudget,
+    /// `wg * cols > GEMV_RED_WORDS` — the shared reduction array.
+    SharedArrayOverrun,
+    /// `cols` does not divide `N`, so the dispatch would take the tail-tile path the search
+    /// deliberately never selects.
+    ColsDoesNotDivideN,
+    /// Tiling this narrowly would leave fewer than [`GEMV_MIN_WORKGROUPS`] workgroups.
+    TooFewWorkgroups,
+    /// `rows > 1` at `M <= 1`. Production never row-tiles a one-row dispatch — the search short
+    /// circuits — so this is a tile production could not already have executed.
+    RowTileAtDecodeWidth,
+}
+
+impl TileRefusalReason {
+    /// A stable machine-readable token. Recorded into the counters artifact, so it is part of the
+    /// instrument's contract and is asserted by name rather than by message text.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Unparseable => "unparseable",
+            Self::ColsNotPowerOfTwo => "cols_not_power_of_two",
+            Self::RowsNotPowerOfTwo => "rows_not_power_of_two",
+            Self::ColsAboveCap => "cols_above_cap",
+            Self::RowsAboveCap => "rows_above_cap",
+            Self::RowsAboveCeilingInForce => "rows_above_ceiling_in_force",
+            Self::TileAboveAccumulatorBudget => "tile_above_accumulator_budget",
+            Self::SharedArrayOverrun => "shared_array_overrun",
+            Self::ColsDoesNotDivideN => "cols_does_not_divide_n",
+            Self::TooFewWorkgroups => "too_few_workgroups",
+            Self::RowTileAtDecodeWidth => "row_tile_at_decode_width",
+        }
+    }
+}
+
+/// A refusal, with the request that caused it. `cols`/`rows` are `0` when nothing parsed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TileRefusal {
+    /// Which rule refused.
+    pub reason: TileRefusalReason,
+    /// The requested column tile, or `0` when the value never parsed.
+    pub cols: u32,
+    /// The requested row tile, or `0` when the value never parsed.
+    pub rows: u32,
+}
+
+impl TileRefusal {
+    /// The line recorded into the counters artifact and into the returned `OrtStatus` message.
+    ///
+    /// Shape-bearing on purpose: the same pair is legal on one node of a graph and illegal on the
+    /// next, so a refusal that named only the pair would be unactionable.
+    pub fn detail(&self, m: u64, n: u64, wg: u32) -> String {
+        format!(
+            "{} cols={} rows={} m={m} n={n} wg={wg}",
+            self.reason.token(),
+            self.cols,
+            self.rows
+        )
+    }
+}
+
+/// The environment variable that carries the exact-pair request.
+pub const GEMV_TILE_ENV: &str = "ONNXRUNTIME_EP_VULKAN_GEMV_TILE";
+
+/// One decimal component of the pair.
+///
+/// The accepted language is `[1-9][0-9]*`, and every deviation is a refusal rather than a
+/// normalisation. `08` is rejected rather than read as 8 so that the value the diagnostic prints
+/// is the value the operator typed; `+8`, `8 `, `2.5`, `0x8`, `-1` and `4294967296` are rejected
+/// by the same rule and by `u32::from_str`'s overflow behaviour, in that order.
+fn parse_tile_component(s: &str) -> Option<u32> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if s.len() > 1 && s.starts_with('0') {
+        return None;
+    }
+    match s.parse::<u32>() {
+        Ok(0) | Err(_) => None,
+        Ok(n) => Some(n),
+    }
+}
+
+/// Parse `"cols,rows"`. Pure, so every syntax case is a unit test rather than a paragraph.
+///
+/// `None` means the variable is absent. `Some(v)` where `v` is anything other than exactly two
+/// canonical decimal components separated by one comma is [`TileRequest::Unparseable`] — including
+/// `"8,4,2"`, which is caught because the text after the first comma is not all digits.
+pub fn parse_tile_request(raw: Option<&str>) -> TileRequest {
+    let Some(v) = raw else {
+        return TileRequest::Unset;
+    };
+    let Some((c, r)) = v.split_once(',') else {
+        return TileRequest::Unparseable;
+    };
+    match (parse_tile_component(c), parse_tile_component(r)) {
+        (Some(cols), Some(rows)) => TileRequest::Exact { cols, rows },
+        _ => TileRequest::Unparseable,
+    }
+}
+
+/// Is this pair one the search could already have emitted for this shape?
+///
+/// Every rule below is a rule [`gemv_tile_with`] already enforces on its own candidates, restated
+/// as a predicate so that an *asked-for* tile is held to the same standard as a *chosen* one.
+/// Nothing here is new policy: an override cannot reach a geometry the selector could not, which
+/// is what makes this an instrument rather than a way to ask the shader for an overrun.
+///
+/// Order matters. The caps are checked before the products so that `cols * rows` and `wg * cols`
+/// cannot overflow on a hostile value; the parser has already excluded `0`.
+pub fn gemv_tile_legality(
+    m: u64,
+    n: u64,
+    wg: u32,
+    cols: u32,
+    rows: u32,
+    max_rows: u32,
+) -> Result<(), TileRefusalReason> {
+    use TileRefusalReason as R;
+    if !cols.is_power_of_two() {
+        return Err(R::ColsNotPowerOfTwo);
+    }
+    if !rows.is_power_of_two() {
+        return Err(R::RowsNotPowerOfTwo);
+    }
+    if cols > GEMV_MAX_COLS {
+        return Err(R::ColsAboveCap);
+    }
+    if rows > GEMV_MAX_ROWS {
+        return Err(R::RowsAboveCap);
+    }
+    if rows > max_rows {
+        return Err(R::RowsAboveCeilingInForce);
+    }
+    if cols * rows > GEMV_MAX_TILE {
+        return Err(R::TileAboveAccumulatorBudget);
+    }
+    if wg * cols > GEMV_RED_WORDS {
+        return Err(R::SharedArrayOverrun);
+    }
+    if n % u64::from(cols) != 0 {
+        return Err(R::ColsDoesNotDivideN);
+    }
+    if cols != 1 && n / u64::from(cols) < GEMV_MIN_WORKGROUPS {
+        return Err(R::TooFewWorkgroups);
+    }
+    if rows > 1 && m <= 1 {
+        return Err(R::RowTileAtDecodeWidth);
+    }
+    Ok(())
+}
+
+/// The tile this dispatch takes, or the refusal that stops it.
+///
+/// Pure in `request` and `max_rows`, so the whole three-state contract — including the one that
+/// matters most, that `Unset` is *byte-for-byte* [`gemv_tile_with`] — is provable without touching
+/// process state. `Unset` does not call the legality predicate at all: the identity is structural,
+/// not a coincidence of the rules agreeing.
+///
+/// The signature is [`gemv_tile_with`]'s, plus `request`. Keeping the shape parameters positional
+/// and identical is what makes the `Unset` delegation below readable as a pass-through rather than
+/// a re-derivation, which is worth more here than being one argument under clippy's threshold.
+#[allow(clippy::too_many_arguments)]
+pub fn gemv_tile_requested(
+    m: u64,
+    n: u64,
+    k: u64,
+    bits: u32,
+    a_bytes: u64,
+    wg: u32,
+    request: TileRequest,
+    max_rows: u32,
+) -> Result<(u32, u32), TileRefusal> {
+    match request {
+        TileRequest::Unset => Ok(gemv_tile_with(m, n, k, bits, a_bytes, wg, max_rows)),
+        TileRequest::Unparseable => Err(TileRefusal {
+            reason: TileRefusalReason::Unparseable,
+            cols: 0,
+            rows: 0,
+        }),
+        TileRequest::Exact { cols, rows } => {
+            match gemv_tile_legality(m, n, wg, cols, rows, max_rows) {
+                Ok(()) => Ok((cols, rows)),
+                Err(reason) => Err(TileRefusal { reason, cols, rows }),
+            }
+        }
+    }
+}
+
+/// The request this process carries.
+///
+/// `var_os` rather than `var`: a value the OS holds that is not UTF-8 must **refuse**, and
+/// `std::env::var` reports that case as an `Err` indistinguishable from "absent" at the call site
+/// unless it is matched on. Absent and un-decodable are different facts and are kept apart here.
+///
+/// Platform note, stated because a test that asserts it on the wrong platform is worse than no
+/// test: on Windows an empty value removes the variable, so `GEMV_TILE=""` is `Unset` there and
+/// `Unparseable` on Linux. The pure parser is where the empty string's meaning is pinned.
+fn tile_request_from_env() -> TileRequest {
+    match std::env::var_os(GEMV_TILE_ENV) {
+        None => TileRequest::Unset,
+        Some(v) => match v.to_str() {
+            Some(s) => parse_tile_request(Some(s)),
+            None => TileRequest::Unparseable,
+        },
+    }
+}
+
+/// [`gemv_tile_requested`] with both controls read from the environment.
+///
+/// This is the single production entry point, and the reason it is separate from [`gemv_tile`] is
+/// that `gemv_tile` has three other callers (the probe mirrors and
+/// `rust/tests/row_tile_fallback.rs`) whose contract is "the tile the byte model picks" and must
+/// not acquire a failure mode.
+fn gemv_tile_for_dispatch(
+    m: u64,
+    n: u64,
+    k: u64,
+    bits: u32,
+    a_bytes: u64,
+    wg: u32,
+) -> Result<(u32, u32), TileRefusal> {
+    gemv_tile_requested(
+        m,
+        n,
+        k,
+        bits,
+        a_bytes,
+        wg,
+        tile_request_from_env(),
+        gemv_max_rows(),
+    )
+}
+
 /// Translate `MatMulNBits` into one block-dequantising GEMV dispatch.
 fn matmul_nbits_gemv(
     spec: &OpSpec,
@@ -597,14 +890,24 @@ fn matmul_nbits_gemv(
 
     let wg = gemv_workgroup(blocks_per_col as u64);
     let a_bytes = dtype.byte_size() as u64;
-    let (cols, rows) = gemv_tile(
-        m_total.max(0) as u64,
-        n as u64,
-        k as u64,
-        bits as u32,
-        a_bytes,
-        wg,
-    );
+    let m_rows = m_total.max(0) as u64;
+    // The override is consulted here, before any resource is committed to a geometry, and a
+    // refusal returns rather than falling back to the search: an operator who asked for a specific
+    // tile and got the default one would attribute the default arm's numbers to the arm they
+    // asked for. The counter row is written first so the refusal is observable from the artifact
+    // even when the caller only sees an `OrtStatus`.
+    let (cols, rows) =
+        match gemv_tile_for_dispatch(m_rows, n as u64, k as u64, bits as u32, a_bytes, wg) {
+            Ok(pair) => pair,
+            Err(refusal) => {
+                let detail = refusal.detail(m_rows, n as u64, wg);
+                crate::counters::record_gemv_tile_override_refused(&detail);
+                return Err(EpError::Internal(format!(
+                    "`{}` refused the {GEMV_TILE_ENV} override: {detail}",
+                    node.op_type
+                )));
+            }
+        };
     let mut push = Vec::with_capacity(16);
     for v in [m_total, k, n, blocks_per_col] {
         push.extend_from_slice(&(v as u32).to_le_bytes());
@@ -1150,9 +1453,13 @@ mod tests {
     /// `gemv_workgroup` gives 32 or 128 and `gemv_cols` gives 16. Because `ceil(N/cols) * cols` is
     /// just `N` whenever the column tile divides `N`, the weight term depends only on `rows` and
     /// the activation term only on `rows / cols` — so `rows = 2, cols = 16` and `rows = 4,
-    /// cols = 8` name *exactly* the same bytes. The picker requires a strict improvement, so the
-    /// tie goes to the first candidate, which is the one that keeps the decode column tile and
-    /// runs half as many sequential shared-memory reductions.
+    /// cols = 8` name the same bytes **for some `M`, not for all of them**. The exact condition is
+    /// derived and exhausted in
+    /// [`the_16x2_and_8x4_tie_is_conditional_on_m_and_on_the_dtype_ratio`]; `M = 64` below is one
+    /// of the tying widths. The picker requires a strict improvement, so wherever the two do tie
+    /// the tile goes to the first candidate, which is the one that keeps the decode column tile
+    /// and runs half as many sequential shared-memory reductions. Where they do not tie, `(16, 2)`
+    /// is the strictly cheaper of the pair at every `M` in the grid below.
     ///
     /// `rows = 4, cols = 16` would be strictly better again, but `cols * rows = 64` exceeds
     /// `GEMV_MAX_TILE`: the accumulator budget, not the byte model, is what bounds the tile.
@@ -1180,8 +1487,9 @@ mod tests {
                 "M={m}: {tiled} is not fewer than {untiled}"
             );
         }
-        // The alternative really is a tie rather than merely close, and the wider tile that would
-        // break the tie is excluded by the accumulator cap rather than by the model.
+        // The alternative ties **at this M**, and the wider tile that would break the tie is
+        // excluded by the accumulator cap rather than by the model. `M = 64` is a tying width
+        // because `64 mod 4 == 0`; the general rule is proved separately.
         assert_eq!(
             gemv_named_bytes(64, n, k, 4, 2, 16, 2),
             gemv_named_bytes(64, n, k, 4, 2, 8, 4)
@@ -1201,6 +1509,320 @@ mod tests {
         let (cols8, rows8) = gemv_tile(512, 3072, 8192, 4, 2, wg8);
         assert!(rows8 > 1, "the row tile must survive the widest workgroup");
         assert_eq!(wg8 * cols8, GEMV_RED_WORDS);
+    }
+
+    /// When `(16, 2)` and `(8, 4)` name the same bytes — derived, then exhausted.
+    ///
+    /// [`gemv_named_bytes`] with `cols` dividing `N` reduces to
+    ///
+    /// ```text
+    /// total(cols, rows) = ceil(M / rows) * (W + rows * A)
+    ///     W = N * K * bits / 8          (independent of cols, since ceil(N/cols)*cols == N)
+    ///     A = (N / cols) * K * a_bytes  (the activation bytes one row of the tile grid names)
+    /// ```
+    ///
+    /// Halving `cols` doubles `A`, so `(8, 4)` has `A_8 = 2 * A_16` and
+    ///
+    /// ```text
+    /// total(16, 2) = ceil(M/2) * (W + 2*A_16)
+    /// total(8,  4) = ceil(M/4) * (W + 8*A_16)
+    /// ```
+    ///
+    /// With `N = K = 3072`, `bits = 4`, `a_bytes = 2`: `W = 4_718_592` and `A_16 = 1_179_648`, so
+    /// `W + 2*A_16 = 7_077_888` and `W + 8*A_16 = 14_155_776` — exactly twice. The bracket ratio
+    /// is 2 precisely when `W == 2 * A_16 * 2`, i.e. when `bits == 2 * a_bytes`; with fp32
+    /// activations the ratio is not 2 and the pair can never tie. Given the ratio, the tie reduces
+    /// to `ceil(M/2) == 2 * ceil(M/4)`, which holds exactly for `M mod 4 ∈ {0, 3}`.
+    ///
+    /// Both halves are exhausted below rather than asserted at a handful of remembered points, and
+    /// the four widths the design note quotes are **computed here**, not transcribed.
+    #[test]
+    fn the_16x2_and_8x4_tie_is_conditional_on_m_and_on_the_dtype_ratio() {
+        let (n, k) = (3072u64, 3072u64);
+        let wide = |m: u64| gemv_named_bytes(m, n, k, 4, 2, 16, 2);
+        let deep = |m: u64| gemv_named_bytes(m, n, k, 4, 2, 8, 4);
+
+        // The four widths the design note quotes, computed rather than quoted. `M = 2` is the one
+        // that is *not* a tie, and its orientation is stated as a ratio of named totals so a
+        // future edit cannot swap the labels without failing.
+        assert_eq!(wide(2), 7_077_888, "M=2 (16,2)");
+        assert_eq!(deep(2), 14_155_776, "M=2 (8,4)");
+        assert_eq!(
+            deep(2),
+            2 * wide(2),
+            "M=2: the deep tile names twice the bytes, not a tie"
+        );
+        assert_eq!(wide(4), 14_155_776, "M=4 (16,2)");
+        assert_eq!(deep(4), 14_155_776, "M=4 (8,4)");
+        assert_eq!(wide(5), 21_233_664, "M=5 (16,2)");
+        assert_eq!(deep(5), 28_311_552, "M=5 (8,4)");
+        assert_eq!(wide(128), 452_984_832, "M=128 (16,2)");
+        assert_eq!(deep(128), 452_984_832, "M=128 (8,4)");
+
+        // Exhaustive over a range that covers every residue class many times: the tie holds for
+        // `M mod 4 ∈ {0, 3}` and fails everywhere else, with fp16 activations.
+        for m in 2u64..=4096 {
+            let tied = wide(m) == deep(m);
+            let predicted = matches!(m % 4, 0 | 3);
+            assert_eq!(tied, predicted, "M={m}: tie={tied} predicted={predicted}");
+            if !tied {
+                assert!(
+                    wide(m) < deep(m),
+                    "M={m}: the wide tile must never be the loser"
+                );
+            }
+        }
+
+        // The ratio condition, not just the `M` condition. `bits == 2 * a_bytes` is what makes any
+        // tie possible; with fp32 activations the same pair never ties at any `M`.
+        for m in 2u64..=512 {
+            assert_ne!(
+                gemv_named_bytes(m, n, k, 4, 4, 16, 2),
+                gemv_named_bytes(m, n, k, 4, 4, 8, 4),
+                "M={m}: bits != 2 * a_bytes, so the pair cannot tie"
+            );
+        }
+        // And with `bits = 8, a_bytes = 4` the ratio is restored and so is the residue rule.
+        for m in 2u64..=512 {
+            assert_eq!(
+                gemv_named_bytes(m, n, k, 8, 4, 16, 2) == gemv_named_bytes(m, n, k, 8, 4, 8, 4),
+                matches!(m % 4, 0 | 3),
+                "M={m}: bits == 2 * a_bytes restores the residue rule"
+            );
+        }
+    }
+
+    /// The override parser accepts one language and refuses everything else.
+    #[test]
+    fn the_tile_override_parser_accepts_only_a_canonical_decimal_pair() {
+        assert_eq!(parse_tile_request(None), TileRequest::Unset);
+        assert_eq!(
+            parse_tile_request(Some("8,4")),
+            TileRequest::Exact { cols: 8, rows: 4 }
+        );
+        assert_eq!(
+            parse_tile_request(Some("16,2")),
+            TileRequest::Exact { cols: 16, rows: 2 }
+        );
+        for bad in [
+            "",             // present but empty — a request for nothing is not a request
+            "8",            // no comma
+            "8,",           // missing component
+            ",4",           //
+            "8,4,2",        // three components: the tail is not all digits
+            " 8,4",         // whitespace is not normalised away
+            "8, 4",         //
+            "8,4 ",         //
+            "08,4",         // leading zeros: the printed value must be the typed value
+            "8,04",         //
+            "+8,4",         //
+            "-8,4",         //
+            "8,-4",         //
+            "2.5,4",        // a decimal point is not a separator
+            "0x8,4",        //
+            "0,4",          // zero is not a tile
+            "8,0",          //
+            "4294967296,4", // overflows u32
+            "8,4294967296",
+            "eight,four",
+            "16;2",
+        ] {
+            assert_eq!(
+                parse_tile_request(Some(bad)),
+                TileRequest::Unparseable,
+                "{bad:?} must not parse"
+            );
+        }
+    }
+
+    /// Unset is the default search, structurally — not merely at the shapes someone remembered.
+    #[test]
+    fn an_unset_override_is_byte_for_byte_the_default_search() {
+        for m in [0u64, 1, 2, 3, 5, 17, 128, 4096] {
+            for n in [1u64, 64, 130, 512, 3072, 9216, 32_064] {
+                for bpc in [1u64, 7, 96, 256, 4096] {
+                    for a_bytes in [2u64, 4] {
+                        for ceiling in [1u32, 2, 4] {
+                            let wg = gemv_workgroup(bpc);
+                            let k = bpc * 32;
+                            assert_eq!(
+                                gemv_tile_requested(
+                                    m,
+                                    n,
+                                    k,
+                                    4,
+                                    a_bytes,
+                                    wg,
+                                    TileRequest::Unset,
+                                    ceiling
+                                ),
+                                Ok(gemv_tile_with(m, n, k, 4, a_bytes, wg, ceiling)),
+                                "m={m} n={n} bpc={bpc} a={a_bytes} ceiling={ceiling}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every legality rule refuses, and refuses by name.
+    #[test]
+    fn an_illegal_override_refuses_and_names_the_rule_that_refused_it() {
+        use TileRefusalReason as R;
+        let wg = gemv_workgroup(3072 / 32);
+        assert_eq!(wg, 32);
+        let ask = |m: u64, n: u64, cols: u32, rows: u32, ceiling: u32| {
+            gemv_tile_requested(
+                m,
+                n,
+                3072,
+                4,
+                2,
+                wg,
+                TileRequest::Exact { cols, rows },
+                ceiling,
+            )
+            .map_err(|r| r.reason)
+        };
+
+        assert_eq!(
+            ask(64, 3072, 8, 4, 4),
+            Ok((8, 4)),
+            "the pair under test is legal"
+        );
+        assert_eq!(ask(64, 3072, 16, 2, 4), Ok((16, 2)), "so is the incumbent");
+
+        assert_eq!(ask(64, 3072, 3, 2, 4), Err(R::ColsNotPowerOfTwo));
+        assert_eq!(ask(64, 3072, 8, 3, 4), Err(R::RowsNotPowerOfTwo));
+        assert_eq!(ask(64, 3072, 32, 1, 4), Err(R::ColsAboveCap));
+        assert_eq!(ask(64, 3072, 4, 8, 4), Err(R::RowsAboveCap));
+        // The ceiling still binds: an exact request does not silently outrank it.
+        assert_eq!(ask(64, 3072, 8, 4, 2), Err(R::RowsAboveCeilingInForce));
+        assert_eq!(ask(64, 3072, 16, 4, 4), Err(R::TileAboveAccumulatorBudget));
+        // `wg * cols` at the K = 8192 workgroup width.
+        let wg8 = gemv_workgroup(8192 / 32);
+        assert_eq!(
+            gemv_tile_requested(
+                64,
+                3072,
+                8192,
+                4,
+                2,
+                wg8,
+                TileRequest::Exact { cols: 16, rows: 2 },
+                4
+            ),
+            Ok((16, 2)),
+            "128 * 16 is exactly the shared-array ceiling, which is legal"
+        );
+        assert_eq!(
+            gemv_tile_requested(
+                64,
+                3072,
+                8192,
+                4,
+                2,
+                256,
+                TileRequest::Exact { cols: 16, rows: 2 },
+                4
+            )
+            .map_err(|r| r.reason),
+            Err(R::SharedArrayOverrun)
+        );
+        assert_eq!(ask(64, 130, 8, 2, 4), Err(R::ColsDoesNotDivideN));
+        assert_eq!(ask(64, 64, 8, 2, 4), Err(R::TooFewWorkgroups));
+        assert_eq!(ask(1, 3072, 16, 2, 4), Err(R::RowTileAtDecodeWidth));
+        assert_eq!(ask(0, 3072, 16, 2, 4), Err(R::RowTileAtDecodeWidth));
+        // A decode-width request for the decode tile is not a refusal.
+        assert_eq!(ask(1, 3072, 16, 1, 4), Ok((16, 1)));
+
+        // Unparseable refuses with no pair, because there was never a pair to report.
+        let refusal = gemv_tile_requested(64, 3072, 3072, 4, 2, wg, TileRequest::Unparseable, 4)
+            .expect_err("unparseable must refuse");
+        assert_eq!(refusal.reason, R::Unparseable);
+        assert_eq!((refusal.cols, refusal.rows), (0, 0));
+    }
+
+    /// The refusal detail carries the shape, and every token is distinct.
+    #[test]
+    fn every_refusal_token_is_distinct_and_the_detail_names_the_shape() {
+        use TileRefusalReason as R;
+        let all = [
+            R::Unparseable,
+            R::ColsNotPowerOfTwo,
+            R::RowsNotPowerOfTwo,
+            R::ColsAboveCap,
+            R::RowsAboveCap,
+            R::RowsAboveCeilingInForce,
+            R::TileAboveAccumulatorBudget,
+            R::SharedArrayOverrun,
+            R::ColsDoesNotDivideN,
+            R::TooFewWorkgroups,
+            R::RowTileAtDecodeWidth,
+        ];
+        let mut tokens: Vec<&str> = all.iter().map(|r| r.token()).collect();
+        tokens.sort_unstable();
+        let distinct = {
+            let mut t = tokens.clone();
+            t.dedup();
+            t.len()
+        };
+        assert_eq!(distinct, all.len(), "refusal tokens must be distinct");
+        assert!(
+            tokens.iter().all(|t| !t.is_empty()),
+            "an empty token would be dropped by the counter"
+        );
+        let detail = TileRefusal {
+            reason: R::TileAboveAccumulatorBudget,
+            cols: 16,
+            rows: 4,
+        }
+        .detail(64, 3072, 32);
+        assert_eq!(
+            detail,
+            "tile_above_accumulator_budget cols=16 rows=4 m=64 n=3072 wg=32"
+        );
+    }
+
+    /// The override can reach the equal-total candidate the search cannot.
+    ///
+    /// This is the whole justification for the seam existing, stated as an assertion: at a tying
+    /// `M` the search returns `(16, 2)` because the improvement must be strict, and `(8, 4)` names
+    /// the same bytes and is unreachable — including through the row-tile ceiling, which is the
+    /// only other control that touches this selection.
+    #[test]
+    fn the_equal_total_candidate_is_unreachable_without_the_override() {
+        let (n, k) = (3072u64, 3072u64);
+        let wg = gemv_workgroup(k / 32);
+        for m in [4u64, 8, 64, 128] {
+            assert_eq!(
+                gemv_named_bytes(m, n, k, 4, 2, 16, 2),
+                gemv_named_bytes(m, n, k, 4, 2, 8, 4),
+                "M={m} must be a tying width for this test to mean anything"
+            );
+            for ceiling in 1..=GEMV_MAX_ROWS {
+                assert_ne!(
+                    gemv_tile_with(m, n, k, 4, 2, wg, ceiling),
+                    (8, 4),
+                    "M={m} ceiling={ceiling}: no ceiling can select the equal-total candidate"
+                );
+            }
+            assert_eq!(
+                gemv_tile_requested(
+                    m,
+                    n,
+                    k,
+                    4,
+                    2,
+                    wg,
+                    TileRequest::Exact { cols: 8, rows: 4 },
+                    4
+                ),
+                Ok((8, 4)),
+                "M={m}: the override is the only surface that reaches it"
+            );
+        }
     }
 
     /// Every tile the picker can emit, over a grid that includes the awkward shapes.

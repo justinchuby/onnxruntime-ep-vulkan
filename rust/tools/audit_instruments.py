@@ -530,6 +530,22 @@ BENCH_HELD_OUT: dict[str, str] = {
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."
     ),
+    # Arrived 2026-08-09 (Tank) with issue #81's tile override. It is a caller: it reads
+    # docs/PERF.md §26.4.1's claim ledger and bench/results/weight_reread_phi35.json and
+    # checks that every published figure is classified, recomputable, and cited. The
+    # verdicts it renders are about a *document*, not about a measurement, so it is held
+    # out on the same footing as test_perf_claims.py above rather than screened.
+    #
+    # Declared here in the same commit that creates the file, deliberately: PR #105 failed
+    # all three hosted jobs because a new bench/*.py reached CI while this dict had never
+    # been told about it, and the frame arm correctly refused to render a verdict over an
+    # undeclared module. Registering only in ci/check_census_completeness.py is not enough
+    # — this is the authoritative list.
+    "test_streaming_claim_class.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Reads the "
+        "docs/PERF.md §26.4.1 claim ledger and the committed weight-reread witness; renders "
+        "verdicts about a publication, not about a measurement."
+    ),
 }
 
 

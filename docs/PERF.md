@@ -3766,9 +3766,11 @@ different dtype — corroboration, not a witness.
 The downstream consequences are unchanged because the number is unchanged; the roofline's
 conclusions are not touched here. What changed is that the anchor can now go wrong.
 
-Reproduce: `python bench/results/probe_weight_reread.py`, then
-`python bench/results/probe_island_bytes.py`.
-Locked by `bench/test_weight_reread.py` (15 tests).
+Reproduce: `python bench/results/probe_weight_reread.py --out bench/results/weight_reread_phi35.json`,
+then `python bench/results/probe_island_bytes.py`. The `--out` is not optional decoration: a bare
+invocation now writes to the untracked `bench/results/local/` instead, so refreshing the committed
+witness is something you say rather than something that happens (issue #81).
+Locked by `bench/test_weight_reread.py`.
 
 ## 23. The lever every grouped model pays for, and a ledger with no derivation (2026-08-03)
 Two items, one shader change, one retraction. Neither needed a clock.
@@ -4393,9 +4395,9 @@ you cannot switch in-place is an arm you cannot measure honestly, and an arm you
 one you will not be able to diagnose in the field either. Values are clamped to `[1, 4]` rather
 than trusted, and an unparseable value means "the default" rather than "refuse to run".
 
-Reproduce: `python bench/results/probe_weight_reread.py`;
+Reproduce: `python bench/results/probe_weight_reread.py --out bench/results/weight_reread_phi35.json`;
 `python bench/results/ab_row_tile.py`; `python bench/results/probe_real_matmulnbits_rows.py`.
-Locked by `bench/test_weight_reread.py` (26 tests), `tests/ops/test_matmulnbits.py` (77 tests),
+Locked by `bench/test_weight_reread.py`, `tests/ops/test_matmulnbits.py` (77 tests),
 `rust/tests/validation_control.rs` (5 tests), and the `ops::quant` unit tests.
 
 ---
@@ -4705,20 +4707,122 @@ Two facts fall out, and both were surprises:
 
 * **`q_gemv` decode time is flat at ~17.5 ms at every cache length.** All of decode's growth is
   GQA. The quantised GEMM is not the decode problem; it is not even a large part of it.
-* **Weight streaming is a minority cost at width.** The tiled and untiled arms differ *only* in how
-  many passes they make over the same 2.291 GB of packed weights — `M` passes untiled against
-  `ceil(M/4)` tiled — so differencing them gives a marginal streaming bandwidth. Eight prefill `M`
-  points yield **seven** differential points: `M = 1` yields none, because both arms make exactly
-  one pass there and Δpasses is zero. Over those seven (`M = 2 … 128`, from
-  `real_model_latency_before_gqa.json`) the readings are **199.7, 244.5, 242.8, 238.8, 226.8,
-  222.5, 217.4 GB/s** — range **200–245**, median **227**, and above the ~192 GB/s spec sheet at
-  every point, which is what L2 reuse looks like. `M = 2` is the low end and the noisiest point
-  (one differenced pass, no averaging); the six points from `M = 4` up sit in 217–245. One full
-  weight pass costs 9.4–11.5 ms (median 10.1). At `M = 128` the tiled arm makes 32 passes, so
-  streaming is ~323 ms of the 3004.55 ms tiled time — **~11%**.
+* **Weight streaming, and how much of the wide-prefill cost it is, is *not* settled here.** The
+  paragraph that used to stand in this bullet derived a marginal streaming bandwidth by
+  differencing the tiled and untiled arms, and it did so with the wrong pass count. It said the
+  tiled arm makes `ceil(M/4)` passes; the shipped tile is `rows = 2`, so it makes `ceil(M/2)` —
+  see §26.4.1, where the pass counts are read off a committed structural artifact rather than
+  asserted. Every figure downstream of that error is withdrawn: the seven-point differential
+  series, its range and median, the per-pass millisecond cost, and the conclusion that streaming
+  was a ~tenth of the wide-prefill time. **No replacement bandwidth, time, or share figure is
+  published**, because none has been measured against the corrected model. `bench/test_perf_claims.py`
+  still carries `test_the_bandwidth_span_is_the_seven_differential_points` and it *skips*:
+  `real_model_diagnostics_before_gqa.json` carries no differential bandwidth field, so that control
+  never bound the withdrawn series in the first place. That is the negative evidence for
+  withdrawing rather than recomputing.
 
-So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — would be
-optimising a tenth of the wide-prefill cost. The data said to go elsewhere, so this branch did.
+Consequently the reading that PR #53's next lever — widening `q_gemv`'s 32-bit scalar `B` loads —
+is or is not worth taking is **open**. It was closed on an arithmetic error, and closing it again
+needs a measurement this branch does not have.
+
+### 26.4.1 Weight-streaming amplification (issue #81)
+
+Everything in this subsection is a **byte count**, not a time. It says how many weight bytes the
+dispatch grid *names*, which is a property of the geometry and is computable exactly; it says
+nothing about how fast any device moves them. That distinction is enforced mechanically rather than
+by care — see "the claim ledger" below.
+
+The amplification is `ceil(M / rows)` full passes over the packed weights, because each row tile
+re-reads the whole weight tensor once. `rows = 1` (the pre-issue-#7 geometry) therefore reads it
+`M` times and the shipped `rows = 2` reads it `ceil(M / 2)` times. `bench/results/weight_reread_phi35.json`
+is a SPIR-V-walk witness of exactly that: its `by_shape_prefill` `ALL SHAPES` rows carry
+`tiled_amplification` of `1, 2, 3` at `M = 2, 4, 5`, against `untiled_amplification` of `2, 4, 5`.
+
+| M | tiled passes | untiled passes | tiled bytes named | untiled bytes named |
+|---|---|---|---|---|
+| 2 | 1 | 2 | `1861189632 B` (`model.tiled_bytes_m2`) | `3722379264 B` (`model.untiled_bytes_m2`) |
+| 4 | 2 | 4 | `3722379264 B` (`model.tiled_bytes_m4`) | `7444758528 B` (`model.untiled_bytes_m4`) |
+| 5 | 3 | 5 | `5583568896 B` (`model.tiled_bytes_m5`) | `9305948160 B` (`model.untiled_bytes_m5`) |
+| 128 | 64 | 128 | `119.1 GB` (`model.tiled_bytes_m128`) | `238.2 GB` (`model.untiled_bytes_m128`) |
+
+One pass is `1861189632 B` (`model.one_pass_bytes`) — the sum of the 161 `MatMulNBits` `B`
+initializers, from the same artifact's `denominator.int4_weight_bytes_from_graph`. The tile removes
+`50.0 %` (`model.bytes_removed_share`) of the named weight traffic at every `M`, which follows from
+`ceil(M/2) / M → 1/2` only in the limit — at odd `M` it is less, and the table's `M = 5` row is the
+worked example (`3/5`, not `1/2`).
+
+#### The `(16, 2)` / `(8, 4)` pair, and why issue #81 needed a new surface
+
+At `N = K = 3072`, q4, fp16 activations, the byte model gives `(16, 2)` and `(8, 4)` **the same
+total** at some widths and not others. The condition is exact and is derived and exhausted in
+`ops::quant::tests::the_16x2_and_8x4_tie_is_conditional_on_m_and_on_the_dtype_ratio`:
+
+* the bracket ratio is 2 exactly when `bits == 2 * a_bytes` — so q4/fp16 can tie and q4/fp32 never
+  can, at any `M`;
+* given that, the tie is exactly `ceil(M/2) == 2 * ceil(M/4)`, i.e. **`M mod 4 ∈ {0, 3}`**.
+
+So `M = 4` and `M = 128` tie, and `M = 2` does **not**: there `(16, 2)` names `7077888 B`
+(`model.pair_wide_m2`) against `(8, 4)`'s `14155776 B` (`model.pair_deep_m2`) — the deep tile names
+twice as many bytes, which is a factor of two in one direction, not a tie. `M = 5` also does not
+tie: `21233664 B` (`model.pair_wide_m5`) against `28311552 B` (`model.pair_deep_m5`).
+
+The selector requires a *strict* improvement, so at a tying width it keeps the incumbent `(16, 2)`
+and `(8, 4)` is unreachable — and `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` cannot reach it either,
+because it is a ceiling: lowering it to 4 changes nothing and lowering it to 2 forbids the arm under
+test. That is the gap `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` exists to close, and the *only* reason it
+exists. It is documented in `docs/DESIGN.md` §8.12.1.
+
+#### The claim ledger
+
+The block below is the machine-readable register of every figure this subsection publishes. It is
+read by `bench/test_streaming_claim_class.py`, which enforces three things:
+
+1. **Class is structural, never lexical.** A row's class comes from this table's `class` column.
+   No prose word — `MODEL`, `measured`, bold, italic, or otherwise — can promote or demote a
+   figure, so a decoy label placed next to a figure changes nothing about how it is checked.
+2. **Every `MODEL` row is recomputed**, from the named-bytes formula and the committed witness
+   artifact, and must match to the digit.
+3. **Every figure in the prose must cite a ledger row id immediately after it**, in the exact form
+   `` `VALUE UNIT` (`row.id`) `` — the citation is the next token, whitespace only in between. A
+   number carrying a performance unit anywhere in this subsection that is not written that way is a
+   failure — including decimals, and including units the ledger has no row for at all. This is a
+   syntactic binding on the figure itself, not a proximity window.
+
+There is currently **no `MEASURED` row**, and that is the honest state of this subsection: it
+publishes byte counts and nothing else. The checker supports the class and requires an artifact
+pointer for it, so that adding one is a mechanical step rather than a prose decision.
+
+```claim-ledger
+# id                        class   value          unit  source
+model.one_pass_bytes        MODEL   1861189632     B     weight_reread_phi35.json#/denominator/int4_weight_bytes_from_graph
+model.tiled_bytes_m2        MODEL   1861189632     B     formula:tiled(2)
+model.untiled_bytes_m2      MODEL   3722379264     B     formula:untiled(2)
+model.tiled_bytes_m4        MODEL   3722379264     B     formula:tiled(4)
+model.untiled_bytes_m4      MODEL   7444758528     B     formula:untiled(4)
+model.tiled_bytes_m5        MODEL   5583568896     B     formula:tiled(5)
+model.untiled_bytes_m5      MODEL   9305948160     B     formula:untiled(5)
+model.tiled_bytes_m128      MODEL   119.1          GB    formula:tiled(128)
+model.untiled_bytes_m128    MODEL   238.2          GB    formula:untiled(128)
+model.bytes_removed_share   MODEL   50.0           %     formula:removed_share(128)
+model.pair_wide_m2          MODEL   7077888        B     formula:named(2,16,2)
+model.pair_deep_m2          MODEL   14155776       B     formula:named(2,8,4)
+model.pair_wide_m5          MODEL   21233664       B     formula:named(5,16,2)
+model.pair_deep_m5          MODEL   28311552       B     formula:named(5,8,4)
+```
+
+#### What this subsection does not claim
+
+* **No bandwidth, time, speed, or share-of-runtime figure.** None has been measured against the
+  corrected pass count.
+* **No claim that a Vulkan pipeline was compiled with an overridden tile.** What is proven, and by
+  `rust/tests/gemv_tile_override.rs`, is that the live registry row's handler builds a
+  `KernelRequest` whose specialisation constants carry the requested `(cols, rows)`, and that
+  feeding those two vectors through the production `counters::record_pipeline_variant` yields two
+  distinct pipeline keys. The remaining link — `src/vk/session.rs` carrying that vector into
+  `vkCreateComputePipelines` — needs a Vulkan device and is **not** exercised by this branch.
+* **No claim that `(8, 4)` is better or worse than `(16, 2)`.** The override makes the comparison
+  runnable. Running it is the next step, not this one.
+
 
 ### 26.5 The finding: one lane per subgroup
 

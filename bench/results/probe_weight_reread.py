@@ -45,14 +45,16 @@ that argument is `probe_roofline.py`'s, unchanged and still an argument. What ha
 that the multiplicity is now measured: if two workgroups named the same blob, or one workgroup
 named it twice, this probe now says so.
 
-Run:  python bench/results/probe_weight_reread.py
+Run:  python bench/results/probe_weight_reread.py --out bench/results/local/wr.json
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -98,6 +100,65 @@ _PHI35_SPEC = _foundry_discovery.FoundryModelSpec(
     download_alias="phi-3.5-mini",
 )
 
+#: The committed witness. Reachable only by naming it: `--out` is the whole surface for
+#: writing this file, and no default invocation resolves to it.
+WITNESS = ROOT / "bench" / "results" / "weight_reread_phi35.json"
+
+#: Where a default invocation lands instead (issue #81). `bench/results/local/` is ignored,
+#: so a probe run cannot dirty tracked evidence by doing nothing in particular.
+#:
+#: The defect this closes was not that the old destination was *wrong* -- it is the right file
+#: to refresh when you mean to refresh it -- but that it was *implicit*: `git status` after an
+#: exploratory run showed a modified committed witness, and the difference between "re-measured
+#: deliberately" and "overwritten in passing" had to be reconstructed from memory.
+DEFAULT_OUT = ROOT / "bench" / "results" / "local" / "weight_reread_phi35.json"
+
+#: Absolute-path shapes that must never reach a published record: a Windows drive root, a UNC
+#: share, or a POSIX absolute path. Matched anywhere in a string, so an absolute path embedded
+#: in a sentence is caught too.
+_ABSOLUTE_PATH = re.compile(r"(?:[A-Za-z]:[\\/])|(?:\\\\[^\\]+\\)|(?:(?<![\w.])/[A-Za-z_.][\w.]*/)")
+
+
+def public_path(p) -> str:
+    """A path as it may appear in a published record: repo-relative, or reduced to its name.
+
+    A record is evidence other people read. An absolute path in one names the machine that
+    produced it -- home directory, and therefore in practice an account name -- which is
+    information about the operator rather than about the measurement. Everything the record
+    needs from a path outside the tree is *which file*, and `onnx_sha256` answers that far
+    better than a directory ever could, so the directory is dropped rather than rendered.
+    """
+    path = pathlib.Path(p)
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return f"<external>/{path.name}"
+
+
+def assert_public(doc, where: str = "$"):
+    """Refuse to publish a record containing an absolute local path.
+
+    Structural, not lexical: this walks the assembled record and inspects every string it
+    actually contains, so a field added later is covered without anybody remembering to add
+    it here. It raises rather than scrubbing in place, because a silent rewrite of evidence
+    is the same class of defect as a silent write of it -- the operator should learn that a
+    path escaped, not have it laundered.
+    """
+    if isinstance(doc, dict):
+        for k, v in doc.items():
+            assert_public(v, f"{where}.{k}")
+    elif isinstance(doc, (list, tuple)):
+        for i, v in enumerate(doc):
+            assert_public(v, f"{where}[{i}]")
+    elif isinstance(doc, str):
+        if _ABSOLUTE_PATH.search(doc):
+            raise InstrumentError(
+                f"refusing to publish an absolute local path at {where}: {doc!r}. "
+                "Route it through `public_path` -- a record naming the machine that "
+                "produced it is not a record anybody else can replay."
+            )
+    return doc
+
 
 def resolve_model() -> pathlib.Path:
     """The model this probe measures against. Lazy and side-effect-free at import time --
@@ -122,7 +183,7 @@ def resolve_model() -> pathlib.Path:
 
 def _result_identity(model: pathlib.Path) -> dict:
     return {
-        "onnx_file": str(model),
+        "onnx_file": public_path(model),
         "onnx_sha256": _model_provenance.sha256_of(model),
         "provider": _PHI35_SPEC.execution_provider,
         "resolved_by": "PHI35_MODEL override" if os.environ.get("PHI35_MODEL")
@@ -558,7 +619,27 @@ def positive_controls(mod: SpirvModule) -> dict:
 # -- main --------------------------------------------------------------------------------------
 
 
-def main() -> int:
+def parse_args(argv=None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        prog="probe_weight_reread.py",
+        description="Walk the compiled q_gemv module and measure weight-read amplification.",
+    )
+    ap.add_argument(
+        "--out",
+        type=pathlib.Path,
+        default=None,
+        help=(
+            "where to write the record. Defaults to the untracked "
+            f"{DEFAULT_OUT.relative_to(ROOT).as_posix()}; naming the committed witness "
+            f"({WITNESS.relative_to(ROOT).as_posix()}) is allowed but must be explicit."
+        ),
+    )
+    return ap.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    out = args.out if args.out is not None else DEFAULT_OUT
     try:
         path, blob, digest = locate_module(SHADER_STEM)
         mod = SpirvModule(blob)
@@ -697,11 +778,12 @@ def main() -> int:
             "by_shape_prefill": prefill,
             "prefill_m_values": PREFILL_M,
         }
+        assert_public(report)
     except InstrumentError as e:
         print(f"ERROR(instrument): {e}", file=sys.stderr)
         return 4
 
-    out = ROOT / "bench" / "results" / "weight_reread_phi35.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
 
     print("WEIGHT RE-READ — executed against the compiled kernel, not asserted")

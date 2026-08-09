@@ -2169,6 +2169,41 @@ pub fn pipeline_variants() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Every `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` override this process refused, first-seen order.
+///
+/// Deduplicated on the whole detail line, which carries the shape, so the same illegal pair
+/// refused on two differently-shaped nodes is two rows. That is the point: a refusal is a fact
+/// about a *dispatch*, and a run that refused one node and dispatched the other is not the same
+/// observation as a run that refused both.
+static GEMV_TILE_OVERRIDE_REFUSALS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Record that a tile override was refused before dispatch.
+///
+/// Called from `ops/quant.rs::matmul_nbits_gemv` on the refusal path only. The handler also
+/// returns an error, so this is not how the failure is *reported* — it is how the failure is
+/// **observable after the fact**, from the artifact, by a harness that only ever sees a session
+/// that declined to build. Silence here and a dispatch that happened anyway is the exact
+/// confusion the instrument exists to make impossible.
+pub fn record_gemv_tile_override_refused(detail: &str) {
+    if detail.is_empty() {
+        return;
+    }
+    if let Ok(mut rows) = GEMV_TILE_OVERRIDE_REFUSALS.lock()
+        && !rows.iter().any(|r| r == detail)
+    {
+        rows.push(detail.to_string());
+    }
+}
+
+/// The refusal rows recorded by [`record_gemv_tile_override_refused`].
+///
+/// `None` = poisoned lock. Not `Vec::new()`: "the instrument could not be read" and "the
+/// instrument read zero refusals" are the two answers a caller must never conflate, because the
+/// second one is the pass condition of every unset-behaviour control in the suite.
+pub fn gemv_tile_override_refusals() -> Option<Vec<String>> {
+    GEMV_TILE_OVERRIDE_REFUSALS.lock().ok().map(|v| v.clone())
+}
+
 /// What this run bound for one entry's shader set, as a comparable observation (§8.9.20).
 ///
 /// Three states, and the middle one is the reason this is not an `Option<String>`. A digest over
@@ -2489,6 +2524,9 @@ pub fn reset() {
     if let Ok(mut used) = PIPELINE_VARIANTS.lock() {
         used.clear();
     }
+    if let Ok(mut used) = GEMV_TILE_OVERRIDE_REFUSALS.lock() {
+        used.clear();
+    }
     CLAIMED_NODES.store(0, ORD);
     ISLANDS_OFFERED.store(0, ORD);
     // Both sides: Tank's staging tally and Mouse's retained-island counter. Neither excludes the
@@ -2629,6 +2667,7 @@ impl VulkanEpCounters {
              \"shaders_dispatched_source_digest\": \"{}\",\n  \
              \"shader_toolchain\": \"{}\",\n  \
              \"pipeline_variants\": {},\n  \
+             \"gemv_tile_override_refusals\": {},\n  \
              \"gemv_packed_spec_constant\": \"{}\",\n  \
              \"shaders_dispatched_spec_digest\": \"{}\",\n  \
              \"specialisation_delta_forms\": {},\n  \
@@ -2721,6 +2760,7 @@ impl VulkanEpCounters {
             shaders_source_digest,
             json_escape(crate::registry::toolchain_identity()),
             pipeline_variants_json(),
+            forms_json(gemv_tile_override_refusals()),
             gemv_packed_spec_constant(),
             specialisation_digest_json(),
             specialisation_delta_forms_json(),

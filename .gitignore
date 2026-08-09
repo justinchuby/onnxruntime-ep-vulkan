@@ -97,3 +97,8 @@ bench/results/landing-simulation.json
 bench/results/**/*.npy
 bench/results/**/*.npz
 
+
+# Bench: default destination for probe records (issue #81). The committed witnesses in
+# bench/results/*.json are refreshed only by naming them with an explicit --out; a default
+# probe invocation lands here instead, so an exploratory run cannot dirty tracked evidence.
+bench/results/local/
