@@ -6011,9 +6011,25 @@ What does it **not** need?
 
 #### The sentinel, and the non-finite policy
 
-Two things about the merge are stated in the shader header because they are correctness
-arguments, not implementation notes, and because a reviewer asked for both to be explicit rather
-than inferred.
+Two things about the merge are stated here, in full, because they are correctness arguments
+rather than implementation notes and a reviewer asked for both to be explicit rather than
+inferred.
+
+They are stated *here* rather than in the shader header, and that placement is deliberate enough
+to record. The normalised text of `gqa_decode_f16.comp` **is** the `source_digest` frame witness
+of this kernel's proof-ledger entry. A comment appended to that file after the entry was proven
+on device moves the witness, and §8.9.19 requires a moved witness to be either declared in
+`evidence/proof_rewitness.json` or not to happen. Declaring it is the worse of the two here: the
+move exists only between two commits *inside* this branch, and the squash landing this repository
+uses collapses them, so the landed history contains no move for the declaration to describe and
+`ci/simulate_squash_rewitness.py` correctly reports the record as
+`stale_rewitness_declaration`. There is no static declaration that is simultaneously true under a
+squash and under a merge. So the transition is avoided instead of declared: the kernel's source is
+frozen at exactly the bytes that were proven on device, and the correctness argument lives in the
+document whose job is to carry arguments. The re-proof that established this is still in the
+audit trail — `evidence/proof_attempts.jsonl` holds a `MATCH` at the *commented* source digest
+`484b4920584177a5` with `worst_rel` `0.03571428571428571`, bit-for-bit the same figure as the
+shipped `219d83d1...` entry, which is what a comments-only edit is supposed to look like.
 
 **The empty-lane sentinel is inside the representable domain, by derivation.** A lane that draws
 no `t` publishes `m = -1e30, s = 0`. For that to be an exact identity under the combine it has to
