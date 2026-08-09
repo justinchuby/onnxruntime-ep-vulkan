@@ -471,3 +471,196 @@ def test_no_artifact_claims_cuda_measurement():
             continue
         for m in re.finditer(r"[^\"]*cuda[^\"]*", p.read_text(encoding="utf-8"), re.I):
             assert "int4-rtn-block-32" in m.group(0), f"{name}: {m.group(0)[:120]}"
+
+
+# --------------------------------------------------------------------------------------------
+# Corrections applied after PR #99 was rejected. Each guard below locks a defect that review
+# found in the Phase 1 evidence and that this third arm had inherited verbatim.
+# --------------------------------------------------------------------------------------------
+
+
+def _sweeps():
+    for name in ("pr97_vs_candidate.json", "pr97_vs_baseline.json"):
+        p = RESULTS / name
+        if p.is_file():
+            yield name, json.loads(p.read_text(encoding="utf-8"))
+
+
+def test_frozen_window_claim_is_fail_open_over_refused_lengths():
+    """The defect itself: `lengths_measured` counts lengths that produced no speed figure."""
+    for name, doc in _sweeps():
+        declared = set(doc["window"]["lengths_measured"])
+        entitled = set(doc["honest_window"]["lengths_with_admissible_records"])
+        assert entitled < declared, f"{name}: expected the frozen claim to overstate coverage"
+        assert doc["window"]["claim"] == "NO-SLOW-LENGTH"
+
+
+def test_honest_window_excludes_every_zero_admissible_length():
+    for name, doc in _sweeps():
+        hw = doc["honest_window"]
+        for length in hw["lengths_with_zero_admissible_records"]:
+            assert length not in hw["corrected_claim_covers"], f"{name}: past={length}"
+            assert hw["records_per_length"][str(length)]["admissible"] == 0
+
+
+def test_honest_window_covers_exactly_the_lengths_with_data():
+    for name, doc in _sweeps():
+        hw = doc["honest_window"]
+        recomputed = sorted(
+            p for p in {r["past"] for r in doc["records"] if r.get("past") is not None}
+            if any(r.get("past") == p and r.get("admissible") is True for r in doc["records"])
+        )
+        assert hw["corrected_claim_covers"] == recomputed, name
+        assert hw["lengths_with_zero_admissible_records"] == [32, 64, 256], name
+
+
+def test_a_sweep_that_measured_nothing_cannot_claim_no_slow_length():
+    """The reductio: strip every admissible record and the corrected claim must collapse."""
+    probe = pytest.importorskip("probe_pr97_third_arm")
+    records = [{"past": 128, "admissible": False}, {"past": 512, "admissible": False}]
+    hw = probe.honest_window(records, {"claim": "NO-SLOW-LENGTH",
+                                       "lengths_measured": [128, 512]})
+    assert hw["corrected_claim"] == "NO-LENGTH-MEASURED"
+    assert hw["corrected_claim_covers"] == []
+
+
+def test_p128_confidence_interval_does_not_exclude_parity_in_either_pairing():
+    """The honest limit of the headline: past=128 is not established at 95% with n=3."""
+    for name, doc in _sweeps():
+        row = next(r for r in doc["ratio_ci95"] if r["past"] == 128)
+        assert row["n_paired"] == 3, name
+        assert row["ci95_low"] < 1.0 < row["ci95_high"], name
+        assert row["ci95_excludes_parity"] is False, name
+
+
+def test_long_context_speedup_excludes_parity_in_both_pairings():
+    """What survives review: past=512 and past=1024 are interval-supported, not band-supported."""
+    for name, doc in _sweeps():
+        for length in (512, 1024):
+            row = next(r for r in doc["ratio_ci95"] if r["past"] == length)
+            assert row["ci95_excludes_parity"] is True, f"{name}: past={length}"
+            assert row["ci95_low"] > 1.0, f"{name}: past={length}"
+
+
+def test_confidence_intervals_recompute_from_the_published_records():
+    import math
+    import statistics
+    probe = pytest.importorskip("probe_pr97_third_arm")
+    for name, doc in _sweeps():
+        fresh = probe.ratio_ci95({"workloads": doc["workloads"]}, doc["records"])
+        assert json.dumps(fresh, sort_keys=True) == json.dumps(doc["ratio_ci95"], sort_keys=True), name
+        row = next(r for r in fresh if r["past"] == 512)
+        assert math.isfinite(row["geomean_ratio"]) and row["n_paired"] == 3
+        assert statistics.fmean([row["ci95_low"], row["ci95_high"]]) > 1.0
+
+
+def test_band_sensitivity_is_published_and_no_verdict_flips_at_the_floor():
+    for name, doc in _sweeps():
+        bs = doc["band_sensitivity"]
+        assert bs["band_floor"] == 0.05
+        assert bs["band_applied"] > bs["band_floor"], name
+        assert bs["any_flip"] is False and bs["verdicts_that_flip"] == [], name
+
+
+def test_indeterminate_rows_are_never_described_as_inside_the_band():
+    """`INDETERMINATE` means the median is OUTSIDE the band; the old `why` said the opposite."""
+    for name, doc in _sweeps():
+        for row in doc["addendum_verdicts"]:
+            if row["sweep_verdict"] != "INDETERMINATE":
+                continue
+            assert row["addendum_verdict"] == "INDETERMINATE", name
+            assert "inside the band" not in row.get("why", ""), f"{name}: {row['workload']}"
+            assert "OUTSIDE the band" in row.get("why", ""), f"{name}: {row['workload']}"
+
+
+def test_indeterminate_is_not_laundered_into_neutral():
+    for name, doc in _sweeps():
+        for row in doc["addendum_verdicts"]:
+            if row["sweep_verdict"] == "INDETERMINATE":
+                assert row["addendum_verdict"] != "NEUTRAL", f"{name}: {row['workload']}"
+
+
+def test_arm1_to_arm3_p128_is_indeterminate_not_faster():
+    doc = json.loads((RESULTS / "pr97_vs_baseline.json").read_text(encoding="utf-8"))
+    row = next(r for r in doc["addendum_verdicts"] if r["past"] == 128)
+    assert row["sweep_verdict"] == "INDETERMINATE"
+    assert row["addendum_verdict"] == "INDETERMINATE"
+
+
+def test_samples_binding_covers_every_timed_sample():
+    for name, doc in _sweeps():
+        sb = doc["samples_binding"]
+        counted = sum(len((r.get("speed") or {}).get("samples_ms") or []) for r in doc["records"])
+        assert sb["samples"] == counted > 0, name
+        assert sb["records"] == len(doc["records"]), name
+
+
+def test_samples_binding_changes_when_any_sample_changes():
+    """F4: the check read only `median_ms`, so scaled or deleted samples still reproduced."""
+    probe = pytest.importorskip("probe_pr97_third_arm")
+    base_records = [{"workload": "w", "arm": "a", "repeat": 0,
+                     "speed": {"samples_ms": [1.0, 2.0, 3.0]}}]
+    ref = probe.samples_binding(base_records)["sha256"]
+
+    scaled = [{"workload": "w", "arm": "a", "repeat": 0,
+               "speed": {"samples_ms": [10.0, 20.0, 30.0]}}]
+    dropped = [{"workload": "w", "arm": "a", "repeat": 0,
+                "speed": {"samples_ms": [1.0, 2.0]}}]
+    absent = [{"workload": "w", "arm": "a", "repeat": 0, "speed": {}}]
+    nudged = [{"workload": "w", "arm": "a", "repeat": 0,
+               "speed": {"samples_ms": [1.0 + 1e-12, 2.0, 3.0]}}]
+
+    for tag, recs in (("scaled", scaled), ("dropped", dropped),
+                      ("absent", absent), ("nudged", nudged)):
+        assert probe.samples_binding(recs)["sha256"] != ref, tag
+
+
+def test_resummarize_republishes_the_samples_binding():
+    for name, doc in _sweeps():
+        probe = pytest.importorskip("probe_pr97_third_arm")
+        fresh = probe.resummarize(doc)
+        assert fresh["samples_binding"] == doc["samples_binding"], name
+
+
+def test_attribution_artifact_is_also_sample_bound():
+    p = RESULTS / "pr97_attribution.json"
+    if not p.is_file():
+        pytest.skip("attribution artifact absent")
+    doc = json.loads(p.read_text(encoding="utf-8"))
+    assert doc["samples_binding"]["records"] == len(doc["records"])
+
+
+def test_pr97_compiled_delta_is_not_limited_to_shader_and_attention():
+    """F3: `evidence/proof_ledger.jsonl` is `include_str!`d, so it is part of the compiled delta."""
+    root = pathlib.Path(__file__).resolve().parents[1]
+    registry = root / "rust" / "src" / "registry.rs"
+    if not registry.is_file():
+        pytest.skip("registry.rs absent")
+    assert 'include_str!("../../evidence/proof_ledger.jsonl")' in registry.read_text(
+        encoding="utf-8"), "the ledger is no longer compiled in; revisit the delta claim"
+    for name, _ in _sweeps():
+        blob = (RESULTS / name).read_text(encoding="utf-8")
+        for bad in ("compiled delta is gqa_f16.comp and attention.rs only",
+                    "the only files that reach the binary"):
+            assert bad not in blob, f"{name}: {bad}"
+
+
+def test_docs_do_not_restate_the_overstated_length_coverage():
+    perf = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "PERF.md")
+    body = perf.read_text(encoding="utf-8")
+    section = body[body.index("## 29."):] if "## 29." in body else body
+    for bad in ("no measured KV length is SLOWER at 0, 32, 64, 128, 256, 512, 1024",
+                "all seven lengths", "every declared length was measured"):
+        assert bad not in section, bad
+
+
+def test_guard_count_in_docs_matches_this_file():
+    """F5: the published guard count must equal the number of `def test_` here."""
+    here = pathlib.Path(__file__).read_text(encoding="utf-8")
+    n = len(re.findall(r"^def test_", here, re.M))
+    perf = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "PERF.md")
+    body = perf.read_text(encoding="utf-8")
+    section = body[body.index("## 29."):] if "## 29." in body else body
+    claims = {int(m) for m in re.findall(r"(\d+)\s+GPU-free guards", section)}
+    assert claims, "PERF section 29 must state a guard count"
+    assert claims == {n}, f"docs claim {claims}, file defines {n}"

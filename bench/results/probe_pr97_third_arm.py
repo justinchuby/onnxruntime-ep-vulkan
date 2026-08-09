@@ -17,7 +17,9 @@ alone, and a disagreement is a refusal.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import statistics
 import sys
 import time
@@ -333,6 +335,134 @@ def kernel_share(cand: dict, base_: dict) -> dict:
     return out
 
 
+def admissible_lengths(records: list) -> dict:
+    """Split the declared KV lengths into those with, and without, any admissible record.
+
+    The frozen instrument's `window_claim` is fail-open: a `REFUSED` pair can never be `SLOWER`,
+    so a length whose every record was refused still counts toward `lengths_measured` and still
+    satisfies `NO-SLOW-LENGTH`. A sweep that measured *nothing* would publish the same headline.
+    This function does not change the frozen claim -- it reports, separately, which lengths the
+    claim is actually entitled to cover.
+    """
+    seen, adm = {}, {}
+    for r in records:
+        p = r.get("past")
+        if p is None:
+            continue
+        seen[p] = seen.get(p, 0) + 1
+        if r.get("admissible") is True:
+            adm[p] = adm.get(p, 0) + 1
+    return {
+        "lengths_declared": sorted(seen),
+        "lengths_with_admissible_records": sorted(adm),
+        "lengths_with_zero_admissible_records": sorted(p for p in seen if p not in adm),
+        "records_per_length": {str(p): {"total": seen[p], "admissible": adm.get(p, 0)}
+                               for p in sorted(seen)},
+    }
+
+
+def honest_window(records: list, frozen_claim: dict) -> dict:
+    """Restate the frozen window claim scoped to the lengths that actually produced numbers."""
+    cov = admissible_lengths(records)
+    covered = cov["lengths_with_admissible_records"]
+    empty = cov["lengths_with_zero_admissible_records"]
+    return {
+        **cov,
+        "frozen_claim": frozen_claim.get("claim"),
+        "frozen_lengths_measured": frozen_claim.get("lengths_measured"),
+        "corrected_claim": (frozen_claim.get("claim") if covered else "NO-LENGTH-MEASURED"),
+        "corrected_claim_covers": covered,
+        "correction": (
+            "`window.lengths_measured` lists every declared length, including lengths where every "
+            "record was refused and no speed figure exists. The claim above is only entitled to "
+            f"cover {covered}; {empty} contributed zero admissible records and must not be read as "
+            "evidence of anything, in either direction."
+        ),
+    }
+
+
+def ratio_ci95(derived: dict, records: list) -> list:
+    """Two-sided 95% t interval on the log of the per-repeat ratios, per workload.
+
+    The frozen verdict rule is a unanimity-plus-band rule on `ratio_min`/`ratio_max`; it is not an
+    interval estimate and does not claim to be one. Reviewers asked the null in this issue to be
+    stated with an interval, so the positive rows are held to the same standard here.
+    """
+    t95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306}
+    by = {}
+    for r in records:
+        if r.get("admissible") is not True:
+            continue
+        med = (r.get("speed") or {}).get("median_ms")
+        if not med:
+            continue
+        by.setdefault(r.get("workload"), {}).setdefault(r.get("repeat"), {})[r.get("arm")] = med
+    out = []
+    for p in derived.get("workloads", []):
+        reps = by.get(p["workload"], {})
+        logs = []
+        for _rep, arms in sorted(reps.items()):
+            if len(arms) != 2:
+                continue
+            (_, a), (_, b) = sorted(arms.items())
+            if a and b:
+                logs.append(math.log(a / b))
+        row = {"workload": p["workload"], "past": p.get("past"), "n_paired": len(logs)}
+        if len(logs) >= 2:
+            m = statistics.mean(logs)
+            se = statistics.stdev(logs) / math.sqrt(len(logs))
+            t = t95.get(len(logs) - 1, 1.96)
+            row.update({
+                "geomean_ratio": math.exp(m),
+                "ci95_low": math.exp(m - t * se),
+                "ci95_high": math.exp(m + t * se),
+                "ci95_excludes_parity": not (math.exp(m - t * se) <= 1.0 <= math.exp(m + t * se)),
+            })
+        else:
+            row.update({"geomean_ratio": None, "ci95_low": None, "ci95_high": None,
+                        "ci95_excludes_parity": None})
+        out.append(row)
+    return out
+
+
+def band_sensitivity(derived: dict) -> dict:
+    """Re-apply the frozen verdict rule at the 0.05 floor and report which verdicts flip."""
+    applied = (derived.get("band") or {}).get("applied")
+    floor = (derived.get("band") or {}).get("floor", 0.05)
+    flips = []
+    for p in derived.get("workloads", []):
+        at_applied = p.get("verdict")
+        at_floor = base.verdict_for(p, floor)
+        if at_floor != at_applied:
+            flips.append({"workload": p["workload"], "past": p.get("past"),
+                          "at_applied_band": at_applied, "at_floor_band": at_floor})
+    return {"band_applied": applied, "band_floor": floor, "verdicts_that_flip": flips,
+            "any_flip": bool(flips)}
+
+
+def samples_binding(records: list) -> dict:
+    """Digest every timed sample so `--resummarize --check` cannot pass over mutated timings.
+
+    Without this the check reads only `speed.median_ms`; multiplying every sample by ten, or
+    deleting `samples_ms` outright, still reproduced. The check now fails on both.
+    """
+    h = hashlib.sha256()
+    n_samples = 0
+    for r in sorted(records, key=lambda r: (str(r.get("workload")), str(r.get("arm")),
+                                            str(r.get("repeat")))):
+        sp = r.get("speed") or {}
+        samples = sp.get("samples_ms")
+        h.update(f"{r.get('workload')}|{r.get('arm')}|{r.get('repeat')}|".encode())
+        if samples is None:
+            h.update(b"<absent>")
+        else:
+            n_samples += len(samples)
+            h.update(",".join(repr(float(s)) for s in samples).encode())
+        h.update(b"\n")
+    return {"sha256": h.hexdigest(), "records": len(records), "samples": n_samples,
+            "note": "binds speed.samples_ms, not just the medians derived from it"}
+
+
 def resummarize(artifact: dict) -> dict:
     """Recompute every derived figure in a third-arm artifact from its own `records`, GPU-free.
 
@@ -343,11 +473,16 @@ def resummarize(artifact: dict) -> dict:
     """
     records = artifact.get("records") or []
     if artifact.get("pass") == "attribution":
-        return {"per_length": _attribution_per_length(records)}
+        return {"per_length": _attribution_per_length(records),
+                "samples_binding": samples_binding(records)}
     repeats = len({r.get("repeat") for r in records if r.get("repeat") is not None}) or 3
     derived = base.resummarize_sweep(records, repeats)
     return {**derived,
             "witness_audit": witness_audit(records),
+            "honest_window": honest_window(records, derived.get("window") or {}),
+            "ratio_ci95": ratio_ci95(derived, records),
+            "band_sensitivity": band_sensitivity(derived),
+            "samples_binding": samples_binding(records),
             "addendum_verdicts": verdict_rows(derived, (artifact.get("attribution_per_length")
                                                         or None))}
 
@@ -396,18 +531,22 @@ def verdict_rows(derived: dict, attribution: "dict | None") -> list:
         else:
             k = attribution.get(str(p.get("past")))
             moved = _kernel_moved_beyond_controls(k)
+            inside = v == "NEUTRAL"
+            where = ("whole model inside the band" if inside else
+                     "whole-model median is OUTSIDE the band but the per-repeat spread straddles "
+                     "it, so the sweep rule returned INDETERMINATE rather than a direction")
             if moved is True:
-                row["addendum_verdict"] = "KERNEL-ONLY"
-                row["why"] = ("decode-GQA device time moved beyond the untouched-control spread "
-                              "while the whole model did not move outside the band")
+                row["addendum_verdict"] = "KERNEL-ONLY" if inside else "INDETERMINATE"
+                row["why"] = ("decode-GQA device time moved beyond the untouched-control spread; "
+                              + where)
             elif moved is False:
-                row["addendum_verdict"] = "NEUTRAL"
+                row["addendum_verdict"] = "NEUTRAL" if inside else "INDETERMINATE"
                 row["why"] = ("neither the model nor the decode-GQA kernel moved beyond what "
-                              "kernels this change cannot touch also did")
+                              "kernels this change cannot touch also did; " + where)
             else:
-                row["addendum_verdict"] = "NEUTRAL"
-                row["why"] = ("whole model inside the band; no admissible attribution pair at "
-                              "this length, so KERNEL-ONLY could not be tested")
+                row["addendum_verdict"] = "NEUTRAL" if inside else "INDETERMINATE"
+                row["why"] = (where + "; no admissible attribution pair at this length, so "
+                              "KERNEL-ONLY could not be tested")
         rows.append(row)
     return rows
 

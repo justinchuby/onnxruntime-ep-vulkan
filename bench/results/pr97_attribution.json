@@ -2721,5 +2721,11 @@
     "mechanism": "msvcrt.locking LK_NBLCK, 1 byte at offset 0",
     "held_seconds": 306.0,
     "released_at": "2026-08-09T04:03:54"
+  },
+  "samples_binding": {
+    "sha256": "10ce13b31b1f9362bf526ae46e5bdba25d4e10f6e44b3d4d261421acc048f4c3",
+    "records": 18,
+    "samples": 0,
+    "note": "binds speed.samples_ms, not just the medians derived from it"
   }
 }

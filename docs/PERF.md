@@ -5412,19 +5412,57 @@ under the OS-level exclusive GPU lock (acquired and waited for; nothing was ever
 | **1024** | **1.445** `[1.401, 1.653]` | **FASTER** | **1.466** `[1.308, 1.581]` | **FASTER** |
 
 Bands: 0.0633 (arm 2 → 3) and 0.0666 (arm 1 → 3), each derived from the no-GQA controls' own
-per-workload half-range as §28 defines, with a 0.05 floor. `NO-SLOW-LENGTH` in both pairings: no
-measured KV length is slower under PR #97.
+per-workload half-range as §28 defines, with a 0.05 floor. Re-applying the same verdict rule at the
+0.05 floor flips **no** verdict in either pairing (`band_sensitivity.any_flip = false` in both
+artifacts), so none of the rows above depends on the transported band.
 
-The `past=128` row is `FASTER` against arm 2 with every one of its three repeats above 1.11, and
-`INDETERMINATE` against arm 1 only because one repeat dipped to 1.021, inside that pairing's band.
-The two pairings agree in direction and roughly in magnitude everywhere, which is what §28's
-finding that arms 1 and 2 are indistinguishable at `past=128` (1.001x) predicts they should do.
+> **Correction (posted after PR #99 was rejected).** An earlier revision of this section said
+> "`NO-SLOW-LENGTH` in both pairings: no measured KV length is slower under PR #97", and the
+> artifacts published `window.lengths_measured = [0, 32, 64, 128, 256, 512, 1024]`. Both overstate
+> the coverage. The frozen `window_claim` is **fail-open**: a `REFUSED` pair can never be classified
+> `SLOWER`, so a length at which *every* record was refused still counts toward `lengths_measured`
+> and still satisfies the claim. `past ∈ {32, 64, 256}` contributed **zero** admissible records in
+> both pairings. The claim is only entitled to cover **`{0, 128, 512, 1024}`**. A sweep that measured
+> nothing at all would have printed the identical headline. The artifacts now carry a separate
+> `honest_window` block stating the entitled scope; the frozen `window` block is left untouched so
+> the defect stays visible rather than being quietly overwritten.
+
+Corrected: **no KV length among `{0, 128, 512, 1024}` is slower under PR #97.** Nothing is known in
+either direction about `{32, 64, 256}`.
+
+### 29.3a What survives an interval estimate
+
+The sweep rule is a unanimity-plus-band rule on `ratio_min`/`ratio_max`; it is not an interval
+estimate. Review of §28 required the *null* to be stated with a confidence interval and a power
+figure, so the *positive* rows here are held to the same standard. Two-sided 95% t intervals on the
+log of the three paired per-repeat ratios:
+
+| past | arm 2 → 3 geomean | 95% CI | arm 1 → 3 geomean | 95% CI | excludes parity |
+|---|---|---|---|---|---|
+| 0 | 1.087 | `[0.697, 1.695]` | 0.897 | `[0.750, 1.073]` | no, neither |
+| **128** | 1.196 | `[0.966, 1.481]` | 1.145 | `[0.895, 1.463]` | **no, neither** |
+| **512** | 1.544 | `[1.493, 1.597]` | 1.448 | `[1.099, 1.910]` | **yes, both** |
+| **1024** | 1.496 | `[1.202, 1.861]` | 1.448 | `[1.142, 1.834]` | **yes, both** |
+
+This materially narrows the claim. With three whole-process repeats, **`past=128` is not established
+at 95% in either pairing** — its interval contains parity on both sides, and the arm 1 → 3 pairing
+already returned `INDETERMINATE` under the sweep rule. The `FASTER` verdict at `past=128` against
+arm 2 rests on band-plus-unanimity, which is a weaker instrument than the interval and should not be
+reported as if it were stronger. **`past=512` and `past=1024` are supported by both instruments in
+both pairings** and are the durable result of this arm.
+
+`past=128` is precisely the length issue #96 is about. So, on whole-model wall time, this arm does
+**not** demonstrate that PR #97 changes anything at `past=128`; it demonstrates a large and
+interval-supported improvement at long context. The kernel-level result in §29.4 is a separate
+measurement and is not weakened by this.
 
 **PR #97 does not resolve the reported `past=128` regression, because §28 established there was no
 `past=128` regression to resolve.** That verdict was declared *unreachable* in the addendum
 pre-registration before any arm-3 timing was taken, precisely so a large and genuine speedup could
 not be retro-fitted as a fix for a defect that does not exist. It is an improvement on a path that
-was never broken.
+was never broken. §28's own finding is additionally weakened by the blockers recorded against
+PR #99 — see the correction note at the head of §28 — so the honest joint statement is that
+**neither a `past=128` regression nor a `past=128` repair is established by any measurement here.**
 
 ### 29.4 The improvement localises to the decode GQA kernel
 
@@ -5542,8 +5580,21 @@ hypothesis for #90 to test, not a result.
 * The model file is named `phi-3.5-mini-instruct-cuda-int4-rtn-block-32`. That is a filename from
   its publisher. **Nothing here measures, or claims to measure, CUDA.** All device work is Vulkan
   compute on the recorded device.
-* One device, one driver, one OS. `NO-SLOW-LENGTH` and the ratios above are statements about this
-  configuration.
+* One device, one driver, one OS. The ratios above are statements about this configuration.
+* **The compiled delta `8701812c..fc1b163` is not confined to the shader and the dispatch.** It is
+  17 files, including `rust/src/counters.rs`, `rust/src/ops/common/templates.rs`,
+  `rust/src/ops/common/variants.rs`, `rust/src/vk/session.rs`, and — because
+  `rust/src/registry.rs:2306` does `include_str!("../../evidence/proof_ledger.jsonl")` —
+  `evidence/proof_ledger.jsonl`, whose ledger header hash changed. Any statement anywhere that the
+  arm-3 binary differs only by `gqa_decode_f16.comp` plus `attention.rs` is false.
+  `test_pr97_compiled_delta_is_not_limited_to_shader_and_attention` locks this.
+* **No A/A arm was run.** Neither pairing includes a same-commit-versus-itself arm, so the band is
+  calibrated only from the two MobileNetV2 no-GQA controls on a different model and a different
+  time scale, and no planted-positive test confirms the rule can detect a known injected change.
+  Nothing here bounds the false-positive rate of the verdict rule itself. This is the same gap
+  recorded against §28 and it is **not** repaired by adding a third arm.
+* **`n = 3` whole-process repeats.** Interval estimates on three paired ratios are wide; see §29.3a.
+  The `past=512` and `past=1024` results survive that width in both pairings. `past=128` does not.
 
 ### 29.9 Reproducing this section
 
@@ -5567,17 +5618,36 @@ python bench/results/probe_pr97_third_arm.py --resummarize bench/results/pr97_at
 python -m pytest bench/test_pr97_third_arm.py
 ```
 
+`bench/test_pr97_third_arm.py` defines **63 GPU-free guards**
+(`grep -c '^def test_' bench/test_pr97_third_arm.py`), which expand to **74 collected test cases**
+under parametrisation (`pytest -q` reports `74 passed`). An earlier revision of this section quoted a
+count that did not match the file; `test_guard_count_in_docs_matches_this_file` now recomputes the
+number from the file and fails if this sentence drifts from it.
+
 `--resummarize` re-derives every published band, verdict, window claim, witness audit and
 attribution figure from the stored records alone and fails if any of them differs. The guard suite
 opens no device and reads no library.
 
+> **Correction (F4).** As first published, `--resummarize --check` read only `speed.median_ms`.
+> Multiplying every `samples_ms` entry by ten, or deleting `samples_ms` outright, still reported
+> `reproduces=YES` — so the check did **not** bind the timings it appeared to certify. The driver now
+> also publishes `samples_binding`, a sha256 over every stored sample in a fixed order. Verified
+> against five mutations, each of which now exits 1: scaling all samples ×10, deleting `samples_ms`,
+> dropping a single sample, perturbing one sample by 1e-9, and flipping one `admissible` flag.
+> `test_samples_binding_changes_when_any_sample_changes` locks this.
+
 | artifact | sha256 (first 32) | bytes |
 |---|---|---|
-| `bench/results/pr97_vs_candidate.json` | `2d2db18ccd50f6197927e9921509b0d7` | 282,612 |
-| `bench/results/pr97_vs_baseline.json` | `0f9e797b7425fc0bbe1dd7012718ee2e` | 280,778 |
-| `bench/results/pr97_attribution.json` | `002f001825cf38e2818d67bc8bf32de9` | 101,063 |
+| `bench/results/pr97_vs_candidate.json` | `02805db9ca5ee30b91f8557b9a933054` | 287,130 |
+| `bench/results/pr97_vs_baseline.json` | `ee2abcebc9662458959b3dea591a5111` | 285,421 |
+| `bench/results/pr97_attribution.json` | `6f28c83d6a87dcd837221f07b5cfd6a0` | 101,291 |
 | `bench/results/pr97_killswitch.json` | `01ac2b5edaec00dbdd18993244fe865b` | 112,497 |
 | `bench/results/spirv_gqa_decode_pr97.json` | `52234724a6e08fb73aed4657eaf55456` | 8,490 |
+
+The first three differ from the hashes first published: they were re-derived, GPU-free and from
+their own stored records, to add `honest_window`, `ratio_ci95`, `band_sensitivity` and
+`samples_binding`. No `records` entry was added, removed or altered — `samples_binding` covers 720
+samples in each sweep and is what now makes that statement checkable.
 
 Addendum pre-registration:
 `bench/results/prereg_pr97_third_arm.md`, sha256

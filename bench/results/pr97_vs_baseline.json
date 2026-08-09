@@ -7896,8 +7896,8 @@
       "past": 0,
       "ratio_median": 0.8827240720082244,
       "sweep_verdict": "INDETERMINATE",
-      "addendum_verdict": "NEUTRAL",
-      "why": "whole model inside the band; no admissible attribution pair at this length, so KERNEL-ONLY could not be tested"
+      "addendum_verdict": "INDETERMINATE",
+      "why": "whole-model median is OUTSIDE the band but the per-repeat spread straddles it, so the sweep rule returned INDETERMINATE rather than a direction; no admissible attribution pair at this length, so KERNEL-ONLY could not be tested"
     },
     {
       "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past32",
@@ -7923,8 +7923,8 @@
       "past": 128,
       "ratio_median": 1.2043636792014765,
       "sweep_verdict": "INDETERMINATE",
-      "addendum_verdict": "NEUTRAL",
-      "why": "whole model inside the band; no admissible attribution pair at this length, so KERNEL-ONLY could not be tested"
+      "addendum_verdict": "INDETERMINATE",
+      "why": "whole-model median is OUTSIDE the band but the per-repeat spread straddles it, so the sweep rule returned INDETERMINATE rather than a direction; no admissible attribution pair at this length, so KERNEL-ONLY could not be tested"
     },
     {
       "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past256",
@@ -7951,5 +7951,170 @@
       "sweep_verdict": "FASTER",
       "addendum_verdict": "WHOLE-MODEL-FASTER"
     }
-  ]
+  ],
+  "honest_window": {
+    "lengths_declared": [
+      0,
+      32,
+      64,
+      128,
+      256,
+      512,
+      1024
+    ],
+    "lengths_with_admissible_records": [
+      0,
+      128,
+      512,
+      1024
+    ],
+    "lengths_with_zero_admissible_records": [
+      32,
+      64,
+      256
+    ],
+    "records_per_length": {
+      "0": {
+        "total": 18,
+        "admissible": 18
+      },
+      "32": {
+        "total": 6,
+        "admissible": 0
+      },
+      "64": {
+        "total": 6,
+        "admissible": 0
+      },
+      "128": {
+        "total": 6,
+        "admissible": 6
+      },
+      "256": {
+        "total": 6,
+        "admissible": 0
+      },
+      "512": {
+        "total": 6,
+        "admissible": 6
+      },
+      "1024": {
+        "total": 6,
+        "admissible": 6
+      }
+    },
+    "frozen_claim": "NO-SLOW-LENGTH",
+    "frozen_lengths_measured": [
+      0,
+      32,
+      64,
+      128,
+      256,
+      512,
+      1024
+    ],
+    "corrected_claim": "NO-SLOW-LENGTH",
+    "corrected_claim_covers": [
+      0,
+      128,
+      512,
+      1024
+    ],
+    "correction": "`window.lengths_measured` lists every declared length, including lengths where every record was refused and no speed figure exists. The claim above is only entitled to cover [0, 128, 512, 1024]; [32, 64, 256] contributed zero admissible records and must not be read as evidence of anything, in either direction."
+  },
+  "ratio_ci95": [
+    {
+      "workload": "mobilenetv2-12/batch/N1",
+      "past": null,
+      "n_paired": 3,
+      "geomean_ratio": 1.0096725884267141,
+      "ci95_low": 0.8395928787904677,
+      "ci95_high": 1.2142060295805777,
+      "ci95_excludes_parity": false
+    },
+    {
+      "workload": "mobilenetv2-12/batch/N16",
+      "past": null,
+      "n_paired": 3,
+      "geomean_ratio": 1.0014355343321668,
+      "ci95_low": 0.9877309621451372,
+      "ci95_high": 1.0153302547539156,
+      "ci95_excludes_parity": false
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0",
+      "past": 0,
+      "n_paired": 3,
+      "geomean_ratio": 0.8969922319755431,
+      "ci95_low": 0.7497591320693588,
+      "ci95_high": 1.0731380650259754,
+      "ci95_excludes_parity": false
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past32",
+      "past": 32,
+      "n_paired": 0,
+      "geomean_ratio": null,
+      "ci95_low": null,
+      "ci95_high": null,
+      "ci95_excludes_parity": null
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past64",
+      "past": 64,
+      "n_paired": 0,
+      "geomean_ratio": null,
+      "ci95_low": null,
+      "ci95_high": null,
+      "ci95_excludes_parity": null
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128",
+      "past": 128,
+      "n_paired": 3,
+      "geomean_ratio": 1.144452987076638,
+      "ci95_low": 0.8950538415032703,
+      "ci95_high": 1.4633450848373952,
+      "ci95_excludes_parity": false
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past256",
+      "past": 256,
+      "n_paired": 0,
+      "geomean_ratio": null,
+      "ci95_low": null,
+      "ci95_high": null,
+      "ci95_excludes_parity": null
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past512",
+      "past": 512,
+      "n_paired": 3,
+      "geomean_ratio": 1.448350184332159,
+      "ci95_low": 1.098551674765228,
+      "ci95_high": 1.9095307982697338,
+      "ci95_excludes_parity": true
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past1024",
+      "past": 1024,
+      "n_paired": 3,
+      "geomean_ratio": 1.4475680931533526,
+      "ci95_low": 1.1423362644213404,
+      "ci95_high": 1.8343577539990836,
+      "ci95_excludes_parity": true
+    }
+  ],
+  "band_sensitivity": {
+    "band_applied": 0.06660869526986829,
+    "band_floor": 0.05,
+    "verdicts_that_flip": [],
+    "any_flip": false
+  },
+  "samples_binding": {
+    "sha256": "fbc116f103d77f20399d5d86955f3947b21b5015f4b0aa37a6f43352289ea059",
+    "records": 54,
+    "samples": 720,
+    "note": "binds speed.samples_ms, not just the medians derived from it"
+  }
 }
