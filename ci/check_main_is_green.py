@@ -111,6 +111,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -167,6 +168,127 @@ RAW_FETCH_STEPS = (50, 200, 500)
 # declares, and the register would then report ERROR(timeout) — an outage of the harness
 # rather than this screen's own, much more informative, deadline_exhausted.
 DEFAULT_DEADLINE_SECONDS = 90.0
+
+# ── THE CLOSURE RULE — code, because a register's `closes_when` is an instruction ──────
+#
+# `ci/open_reds.json` accepts this screen's red with a `closes_when` sentence, and
+# `ci/check_open_reds.py` quotes that sentence verbatim the moment the screen turns green
+# (FAIL(condition=stale_acceptance)). It is not commentary about the acceptance; it is the
+# discharge procedure the next reader follows, and a wrong one sends them to do the wrong
+# thing with the register's authority behind it.
+#
+# It was wrong. The entry was written when this screen ruled on the newest run, and said a
+# push to `main` whose CI run completes green closes it. Issue #84's fix (PR #91) made the
+# whole applicable WINDOW authoritative: `screen()` returns PASS iff the window filled, at
+# least one run in it completed, and NO completed run in it is BAD. By 2026-08-09 that was
+# the difference between a register instructing the next reader that one more green push
+# discharges the acceptance, and a branch where eight green pushes had already landed in
+# front of two reds still inside the window — the screen correctly red, the instruction
+# correctly followed, and the two saying opposite things (issue #103).
+#
+# Two mechanisms keep them together, and they fail in different directions on purpose:
+#
+#   * `CLOSURE_RULE_ID` is owned HERE, beside the verdict it names. A register sentence
+#     must carry it. If the rule below ever changes, this identifier changes with it and
+#     every register still quoting the old one goes red — that is a version stamp, not a
+#     keyword search, and it cannot be satisfied by prose that happens to use the right
+#     nouns.
+#   * `closure_prose_defects` additionally screens for the superseded single-event
+#     readings, and `ci/check_open_reds.py` runs it before it will grant the acceptance.
+#     The pin therefore lives in a production lane rather than only in a test.
+#
+# Neither of them can prove the identifier describes the verdict; only exercising the
+# verdict can. `ci/test_lane_checks.py` does that on the production `gh` path in both
+# polarities, and the case that matters is the one the old sentence got wrong: a FULL
+# window whose newest run is green with a red still behind it.
+CLOSURE_RULE_ID = "zero_red_completed_runs_in_the_applicable_window"
+
+CLOSURE_STATEMENT = (
+    "This screen goes green when the applicable window it rules on contains zero red "
+    "runs — closure rule `" + CLOSURE_RULE_ID + "`. The window is the newest `--limit` "
+    "APPLICABLE runs (workflow `CI`, event `push`, on the target branch, `skipped` "
+    "excluded); every completed run in it must have succeeded, and at least one must have "
+    "completed. The newest run's colour is not the window's colour: a green push in front "
+    "of a red still inside the window is exactly the state this screen exists to convict."
+)
+
+# Claims a `closes_when` may not make about this screen, each paired with the wrong thing
+# it would send a discharging reader off to do. These are the superseded single-event
+# readings specifically — not a style guide, and not a substitute for CLOSURE_RULE_ID.
+#
+# THE LIMIT, STATED. This is a heuristic backstop and it is applied per sentence with a
+# negation carve-out, so that a sentence which exists to DENY the wrong reading ("a single
+# green push does not close this") is not convicted for containing it. A sufficiently
+# contorted double negative would slip past. That is tolerable because it is the SECOND
+# guard: a sentence carrying the wrong rule identifier is refused by the first one no
+# matter how it is worded, and this one only narrows the ways a sentence carrying the
+# right identifier can still mislead.
+_CLOSURE_NEGATIONS = re.compile(r"\b(not|never|no longer|nothing|rather than|instead of)\b",
+                                re.IGNORECASE)
+
+_CLOSURE_FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\ba (?:single )?push to [`']?\w+[`']? whose\b", re.IGNORECASE),
+        "it makes ONE push the closing event. The window is authoritative since PR #91, "
+        "so a reader following this would flip the entry to expect=green while reds "
+        "remained inside the window and this screen went on failing",
+    ),
+    (
+        re.compile(r"\b(?:one|a single|the next|the latest|the newest)\s+green\s+"
+                   r"(?:push|run|build|commit|merge)\b", re.IGNORECASE),
+        "it names a single green run as sufficient. Zero red runs IN THE WINDOW is the "
+        "condition; one green run is not the same claim and is weaker in exactly the "
+        "direction that discharges an acceptance early",
+    ),
+    (
+        re.compile(r"\b(?:latest|newest|most recent|head)\s+run\b.{0,40}\b"
+                   r"(?:green|succe\w+|passes)\b", re.IGNORECASE),
+        "it rules on the head run rather than the window. That is the pre-PR-#91 "
+        "semantics and it is the defect issue #84 was filed for",
+    ),
+)
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.;])\s+")
+
+
+def closure_prose_defects(closes_when: object) -> list[str]:
+    """Reasons `closes_when` does not describe THIS screen's closure rule. Empty == agrees.
+
+    Shipped here rather than in a test so that `ci/check_open_reds.py` — the production
+    consumer of `closes_when` — can refuse an acceptance whose discharge instruction has
+    drifted from the verdict it is an instruction about. A rule that only a test knows is
+    a rule the register can violate in production for as long as nobody runs the test.
+
+    Fails closed on a non-string: a register field that is not prose cannot be an
+    instruction, and reporting "no defects" about it would be this screen's own
+    unobservable-is-not-green error one level up.
+    """
+    if not isinstance(closes_when, str):
+        return [
+            f"`closes_when` is {type(closes_when).__name__}, not a string; a discharge "
+            "instruction that is not prose instructs nobody"
+        ]
+    defects: list[str] = []
+    if CLOSURE_RULE_ID not in closes_when:
+        defects.append(
+            f"it does not carry this screen's closure rule identifier "
+            f"{CLOSURE_RULE_ID!r}. That token is owned beside the verdict in "
+            "ci/check_main_is_green.py and changes when the verdict does, so a register "
+            "that omits it is describing a rule nothing keeps it tied to. The rule is: "
+            + CLOSURE_STATEMENT
+        )
+    for sentence in _SENTENCE_SPLIT.split(closes_when):
+        if _CLOSURE_NEGATIONS.search(sentence):
+            continue
+        for pattern, why in _CLOSURE_FORBIDDEN:
+            if pattern.search(sentence):
+                defects.append(
+                    f"the sentence {sentence.strip()[:160]!r} claims a closing condition "
+                    f"this screen does not have: {why}"
+                )
+                break
+    return defects
+
 
 KNOWN_LIMITS = {
     "github_unreachable_is_unobservable_not_green": (

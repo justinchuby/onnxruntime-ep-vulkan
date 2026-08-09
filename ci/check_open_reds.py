@@ -110,6 +110,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import importlib.util
 import json
 import os
 import re
@@ -227,6 +228,9 @@ def load_register(path: Path) -> list[dict]:
             defect = _extent_defect(path, entry)
             if defect:
                 entry["_extent_defect"] = defect
+            closure = _closure_defect(path, entry)
+            if closure:
+                entry["_closure_defect"] = closure
         if entry["id"] in seen:
             raise ValueError(f"{path}: duplicate id {entry['id']!r}")
         seen.add(entry["id"])
@@ -297,6 +301,86 @@ def _extent_defect(path: Path, entry: dict) -> str:
     if len(set(ext["members"])) != len(ext["members"]):
         return f"{path}: entry {ident!r} extent.members has duplicates"
     return ""
+
+
+#: Screens that own a machine-readable closure rule, keyed by the script an entry's `cmd`
+#: invokes. The rule lives WITH the verdict it describes (see the module docstring of
+#: ci/check_main_is_green.py); this table only says which entries are subject to one, so
+#: that a register full of screens which own no such rule is unaffected.
+_CLOSURE_RULE_OWNERS = ("ci/check_main_is_green.py",)
+
+
+def _closure_defect(path: Path, entry: dict) -> str:
+    """Say why this expect=red entry's `closes_when` disagrees with the screen it accepts.
+
+    WHY A REGISTER FIELD IS PARSED BY THE SCREEN IT DESCRIBES.
+
+    `closes_when` is not a comment. This tool quotes it verbatim in STATE_STALE the moment
+    an accepted red turns green, and in `--list`, `--summary` and the merge annotation
+    before that — it is the discharge instruction, handed to whoever has to act. So it can
+    be WRONG, and a wrong one is worse than a missing one: it carries the register's
+    authority into the wrong action.
+
+    It was wrong. `main_is_green` was registered while ci/check_main_is_green.py ruled on
+    the newest run, and said one green push to `main` closes it. PR #91 made the whole
+    applicable window authoritative. From then on the entry's expected COLOUR stayed right
+    — the screen is red and the register says red — while its instruction said a single
+    green push would discharge an acceptance that the screen would go on refusing to
+    discharge (issue #103). Nothing could notice, because no lane compared the sentence to
+    the semantics; only a person reading both could, and the whole point of this register
+    is not to need one.
+
+    So the screen that owns the verdict also owns an identifier for its closure rule and a
+    parser for prose claiming to describe it, and this function runs that parser here, in
+    the production lane, before the acceptance is granted. A defect is carried on the
+    entry and becomes ERROR(instrument=closure_condition_undeclared) at run time — the
+    same shape as `_extent_defect`, and for the same reason (see its docstring): one
+    entry's defect must not make the register unloadable and silence every other entry.
+
+    Scope, deliberately: expect=red entries only, and only those whose `cmd` invokes a
+    screen that owns a closure rule. An expect=green entry's `closes_when` is not an
+    instruction anyone is about to follow, and a screen that has declared no rule has
+    nothing to disagree with — inventing a defect there would be this tool ruling on a
+    subject nobody gave it.
+
+    Fails closed. If the owning screen cannot be imported, that is not "no defect": it is
+    this tool being unable to ask, which is the same error as reporting green because the
+    network was down.
+    """
+    ident = entry.get("id", "<no id>")
+    cmd = entry.get("cmd")
+    if not isinstance(cmd, list):
+        return ""
+    parts = [str(a).replace("\\", "/") for a in cmd]
+    owner = next((o for o in _CLOSURE_RULE_OWNERS if any(p.endswith(o) for p in parts)), None)
+    if owner is None:
+        return ""
+    script = REPO / owner
+    try:
+        spec = importlib.util.spec_from_file_location(f"_closure_owner_{ident}", script)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"no import spec for {script}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        defects = module.closure_prose_defects(entry.get("closes_when"))
+    except Exception as exc:  # noqa: BLE001 - unable-to-ask is a defect, not a pass
+        return (
+            f"{path}: entry {ident!r} accepts a red from {owner}, whose closure rule this "
+            f"tool could not read ({type(exc).__name__}: {exc}). The instruction in "
+            "`closes_when` is therefore unchecked, and an unchecked instruction is not a "
+            "verified one — reporting no defect here would be asserting agreement that "
+            "nothing established."
+        )
+    if not defects:
+        return ""
+    joined = " ".join(f"({i}) {d}" for i, d in enumerate(defects, 1))
+    return (
+        f"{path}: entry {ident!r} declares a `closes_when` that {owner} does not agree "
+        f"describes its closure rule: {joined} Fix the sentence, or — if the screen's rule "
+        "really did change — change the rule identifier in the screen and let every "
+        "register quoting the old one go red, which is the point of its being an "
+        "identifier."
+    )
 
 
 def _check_subjects(path: Path, doc: dict, checks: list[dict]) -> None:
@@ -386,6 +470,21 @@ def run_entry(entry: dict, repo: Path) -> Outcome:
             entry,
         )
     cmd = list(entry["cmd"])
+    closure = entry.get("_closure_defect")
+    if closure:
+        # Also refused BEFORE the command runs. The colour this entry expects may well be
+        # the colour the screen produces — that is precisely how this defect survived: the
+        # register was RIGHT about red and WRONG about what would end it. Running the
+        # command would confirm the colour and rule on nothing about the instruction, so
+        # `observed` is "?" here too.
+        return Outcome(
+            ident,
+            f"{STATE_ERROR}=closure_condition_undeclared)",
+            entry["expect"],
+            "?",
+            closure,
+            entry,
+        )
     if cmd and cmd[0] == "python":
         cmd[0] = sys.executable
     cwd = repo / entry.get("cwd", ".")
