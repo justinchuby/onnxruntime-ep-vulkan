@@ -450,6 +450,13 @@ BENCH_INSTRUMENT_FILES = [
     # run is admissible as evidence about device utilisation. Those are verdicts about a
     # measurement, which is this list's criterion.
     "real_model.py",
+    # Arrived with issue #96 (Morpheus). This is the criterion's clearest case yet: every
+    # public function in it renders a verdict about a measurement — `classify_record` decides
+    # whether a record is admissible evidence at all, `calibration` decides whether a band
+    # may exist, `verdict_for` decides SLOWER/FASTER/NEUTRAL/INDETERMINATE, and
+    # `window_verdict` decides whether a range claim has the neighbours it needs. Screening
+    # it means the polarity of those decisions is counted rather than assumed.
+    "decode_window_evidence.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -529,6 +536,14 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_devices_identity.py": (
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."
+    ),
+    # Arrived with issue #96 (Morpheus), alongside `decode_window_evidence.py` in
+    # BENCH_INSTRUMENT_FILES above. Declared here rather than left to drift, which is the
+    # whole point of this dict: the frame arm caught both files on the first run.
+    "test_decode_window_evidence.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries the "
+        "mutation grid that earns decode_window_evidence.py's admissibility, calibration, "
+        "verdict and window decisions their polarity."
     ),
 }
 
@@ -614,11 +629,19 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
 # Crediting a bare marker would be the Guard D shape with the sign flipped, and this file
 # says so about itself two hundred lines up; the enforcement is what makes this not that.
 #
+# 2026-08-09 (Morpheus): `withholds` joins `refuses` for the same reason and under the same
+# standard.  It is written for the other totality contract in this tree — an instrument that
+# returns a verdict MAPPING and declines by withholding the verdict, rather than by putting
+# `None` in slot zero of a pair.  It raises `PolarityError` when the thing inside it reached a
+# verdict, and again when it withheld one without saying why, so a mutant cannot pass through it
+# either.  Subjects: the issue-#96 summarizer in `bench/decode_window_evidence.py`, whose
+# mutation battery is `bench/test_decode_window_evidence.py`.
+#
 # The blind spot, unchanged and restated: neither model can see whether the test's INPUT
 # actually varies the thing under test.  That is earned by mutation —
 # `bench/test_devices_identity.py` for this instrument, `tests/ops/test_guard_d.py` for
 # the harness domain — and it is not claimed by this screen.
-VALUE_REJECT_FN = frozenset({"refuses"})
+VALUE_REJECT_FN = frozenset({"refuses", "withholds"})
 VALUE_ACCEPT_FN = frozenset({"selects"})
 
 

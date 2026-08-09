@@ -5897,6 +5897,37 @@ with a reduction, which is a shared-memory and barrier change and therefore a po
 of exactly the kind §8.12 declined to open without evidence. `docs/PERF.md` §26.7 names it as the
 next lever and says what it would have to prove.
 
+#### Whether that decode geometry costs anything — still open (issue #96)
+
+The paragraph above says this change does not help decode. Issue #96 asks the sharper question:
+does it *hurt* decode, and over what range of KV lengths? At `local = 1` the decode dispatch is
+argued to be unchanged, and `translate_gqa_phi35_decode_produces_one_dispatch` holds that argument
+at the source level — but a dispatch that is unchanged in shape still ships inside a different
+binary, and the question is empirical.
+
+It is not settled. `docs/PERF.md` §27 is the evidence and the reasoning; the short version:
+
+* At Phi-3.5 `decode/M1/past128` the paired candidate ÷ baseline geometric mean is **0.9651** with a
+  95% interval of [0.820, 1.136]. The interval contains 1.0 and it contains the earlier observation,
+  so the verdict is **INCONCLUSIVE**, with power 0.66 against an effect of the size previously
+  reported.
+* An earlier run of the same comparison observed a per-repeat median of **0.859** at the same
+  workload. That observation is preserved, not superseded. The two runs disagree and no cause is
+  claimed for the disagreement.
+* An A/A calibration — the same binary allocated to both sides of the same protocol at the same
+  workload — moved **12.7%** in one of three repeats. Any reading of a single-digit-percent
+  difference on this box has to clear that first.
+* Of the six preregistered KV lengths `{32, 64, 128, 256, 512, 1024}`, **three of the six** have an
+  admissible measured pair (128, 512, 1024). The target's own neighbours, 64 and 256, have none, so
+  the window question issue #96 actually asks has no answer here at all.
+* Three compiled inputs differ between the two binaries — `gqa_f16.comp`, `ops/attention.rs`, and
+  `evidence/proof_ledger.jsonl` via `include_str!` — so no timing difference measured there can be
+  attributed to any single one of them.
+
+Issue #96 stays open on the strength of this. What would settle it is measurement at 64 and 256
+under the same protocol, with the A/A arm run in the same session as the treatment rather than after
+it.
+
 ---
 
 ## 9. Testing and benchmarking strategy
