@@ -427,7 +427,8 @@ impl Drop for ComputeCallGuard {
 /// Which recording path one `Compute` call took — the Vulkan analogue of MLX's compile-cache
 /// state, over `ENGINE.md` §6.1's record-once / replay-many model.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RecordPath {    /// First recording of this subgraph's command buffer.
+pub enum RecordPath {
+    /// First recording of this subgraph's command buffer.
     FirstRecord,
     /// Replayed the cached `VkCommandBuffer` — the steady-state path.
     Replay,
@@ -1725,7 +1726,10 @@ mod tests {
             .iter()
             .find(|e| e.name == "vulkan.compute_call")
             .expect("the total span must be emitted under its own name");
-        assert_eq!(span.cat, "ep", "the total is an `ep` span, not an `ep.phase`");
+        assert_eq!(
+            span.cat, "ep",
+            "the total is an `ep` span, not an `ep.phase`"
+        );
         let args = span.args.as_ref().expect("args are written on drop");
         assert_eq!(
             args.get("boundary").and_then(|v| v.as_str()),
@@ -1802,10 +1806,7 @@ mod tests {
             .iter()
             .filter(|e| e.name == "vulkan.compute_call")
             .collect();
-        let paths: Vec<_> = events
-            .iter()
-            .filter(|e| e.cat == "ep.path")
-            .collect();
+        let paths: Vec<_> = events.iter().filter(|e| e.cat == "ep.path").collect();
         assert_eq!(totals.len(), 1, "exactly one total span per call");
         assert_eq!(paths.len(), 1, "the record-path marker is still emitted");
         assert!(
