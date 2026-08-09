@@ -526,6 +526,18 @@ BENCH_HELD_OUT: dict[str, str] = {
         "source, not a verdict about a measurement. Two-polarity tested in "
         "test_devices_identity.py."
     ),
+    # Arrived 2026-08-08 (Switch) with the issue #96 cross-build decode investigation. It
+    # drives `bench/results/probe_crossbuild_decode_window.py`'s gate over synthetic records
+    # and re-derives the committed artifacts' own arithmetic; it renders no verdict about a
+    # measurement of its own and opens no device, so it is a caller, like every other
+    # `test_*.py` above. The probe it drives lives under `bench/results/`, which this frame
+    # does not scan — that is stated in the artifact and in docs/PERF.md rather than left
+    # to be inferred.
+    "test_crossbuild_decode_window.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries the "
+        "mutation battery that keeps a refused cross-build record from ever holding a "
+        "`speed` field."
+    ),
     "test_devices_identity.py": (
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."

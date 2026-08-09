@@ -5846,6 +5846,28 @@ issue #56. That is asserted twice, in `translate_gqa_phi35_decode_produces_one_d
 predates this change and still passes untouched) and in
 `gqa_decode_stays_at_one_invocation_per_workgroup`.
 
+> **Correction (issue #96, Switch, 2026-08-08).** "The same pipeline behaviour" is right; "the
+> same pipeline" would not be, and this section came close enough to the second that issue #96
+> read it as a claim of identity. What decode actually hands the driver at `local = 1` differs
+> from the pre-#56 module in exactly one respect, now measured rather than asserted
+> (`bench/results/spirv_gqa_crossbuild.json`): the compiled `gqa_f16.spv` gains
+> `OpDecorate … SpecId 0`, and `%gl_WorkGroupSize` becomes an `OpSpecConstantComposite` over an
+> `OpSpecConstant 1` instead of an `OpConstantComposite`. `spirv-diff` over the two modules
+> changes **8 lines and no body instruction**; the opcode histogram moves by
+> `+OpDecorate, +OpSpecConstant, +OpSpecConstantComposite, −OpConstantComposite` (993 → 995).
+> **No instruction in the body reads `gl_WorkGroupSize`**, so no loop bound and no address
+> computation depended on it and there was never a fold for a specialisation constant to
+> prevent. The host-side pipeline-cache key also differs — `gqa_f16:1` against `gqa_f16:` — which
+> is what makes the two builds distinguishable from inside a run at all.
+>
+> What that comparison **cannot** establish is the driver's final machine code: NVIDIA compiles
+> SPIR-V to SASS inside `vkCreateComputePipelines` with `SpecId 0` already resolved to 1, and no
+> SPIR-V-level tool observes the result. Module-level identity is evidence about the *input* to
+> the driver's compiler and nothing more. The wall-clock consequence was measured separately and
+> is in `docs/PERF.md` §28: across 6 KV lengths, 3 whole-process repeats and 54 processes, no
+> measured decode length is `SLOWER` on `85fbda2` than on `c96e7d9`, and `past = 128` — the
+> length issue #96 named — pairs at **1.001×**.
+
 For every *other* size, "bit-identical" is a claim about the source text, so it is verified as one
 rather than argued: `bench/results/probe_gqa_local_size.py` compares whole-model outputs
 byte-for-byte against the `local = 1` reference in the same case. Six cases at seven sizes are

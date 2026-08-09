@@ -5046,3 +5046,272 @@ transition can never be declared, because
 correctly requires every declared transition to end at what the build computes. Rebuilding the
 stack on `main` is the only fix; merging `main` is not, because CI screens `refs/pull/N/merge`,
 which has the same shape.
+
+---
+
+## 28. Issue #96: the decode regression that does not reproduce (2026-08-08/09)
+
+> **On the section number.** This is §28 and not §27 deliberately. §27 belongs to PR #95, which was
+> open and unmerged when this was written; taking §27 here would have produced two §27s on merge.
+> If #95 does not land, renumber this to §27. The gap is the smaller lie.
+
+Issue #96 reported a **~14% Phi-3.5 decode regression at `past = 128`** on `85fbda2` — the GQA
+workgroup-size / specialisation-constant change from PR #72 — against its parent `c96e7d9`. This
+section is an independent cross-build measurement of that claim, run without trusting PR #95's
+implementation. It reproduces #95's build inputs (same two commits, same model, byte-identical DLL
+sizes) and diverges from it on one analysis choice, stated below.
+
+**The finding: the regression does not reproduce.** The pre-registered window claim resolves to
+`NO-SLOW-LENGTH`. `past = 128` — the length the issue named — pairs at **1.001×**.
+
+### 28.1 What was measured, exactly
+
+| | |
+|---|---|
+| baseline tree | `c96e7d94ff706d26ee6a1bd9bb084c0ade426820` |
+| candidate tree | `85fbda29a92e0e99c3895be8b13664d4ee670c50` |
+| work branch cut from | `origin/main` @ `8701812c` |
+| baseline `onnxruntime_vulkan_ep.dll` | `655a247c29a8…`, 2,560,000 bytes |
+| candidate `onnxruntime_vulkan_ep.dll` | `3b210b016179…`, 2,563,072 bytes |
+| compiled delta `c96e7d9..85fbda2` | 2 commits; of 4 changed paths only `rust/shaders/glsl/gqa_f16.comp` and `rust/src/ops/attention.rs` compile |
+| candidate vs `origin/main` over `rust/src rust/shaders rust/Cargo.*` | **empty** — the candidate library *is* today's library |
+| device | NVIDIA RTX A1000 Laptop GPU, driver 573.44, Vulkan 1.4.303, subgroup 32 |
+
+Both arms were built `--release` in **separate clean worktrees** so neither could observe the
+other's `target/`, and the primary checkout (dirty) was never touched. The two DLL byte counts
+reproduce PR #95's exactly, which is the cheapest available check that both investigations built
+the same two trees.
+
+The model is the Foundry-resolved `phi-3.5-mini-instruct-cuda-int4-rtn-block-32`
+(`3dbdd4b5f4d4…`, 2.29 GB of weights). **The string `cuda` is part of the upstream artefact name
+and nothing else** — every timing here is the Vulkan EP against the CPU EP as reference. No CUDA
+execution provider was built, loaded, or timed, and no claim in this section depends on one.
+
+### 28.2 Protocol, pre-registered before any timed run
+
+`bench/results/prereg_crossbuild_decode_window.md`, sha256
+`4d1834e231c2bd28a41eb8323b18163cecd529268e6843683cd7b5fec1fe544d`, 9,800 bytes — **published as a
+comment on issue #96 before the first timed process started**, and not edited since. The digest is
+embedded in both artefacts, so a reader can check that the analysis they are reading is the one
+that was declared.
+
+* **9 workloads** — MobileNetV2 `N=1` and `N=16` (no GQA node: the controls), Phi-3.5 prefill
+  `M=1 past=0` (the null), and decode `M=1` at `past ∈ {32, 64, 128, 256, 512, 1024}`.
+* **2 arms × 3 whole-process repeats** = **54 processes**, one process per
+  `(workload, arm, repeat)`. Nothing is timed in a process that has already timed something else.
+* **Arm order interleaved**: candidate first on even repeats, baseline first on odd.
+* **5 warmups, 20 timed iterations** per process; the per-process statistic is the **median**.
+* **`past = 2048` was excluded in advance**, before any timing, because its ~805 MB feed dict moves
+  the host-transfer regime and would not be comparable with the rest of the sweep.
+* **Every inherited `ONNXRUNTIME_EP_VULKAN_*` variable is stripped from every child.** The driver
+  sets only the counters path (and, in the attribution pass, the trace path).
+* **Exclusive GPU serialisation** via the pre-existing OS lock, `msvcrt.locking(LK_NBLCK)`, 5 s
+  poll, **wait — never kill**. Held 1021.2 s across the sweep; `killed_anything: false`.
+* **Ratio = `baseline_median_ms / candidate_median_ms`**, so **> 1 means the candidate is faster**.
+  This matches PR #95's convention so the two are directly comparable.
+
+**The one deliberate divergence from PR #95.** #95 uses Phi-3.5 prefill `M=1` as its null control.
+That row also resolves to `local = 1` and therefore runs the *changed* pipeline — it is treatment,
+not control. This sweep keeps prefill `M=1` as a declared **null** but takes its **band from
+MobileNetV2**, which contains no GQA node and cannot be touched by the change. The band is
+`max(0.05, max per-workload half-range over the no-GQA controls)` and came out at **0.1106**,
+giving a drift envelope of **0.865 … 1.086**. That envelope is this box's own no-treatment scatter,
+and it is the single most important number in this section: **it is comparable in magnitude to the
+~14% the issue reported.**
+
+### 28.3 Admissibility — 36 of 54 records admissible
+
+Every record passes or fails a gate *before* it is allowed to carry a speed field. A refused record
+retains **no timing whatsoever** (and, in the attribution pass, no trace either).
+
+| gate | requirement |
+|---|---|
+| output equivalence | per arm, per repeat, EP output vs CPU reference under the repo's standing tolerances |
+| production-path witness | the run actually dispatched `gqa_f16` through the production translate path |
+| library identity | the two arms' DLL digests differ (a pair of identical libraries is refused as `IDENTICAL-LIBRARY`) |
+| witness identity | the two arms' witnesses differ where the change requires them to (`IDENTICAL-WITNESS`) |
+| provenance | model sha256 agrees with the recorded provenance |
+
+**18 records refused**, all for output equivalence, all at `past ∈ {32, 64, 256}`, **on both arms,
+in all three repeats, deterministically.** The cause is this repo's own standing accuracy budget,
+`PHI35_MAX_PROB_DELTA = 0.02` (`bench/real_model.py:590`). Measured `max_prob_delta` by length:
+
+| past | 32 | 64 | 128 | 256 | 512 | 1024 |
+|---|---|---|---|---|---|---|
+| `max_prob_delta` | 0.0327 | 0.0511 | **0.0170** | 0.0295 | 0.0061 | 0.0034 |
+| | refused | refused | **pass** | refused | pass | pass |
+
+This is **symmetric across arms**, so it introduces no bias — it costs coverage, not validity. It
+is also a pre-existing property of the EP against the CPU reference on this random-feed decode
+protocol and has nothing to do with `85fbda2`. It arguably deserves its own issue; it is recorded
+here because it is why three of six lengths could not be read.
+
+### 28.4 Per-length result
+
+Ratio = baseline / candidate; **> 1 = candidate faster**. Verdicts require **every** repeat to sit
+outside the band, so a single stray repeat cannot manufacture a result.
+
+| workload | role | median ratio | per repeat | verdict |
+|---|---|---|---|---|
+| mobilenetv2 `N=1` | control (no GQA) | 1.029 | 1.029 / 1.086 / 0.865 | NEUTRAL |
+| mobilenetv2 `N=16` | control (no GQA) | 1.003 | 1.003 / 0.979 / 1.024 | NEUTRAL |
+| phi prefill `M=1 past=0` | null (treatment) | 1.154 | 1.188 / 1.154 / 0.841 | INDETERMINATE |
+| decode `past=32` | treatment | — | — | **REFUSED** (equivalence) |
+| decode `past=64` | treatment | — | — | **REFUSED** (equivalence) |
+| decode **`past=128`** | treatment | **1.001** | 1.001 / 1.004 / 0.895 | **NEUTRAL** |
+| decode `past=256` | treatment | — | — | **REFUSED** (equivalence) |
+| decode `past=512` | treatment | 1.020 | 0.958 / 1.020 / 1.074 | NEUTRAL |
+| decode `past=1024` | treatment | 1.035 | 1.109 / 1.025 / 1.035 | NEUTRAL |
+
+**Window claim: `NO-SLOW-LENGTH`.** No measured decode length is slower on the candidate, so there
+is no window to bound and no edges to name. `past = 128` is **1.001×** — a 0.1% difference against
+a box whose own no-treatment drift is ±11%.
+
+Note the prefill null: `INDETERMINATE`, with repeats spanning 0.841 … 1.188. That row is the
+sweep's own reminder of what this hardware does to a 3-repeat reading, and it is the row PR #95
+uses as its control.
+
+### 28.5 Static SPIR-V: the modules differ in one declaration and nothing else
+
+`bench/results/spirv_gqa_crossbuild.py` compiles `gqa_f16.comp` from both trees with the pinned
+`glslc` and diffs the disassembly (SPIRV-Tools v2026.2). Artefact:
+`bench/results/spirv_gqa_crossbuild.json`. Both modules — and the frozen-to-1 variant — pass
+`spirv-val`.
+
+```
+-; Bound: 1778                              +; Bound: 1780
+-OpDecorate %1118 BuiltIn WorkgroupSize     +OpDecorate %1778 SpecId 0
+                                            +OpDecorate %1779 BuiltIn WorkgroupSize
+-%1118 = OpConstantComposite %272 %49 %49 %49
+                                            +%1778 = OpSpecConstant %6 1
+                                            +%1779 = OpSpecConstantComposite %272 %1778 %49 %49
+```
+
+* Opcode histogram delta: `OpDecorate +1`, `OpSpecConstant +1`, `OpSpecConstantComposite +1`,
+  `OpConstantComposite −1`. Instruction count 993 → 995.
+* `body_instructions_differ: false` — **no instruction in the function body changed.**
+* `workgroup_size_consumed_by_body: false` — **nothing in the body reads `gl_WorkGroupSize`.** The
+  only references are the two *declarations* (`OpExecutionMode … LocalSize 1 1 1` and the
+  `WorkgroupSize`-decorated constant, which the specification says supersedes it).
+* `shared_memory_present: false` — there is no workgroup-shared allocation whose size could depend
+  on the specialisation constant.
+* Freezing the candidate's `SpecId 0` back to a literal 1 yields a module that differs from
+  baseline only in the id numbering and an `OpConstant 1` — i.e. the two collapse.
+
+**This refutes the module-level limb of "the specialisation constant stopped loop bounds from
+constant-folding."** There was no fold to prevent: no loop bound, no address computation, and no
+shared-memory size ever depended on the workgroup size in this shader.
+
+**What SPIR-V cannot show, stated plainly.** The driver compiles SPIR-V to machine code inside
+`vkCreateComputePipelines`, *after* `SpecId 0` has been resolved to 1. No SPIR-V-level tool
+observes that output. Module-level identity is evidence about the **input** to the driver's
+compiler and nothing more. Answering the machine-code question needs
+`VK_KHR_pipeline_executable_properties`; this repo has no such instrument, and this section does
+not pretend otherwise.
+
+### 28.6 Attribution at `past = 128`: it does not localise to `gqa_f16`
+
+A separate 18-process pass ran the **existing, merged** tracer on **both** arms at
+`past ∈ {64, 128, 256}` (`bench/results/crossbuild_decode_attribution.json`). PR #94's unmerged
+instrumentation was deliberately not used. `past = 64` and `past = 256` have **no admissible pair**
+— same equivalence gate as §28.3 — so only `past = 128` yields a reading.
+
+**A traced process is never a wall-clock result.** These numbers exist to compare *composition*
+between two equally-traced arms, nothing else.
+
+| kernel | ratio (cand/base device µs) | touched by the diff? |
+|---|---|---|
+| `gather_f16` | 0.928 | no |
+| `simplified_layer_norm_f16` | 1.010 | no |
+| `ew_unary_sigmoid_f16` | 1.039 | no |
+| `ew_binary_mul_f16` | 1.042 | no |
+| **`gqa_f16`** | **1.055** | **yes** |
+| `skip_simplified_layer_norm_f16` | 1.063 | no |
+| **`q_gemv_matmul_nbits_f16`** | **1.125** | **no** |
+
+`gqa_f16` did move in a **sign-consistent** direction across all three repeats
+(1.0335 / 1.0066 / 1.0557). So did `q_gemv_matmul_nbits_f16` (1.1377 / 1.0734 / 1.1039) — **and it
+moved further**, from a kernel the `c96e7d9..85fbda2` diff does not touch at all.
+`gqa_outside_untouched_spread: false`: **`gqa_f16`'s ratio sits inside the spread of kernels the
+change cannot have affected, so this pass does not localise a device-time difference to
+`gqa_f16`.** The traced pass moved as a whole.
+
+Host phases at `past = 128` (difference of arm medians, µs):
+
+| phase | Δ µs |
+|---|---|
+| `fence_wait` | +7466 |
+| `record` | +7337 |
+| `cmd_upload` (nested) | +7448 |
+| `desc_alloc` (nested) | +14.2 |
+| `submit` | −0.18 |
+| `pipeline_lookup` (nested) | **−3.89** |
+
+The three large movers are the same movement seen once — `record` contains `cmd_upload`, and
+`fence_wait` absorbs whatever the device did. The two phases the "dispatch overhead" hypothesis
+predicts would grow, `pipeline_lookup` and `submit`, did not: one is *negative* and the other is
+0.08% of its own magnitude.
+
+Setup cost was read from the sweep's **own 54 processes** rather than from a new run: median
+`session_build_ms` delta **−12.4 ms** (candidate builds *faster*), median `first_run_ms` delta
+**+1.15 ms**, both dwarfed by per-workload scatter of −172 … +62 ms.
+
+### 28.7 Hypotheses
+
+| # | hypothesis | status |
+|---|---|---|
+| H1 | the specialisation-constant module is slower than a literal-1 module | **module limb refuted** (identical body; nothing consumes the size; freezing collapses the two). **Device limb not supported** — `gqa_f16` moved less than an untouched control. Driver-final SASS remains unprovable with the instruments in this repo. |
+| H2 | attention dispatch / pipeline setup overhead | **not supported** — `pipeline_lookup` −3.89 µs, `submit` −0.18 µs, `desc_alloc` +14 µs, `session_build_ms` −12.4 ms. The `gqa_local_size` rule and its `std::env::var` read run at translate time, once, not per inference. |
+| H3 | the regression is a KV-length window that `past = 128` happens to sit in | **refuted at every length that can be measured** — `NO-SLOW-LENGTH` over {128, 512, 1024}. {32, 64, 256} are unmeasurable on this protocol for a reason unrelated to the change. |
+
+None of these is inferred from correlation with the wall-clock ratio; each was tested with its own
+instrument against its own prediction.
+
+### 28.8 What this section may not be read as
+
+* It is **not** proof that `85fbda2` is free of any decode cost on any device. It is one box, one
+  driver, one model, three repeats per cell.
+* It **cannot** speak to `past ∈ {32, 64, 256}`: those cells produced no admissible pair.
+* It **cannot** speak to the driver's final machine code (§28.5).
+* The prefill null came out `INDETERMINATE`, so the null did not discharge cleanly; the *controls*
+  did, which is why the band is taken from them.
+* **Three attribution passes were run.** The first published `gqa_f16_gpu: 0` — a false zero caused
+  by summarising under `vulkan.gpu.gqa_f16` and differencing under `gqa_f16` with an `x or 0`
+  fallback. The same pass reported an empty `host_phase_us` because `rust/src/trace.rs:830` emits
+  the literal string `"none"` for a top-level phase and a truthiness test therefore classified the
+  entire top level as nested. Both are analysis bugs in the instrument written for this
+  investigation, both were found by the guard suite, and both are now guarded by named mutation
+  tests in `bench/test_crossbuild_decode_window.py` (96 tests, GPU-free). `attribution_delta()` now
+  returns `None` — declared in `not_differenced` — rather than a number it cannot compute.
+
+### 28.9 Reproducing it
+
+```
+# 54-process sweep (acquires the exclusive GPU lock; waits, never kills)
+python bench/results/probe_crossbuild_decode_window.py \
+    --baseline-lib <c96e7d9 build>/onnxruntime_vulkan_ep.dll \
+    --candidate-lib <85fbda2 build>/onnxruntime_vulkan_ep.dll \
+    --baseline-commit c96e7d9 --candidate-commit 85fbda2 \
+    --out bench/results/crossbuild_decode_window.json
+
+# 18-process attribution pass at past in {64,128,256}, same flags plus:
+    --attribution --out bench/results/crossbuild_decode_attribution.json
+
+# re-derive every published summary from the stored records, no GPU, no model
+python bench/results/probe_crossbuild_decode_window.py \
+    --resummarize bench/results/crossbuild_decode_window.json --check
+python bench/results/probe_crossbuild_decode_window.py \
+    --resummarize bench/results/crossbuild_decode_attribution.json --check
+
+# static SPIR-V comparison, no GPU (needs glslc + spirv-tools on PATH)
+python bench/results/spirv_gqa_crossbuild.py
+
+# guards, no GPU
+pytest bench/test_crossbuild_decode_window.py -q
+```
+
+`--resummarize --check` detects the artifact kind from its contents and re-derives the sweep's
+`band`, every `workloads` verdict and the `window` claim — or the attribution pass's `summary` —
+from the stored records alone, failing if any published figure differs. It reads the workload set
+from the records rather than from today's source constant, so it cannot pass by re-deriving a
+different experiment. Everything in this section is therefore checkable without hardware.

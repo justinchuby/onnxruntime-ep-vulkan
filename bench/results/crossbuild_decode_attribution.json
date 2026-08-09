@@ -1,0 +1,2647 @@
+{
+  "instrument": "probe_crossbuild_decode_window.py",
+  "pass": "attribution",
+  "issue": 96,
+  "generated_at": "2026-08-09T01:06:33",
+  "caveat": "The tracer is on in every process here, so no latency in this section is a wall-clock result and none may be quoted as one. It answers WHERE a difference sits, never WHETHER there is one.",
+  "instrument_provenance": "ONNXRUNTIME_EP_VULKAN_TRACE + _TRACE_GPU, the EP's own tracer, present unchanged in both trees (the c96e7d9..85fbda2 compiled delta is gqa_f16.comp and ops/attention.rs only). No PR #94 instrumentation is used.",
+  "arms": {
+    "baseline": {
+      "path_basename": "onnxruntime_vulkan_ep.dll",
+      "sha256": "655a247c29a8585891f4a3033a929b1a89d8e13881634bcf5ce13b30b2c644b4",
+      "bytes": 2560000,
+      "commit": "c96e7d94ff706d26ee6a1bd9bb084c0ade426820"
+    },
+    "candidate": {
+      "path_basename": "onnxruntime_vulkan_ep.dll",
+      "sha256": "3b210b016179011ab392c7d03c46467728f80f147504fd583702df4f8d762d96",
+      "bytes": 2563072,
+      "commit": "85fbda29a92e0e99c3895be8b13664d4ee670c50"
+    }
+  },
+  "summary": [
+    {
+      "past": 64,
+      "candidate": null,
+      "baseline": null
+    },
+    {
+      "past": 128,
+      "candidate": {
+        "n": 3,
+        "gpu_total_us": 64094.56,
+        "gpu_us": {
+          "ew_binary_mul_f16": 205.56,
+          "ew_unary_sigmoid_f16": 103.67,
+          "gather_f16": 6.56,
+          "gqa_f16": 41170.48,
+          "q_gemv_matmul_nbits_f16": 22045.59,
+          "simplified_layer_norm_f16": 11.04,
+          "skip_simplified_layer_norm_f16": 922.22
+        },
+        "host_phase_us": {
+          "fence_wait": 80563.78,
+          "record": 69981.15,
+          "submit": 214.56
+        },
+        "host_nested_us": {
+          "cmd_upload": 62024.89,
+          "desc_alloc": 1107.93,
+          "pipeline_lookup": 804.67
+        },
+        "host_sibling_total_us": 149220.59,
+        "traced_median_ms": 136.3793
+      },
+      "baseline": {
+        "n": 3,
+        "gpu_total_us": 59814.78,
+        "gpu_us": {
+          "ew_binary_mul_f16": 197.33,
+          "ew_unary_sigmoid_f16": 99.74,
+          "gather_f16": 7.07,
+          "gqa_f16": 39027.63,
+          "q_gemv_matmul_nbits_f16": 19604.37,
+          "simplified_layer_norm_f16": 10.93,
+          "skip_simplified_layer_norm_f16": 867.7
+        },
+        "host_phase_us": {
+          "fence_wait": 73097.7,
+          "record": 62644.04,
+          "submit": 214.74
+        },
+        "host_nested_us": {
+          "cmd_upload": 54576.67,
+          "desc_alloc": 1093.7,
+          "pipeline_lookup": 808.56
+        },
+        "host_sibling_total_us": 135251.56,
+        "traced_median_ms": 130.81835
+      },
+      "delta_us": {
+        "gpu_total": 4279.78,
+        "gpu_ew_binary_mul_f16": 8.23,
+        "gpu_ew_unary_sigmoid_f16": 3.93,
+        "gpu_gather_f16": -0.51,
+        "gpu_gqa_f16": 2142.85,
+        "gpu_q_gemv_matmul_nbits_f16": 2441.22,
+        "gpu_simplified_layer_norm_f16": 0.11,
+        "gpu_skip_simplified_layer_norm_f16": 54.52,
+        "host_fence_wait": 7466.08,
+        "host_record": 7337.11,
+        "host_submit": -0.18,
+        "host_nested_cmd_upload": 7448.22,
+        "host_nested_desc_alloc": 14.23,
+        "host_nested_pipeline_lookup": -3.89,
+        "host_sibling_total": 13969.03
+      },
+      "kernel_ratios": {
+        "per_kernel": {
+          "ew_binary_mul_f16": 1.0417,
+          "ew_unary_sigmoid_f16": 1.0394,
+          "gather_f16": 0.9279,
+          "gqa_f16": 1.0549,
+          "q_gemv_matmul_nbits_f16": 1.1245,
+          "simplified_layer_norm_f16": 1.0101,
+          "skip_simplified_layer_norm_f16": 1.0628
+        },
+        "untouched_kernels_present": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "untouched_ratio_min": 0.9279,
+        "untouched_ratio_max": 1.1245,
+        "untouched_ratio_median": 1.04055,
+        "gqa_f16_ratio": 1.0549,
+        "gqa_outside_untouched_spread": false,
+        "reading": "gqa_f16's ratio sits INSIDE the spread of kernels the change cannot touch, so this pass does not localise a device-time difference to gqa_f16"
+      },
+      "gqa_f16_per_repeat": [
+        {
+          "repeat": 0,
+          "kernel": "gqa_f16",
+          "candidate_us": 40003.26,
+          "baseline_us": 38707.44,
+          "delta_us": 1295.82,
+          "ratio": 1.0335
+        },
+        {
+          "repeat": 1,
+          "kernel": "gqa_f16",
+          "candidate_us": 41170.48,
+          "baseline_us": 40900.96,
+          "delta_us": 269.52,
+          "ratio": 1.0066
+        },
+        {
+          "repeat": 2,
+          "kernel": "gqa_f16",
+          "candidate_us": 41202.41,
+          "baseline_us": 39027.63,
+          "delta_us": 2174.78,
+          "ratio": 1.0557
+        }
+      ],
+      "control_kernel_per_repeat": [
+        {
+          "repeat": 0,
+          "kernel": "q_gemv_matmul_nbits_f16",
+          "candidate_us": 22045.59,
+          "baseline_us": 19376.59,
+          "delta_us": 2669.0,
+          "ratio": 1.1377
+        },
+        {
+          "repeat": 1,
+          "kernel": "q_gemv_matmul_nbits_f16",
+          "candidate_us": 22942.78,
+          "baseline_us": 21373.33,
+          "delta_us": 1569.45,
+          "ratio": 1.0734
+        },
+        {
+          "repeat": 2,
+          "kernel": "q_gemv_matmul_nbits_f16",
+          "candidate_us": 21642.22,
+          "baseline_us": 19604.37,
+          "delta_us": 2037.85,
+          "ratio": 1.1039
+        }
+      ],
+      "gqa_f16_per_repeat_sign_consistent": true,
+      "control_kernel_per_repeat_sign_consistent": true,
+      "per_repeat_note": "device-clock time per inference, one traced process per repeat. Three repeats support a DIRECTION at best, never a magnitude. `control_kernel_per_repeat` is `q_gemv_matmul_nbits_f16`, which the c96e7d9..85fbda2 diff does not touch: if its direction matches gqa_f16's, the pass moved as a whole and neither direction is attributable to the change.",
+      "delta_us_note": "`delta_us` differences the two arms' MEDIANS across repeats. It is NOT a median of paired differences and the two are not interchangeable \u2014 the paired figure is in `gqa_f16_per_repeat` and `control_kernel_per_repeat`."
+    },
+    {
+      "past": 256,
+      "candidate": null,
+      "baseline": null
+    }
+  ],
+  "records": [
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past64",
+      "arm": "candidate",
+      "repeat": 0,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 64,
+      "traced": true,
+      "pid": 21924,
+      "started_at": "2026-08-09T01:01:33",
+      "started_monotonic": 375310.2034153,
+      "ep_library_sha256": "3b210b016179011ab392c7d03c46467728f80f147504fd583702df4f8d762d96",
+      "ep_library_bytes": 2563072,
+      "feeds_sha256": "d7bdd1e79b11f1b246b83175ca6978d90c639d410b38ff06324fdd0bcb4a4460",
+      "cpu_reference_ms": 124.27520001074299,
+      "session_build_ms": 555.5751000065356,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2257.611499982886,
+      "outputs_sha256": "3741229803f5f2779f183397ccf2afdffe054d95c16123408550158b3b1b7e4d",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 1970,
+          "argmax_reference": 1970,
+          "topk_overlap": 9,
+          "max_abs": 1.82373046875,
+          "reference_scale": 32.375,
+          "abs_budget": 1.6187500000000001,
+          "max_rel": 314.58636474609375,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.0511101281026326,
+          "top1_prob_reference": 0.3263143277688699,
+          "top1_prob_candidate": 0.2752041996662373,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 3,
+        "worst_secondary": {
+          "shape_candidate": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "shape_reference": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "rel_tol": 0.05,
+          "ulp_budget": 16.0,
+          "signal_fraction": 0.1,
+          "gross_multiple": 8.0,
+          "marginal_fraction": 0.0001,
+          "max_abs": 0.392578125,
+          "reference_scale": 8.15625,
+          "reference_rms": 0.24160763080985379,
+          "abs_floor": 0.12744140625,
+          "signal_elements": 47580,
+          "max_rel_signal": 4.572700296735905,
+          "max_rel_all": 59.30684657671164,
+          "max_rel_all_note": "relative error over every element is a cancellation meter; reported, not gated on",
+          "reference_all_zero": false,
+          "elements_outside_tolerance": 96,
+          "elements_gross": 0,
+          "elements_total": 199680,
+          "marginal_fraction_observed": 0.0004807692307692308,
+          "worst_floor_multiple": 2.221465076660988,
+          "verdict": "DIVERGENT",
+          "gate": "no element above 8.0x the floor (16.0 fp16 ULP of the reference's own scale + 0.05*|ref|), at most 0.0001 of elements above the floor at all, AND the reference is not all-zero"
+        },
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375322.3795196,
+      "worker_exit": 3,
+      "worker_wall_s": 13.052,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:1"
+        ],
+        "local_size": 1,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past64",
+      "arm": "baseline",
+      "repeat": 0,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 64,
+      "traced": true,
+      "pid": 27936,
+      "started_at": "2026-08-09T01:01:46",
+      "started_monotonic": 375323.4081193,
+      "ep_library_sha256": "655a247c29a8585891f4a3033a929b1a89d8e13881634bcf5ce13b30b2c644b4",
+      "ep_library_bytes": 2560000,
+      "feeds_sha256": "d7bdd1e79b11f1b246b83175ca6978d90c639d410b38ff06324fdd0bcb4a4460",
+      "cpu_reference_ms": 127.40550003945827,
+      "session_build_ms": 540.8826000057161,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2128.6635999567807,
+      "outputs_sha256": "3741229803f5f2779f183397ccf2afdffe054d95c16123408550158b3b1b7e4d",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 1970,
+          "argmax_reference": 1970,
+          "topk_overlap": 9,
+          "max_abs": 1.82373046875,
+          "reference_scale": 32.375,
+          "abs_budget": 1.6187500000000001,
+          "max_rel": 314.58636474609375,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.0511101281026326,
+          "top1_prob_reference": 0.3263143277688699,
+          "top1_prob_candidate": 0.2752041996662373,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 3,
+        "worst_secondary": {
+          "shape_candidate": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "shape_reference": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "rel_tol": 0.05,
+          "ulp_budget": 16.0,
+          "signal_fraction": 0.1,
+          "gross_multiple": 8.0,
+          "marginal_fraction": 0.0001,
+          "max_abs": 0.392578125,
+          "reference_scale": 8.15625,
+          "reference_rms": 0.24160763080985379,
+          "abs_floor": 0.12744140625,
+          "signal_elements": 47580,
+          "max_rel_signal": 4.572700296735905,
+          "max_rel_all": 59.30684657671164,
+          "max_rel_all_note": "relative error over every element is a cancellation meter; reported, not gated on",
+          "reference_all_zero": false,
+          "elements_outside_tolerance": 96,
+          "elements_gross": 0,
+          "elements_total": 199680,
+          "marginal_fraction_observed": 0.0004807692307692308,
+          "worst_floor_multiple": 2.221465076660988,
+          "verdict": "DIVERGENT",
+          "gate": "no element above 8.0x the floor (16.0 fp16 ULP of the reference's own scale + 0.05*|ref|), at most 0.0001 of elements above the floor at all, AND the reference is not all-zero"
+        },
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375334.8829486,
+      "worker_exit": 3,
+      "worker_wall_s": 12.414,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:"
+        ],
+        "local_size": null,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128",
+      "arm": "candidate",
+      "repeat": 0,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 128,
+      "traced": true,
+      "pid": 39816,
+      "started_at": "2026-08-09T01:01:59",
+      "started_monotonic": 375335.8830018,
+      "ep_library_sha256": "3b210b016179011ab392c7d03c46467728f80f147504fd583702df4f8d762d96",
+      "ep_library_bytes": 2563072,
+      "feeds_sha256": "52dbbe9170218c768400716e1b8d98cf0d99b09616917cd63928cd7b060033ae",
+      "cpu_reference_ms": 161.7590999812819,
+      "session_build_ms": 583.2910999888554,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2346.6236000531353,
+      "outputs_sha256": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "equivalence": {
+        "verdict": "MATCH",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 6657,
+          "argmax_reference": 6657,
+          "topk_overlap": 10,
+          "max_abs": 0.58203125,
+          "reference_scale": 23.28125,
+          "abs_budget": 1.1640625,
+          "max_rel": 1290.3701171875,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.017005630108892833,
+          "top1_prob_reference": 0.37570795272066876,
+          "top1_prob_candidate": 0.3927135828295616,
+          "verdict": "MATCH",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "outputs_sha256_post_timing": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "inference_calls": 27,
+      "traced_samples_ms": [
+        125.8114,
+        126.4422,
+        128.5154,
+        118.2192,
+        114.9588,
+        106.0894,
+        116.984,
+        128.0096,
+        143.3536,
+        140.231,
+        153.3385,
+        138.8547,
+        161.5941,
+        150.1338,
+        159.0445,
+        158.4586,
+        153.5468,
+        142.1422,
+        135.6757,
+        150.7673
+      ],
+      "admissible": true,
+      "refusal": null,
+      "finished_at": "2026-08-09T01:02:16",
+      "finished_monotonic": 375353.3200313,
+      "worker_exit": 0,
+      "worker_wall_s": 17.868,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:1"
+        ],
+        "local_size": 1,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 9585,
+        "compute_calls": 27,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "inference_calls": 27,
+        "gpu_us_per_inference": {
+          "gqa_f16": 40003.26,
+          "q_gemv_matmul_nbits_f16": 22045.59,
+          "skip_simplified_layer_norm_f16": 902.19,
+          "ew_binary_mul_f16": 199.41,
+          "ew_unary_sigmoid_f16": 101.56,
+          "simplified_layer_norm_f16": 10.56,
+          "gather_f16": 6.15
+        },
+        "gpu_span_counts": {
+          "gather_f16": 27,
+          "simplified_layer_norm_f16": 27,
+          "q_gemv_matmul_nbits_f16": 4347,
+          "gqa_f16": 864,
+          "skip_simplified_layer_norm_f16": 1728,
+          "ew_unary_sigmoid_f16": 864,
+          "ew_binary_mul_f16": 1728
+        },
+        "gpu_total_us_per_inference": 63268.7,
+        "host_phase_us_per_inference": {
+          "fence_wait": 80563.78,
+          "record": 64821.7,
+          "submit": 206.15
+        },
+        "host_phase_counts": {
+          "record": 27,
+          "submit": 27,
+          "fence_wait": 27
+        },
+        "host_sibling_total_us_per_inference": 145591.63,
+        "host_nested_us_per_inference": {
+          "cmd_upload": 56573.48,
+          "pipeline_lookup": 761.89,
+          "desc_alloc": 1107.93
+        },
+        "host_nested_counts": {
+          "cmd_upload": 27,
+          "pipeline_lookup": 9585,
+          "desc_alloc": 9585
+        },
+        "host_nested_parents": {
+          "cmd_upload": "record",
+          "pipeline_lookup": "record",
+          "desc_alloc": "record"
+        },
+        "note": "gpu_* is device-clock timestamp-query time; host_phase_* is host wall time and is NOT additive with it. nested spans are excluded from host_phase_* to avoid double-counting their parent. Every per_inference figure is a MEAN over inference_calls and includes the first run's compile, so it sits above the timed median and may not be differenced against it."
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128",
+      "arm": "baseline",
+      "repeat": 0,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 128,
+      "traced": true,
+      "pid": 34980,
+      "started_at": "2026-08-09T01:02:17",
+      "started_monotonic": 375354.0781694,
+      "ep_library_sha256": "655a247c29a8585891f4a3033a929b1a89d8e13881634bcf5ce13b30b2c644b4",
+      "ep_library_bytes": 2560000,
+      "feeds_sha256": "52dbbe9170218c768400716e1b8d98cf0d99b09616917cd63928cd7b060033ae",
+      "cpu_reference_ms": 145.7817999762483,
+      "session_build_ms": 672.756300016772,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2111.234800016973,
+      "outputs_sha256": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "equivalence": {
+        "verdict": "MATCH",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 6657,
+          "argmax_reference": 6657,
+          "topk_overlap": 10,
+          "max_abs": 0.58203125,
+          "reference_scale": 23.28125,
+          "abs_budget": 1.1640625,
+          "max_rel": 1290.3701171875,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.017005630108892833,
+          "top1_prob_reference": 0.37570795272066876,
+          "top1_prob_candidate": 0.3927135828295616,
+          "verdict": "MATCH",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "outputs_sha256_post_timing": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "inference_calls": 27,
+      "traced_samples_ms": [
+        114.9813,
+        109.5813,
+        100.9801,
+        99.9776,
+        99.7066,
+        103.3845,
+        119.9915,
+        113.6172,
+        126.9798,
+        124.3619,
+        130.4862,
+        119.6571,
+        136.1674,
+        129.1529,
+        109.3929,
+        133.2871,
+        108.9206,
+        106.6346,
+        180.347,
+        181.268
+      ],
+      "admissible": true,
+      "refusal": null,
+      "finished_at": "2026-08-09T01:02:35",
+      "finished_monotonic": 375371.8000025,
+      "worker_exit": 0,
+      "worker_wall_s": 18.117,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:"
+        ],
+        "local_size": null,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 9585,
+        "compute_calls": 27,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "inference_calls": 27,
+        "gpu_us_per_inference": {
+          "gqa_f16": 38707.44,
+          "q_gemv_matmul_nbits_f16": 19376.59,
+          "skip_simplified_layer_norm_f16": 831.59,
+          "ew_binary_mul_f16": 190.89,
+          "ew_unary_sigmoid_f16": 94.74,
+          "gather_f16": 46.56,
+          "simplified_layer_norm_f16": 9.56
+        },
+        "gpu_span_counts": {
+          "gather_f16": 27,
+          "simplified_layer_norm_f16": 27,
+          "q_gemv_matmul_nbits_f16": 4347,
+          "gqa_f16": 864,
+          "skip_simplified_layer_norm_f16": 1728,
+          "ew_unary_sigmoid_f16": 864,
+          "ew_binary_mul_f16": 1728
+        },
+        "gpu_total_us_per_inference": 59257.37,
+        "host_phase_us_per_inference": {
+          "fence_wait": 73097.7,
+          "record": 59305.74,
+          "submit": 172.63
+        },
+        "host_phase_counts": {
+          "record": 27,
+          "submit": 27,
+          "fence_wait": 27
+        },
+        "host_sibling_total_us_per_inference": 132576.07,
+        "host_nested_us_per_inference": {
+          "cmd_upload": 52411.26,
+          "pipeline_lookup": 703.81,
+          "desc_alloc": 995.74
+        },
+        "host_nested_counts": {
+          "cmd_upload": 27,
+          "pipeline_lookup": 9585,
+          "desc_alloc": 9585
+        },
+        "host_nested_parents": {
+          "cmd_upload": "record",
+          "pipeline_lookup": "record",
+          "desc_alloc": "record"
+        },
+        "note": "gpu_* is device-clock timestamp-query time; host_phase_* is host wall time and is NOT additive with it. nested spans are excluded from host_phase_* to avoid double-counting their parent. Every per_inference figure is a MEAN over inference_calls and includes the first run's compile, so it sits above the timed median and may not be differenced against it."
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past256",
+      "arm": "candidate",
+      "repeat": 0,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 256,
+      "traced": true,
+      "pid": 34932,
+      "started_at": "2026-08-09T01:02:35",
+      "started_monotonic": 375372.3843003,
+      "ep_library_sha256": "3b210b016179011ab392c7d03c46467728f80f147504fd583702df4f8d762d96",
+      "ep_library_bytes": 2563072,
+      "feeds_sha256": "93bce20d6143de82f97a65c17fa52f07cebcf7b5d060c9036e0f39bba766f2dd",
+      "cpu_reference_ms": 147.72779995109886,
+      "session_build_ms": 522.0340000232682,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2344.5184000302106,
+      "outputs_sha256": "eb4dc1d43eb641e432e169bba14db464b22fe9f4ac9188189d10eb9e0c320dd2",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 29871,
+          "argmax_reference": 29871,
+          "topk_overlap": 10,
+          "max_abs": 0.5625,
+          "reference_scale": 29.171875,
+          "abs_budget": 1.4585937500000001,
+          "max_rel": 306.7086181640625,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.02954583490618451,
+          "top1_prob_reference": 0.4641062744770127,
+          "top1_prob_candidate": 0.4345604395708282,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375387.8685871,
+      "worker_exit": 3,
+      "worker_wall_s": 16.404,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:1"
+        ],
+        "local_size": 1,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past256",
+      "arm": "baseline",
+      "repeat": 0,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 256,
+      "traced": true,
+      "pid": 29320,
+      "started_at": "2026-08-09T01:02:52",
+      "started_monotonic": 375388.73353,
+      "ep_library_sha256": "655a247c29a8585891f4a3033a929b1a89d8e13881634bcf5ce13b30b2c644b4",
+      "ep_library_bytes": 2560000,
+      "feeds_sha256": "93bce20d6143de82f97a65c17fa52f07cebcf7b5d060c9036e0f39bba766f2dd",
+      "cpu_reference_ms": 189.6965999621898,
+      "session_build_ms": 721.8937000143342,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2866.598199994769,
+      "outputs_sha256": "eb4dc1d43eb641e432e169bba14db464b22fe9f4ac9188189d10eb9e0c320dd2",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 29871,
+          "argmax_reference": 29871,
+          "topk_overlap": 10,
+          "max_abs": 0.5625,
+          "reference_scale": 29.171875,
+          "abs_budget": 1.4585937500000001,
+          "max_rel": 306.7086181640625,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.02954583490618451,
+          "top1_prob_reference": 0.4641062744770127,
+          "top1_prob_candidate": 0.4345604395708282,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375404.994893,
+      "worker_exit": 3,
+      "worker_wall_s": 17.203,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:"
+        ],
+        "local_size": null,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past64",
+      "arm": "baseline",
+      "repeat": 1,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 64,
+      "traced": true,
+      "pid": 16828,
+      "started_at": "2026-08-09T01:03:09",
+      "started_monotonic": 375406.0351467,
+      "ep_library_sha256": "655a247c29a8585891f4a3033a929b1a89d8e13881634bcf5ce13b30b2c644b4",
+      "ep_library_bytes": 2560000,
+      "feeds_sha256": "d7bdd1e79b11f1b246b83175ca6978d90c639d410b38ff06324fdd0bcb4a4460",
+      "cpu_reference_ms": 123.48029995337129,
+      "session_build_ms": 735.490299994126,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2847.4470000364818,
+      "outputs_sha256": "3741229803f5f2779f183397ccf2afdffe054d95c16123408550158b3b1b7e4d",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 1970,
+          "argmax_reference": 1970,
+          "topk_overlap": 9,
+          "max_abs": 1.82373046875,
+          "reference_scale": 32.375,
+          "abs_budget": 1.6187500000000001,
+          "max_rel": 314.58636474609375,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.0511101281026326,
+          "top1_prob_reference": 0.3263143277688699,
+          "top1_prob_candidate": 0.2752041996662373,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 3,
+        "worst_secondary": {
+          "shape_candidate": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "shape_reference": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "rel_tol": 0.05,
+          "ulp_budget": 16.0,
+          "signal_fraction": 0.1,
+          "gross_multiple": 8.0,
+          "marginal_fraction": 0.0001,
+          "max_abs": 0.392578125,
+          "reference_scale": 8.15625,
+          "reference_rms": 0.24160763080985379,
+          "abs_floor": 0.12744140625,
+          "signal_elements": 47580,
+          "max_rel_signal": 4.572700296735905,
+          "max_rel_all": 59.30684657671164,
+          "max_rel_all_note": "relative error over every element is a cancellation meter; reported, not gated on",
+          "reference_all_zero": false,
+          "elements_outside_tolerance": 96,
+          "elements_gross": 0,
+          "elements_total": 199680,
+          "marginal_fraction_observed": 0.0004807692307692308,
+          "worst_floor_multiple": 2.221465076660988,
+          "verdict": "DIVERGENT",
+          "gate": "no element above 8.0x the floor (16.0 fp16 ULP of the reference's own scale + 0.05*|ref|), at most 0.0001 of elements above the floor at all, AND the reference is not all-zero"
+        },
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375419.1950157,
+      "worker_exit": 3,
+      "worker_wall_s": 14.02,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:"
+        ],
+        "local_size": null,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past64",
+      "arm": "candidate",
+      "repeat": 1,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 64,
+      "traced": true,
+      "pid": 3916,
+      "started_at": "2026-08-09T01:03:23",
+      "started_monotonic": 375420.2328993,
+      "ep_library_sha256": "3b210b016179011ab392c7d03c46467728f80f147504fd583702df4f8d762d96",
+      "ep_library_bytes": 2563072,
+      "feeds_sha256": "d7bdd1e79b11f1b246b83175ca6978d90c639d410b38ff06324fdd0bcb4a4460",
+      "cpu_reference_ms": 135.02330001210794,
+      "session_build_ms": 776.0223999503069,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2437.509300012607,
+      "outputs_sha256": "3741229803f5f2779f183397ccf2afdffe054d95c16123408550158b3b1b7e4d",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 1970,
+          "argmax_reference": 1970,
+          "topk_overlap": 9,
+          "max_abs": 1.82373046875,
+          "reference_scale": 32.375,
+          "abs_budget": 1.6187500000000001,
+          "max_rel": 314.58636474609375,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.0511101281026326,
+          "top1_prob_reference": 0.3263143277688699,
+          "top1_prob_candidate": 0.2752041996662373,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 3,
+        "worst_secondary": {
+          "shape_candidate": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "shape_reference": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "rel_tol": 0.05,
+          "ulp_budget": 16.0,
+          "signal_fraction": 0.1,
+          "gross_multiple": 8.0,
+          "marginal_fraction": 0.0001,
+          "max_abs": 0.392578125,
+          "reference_scale": 8.15625,
+          "reference_rms": 0.24160763080985379,
+          "abs_floor": 0.12744140625,
+          "signal_elements": 47580,
+          "max_rel_signal": 4.572700296735905,
+          "max_rel_all": 59.30684657671164,
+          "max_rel_all_note": "relative error over every element is a cancellation meter; reported, not gated on",
+          "reference_all_zero": false,
+          "elements_outside_tolerance": 96,
+          "elements_gross": 0,
+          "elements_total": 199680,
+          "marginal_fraction_observed": 0.0004807692307692308,
+          "worst_floor_multiple": 2.221465076660988,
+          "verdict": "DIVERGENT",
+          "gate": "no element above 8.0x the floor (16.0 fp16 ULP of the reference's own scale + 0.05*|ref|), at most 0.0001 of elements above the floor at all, AND the reference is not all-zero"
+        },
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375432.834769,
+      "worker_exit": 3,
+      "worker_wall_s": 13.662,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:1"
+        ],
+        "local_size": 1,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128",
+      "arm": "baseline",
+      "repeat": 1,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 128,
+      "traced": true,
+      "pid": 23192,
+      "started_at": "2026-08-09T01:03:37",
+      "started_monotonic": 375433.8908302,
+      "ep_library_sha256": "655a247c29a8585891f4a3033a929b1a89d8e13881634bcf5ce13b30b2c644b4",
+      "ep_library_bytes": 2560000,
+      "feeds_sha256": "52dbbe9170218c768400716e1b8d98cf0d99b09616917cd63928cd7b060033ae",
+      "cpu_reference_ms": 153.46390003105626,
+      "session_build_ms": 607.5423000147566,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2870.150000031572,
+      "outputs_sha256": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "equivalence": {
+        "verdict": "MATCH",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 6657,
+          "argmax_reference": 6657,
+          "topk_overlap": 10,
+          "max_abs": 0.58203125,
+          "reference_scale": 23.28125,
+          "abs_budget": 1.1640625,
+          "max_rel": 1290.3701171875,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.017005630108892833,
+          "top1_prob_reference": 0.37570795272066876,
+          "top1_prob_candidate": 0.3927135828295616,
+          "verdict": "MATCH",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "outputs_sha256_post_timing": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "inference_calls": 27,
+      "traced_samples_ms": [
+        149.0012,
+        144.7893,
+        137.5991,
+        163.2646,
+        144.0815,
+        146.7949,
+        137.4546,
+        137.2871,
+        150.5284,
+        128.2611,
+        139.9667,
+        156.6608,
+        126.4253,
+        145.3519,
+        140.3427,
+        148.3712,
+        151.5142,
+        148.0881,
+        155.691,
+        143.0859
+      ],
+      "admissible": true,
+      "refusal": null,
+      "finished_at": "2026-08-09T01:03:56",
+      "finished_monotonic": 375452.8345302,
+      "worker_exit": 0,
+      "worker_wall_s": 19.358,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:"
+        ],
+        "local_size": null,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 9585,
+        "compute_calls": 27,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "inference_calls": 27,
+        "gpu_us_per_inference": {
+          "gqa_f16": 40900.96,
+          "q_gemv_matmul_nbits_f16": 21373.33,
+          "skip_simplified_layer_norm_f16": 908.26,
+          "ew_binary_mul_f16": 201.67,
+          "ew_unary_sigmoid_f16": 124.52,
+          "simplified_layer_norm_f16": 10.96,
+          "gather_f16": 6.15
+        },
+        "gpu_span_counts": {
+          "gather_f16": 27,
+          "simplified_layer_norm_f16": 27,
+          "q_gemv_matmul_nbits_f16": 4347,
+          "gqa_f16": 864,
+          "skip_simplified_layer_norm_f16": 1728,
+          "ew_unary_sigmoid_f16": 864,
+          "ew_binary_mul_f16": 1728
+        },
+        "gpu_total_us_per_inference": 63525.85,
+        "host_phase_us_per_inference": {
+          "fence_wait": 86731.96,
+          "record": 75545.11,
+          "submit": 234.89
+        },
+        "host_phase_counts": {
+          "record": 27,
+          "submit": 27,
+          "fence_wait": 27
+        },
+        "host_sibling_total_us_per_inference": 162511.96,
+        "host_nested_us_per_inference": {
+          "cmd_upload": 66504.93,
+          "pipeline_lookup": 1163.04,
+          "desc_alloc": 1276.89
+        },
+        "host_nested_counts": {
+          "cmd_upload": 27,
+          "pipeline_lookup": 9585,
+          "desc_alloc": 9585
+        },
+        "host_nested_parents": {
+          "cmd_upload": "record",
+          "pipeline_lookup": "record",
+          "desc_alloc": "record"
+        },
+        "note": "gpu_* is device-clock timestamp-query time; host_phase_* is host wall time and is NOT additive with it. nested spans are excluded from host_phase_* to avoid double-counting their parent. Every per_inference figure is a MEAN over inference_calls and includes the first run's compile, so it sits above the timed median and may not be differenced against it."
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128",
+      "arm": "candidate",
+      "repeat": 1,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 128,
+      "traced": true,
+      "pid": 26996,
+      "started_at": "2026-08-09T01:03:57",
+      "started_monotonic": 375453.6269566,
+      "ep_library_sha256": "3b210b016179011ab392c7d03c46467728f80f147504fd583702df4f8d762d96",
+      "ep_library_bytes": 2563072,
+      "feeds_sha256": "52dbbe9170218c768400716e1b8d98cf0d99b09616917cd63928cd7b060033ae",
+      "cpu_reference_ms": 157.60530001716688,
+      "session_build_ms": 695.7676000311039,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2723.345700011123,
+      "outputs_sha256": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "equivalence": {
+        "verdict": "MATCH",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 6657,
+          "argmax_reference": 6657,
+          "topk_overlap": 10,
+          "max_abs": 0.58203125,
+          "reference_scale": 23.28125,
+          "abs_budget": 1.1640625,
+          "max_rel": 1290.3701171875,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.017005630108892833,
+          "top1_prob_reference": 0.37570795272066876,
+          "top1_prob_candidate": 0.3927135828295616,
+          "verdict": "MATCH",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "outputs_sha256_post_timing": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "inference_calls": 27,
+      "traced_samples_ms": [
+        130.5183,
+        132.3902,
+        113.6869,
+        118.5921,
+        137.8859,
+        128.8736,
+        153.8322,
+        150.5405,
+        144.5129,
+        124.6378,
+        118.5887,
+        134.8727,
+        133.7986,
+        124.29,
+        143.0724,
+        144.7968,
+        149.286,
+        141.6304,
+        156.2093,
+        161.1344
+      ],
+      "admissible": true,
+      "refusal": null,
+      "finished_at": "2026-08-09T01:04:16",
+      "finished_monotonic": 375473.0627215,
+      "worker_exit": 0,
+      "worker_wall_s": 19.941,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:1"
+        ],
+        "local_size": 1,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 9585,
+        "compute_calls": 27,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "inference_calls": 27,
+        "gpu_us_per_inference": {
+          "gqa_f16": 41170.48,
+          "q_gemv_matmul_nbits_f16": 22942.78,
+          "skip_simplified_layer_norm_f16": 922.22,
+          "ew_binary_mul_f16": 207.22,
+          "ew_unary_sigmoid_f16": 103.7,
+          "simplified_layer_norm_f16": 11.22,
+          "gather_f16": 6.85
+        },
+        "gpu_span_counts": {
+          "gather_f16": 27,
+          "simplified_layer_norm_f16": 27,
+          "q_gemv_matmul_nbits_f16": 4347,
+          "gqa_f16": 864,
+          "skip_simplified_layer_norm_f16": 1728,
+          "ew_unary_sigmoid_f16": 864,
+          "ew_binary_mul_f16": 1728
+        },
+        "gpu_total_us_per_inference": 65364.48,
+        "host_phase_us_per_inference": {
+          "fence_wait": 88262.78,
+          "record": 69981.15,
+          "submit": 214.56
+        },
+        "host_phase_counts": {
+          "record": 27,
+          "submit": 27,
+          "fence_wait": 27
+        },
+        "host_sibling_total_us_per_inference": 158458.48,
+        "host_nested_us_per_inference": {
+          "cmd_upload": 62024.89,
+          "pipeline_lookup": 879.74,
+          "desc_alloc": 1148.63
+        },
+        "host_nested_counts": {
+          "cmd_upload": 27,
+          "pipeline_lookup": 9585,
+          "desc_alloc": 9585
+        },
+        "host_nested_parents": {
+          "cmd_upload": "record",
+          "pipeline_lookup": "record",
+          "desc_alloc": "record"
+        },
+        "note": "gpu_* is device-clock timestamp-query time; host_phase_* is host wall time and is NOT additive with it. nested spans are excluded from host_phase_* to avoid double-counting their parent. Every per_inference figure is a MEAN over inference_calls and includes the first run's compile, so it sits above the timed median and may not be differenced against it."
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past256",
+      "arm": "baseline",
+      "repeat": 1,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 256,
+      "traced": true,
+      "pid": 21728,
+      "started_at": "2026-08-09T01:04:17",
+      "started_monotonic": 375473.7010347,
+      "ep_library_sha256": "655a247c29a8585891f4a3033a929b1a89d8e13881634bcf5ce13b30b2c644b4",
+      "ep_library_bytes": 2560000,
+      "feeds_sha256": "93bce20d6143de82f97a65c17fa52f07cebcf7b5d060c9036e0f39bba766f2dd",
+      "cpu_reference_ms": 180.83359999582171,
+      "session_build_ms": 691.3084000116214,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 3259.7740999772213,
+      "outputs_sha256": "eb4dc1d43eb641e432e169bba14db464b22fe9f4ac9188189d10eb9e0c320dd2",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 29871,
+          "argmax_reference": 29871,
+          "topk_overlap": 10,
+          "max_abs": 0.5625,
+          "reference_scale": 29.171875,
+          "abs_budget": 1.4585937500000001,
+          "max_rel": 306.7086181640625,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.02954583490618451,
+          "top1_prob_reference": 0.4641062744770127,
+          "top1_prob_candidate": 0.4345604395708282,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375491.2886989,
+      "worker_exit": 3,
+      "worker_wall_s": 18.622,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:"
+        ],
+        "local_size": null,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past256",
+      "arm": "candidate",
+      "repeat": 1,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 256,
+      "traced": true,
+      "pid": 23232,
+      "started_at": "2026-08-09T01:04:35",
+      "started_monotonic": 375492.4252685,
+      "ep_library_sha256": "3b210b016179011ab392c7d03c46467728f80f147504fd583702df4f8d762d96",
+      "ep_library_bytes": 2563072,
+      "feeds_sha256": "93bce20d6143de82f97a65c17fa52f07cebcf7b5d060c9036e0f39bba766f2dd",
+      "cpu_reference_ms": 168.90450002392754,
+      "session_build_ms": 721.6589999734424,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2636.845800036099,
+      "outputs_sha256": "eb4dc1d43eb641e432e169bba14db464b22fe9f4ac9188189d10eb9e0c320dd2",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 29871,
+          "argmax_reference": 29871,
+          "topk_overlap": 10,
+          "max_abs": 0.5625,
+          "reference_scale": 29.171875,
+          "abs_budget": 1.4585937500000001,
+          "max_rel": 306.7086181640625,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.02954583490618451,
+          "top1_prob_reference": 0.4641062744770127,
+          "top1_prob_candidate": 0.4345604395708282,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375509.1387548,
+      "worker_exit": 3,
+      "worker_wall_s": 17.729,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:1"
+        ],
+        "local_size": 1,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past64",
+      "arm": "candidate",
+      "repeat": 2,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 64,
+      "traced": true,
+      "pid": 23192,
+      "started_at": "2026-08-09T01:04:53",
+      "started_monotonic": 375510.3638245,
+      "ep_library_sha256": "3b210b016179011ab392c7d03c46467728f80f147504fd583702df4f8d762d96",
+      "ep_library_bytes": 2563072,
+      "feeds_sha256": "d7bdd1e79b11f1b246b83175ca6978d90c639d410b38ff06324fdd0bcb4a4460",
+      "cpu_reference_ms": 134.31049999780953,
+      "session_build_ms": 711.2985999556258,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2435.1128000416793,
+      "outputs_sha256": "3741229803f5f2779f183397ccf2afdffe054d95c16123408550158b3b1b7e4d",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 1970,
+          "argmax_reference": 1970,
+          "topk_overlap": 9,
+          "max_abs": 1.82373046875,
+          "reference_scale": 32.375,
+          "abs_budget": 1.6187500000000001,
+          "max_rel": 314.58636474609375,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.0511101281026326,
+          "top1_prob_reference": 0.3263143277688699,
+          "top1_prob_candidate": 0.2752041996662373,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 3,
+        "worst_secondary": {
+          "shape_candidate": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "shape_reference": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "rel_tol": 0.05,
+          "ulp_budget": 16.0,
+          "signal_fraction": 0.1,
+          "gross_multiple": 8.0,
+          "marginal_fraction": 0.0001,
+          "max_abs": 0.392578125,
+          "reference_scale": 8.15625,
+          "reference_rms": 0.24160763080985379,
+          "abs_floor": 0.12744140625,
+          "signal_elements": 47580,
+          "max_rel_signal": 4.572700296735905,
+          "max_rel_all": 59.30684657671164,
+          "max_rel_all_note": "relative error over every element is a cancellation meter; reported, not gated on",
+          "reference_all_zero": false,
+          "elements_outside_tolerance": 96,
+          "elements_gross": 0,
+          "elements_total": 199680,
+          "marginal_fraction_observed": 0.0004807692307692308,
+          "worst_floor_multiple": 2.221465076660988,
+          "verdict": "DIVERGENT",
+          "gate": "no element above 8.0x the floor (16.0 fp16 ULP of the reference's own scale + 0.05*|ref|), at most 0.0001 of elements above the floor at all, AND the reference is not all-zero"
+        },
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375522.9742797,
+      "worker_exit": 3,
+      "worker_wall_s": 13.838,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:1"
+        ],
+        "local_size": 1,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past64",
+      "arm": "baseline",
+      "repeat": 2,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 64,
+      "traced": true,
+      "pid": 40568,
+      "started_at": "2026-08-09T01:05:07",
+      "started_monotonic": 375524.1380908,
+      "ep_library_sha256": "655a247c29a8585891f4a3033a929b1a89d8e13881634bcf5ce13b30b2c644b4",
+      "ep_library_bytes": 2560000,
+      "feeds_sha256": "d7bdd1e79b11f1b246b83175ca6978d90c639d410b38ff06324fdd0bcb4a4460",
+      "cpu_reference_ms": 128.56510002166033,
+      "session_build_ms": 696.2425999809057,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2746.3724999688566,
+      "outputs_sha256": "3741229803f5f2779f183397ccf2afdffe054d95c16123408550158b3b1b7e4d",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 1970,
+          "argmax_reference": 1970,
+          "topk_overlap": 9,
+          "max_abs": 1.82373046875,
+          "reference_scale": 32.375,
+          "abs_budget": 1.6187500000000001,
+          "max_rel": 314.58636474609375,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.0511101281026326,
+          "top1_prob_reference": 0.3263143277688699,
+          "top1_prob_candidate": 0.2752041996662373,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 3,
+        "worst_secondary": {
+          "shape_candidate": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "shape_reference": [
+            1,
+            32,
+            65,
+            96
+          ],
+          "rel_tol": 0.05,
+          "ulp_budget": 16.0,
+          "signal_fraction": 0.1,
+          "gross_multiple": 8.0,
+          "marginal_fraction": 0.0001,
+          "max_abs": 0.392578125,
+          "reference_scale": 8.15625,
+          "reference_rms": 0.24160763080985379,
+          "abs_floor": 0.12744140625,
+          "signal_elements": 47580,
+          "max_rel_signal": 4.572700296735905,
+          "max_rel_all": 59.30684657671164,
+          "max_rel_all_note": "relative error over every element is a cancellation meter; reported, not gated on",
+          "reference_all_zero": false,
+          "elements_outside_tolerance": 96,
+          "elements_gross": 0,
+          "elements_total": 199680,
+          "marginal_fraction_observed": 0.0004807692307692308,
+          "worst_floor_multiple": 2.221465076660988,
+          "verdict": "DIVERGENT",
+          "gate": "no element above 8.0x the floor (16.0 fp16 ULP of the reference's own scale + 0.05*|ref|), at most 0.0001 of elements above the floor at all, AND the reference is not all-zero"
+        },
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375537.1908178,
+      "worker_exit": 3,
+      "worker_wall_s": 14.122,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:"
+        ],
+        "local_size": null,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128",
+      "arm": "candidate",
+      "repeat": 2,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 128,
+      "traced": true,
+      "pid": 34916,
+      "started_at": "2026-08-09T01:05:21",
+      "started_monotonic": 375538.420808,
+      "ep_library_sha256": "3b210b016179011ab392c7d03c46467728f80f147504fd583702df4f8d762d96",
+      "ep_library_bytes": 2563072,
+      "feeds_sha256": "52dbbe9170218c768400716e1b8d98cf0d99b09616917cd63928cd7b060033ae",
+      "cpu_reference_ms": 138.47529998747632,
+      "session_build_ms": 796.606799995061,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2346.7040000250563,
+      "outputs_sha256": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "equivalence": {
+        "verdict": "MATCH",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 6657,
+          "argmax_reference": 6657,
+          "topk_overlap": 10,
+          "max_abs": 0.58203125,
+          "reference_scale": 23.28125,
+          "abs_budget": 1.1640625,
+          "max_rel": 1290.3701171875,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.017005630108892833,
+          "top1_prob_reference": 0.37570795272066876,
+          "top1_prob_candidate": 0.3927135828295616,
+          "verdict": "MATCH",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "outputs_sha256_post_timing": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "inference_calls": 27,
+      "traced_samples_ms": [
+        124.2353,
+        126.0249,
+        114.8938,
+        118.3241,
+        126.9566,
+        127.6787,
+        125.2308,
+        122.5487,
+        122.4753,
+        125.6247,
+        124.8825,
+        125.4811,
+        129.7301,
+        119.3331,
+        147.8761,
+        129.0817,
+        132.8766,
+        121.6985,
+        128.2296,
+        136.1624
+      ],
+      "admissible": true,
+      "refusal": null,
+      "finished_at": "2026-08-09T01:05:40",
+      "finished_monotonic": 375556.8886223,
+      "worker_exit": 0,
+      "worker_wall_s": 18.886,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:1"
+        ],
+        "local_size": 1,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 9585,
+        "compute_calls": 27,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "inference_calls": 27,
+        "gpu_us_per_inference": {
+          "gqa_f16": 41202.41,
+          "q_gemv_matmul_nbits_f16": 21642.22,
+          "skip_simplified_layer_norm_f16": 923.11,
+          "ew_binary_mul_f16": 205.56,
+          "ew_unary_sigmoid_f16": 103.67,
+          "simplified_layer_norm_f16": 11.04,
+          "gather_f16": 6.56
+        },
+        "gpu_span_counts": {
+          "gather_f16": 27,
+          "simplified_layer_norm_f16": 27,
+          "q_gemv_matmul_nbits_f16": 4347,
+          "gqa_f16": 864,
+          "skip_simplified_layer_norm_f16": 1728,
+          "ew_unary_sigmoid_f16": 864,
+          "ew_binary_mul_f16": 1728
+        },
+        "gpu_total_us_per_inference": 64094.56,
+        "host_phase_us_per_inference": {
+          "fence_wait": 78559.22,
+          "record": 70435.33,
+          "submit": 226.04
+        },
+        "host_phase_counts": {
+          "record": 27,
+          "submit": 27,
+          "fence_wait": 27
+        },
+        "host_sibling_total_us_per_inference": 149220.59,
+        "host_nested_us_per_inference": {
+          "cmd_upload": 63006.41,
+          "pipeline_lookup": 804.67,
+          "desc_alloc": 1072.93
+        },
+        "host_nested_counts": {
+          "cmd_upload": 27,
+          "pipeline_lookup": 9585,
+          "desc_alloc": 9585
+        },
+        "host_nested_parents": {
+          "cmd_upload": "record",
+          "pipeline_lookup": "record",
+          "desc_alloc": "record"
+        },
+        "note": "gpu_* is device-clock timestamp-query time; host_phase_* is host wall time and is NOT additive with it. nested spans are excluded from host_phase_* to avoid double-counting their parent. Every per_inference figure is a MEAN over inference_calls and includes the first run's compile, so it sits above the timed median and may not be differenced against it."
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128",
+      "arm": "baseline",
+      "repeat": 2,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 128,
+      "traced": true,
+      "pid": 28092,
+      "started_at": "2026-08-09T01:05:40",
+      "started_monotonic": 375557.4945332,
+      "ep_library_sha256": "655a247c29a8585891f4a3033a929b1a89d8e13881634bcf5ce13b30b2c644b4",
+      "ep_library_bytes": 2560000,
+      "feeds_sha256": "52dbbe9170218c768400716e1b8d98cf0d99b09616917cd63928cd7b060033ae",
+      "cpu_reference_ms": 126.90370000200346,
+      "session_build_ms": 512.6669000019319,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2049.865300010424,
+      "outputs_sha256": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "equivalence": {
+        "verdict": "MATCH",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 6657,
+          "argmax_reference": 6657,
+          "topk_overlap": 10,
+          "max_abs": 0.58203125,
+          "reference_scale": 23.28125,
+          "abs_budget": 1.1640625,
+          "max_rel": 1290.3701171875,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.017005630108892833,
+          "top1_prob_reference": 0.37570795272066876,
+          "top1_prob_candidate": 0.3927135828295616,
+          "verdict": "MATCH",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "outputs_sha256_post_timing": "5060c852a31b6d1290bdd96648224fc1d69085f0cb38d2da749d45284d6a0289",
+      "inference_calls": 27,
+      "traced_samples_ms": [
+        116.2345,
+        118.8903,
+        136.7762,
+        120.9207,
+        108.2291,
+        135.387,
+        132.9422,
+        130.489,
+        129.2009,
+        122.8514,
+        131.1477,
+        120.6442,
+        150.8656,
+        124.4221,
+        144.9659,
+        137.3004,
+        141.5197,
+        154.9179,
+        132.6433,
+        119.1395
+      ],
+      "admissible": true,
+      "refusal": null,
+      "finished_at": "2026-08-09T01:05:57",
+      "finished_monotonic": 375574.5725297,
+      "worker_exit": 0,
+      "worker_wall_s": 17.466,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:"
+        ],
+        "local_size": null,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 9585,
+        "compute_calls": 27,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "inference_calls": 27,
+        "gpu_us_per_inference": {
+          "gqa_f16": 39027.63,
+          "q_gemv_matmul_nbits_f16": 19604.37,
+          "skip_simplified_layer_norm_f16": 867.7,
+          "ew_binary_mul_f16": 197.33,
+          "ew_unary_sigmoid_f16": 99.74,
+          "simplified_layer_norm_f16": 10.93,
+          "gather_f16": 7.07
+        },
+        "gpu_span_counts": {
+          "gather_f16": 27,
+          "simplified_layer_norm_f16": 27,
+          "q_gemv_matmul_nbits_f16": 4347,
+          "gqa_f16": 864,
+          "skip_simplified_layer_norm_f16": 1728,
+          "ew_unary_sigmoid_f16": 864,
+          "ew_binary_mul_f16": 1728
+        },
+        "gpu_total_us_per_inference": 59814.78,
+        "host_phase_us_per_inference": {
+          "fence_wait": 72392.78,
+          "record": 62644.04,
+          "submit": 214.74
+        },
+        "host_phase_counts": {
+          "record": 27,
+          "submit": 27,
+          "fence_wait": 27
+        },
+        "host_sibling_total_us_per_inference": 135251.56,
+        "host_nested_us_per_inference": {
+          "cmd_upload": 54576.67,
+          "pipeline_lookup": 808.56,
+          "desc_alloc": 1093.7
+        },
+        "host_nested_counts": {
+          "cmd_upload": 27,
+          "pipeline_lookup": 9585,
+          "desc_alloc": 9585
+        },
+        "host_nested_parents": {
+          "cmd_upload": "record",
+          "pipeline_lookup": "record",
+          "desc_alloc": "record"
+        },
+        "note": "gpu_* is device-clock timestamp-query time; host_phase_* is host wall time and is NOT additive with it. nested spans are excluded from host_phase_* to avoid double-counting their parent. Every per_inference figure is a MEAN over inference_calls and includes the first run's compile, so it sits above the timed median and may not be differenced against it."
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past256",
+      "arm": "candidate",
+      "repeat": 2,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 256,
+      "traced": true,
+      "pid": 25700,
+      "started_at": "2026-08-09T01:05:58",
+      "started_monotonic": 375575.185751,
+      "ep_library_sha256": "3b210b016179011ab392c7d03c46467728f80f147504fd583702df4f8d762d96",
+      "ep_library_bytes": 2563072,
+      "feeds_sha256": "93bce20d6143de82f97a65c17fa52f07cebcf7b5d060c9036e0f39bba766f2dd",
+      "cpu_reference_ms": 171.26770003233105,
+      "session_build_ms": 781.5835999790579,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2467.4425999983214,
+      "outputs_sha256": "eb4dc1d43eb641e432e169bba14db464b22fe9f4ac9188189d10eb9e0c320dd2",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 29871,
+          "argmax_reference": 29871,
+          "topk_overlap": 10,
+          "max_abs": 0.5625,
+          "reference_scale": 29.171875,
+          "abs_budget": 1.4585937500000001,
+          "max_rel": 306.7086181640625,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.02954583490618451,
+          "top1_prob_reference": 0.4641062744770127,
+          "top1_prob_candidate": 0.4345604395708282,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375591.5294854,
+      "worker_exit": 3,
+      "worker_wall_s": 17.299,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:1"
+        ],
+        "local_size": 1,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:1",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    },
+    {
+      "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past256",
+      "arm": "baseline",
+      "repeat": 2,
+      "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+      "phase": "decode",
+      "m": 1,
+      "past": 256,
+      "traced": true,
+      "pid": 2004,
+      "started_at": "2026-08-09T01:06:15",
+      "started_monotonic": 375592.5156917,
+      "ep_library_sha256": "655a247c29a8585891f4a3033a929b1a89d8e13881634bcf5ce13b30b2c644b4",
+      "ep_library_bytes": 2560000,
+      "feeds_sha256": "93bce20d6143de82f97a65c17fa52f07cebcf7b5d060c9036e0f39bba766f2dd",
+      "cpu_reference_ms": 166.6859000106342,
+      "session_build_ms": 717.5420999992639,
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "first_run_ms": 2415.478000009898,
+      "outputs_sha256": "eb4dc1d43eb641e432e169bba14db464b22fe9f4ac9188189d10eb9e0c320dd2",
+      "equivalence": {
+        "verdict": "DIVERGENT",
+        "primary": {
+          "shape_candidate": [
+            1,
+            1,
+            32064
+          ],
+          "shape_reference": [
+            1,
+            1,
+            32064
+          ],
+          "top_k": 10,
+          "reference_all_zero": false,
+          "argmax_candidate": 29871,
+          "argmax_reference": 29871,
+          "topk_overlap": 10,
+          "max_abs": 0.5625,
+          "reference_scale": 29.171875,
+          "abs_budget": 1.4585937500000001,
+          "max_rel": 306.7086181640625,
+          "max_rel_note": "relative error over logits is a cancellation meter, not an accuracy meter; reported, not gated on",
+          "max_prob_delta": 0.02954583490618451,
+          "top1_prob_reference": 0.4641062744770127,
+          "top1_prob_candidate": 0.4345604395708282,
+          "verdict": "DIVERGENT",
+          "gate": "argmax equal AND top-10 identical AND max_abs <= 0.05 of the reference's own logit scale AND max softmax probability delta <= 0.02 AND reference not all-zero"
+        },
+        "secondary_outputs": 64,
+        "secondary_divergent": 0,
+        "worst_secondary": null,
+        "secondary_note": "KV/present outputs compared under `classify_activation` \u2014 a floor scaled to the tensor's own fp16 resolution, a gross ceiling, and a bound on how many elements may sit between them; logits agreement alone would not catch a wrong cache"
+      },
+      "admissible": false,
+      "refusal": {
+        "reason": "equivalence not MATCH",
+        "verdict": "DIVERGENT"
+      },
+      "finished_monotonic": 375609.3180378,
+      "worker_exit": 3,
+      "worker_wall_s": 17.739,
+      "path_witness": {
+        "present": true,
+        "gqa_keys": [
+          "gqa_f16:"
+        ],
+        "local_size": null,
+        "all_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "dispatches_executed": 355,
+        "compute_calls": 1,
+        "compute_failures": 0,
+        "claimed_nodes": 355,
+        "running_device_names": "NVIDIA RTX A1000",
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ]
+      },
+      "trace": {
+        "withheld": "record refused; no timing is published for it",
+        "gpu_spans_seen": 355
+      },
+      "role": "attribution"
+    }
+  ],
+  "counts": {
+    "records": 18,
+    "admissible": 6
+  },
+  "exclusivity": {
+    "state": "RELEASED",
+    "lock_path": "gpu-exclusive.lock",
+    "path_note": "basenames only; an absolute path is a fact about this operator's machine, not about the measurement",
+    "waited_seconds": 0.0,
+    "poll_seconds": 5.0,
+    "acquired_at": "2026-08-09T01:01:33",
+    "killed_anything": false,
+    "policy": "wait, never kill",
+    "mechanism": "msvcrt.locking LK_NBLCK, 1 byte at offset 0",
+    "held_seconds": 300.1,
+    "released_at": "2026-08-09T01:06:33"
+  },
+  "resummarized_at": "2026-08-09T01:27:47"
+}
