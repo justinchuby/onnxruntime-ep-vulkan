@@ -1,0 +1,1403 @@
+{
+ "schema": "crossbuild_gqa_landing_summary/2",
+ "issue": 69,
+ "supersedes": {
+  "pull_request": 95,
+  "head": "ce632011bb597bd44b64c5dd997a9210691c1615",
+  "what_is_reused": "the 60 raw records, byte-identically",
+  "what_is_rebuilt": [
+   "the admissibility gate, the witness gate and the verdict rule (B1)",
+   "the band, which no longer comes from the workload it judges (B2)",
+   "every published table, recomputed from raw samples_ms"
+  ]
+ },
+ "measurement_provenance": {
+  "path": "real_model_crossbuild_gqa_landing.pr95-frozen.json",
+  "sha256": "d8df20637915417592640980b1d643031ff93ff3d67a520103ddbfc3b852ef74",
+  "bytes": 296488,
+  "source_pr": 95,
+  "source_head": "ce632011bb597bd44b64c5dd997a9210691c1615",
+  "measured_by": "Tank, on PR #95. REUSED HERE, NOT RE-MEASURED. Independently revalidated by Niobe, who recomputed every median, ratio and verdict from the raw samples and recorded that remeasurement is unnecessary.",
+  "superseded_blocks_withheld": [
+   "band",
+   "workloads",
+   "preregistration"
+  ]
+ },
+ "question": "Does current origin/main improve end-to-end real-model Vulkan wall-clock latency versus the exact Vulkan parent immediately before the landed GQA local-size optimisation (PR #72 / 0cfa362)?",
+ "not_a_claim_about": "any other execution provider. This is Vulkan against prior Vulkan. It is not a CUDA comparison and no CUDA number appears in it.",
+ "arms": {
+  "candidate": {
+   "commit": "85fbda29a92e0e99c3895be8b13664d4ee670c50",
+   "ep_library_sha256": "1dfa7b21b0a0ffff2c8eecd67992a40d17b75b840654cc319f9b557781807a1b",
+   "ep_library_bytes": 2563072,
+   "role": "origin/main at the time of measurement"
+  },
+  "baseline": {
+   "commit": "c96e7d94ff706d26ee6a1bd9bb084c0ade426820",
+   "ep_library_sha256": "f0d8a822ae525598779c277ec8517e42d8424a4d34e841c1f470b47d99836820",
+   "ep_library_bytes": 2560000,
+   "role": "first parent of 0cfa362 (PR #72) \u2014 the exact Vulkan tree immediately before the GQA local-size change"
+  }
+ },
+ "environment": {
+  "onnxruntime": "1.28.0",
+  "python": "3.12.10",
+  "os": "Windows 11 10.0.26200",
+  "machine": "AMD64",
+  "device": {
+   "index": 0,
+   "name": "NVIDIA RTX A1000",
+   "uuid": "aadf33d4d118155fcc60c22b5c352463",
+   "luid": "7adf070000000000",
+   "pci": "0000:9f:00.0",
+   "driver": "573.44",
+   "transfer_class": "discrete",
+   "subgroup_size": 32,
+   "timestamp_period_ns": null,
+   "max_compute_shared_memory": 49152
+  },
+  "methodology": {
+   "unit_of_measurement": "one OS process per (workload, arm, repeat)",
+   "repeats": 3,
+   "iters_per_repeat": 20,
+   "warmup_per_session": 5,
+   "warmups_discarded": true,
+   "arm_order": "the two arms of one workload run adjacent; order flips per repeat",
+   "tracing_during_timed_pass": false,
+   "tuning_env_stripped": true,
+   "equivalence": "CPU EP reference in the same process, on the same session object that is then timed, for every (workload, arm, repeat)"
+  },
+  "power_and_affinity": {
+   "assumption": "stock Windows power plan, no CPU affinity mask, no GPU clock lock",
+   "thread_affinity_set": false,
+   "gpu_clocks_locked": false,
+   "note": "the box is shared indefinitely (PERF.md 20); arms are interleaved at the workload level precisely because machine state cannot be assumed quiet"
+  }
+ },
+ "models": {
+  "phi-3.5-mini-instruct-cuda-int4-rtn-block-32": {
+   "key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+   "family": "phi3",
+   "sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+   "bytes": 26180848,
+   "provenance": "foundry-resolved",
+   "resolver": "foundry",
+   "recorded_sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+   "agrees_with_recorded_provenance": true,
+   "external_data": {
+    "scanned": true,
+    "files": [
+     {
+      "location": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx.data",
+      "bytes": 2291238912,
+      "sha256": "9ce390a75dd00614031c41af38f0f3a83fdfe4648dcec8514d96800020e92217"
+     }
+    ],
+    "reason": null
+   },
+   "weights_bytes": 2291238912,
+   "note": "Foundry Local Phi-3.5-mini-instruct, int4 RTN block-32, fp16 activations. 32 layers, 32 KV heads, head dim 96, 64 KV inputs and 64 KV outputs."
+  },
+  "mobilenetv2-12": {
+   "key": "mobilenetv2-12",
+   "family": "cnn",
+   "sha256": "c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5",
+   "bytes": 13964571,
+   "provenance": "pinned-cache",
+   "resolver": "repo-cache",
+   "recorded_sha256": "c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5",
+   "agrees_with_recorded_provenance": true,
+   "external_data": {
+    "scanned": true,
+    "files": [],
+    "reason": "graph carries no external initializers; the .onnx hash covers the weights"
+   },
+   "weights_bytes": 0,
+   "note": "ONNX model zoo MobileNetV2-12, f32. Broad-EP-overhead arm: dense elementwise/Conv graph with a single free batch dimension, so it prices boundary crossing on a model whose arithmetic has nothing to do with MatMulNBits."
+  },
+  "all-MiniLM-L6-v2-onnx": {
+   "key": "all-MiniLM-L6-v2-onnx",
+   "family": "encoder",
+   "sha256": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+   "bytes": 90405214,
+   "provenance": "huggingface-immutable-pin",
+   "resolver": "pinned-download",
+   "recorded_sha256": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+   "agrees_with_recorded_provenance": true,
+   "source": {
+    "repo": "sentence-transformers/all-MiniLM-L6-v2",
+    "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "file": "onnx/model.onnx",
+    "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/onnx/model.onnx"
+   },
+   "external_data": {
+    "scanned": true,
+    "files": [],
+    "reason": "single-file export; the .onnx hash covers the weights"
+   },
+   "weights_bytes": 0,
+   "note": "sentence-transformers/all-MiniLM-L6-v2 ONNX export at an immutable commit. Fragmentation control: a BERT encoder with no GroupQueryAttention, so the landed change cannot touch it and its arms must agree."
+  }
+ },
+ "model_pins": {
+  "all-MiniLM-L6-v2-onnx": {
+   "repo": "sentence-transformers/all-MiniLM-L6-v2",
+   "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+   "file": "onnx/model.onnx",
+   "sha256": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+   "bytes": 90405214,
+   "note": "Pinned here, independently of any unlanded PR. bench/real_model.py on main carries no MiniLM entry, so nothing about this control depends on rejected #83."
+  },
+  "phi-3.5-mini-instruct-cuda-int4-rtn-block-32": {
+   "sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
+   "bytes": 26180848,
+   "note": "Foundry Local resolution; cross-checked against bench/results/rust-model-runner."
+  },
+  "mobilenetv2-12": {
+   "sha256": "c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5",
+   "bytes": 13964571,
+   "note": "the repository's existing pinned ONNX model zoo artifact."
+  }
+ },
+ "compiled_input_delta": {
+  "baseline_commit": "c96e7d94ff706d26ee6a1bd9bb084c0ade426820",
+  "candidate_commit": "85fbda29a92e0e99c3895be8b13664d4ee670c50",
+  "compiled_inputs_considered": [
+   "rust/src/**/*.rs (the cdylib sources)",
+   "rust/shaders/** (compiled to SPIR-V by build.rs and embedded with include_bytes!)",
+   "rust/src/ops/shader_variants.txt (build.rs variant table; a build input)",
+   "rust/build.rs, rust/Cargo.toml, rust/Cargo.lock, rust/wrapper_ort.h",
+   "evidence/proof_ledger.jsonl (include_str! at rust/src/registry.rs:2306)"
+  ],
+  "differing": [
+   {
+    "path": "rust/shaders/glsl/gqa_f16.comp",
+    "what": "one non-comment line: `layout(local_size_x = 1, ...)` becomes `layout(local_size_x_id = 0, local_size_x = 1, ...)`. The rest of the diff is comment.",
+    "on_the_timed_path": true
+   },
+   {
+    "path": "rust/src/ops/attention.rs",
+    "what": "the GQA dispatch gains `spec_constants: vec![local]` and `workgroups: [total.div_ceil(local), 1, 1]`, plus `gqa_local_size`, `GQA_MAX_LOCAL_SIZE`, `GQA_MIN_GROUPS`, `ENV_GQA_LOCAL_SIZE` and five `#[cfg(test)]` unit tests.",
+    "on_the_timed_path": true
+   },
+   {
+    "path": "evidence/proof_ledger.jsonl",
+    "what": "header `content_fnv1a64` 8902d86b502e04e3 -> cb6391d0843c1bb1 and its `generated_at`; the GroupQueryAttention entry is re-witnessed on the RTX A1000 with new shader/source/spec digests and moves to the end of the file. Entry count is 133 on both sides.",
+    "on_the_timed_path": false
+   }
+  ],
+  "unchanged": [
+   "rust/build.rs",
+   "rust/Cargo.toml",
+   "rust/Cargo.lock",
+   "rust/src/ops/shader_variants.txt",
+   "every rust/src/**/*.rs other than ops/attention.rs",
+   "every rust/shaders/** other than glsl/gqa_f16.comp"
+  ],
+  "attribution": "BOUNDED, not isolated. Two of the three differing compiled inputs are the landed GQA change itself. The third, the baked proof ledger, reaches the binary only through `LEDGER_SOURCE`, whose only non-test consumers are `registry::baked_ledger_identity()` and its caller in `lib.rs` -- a diagnostic string builder that no inference path calls, so it cannot execute during a timed iteration. It is also very likely the source of the 3,072-byte size difference between the two DLLs. What is therefore claimed is: the only compiled difference REACHABLE FROM A TIMED INFERENCE is the GQA workgroup-packing change. What is NOT claimed is that the two binaries differ in nothing else.",
+  "verified_by": [
+   "git diff --name-status c96e7d9 85fbda2",
+   "git grep -n 'include_str!\\|include_bytes!' 85fbda2 -- rust/",
+   "git grep -n 'LEDGER_SOURCE\\|baked_ledger_identity' 85fbda2 -- rust/src",
+   "git diff -U0 c96e7d9 85fbda2 -- rust/shaders/glsl/gqa_f16.comp"
+  ]
+ },
+ "exclusivity": {
+  "owner": "tank/issue-69 cross-build real-model speed proof",
+  "pid": 13840,
+  "host": "WIN-7GI3E2446U6",
+  "acquired_at": "2026-08-08T20:30:37",
+  "lock_path": "gpu-exclusive.lock",
+  "mechanism": "msvcrt.locking LK_NBLCK byte-range lock on a handle held open by the holder process",
+  "waited_seconds": 0.0,
+  "state": "RELEASED",
+  "released_at": "2026-08-08T21:01:18",
+  "held_seconds": 1840.6,
+  "held_command_exit": 0,
+  "os": "Windows 11",
+  "gpu_compute_apps_at_acquire": [
+   "ApplicationFrameHost.exe",
+   "CrossDeviceResume.exe",
+   "GlobalSecureAccessClient.exe",
+   "LockApp.exe",
+   "M365Copilot.exe",
+   "Microsoft.AAD.BrokerPlugin.exe",
+   "Microsoft.CmdPal.UI.exe",
+   "Notepad.exe",
+   "PhoneExperienceHost.exe",
+   "PowerToys.ColorPickerUI.exe",
+   "PowerToys.FancyZones.exe",
+   "PowerToys.Peek.UI.exe",
+   "PowerToys.PowerLauncher.exe",
+   "PowerToys.QuickAccess.exe",
+   "PowerToys.exe",
+   "SearchHost.exe",
+   "ShellExperienceHost.exe",
+   "ShellHost.exe",
+   "StartMenuExperienceHost.exe",
+   "SystemSettings.exe",
+   "TextInputHost.exe",
+   "WindowsTerminal.exe",
+   "[Insufficient Permissions] x2",
+   "explorer.exe",
+   "msedge.exe",
+   "msedgewebview2.exe x4"
+  ],
+  "gpu_compute_apps_at_release": [
+   "ApplicationFrameHost.exe",
+   "CrossDeviceResume.exe",
+   "GlobalSecureAccessClient.exe",
+   "LockApp.exe",
+   "M365Copilot.exe",
+   "Microsoft.AAD.BrokerPlugin.exe",
+   "Microsoft.CmdPal.UI.exe",
+   "Notepad.exe",
+   "PhoneExperienceHost.exe",
+   "PowerToys.ColorPickerUI.exe",
+   "PowerToys.FancyZones.exe",
+   "PowerToys.Peek.UI.exe",
+   "PowerToys.PowerLauncher.exe",
+   "PowerToys.QuickAccess.exe",
+   "PowerToys.exe",
+   "SearchHost.exe",
+   "ShellExperienceHost.exe",
+   "ShellHost.exe",
+   "StartMenuExperienceHost.exe",
+   "SystemSettings.exe",
+   "TextInputHost.exe",
+   "WindowsTerminal.exe",
+   "[Insufficient Permissions] x2",
+   "explorer.exe",
+   "msedge.exe",
+   "msedgewebview2.exe x4"
+  ],
+  "no_process_was_killed": true,
+  "contention_policy": "wait, never kill; if the lock could not be taken the measurement does not run",
+  "lock_path_note": "session-local, deliberately outside every worktree; the directory is a runtime detail and is not published"
+ },
+ "exclusivity_language": {
+  "mechanism": "msvcrt.locking(..., LK_NBLCK, ...) byte-range lock on a file handle held open for the duration of the run.",
+  "proves": [
+   "no OTHER PROCESS THAT COOPERATES BY TAKING THE SAME LOCK ran a measurement concurrently with this one",
+   "the lock was acquired without waiting (0.0 s), held 1840.6 s and released cleanly, so the run was not silently split around a contention stall",
+   "nothing was terminated to obtain it -- the policy is wait, never kill"
+  ],
+  "does_not_prove": [
+   "exclusive ownership of the GPU. The lock is advisory: it excludes only compliant harness processes and has no effect on anything else on the device",
+   "a quiet machine. The artifact's own exclusivity block records 26 GPU compute application ENTRIES at acquire and 26 at release -- 30 processes once the `xN` multiplicities in that list are expanded -- including a browser and four of its renderers, plus two entries the probe could not name for lack of permissions",
+   "an absence of interference. docs/PERF.md s20 is the standing position: this box is contended and that is the baseline. The design answer to it is pairing within a repeat and interleaving the arms, not the lock"
+  ]
+ },
+ "decision_rule": "ratio = baseline_median_ms / candidate_median_ms, paired WITHIN a repeat (>1 means the candidate build is faster). Per workload, over its 3 repeat ratios, with band b: FASTER iff min(ratios) > 1+b; SLOWER iff max(ratios) < 1-b; NEUTRAL iff every ratio lies in [1-b, 1+b]; INDETERMINATE otherwise. Symmetric on purpose -- PR #95 required every repeat for FASTER but only the median for SLOWER, which makes a regression cheaper to claim than an improvement. n=3: this is an envelope screen, NOT a confidence interval, and no p-value is computed or implied.",
+ "band": {
+  "applied": 0.15341637858622792,
+  "floor": 0.05,
+  "floor_binds": false,
+  "calibration_envelope": 0.15341637858622792,
+  "calibration_workloads": [
+   "all-MiniLM-L6-v2-onnx/encode/S128",
+   "all-MiniLM-L6-v2-onnx/encode/S384",
+   "mobilenetv2-12/batch/N1",
+   "mobilenetv2-12/batch/N16"
+  ],
+  "calibration_ratios": [
+   0.8818976801162984,
+   0.9407913913669249,
+   0.9730704885026661,
+   0.989747574475944,
+   1.0038220454884108,
+   1.015157837875202,
+   1.016585891076812,
+   1.0662499911421022,
+   1.0698876955089174,
+   1.0792810447957644,
+   1.0922547181074427,
+   1.153416378586228
+  ],
+  "calibration_ratio_min": 0.8818976801162984,
+  "calibration_ratio_max": 1.153416378586228,
+  "n_calibration_ratios": 12,
+  "rule": "band = max(BAND_FLOOR=0.05, max |ratio - 1| over every paired repeat ratio of the CALIBRATION set). The calibration set is every workload whose GQA path witness is empty on BOTH arms, i.e. no gqa_f16 pipeline was ever built, so the landed change cannot have moved it and its spread is drift alone. Calibration workloads are never assigned a speed verdict: a control that defines the band may not be judged by it.",
+  "provenance": "POST-HOC, and said so rather than dressed up. These 60 records already existed when this band rule was written; no externally timestamped pre-timing rule for it exists, and none is claimed. PR #95's `preregistration` block is text embedded in the artifact at finalize time, so its digest binds the text to itself and not to a point in time -- that is why it is superseded here rather than inherited. Two things stand in for precedence and neither is a substitute for it: the calibration set is separated from the subjects by a mechanical criterion that cannot be steered towards a result (a workload is calibration iff its GQA witness is empty on both arms), and the full sensitivity sweep is published so a reader may apply their own band."
+ },
+ "rows": [
+  {
+   "workload": "all-MiniLM-L6-v2-onnx/encode/S128",
+   "model_key": "all-MiniLM-L6-v2-onnx",
+   "per_repeat": [
+    {
+     "repeat": 0,
+     "candidate_median_ms": 673.5967,
+     "baseline_median_ms": 666.6907000000001,
+     "ratio": 0.989747574475944,
+     "candidate_rsd_pct": 9.112471631266574,
+     "baseline_rsd_pct": 9.901988313366713,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 36476,
+     "baseline_pid": 38944
+    },
+    {
+     "repeat": 1,
+     "candidate_median_ms": 672.7577,
+     "baseline_median_ms": 775.96975,
+     "ratio": 1.153416378586228,
+     "candidate_rsd_pct": 8.788215678560826,
+     "baseline_rsd_pct": 5.686748475784404,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 25528,
+     "baseline_pid": 11084
+    },
+    {
+     "repeat": 2,
+     "candidate_median_ms": 738.4716000000001,
+     "baseline_median_ms": 797.0183999999999,
+     "ratio": 1.0792810447957644,
+     "candidate_rsd_pct": 5.336967606486502,
+     "baseline_rsd_pct": 6.578832744467746,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 34600,
+     "baseline_pid": 30856
+    }
+   ],
+   "ratios": [
+    0.989747574475944,
+    1.153416378586228,
+    1.0792810447957644
+   ],
+   "ratio_min": 0.989747574475944,
+   "ratio_median": 1.0792810447957644,
+   "ratio_max": 1.153416378586228,
+   "candidate_median_ms": 673.5967,
+   "baseline_median_ms": 775.96975,
+   "repeats_paired": 3,
+   "repeats_dropped": [],
+   "refusals": [],
+   "witness_class": "NO_GQA",
+   "cross_arm_bitwise_identical": true,
+   "gqa_keys": {
+    "candidate": [
+     []
+    ],
+    "baseline": [
+     []
+    ]
+   },
+   "raw_verdict": "NEUTRAL",
+   "verdict": "CALIBRATION",
+   "role": "calibration",
+   "gate_reasons": [
+    "calibration: this workload's ratios define the band, so it is not graded by it"
+   ],
+   "band": 0.15341637858622792,
+   "separation": {
+    "faster_needs_min_above": 1.153416378586228,
+    "slower_needs_max_below": 0.8465836214137721,
+    "observed_min": 0.989747574475944,
+    "observed_max": 1.153416378586228,
+    "largest_band_still_faster": -0.01025242552405603,
+    "largest_band_still_slower": -0.15341637858622792
+   },
+   "dispatch_grid": {
+    "witnessed": "no gqa_f16 pipeline was built on either arm",
+    "grids_equal_across_arms": null,
+    "inferred_grid": null,
+    "inference_inputs": []
+   }
+  },
+  {
+   "workload": "all-MiniLM-L6-v2-onnx/encode/S384",
+   "model_key": "all-MiniLM-L6-v2-onnx",
+   "per_repeat": [
+    {
+     "repeat": 0,
+     "candidate_median_ms": 760.3651,
+     "baseline_median_ms": 763.27125,
+     "ratio": 1.0038220454884108,
+     "candidate_rsd_pct": 11.25473975475418,
+     "baseline_rsd_pct": 11.733235255670333,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 38520,
+     "baseline_pid": 18352
+    },
+    {
+     "repeat": 1,
+     "candidate_median_ms": 780.4055000000001,
+     "baseline_median_ms": 688.2378,
+     "ratio": 0.8818976801162984,
+     "candidate_rsd_pct": 12.341060686899525,
+     "baseline_rsd_pct": 11.799022041016036,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 8288,
+     "baseline_pid": 37304
+    },
+    {
+     "repeat": 2,
+     "candidate_median_ms": 968.8228,
+     "baseline_median_ms": 911.46015,
+     "ratio": 0.9407913913669249,
+     "candidate_rsd_pct": 6.183405111768148,
+     "baseline_rsd_pct": 7.566449728634216,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 28268,
+     "baseline_pid": 17572
+    }
+   ],
+   "ratios": [
+    1.0038220454884108,
+    0.8818976801162984,
+    0.9407913913669249
+   ],
+   "ratio_min": 0.8818976801162984,
+   "ratio_median": 0.9407913913669249,
+   "ratio_max": 1.0038220454884108,
+   "candidate_median_ms": 780.4055000000001,
+   "baseline_median_ms": 763.27125,
+   "repeats_paired": 3,
+   "repeats_dropped": [],
+   "refusals": [],
+   "witness_class": "NO_GQA",
+   "cross_arm_bitwise_identical": true,
+   "gqa_keys": {
+    "candidate": [
+     []
+    ],
+    "baseline": [
+     []
+    ]
+   },
+   "raw_verdict": "NEUTRAL",
+   "verdict": "CALIBRATION",
+   "role": "calibration",
+   "gate_reasons": [
+    "calibration: this workload's ratios define the band, so it is not graded by it"
+   ],
+   "band": 0.15341637858622792,
+   "separation": {
+    "faster_needs_min_above": 1.153416378586228,
+    "slower_needs_max_below": 0.8465836214137721,
+    "observed_min": 0.8818976801162984,
+    "observed_max": 1.0038220454884108,
+    "largest_band_still_faster": -0.11810231988370157,
+    "largest_band_still_slower": -0.003822045488410808
+   },
+   "dispatch_grid": {
+    "witnessed": "no gqa_f16 pipeline was built on either arm",
+    "grids_equal_across_arms": null,
+    "inferred_grid": null,
+    "inference_inputs": []
+   }
+  },
+  {
+   "workload": "mobilenetv2-12/batch/N1",
+   "model_key": "mobilenetv2-12",
+   "per_repeat": [
+    {
+     "repeat": 0,
+     "candidate_median_ms": 29.37855,
+     "baseline_median_ms": 28.587400000000002,
+     "ratio": 0.9730704885026661,
+     "candidate_rsd_pct": 8.348973073115934,
+     "baseline_rsd_pct": 5.517076580427717,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 40944,
+     "baseline_pid": 31884
+    },
+    {
+     "repeat": 1,
+     "candidate_median_ms": 27.3453,
+     "baseline_median_ms": 29.2564,
+     "ratio": 1.0698876955089174,
+     "candidate_rsd_pct": 5.015849088768027,
+     "baseline_rsd_pct": 6.012678451410029,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 31832,
+     "baseline_pid": 16600
+    },
+    {
+     "repeat": 2,
+     "candidate_median_ms": 28.223399999999998,
+     "baseline_median_ms": 30.093200000000003,
+     "ratio": 1.0662499911421022,
+     "candidate_rsd_pct": 4.437597046106633,
+     "baseline_rsd_pct": 8.013341126316565,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 26724,
+     "baseline_pid": 36196
+    }
+   ],
+   "ratios": [
+    0.9730704885026661,
+    1.0698876955089174,
+    1.0662499911421022
+   ],
+   "ratio_min": 0.9730704885026661,
+   "ratio_median": 1.0662499911421022,
+   "ratio_max": 1.0698876955089174,
+   "candidate_median_ms": 28.223399999999998,
+   "baseline_median_ms": 29.2564,
+   "repeats_paired": 3,
+   "repeats_dropped": [],
+   "refusals": [],
+   "witness_class": "NO_GQA",
+   "cross_arm_bitwise_identical": true,
+   "gqa_keys": {
+    "candidate": [
+     []
+    ],
+    "baseline": [
+     []
+    ]
+   },
+   "raw_verdict": "NEUTRAL",
+   "verdict": "CALIBRATION",
+   "role": "calibration",
+   "gate_reasons": [
+    "calibration: this workload's ratios define the band, so it is not graded by it"
+   ],
+   "band": 0.15341637858622792,
+   "separation": {
+    "faster_needs_min_above": 1.153416378586228,
+    "slower_needs_max_below": 0.8465836214137721,
+    "observed_min": 0.9730704885026661,
+    "observed_max": 1.0698876955089174,
+    "largest_band_still_faster": -0.026929511497333913,
+    "largest_band_still_slower": -0.06988769550891738
+   },
+   "dispatch_grid": {
+    "witnessed": "no gqa_f16 pipeline was built on either arm",
+    "grids_equal_across_arms": null,
+    "inferred_grid": null,
+    "inference_inputs": []
+   }
+  },
+  {
+   "workload": "mobilenetv2-12/batch/N16",
+   "model_key": "mobilenetv2-12",
+   "per_repeat": [
+    {
+     "repeat": 0,
+     "candidate_median_ms": 147.95105,
+     "baseline_median_ms": 150.40494999999999,
+     "ratio": 1.016585891076812,
+     "candidate_rsd_pct": 2.8727143426318307,
+     "baseline_rsd_pct": 4.49179861410826,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 17472,
+     "baseline_pid": 7676
+    },
+    {
+     "repeat": 1,
+     "candidate_median_ms": 150.34895,
+     "baseline_median_ms": 164.21935,
+     "ratio": 1.0922547181074427,
+     "candidate_rsd_pct": 6.887096276063201,
+     "baseline_rsd_pct": 6.519248091321089,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 36800,
+     "baseline_pid": 34600
+    },
+    {
+     "repeat": 2,
+     "candidate_median_ms": 156.24259999999998,
+     "baseline_median_ms": 158.61090000000002,
+     "ratio": 1.015157837875202,
+     "candidate_rsd_pct": 7.348832655068853,
+     "baseline_rsd_pct": 6.42193404644724,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 17364,
+     "baseline_pid": 26488
+    }
+   ],
+   "ratios": [
+    1.016585891076812,
+    1.0922547181074427,
+    1.015157837875202
+   ],
+   "ratio_min": 1.015157837875202,
+   "ratio_median": 1.016585891076812,
+   "ratio_max": 1.0922547181074427,
+   "candidate_median_ms": 150.34895,
+   "baseline_median_ms": 158.61090000000002,
+   "repeats_paired": 3,
+   "repeats_dropped": [],
+   "refusals": [],
+   "witness_class": "NO_GQA",
+   "cross_arm_bitwise_identical": true,
+   "gqa_keys": {
+    "candidate": [
+     []
+    ],
+    "baseline": [
+     []
+    ]
+   },
+   "raw_verdict": "NEUTRAL",
+   "verdict": "CALIBRATION",
+   "role": "calibration",
+   "gate_reasons": [
+    "calibration: this workload's ratios define the band, so it is not graded by it"
+   ],
+   "band": 0.15341637858622792,
+   "separation": {
+    "faster_needs_min_above": 1.153416378586228,
+    "slower_needs_max_below": 0.8465836214137721,
+    "observed_min": 1.015157837875202,
+    "observed_max": 1.0922547181074427,
+    "largest_band_still_faster": 0.015157837875201974,
+    "largest_band_still_slower": -0.09225471810744268
+   },
+   "dispatch_grid": {
+    "witnessed": "no gqa_f16 pipeline was built on either arm",
+    "grids_equal_across_arms": null,
+    "inferred_grid": null,
+    "inference_inputs": []
+   }
+  },
+  {
+   "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past1024",
+   "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+   "per_repeat": [
+    {
+     "repeat": 0,
+     "candidate_median_ms": 695.3645,
+     "baseline_median_ms": 699.87415,
+     "ratio": 1.0064853037507666,
+     "candidate_rsd_pct": 14.294506450055913,
+     "baseline_rsd_pct": 6.045029201809764,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 13820,
+     "baseline_pid": 11572
+    },
+    {
+     "repeat": 1,
+     "candidate_median_ms": 754.4014999999999,
+     "baseline_median_ms": 744.6073,
+     "ratio": 0.9870172580515814,
+     "candidate_rsd_pct": 5.504853610377066,
+     "baseline_rsd_pct": 4.473804111849283,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 14168,
+     "baseline_pid": 22484
+    },
+    {
+     "repeat": 2,
+     "candidate_median_ms": 716.0414000000001,
+     "baseline_median_ms": 728.8968,
+     "ratio": 1.0179534311842862,
+     "candidate_rsd_pct": 5.037973600506911,
+     "baseline_rsd_pct": 5.801123312289006,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 36556,
+     "baseline_pid": 28976
+    }
+   ],
+   "ratios": [
+    1.0064853037507666,
+    0.9870172580515814,
+    1.0179534311842862
+   ],
+   "ratio_min": 0.9870172580515814,
+   "ratio_median": 1.0064853037507666,
+   "ratio_max": 1.0179534311842862,
+   "candidate_median_ms": 716.0414000000001,
+   "baseline_median_ms": 728.8968,
+   "repeats_paired": 3,
+   "repeats_dropped": [],
+   "refusals": [],
+   "witness_class": "DISTINGUISHED",
+   "cross_arm_bitwise_identical": true,
+   "gqa_keys": {
+    "candidate": [
+     [
+      "gqa_f16:1"
+     ]
+    ],
+    "baseline": [
+     [
+      "gqa_f16:"
+     ]
+    ]
+   },
+   "raw_verdict": "NEUTRAL",
+   "verdict": "NEUTRAL",
+   "role": "subject",
+   "gate_reasons": [],
+   "band": 0.15341637858622792,
+   "separation": {
+    "faster_needs_min_above": 1.153416378586228,
+    "slower_needs_max_below": 0.8465836214137721,
+    "observed_min": 0.9870172580515814,
+    "observed_max": 1.0179534311842862,
+    "largest_band_still_faster": -0.012982741948418641,
+    "largest_band_still_slower": -0.01795343118428616
+   },
+   "dispatch_grid": {
+    "witnessed": "candidate gqa_f16 local size [1] (read off the pipeline key); baseline key carries no local size, i.e. spec_constants was empty",
+    "grids_equal_across_arms": true,
+    "grids_equal_because": "local == 1 makes the candidate's ceil(total/local) == total, which is exactly the baseline's workgroup count, for every total",
+    "inferred_grid": [
+     32,
+     1,
+     1
+    ],
+    "inference_inputs": [
+     "Phi-3.5-mini has 32 query heads (docs/DESIGN.md s8.13)",
+     "M == 1 for this workload, so total = B*Nq*S = 32",
+     "ops::attention::gqa_local_size(32) == 1 (rust/src/ops/attention.rs)"
+    ],
+    "inferred_not_witnessed": "the artifact records no grid field; total is bounded to [32, 64) by the rule when local == 1, which contains 32 without pinning it"
+   }
+  },
+  {
+   "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128",
+   "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+   "per_repeat": [
+    {
+     "repeat": 0,
+     "candidate_median_ms": 127.11915,
+     "baseline_median_ms": 109.73995,
+     "ratio": 0.8632841707956668,
+     "candidate_rsd_pct": 5.904949246998735,
+     "baseline_rsd_pct": 14.256235415072519,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 39252,
+     "baseline_pid": 36196
+    },
+    {
+     "repeat": 1,
+     "candidate_median_ms": 139.93035,
+     "baseline_median_ms": 120.229,
+     "ratio": 0.8592060264267187,
+     "candidate_rsd_pct": 4.855841578720904,
+     "baseline_rsd_pct": 11.347271125974997,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 10132,
+     "baseline_pid": 35756
+    },
+    {
+     "repeat": 2,
+     "candidate_median_ms": 137.99295,
+     "baseline_median_ms": 109.68405,
+     "ratio": 0.7948525631200724,
+     "candidate_rsd_pct": 6.7329588793965245,
+     "baseline_rsd_pct": 10.225895209629874,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 26216,
+     "baseline_pid": 30612
+    }
+   ],
+   "ratios": [
+    0.8632841707956668,
+    0.8592060264267187,
+    0.7948525631200724
+   ],
+   "ratio_min": 0.7948525631200724,
+   "ratio_median": 0.8592060264267187,
+   "ratio_max": 0.8632841707956668,
+   "candidate_median_ms": 137.99295,
+   "baseline_median_ms": 109.73995,
+   "repeats_paired": 3,
+   "repeats_dropped": [],
+   "refusals": [],
+   "witness_class": "DISTINGUISHED",
+   "cross_arm_bitwise_identical": true,
+   "gqa_keys": {
+    "candidate": [
+     [
+      "gqa_f16:1"
+     ]
+    ],
+    "baseline": [
+     [
+      "gqa_f16:"
+     ]
+    ]
+   },
+   "raw_verdict": "INDETERMINATE",
+   "verdict": "INDETERMINATE",
+   "role": "subject",
+   "gate_reasons": [],
+   "band": 0.15341637858622792,
+   "separation": {
+    "faster_needs_min_above": 1.153416378586228,
+    "slower_needs_max_below": 0.8465836214137721,
+    "observed_min": 0.7948525631200724,
+    "observed_max": 0.8632841707956668,
+    "largest_band_still_faster": -0.20514743687992765,
+    "largest_band_still_slower": 0.13671582920433323
+   },
+   "dispatch_grid": {
+    "witnessed": "candidate gqa_f16 local size [1] (read off the pipeline key); baseline key carries no local size, i.e. spec_constants was empty",
+    "grids_equal_across_arms": true,
+    "grids_equal_because": "local == 1 makes the candidate's ceil(total/local) == total, which is exactly the baseline's workgroup count, for every total",
+    "inferred_grid": [
+     32,
+     1,
+     1
+    ],
+    "inference_inputs": [
+     "Phi-3.5-mini has 32 query heads (docs/DESIGN.md s8.13)",
+     "M == 1 for this workload, so total = B*Nq*S = 32",
+     "ops::attention::gqa_local_size(32) == 1 (rust/src/ops/attention.rs)"
+    ],
+    "inferred_not_witnessed": "the artifact records no grid field; total is bounded to [32, 64) by the rule when local == 1, which contains 32 without pinning it"
+   }
+  },
+  {
+   "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0",
+   "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+   "per_repeat": [
+    {
+     "repeat": 0,
+     "candidate_median_ms": 63.56555,
+     "baseline_median_ms": 66.80925,
+     "ratio": 1.051029213150834,
+     "candidate_rsd_pct": 11.718125653681623,
+     "baseline_rsd_pct": 16.26841856721124,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 14388,
+     "baseline_pid": 2376
+    },
+    {
+     "repeat": 1,
+     "candidate_median_ms": 63.24245,
+     "baseline_median_ms": 60.835049999999995,
+     "ratio": 0.9619337960499632,
+     "candidate_rsd_pct": 76.77996068223067,
+     "baseline_rsd_pct": 74.91139898569051,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 17660,
+     "baseline_pid": 35012
+    },
+    {
+     "repeat": 2,
+     "candidate_median_ms": 64.07225,
+     "baseline_median_ms": 66.5115,
+     "ratio": 1.0380703034465,
+     "candidate_rsd_pct": 59.20640806647802,
+     "baseline_rsd_pct": 26.053229093329215,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 15172,
+     "baseline_pid": 15380
+    }
+   ],
+   "ratios": [
+    1.051029213150834,
+    0.9619337960499632,
+    1.0380703034465
+   ],
+   "ratio_min": 0.9619337960499632,
+   "ratio_median": 1.0380703034465,
+   "ratio_max": 1.051029213150834,
+   "candidate_median_ms": 63.56555,
+   "baseline_median_ms": 66.5115,
+   "repeats_paired": 3,
+   "repeats_dropped": [],
+   "refusals": [],
+   "witness_class": "DISTINGUISHED",
+   "cross_arm_bitwise_identical": true,
+   "gqa_keys": {
+    "candidate": [
+     [
+      "gqa_f16:1"
+     ]
+    ],
+    "baseline": [
+     [
+      "gqa_f16:"
+     ]
+    ]
+   },
+   "raw_verdict": "NEUTRAL",
+   "verdict": "NEUTRAL",
+   "role": "subject",
+   "gate_reasons": [],
+   "band": 0.15341637858622792,
+   "separation": {
+    "faster_needs_min_above": 1.153416378586228,
+    "slower_needs_max_below": 0.8465836214137721,
+    "observed_min": 0.9619337960499632,
+    "observed_max": 1.051029213150834,
+    "largest_band_still_faster": -0.03806620395003679,
+    "largest_band_still_slower": -0.051029213150834085
+   },
+   "dispatch_grid": {
+    "witnessed": "candidate gqa_f16 local size [1] (read off the pipeline key); baseline key carries no local size, i.e. spec_constants was empty",
+    "grids_equal_across_arms": true,
+    "grids_equal_because": "local == 1 makes the candidate's ceil(total/local) == total, which is exactly the baseline's workgroup count, for every total",
+    "inferred_grid": [
+     32,
+     1,
+     1
+    ],
+    "inference_inputs": [
+     "Phi-3.5-mini has 32 query heads (docs/DESIGN.md s8.13)",
+     "M == 1 for this workload, so total = B*Nq*S = 32",
+     "ops::attention::gqa_local_size(32) == 1 (rust/src/ops/attention.rs)"
+    ],
+    "inferred_not_witnessed": "the artifact records no grid field; total is bounded to [32, 64) by the rule when local == 1, which contains 32 without pinning it"
+   }
+  },
+  {
+   "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0",
+   "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+   "per_repeat": [
+    {
+     "repeat": 0,
+     "candidate_median_ms": 1456.8468,
+     "baseline_median_ms": 3043.77245,
+     "ratio": 2.089287940228169,
+     "candidate_rsd_pct": 1.1941983739594675,
+     "baseline_rsd_pct": 0.6905530793939142,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 37252,
+     "baseline_pid": 39044
+    },
+    {
+     "repeat": 1,
+     "candidate_median_ms": 1479.36205,
+     "baseline_median_ms": 3070.3094499999997,
+     "ratio": 2.075428019800832,
+     "candidate_rsd_pct": 1.1389210378233883,
+     "baseline_rsd_pct": 0.42585453045811955,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 26744,
+     "baseline_pid": 40532
+    },
+    {
+     "repeat": 2,
+     "candidate_median_ms": 1474.9958499999998,
+     "baseline_median_ms": 3064.10815,
+     "ratio": 2.077367302423258,
+     "candidate_rsd_pct": 1.1253178012779779,
+     "baseline_rsd_pct": 0.49575915263477965,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 35620,
+     "baseline_pid": 38084
+    }
+   ],
+   "ratios": [
+    2.089287940228169,
+    2.075428019800832,
+    2.077367302423258
+   ],
+   "ratio_min": 2.075428019800832,
+   "ratio_median": 2.077367302423258,
+   "ratio_max": 2.089287940228169,
+   "candidate_median_ms": 1474.9958499999998,
+   "baseline_median_ms": 3064.10815,
+   "repeats_paired": 3,
+   "repeats_dropped": [],
+   "refusals": [],
+   "witness_class": "DISTINGUISHED",
+   "cross_arm_bitwise_identical": true,
+   "gqa_keys": {
+    "candidate": [
+     [
+      "gqa_f16:64"
+     ]
+    ],
+    "baseline": [
+     [
+      "gqa_f16:"
+     ]
+    ]
+   },
+   "raw_verdict": "FASTER",
+   "verdict": "FASTER",
+   "role": "subject",
+   "gate_reasons": [],
+   "band": 0.15341637858622792,
+   "separation": {
+    "faster_needs_min_above": 1.153416378586228,
+    "slower_needs_max_below": 0.8465836214137721,
+    "observed_min": 2.075428019800832,
+    "observed_max": 2.089287940228169,
+    "largest_band_still_faster": 1.0754280198008321,
+    "largest_band_still_slower": -1.0892879402281692
+   },
+   "dispatch_grid": {
+    "witnessed": "candidate gqa_f16 local size [64] (read off the pipeline key); baseline key carries no local size, i.e. spec_constants was empty",
+    "grids_equal_across_arms": false,
+    "grids_equal_because": "local > 1 packs the same invocations into fewer workgroups, so the grids differ",
+    "inferred_grid": null,
+    "inference_inputs": [],
+    "inferred_not_witnessed": null
+   }
+  },
+  {
+   "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M32/past0",
+   "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+   "per_repeat": [
+    {
+     "repeat": 0,
+     "candidate_median_ms": 399.47265000000004,
+     "baseline_median_ms": 510.4792,
+     "ratio": 1.2778827286423737,
+     "candidate_rsd_pct": 2.889340126086806,
+     "baseline_rsd_pct": 2.6361298922698078,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 39404,
+     "baseline_pid": 6680
+    },
+    {
+     "repeat": 1,
+     "candidate_median_ms": 410.5125,
+     "baseline_median_ms": 842.7891,
+     "ratio": 2.0530168996071985,
+     "candidate_rsd_pct": 58.27624879579768,
+     "baseline_rsd_pct": 29.059050814363847,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 38800,
+     "baseline_pid": 38204
+    },
+    {
+     "repeat": 2,
+     "candidate_median_ms": 393.99789999999996,
+     "baseline_median_ms": 1409.7334,
+     "ratio": 3.578022623978453,
+     "candidate_rsd_pct": 18.395190337173826,
+     "baseline_rsd_pct": 55.43754138781289,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 36832,
+     "baseline_pid": 37680
+    }
+   ],
+   "ratios": [
+    1.2778827286423737,
+    2.0530168996071985,
+    3.578022623978453
+   ],
+   "ratio_min": 1.2778827286423737,
+   "ratio_median": 2.0530168996071985,
+   "ratio_max": 3.578022623978453,
+   "candidate_median_ms": 399.47265000000004,
+   "baseline_median_ms": 842.7891,
+   "repeats_paired": 3,
+   "repeats_dropped": [],
+   "refusals": [],
+   "witness_class": "DISTINGUISHED",
+   "cross_arm_bitwise_identical": true,
+   "gqa_keys": {
+    "candidate": [
+     [
+      "gqa_f16:32"
+     ]
+    ],
+    "baseline": [
+     [
+      "gqa_f16:"
+     ]
+    ]
+   },
+   "raw_verdict": "FASTER",
+   "verdict": "FASTER",
+   "role": "subject",
+   "gate_reasons": [],
+   "band": 0.15341637858622792,
+   "separation": {
+    "faster_needs_min_above": 1.153416378586228,
+    "slower_needs_max_below": 0.8465836214137721,
+    "observed_min": 1.2778827286423737,
+    "observed_max": 3.578022623978453,
+    "largest_band_still_faster": 0.27788272864237373,
+    "largest_band_still_slower": -2.578022623978453
+   },
+   "dispatch_grid": {
+    "witnessed": "candidate gqa_f16 local size [32] (read off the pipeline key); baseline key carries no local size, i.e. spec_constants was empty",
+    "grids_equal_across_arms": false,
+    "grids_equal_because": "local > 1 packs the same invocations into fewer workgroups, so the grids differ",
+    "inferred_grid": null,
+    "inference_inputs": [],
+    "inferred_not_witnessed": null
+   }
+  },
+  {
+   "workload": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M64/past0",
+   "model_key": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32",
+   "per_repeat": [
+    {
+     "repeat": 0,
+     "candidate_median_ms": 721.87045,
+     "baseline_median_ms": 1132.0853000000002,
+     "ratio": 1.568266577472454,
+     "candidate_rsd_pct": 2.327424572973416,
+     "baseline_rsd_pct": 0.9409301485729783,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 33236,
+     "baseline_pid": 3832
+    },
+    {
+     "repeat": 1,
+     "candidate_median_ms": 1484.5576999999998,
+     "baseline_median_ms": 1531.69345,
+     "ratio": 1.0317507025829984,
+     "candidate_rsd_pct": 25.994316486322894,
+     "baseline_rsd_pct": 33.7589523497358,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 3516,
+     "baseline_pid": 32656
+    },
+    {
+     "repeat": 2,
+     "candidate_median_ms": 1583.17725,
+     "baseline_median_ms": 2949.64315,
+     "ratio": 1.8631161798213056,
+     "candidate_rsd_pct": 41.846540395967125,
+     "baseline_rsd_pct": 53.0096658148115,
+     "cross_arm_bitwise_identical": true,
+     "candidate_pid": 30524,
+     "baseline_pid": 34540
+    }
+   ],
+   "ratios": [
+    1.568266577472454,
+    1.0317507025829984,
+    1.8631161798213056
+   ],
+   "ratio_min": 1.0317507025829984,
+   "ratio_median": 1.568266577472454,
+   "ratio_max": 1.8631161798213056,
+   "candidate_median_ms": 1484.5576999999998,
+   "baseline_median_ms": 1531.69345,
+   "repeats_paired": 3,
+   "repeats_dropped": [],
+   "refusals": [],
+   "witness_class": "DISTINGUISHED",
+   "cross_arm_bitwise_identical": true,
+   "gqa_keys": {
+    "candidate": [
+     [
+      "gqa_f16:64"
+     ]
+    ],
+    "baseline": [
+     [
+      "gqa_f16:"
+     ]
+    ]
+   },
+   "raw_verdict": "INDETERMINATE",
+   "verdict": "INDETERMINATE",
+   "role": "subject",
+   "gate_reasons": [],
+   "band": 0.15341637858622792,
+   "separation": {
+    "faster_needs_min_above": 1.153416378586228,
+    "slower_needs_max_below": 0.8465836214137721,
+    "observed_min": 1.0317507025829984,
+    "observed_max": 1.8631161798213056,
+    "largest_band_still_faster": 0.03175070258299839,
+    "largest_band_still_slower": -0.8631161798213056
+   },
+   "dispatch_grid": {
+    "witnessed": "candidate gqa_f16 local size [64] (read off the pipeline key); baseline key carries no local size, i.e. spec_constants was empty",
+    "grids_equal_across_arms": false,
+    "grids_equal_because": "local > 1 packs the same invocations into fewer workgroups, so the grids differ",
+    "inferred_grid": null,
+    "inference_inputs": [],
+    "inferred_not_witnessed": null
+   }
+  }
+ ],
+ "counts": {
+  "records": 60,
+  "workloads": 10,
+  "calibration": 4,
+  "subjects": 6,
+  "admissible_records": 60,
+  "verdicts": {
+   "FASTER": 2,
+   "SLOWER": 0,
+   "NEUTRAL": 2,
+   "INDETERMINATE": 2,
+   "REFUSED": 0,
+   "CALIBRATION": 4
+  }
+ },
+ "sensitivity": {
+  "bands": [
+   0.05,
+   0.0510292125170773,
+   0.1,
+   0.15,
+   0.2,
+   0.25,
+   0.3
+  ],
+  "note": "CALIBRATION rows are shown with their raw ratios but are never graded, at any band. Subject rows show the verdict the symmetric rule returns.",
+  "by_workload": {
+   "all-MiniLM-L6-v2-onnx/encode/S128": {
+    "role": "calibration",
+    "ratios": [
+     0.989747574475944,
+     1.153416378586228,
+     1.0792810447957644
+    ],
+    "at_band": {
+     "0.0500": "CALIBRATION",
+     "0.0510": "CALIBRATION",
+     "0.1000": "CALIBRATION",
+     "0.1500": "CALIBRATION",
+     "0.2000": "CALIBRATION",
+     "0.2500": "CALIBRATION",
+     "0.3000": "CALIBRATION"
+    }
+   },
+   "all-MiniLM-L6-v2-onnx/encode/S384": {
+    "role": "calibration",
+    "ratios": [
+     1.0038220454884108,
+     0.8818976801162984,
+     0.9407913913669249
+    ],
+    "at_band": {
+     "0.0500": "CALIBRATION",
+     "0.0510": "CALIBRATION",
+     "0.1000": "CALIBRATION",
+     "0.1500": "CALIBRATION",
+     "0.2000": "CALIBRATION",
+     "0.2500": "CALIBRATION",
+     "0.3000": "CALIBRATION"
+    }
+   },
+   "mobilenetv2-12/batch/N1": {
+    "role": "calibration",
+    "ratios": [
+     0.9730704885026661,
+     1.0698876955089174,
+     1.0662499911421022
+    ],
+    "at_band": {
+     "0.0500": "CALIBRATION",
+     "0.0510": "CALIBRATION",
+     "0.1000": "CALIBRATION",
+     "0.1500": "CALIBRATION",
+     "0.2000": "CALIBRATION",
+     "0.2500": "CALIBRATION",
+     "0.3000": "CALIBRATION"
+    }
+   },
+   "mobilenetv2-12/batch/N16": {
+    "role": "calibration",
+    "ratios": [
+     1.016585891076812,
+     1.0922547181074427,
+     1.015157837875202
+    ],
+    "at_band": {
+     "0.0500": "CALIBRATION",
+     "0.0510": "CALIBRATION",
+     "0.1000": "CALIBRATION",
+     "0.1500": "CALIBRATION",
+     "0.2000": "CALIBRATION",
+     "0.2500": "CALIBRATION",
+     "0.3000": "CALIBRATION"
+    }
+   },
+   "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past1024": {
+    "role": "subject",
+    "ratios": [
+     1.0064853037507666,
+     0.9870172580515814,
+     1.0179534311842862
+    ],
+    "at_band": {
+     "0.0500": "NEUTRAL",
+     "0.0510": "NEUTRAL",
+     "0.1000": "NEUTRAL",
+     "0.1500": "NEUTRAL",
+     "0.2000": "NEUTRAL",
+     "0.2500": "NEUTRAL",
+     "0.3000": "NEUTRAL"
+    }
+   },
+   "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128": {
+    "role": "subject",
+    "ratios": [
+     0.8632841707956668,
+     0.8592060264267187,
+     0.7948525631200724
+    ],
+    "at_band": {
+     "0.0500": "SLOWER",
+     "0.0510": "SLOWER",
+     "0.1000": "SLOWER",
+     "0.1500": "INDETERMINATE",
+     "0.2000": "INDETERMINATE",
+     "0.2500": "NEUTRAL",
+     "0.3000": "NEUTRAL"
+    }
+   },
+   "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0": {
+    "role": "subject",
+    "ratios": [
+     1.051029213150834,
+     0.9619337960499632,
+     1.0380703034465
+    ],
+    "at_band": {
+     "0.0500": "INDETERMINATE",
+     "0.0510": "INDETERMINATE",
+     "0.1000": "NEUTRAL",
+     "0.1500": "NEUTRAL",
+     "0.2000": "NEUTRAL",
+     "0.2500": "NEUTRAL",
+     "0.3000": "NEUTRAL"
+    }
+   },
+   "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0": {
+    "role": "subject",
+    "ratios": [
+     2.089287940228169,
+     2.075428019800832,
+     2.077367302423258
+    ],
+    "at_band": {
+     "0.0500": "FASTER",
+     "0.0510": "FASTER",
+     "0.1000": "FASTER",
+     "0.1500": "FASTER",
+     "0.2000": "FASTER",
+     "0.2500": "FASTER",
+     "0.3000": "FASTER"
+    }
+   },
+   "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M32/past0": {
+    "role": "subject",
+    "ratios": [
+     1.2778827286423737,
+     2.0530168996071985,
+     3.578022623978453
+    ],
+    "at_band": {
+     "0.0500": "FASTER",
+     "0.0510": "FASTER",
+     "0.1000": "FASTER",
+     "0.1500": "FASTER",
+     "0.2000": "FASTER",
+     "0.2500": "FASTER",
+     "0.3000": "INDETERMINATE"
+    }
+   },
+   "phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M64/past0": {
+    "role": "subject",
+    "ratios": [
+     1.568266577472454,
+     1.0317507025829984,
+     1.8631161798213056
+    ],
+    "at_band": {
+     "0.0500": "INDETERMINATE",
+     "0.0510": "INDETERMINATE",
+     "0.1000": "INDETERMINATE",
+     "0.1500": "INDETERMINATE",
+     "0.2000": "INDETERMINATE",
+     "0.2500": "INDETERMINATE",
+     "0.3000": "INDETERMINATE"
+    }
+   }
+  }
+ }
+}

@@ -5841,10 +5841,27 @@ protect decode.
 #### Decode is bit-identical, and its dispatch is unchanged
 
 At 32 invocations the rule returns `local = 1`, so decode's dispatch is `[32, 1, 1]` with
-`spec_constants = [1]` — the same geometry, the same grid, the same pipeline behaviour as before
-issue #56. That is asserted twice, in `translate_gqa_phi35_decode_produces_one_dispatch` (which
+`spec_constants = [1]` — the same geometry and the same grid as before issue #56. That is asserted
+twice, in `translate_gqa_phi35_decode_produces_one_dispatch` (which
 predates this change and still passes untouched) and in
 `gqa_decode_stays_at_one_invocation_per_workgroup`.
+
+Two precisions on that sentence, both added after the issue #69 cross-build evidence made the
+difference visible (`docs/PERF.md` §27.8):
+
+* **`[32, 1, 1]` here is derived, not measured.** It follows from `gqa_local_size(32) == 1` and from
+  Phi-3.5's `B * Nq * S = 32` at `M = 1`; it is a statement about this source, and the two Rust
+  tests above are what check it. No benchmark artifact in this repository records a dispatch grid
+  as a field, so anywhere `[32, 1, 1]` appears beside a *timing* it must be labelled an inference —
+  which is what `bench/crossbuild_summary.py`'s `dispatch_grid_claim()` does, separating the
+  `witnessed` part (`local == 1` ⇒ `ceil(total/local) == total`, so the grids match the pre-change
+  grid for *any* total, and `total ∈ [32, 64)`) from the `inferred_grid`.
+* **It is not the same *pipeline object*.** The pipeline-cache key moves from `gqa_f16:` to
+  `gqa_f16:1` because `spec_constants` is no longer empty, so a distinct `VkPipeline` is
+  specialised from the same SPIR-V. Behaviour and outputs are unchanged — that is what the two
+  tests assert, and the cross-build records show bitwise-identical outputs on every decode arm —
+  but "the same pipeline as before issue #56" would be false, and the key difference is precisely
+  the path witness the issue #69 evidence relies on to show the two builds ran different code.
 
 For every *other* size, "bit-identical" is a claim about the source text, so it is verified as one
 rather than argued: `bench/results/probe_gqa_local_size.py` compares whole-model outputs
@@ -5896,6 +5913,28 @@ faster needs a different kernel shape: parallelism over the **KV sequence** insi
 with a reduction, which is a shared-memory and barrier change and therefore a portability question
 of exactly the kind §8.12 declined to open without evidence. `docs/PERF.md` §26.7 names it as the
 next lever and says what it would have to prove.
+
+#### What the issue #69 cross-build evidence adds, and what it hands to issue #96
+
+`docs/PERF.md` §27 compares this change's landing commit against its exact parent on one box, on
+real models. Three things from it belong in the design record:
+
+* **The claim is Phi-3.5 prefill, and only that.** `M = 128` is 2.077× with per-repeat
+  `2.075 – 2.089`; `M = 32` is `FASTER` on a minimum repeat of 1.278×. Decode is `NEUTRAL` at
+  `past = 1024` and gets no verdict at `past = 128`. Nothing there is a claim about another
+  execution provider, and no CUDA number is involved.
+* **`M = 64` prefill is bimodal and is not explained by this design.** Three repeats of the same
+  cell read `1.032 / 1.568 / 1.863` with identical outputs and identical pipeline keys —
+  `gqa_f16:64` against `gqa_f16:` — so the arms are distinguishable and the dispersion is not a
+  path difference. `M = 32` shows the same shape more widely (`1.278 / 2.053 / 3.578`). `M = 64`
+  and `M = 128` **select the same `local = 64`**, and only one of them is stable, which is what
+  makes this interesting rather than ambient noise: the difference between them is `total`, hence
+  the number of workgroups (`ceil(total/64)`), hence tail occupancy. **Handed to issue #96.** No
+  result from that diagnosis is imported here or into §27.
+* **`decode past = 128` reads 0.859×** — the candidate slower, consistently, in all three repeats —
+  and is recorded as a descriptive regression rather than a verdict because it does not clear the
+  observed control envelope. It is the second thing #96 should look at, and it is the case §8.13
+  would most expect to be untouched, since decode selects `local = 1`.
 
 ---
 

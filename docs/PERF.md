@@ -5046,3 +5046,366 @@ transition can never be declared, because
 correctly requires every declared transition to end at what the build computes. Rebuilding the
 stack on `main` is the only fix; merging `main` is not, because CI screens `refs/pull/N/merge`,
 which has the same shape.
+
+## 27. The GQA landing, re-derived: what the frozen cross-build records support once the band is not circular (2026-08-09)
+
+§26 measured the whole model against the CPU EP on one build. This section asks a narrower and
+harder question, and answers a **smaller** part of it than its first attempt claimed:
+
+> Does current `origin/main` improve end-to-end **Phi-3.5 prefill** Vulkan wall-clock latency
+> against the exact Vulkan parent immediately before the landed GQA local-size change?
+
+Not "real models" plural. Not decode. Not any other execution provider — **no CUDA number appears
+anywhere in this section or in either artifact it cites**, and none is implied. Issue #69's title
+names CUDA; this evidence does not address it, and saying so is part of the result.
+
+### 27.1 Provenance: these timings were not measured here
+
+**The 60 raw records were measured on PR #95 and are reused byte-identically. They were not
+re-measured for this section, and nothing here should be read as a fresh run.**
+
+| | |
+|---|---|
+| committed at | `bench/results/real_model_crossbuild_gqa_landing.pr95-frozen.json` |
+| sha256 | `d8df20637915417592640980b1d643031ff93ff3d67a520103ddbfc3b852ef74` |
+| bytes | 296,488 |
+| originally produced by | PR #95, head `ce632011bb597bd44b64c5dd997a9210691c1615` |
+| status of that PR | **rejected, closed unmerged**; its analysis is superseded, its raw records are not |
+
+The reason the records survive their PR is specific rather than generous: the reviewer recomputed
+every median, ratio and verdict in that artifact from its own `speed.samples_ms`, found the
+arithmetic sound, and recorded that re-measurement was unnecessary. What was rejected was the
+*derivation* — a verdict gate that lived only in the test file, and a band a null control derived
+from its own ratios and was then judged by. Both are rebuilt here from `main`, and the three
+superseded blocks (`band`, `workloads`, `preregistration`) are **withheld rather than inherited**:
+`bench/crossbuild_summary.py` refuses to load the frozen file if any of them is present, so a
+future edit that re-imports the old conclusions cannot pass silently.
+
+What was independently verified before the import, on this branch, from the raw records alone:
+
+* the file's digest and `schema` (`real_model_crossbuild_gqa_landing/1`);
+* 60 records = 10 workloads × 2 builds × 3 repeats, with no cell duplicated and none missing;
+* 20 timed iterations in every record (`speed.n == 20` and 20 stored `samples_ms`, 60/60), after
+  the 5 warmups per session the artifact's `environment.methodology` declares and discards;
+* **process non-overlap**: 60 records, 58 distinct PIDs, and zero overlapping
+  `[started_at, finished_at]` spans — no two timed passes were in flight at once;
+* the CPU-EP equivalence oracle present and `MATCH` on all 60, taken in the same process on the
+  same session object that was then timed (`cpu_reference_outputs_sha256` is a per-record field,
+  and `providers` carries `CPUExecutionProvider` beside the Vulkan EP in every record);
+* **outputs did not move under the timer**: the digest recomputed after the timed pass equals the
+  one taken before it (`outputs_sha256_post_timing == outputs_sha256`) on all 60;
+* a production path witness recorded in the measuring process itself on all 60
+  (`path_witness.present`, `compute_failures == 0`);
+* the DLL sha256 in each record matching its arm's declared `ep_library_sha256`;
+* all 30 (workload, repeat) pairs bitwise identical **across arms**, so every ratio below is a
+  ratio between two runs that computed the same numbers.
+
+### 27.2 One summarizer, and the tests call it
+
+The rejected attempt failed review on a structural point worth restating, because it is easy to
+repeat: **its verdict gate existed only in its test file.** The shipped code emitted raw verdicts;
+the test re-implemented the witness rule and asserted the re-implementation agreed with itself.
+Deleting the shipped gate would not have turned anything red, because there was no shipped gate.
+
+`bench/crossbuild_summary.py` is the single authoritative implementation. The CLI
+(`--check`, `--finalize`), the published artifact and the test suite all call the *same* functions:
+
+```
+python bench/crossbuild_summary.py --check      # gate only, no write
+python bench/crossbuild_summary.py --finalize   # rewrites bench/results/real_model_crossbuild_gqa_landing_v2.json
+python bench/crossbuild_summary.py              # prints the table below
+```
+
+`gated_verdict()` is the gate. It downgrades a raw `FASTER`/`SLOWER` to `REFUSED` when any of the
+following holds, and the reason is written into the published row rather than only into an
+exception:
+
+| premise | what a violation means | verdict |
+|---|---|---|
+| the two arms' GQA path witnesses differ | if the pipeline keys are **identical** across arms the arms did not run different code, so a speed claim has no mechanism | `REFUSED` |
+| equivalence present, non-empty and `MATCH` on both arms | a timing whose outputs were never compared is not evidence | `REFUSED` |
+| model sha256 matches its independent pin | a "faster" run of a different file is not faster | `REFUSED` |
+| a record carrying a refusal also carries timing | a withdrawn record must not keep its number | raises `AdmissibilityError` |
+| `claimed_nodes` consistent with the model | screens a witness borrowed from another workload | `REFUSED` |
+| 3 of 3 repeats paired | a two-repeat verdict published as three | `REFUSED` |
+| outputs bitwise identical across arms | the arms did not compute the same thing | `REFUSED` |
+| the row is a calibration control | a control that defines the band may not be judged by it | `CALIBRATION` |
+
+`bench/test_crossbuild_summary.py` proves those gates are load-bearing rather than decorative. It
+holds 17 named properties and 13 **mutations of the shipped source**, compiled in memory. Each
+mutation deletes or bypasses exactly one gate — `elif False:` on the witness comparison, publishing
+`raw_verdict` instead of `gated_verdict`, `if False:` on the equivalence premise, on the model
+digest, on the completeness check, on the cross-arm output check, on the borrowed-witness screen,
+on the admissibility raise, on the frozen-digest check, grading the calibration rows, handing out
+the superseded PR #95 blocks. Two paired tests run over the matrix: every property must hold on the
+shipped module, and every property named by a mutation must **go red on that mutant**. A guard
+nothing can falsify fails the second test, which is the failure mode that got PR #95 rejected.
+
+### 27.3 The band, and why the old one could not have said anything else
+
+PR #95 set its band from the **`M = 1` prefill null control's own ratios** (`max |r − 1| = 5.10%`,
+which it also mislabelled a "half-range"; the true half-range of that set is 4.45%) and then
+graded that same control against that band. The control could not have come out anything but
+`NEUTRAL`: the band is by construction at least as wide as its widest deviation. A verdict that
+holds for every possible input is not a measurement.
+
+The fix separates the set that *defines* the band from the set that is *judged* by it, by a
+mechanical criterion that cannot be steered towards a result:
+
+> **A workload is CALIBRATION iff its `gqa_f16` path witness is empty on _both_ arms** — no GQA
+> pipeline was ever built, so the landed change cannot have moved it, and its spread is drift alone.
+
+That selects MobileNetV2 (N1, N16) and MiniLM (S128, S384): **4 workloads, 12 paired repeat
+ratios**, spanning `0.8819 – 1.1534`. The applied band is
+
+```
+band = max(BAND_FLOOR = 0.05, max |ratio - 1| over the 12 calibration ratios)
+     = max(0.05, 0.153416) = 0.153416
+```
+
+— the floor does not bind. **No Phi workload contributes to it**, so no subject helps set the
+threshold it is then measured against. The six Phi workloads are the subjects; the four controls
+are reported with their raw ratios and never receive a speed verdict.
+
+The rule is symmetric on purpose. PR #95 required *every* repeat to clear the band for `FASTER` but
+only the *median* for `SLOWER`, which makes a regression cheaper to claim than an improvement:
+
+```
+FASTER        iff min(ratios) > 1 + b
+SLOWER        iff max(ratios) < 1 - b
+NEUTRAL       iff every ratio lies within [1 - b, 1 + b]
+INDETERMINATE otherwise
+```
+
+`ratio = baseline_median_ms / candidate_median_ms`, paired **within** a repeat; `> 1` means the
+candidate build is faster. With `n = 3` this is an **envelope screen, not a confidence interval**.
+No p-value is computed and none is implied.
+
+**On precedence: this band is post-hoc, and there is no pre-registration.** The 60 records already
+existed when the rule above was written. No externally timestamped pre-timing rule exists for it,
+and none is claimed. PR #95's `preregistration` block was text embedded in its own artifact at
+finalize time — its digest binds the text to itself, not to a point in time — which is why it is
+withheld here rather than inherited, and why the phrase "pre-registered" appears nowhere in this
+section. Two things stand in for precedence and neither is a substitute: the calibration/subject
+split is mechanical, and the full sensitivity sweep below lets a reader apply their own band.
+
+### 27.4 What the records say
+
+Every cell is recomputed from `speed.samples_ms` in the frozen file by
+`bench/crossbuild_summary.py`; none is transcribed.
+
+| workload | role | candidate | baseline | ratio (median) | per-repeat | verdict |
+|---|---|---|---|---|---|---|
+| all-MiniLM-L6-v2-onnx/encode/S128 | calibration | 673.60 ms | 775.97 ms | 1.079× | 0.990 / 1.153 / 1.079 | CALIBRATION |
+| all-MiniLM-L6-v2-onnx/encode/S384 | calibration | 780.41 ms | 763.27 ms | 0.941× | 1.004 / 0.882 / 0.941 | CALIBRATION |
+| mobilenetv2-12/batch/N1 | calibration | 28.22 ms | 29.26 ms | 1.066× | 0.973 / 1.070 / 1.066 | CALIBRATION |
+| mobilenetv2-12/batch/N16 | calibration | 150.35 ms | 158.61 ms | 1.017× | 1.017 / 1.092 / 1.015 | CALIBRATION |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past1024 | subject | 716.04 ms | 728.90 ms | 1.006× | 1.006 / 0.987 / 1.018 | NEUTRAL |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/decode/M1/past128 | subject | 137.99 ms | 109.74 ms | 0.859× | 0.863 / 0.859 / 0.795 | INDETERMINATE |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M1/past0 | subject | 63.57 ms | 66.51 ms | 1.038× | 1.051 / 0.962 / 1.038 | NEUTRAL |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M128/past0 | subject | 1475.00 ms | 3064.11 ms | 2.077× | 2.089 / 2.075 / 2.077 | FASTER |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M32/past0 | subject | 399.47 ms | 842.79 ms | 2.053× | 1.278 / 2.053 / 3.578 | FASTER |
+| phi-3.5-mini-instruct-cuda-int4-rtn-block-32/prefill/M64/past0 | subject | 1484.56 ms | 1531.69 ms | 1.568× | 1.568 / 1.032 / 1.863 | INDETERMINATE |
+
+60 records, 60 admissible, 0 refused. Verdicts: **FASTER 2, SLOWER 0, NEUTRAL 2, INDETERMINATE 2,
+CALIBRATION 4.**
+
+Read as prose, and no wider than that:
+
+* **`M = 128` prefill is the result.** 2.077× median, per-repeat `2.075 – 2.089`, and the three
+  repeats do not merely clear the band — the smallest of them would survive a band of **107.5%**.
+  This is the one workload where the claim is not sensitive to any choice made in §27.3.
+* **`M = 32` prefill is real but wide.** Its *minimum* repeat is **1.278×**, which is the number to
+  quote; its median is 2.053× and its spread reaches 3.578×, an 2.8× range across three repeats of
+  the same cell. `FASTER` holds because even the worst repeat clears 1.153, but a factor of 2.8
+  between repeats is not a precision result and is not presented as one.
+* **`M = 64` prefill is indeterminate**, and stays indeterminate at *every* band examined: repeat 1
+  reads 1.032×, inside any band wide enough to be honest about this box, while repeats 0 and 2 read
+  1.568× and 1.863×. Something is bimodal here. **This is the observation handed to issue #96**, not
+  a speed claim.
+* **`decode past = 128` reads 0.859× — the candidate is slower — and is reported as
+  `INDETERMINATE`, not `SLOWER`.** This is the corrected control envelope doing exactly what it is
+  for: the largest band under which `SLOWER` would still hold is 13.67%, and the calibration set
+  says drift on this box reaches 15.34%. The regression is **descriptive** — all three repeats are
+  below 1, consistently, and it should be looked at — but it is not a thresholded verdict, because
+  the controls do not support one. PR #95 called it `SLOWER`; that call was an artefact of the
+  narrow circular band.
+* **`decode past = 1024` and the `M = 1` prefill null control are `NEUTRAL`**, and under the
+  corrected envelope the null control is *not eligible* for `FASTER` or `SLOWER` — its widest
+  deviation, 5.10%, is a third of the band. Under PR #95's band it sat exactly at the edge by
+  construction.
+* **MobileNetV2 and MiniLM are controls, not wins.** They have no `GroupQueryAttention`, they
+  define the band, and they are never graded. A reader who sees `1.079×` next to MiniLM should read
+  "this box drifts about 8% on a workload the change cannot have touched", not "MiniLM got faster".
+
+### 27.5 Sensitivity
+
+The band is a choice, so the choice is exposed. Verdict for every subject at seven bands — 5% (the
+floor), 5.10% (PR #95's superseded value, shown so the difference is visible rather than asserted),
+10%, 15%, 15.34% (applied), 20%, 25%, 30%:
+
+| subject | 5% | 5.10% | 10% | 15% | **15.34%** | 20% | 25% | 30% |
+|---|---|---|---|---|---|---|---|---|
+| prefill M=128 | FASTER | FASTER | FASTER | FASTER | **FASTER** | FASTER | FASTER | FASTER |
+| prefill M=32 | FASTER | FASTER | FASTER | FASTER | **FASTER** | FASTER | FASTER | INDETERMINATE |
+| prefill M=64 | INDET | INDET | INDET | INDET | **INDET** | INDET | INDET | INDET |
+| prefill M=1 (null) | INDET | INDET | NEUTRAL | NEUTRAL | **NEUTRAL** | NEUTRAL | NEUTRAL | NEUTRAL |
+| decode past=128 | SLOWER | SLOWER | SLOWER | INDET | **INDET** | INDET | NEUTRAL | NEUTRAL |
+| decode past=1024 | NEUTRAL | NEUTRAL | NEUTRAL | NEUTRAL | **NEUTRAL** | NEUTRAL | NEUTRAL | NEUTRAL |
+
+Break-even bands, i.e. the largest band at which each verdict still holds: `M = 128` **107.5%**,
+`M = 32` **27.8%**, `M = 64` **3.2%**, `decode past = 128` (SLOWER) **13.7%**. Only the first is
+robust to any plausible re-choice; `M = 32`'s survives every band examined below 27.8%; the decode
+regression's does not survive the observed control envelope, which is why it is not claimed.
+
+### 27.6 What the process lock proves, and what it does not
+
+The harness takes a byte-range lock with `msvcrt.locking(..., LK_NBLCK, ...)` on a handle held open
+for the run. **That lock is advisory and cooperative.** It excludes other *compliant harness
+processes* that take the same lock. It is not exclusive ownership of the GPU, it does not exclude
+anything else on the device, and the artifact does not claim it does.
+
+It proves: no other cooperating harness process ran a measurement concurrently with this one; the
+lock was acquired without waiting (0.0 s), held 1840.6 s and released cleanly with
+`state: RELEASED`, so the run was not silently split around a contention stall; and nothing was
+terminated to obtain it — the policy is wait, never kill.
+
+It does not prove a quiet machine, and the artifact's own record says so: **26 GPU compute
+application entries were recorded at acquire and 26 at release** — 30 processes once the `xN`
+multiplicities in that list are expanded — including `msedge.exe`, four `msedgewebview2.exe`, and
+two entries the probe could not name for lack of permissions. §20 remains
+the standing position on this box: it is contended, and the design answer is pairing within a
+repeat and interleaving the arms — not the lock.
+
+The stronger evidence is the one that does not depend on the lock at all: 60 records, 58 distinct
+PIDs, **zero overlapping timed spans**, checked directly from the recorded start/end timestamps.
+
+Those timestamps are ISO-8601 local times at **one-second resolution**, so the non-overlap check is
+`end <= start` on the sorted spans and two passes sharing a boundary second are not counted as an
+overlap. That is the honest reading of the clock the artifact recorded. It is also why the
+overlap claim is stated as *no pair of spans intersects at second resolution* rather than as a
+sub-millisecond guarantee: the spans are wall-clock envelopes around whole worker processes, each
+hundreds of times longer than the resolution, and two of the 60 share a PID because the OS reused
+it after an earlier worker had exited — which the ordering check confirms rather than contradicts.
+
+### 27.7 The compiled delta: bounded, not isolated
+
+The two builds are `c96e7d94ff706d26ee6a1bd9bb084c0ade426820` (baseline) and
+`85fbda29a92e0e99c3895be8b13664d4ee670c50` (candidate), two commits apart. Every input that reaches
+the `.dll` was enumerated — `rust/src/**/*.rs`, `rust/shaders/**` (compiled to SPIR-V by `build.rs`
+and embedded with `include_bytes!`), `rust/src/ops/shader_variants.txt`, `rust/build.rs`,
+`Cargo.toml`, `Cargo.lock`, `wrapper_ort.h`, and — the one PR #95 missed —
+`evidence/proof_ledger.jsonl`, which reaches the binary through `include_str!` at
+`rust/src/registry.rs:2306`.
+
+**Three differ:**
+
+| compiled input | what changed | on the timed path? |
+|---|---|---|
+| `rust/shaders/glsl/gqa_f16.comp` | one non-comment line: `layout(local_size_x = 1, …)` → `layout(local_size_x_id = 0, local_size_x = 1, …)`; the rest of the diff is comment | **yes** |
+| `rust/src/ops/attention.rs` | GQA dispatch gains `spec_constants: vec![local]` and `workgroups: [total.div_ceil(local), 1, 1]`, plus `gqa_local_size`, `GQA_MAX_LOCAL_SIZE`, `GQA_MIN_GROUPS`, `ENV_GQA_LOCAL_SIZE` and five `#[cfg(test)]` unit tests | **yes** |
+| `evidence/proof_ledger.jsonl` | header `content_fnv1a64` `8902d86b502e04e3` → `cb6391d0843c1bb1` and its `generated_at`; the GroupQueryAttention entry is re-witnessed on the RTX A1000 with new shader/source/spec digests and moves to the end. Entry count 133 on both sides | **no** |
+
+Unchanged: `rust/build.rs`, `Cargo.toml`, `Cargo.lock`, `shader_variants.txt`, every other `.rs`,
+every other shader.
+
+So the honest statement is **bounded attribution, not isolation**:
+
+* what *is* claimed — the only compiled difference **reachable from a timed inference** is the GQA
+  workgroup-packing change. `LEDGER_SOURCE`'s only non-test consumers are
+  `registry::baked_ledger_identity()` and its caller in `lib.rs`, a diagnostic string builder that
+  no inference path calls, so it cannot execute during a timed iteration;
+* what is **not** claimed — that the two binaries differ in nothing else. They differ by 3,072
+  bytes (2,560,000 → 2,563,072), and the baked ledger is very likely that difference. A binary hash
+  is not a path proof in either direction.
+
+Verified by `git diff --name-status c96e7d9 85fbda2`,
+`git grep -n 'include_str!\|include_bytes!' 85fbda2 -- rust/`,
+`git grep -n 'LEDGER_SOURCE\|baked_ledger_identity' 85fbda2 -- rust/src`, and
+`git diff -U0 c96e7d9 85fbda2 -- rust/shaders/glsl/gqa_f16.comp`.
+
+### 27.8 Path witnesses: what is witnessed and what is inferred
+
+The pipeline-cache keys recorded in each record are the path evidence:
+
+| workload | candidate key | baseline key |
+|---|---|---|
+| prefill M=128, M=64 | `gqa_f16:64` | `gqa_f16:` |
+| prefill M=32 | `gqa_f16:32` | `gqa_f16:` |
+| prefill M=1, decode past=128, past=1024 | `gqa_f16:1` | `gqa_f16:` |
+| MobileNetV2, MiniLM (all) | *(no `gqa_f16` pipeline built)* | *(none)* |
+
+The baseline key carries **no** local size because the baseline shader has no specialisation
+constant — its `spec_constants` list is empty. That difference is what makes the arms
+distinguishable, and it is the premise `gated_verdict()` enforces: identical keys across arms
+downgrade any speed verdict to `REFUSED`.
+
+The local size itself is a recorded field, not a reading of the key: every record's
+`path_witness.local_size` carries it, and the pipeline key corroborates it independently. What the
+artifact does **not** record is a dispatch grid.
+
+**`[32, 1, 1]` is an inference, not an artifact field, and is labelled as one.** No record in the
+frozen file carries a `grid`, `dispatch_grid` or `spec_const` field; nothing was added to the raw
+measurements to create one. What the witness alone establishes is weaker and exactly stated in
+`bench/results/real_model_crossbuild_gqa_landing_v2.json` under each row's `dispatch_grid`:
+
+* **witnessed**: when the candidate key is `gqa_f16:1`, `local == 1`, so the candidate's
+  `ceil(total / local)` equals `total` — which is precisely the baseline's workgroup count, for
+  *any* total. The grids are therefore **equal across arms** on those three workloads without
+  knowing `total`;
+* **witnessed**: `local == 1` bounds `total ∈ [32, 64)` by `gqa_local_size`'s own rule;
+* **inferred** (recorded as `inferred_grid` with its three `inference_inputs`, never as a
+  measurement): Phi-3.5 has 32 query heads and `M == 1`, so `total = B·Nq·S = 32` and the grid is
+  `[32, 1, 1]`. That interval contains 32 without pinning it.
+
+Adding an exact grid witness to the probe is cheap and is the right fix; it requires a new run, and
+this section deliberately does not take one.
+
+### 27.9 Counts, bound to the command that produced them
+
+PR #95 cited "155 tests" beside a file that has 14. Every count below names its exact command:
+
+| command | result |
+|---|---|
+| `python -m pytest bench/test_crossbuild_summary.py -q` | 32 passed |
+| `python -m pytest bench/test_crossbuild_gqa_landing.py -q` | see §27.11 |
+| `python -m pytest tests/ops/test_harness_census.py -q` | **14** tests |
+| `python -m pytest bench/test_perf_claims.py bench/test_real_model.py bench/test_paired_ratio.py -q` | 105 collected |
+| `python rust/tools/audit_instruments.py --check` | census verdict |
+
+Full-suite totals are a different measurement and are kept separate; a number quoted from a
+five-file run may not be cited beside a one-file claim.
+
+### 27.10 Models
+
+| model | pin | sha256 | bytes |
+|---|---|---|---|
+| Phi-3.5-mini-instruct int4 RTN block-32 | `foundry_discovery`, no hard-coded path | `3dbdd4b5…04dac3f` | 26,180,848 (+ 2,291,238,912 external `.onnx.data`, `9ce390a7…0e92217`) |
+| MobileNetV2-12 | repo model cache, checksum-pinned | `c0c3f76d…0432ad5` | 13,964,571 |
+| all-MiniLM-L6-v2 | `sentence-transformers/all-MiniLM-L6-v2` @ `1110a243fdf4706b3f48f1d95db1a4f5529b4d41`, `onnx/model.onnx` | `6fd5d72f…6046452` | 90,405,214 |
+
+MiniLM is pinned to an immutable Hugging Face revision — repo, revision, file path, sha256 and byte
+count — inside `bench/crossbuild_summary.py`'s `MODEL_PINS`, and the gate refuses any record whose
+model digest disagrees. That pin is **self-contained**: it depends on no other pull request, and in
+particular not on PR #83. Its text inputs are the two fixed sentence batches recorded in the
+artifact's `models` block.
+
+Neither published JSON contains an absolute private path or a credential; the lock file's directory
+is deliberately session-local and unpublished, and a test asserts both files are clean.
+
+### 27.11 What is still open
+
+* **`M = 64` prefill is bimodal** — `1.032 / 1.568 / 1.863` across three repeats of the same cell,
+  with identical outputs and identical pipeline keys. `M = 32` shows the same shape more widely
+  (`1.278 / 2.053 / 3.578`). Neither is explained here. Handed to **issue #96**, which is being
+  diagnosed separately; nothing in that diagnosis is imported into this section.
+* **`decode past = 128` is a descriptive regression**, 0.859× with all three repeats below 1. It
+  does not clear the control envelope, so it gets no verdict — but "no verdict" is not "no
+  problem", and it belongs in the same look as #96.
+* **`n = 3`.** Every verdict here is an envelope screen on three paired repeats. Widening the band
+  is the honest response to a noisy box; more repeats would be a better one, and would need a run.
+* **The band is post-hoc.** Mechanical subject/calibration separation and a published sensitivity
+  sweep are mitigations, not a substitute for a rule fixed before the data existed.
+* **The grid is inferred at `local == 1`.** A witness field would settle it; it needs a run.
+* **One box, one device.** RTX A1000, driver 573.44. Nothing here transfers to another GPU, and the
+  RTX 4060 numbers elsewhere in this file are not comparable.

@@ -450,6 +450,16 @@ BENCH_INSTRUMENT_FILES = [
     # run is admissible as evidence about device utilisation. Those are verdicts about a
     # measurement, which is this list's criterion.
     "real_model.py",
+    # Arrived with issue #69 (Switch, the cross-build speed proof rebuild). It is the
+    # clearest case this list has: `gated_verdict` IS the production admissibility gate --
+    # it decides whether a real timing may be published as FASTER/SLOWER at all, and
+    # `calibration_band`, `raw_verdict`, `witness_class`, `record_refusals` and
+    # `pair_repeats` are the premises it rests on. PR #95 was rejected precisely because
+    # that gate lived in a test file instead of a shipped module, so screening this one is
+    # not bookkeeping: it is the thing that keeps the gate falsifiable. Two-polarity tests
+    # for all eleven public functions live in bench/test_crossbuild_summary.py (which also
+    # carries the source-mutation battery) and bench/test_crossbuild_gqa_landing.py.
+    "crossbuild_summary.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -529,6 +539,21 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_devices_identity.py": (
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."
+    ),
+    # Arrived with issue #69 (Switch). Both are callers of crossbuild_summary.py, declared
+    # here rather than left to drift. The first carries the source-mutation battery that
+    # earns every gate in that module its `screened` state; the second checks the
+    # *publication* -- docs/PERF.md section 27 and the two committed JSONs -- against the raw
+    # records, which is the same relationship test_perf_claims.py has to section 26.
+    "test_crossbuild_summary.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries the "
+        "thirteen source mutations that earn crossbuild_summary's gates their `screened` "
+        "state."
+    ),
+    "test_crossbuild_gqa_landing.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Checks the "
+        "publication (docs/PERF.md section 27, the two committed crossbuild JSONs) against "
+        "the raw records, via the shipped summarizer."
     ),
 }
 

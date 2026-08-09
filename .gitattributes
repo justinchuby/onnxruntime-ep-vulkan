@@ -37,3 +37,10 @@
 # squash landing deletes the branch and the refs with it. Mark them binary so no
 # line-ending translation can touch them on checkout -- the digest is the whole point.
 ci/fixtures/cleanroom-redaction/*.pysrc -text
+
+# The issue #69 cross-build evidence is REUSED PR #95 bytes, imported unmodified. Its sha256
+# (d8df20637915417592640980b1d643031ff93ff3d67a520103ddbfc3b852ef74) is enforced by
+# bench/crossbuild_summary.py::load_frozen() before any number is derived from it, so a checkout
+# that rewrote its line endings would make the whole artifact refuse to load. Mark it binary: the
+# file is evidence, not source, and nothing may normalise it.
+bench/results/real_model_crossbuild_gqa_landing.pr95-frozen.json -text
