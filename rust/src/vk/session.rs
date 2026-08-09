@@ -9,7 +9,7 @@
 //! The dispatch path here is the same sequence as `dispatch_integration.rs` but reads from and
 //! writes to ORT-allocated CPU tensor buffers rather than test-generated data.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ash::vk;
@@ -698,6 +698,14 @@ pub(crate) struct VulkanSession {
     /// the outer dimension is 0 — it is only present to satisfy the descriptor-write constraint.
     /// Freed explicitly in `Drop` before `alloc` drops.
     zero_elem_placeholder: Option<GpuBuffer>,
+    /// Subgraph IDs whose command buffer this session has recorded at least once.
+    ///
+    /// The whole state behind [`trace::RecordPath::FirstRecord`] vs
+    /// [`trace::RecordPath::RecordedAgain`]. It is a set of IDs and not a cache of command
+    /// buffers: there is no command-buffer cache in this engine, which is exactly the fact the
+    /// record-path breakdown publishes. Entries are never removed — a subgraph released and
+    /// re-created would get a fresh ID from `ep.rs`.
+    recorded_subgraphs: HashSet<u64>,
 }
 
 /// Is the output-side device bind active for this process?
@@ -958,6 +966,7 @@ impl VulkanSession {
             instance,
             weight_caches: HashMap::new(),
             zero_elem_placeholder,
+            recorded_subgraphs: HashSet::new(),
         })
     }
 
@@ -2056,6 +2065,29 @@ impl VulkanSession {
         // Phase::Record wraps everything from vkBeginCommandBuffer through vkEndCommandBuffer.
         // The upload CPU-memcopy time is reported separately via record_transfer so Niobe's
         // harness can attribute it without mixing recording and copy costs.
+        //
+        // WHICH RECORDING PATH THIS CALL TOOK, reported at the one place that knows.
+        //
+        // `cmd_pool.begin()` on the next line *resets* the single pre-allocated command buffer:
+        // this engine holds no cached `VkCommandBuffer` for a subgraph, so no `Compute` can ever
+        // replay one. The path is therefore `FirstRecord` the first time this subgraph is
+        // dispatched and `RecordedAgain` every time after — never `Replay`, and never `Rerecord`,
+        // which would claim a shape-key change this engine does not track and did not observe.
+        // The shape key is empty for the same reason: there is no recorded shape to compare
+        // against, and passing a fabricated one would make the tracer's REPLAY-on-an-unseen-key
+        // reclassification report a state that cannot occur.
+        let record_path = if self.recorded_subgraphs.insert(subgraph_id) {
+            trace::RecordPath::FirstRecord
+        } else {
+            trace::RecordPath::RecordedAgain
+        };
+        t.record_path(
+            &format!("subgraph{subgraph_id}"),
+            record_path,
+            "",
+            kernels.len(),
+        );
+
         let _record_guard = t.phase(Phase::Record);
 
         // SAFETY: cmd_pool is live; no previous recording is in flight.

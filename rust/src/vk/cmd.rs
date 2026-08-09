@@ -84,18 +84,22 @@ impl CommandPool {
             .command_buffer_count(1);
 
         // SAFETY: pool is freshly created; ash_device is live.
+        //
+        // Both arms route through `counters::resources::command_buffer_outcome` (issue #88 / B2).
         let cmds = unsafe {
-            match ash_device.allocate_command_buffers(&alloc_info) {
-                Ok(c) => c,
-                Err(e) => {
-                    log::error!("vkAllocateCommandBuffers failed: {e}");
-                    // SAFETY: pool was created by us; no command buffers are live.
-                    // Already inside an outer unsafe block — no nested unsafe needed.
-                    ash_device.destroy_command_pool(pool, None);
-                    return None;
-                }
-            }
-        };
+            crate::counters::resources::command_buffer_outcome(
+                match ash_device.allocate_command_buffers(&alloc_info) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        log::error!("vkAllocateCommandBuffers failed: {e}");
+                        // SAFETY: pool was created by us; no command buffers are live.
+                        // Already inside an outer unsafe block — no nested unsafe needed.
+                        ash_device.destroy_command_pool(pool, None);
+                        None
+                    }
+                },
+            )
+        }?;
 
         Some(CommandPool {
             ash_device: ash_device.clone(),
@@ -332,9 +336,12 @@ pub(crate) unsafe fn wait_fence_then_destroy(ash_device: &ash::Device, fence: vk
         if e == vk::Result::ERROR_DEVICE_LOST {
             crate::counters::record_device_lost();
         }
-        return false;
+        return crate::counters::resources::queue_submit_outcome(false);
     }
-    true
+    // The submission is only "completed" once the fence says the GPU drained it — a submit that
+    // was accepted and then lost the device did not complete. Both arms route through the seam;
+    // see `counters::resources`.
+    crate::counters::resources::queue_submit_outcome(true)
 }
 
 /// Whether the device has been lost at any point in this process.

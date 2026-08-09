@@ -355,15 +355,21 @@ impl DispatchDescriptorPool {
             .max_sets(1)
             .pool_sizes(&pool_sizes);
         // SAFETY: ash_device is live; pool_info is valid.
-        let pool = unsafe {
+        //
+        // BOTH ARMS ROUTE THROUGH THE SEAM (issue #88 / B2). The seam counts the success-shaped
+        // value and returns its argument unchanged; the counter it writes is private to
+        // `counters::resources`, so there is nowhere else in this crate a failure could increment
+        // it from. See that module for why this is not the same as putting a `fetch_add` after
+        // the `Ok`.
+        let pool = crate::counters::resources::descriptor_pool_outcome(unsafe {
             match ash_device.create_descriptor_pool(&pool_info, None) {
-                Ok(p) => p,
+                Ok(p) => Some(p),
                 Err(e) => {
                     log::error!("vkCreateDescriptorPool failed: {e}");
-                    return None;
+                    None
                 }
             }
-        };
+        })?;
         Some(DispatchDescriptorPool {
             ash_device: ash_device.clone(),
             pool,
@@ -388,13 +394,16 @@ impl DispatchDescriptorPool {
             .descriptor_pool(self.pool)
             .set_layouts(&layouts);
         // SAFETY: pool and layout are valid; ash_device is live.
-        let sets = unsafe {
-            match self.ash_device.allocate_descriptor_sets(&alloc_info) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::error!("vkAllocateDescriptorSets failed: {e}");
-                    return None;
-                }
+        //
+        // The allocation failure arm routes through the *write* seam with `None`: the counter
+        // this seam guards is "sets allocated AND written", and a set that never got allocated
+        // certainly was not written. Counting the allocation separately would publish a resource
+        // no dispatch can bind. See `counters::resources`.
+        let sets = match unsafe { self.ash_device.allocate_descriptor_sets(&alloc_info) } {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("vkAllocateDescriptorSets failed: {e}");
+                return crate::counters::resources::descriptor_set_write_outcome(None);
             }
         };
         let set = sets[0];
@@ -424,7 +433,8 @@ impl DispatchDescriptorPool {
         // SAFETY: writes reference buffer_infos which are valid for this call.
         unsafe { self.ash_device.update_descriptor_sets(&writes, &[]) };
 
-        Some(set)
+        // Counted here and not at the allocation: only now is the set usable.
+        crate::counters::resources::descriptor_set_write_outcome(Some(set))
     }
 
     /// Reset the pool, freeing all descriptor sets allocated from it.
@@ -503,6 +513,134 @@ fn build_spec_info_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real, spec-sanctioned forced failure of `vkAllocateDescriptorSets`, run against a live
+    /// device: the pool is created with `max_sets(1)`, the first allocation succeeds and the
+    /// second must fail with `ERROR_OUT_OF_POOL_MEMORY`.
+    ///
+    /// # Why this test and not a source check (issue #88 / blocker B2)
+    ///
+    /// The gate this replaces read `pipeline.rs` and asserted that the counter increment appeared
+    /// after the success token. That is satisfied by any file whose tokens are in that order,
+    /// including one in which the increment has been moved into the failure arm. This drives the
+    /// production function, forces the production failure, and asserts on the published counter.
+    ///
+    /// Portability: pool exhaustion is a runtime error every conformant Vulkan 1.1 implementation
+    /// must report (`VK_ERROR_OUT_OF_POOL_MEMORY`), not undefined behaviour, and nothing here
+    /// depends on a vendor, a device kind or an extension. The test skips — loudly — when no
+    /// loader, ICD or capable device is present, because a skipped test that says why is a
+    /// different fact from a passing one.
+    #[test]
+    fn a_forced_descriptor_set_allocation_failure_leaves_the_success_counter_untouched() {
+        use crate::vk::device::Device;
+        use crate::vk::instance::Instance;
+
+        let _g = crate::allocator::ledger::test_lock();
+
+        let Some(instance) = Instance::create(false) else {
+            eprintln!(
+                "[SKIP] a_forced_descriptor_set_allocation_failure...: no Vulkan instance \
+                 (no loader or ICD). The seam's behavioural gates in counters.rs still ran."
+            );
+            return;
+        };
+        let devices = instance.enumerate_capable_devices();
+        let Some(capable) = devices.first() else {
+            eprintln!(
+                "[SKIP] a_forced_descriptor_set_allocation_failure...: no capable Vulkan device"
+            );
+            return;
+        };
+        // SAFETY: instance is live; `capable` came from this instance's enumeration.
+        let Some(device) = (unsafe { Device::create(instance.ash(), capable, false) }) else {
+            eprintln!(
+                "[SKIP] a_forced_descriptor_set_allocation_failure...: vkCreateDevice failed"
+            );
+            return;
+        };
+        let ash_device = device.ash();
+
+        // One binding, one storage buffer — the smallest layout a dispatch could use.
+        let bindings = [vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)];
+        let dsl_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+        // SAFETY: ash_device is live; dsl_info is valid.
+        let Ok(layout) = (unsafe { ash_device.create_descriptor_set_layout(&dsl_info, None) })
+        else {
+            eprintln!("[SKIP] a_forced_descriptor_set_allocation_failure...: no descriptor layout");
+            return;
+        };
+
+        // SAFETY: instance, physical device and device all belong to the same instance.
+        let Some(mut alloc) = (unsafe {
+            crate::vk::alloc::Allocator::new(instance.ash(), device.physical_device(), ash_device)
+        }) else {
+            // SAFETY: layout was created by us and nothing references it.
+            unsafe { ash_device.destroy_descriptor_set_layout(layout, None) };
+            eprintln!("[SKIP] a_forced_descriptor_set_allocation_failure...: no allocator");
+            return;
+        };
+        // SAFETY: alloc is live; the size is non-zero.
+        let Some(buf) = (unsafe { alloc.alloc_device("desc_seam_probe", 256) }) else {
+            // SAFETY: layout was created by us and nothing references it.
+            unsafe { ash_device.destroy_descriptor_set_layout(layout, None) };
+            eprintln!("[SKIP] a_forced_descriptor_set_allocation_failure...: no device buffer");
+            return;
+        };
+        let buffers = [(buf.buffer, 256u64)];
+
+        // SAFETY: ash_device is live for the pool's lifetime.
+        let Some(pool) = (unsafe { DispatchDescriptorPool::new(ash_device, 1) }) else {
+            // SAFETY: buf and layout were created by us.
+            unsafe {
+                alloc.free(buf);
+                ash_device.destroy_descriptor_set_layout(layout, None);
+            }
+            eprintln!("[SKIP] a_forced_descriptor_set_allocation_failure...: no descriptor pool");
+            return;
+        };
+
+        // ── Success arm: exactly one increment. ──
+        let before = crate::counters::resources::descriptor_sets_written();
+        // SAFETY: layout matches the single binding described by `buffers`; buf is live.
+        let first = unsafe { pool.allocate_and_write(layout, &buffers) };
+        assert!(
+            first.is_some(),
+            "the first allocation from a fresh pool must succeed"
+        );
+        let after_success = crate::counters::resources::descriptor_sets_written();
+        assert_eq!(
+            after_success,
+            before + 1,
+            "one written descriptor set must count exactly once"
+        );
+
+        // ── Forced failure arm: the pool was created with max_sets(1). ──
+        // SAFETY: same contract as above; the call is expected to fail, not to be invalid.
+        let second = unsafe { pool.allocate_and_write(layout, &buffers) };
+        assert!(
+            second.is_none(),
+            "a pool created with max_sets(1) must refuse a second allocation with \
+             VK_ERROR_OUT_OF_POOL_MEMORY — if this device accepted it, the forced failure did \
+             not occur and the assertion below would be vacuous"
+        );
+        let after_failure = crate::counters::resources::descriptor_sets_written();
+        assert_eq!(
+            after_failure, after_success,
+            "a FAILED descriptor-set allocation moved the success counter \
+             {after_success} -> {after_failure}"
+        );
+
+        // SAFETY: nothing was submitted, so no set is in use; everything here was created by us.
+        unsafe {
+            drop(pool);
+            alloc.free(buf);
+            ash_device.destroy_descriptor_set_layout(layout, None);
+        }
+    }
 
     #[test]
     fn pipeline_key_equality() {

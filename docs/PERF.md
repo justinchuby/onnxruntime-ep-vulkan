@@ -52,20 +52,24 @@ So our span vocabulary is different, and the difference is the whole point:
 |---|---|---|
 | `compile` | Shader module creation, pipeline layout + compute pipeline creation, descriptor layout. | Real host CPU work. Once per subgraph, amortised over the session. |
 | `prepack` | Weight repacking/quantisation-layout fixups on the host. | Real host CPU work. Once. |
-| `upload` | Staging-buffer write + transfer of weights and inputs to device-local memory. | Host time *plus* a real transfer. Counters carry bytes and effective GiB/s. |
-| `record` | Filling the command buffer: binds, push constants, barriers, dispatches. | Real host CPU work. Per `ENGINE.md` §6.1 this is record-once/replay-many, so a steady-state inference should show *no* `record` span at all — if it does, something is invalidating the recording. |
+| `upload` | Staging-buffer write + transfer of weights and inputs to device-local memory. | Host time *plus* a real transfer. Counters carry bytes and effective GiB/s. **Summary-only: no `vulkan.upload` span is emitted** — the engine folds this in through `record_transfer`. It happens *inside* the `record` bracket. |
+| `record` | Filling the command buffer: binds, push constants, barriers, dispatches. | Real host CPU work. Per `ENGINE.md` §6.1 this is record-once/replay-many, so a steady-state inference should show *no* `record` span at all — if it does, something is invalidating the recording. **This engine does not implement that model** (see `RecordPath` below), so `record` is paid on every `Compute` call. |
 | `submit` | `vkQueueSubmit` itself. | **Almost nothing.** See §1.3. |
 | `fence_wait` | Waiting for the submission's fence. | An **upper bound** on GPU execution, inflated by queue contention, other clients' work, and driver scheduling. Not kernel time. |
-| `readback` | Device→host transfer of outputs. | Host time plus a real transfer. Bytes + GiB/s counters. |
+| `readback` | Device→host transfer of outputs. | Host time plus a real transfer. Bytes + GiB/s counters. **Summary-only: no `vulkan.readback` span is emitted**, and it is **not** inside `record` — production reads outputs back after the record bracket closes, after `vkQueueSubmit` and after the fence wait, because the outputs do not exist until the GPU has drained. Corrected 2026-08-09 (issue #88); `Phase::Readback::nested_in()` previously claimed `record` as a parent. |
 
 Two further span-adjacent facts we record because they are the ones that mislead people:
 
-* **`RecordPath`** — `first_record` / `replay` / `rerecord`. This is our analogue of MLX's cache
-  HIT/MISS/RETRACE. It answers "did this inference reuse the command buffer, or did we rebuild
-  it?" A shape key never seen before for a given subgraph is classified `rerecord`, not
-  `replay`, even if a recording existed — resolving against a *set* of seen keys rather than a
-  single last-key, which is the lesson the MLX tracer learned the hard way about alternating
-  shapes.
+* **`RecordPath`** — `first_record` / `replay` / `rerecord` / `recorded_again`. This is our
+  analogue of MLX's cache HIT/MISS/RETRACE. It answers "did this inference reuse the command
+  buffer, or did we rebuild it?" A shape key never seen before for a given subgraph is classified
+  `rerecord`, not `replay`, even if a recording existed — resolving against a *set* of seen keys
+  rather than a single last-key, which is the lesson the MLX tracer learned the hard way about
+  alternating shapes. **Wired 2026-08-09 (issue #88) and the answer is uncomfortable:** this engine
+  holds no cached command buffer, so every `Compute` after the first for a given subgraph is
+  `recorded_again` — a fourth path, distinct from `rerecord` because no shape key changed — and
+  `replay` is **zero by construction**, not zero because replays are rare. The counters publish
+  `record_path_state`, which reads `UNOBSERVED` rather than `0` before anything has been recorded.
 * **`PartitionStats`** — `island_count`, `largest_island_nodes`, `largest_island_flops`,
   `concentration`, `boundary_bytes_per_inference`, `boundary_time_fraction`, and the `declined`
   histogram keyed by `deny!` reason. `largest_island_flops` is the metric of record
@@ -1006,38 +1010,53 @@ comparison and that refusal stands.
 
 ### 9.3 The phase split
 
-Shares are of **time inside `Compute`** — the sum of `vulkan.subgraph` spans. That is the EP's
-own view of its execution and is **not** process wall time; ORT's graph execution, the CPU EP's
-nodes between islands and session setup are all outside it. These shares may not be restated as
-shares of the benchmark's wall clock.
+Shares are of **time inside the EP's engine dispatch** — the sum of `vulkan.subgraph` spans.
+
+**Re-headed 2026-08-09 (issue #88).** These tables previously said "time inside `Compute`", and
+that denominator was wrong in a specific, mechanical way: `vulkan.subgraph` brackets
+`vk::session::dispatch_ort`, which the `Compute` callback reaches only *after* its null, liveness
+and binding checks, and which is never entered at all when one of them refuses. The callback body
+around it — ORT context reads, those checks, status construction, and the post-return
+broken-commitment disclosure — was outside every span in this table and outside every share
+computed from it. It is now measured by `vulkan.ort_compute_callback` (§9.11), and the numbers in
+this section are shares of the **dispatch**, not of `Compute`.
+
+The re-heading changes no measured value. **The runs below were captured before
+`vulkan.ort_compute_callback` existed, so the outer residual for them is not merely unknown — it
+is unmeasurable, and no figure for it is stated anywhere in this document.** What changed is the
+name of the denominator, which is what the row said it was a share of.
+
+It is also **not** process wall time; ORT's graph execution, the CPU EP's nodes between islands
+and session setup are all outside it. These shares may not be restated as shares of `Compute`, nor
+as shares of the benchmark's wall clock.
 
 The timed pass runs with tracing **off**; the split comes from a separate instrumented pass, and
 `tracing_overhead_ratio` (traced median ÷ untraced median) is measured rather than assumed:
 1.0207× on NVIDIA, 0.8659× on Intel. The Intel figure being below 1.0 is not negative overhead —
 it means the machine state moved between the two passes, and it is reported for that reason.
 
-**NVIDIA RTX 4060 Laptop** — 48563.24 ms inside `Compute`, 561 subgraph invocations:
+**NVIDIA RTX 4060 Laptop** — 48563.24 ms inside the **engine dispatch**, 561 subgraph invocations:
 
-| phase | total | share | n | median |
+| phase | total | share of dispatch | n | median |
 |---|---|---|---|---|
 | `vulkan.record` | **33456.17 ms** | **68.9%** | 561 | 50.774 ms |
 | ├ of which: host **upload memcpy** | **33042.07 ms** | **98.8% of record** | 561 | — |
 | └ of which: command construction | **414.10 ms** | 1.2% of record | 561 | 0.459 ms |
 | `vulkan.submit` | 308.18 ms | 0.6% | 561 | 0.452 ms |
 | `vulkan.fence_wait` | 13980.26 ms | 28.8% | 561 | 27.776 ms |
-| unattributed inside `Compute` | 818.63 ms | 1.7% | — | — |
+| **inner residual** (dispatch minus its top-level phases) | 818.63 ms | 1.7% | — | — |
 | **GPU kernels (sum)** | **6110.00 ms** | **12.6%** | 5457 | — |
 
-**Intel Iris Xe** — 72148.67 ms inside `Compute`, 561 subgraph invocations:
+**Intel Iris Xe** — 72148.67 ms inside the **engine dispatch**, 561 subgraph invocations:
 
-| phase | total | share | n | median |
+| phase | total | share of dispatch | n | median |
 |---|---|---|---|---|
 | `vulkan.record` | **23946.22 ms** | **33.2%** | 561 | 25.368 ms |
 | ├ of which: host **upload memcpy** | **17231.74 ms** | **72.0% of record** | 561 | — |
 | └ of which: command construction | 6714.48 ms | 28.0% of record | 561 | 1.393 ms |
 | `vulkan.submit` | 11830.53 ms | 16.4% | 561 | 0.349 ms |
 | `vulkan.fence_wait` | 34978.91 ms | 48.5% | 561 | 56.652 ms |
-| unattributed inside `Compute` | 1393.01 ms | 1.9% | — | — |
+| **inner residual** (dispatch minus its top-level phases) | 1393.01 ms | 1.9% | — | — |
 | **GPU kernels (sum)** | **31652.94 ms** | **43.9%** | 5457 | — |
 
 Per-kernel GPU time (summed from the per-span `gpu_ns` float, **not** from the integer-µs `dur`
@@ -1050,10 +1069,11 @@ Per-kernel GPU time (summed from the per-span `gpu_ns` float, **not** from the i
 | `ew_binary_mul_f16` | 1088 | 14.39 ms | 48.69 ms |
 | `ew_unary_sigmoid_f16` | 544 | 7.22 ms | 22.73 ms |
 
-`unattributed` is reported rather than folded into a neighbouring phase: it is the input-pointer
-reads, buffer allocation and descriptor-pool work before recording, plus the readback memcpy and
-the writes into ORT's output tensors after the fence. **A phase split whose parts do not sum to
-the whole should say so.**
+The row formerly headed `unattributed inside Compute` is the **inner residual** and is reported
+rather than folded into a neighbouring phase: it is the input-pointer reads, buffer allocation and
+descriptor-pool work before recording, plus the readback memcpy and the writes into ORT's output
+tensors after the fence. **A phase split whose parts do not sum to the whole should say so.** It
+is *not* the outer residual issue #88 asks for, and the two may never be added — see §9.11.
 
 ### 9.4 The 68% is not `vkCmd*`. It is `memcpy`. — the finding Switch needs
 
@@ -1270,6 +1290,69 @@ Per R9: *confidence scales with agreeing instruments; evidence scales only with 
 machine drift rather than negative overhead (it must be — but nothing in the harness rules the
 alternative out); and the Intel steady-state record median, which is provisional because the tail
 has not flattened.
+
+---
+
+### 9.11 Two residuals, two levels, and why they may never be added (issue #88)
+
+Landed 2026-08-09T04:33:34.895-07:00. **This section describes an instrument. It states no speed
+figure and no host-cost percentage**, because no run captured with `vulkan.ort_compute_callback`
+in the binary exists yet; every number in §9.3 predates it.
+
+The EP now emits three strictly-nested tiers, each self-identifying by `cat` and by a `tier` span
+arg so that no analyser has to infer a level from a name:
+
+| tier | span | `cat` | what it brackets |
+|---|---|---|---|
+| callback | `vulkan.ort_compute_callback` | `ep.compute_call` | the whole `OrtNodeComputeInfo::Compute` callback body, from just inside the `extern "C"` entry point to the moment the status is returned to ORT. Carries `outcome` ∈ `ok` / `failed` / `unresolved`. |
+| dispatch | `vulkan.subgraph` | `ep` | `vk::session::dispatch_ort` only. |
+| phase | `vulkan.record`, `vulkan.submit`, `vulkan.fence_wait`, … | `ep.phase` | one phase inside a dispatch. |
+
+From which there are **two** residuals. They are residuals of **different intervals against
+different denominators**:
+
+* **outer** = `Σ vulkan.ort_compute_callback − Σ vulkan.subgraph`, over the callback total. What
+  the callback body costs *around* the dispatch.
+* **inner** = `Σ vulkan.subgraph − Σ (top-level `ep.phase` spans)`, over the dispatch total. What
+  the dispatch costs *around* its own phases. This is the row §9.3 used to call "unattributed".
+
+**They are not two halves of one quantity and their sum names nothing.** The first attempt at this
+work shipped an analyser that subtracted the phase spans from the callback total and published the
+result under the outer residual's definition; that number is `outer + inner`. On a
+1000 µs callback / 900 µs dispatch / 700 µs phase case it reads **300 µs where the outer residual
+is 100 µs**. `bench/test_compute_attribution.py` pins exactly that case and asserts that no value
+equal to 300 appears anywhere in the artifact, under any key.
+
+`bench/phases.py::two_level_attribution` computes both or neither, and has three terminal states:
+`PASS`, `VACUOUS` (the trace carries no callback span at all — it predates the instrument, which is
+**not** evidence that the callback body is free) and `REFUSED`. It refuses on: an `ep.phase` span
+whose name this module cannot name; a missing/negative `dur`; a missing or wrong `boundary`/`tier`
+arg; overlapping or nested callback spans; a dispatch that escapes every callback; a phase that
+escapes every dispatch; a dispatch total exceeding the callback total; a phase total exceeding the
+dispatch total; and an `outcome` of `unresolved`. On a refusal **every percentage key is absent
+from the artifact rather than zero**, so a refusal cannot be formatted as `0.0%`. A callback whose
+outcome is `failed` is disclosed and never dropped: excluding it would shrink the denominator by
+exactly the calls most likely to be slow.
+
+**Where the timer sits, precisely.** The guard opens in `ep::compute` — the `extern "C"` entry
+point — immediately after the compute-info pointer is resolved, and is dropped explicitly after
+the post-return broken-commitment disclosure. It therefore covers the FFI status guard, all of
+`compute_impl` and the disclosure. It **excludes** the branch taken when ORT hands us a null
+`OrtNodeComputeInfo`, because there is nothing to attribute in that case and no subgraph identity
+to attribute it to. The span is scope-based; **no claim is made about a number of return paths.**
+
+**Portability.** Nothing here is device-specific or above Vulkan 1.1: the callback boundary is
+host-side `Instant` arithmetic on the same microsecond axis every other host span uses, and the
+four new resource counters are incremented from the existing call sites. No new Vulkan feature,
+extension or limit is required or queried.
+
+**Limitations, stated.** (1) No run with this instrument in the binary has been captured, so no
+outer residual has been measured on any device and none is quoted. (2) The outer residual is a
+*wall-clock* residual on the calling thread; it says where time went, not why. (3) A trace captured
+before this landed is `VACUOUS`, and that is a different fact from an outer residual of zero. (4)
+The four resource counters (`descriptor_pools_created`, `descriptor_sets_written`,
+`command_buffers_allocated`, `queue_submits_completed`) count **successes only** and are recorded
+as `uncensused` in `ci/census_surface_map.json` — no wiring-census mechanism reads them yet.
 
 ---
 

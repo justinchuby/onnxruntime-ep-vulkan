@@ -6658,6 +6658,127 @@ push is a second, staler answer to a question already being asked live — and s
 what it delivered. `--record` remains for a deliberate archival reading; anything it writes carries
 the frame above, so such a reading can go stale *detectably* instead of silently.
 
+### 9.5 Two levels of host-cost attribution, and the number that names nothing (issue #88)
+
+**Landed 2026-08-09T04:33:34.895-07:00. This is an instrument, not a result. No speed figure and
+no host-cost percentage is claimed anywhere in this section**, because no run captured with the
+new boundary span in the binary exists yet, and a percentage computed from a trace that predates
+the instrument would be a number about a different world.
+
+Issue #88 asked where the host cost of a `Compute` call goes. The EP could not answer, because it
+had never measured the callback. `vulkan.subgraph` — the span every phase table in `PERF.md` §9.3
+was a share of — brackets `vk::session::dispatch_ort`, which the `extern "C"` `Compute` callback
+reaches only after its null, liveness and binding checks and **never enters at all when one of
+them refuses**. Everything the callback body does around that dispatch was outside every span the
+EP emitted and outside every denominator computed from them.
+
+**RULING — there are two residuals, they are about different intervals, and adding them is a
+category error.**
+
+| tier | span | `cat` | `boundary` | brackets |
+|---|---|---|---|---|
+| callback | `vulkan.ort_compute_callback` | `ep.compute_call` | `ort_compute_callback` | the whole `OrtNodeComputeInfo::Compute` callback body |
+| dispatch | `vulkan.subgraph` | `ep` | `engine_dispatch` | `vk::session::dispatch_ort` only |
+| phase | `vulkan.record`, `vulkan.submit`, `vulkan.fence_wait`, … | `ep.phase` | — | one phase inside a dispatch |
+
+* **outer residual** = `Σ vulkan.ort_compute_callback − Σ vulkan.subgraph`. Denominator: the
+  callback total. This is the quantity issue #88 names. It covers the ORT context reads, the
+  null/liveness/binding checks, status construction, the post-return broken-commitment disclosure,
+  and every call that refused before a dispatch was attempted.
+* **inner residual** = `Σ vulkan.subgraph − Σ (top-level `ep.phase` spans)`. Denominator: the
+  dispatch total. This is the row `PERF.md` §9.3 used to head `unattributed inside Compute`: input
+  pointer reads, buffer allocation, the readback memcpy and the writes into ORT's output tensors.
+
+**Their sum names nothing and no artifact in this repository holds it.** This ruling exists
+because the first attempt at issue #88 produced exactly that number: an analyser that subtracted
+`record + submit + fence_wait` from the callback total, and published the difference under the
+outer residual's definition. That difference is `outer + inner`. On a 1000 µs callback / 900 µs
+dispatch / 700 µs phase case it reads **300 µs where the outer residual is 100 µs** — a three-fold
+overstatement of what the callback body costs, with a correct-looking label. The fixture contained
+`vulkan.subgraph` and the analyser discarded it, so the one span that could have distinguished the
+two levels was present and unread.
+
+Three things follow, and each is enforced rather than described:
+
+1. **The names make substitution impossible.** `bench/phases.py::two_level_attribution` publishes
+   `outer_residual_us` and `inner_residual_us` with `outer_residual_def`, `inner_residual_def` and
+   `never_sum_note` beside them, and every percentage carries its denominator in the key
+   (`outer_residual_pct_of_callback_total`, `inner_residual_pct_of_dispatch_total`). There is no
+   key named `residual_us`. `bench/test_compute_attribution.py` walks the whole artifact and
+   asserts that **no value equal to 300 appears anywhere in it** on the canonical case.
+2. **Both, or neither.** The function has three terminal states (R13). `PASS`; `VACUOUS` when the
+   trace carries no callback span at all — which is what every trace committed before today looks
+   like, and is **not** evidence that the callback body is free; and `REFUSED`. It refuses on an
+   unknown `ep.phase` span name, a missing or negative `dur`, a missing or wrong `boundary`/`tier`
+   arg, overlapping or nested callback spans, a dispatch that escapes every callback, a phase that
+   escapes every dispatch, a dispatch total exceeding the callback total, a phase total exceeding
+   the dispatch total, and an `outcome` of `unresolved`. **On a refusal every percentage key is
+   absent from the returned artifact rather than zero**, so a refusal cannot be rendered as
+   `0.0%`. A callback whose outcome is `failed` is disclosed and never dropped: silently excluding
+   it would shrink the denominator by exactly the calls most likely to be slow.
+3. **Unknown phase names fail closed.** `bench/phases.py::HOST_PHASES` is a copy of the EP's
+   `Phase` enum, and a copy drifts. `unknown_phase_spans` is a falsifier in `analyse()`: any
+   `cat:"ep.phase"` span whose name it cannot name goes red and refuses the attribution. Without
+   it a drifted phase would be silently dropped by `phase_spans` and would **reappear inside the
+   inner residual**, read as host cost nobody wrote code for.
+
+**Where the callback timer sits, stated exactly.** The guard opens in `ep::compute` — the
+`extern "C"` entry point — immediately after the compute-info pointer is resolved, and is dropped
+explicitly after the post-return broken-commitment disclosure. It covers the FFI status guard, all
+of `compute_impl`, and that disclosure. It **excludes** the branch taken when ORT hands us a null
+`OrtNodeComputeInfo`, because there is no subgraph identity to attribute anything to there. The
+span is **scope-based**: it is emitted by a `Drop` impl, so it cannot be desynchronised from a
+return, and **no claim is made about how many return paths the function has**. The `outcome` arg
+defaults to `unresolved` and is set only where the status is known; an `unresolved` span is an
+instrument error and the analyser refuses on it rather than reading it as a success.
+
+**`Phase::Readback` was nested in `Phase::Record` and is not.** Production reads outputs back in
+`dispatch_ort` *after* the record guard is dropped, *after* `vkQueueSubmit` and *after* the fence
+wait — the outputs do not exist until the GPU has drained. `nested_in()` now returns `None` for
+it. The false parentage made the `SIBLING TOTAL` line drop a genuine top-level interval, and told
+every aggregator that reads the `nested_in` span arg to subtract readback from a bracket that
+never contained it. `Phase::Upload` keeps `Some(Record)`, because the staging memcpy genuinely is
+inside that bracket. Both are now additionally declared **summary-only** by `Phase::emits_span()`:
+production reaches them through `record_transfer`, which folds a duration without opening a span,
+so a reader will find no `vulkan.upload` or `vulkan.readback` event in the trace JSON and must not
+read that absence as "no transfer happened". The summary table marks those rows `[summary-only: no
+span]`, derived from `emits_span()` rather than restated.
+
+**Success counters are counted at a seam, and the seam is the argument.** Three new resource
+counters — `descriptor_pools_created`, `descriptor_sets_written`, `command_buffers_allocated` —
+join the existing `queue_submits_completed`. Each is a module-private `static` inside
+`counters::resources` whose **only** writer is a value-preserving seam
+(`fn descriptor_pool_outcome<T>(Option<T>) -> Option<T>` and friends) that counts the
+success-shaped value and returns it unchanged. The structural claim is narrow and checkable:
+because the static is private and the seam is the sole write, **there is no reachable increment
+that a later edit could move into a failure arm** — there is nothing to move. That replaces three
+lexical "the increment appears after the `?`" guards, which stayed green under exactly that edit.
+The gates are behavioural: a forced `None` must leave the counter unchanged; ten held-out
+mis-wired reimplementations (`count_on_failure`, `count_always`, `count_never`, `count_twice`,
+`swallow`, `fabricate`, and four boolean analogues) run through the *same* protocol and every one
+must go red; and a held-out **correct** implementation must pass it, so a protocol that rejects
+everything is itself detected. On top of that, `vk/pipeline.rs` exhausts a real `max_sets(1)`
+descriptor pool on a live device and asserts the counter does not move. `queue_submits_completed`
+counts only submissions that reached fence completion, and its existing guard is preserved.
+
+**`RecordPath` is wired, and the answer is that this engine does not amortise.**
+`vk::session::dispatch_ort` now resolves `FIRST_RECORD` against a session-held set of recorded
+subgraph ids, and everything after is `RECORDED_AGAIN` — a fourth variant, deliberately not spelled
+like `RERECORD`, which means *a re-record caused by a shape-key change* and is a different fact.
+`REPLAY` is **zero by construction**: `cmd_pool.begin()` resets the single pre-allocated buffer on
+every `Compute`, so there is no replay path to take, and the summary says so rather than letting a
+zero read as "replays were rare". Absence prints `UNOBSERVED`, never `0`.
+
+**Portability.** Nothing added here is device-specific or above Vulkan 1.1. The callback boundary
+is host-side `Instant` arithmetic on the microsecond axis every other host span already uses; the
+resource counters are folded at existing call sites; no new extension, feature or limit is queried.
+
+**Extent, stated.** The ABI is bumped to version 9 with the eight new fields **appended** and the
+layout hash registered, so no existing offset moves. The four resource counters and the four
+record-path counters are recorded as `uncensused` in `ci/census_surface_map.json` — no
+wiring-census mechanism reads them yet, and that gap is owned rather than hidden. And, again: **no
+outer residual has been measured on any device, so none is quoted.**
+
 ---
 
 ## 10. Milestones

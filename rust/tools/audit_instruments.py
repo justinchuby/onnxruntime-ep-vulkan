@@ -510,6 +510,12 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_pinned_bytes.py": "test module - a caller, screened as polarity, not as an instrument.",
     "test_path_screen.py": "test module - a caller, screened as polarity, not as an instrument.",
     "test_phases.py": "test module.",
+    # Arrived with issue #88 (Morpheus, two-level host-cost attribution). A test module: it is
+    # the caller that supplies both polarities for `phases.py::two_level_attribution`,
+    # `callback_spans` and `unknown_phase_spans`, so it is screened AS polarity and never as an
+    # instrument in its own right.
+    "test_compute_attribution.py": (
+        "test module — a caller, screened as polarity, not as an instrument."),
     "test_plausible_but_wrong.py": "test module.",
     "test_run_disturbance.py": "test module.",
     "test_tenancy_signature.py": "test module.",
