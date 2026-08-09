@@ -4705,20 +4705,48 @@ Two facts fall out, and both were surprises:
 
 * **`q_gemv` decode time is flat at ~17.5 ms at every cache length.** All of decode's growth is
   GQA. The quantised GEMM is not the decode problem; it is not even a large part of it.
-* **Weight streaming is a minority cost at width.** The tiled and untiled arms differ *only* in how
-  many passes they make over the same 2.291 GB of packed weights — `M` passes untiled against
-  `ceil(M/4)` tiled — so differencing them gives a marginal streaming bandwidth. Eight prefill `M`
-  points yield **seven** differential points: `M = 1` yields none, because both arms make exactly
-  one pass there and Δpasses is zero. Over those seven (`M = 2 … 128`, from
-  `real_model_latency_before_gqa.json`) the readings are **199.7, 244.5, 242.8, 238.8, 226.8,
-  222.5, 217.4 GB/s** — range **200–245**, median **227**, and above the ~192 GB/s spec sheet at
-  every point, which is what L2 reuse looks like. `M = 2` is the low end and the noisiest point
-  (one differenced pass, no averaging); the six points from `M = 4` up sit in 217–245. One full
-  weight pass costs 9.4–11.5 ms (median 10.1). At `M = 128` the tiled arm makes 32 passes, so
-  streaming is ~323 ms of the 3004.55 ms tiled time — **~11%**.
+* **Weight streaming at width — the pass count, corrected 2026-08-08 (issue #81).** The tiled and
+  untiled arms differ *only* in how many passes they make over the same 2.291 GB of packed
+  weights: `M` passes untiled against **`ceil(M/2)`** tiled.
 
-So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — would be
-optimising a tenth of the wide-prefill cost. The data said to go elsewhere, so this branch did.
+  > **CORRECTION.** This paragraph previously said `ceil(M/4)`. That was wrong, and it was wrong
+  > about the shipping code rather than about a plan: `GEMV_MAX_ROWS` is 4, but the *selected*
+  > row tile on every Phi-3.5 prefill shape is **2**, because `cols = 16` and `GEMV_MAX_TILE` is
+  > 32, so `(16, 4)` is over the accumulator budget and never chosen. `rows = 2` is asserted
+  > directly in `ops::quant::tests::a_prefill_shape_takes_a_row_tile_and_it_is_the_cheapest_legal_one`
+  > and mirrored in `bench/test_weight_reread.py::test_the_tile_picker_mirrors_the_host`. The
+  > ceiling constant was read where the selected tile was meant.
+  >
+  > **What the correction costs.** Every quantity below that was *derived* from Δpasses is
+  > therefore derived from the wrong Δpasses, and all of it is **WITHDRAWN**:
+  >
+  > * the seven differential bandwidth readings (199.7, 244.5, 242.8, 238.8, 226.8, 222.5,
+  >   217.4 GB/s), their range, their median, and the "above the ~192 GB/s spec sheet" reading;
+  > * the per-pass cost of 9.4–11.5 ms (median 10.1);
+  > * the conclusion that streaming is **~323 ms of 3004.55 ms at `M = 128`, ~11%**.
+  >
+  > These are not restated with a corrected divisor here. Rescaling them would require assuming
+  > exactly how they were computed from `real_model_latency_before_gqa.json`, and an assumed
+  > derivation is not a measurement. Re-deriving them needs a run, and this correction has not
+  > run one. **The share of wide-prefill time attributable to weight streaming is UNMEASURED as
+  > of 2026-08-08.**
+  >
+  > **What survives.** Two things, and only these. (a) The *pass counts* themselves, which follow
+  > from the selector and not from any timing: at `M = 128` the tiled arm makes `ceil(128/2)` =
+  > **64** passes, not 32, and `M = 1` still yields no differential point because both arms make
+  > exactly one pass there. (b) The measured GPU attribution table above, which is read off
+  > `real_model_gqa_local_size.json` per kernel and never went through Δpasses at all — `q_gemv`
+  > is 35.2% of GPU time at `M = 128` by direct timestamp, and that number is unaffected.
+  >
+  > **What this does not re-litigate.** PR #53 chose not to widen `q_gemv`'s scalar `B` loads.
+  > That decision is history and this correction does not reverse it; what it does is remove the
+  > "~a tenth of wide-prefill cost" *number* from the record, so that a future reader does not
+  > cite an arithmetic that was never right. If the lever is reconsidered, it needs a fresh
+  > reading. Class: the withdrawn quantities were MODEL (derived), not MEASUREMENT.
+
+So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — was set aside on
+the strength of the withdrawn figure above. Reconsidering it requires a measurement, not this
+paragraph.
 
 ### 26.5 The finding: one lane per subgroup
 

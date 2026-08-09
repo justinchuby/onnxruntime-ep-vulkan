@@ -45,11 +45,27 @@ that argument is `probe_roofline.py`'s, unchanged and still an argument. What ha
 that the multiplicity is now measured: if two workgroups named the same blob, or one workgroup
 named it twice, this probe now says so.
 
-Run:  python bench/results/probe_weight_reread.py
+Run:  python bench/results/probe_weight_reread.py            # prints; writes bench/_scratch/
+      python bench/results/probe_weight_reread.py --out X   # writes X instead
+      python bench/results/probe_weight_reread.py --out bench/results/weight_reread_phi35.json \
+             --allow-tracked                                # replaces the committed record
+
+WHERE IT WRITES, AND WHY THAT IS NOT WHERE IT USED TO
+=====================================================
+This probe used to end `main()` with an unconditional write onto the *tracked*
+`bench/results/weight_reread_phi35.json`. Running it to read it therefore modified committed
+evidence, and the modification was invisible until `git status` said so — often several commits
+later. The record in `bench/results/` is a statement about one run on one machine, not a cache;
+replacing it silently makes two different measurements look like one that drifted.
+
+Writing is now explicit: the default destination is `bench/_scratch/`, which `bench/.gitignore`
+already ignores, and overwriting anything git tracks requires `--allow-tracked`. The guard fails
+closed — if it cannot tell whether a destination is tracked, it refuses. See `bench/public_paths.py`.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -65,6 +81,13 @@ sys.path.insert(0, str(ROOT / "bench"))
 sys.path.insert(0, str(ROOT / "bench" / "results"))
 
 from spirv_simt import Dispatch, InstrumentError, SpirvModule  # noqa: E402
+
+from public_paths import (  # noqa: E402
+    TrackedWriteRefused,
+    assert_public,
+    public_path,
+    resolve_out,
+)
 
 LEDGER = ROOT / "evidence" / "proof_ledger.jsonl"
 SHADER_STEM = "q_gemv_matmul_nbits_f16"
@@ -121,8 +144,20 @@ def resolve_model() -> pathlib.Path:
 
 
 def _result_identity(model: pathlib.Path) -> dict:
+    """The model this record is about, in a form that can be published.
+
+    `onnx_file` is a *public* path (`bench/public_paths.py`), not the absolute one. The absolute
+    path is an operator's account name written into a file that gets pushed to a public
+    repository, and it was never the identifying field in the first place: `onnx_sha256` is
+    exact, the path is at best suggestive — two operators with the same model have the same hash
+    and different paths, one operator with two models has the same-shaped path and two hashes.
+
+    `assert_public` is not decoration. It re-reads the rendered string rather than trusting the
+    conversion, and raises rather than publishing anything that still looks absolute or still
+    spells out who ran it. A record that cannot be written safely is not written.
+    """
     return {
-        "onnx_file": str(model),
+        "onnx_file": assert_public(public_path(model), field="onnx_file"),
         "onnx_sha256": _model_provenance.sha256_of(model),
         "provider": _PHI35_SPEC.execution_provider,
         "resolved_by": "PHI35_MODEL override" if os.environ.get("PHI35_MODEL")
@@ -557,8 +592,57 @@ def positive_controls(mod: SpirvModule) -> dict:
 
 # -- main --------------------------------------------------------------------------------------
 
+#: File name used under `bench/_scratch/` when `--out` is not given, and the name of the
+#: committed record this probe's evidence lives in. One constant so the default destination and
+#: the tracked record can never drift into two different names.
+RECORD_NAME = "weight_reread_phi35.json"
 
-def main() -> int:
+
+def build_parser() -> argparse.ArgumentParser:
+    """The probe's command line. Separated from `main` so tests can read it without running it.
+
+    Two flags, and the pair is the whole safety property:
+
+    * `--out` names the destination; unset means `bench/_scratch/<RECORD_NAME>`, which git
+      ignores. Running the probe with no arguments therefore cannot modify anything tracked.
+    * `--allow-tracked` is the operator saying, in as many words, that they intend to replace
+      committed evidence. It is required, not merely advisory, and the check behind it fails
+      closed: a destination whose tracked-ness cannot be determined is refused.
+    """
+    p = argparse.ArgumentParser(
+        prog="probe_weight_reread.py",
+        description=(
+            "Walk the compiled q_gemv module over the whole Phi-3.5 dispatch grid and report "
+            "weight-read amplification. Writes to bench/_scratch/ unless told otherwise."
+        ),
+    )
+    p.add_argument(
+        "--out",
+        default=None,
+        metavar="PATH",
+        help=(
+            f"where to write the JSON record (default: bench/_scratch/{RECORD_NAME}, which is "
+            "gitignored)"
+        ),
+    )
+    p.add_argument(
+        "--allow-tracked",
+        action="store_true",
+        help=(
+            "permit --out to name a file git tracks. Without this, writing over committed "
+            "evidence is refused."
+        ),
+    )
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        out = resolve_out(args.out, RECORD_NAME, allow_tracked=args.allow_tracked)
+    except TrackedWriteRefused as e:
+        print(f"ERROR(instrument=tracked_write_refused): {e}", file=sys.stderr)
+        return 4
     try:
         path, blob, digest = locate_module(SHADER_STEM)
         mod = SpirvModule(blob)
@@ -701,9 +785,12 @@ def main() -> int:
         print(f"ERROR(instrument): {e}", file=sys.stderr)
         return 4
 
-    out = ROOT / "bench" / "results" / "weight_reread_phi35.json"
+    # The write stays here, inline, rather than moving into `public_paths`. `ci/phi35_identity
+    # _audit.py` finds record producers structurally — a write sink whose argument subtree
+    # contains `json.dumps(...)` — so hoisting this call into a helper would delete this probe
+    # from that audit's producer set. The screen would go quiet rather than red. `public_paths`
+    # hands back a destination; the writing is this file's.
     out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
-
     print("WEIGHT RE-READ — executed against the compiled kernel, not asserted")
     print("=" * 78)
     print(f"  module           {SHADER_STEM}  digest {digest}  ({len(blob):,} B)")
@@ -738,7 +825,7 @@ def main() -> int:
               f"   tiled {r['tiled_amplification']:>9.6f}"
               f"   weight bytes not named {r['weight_bytes_not_named_because_of_the_tile']:>15,}")
     print(f"\n  -> {verdict}")
-    print(f"\n  record: {out}")
+    print(f"\n  record: {public_path(out)}")
     return 0
 
 

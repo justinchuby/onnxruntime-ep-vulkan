@@ -5735,6 +5735,57 @@ arm you cannot measure honestly**, and it is also an arm you cannot bisect in th
 plumbing is locked by `rust/tests/row_tile_fallback.rs`, which lives outside `src/ops/` because
 `tests/layering.rs` forbids `unsafe` there and mutating process environment requires it.
 
+#### The instrument beside the kill switch — `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` (issue #81)
+
+A ceiling cannot break a tie, and there is a tie. When `cols` divides `N` and `rows` divides `M`,
+`gemv_named_bytes` separates into a weight term that depends only on `rows` and an activation term
+that depends only on `cols`:
+
+```
+weight     = M*N*K * (bits/8) / rows
+activation = M*N*K * a_bytes  / cols
+```
+
+At `bits = 4, a_bytes = 2` the pairs `(16, 2)` and `(8, 4)` are swaps of one another —
+`4/(8·2) + 2/16 = 4/(8·4) + 2/8` — and name **exactly** the same bytes. `gemv_tile_with` improves
+strictly, so it keeps the incumbent; `GEMV_MAX_ROWS` only ever *removes* candidates, so no setting
+of it reaches `(8, 4)`. The equal-traffic arm was unreachable from the shipping surface, and
+unreachable is **unmeasured**, which §10.0.1 R12 insists is not the same fact as measured and no
+different.
+
+`ONNXRUNTIME_EP_VULKAN_GEMV_TILE="cols,rows"` makes it dispatchable. Four properties, and each is
+a deliberate difference from the kill switch above:
+
+1. **Absent is the shipping selector, not a copy of it.** `gemv_tile_with_request(.., None)` calls
+   `gemv_tile_with` with the arguments the shipping path always passed. Byte-identity by
+   construction; there is no second search to drift.
+2. **It refuses; it never clamps.** The grammar is exactly `<digits>,<digits>` — no whitespace, no
+   sign, no radix prefix, no leading zero, no third field, both values inside `u32`, both `>= 1`.
+   A value that parses but names a pair this module cannot execute is refused too, against the
+   same bounds the search obeys. The refusal is an `EpError::Internal` raised **before**
+   `ctx.dispatch`, so no pipeline is built. This is the opposite of `GEMV_MAX_ROWS`'s "a typo means
+   the default", and correctly so: a typo in a *fallback* must not take the process down, whereas
+   a typo in an *instrument* that silently ran the incumbent would publish a control arm's
+   measurement under a treatment arm's name.
+3. **It does not reach past the decode short circuit.** At `m <= 1` the selector decides before it
+   searches, and the override does not override that. Decode therefore stays byte-identical
+   between arms, which is what makes it the **null control** of a whole-model A/B rather than a
+   second treatment. The outcome is reported (`TileChoice::DecodeUnchanged`), not swallowed.
+4. **A contradiction with the ceiling refuses.** Asking for `rows = 4` in a process that has pinned
+   `GEMV_MAX_ROWS` to 1 is two experiments at once, so neither runs.
+
+The witness is a readback, not an echo: `counters::gemv_tile_spec_constants()` reads indices 4 and
+6 out of the `pipeline_variants` entries the engine records at pipeline-creation time and publishes
+`"<cols>,<rows>"`, `"MIXED"`, `"UNRECORDED"` or `"UNOBSERVABLE"` in the counters JSON. A field that
+reported the *request* could report identically for two runs that built the same pipeline.
+`rust/tests/gemv_tile_override.rs` drives the real registry handler and asserts that the two arms
+differ in exactly those two constants and in the dispatch grid.
+
+**Nothing is measured by this.** The `(8, 4)` arm is dispatchable and witnessed; whether it differs
+from `(16, 2)` in time is UNMEASURED. A harness that measures it must use prefill widths that are
+multiples of 4 — below that, `rows = 4` rounds up to a whole tile and the arms are no longer
+equal-traffic, so a difference would be a rounding artefact wearing the tile's name.
+
 #### What is proven, and the one thing that is not
 
 Three levels, none of them a whole-model claim:
@@ -5795,8 +5846,13 @@ is why the headline reads 64.6% here and not 64.7%.
 
 GQA, not the quantised GEMM this EP has spent its optimisation effort on, is the largest single
 consumer of device time in Phi-3.5 at every width above `M = 1`. PR #53's own named next levers
-(widen the 32-bit scalar `B` loads, raise the accumulator budget) address the *minority* cost;
-`docs/PERF.md` §26 shows the differential bandwidth measurement that establishes that.
+(widen the 32-bit scalar `B` loads, raise the accumulator budget) address a cost whose *share* is
+no longer quantified: `docs/PERF.md` §26.4's differential bandwidth figure was derived from a
+`ceil(M/4)` pass count where the shipping selector uses `ceil(M/2)`, and was withdrawn on
+2026-08-08 (issue #81). The per-kernel table above is unaffected — it is read straight off
+`by_kernel_us` and never passed through a pass count — so `q_gemv` at 35.2% of GPU time at
+`M = 128` stands. What is withdrawn is the finer claim about how much of *that* 35.2% is weight
+streaming.
 
 #### The mechanism
 

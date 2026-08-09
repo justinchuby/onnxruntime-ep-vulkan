@@ -362,6 +362,70 @@ def test_the_tile_picker_mirrors_the_host():
                         <= wr.gemv_named_bytes(m, n, bpc * 32, 4, 2, wr.gemv_cols(n, wg), 1))
 
 
+def test_the_equal_traffic_arm_is_a_tie_the_picker_cannot_break():
+    """Issue #81's premise, held in the Python mirror as well as in Rust.
+
+    When `cols` divides `N` and `rows` divides `M`, `gemv_named_bytes` separates cleanly:
+
+        weight     = M*N*K * (bits/8) / rows      -- depends on `rows` only
+        activation = M*N*K * a_bytes  / cols      -- depends on `cols` only
+
+    so at `bits = 4, a_bytes = 2` the pair `(16, 2)` and `(8, 4)` are *swaps* of one another —
+    `4/(8*2) + 2/16 = 4/(8*4) + 2/8 = 0.375` — and name **exactly** the same total. `gemv_tile`
+    improves strictly, so the incumbent wins the tie, and `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS`
+    is a ceiling: it can only remove candidates, so no setting of it can break a tie. `(8, 4)` is
+    therefore unreachable from the shipping surface, which is why
+    `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` exists.
+
+    The divisibility condition is not a technicality and is asserted in both directions below: at
+    `M = 2` the `rows = 4` arm rounds up to a whole tile and moves *more* activation traffic, so
+    an A/B run at a prefill width that is not a multiple of 4 is not an equal-traffic comparison
+    at all. A later harness that ignored that would attribute a rounding artefact to the tile.
+
+    NOTE ON SCOPE: nothing here measures anything. `(8, 4)` remains UNMEASURED — this asserts
+    that it is *equal in the model* and *unreachable by the picker*, which is precisely the pair
+    of facts that makes measuring it worthwhile and impossible today.
+    """
+    for K, N in ((3072, 9216), (3072, 3072), (3072, 8192), (3072, 32064), (8192, 3072)):
+        wg = wr.gemv_workgroup(K // 32)
+        assert N % 16 == 0 and N % 8 == 0, (K, N)
+        for m in (4, 16, 128, 512):  # multiples of 4: both tiles divide M exactly
+            assert (wr.gemv_named_bytes(m, N, K, 4, 2, 16, 2)
+                    == wr.gemv_named_bytes(m, N, K, 4, 2, 8, 4)), (K, N, m)
+        for m in (2, 4, 16, 128, 512):
+            assert wr.gemv_tile(m, N, K, 4, 2, wg) == (16, 2), (K, N, m)
+    # The other direction: where `rows` does not divide `M`, the arms are NOT equal-traffic, and
+    # the taller tile is the more expensive one. This is the condition an A/B harness has to
+    # respect when it chooses its prefill widths.
+    assert (wr.gemv_named_bytes(2, 9216, 3072, 4, 2, 8, 4)
+            > wr.gemv_named_bytes(2, 9216, 3072, 4, 2, 16, 2))
+    # The strictly-better tile is excluded by the accumulator budget, not by the byte model --
+    # so the tie is not an artefact of the search order.
+    assert wr.gemv_named_bytes(128, 3072, 3072, 4, 2, 16, 4) < wr.gemv_named_bytes(
+        128, 3072, 3072, 4, 2, 16, 2)
+    assert 16 * 4 > wr.GEMV_MAX_TILE
+    # No ceiling reaches the equal-traffic arm: the mirror of the Rust lock in `ops::quant`.
+    for ceiling in range(0, wr.GEMV_MAX_ROWS + 5):
+        picked = wr.gemv_tile(128, 3072, 3072, 4, 2, wr.gemv_workgroup(96))
+        assert picked != (8, 4), ceiling
+
+
+def test_the_walk_can_be_pointed_at_either_arm():
+    """`walk_shape` takes `cols` and `rows` as parameters, so the SPIR-V walk can be run at the
+    forced tile as well as at the selected one.
+
+    Without this the probe could only ever see the arm the picker chose, and the whole point of
+    issue #81 is that one arm is unreachable that way. Both walks are of the *same compiled
+    module*: the tile is a specialisation constant, not a different kernel, which is what makes
+    them comparable at all.
+    """
+    import inspect
+    sig = inspect.signature(wr.walk_shape)
+    assert "cols" in sig.parameters and "rows" in sig.parameters, (
+        "the walk must accept a tile rather than deriving one, or the (8,4) arm cannot be walked"
+    )
+
+
 # -- the defect this file is a lock against ----------------------------------------------------
 
 FIVE_LITERALS = ("116_324_352", "116324352", "1_861_189_632", "1861189632", "2_093_838_336")

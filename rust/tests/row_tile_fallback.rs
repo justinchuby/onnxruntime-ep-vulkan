@@ -14,8 +14,13 @@
 //! `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS=1` is the documented operational fallback for issue #7:
 //! it restores the pre-tile decode geometry without a rebuild. A fallback nobody has demonstrated
 //! is a paragraph, not a fallback.
+//!
+//! Updated for issue #81: the handler now reaches the selector through `gemv_tile_choice`, which
+//! is where both process controls are read. Driving `gemv_tile` here would test a function
+//! production no longer calls — the exact staleness this file's own docstring warns about — so
+//! the seam under test moved with the code.
 
-use onnxruntime_vulkan_ep::ops::quant::{gemv_tile, gemv_workgroup};
+use onnxruntime_vulkan_ep::ops::quant::{gemv_tile_choice, gemv_workgroup};
 
 const VAR: &str = "ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS";
 
@@ -26,7 +31,9 @@ const BITS: u32 = 4;
 const A_BYTES: u64 = 2;
 
 fn tile(m: u64) -> (u32, u32) {
-    gemv_tile(m, N, K, BITS, A_BYTES, gemv_workgroup(K / 32))
+    gemv_tile_choice(m, N, K, BITS, A_BYTES, gemv_workgroup(K / 32))
+        .expect("no tile request is set in this binary, so the selector cannot refuse")
+        .tile()
 }
 
 /// Everything in one test, deliberately: `cargo test` runs the tests in a file on several threads

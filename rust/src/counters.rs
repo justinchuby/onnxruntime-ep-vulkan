@@ -2304,6 +2304,63 @@ fn gemv_packed_spec_constant() -> &'static str {
     }
 }
 
+/// Index of the column tile (`QB_COLS`) in `q_gemv.comp`'s constant vector.
+const GEMV_COLS_SPEC_INDEX: usize = 4;
+
+/// Index of the row tile (`QB_ROWS`) in `q_gemv.comp`'s constant vector.
+///
+/// Appended by issue #7; named here for the same reason as [`GEMV_PACKED_SPEC_INDEX`], and doubly
+/// so now that a second one exists — two bare integers at a use site are two chances to read the
+/// wrong field and no chance for a compiler to notice.
+const GEMV_ROWS_SPEC_INDEX: usize = 6;
+
+/// The `(cols, rows)` tile the GEMV pipelines in this frame were **built** with, as a string.
+///
+/// The readback witness for the `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` instrument (issue #81), and the
+/// distinction that makes it a witness at all: this reads the vector handed to
+/// `vkCreateComputePipelines`, not the value the environment asked for. `DEVICE=0` has run on
+/// device 1; a host-side echo of a request is not an observation of what ran.
+///
+/// Five states, and the first two are why this is not a `(u32, u32)`:
+///
+/// * `"UNOBSERVABLE"` — no GEMV pipeline was built in this frame. Not the same fact as any tile
+///   (R12), and the common case: the census graph carries no `MatMulNBits`.
+/// * `"UNRECORDED"` — a GEMV pipeline whose constant vector is too short to hold the field, i.e.
+///   a build from before the row tile existed. Saying so is not the same as saying `rows = 1`.
+/// * `"MIXED"` — GEMV pipelines with different tiles were built in one process. **This is the
+///   normal state of a whole-model run**: prefill takes a row tile and decode does not, so a
+///   reading that needs the two apart must read `pipeline_variants` itself, which keeps them
+///   apart by construction. Collapsing them onto either value would name one kernel for a
+///   reading that came from two.
+/// * `"<cols>,<rows>"` — every GEMV pipeline in this frame was built with that one tile. This is
+///   the state a single-shape A/B arm produces, and it is what makes a `(16,2)` arm and an
+///   `(8,4)` arm provably different pipelines rather than differently-labelled ones.
+fn gemv_tile_spec_constants() -> String {
+    let mut seen: Option<(u32, u32)> = None;
+    for key in pipeline_variants() {
+        let Some((stem, consts)) = key.split_once(':') else {
+            continue;
+        };
+        if !stem.contains(GEMV_STEM_MARK) {
+            continue;
+        }
+        let field = |i: usize| consts.split(',').nth(i).and_then(|s| s.parse::<u32>().ok());
+        let (Some(cols), Some(rows)) = (field(GEMV_COLS_SPEC_INDEX), field(GEMV_ROWS_SPEC_INDEX))
+        else {
+            return "UNRECORDED".to_string();
+        };
+        match seen {
+            None => seen = Some((cols, rows)),
+            Some(prev) if prev != (cols, rows) => return "MIXED".to_string(),
+            Some(_) => {}
+        }
+    }
+    match seen {
+        None => "UNOBSERVABLE".to_string(),
+        Some((cols, rows)) => format!("{cols},{rows}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // kv_cache_convention — which KV convention the dispatch was actually built with
 // JSON-only, no `abi_version` bump, for the same reason as `pipeline_variants` above: the C
@@ -2630,6 +2687,7 @@ impl VulkanEpCounters {
              \"shader_toolchain\": \"{}\",\n  \
              \"pipeline_variants\": {},\n  \
              \"gemv_packed_spec_constant\": \"{}\",\n  \
+             \"gemv_tile_spec_constants\": \"{}\",\n  \
              \"shaders_dispatched_spec_digest\": \"{}\",\n  \
              \"specialisation_delta_forms\": {},\n  \
              \"specialisation_unrecorded_forms\": {},\n  \
@@ -2722,6 +2780,7 @@ impl VulkanEpCounters {
             json_escape(crate::registry::toolchain_identity()),
             pipeline_variants_json(),
             gemv_packed_spec_constant(),
+            gemv_tile_spec_constants(),
             specialisation_digest_json(),
             specialisation_delta_forms_json(),
             specialisation_unrecorded_forms_json(),
@@ -4331,7 +4390,73 @@ mod tests {
         reset();
     }
 
-    /// The verdict vocabulary is duplicated in `tests/ops/_verdict.py`. Duplicated vocabularies
+    /// The A/B witness (issue #81): the tile the pipelines were **built** with, read back.
+    ///
+    /// A host-side echo of `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` would prove nothing — the point of a
+    /// readback is that it comes from the constant vector `vkCreateComputePipelines` was handed.
+    /// The claim this field has to support is "the `(16,2)` arm and the `(8,4)` arm are different
+    /// pipelines", and a field that reported the request could report that of two identical runs.
+    #[test]
+    fn the_gemv_tile_witness_separates_the_two_arms() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        assert_eq!(
+            gemv_tile_spec_constants(),
+            "UNOBSERVABLE",
+            "no GEMV pipeline is not the same fact as any tile"
+        );
+
+        // Arm A: the incumbent. One shape, one pipeline, one tile.
+        record_pipeline_variant("q_gemv_f16", &[32, 4, 32, 0, 16, 1, 2]);
+        assert_eq!(gemv_tile_spec_constants(), "16,2");
+        let arm_a = snapshot().to_json();
+        assert!(
+            arm_a.contains("\"gemv_tile_spec_constants\": \"16,2\""),
+            "{arm_a}"
+        );
+
+        // Arm B: the equal-traffic tile, in a fresh process-equivalent state.
+        reset();
+        record_pipeline_variant("q_gemv_f16", &[32, 4, 32, 0, 8, 1, 4]);
+        assert_eq!(gemv_tile_spec_constants(), "8,4");
+        let arm_b = snapshot().to_json();
+        assert!(
+            arm_b.contains("\"gemv_tile_spec_constants\": \"8,4\""),
+            "{arm_b}"
+        );
+        assert_ne!(
+            arm_a, arm_b,
+            "two arms that read identically are not an A/B, they are one run reported twice"
+        );
+
+        // A whole-model run builds both a prefill and a decode pipeline, so the scalar is MIXED
+        // and the *variant list* is what keeps the arms apart. Saying "MIXED" rather than picking
+        // one is the difference between a witness and a summary.
+        reset();
+        record_pipeline_variant("q_gemv_f16", &[32, 4, 32, 0, 8, 1, 4]);
+        record_pipeline_variant("q_gemv_f16", &[32, 4, 32, 0, 16, 1, 1]);
+        assert_eq!(gemv_tile_spec_constants(), "MIXED");
+        assert_eq!(
+            pipeline_variants(),
+            vec![
+                "q_gemv_f16:32,4,32,0,16,1,1".to_string(),
+                "q_gemv_f16:32,4,32,0,8,1,4".to_string(),
+            ],
+            "the decode null control and the treated prefill stay separable under MIXED"
+        );
+
+        // A pre-row-tile vector cannot hold the field, and that is not a tile of one row.
+        reset();
+        record_pipeline_variant("q_gemv_f16", &[32, 4, 32, 0, 16, 1]);
+        assert_eq!(gemv_tile_spec_constants(), "UNRECORDED");
+
+        // A non-GEMV pipeline says nothing about the GEMV tile.
+        reset();
+        record_pipeline_variant("ew_binary_add_f32", &[256, 1]);
+        assert_eq!(gemv_tile_spec_constants(), "UNOBSERVABLE");
+        reset();
+    }
     /// drift, and a drifted one fails *quietly*: `extract_equivalence` maps any token it does not
     /// recognise to `UNMEASURED`, so a token the Python side renamed would arrive here as "no
     /// comparison was performed" — a red turned into a shrug, which is precisely the two-token

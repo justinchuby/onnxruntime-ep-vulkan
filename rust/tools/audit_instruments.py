@@ -530,6 +530,30 @@ BENCH_HELD_OUT: dict[str, str] = {
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."
     ),
+    # Arrived with issue #81 (Morpheus, the q_gemv tile instrument). Held out on the same
+    # footing as `_polarity.py` directly above, and the parallel is exact: both raise, and
+    # neither renders a verdict about a *measurement*, which is the screened list's stated
+    # criterion. `public_paths.py` judges where a record may land (`resolve_out` refuses a
+    # git-tracked destination) and whether a rendered string may be published
+    # (`assert_public` refuses one still carrying the operator's account name). Those are
+    # verdicts about publication, not about numbers, and the numbers they escort are
+    # unaffected by them. Screening it instead would also drag in its two TOTAL functions —
+    # `public_path` renders, `is_tracked` answers a yes/no about the index — neither of
+    # which has a refusal state to observe; crediting them a polarity nothing watched, or
+    # bending them into `(value, why)` pairs to suit the screen, are the two moves
+    # `_polarity.py`'s own docstring refuses. Both polarities of both refusals are watched
+    # in bench/test_public_paths.py.
+    "public_paths.py": (
+        "publication guard for records — refuses a tracked destination and a leaking "
+        "string, renders no verdict about a measurement. Two-polarity tested in "
+        "test_public_paths.py."
+    ),
+    # Arrived with issue #81 (Morpheus). The instrument it calls is public_paths.py, which
+    # is held out just above; this file is where that module's two polarities are watched.
+    "test_public_paths.py": (
+        "test module — a caller, screened as polarity, not as an instrument. Carries the "
+        "reject-direction cases for public_paths.py's two refusals."
+    ),
 }
 
 
