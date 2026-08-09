@@ -98,10 +98,16 @@ class ModelSpec:
     execution_provider: str = ""
     onnx_filename: str = ""
     download_alias: str = ""
-    #: repo-cache identity (resolver == "repo-cache")
+    #: repo-cache identity (resolver == "repo-cache" and "pinned")
     cache_filename: str = ""
     #: Where the recorded provenance for this model lives, relative to `bench/results/`.
     recorded_provenance: str = ""
+    #: The immutable pin (resolver == "pinned"): the untyped mapping that
+    #: `bench/pinned_bytes.py::read_pinned_identity` must admit before any byte is read.
+    #: Deliberately a plain mapping and not a pre-validated object — the production resolver is
+    #: what validates it, so the combinatorial metadata tests drive the shipped gate rather
+    #: than a copy of it.
+    pin: "dict | None" = None
     note: str = ""
 
 
@@ -130,6 +136,49 @@ MOBILENETV2 = ModelSpec(
 )
 
 MODELS = {m.key: m for m in (PHI35, MOBILENETV2)}
+
+# --------------------------------------------------------------------------------------------
+# MiniLM — pinned identity only (issue #78)
+# --------------------------------------------------------------------------------------------
+#
+# The immutable identity below is the *whole* entry. There is no URL resolved against a branch,
+# no "MiniLM" that means whichever of several third-party re-exports happens to be cached, and
+# no timing arm: `MINILM` is deliberately absent from `MODELS`, which is the timed matrix, so
+# `probe_real_model_latency.py --models all` cannot pick it up and no speed claim about MiniLM
+# can be produced by this repository yet. Issue #78 is about *identity*; a latency number
+# smuggled in beside it would be a claim nobody reviewed.
+#
+# `pin` is an untyped mapping on purpose — see `ModelSpec.pin`.
+MINILM_PIN = {
+    "repo": "sentence-transformers/all-MiniLM-L6-v2",
+    "file": "onnx/model.onnx",
+    "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "sha256": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+    "pinned_bytes": 90405214,
+    "source": "pinned-cache",
+    "declared_external_files": 0,
+}
+
+MINILM = ModelSpec(
+    key="all-MiniLM-L6-v2",
+    family="bert",
+    resolver="pinned",
+    cache_filename="all-MiniLM-L6-v2-onnx-1110a243.onnx",
+    recorded_provenance="pinned-bytes/all-MiniLM-L6-v2.json",
+    pin=MINILM_PIN,
+    note="sentence-transformers/all-MiniLM-L6-v2 `onnx/model.onnx` at immutable revision "
+         "1110a243fdf4706b3f48f1d95db1a4f5529b4d41. Six-layer BERT encoder, f32, no external "
+         "data. PROVENANCE ONLY: this repository has no reviewed latency claim about MiniLM, "
+         "so it is not in the timed matrix.",
+)
+
+#: Models this repository can *identify* but does not time. Kept separate from `MODELS` so the
+#: timed matrix cannot silently grow a model whose numbers nobody reviewed, and so a reader can
+#: tell "we have not measured this" from "this does not exist here" — the R12 distinction.
+PROVENANCE_ONLY = {MINILM.key: MINILM}
+
+#: Every model this module knows, timed or not. Resolution works for all of them.
+ALL_MODELS = {**MODELS, **PROVENANCE_ONLY}
 
 #: Where `rust/modelrunner` puts pinned downloads. Read from the environment first so a machine
 #: that keeps its cache elsewhere is not silently missed.
@@ -172,11 +221,22 @@ def recorded_sha256(spec: ModelSpec, results_dir: "Path | None" = None) -> "str 
 def resolve_model(spec: ModelSpec, *, results_dir: "Path | None" = None) -> dict:
     """Resolve one model to a path plus a full provenance block, or raise.
 
-    The returned dict is what lands in the artifact. ``agrees_with_recorded_provenance`` is
-    reported rather than enforced — a model that legitimately moved forward should be visible as
-    a disagreement, not as a crash — but it is a *field on the face of the result*, so a reader
-    cannot miss it.
+    The returned dict is what lands in the artifact.
+
+    For ``resolver == "pinned"`` (issue #78) this delegates the entire identity decision to
+    `bench/pinned_bytes.py::check_pinned_bytes` — the one authority — and **fails closed**:
+    a digest, size, source state, second witness or external-data scan that disagrees with the
+    pin raises `ModelUnavailable` and nothing downstream ever sees the file. There is no
+    fallback model, no silent skip, and no "unverified but probably fine" state, because every
+    one of those is a way for a benchmark to publish numbers about bytes nobody identified.
+
+    For the two older resolvers the behaviour is unchanged:
+    ``agrees_with_recorded_provenance`` is *reported* rather than enforced — a model that
+    legitimately moved forward should be visible as a disagreement, not as a crash — but it is a
+    field on the face of the result, so a reader cannot miss it.
     """
+    if spec.resolver == "pinned":
+        return _resolve_pinned(spec, results_dir=results_dir)
     if spec.resolver == "foundry":
         import foundry_discovery as fd
 
@@ -229,48 +289,135 @@ def resolve_model(spec: ModelSpec, *, results_dir: "Path | None" = None) -> dict
     }
 
 
+def _sidecar_path(spec: ModelSpec, results_dir: "Path | None") -> "Path | None":
+    base = Path(results_dir) if results_dir else (_BENCH / "results")
+    return (base / spec.recorded_provenance) if spec.recorded_provenance else None
+
+
+def _resolve_pinned(spec: ModelSpec, *, results_dir: "Path | None" = None) -> dict:
+    """The issue #78 path: identity first, and nothing at all if identity fails.
+
+    Note the import placement and what it is load-bearing for. `pinned_bytes` pulls in
+    `onnx` and `hashlib`; it does **not** pull in `onnxruntime`, and nothing here builds a
+    session or runs an inference. A provenance check that had already loaded the runtime would
+    be deciding whether to trust bytes it has handed to the runtime already.
+    """
+    import pinned_bytes as pb
+    import path_screen as ps
+
+    pin = spec.pin if isinstance(spec.pin, dict) else {}
+    path = repo_cache_dir() / spec.cache_filename
+    if not path.is_file():
+        raise ModelUnavailable(
+            f"{spec.key}: {spec.cache_filename} is absent from the model cache. Fetch the "
+            f"pinned bytes from {pin.get('repo')} at revision {pin.get('revision')} "
+            f"(file {pin.get('file')}), or set {REPO_CACHE_ENV} to the directory that holds "
+            f"it. An absent pinned model is UNAVAILABLE, never an unverified pass."
+        )
+    sidecar = _sidecar_path(spec, results_dir)
+    try:
+        record = pb.check_pinned_bytes(
+            path, spec.pin, sidecar=sidecar, source_state="pinned-cache"
+        )
+    except pb.ProvenanceError as exc:
+        raise ModelUnavailable(
+            f"{spec.key}: REFUSED(instrument={exc.reason}) {exc.detail}. The bytes on this "
+            f"machine are not the bytes pinned for this model, so nothing downstream is told "
+            f"about them — issue #78 exists because 'a file is here' was standing in for "
+            f"'these are the pinned bytes'."
+        ) from exc
+
+    public = ps.public_model_record(record, extra={"key": spec.key, "family": spec.family})
+    return {
+        "key": spec.key,
+        "family": spec.family,
+        "path": str(path),
+        "sha256": record.observed_sha256,
+        "bytes": record.observed_bytes,
+        "provenance": "pinned-immutable",
+        "resolver": spec.resolver,
+        "recorded_sha256": record.sidecar_sha256,
+        "agrees_with_recorded_provenance": True,
+        "external_data": record.external,
+        "weights_bytes": 0,
+        "provenance_ok": record.provenance_ok,
+        "public_provenance": public,
+        "note": spec.note,
+    }
+
+
 def external_data_provenance(path: Path) -> dict:
     """Hash the tensors the `.onnx` file does *not* contain.
 
     The Foundry Phi-3.5 graph is 26 MB and its weights are 2.29 GB in a sibling `.data` file.
     A provenance block that hashes only the `.onnx` therefore identifies the *topology* and
-    says nothing about the numbers the benchmark actually multiplies — swap the `.data` and the
+    says nothing about the numbers the benchmark actually multiplies - swap the `.data` and the
     recorded hash is unchanged. This is not hypothetical for a quantised model shipped by a
     downloader that can re-materialise weights independently of the graph.
 
-    The file list comes from the graph's own `external_data` locations, not from a `.data`
-    suffix guess, so a model that names its blob something else is still covered.
+    WHY THIS IS NOW A THIN ADAPTER (issue #78)
+    ------------------------------------------
+    It used to walk `model.graph.initializer` and nothing else. That is not where an ONNX file
+    keeps all of its tensors: a weight reached only through a subgraph attribute, a sparse
+    initializer, a function body or a `training_info` field was invisible to it, so a model with
+    external weights in any of those places was reported as `scanned: true, files: []` - which
+    reads exactly like "this model has no external weights at all".
+
+    Rather than fix the walk here and leave two readers that can disagree about the same file,
+    the walk now *is* `pinned_bytes.external_references`. There is one traversal in this
+    repository and one confinement policy, and both live in the module whose tests exercise
+    them. This function keeps its own return shape because callers and recorded artifacts
+    depend on it, and adds `complete` so a reader can tell a scan that finished from one that
+    gave up.
     """
-    rec = {"scanned": False, "files": [], "reason": None}
+    rec = {"scanned": False, "files": [], "reason": None, "complete": False}
+    p = Path(path)
+    try:
+        import pinned_bytes as pb
+    except ImportError:  # pragma: no cover - the module ships beside this one
+        rec["reason"] = "pinned_bytes not importable; external weights are UNHASHED"
+        return rec
     try:
         import onnx
     except ImportError:  # pragma: no cover - onnx is present in this repo's venv
         rec["reason"] = "onnx package not importable; external weights are UNHASHED"
         return rec
     try:
-        model = onnx.load(str(path), load_external_data=False)
+        model = onnx.load(str(p), load_external_data=False)
     except Exception as exc:  # pragma: no cover - a corrupt graph is its own failure
         rec["reason"] = f"could not parse graph: {exc}; external weights are UNHASHED"
         return rec
-    locations = set()
-    for init in model.graph.initializer:
-        if init.HasField("data_location") and init.data_location == onnx.TensorProto.EXTERNAL:
-            for kv in init.external_data:
-                if kv.key == "location":
-                    locations.add(kv.value)
-    rec["scanned"] = True
-    for loc in sorted(locations):
-        blob = path.parent / loc
-        if not blob.is_file():
-            rec["files"].append({"location": loc, "bytes": 0, "sha256": None,
-                                 "missing": True})
-            continue
-        rec["files"].append({"location": loc, "bytes": blob.stat().st_size,
-                             "sha256": sha256_file(blob)})
-    if not locations:
-        rec["reason"] = "graph carries no external initializers; the .onnx hash covers the weights"
-    return rec
 
+    root = p.resolve().parent
+    try:
+        refs = pb.external_references(model, model_root=root)
+    except pb.ProvenanceError as exc:
+        # A graph whose external declarations are unsafe or malformed is not a graph with no
+        # external weights. Saying so is the whole point; the old walk could not say it.
+        rec["reason"] = f"REFUSED(instrument={exc.reason}) {exc.detail}"
+        return rec
+
+    rec["scanned"] = True
+    rec["complete"] = True
+    seen: "dict[str, dict]" = {}
+    for ref in refs:
+        if ref.location in seen:
+            continue
+        blob = root / ref.location
+        if not blob.is_file():
+            seen[ref.location] = {"location": ref.location, "bytes": 0, "sha256": None,
+                                  "missing": True}
+            continue
+        seen[ref.location] = {"location": ref.location, "bytes": blob.stat().st_size,
+                              "sha256": sha256_file(blob)}
+    rec["files"] = [seen[k] for k in sorted(seen)]
+    if not refs:
+        rec["reason"] = (
+            "graph carries no external initializers anywhere in it - not in the top-level "
+            "graph, a subgraph, a sparse initializer, a function body or training_info - so "
+            "the .onnx hash covers every weight byte"
+        )
+    return rec
 
 # --------------------------------------------------------------------------------------------
 # Cases — what is fed, and what the numbers may be divided by
@@ -333,6 +480,102 @@ def mobilenet_cases(batch) -> "list[Case]":
             for b in batch]
 
 
+#: MiniLM's BERT vocabulary size. Token ids are taken modulo this, so a feed can never index
+#: outside the embedding table — an out-of-range id is a crash in the runtime, and a crash is
+#: not a smoke test result.
+MINILM_VOCAB = 30522
+MINILM_HIDDEN = 384
+MINILM_SEED = 0x5EED0078
+
+
+def minilm_cases(seq_lengths) -> "list[Case]":
+    """Encoder shapes for the MiniLM smoke check. No timing arm - see `PROVENANCE_ONLY`.
+
+    Refuses rather than coerces. `int("16")` and `int(15.9)` both succeed and both mean the
+    caller did not say what it meant; a shape silently rounded down is a run whose recorded
+    sequence length is not the one that was fed. A sequence shorter than two positions cannot
+    carry the `[CLS] ... [SEP]` frame `minilm_feeds` builds, so it is refused here rather than
+    producing a feed whose first and last token are the same cell.
+    """
+    if isinstance(seq_lengths, (str, bytes)) or not hasattr(seq_lengths, "__iter__"):
+        raise ValueError(
+            f"seq_lengths must be an iterable of ints, got {type(seq_lengths).__name__}"
+        )
+    lengths = list(seq_lengths)
+    if not lengths:
+        raise ValueError(
+            "no sequence lengths given; an empty case list is an empty matrix that reads as "
+            "a completed one"
+        )
+    out = []
+    seen = set()
+    for value in lengths:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"sequence length {value!r} is {type(value).__name__}, not int; this refuses "
+                f"rather than coercing, because a coerced shape is a shape nobody chose"
+            )
+        if value < 2:
+            raise ValueError(
+                f"sequence length {value} cannot carry the [CLS]...[SEP] frame; MiniLM feeds "
+                f"need at least 2 positions"
+            )
+        if value in seen:
+            raise ValueError(
+                f"sequence length {value} given twice; two identical cases are one case "
+                f"counted twice, which inflates any total taken over the list"
+            )
+        seen.add(value)
+        out.append(Case(MINILM.key, "prefill", value, 0, tokens=value))
+    return out
+
+
+def minilm_feeds(case: Case, np) -> dict:
+    """Deterministic int64 text feeds for the MiniLM encoder.
+
+    All three inputs are ``int64`` - this is a text model, and its tensors are token ids, not
+    the float images and float activations every other feed in this module builds. A BERT
+    encoder handed float32 raises inside `session.run`, long after the record said the model
+    resolved, so the dtype is asserted here where it can still be attributed.
+
+    Fixed, not random: two runs that feed different ids gather different embedding rows and are
+    not two measurements of the same thing.
+    """
+    if not isinstance(case, Case):
+        raise ValueError(
+            f"expected a Case, got {type(case).__name__}; a feed built from something that "
+            f"merely has an `m` attribute is a feed nobody can trace to a matrix row"
+        )
+    if case.model_key != MINILM.key:
+        raise ValueError(
+            f"{case.model_key} is not {MINILM.key}; MiniLM feeds are int64 token ids and would "
+            f"be silently wrong for any other model in this module"
+        )
+    if case.phase != "prefill":
+        raise ValueError(
+            f"MiniLM is an encoder: it has no {case.phase!r} phase and no KV cache to carry "
+            f"one. A decode-shaped case here would be a claim about a model that does not "
+            f"decode."
+        )
+    if case.past:
+        raise ValueError(f"MiniLM has no KV cache; past={case.past} cannot be honoured")
+    if case.m < 2:
+        raise ValueError(
+            f"sequence length must be at least 2 to carry [CLS]...[SEP], got {case.m}"
+        )
+    rng = np.random.default_rng(MINILM_SEED)
+    ids = rng.integers(1, MINILM_VOCAB - 1, size=(1, case.m), dtype=np.int64)
+    # [CLS] ... [SEP] - the real tokenizer's frame, so the smoke run exercises the shape a
+    # caller would actually send rather than a bag of interior ids.
+    ids[0, 0] = 101
+    ids[0, -1] = 102
+    return {
+        "input_ids": ids,
+        "attention_mask": np.ones((1, case.m), dtype=np.int64),
+        "token_type_ids": np.zeros((1, case.m), dtype=np.int64),
+    }
+
+
 def phi35_feeds(case: Case, np):
     """Build one feed dict. Pure given ``KV_SEED``; identical bytes for every arm."""
     if case.model_key != PHI35.key:
@@ -368,6 +611,8 @@ def build_feeds(case: Case, np):
         return phi35_feeds(case, np)
     if case.model_key == MOBILENETV2.key:
         return mobilenet_feeds(case, np)
+    if case.model_key == MINILM.key:
+        return minilm_feeds(case, np)
     raise ValueError(f"no feed builder for {case.model_key}")
 
 

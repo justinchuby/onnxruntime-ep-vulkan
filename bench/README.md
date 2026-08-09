@@ -28,6 +28,8 @@ Pin `onnxruntime>=1.28`. This is enforced: see the refusals below.
 | `transfer_calibration.py` | The byte staircase that replaces `TransferModel`'s placeholder constants with measured ones. Per device, per transfer class. |
 | `test_harness.py` | Self-tests for the statistics and the environment record. No GPU, no EP. |
 | `test_plausible_but_wrong.py` | Tests named for the *plausible but wrong* reading each one prevents, using this machine's real device values as fixtures. |
+| `pinned_bytes.py` | The provenance authority (issue #78). Admits an immutable pin, hashes the bytes on disk, walks the whole ONNX graph for external weights, confines and hashes them, and derives a verdict. Every refusal raises with a named `reason`; nothing here reports a verdict as a field. |
+| `path_screen.py` | The public-artifact screen. Refuses to serialise a record that carries a filesystem path from this machine, by shape rather than by allowlist. |
 
 ## The two GPUs in this laptop are not interchangeable
 
@@ -151,6 +153,38 @@ Refusals built into the harness:
 * **UMA and discrete transfer models are never blended.** The blended affine constants would
   land plausibly between the two and describe neither part.
 * **Nothing is extrapolated.** A number that was not measured is `null`.
+* **A model is identified by its bytes, not by its filename** (issue #78). For a `pinned`
+  model, `resolve_model` refuses unless *every* one of these holds: the pin is complete and
+  correctly typed; the file's SHA-256 and size equal the pinned values; the source state is one
+  that carries verified bytes; an independently-produced sidecar names the same digest; the
+  graph's external-data scan actually ran; and the number of external files it found equals the
+  number the pin declared. The verdict is a **derived property** of those recorded fields, not a
+  stored one, so no record can say `provenance_ok: true` while the metadata beside it disagrees.
+  Anything short of all of it raises `ModelUnavailable` carrying
+  `REFUSED(instrument=<reason>)` — never a benchmark of unidentified bytes, and never a
+  silent skip. Nothing imports `onnxruntime` on that path: a provenance check that had already
+  loaded the runtime would be deciding whether to trust bytes it handed over already.
+
+### What "verified" costs, and where it stops
+
+* **MiniLM is provenance-only.** It is in `PROVENANCE_ONLY`, not in `MODELS`, so it never
+  reaches the timed matrix. This repository has no reviewed latency claim about MiniLM and this
+  change does not create one; `probe_real_model_latency.py` iterates `MODELS` and a test locks
+  that it does not iterate `ALL_MODELS`.
+* **The second witness is independent by construction.** `bench/results/pinned-bytes/` holds
+  witnesses produced by a procedure *other than* `pinned_bytes.py` — a digest a module both
+  writes and then checks proves nothing. That directory deliberately is not
+  `bench/results/rust-model-runner/`, which holds readings taken by `rust/modelrunner` against a
+  built EP and is stamped by an artifact frame whose subject is that DLL.
+* **MiniLM is deliberately absent from `bench/results/model_provenance.json`.** That file is the
+  *download* contract for differential-test subjects consumed by `rust/modelrunner`; an entry
+  there claims a subject with a verification lane behind it, and MiniLM has none.
+* **The path screen is structural, and says so.** An ONNX node name (`/encoder/layer.0/MatMul`)
+  and a POSIX path (`/srv/models/minilm`) are not distinguishable as strings. The screen resolves
+  that by *position*: the POSIX-absolute exemption is granted only under declared graph-name
+  keys, and drive-letter, UNC, device and home-macro findings are never exempt anywhere. A
+  private POSIX path smuggled in under a graph-name key is the known limitation, and it is
+  stated rather than papered over.
 
 ### The 1.70× that wasn't
 

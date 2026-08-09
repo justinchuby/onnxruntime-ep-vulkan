@@ -6399,6 +6399,83 @@ deliberately:
   against the rejected regex as well, so "the new screen is green" is not the only evidence that
   it works.
 
+#### 9.1.5 A filename is not an identity — pinned bytes for the benchmark resolver (issue #78)
+
+`bench/real_model.py::resolve_model` resolved `repo-cache` models by looking for a file with the
+expected *name* under the cache directory, hashing whatever it found, and reporting
+`agrees_with_recorded_provenance` as a **field on the result**. Two consequences followed and
+both were live. A same-named MiniLM export — a different quantisation, a different opset, a
+re-export by anybody — would be benchmarked and published as "MiniLM" with nothing in the repo
+violated. And when the sidecar was missing, `recorded_sha256` returned `None`, the field became
+`None` rather than `False`, and every caller that read it as a boolean read "not a disagreement".
+A verdict that is a field is a verdict somebody can set.
+
+**The fix has one shape: the verdict is derived, and refusal is by raising.**
+`bench/pinned_bytes.py` is the single authority. `PinnedIdentity` is a frozen dataclass that
+re-validates itself on construction, so no code path can hold a pin that was never admitted;
+`read_pinned_identity` is *total* over arbitrary input (a string, `None`, a list, a mapping with
+a typo'd key) and returns `(None, why)` rather than raising, because the metadata gate is the one
+place a `TypeError` would be indistinguishable from a refusal. `ProvenanceRecord.provenance_ok`
+is a **`@property` computed from the recorded fields on every read and stored nowhere**: digest,
+size, source state, agreement between the source state and the pin, an independently-produced
+sidecar naming the same digest, a completed external scan, and an external file count equal to
+the declared one. There is no assignment anywhere in the repository that can set a record's
+verdict, so the class of defect where a record says `true` while the metadata beside it says
+otherwise is not caught — it is unrepresentable. `disagreements` names every reason the verdict
+is `False`, and is empty exactly when it is `True`.
+
+**The traversal is complete, and the completeness is the point.** An external-weight scan that
+misses a container reports `0 external files` for a model that has them, and `0` is
+indistinguishable from "this model genuinely has none" — which is precisely the `UNSCANNED`-read-
+as-`ABSENT` failure §10.0.1 R12 names. `iter_tensor_protos` walks graph initializers, sparse
+initializers (**values and indices**), node attributes including the repeated `tensors`/`graphs`/
+`sparse_tensors` fields, arbitrarily nested subgraphs, local `FunctionProto` bodies and their
+`attribute_proto` defaults, and `training_info` initialization/algorithm graphs. Depth and total
+work are bounded; exceeding a bound is a refusal, not a truncation. A container holding the wrong
+type is refused rather than skipped past. `bench/real_model.py::external_data_provenance`, which
+previously walked `model.graph.initializer` alone, is now a thin adapter over this walk — two
+readers that could disagree about what "external" means have been reduced to one.
+
+**External bytes are confined, and confinement is checked twice for different reasons.**
+`confine_external_location` requires a plain relative POSIX location and refuses URIs, absolute
+POSIX paths, drive letters, UNC/device/extended-length paths, backslashes, `..`, empty segments,
+Windows reserved device names and trailing-space/dot segments. It then walks every component from
+the model root down looking for a reparse point, and separately requires the *resolved* path to
+stay under the root. Those two rules are deliberately redundant against an escaping junction and
+they are not the same rule: a junction pointing back *inside* the root passes containment and is
+still refused, because what a reparse point resolves to at check time is not what it resolves to
+at open time. `open_stable_file` closes the rest of that race — it re-checks components at open
+time, opens with `O_NOFOLLOW` where the platform has it, and compares the descriptor's own
+`fstat` identity against the `lstat` of the name that was validated. A declared extent that runs
+past EOF raises `external_short`; the up-front bounds check is load-bearing rather than
+belt-and-braces, because an offset past EOF with no declared length computes a *negative* extent
+that the read loop would skip and report as a digest of nothing.
+
+**Published records are screened for private paths by shape, not by allowlist.**
+`bench/path_screen.py` refuses to serialise a record carrying a drive-letter path, a UNC or
+device path, an arbitrary absolute POSIX root (`/srv`, `/data`, `/run`, `/Volumes`, `/nix`,
+`/opt`, `/var`, a home directory), or an unexpanded `~`/`$HOME`/`%USERPROFILE%` macro — including
+when the path is only readable after JSON de-escaping, percent-decoding or UTF-16 decoding. The
+screen *raises*; a screen that returns a value is a screen a caller can ignore. **Its stated
+limit:** an ONNX node name (`/encoder/layer.0/MatMul`) and a private POSIX path
+(`/srv/models/minilm`) are not distinguishable as strings, so the POSIX-absolute exemption is
+granted structurally — only under declared graph-name keys — while drive, UNC, device and home
+findings are never exempt anywhere. A private POSIX path smuggled in under a graph-name key is
+outside this screen's reach and is written down rather than papered over.
+
+**MiniLM is identified, not timed.** It lives in `PROVENANCE_ONLY`, not in `MODELS`, so the timed
+matrix cannot silently grow a model whose numbers nobody reviewed;
+`probe_real_model_latency.py` iterates `MODELS` and a test locks that it does not iterate
+`ALL_MODELS`. Nothing on the provenance path imports `onnxruntime` or builds a session — a
+provenance check that had already loaded the runtime would be deciding whether to trust bytes it
+had handed over already. The independent second witness lives in `bench/results/pinned-bytes/`,
+produced by a procedure other than `pinned_bytes.py` (a digest a module both writes and checks
+proves nothing), and deliberately not in `bench/results/rust-model-runner/`, whose artifact frame
+is stamped against a built EP that this reading has nothing to do with. MiniLM is equally
+deliberately **absent** from `bench/results/model_provenance.json`: that file is the download
+contract for differential-test subjects consumed by `rust/modelrunner`, an entry there claims a
+verification lane, and MiniLM has none.
+
 ### 9.2 Benchmarking — Niobe
 
 - **Baselines are versus the ORT CPU EP on the same machine, same model, same ORT build.** Any
