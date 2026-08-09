@@ -4705,20 +4705,104 @@ Two facts fall out, and both were surprises:
 
 * **`q_gemv` decode time is flat at ~17.5 ms at every cache length.** All of decode's growth is
   GQA. The quantised GEMM is not the decode problem; it is not even a large part of it.
-* **Weight streaming is a minority cost at width.** The tiled and untiled arms differ *only* in how
-  many passes they make over the same 2.291 GB of packed weights — `M` passes untiled against
-  `ceil(M/4)` tiled — so differencing them gives a marginal streaming bandwidth. Eight prefill `M`
-  points yield **seven** differential points: `M = 1` yields none, because both arms make exactly
-  one pass there and Δpasses is zero. Over those seven (`M = 2 … 128`, from
-  `real_model_latency_before_gqa.json`) the readings are **199.7, 244.5, 242.8, 238.8, 226.8,
-  222.5, 217.4 GB/s** — range **200–245**, median **227**, and above the ~192 GB/s spec sheet at
-  every point, which is what L2 reuse looks like. `M = 2` is the low end and the noisiest point
-  (one differenced pass, no averaging); the six points from `M = 4` up sit in 217–245. One full
-  weight pass costs 9.4–11.5 ms (median 10.1). At `M = 128` the tiled arm makes 32 passes, so
-  streaming is ~323 ms of the 3004.55 ms tiled time — **~11%**.
+* **Weight streaming at width: the reading is WITHDRAWN.** ⚠️ **WITHDRAWN 2026-08-08 (issue #81).**
+  This bullet published a marginal streaming bandwidth of **199.7, 244.5, 242.8, 238.8, 226.8,
+  222.5, 217.4 GB/s** — range **200–245**, median **227** — and concluded that at `M = 128`
+  streaming was **~323 ms** of the 3004.55 ms tiled time, **~11%**. **Every one of those figures is
+  withdrawn**, and none of them is replaced here; see §26.4.1 for what survives.
 
-So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — would be
-optimising a tenth of the wide-prefill cost. The data said to go elsewhere, so this branch did.
+  Two independent defects, either of which alone would be enough:
+
+  * **The divisor was wrong.** The text differenced `M` untiled passes against **`ceil(M/4)`**
+    tiled ones, taking the `4` from the tiled arm's recorded environment
+    (`ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS = 4`). That variable is a *clamp*, not the tile. The
+    selector also caps `QB_COLS × QB_ROWS` at `GEMV_MAX_TILE`, and at the `QB_COLS = 16` these
+    shapes resolve to, that cap admits **`QB_ROWS = 2`** — so the tiled arm made **`ceil(M/2)`**
+    passes, not `ceil(M/4)`. This is not an inference from the constants: it is read off
+    `bench/results/weight_reread_phi35.json`, whose executed SPIR-V trace records
+    `tiled_amplification` of exactly **1.0, 2.0, 3.0** at `M = 2, 4, 5` — i.e. 1, 2 and 3 passes,
+    which is `ceil(M/2)` and is not `ceil(M/4)`. Every differenced pass count was therefore roughly
+    double the truth, and every GB/s reading derived from it roughly half.
+  * **The denominator was not the weight tensor.** The published series reproduces arithmetically
+    only against **2.291 GB**. The packed int4 weights of this graph are **1,861,189,632 B ≈ 1.861
+    GB**, summed from the ONNX initializers of all 161 `MatMulNBits` nodes
+    (`weight_reread_phi35.json` → `denominator.int4_weight_bytes_from_graph`, with
+    `matmulnbits_nodes = 161`). What the extra 0.43 GB was is not recorded anywhere in the tree,
+    so the quantity those GB/s figures measured cannot now be named — which is itself sufficient
+    reason to withdraw them rather than rescale them.
+
+  **No replacement bandwidth and no replacement share is published.** Correcting the divisor changes
+  the numerator's provenance too, and a differenced reading whose denominator nobody can identify
+  is not a reading that can be repaired by arithmetic. It needs a rerun. Until then the honest
+  statement is that §26's *streaming share of wide prefill is unquantified*, and in particular that
+  the "go elsewhere" conclusion in the paragraph below no longer rests on a measured share.
+
+So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — was set aside on
+the strength of that share. ⚠️ With the share withdrawn, **the reason to set it aside is withdrawn
+with it.** The lever is neither vindicated nor refuted here; it is simply un-adjudicated, and
+whichever way it goes has to come from a rerun rather than from this section.
+
+### 26.4.1 What survives the withdrawal, and what it is
+
+Written as a separate subsection because a correction folded into the text it corrects is a
+correction nobody finds. Everything here is labelled **WITNESSED** (a field of a committed
+artifact) or **MODEL** (arithmetic over such fields). Nothing here is a new measurement — issue #81
+took no clock readings.
+
+**WITNESSED — the tile the tiled arm actually used.** `bench/results/weight_reread_phi35.json` is
+an executed trace of the compiled `q_gemv_matmul_nbits_f16` SPIR-V over every `MatMulNBits` node's
+whole dispatch grid, and it records `prefill_m_values = [2, 4, 5]` with `tiled_amplification` of
+1.0, 2.0, 3.0. Weight passes at `M = 4` are **2**, and at `M = 5` are **3**. Those two are readings.
+
+**MODEL — pass counts at the M values §26.4's table quotes.** `ceil(M/2)` extended to the table's
+own `M`: `M = 32` → **16** passes, `M = 128` → **64** passes. This is arithmetic continuing a
+witnessed pattern, not a trace: the probe recorded `M ∈ {2, 4, 5}` and nothing wider. It is called
+MODEL here for exactly that reason, and the earlier draft's failure to make this distinction is
+half of why the bullet above had to be withdrawn.
+
+**MODEL — bytes moved at `M = 128`.** 64 passes × 1,861,189,632 B = **119,116,136,448 B ≈ 119.1
+GB**. Both factors are bound to fields rather than typed: the count from the `ceil(M/2)` rule above,
+the byte figure from `denominator.int4_weight_bytes_from_graph`.
+
+**Not published, deliberately:** any time, bandwidth, or percentage-of-runtime derived from that
+byte figure. Dividing 119.1 GB by a wall time taken from a different artifact, under a different
+arm, would rebuild precisely the mistake this subsection exists to record.
+
+**UNMEASURED — the `(8, 4)` tile.** `QB_COLS = 8, QB_ROWS = 4` is legal (8 × 4 = 32 = `GEMV_MAX_TILE`)
+and moves the same weight traffic per output as the incumbent `(16, 2)`: both make `ceil(M/2)`
+passes. It is a genuinely different pipeline — a different shape of shared-memory reduction and a
+different x-grid — and the selector cannot reach it, because no ceiling the selector accepts
+resolves to it. **Nothing in this tree has ever run it.** `ONNXRUNTIME_EP_VULKAN_GEMV_TILE=8,4`
+(§26.4.2) is what makes running it possible; it is not a claim that it was run, and no number for
+it appears anywhere in this document.
+
+### 26.4.2 Asking for an exact tile: `ONNXRUNTIME_EP_VULKAN_GEMV_TILE`
+
+The withdrawal above turns on a tile nobody could name: the arm's environment said `MAX_ROWS = 4`
+and the pipeline used `QB_ROWS = 2`, and it took an executed SPIR-V trace to notice. The clamp is
+the wrong instrument for an A/B, because *what you asked for is not what you got* and nothing in
+the record says so.
+
+`ONNXRUNTIME_EP_VULKAN_GEMV_TILE=<cols>,<rows>` asks for an exact pair. Its contract is small on
+purpose:
+
+* **Unset means "call the current selector."** No default tile is written in the reader, so this
+  switch cannot mask a future change to the selector.
+* **A legal pair is used exactly**, and the resolved `(QB_COLS, QB_ROWS)` ride into specialisation
+  constants 4 and 6 of `q_gemv.comp` — the same vector `counters::record_pipeline_variant` already
+  records, so the tile that ran is readable out of the run's own `pipeline_variants` rather than
+  out of the command line that requested it. That is the whole point: the A/B's arms are witnessed
+  as the tiles they claim to be.
+* **An illegal or malformed value refuses the dispatch** with a named reason
+  (`counters::gemv_tile_request_refused()`), and never falls back to the selector. Silent fallback
+  is how you get an experiment whose two arms are the same pipeline.
+* **The legality it screens against is production's own**, not a second copy: `GEMV_MAX_COLS`,
+  `GEMV_MAX_ROWS`, `GEMV_MAX_TILE`, the `GEMV_RED_WORDS` shared-reduction budget, and the x-grid
+  bound. Note the shared-memory arithmetic, because §26 has got it wrong before: `shared float
+  red[2048]` is **8 KiB**, which is *half* the 16 KiB `maxComputeSharedMemorySize` floor Vulkan
+  guarantees — the 16 KiB is the floor, not the spend.
+
+No measurement is attached to this switch. It is an instrument.
 
 ### 26.5 The finding: one lane per subgroup
 
@@ -4865,10 +4949,13 @@ by this edit, which is the point: the change moved lane occupancy, not graph par
   inputs on the CPU *reference* arm). §25's limitation is unchanged; what this section adds is a
   harness that supplies interdependent inputs itself, which is why it can compare whole-model
   outputs where the runner cannot.
-* **The bandwidth figure is differential, not instrumented.** It comes from Δtime ÷ Δ(weight passes
-  × 2.291 GB) between two arms, so it inherits both arms' noise and assumes the arms differ only in
-  weight passes — which is true by construction of the `QB_ROWS` specialisation, but is an argument
-  about the source, not a counter reading.
+* **The bandwidth figure is differential, not instrumented.** ⚠️ **WITHDRAWN 2026-08-08 (issue
+  #81)** along with the reading it qualified — see §26.4 and §26.4.1. It came from Δtime ÷ Δ(weight
+  passes × 2.291 GB) between two arms, and both halves of that expression were wrong: the pass
+  delta used `ceil(M/4)` where the executed trace says `ceil(M/2)`, and the 2.291 GB denominator is
+  not the graph's 1,861,189,632 B of packed weights and is not identified anywhere. No replacement
+  figure is published. The general caution survives its own example: a differenced reading inherits
+  both arms' noise *and* every assumption about what the arms differ in.
 * **The null control is an arm-asymmetry width, not a symmetric noise band.** In §26.10's run the
   two arms' per-repeat spans are disjoint at `M = 1` — where the effect is zero by construction —
   with a **median ratio of 1.167 (mean 1.143)**, tiled ÷ untiled. Any row whose arm ratio sits

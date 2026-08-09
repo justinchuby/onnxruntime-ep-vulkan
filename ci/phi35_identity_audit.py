@@ -65,8 +65,9 @@ It parses each file with :mod:`ast` and answers four questions structurally:
     ``env=os.environ.copy()``, ``env={**os.environ}``, or any of those bound to a name first
     and mutated before the call — which is exactly what both real cases do.
 
-*   **Does it write a JSON record?**  ``json.dump(...)``, or a ``.write_text``/``.write``
-    whose argument subtree contains ``json.dumps(...)``.  A ``json.dumps`` that only reaches
+*   **Does it write a JSON record?**  ``json.dump(...)``, a ``.write_text``/``.write``
+    whose argument subtree contains ``json.dumps(...)``, or a call to one of the project's own
+    record-writing helpers (:data:`_JSON_RECORD_WRITERS`).  A ``json.dumps`` that only reaches
     ``print()`` is not a record and does not count — the previous ``json\\.dumps?\\(`` regex
     could not tell those apart.
 
@@ -174,6 +175,21 @@ NOT_A_PRODUCER = (
 
 _SUBPROCESS_SPAWNERS = ("run", "Popen", "call", "check_call", "check_output")
 _JSON_WRITE_SINKS = ("write_text", "write", "writelines")
+
+#: Project helpers that *are* the write of a JSON record.
+#:
+#: The analysis looks for ``json.dump`` or a ``json.dumps`` reaching a write sink, which is what
+#: every producer here used to spell inline. ``bench/public_paths.dump_public_json`` now scrubs and
+#: screens that record on the way out, and a producer that routes through it has neither token in
+#: its own body — so the audit would have stopped seeing a file that still writes exactly the same
+#: evidence. Screening a record harder is the last reason a producer should fall out of the census,
+#: and a producer set that shrinks when somebody improves a seam is a set that will drift silently.
+#:
+#: Listed by name because this is a *declaration about this repository's helpers*, the same shape
+#: as :data:`NOT_A_PRODUCER`, and because the alternative — following every call into every module
+#: to see whether it eventually writes JSON — is a call graph, not a screen. A helper added here
+#: must actually write a record; ``ci/test_lane_checks.py`` holds the live count against drift.
+_JSON_RECORD_WRITERS = ("dump_public_json",)
 
 
 @dataclass(frozen=True)
@@ -524,6 +540,9 @@ class _Analyzer(ast.NodeVisitor):
             ):
                 self.json_record_lines.append(node.lineno)
                 return
+            if func.attr in _JSON_RECORD_WRITERS:
+                self.json_record_lines.append(node.lineno)
+                return
             if func.attr in _JSON_WRITE_SINKS:
                 if any(self._is_json_dumps(a) for a in node.args):
                     self.json_record_lines.append(node.lineno)
@@ -532,6 +551,8 @@ class _Analyzer(ast.NodeVisitor):
             if func.id in self.json_load_aliases:
                 self.reads_json = True
             elif func.id in self.json_dump_aliases:
+                self.json_record_lines.append(node.lineno)
+            elif func.id in _JSON_RECORD_WRITERS:
                 self.json_record_lines.append(node.lineno)
 
 

@@ -530,6 +530,24 @@ BENCH_HELD_OUT: dict[str, str] = {
         "test module — a caller, screened as polarity, not as an instrument. Carries the "
         "five planted mutants that earn identify_by_uuid its `screened` state."
     ),
+    # Arrived 2026-08-08 (Morpheus, issue #81). Declared on the way in rather than left for
+    # the frame arm to catch, which is what this dict is for.
+    "public_paths.py": (
+        "screen — it decides whether a RECORD may be published (absolute local paths) and "
+        "whether a DESTINATION may be written (git-tracked evidence). Neither is a verdict "
+        "about a measurement, which is BENCH_INSTRUMENT_FILES' criterion: it never reads a "
+        "number, and a record it passes is one it has said nothing about. Its own two "
+        "polarities are screened in test_public_paths.py, which plants each recognised path "
+        "form and requires the screen to fire."
+    ),
+    "test_public_paths.py": (
+        "test module — a caller, screened as polarity, not as an instrument."
+    ),
+    "test_withdrawn_streaming_claim.py": (
+        "test module — a caller. It reads docs/PERF.md and committed JSON and rules on "
+        "whether the WITHDRAWN §26.4 figures stay withdrawn; the arithmetic it checks is "
+        "the artifact's, not its own."
+    ),
 }
 
 

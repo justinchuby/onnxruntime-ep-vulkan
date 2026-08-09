@@ -663,7 +663,15 @@ def _function_source(module_src: str, name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def test_the_bandwidth_span_is_the_seven_differential_points():
-    """THE B6 CONTROL. The published span and median must be the artifact's own points."""
+    """THE B6 CONTROL. The published span and median must be the artifact's own points.
+
+    NOTE (issue #81, 2026-08-08): docs/PERF.md §26.4 has WITHDRAWN the bandwidth reading these
+    points feed — the pass delta used ``ceil(M/4)`` where the executed SPIR-V trace in
+    ``weight_reread_phi35.json`` says ``ceil(M/2)``, and the denominator is not the graph's packed
+    weight bytes. This control is unchanged and still binding: it says that *if* the document
+    publishes a span or a median, it must be the artifact's own. It has never been a claim that the
+    artifact's own figures measure what their field names say they measure. See §26.4.1.
+    """
     doc = _load("real_model_diagnostics_before_gqa.json")
     points = _differential_bandwidths(doc)
     assert len(points) == 7, points

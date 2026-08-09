@@ -45,11 +45,30 @@ that argument is `probe_roofline.py`'s, unchanged and still an argument. What ha
 that the multiplicity is now measured: if two workgroups named the same blob, or one workgroup
 named it twice, this probe now says so.
 
-Run:  python bench/results/probe_weight_reread.py
+WHERE THE RECORD GOES
+=====================
+By default: `bench/_scratch/weight_reread_phi35.json`, which git ignores. This probe used to end
+with an unconditional write onto the *committed* `bench/results/weight_reread_phi35.json`, so
+running it to read a number rewrote the number and left the tree dirty — the one thing you cannot
+afford while reproducing a disagreement about that very file. Regenerating the committed witness is
+still possible and is now something you have to ask for by name:
+
+    python bench/results/probe_weight_reread.py \
+        --out bench/results/weight_reread_phi35.json --allow-tracked
+
+The record is scrubbed of absolute local paths on the way out (`bench/public_paths.py`): a path
+under somebody's home directory names a person and a machine and is reproducible by nobody else,
+so as provenance it is worse than nothing. The `onnx_file` field survives as a redaction token; the
+`onnx_sha256` beside it is what actually identifies the bytes.
+
+Run:  python bench/results/probe_weight_reread.py [--out PATH] [--allow-tracked]
+
+Exit: 0 written · 4 ERROR(instrument) · 5 ERROR(public-path), the write refused before it landed
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -65,6 +84,11 @@ sys.path.insert(0, str(ROOT / "bench"))
 sys.path.insert(0, str(ROOT / "bench" / "results"))
 
 from spirv_simt import Dispatch, InstrumentError, SpirvModule  # noqa: E402
+from public_paths import (  # noqa: E402
+    PublicPathError,
+    dump_public_json,
+    untracked_default,
+)
 
 LEDGER = ROOT / "evidence" / "proof_ledger.jsonl"
 SHADER_STEM = "q_gemv_matmul_nbits_f16"
@@ -558,7 +582,28 @@ def positive_controls(mod: SpirvModule) -> dict:
 # -- main --------------------------------------------------------------------------------------
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        "--out",
+        type=pathlib.Path,
+        default=None,
+        help="where to write the record (default: bench/_scratch/weight_reread_phi35.json, which "
+             "git ignores). Running this probe to READ a number must not dirty the tree.",
+    )
+    ap.add_argument(
+        "--allow-tracked",
+        action="store_true",
+        help="permit writing over a git-tracked file. Needed to regenerate the committed witness "
+             "bench/results/weight_reread_phi35.json, and deliberately absent from the default so "
+             "that the run which did it says so in its own command line.",
+    )
+    args = ap.parse_args(argv)
+    out = args.out if args.out is not None else untracked_default("weight_reread_phi35.json")
+
     try:
         path, blob, digest = locate_module(SHADER_STEM)
         mod = SpirvModule(blob)
@@ -701,8 +746,11 @@ def main() -> int:
         print(f"ERROR(instrument): {e}", file=sys.stderr)
         return 4
 
-    out = ROOT / "bench" / "results" / "weight_reread_phi35.json"
-    out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        out = dump_public_json(report, out, allow_tracked=args.allow_tracked)
+    except PublicPathError as e:
+        print(f"ERROR(public-path): {e}", file=sys.stderr)
+        return 5
 
     print("WEIGHT RE-READ — executed against the compiled kernel, not asserted")
     print("=" * 78)

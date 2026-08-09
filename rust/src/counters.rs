@@ -2383,6 +2383,53 @@ fn pipeline_variants_json() -> String {
     format!("[{}]", list.join(", "))
 }
 
+// ---------------------------------------------------------------------------
+// gemv_tile_request_refused — the reason a tile request never became a pipeline
+//
+// JSON-only, no `abi_version` bump, for exactly the reason `pipeline_variants` above is.
+//
+// **Why this is a field of its own rather than a state of `pipeline_variants`.**
+// `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` is honoured by *building the pipeline it names*, so an
+// honoured request is already witnessed: indices 4 and 6 of the recorded specialisation vector are
+// the resolved `(cols, rows)`, recorded from the effective pair handed to pipeline creation and
+// not from what the environment asked for. That is the readback witness and this field must not
+// duplicate it.
+//
+// A **refused** request has the opposite problem: it builds no pipeline at all, so
+// `pipeline_variants` is silent about it in a way that is indistinguishable from the variable
+// never having been set. A silence is not a zero. This field carries that one fact and only that
+// fact: the reason text of the first refusal, or `"NONE"`.
+//
+// `"NONE"` is honest for both "nothing was requested" and "the request was honoured", because in
+// the second case the honoured pair is visible in `pipeline_variants` and reading the two together
+// is unambiguous. What is not representable, deliberately, is a refusal that left no trace.
+// ---------------------------------------------------------------------------
+
+/// The reason text of the first refused GEMV tile request in this process, if any.
+static GEMV_TILE_REQUEST_REFUSED: Mutex<Option<String>> = Mutex::new(None);
+
+/// Record that a GEMV tile request was refused before any pipeline was built.
+///
+/// First writer wins. A later refusal is a repeat of the same misconfiguration — every
+/// `MatMulNBits` node in the graph refuses the same request for the same reason — and letting the
+/// last one win would make the recorded reason depend on node order.
+pub fn record_gemv_tile_request_refused(reason: &str) {
+    if let Ok(mut slot) = GEMV_TILE_REQUEST_REFUSED.lock() {
+        if slot.is_none() {
+            *slot = Some(reason.to_string());
+        }
+    }
+}
+
+/// The refusal reason, or `"NONE"`. See the note above for why `"NONE"` is not ambiguous.
+pub fn gemv_tile_request_refused() -> String {
+    GEMV_TILE_REQUEST_REFUSED
+        .lock()
+        .ok()
+        .and_then(|s| s.clone())
+        .unwrap_or_else(|| "NONE".to_string())
+}
+
 /// `shaders_dispatched` and `shaders_dispatched_digest` as JSON fragments.
 ///
 /// The digest is over the SPIR-V **bytes** of exactly those modules, so it changes when the
@@ -2488,6 +2535,11 @@ pub fn reset() {
     }
     if let Ok(mut used) = PIPELINE_VARIANTS.lock() {
         used.clear();
+    }
+    // Same reason as the two above: a refusal latched across a reset is one test reading another
+    // test's misconfiguration.
+    if let Ok(mut slot) = GEMV_TILE_REQUEST_REFUSED.lock() {
+        *slot = None;
     }
     CLAIMED_NODES.store(0, ORD);
     ISLANDS_OFFERED.store(0, ORD);
@@ -2630,6 +2682,7 @@ impl VulkanEpCounters {
              \"shader_toolchain\": \"{}\",\n  \
              \"pipeline_variants\": {},\n  \
              \"gemv_packed_spec_constant\": \"{}\",\n  \
+             \"gemv_tile_request_refused\": \"{}\",\n  \
              \"shaders_dispatched_spec_digest\": \"{}\",\n  \
              \"specialisation_delta_forms\": {},\n  \
              \"specialisation_unrecorded_forms\": {},\n  \
@@ -2722,6 +2775,7 @@ impl VulkanEpCounters {
             json_escape(crate::registry::toolchain_identity()),
             pipeline_variants_json(),
             gemv_packed_spec_constant(),
+            json_escape(&gemv_tile_request_refused()),
             specialisation_digest_json(),
             specialisation_delta_forms_json(),
             specialisation_unrecorded_forms_json(),

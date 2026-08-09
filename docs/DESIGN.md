@@ -5758,6 +5758,53 @@ CPU reference to compare a Vulkan run against**, so nothing here is an end-to-en
 
 ---
 
+#### Asking for an exact tile, and why the clamp was not enough (issue #81)
+
+The kill switch above is a *clamp*, and a clamp is the wrong instrument for an experiment. Issue #81
+found out how wrong by reading a published result backwards: `docs/PERF.md` §26.4 differenced two
+arms on the assumption that the tiled one made `ceil(M/4)` weight passes, because that arm's
+recorded environment said `GEMV_MAX_ROWS = 4`. It made `ceil(M/2)`. The clamp had been obeyed and
+then the *other* bound — `QB_ROWS * QB_COLS <= GEMV_MAX_TILE` — had bound at the `QB_COLS = 16`
+those shapes resolve to. Nothing was broken. The selector did exactly what this section says it
+does. But **what was asked for was not what ran, and no record said so**, and a published
+bandwidth reading had to be withdrawn.
+
+`ONNXRUNTIME_EP_VULKAN_GEMV_TILE=<cols>,<rows>` closes that gap by naming the pair instead of
+bounding it. Four properties, each chosen against a specific way the clamp misled:
+
+* **Unset means "call `gemv_tile`".** Not "use some documented default" — the reader holds no tile
+  of its own, so this switch cannot silently pin a geometry across a future change to the selector.
+  That is the difference between an override and a fork.
+* **A legal pair is used verbatim**, and lands in specialisation constants 4 (`QB_COLS`) and 6
+  (`QB_ROWS`) through the same vector `rust/src/vk/session.rs` already hands to
+  `counters::record_pipeline_variant`. So the tile that ran is legible from the run's own
+  `pipeline_variants`, not from the command line that requested it. This is the whole point: an A/B
+  whose arms are witnessed as the pipelines they claim to be.
+* **An illegal or malformed value refuses the dispatch.** `EpError::Internal`, with a named reason
+  kept in `counters::gemv_tile_request_refused()`. It never falls back to the selector, because a
+  request that silently becomes a different tile produces an experiment whose two arms may be the
+  same pipeline — which is precisely the failure mode that cost §26.4 its reading. A non-UTF-8
+  value refuses too (`var_os`, not `var`): reading it as "unset" would be a fallback wearing a
+  different hat.
+* **It screens against production's own bounds, not a copy.** `GEMV_MAX_COLS`, `GEMV_MAX_ROWS`,
+  `GEMV_MAX_TILE`, `wg * QB_COLS <= GEMV_RED_WORDS`, and the x-grid bound — the same list this
+  section already states, evaluated by the same constants. A second table of limits would drift.
+
+Note the shared-memory arithmetic, since it is easy to get backwards and §26 did: `shared float
+red[GEMV_RED_WORDS]` with `GEMV_RED_WORDS = 2048` is **8 KiB** — *half* the 16 KiB
+`maxComputeSharedMemorySize` floor §7.2 relies on. 16 KiB is what the device guarantees; 8 KiB is
+what this module spends.
+
+**This is an instrument, and it measures nothing by itself.** It makes reachable a tile the selector
+cannot reach — `(8, 4)` is legal, ties the incumbent `(16, 2)` on weight traffic, and has never been
+run — but issue #81 took no clock readings and neither `docs/PERF.md` nor this document attaches a
+number to it. The switch is mapped in `ci/census_surface_map.json` as `uncensused`, for the same
+reason its two GEMV neighbours are: the wiring census's graph carries no `MatMulNBits` node, so no
+run of it can build a `q_gemv` pipeline at all. Falsification lives outside the census, on the
+production path, in `rust/tests/gemv_tile_request.rs`.
+
+---
+
 ### 8.13 The GQA workgroup size — one lane per subgroup was 1/32 of the machine (issue #56)
 
 `gqa_f16.comp` declared `layout(local_size_x = 1, local_size_y = 1, local_size_z = 1)`. That is
