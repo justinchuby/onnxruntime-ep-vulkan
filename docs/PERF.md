@@ -5200,9 +5200,9 @@ Only because that passed does the timing get published:
 
 | case | serial `gqa_f16` | parallel `gqa_decode_f16` | `W` chosen | kernel speed-up |
 |---|---|---|---|---|
-| decode past=128 | 1.355 ms | 0.920 ms | 4 | **1.47x** |
-| decode past=512 | 5.106 ms | 1.142 ms | 16 | **4.47x** |
-| decode past=1024 | 10.116 ms | 2.050 ms | 16 | **4.93x** |
+| decode past=128 | 1.356 ms | 0.915 ms | 4 | **1.48x** |
+| decode past=512 | 5.102 ms | 1.143 ms | 16 | **4.46x** |
+| decode past=1024 | 10.116 ms | 2.054 ms | 16 | **4.92x** |
 
 The shape of that column is the design: at `past = 128` the selector picks `W = 4` and the walk is
 short enough that fixed cost dominates; by `past = 1024` it is `W = 16` and the 1,025-token serial
@@ -5227,7 +5227,7 @@ byte-identical.
 | forced `W = 1` vs base build | **bitwise identical on all three outputs at all 13 lengths** (`max_abs = 0.0`) |
 | pipeline witness | forced `W = 1` dispatched `vulkan.gpu.gqa_f16` **only** — the decode module never appeared |
 | shipped default (`auto`) vs base | identical at `past <= 62`, differs at `past >= 63` — **the selector boundary, measured** |
-| `distinct_binaries` | true (subject `dcb25298…`, base `25a27fc4…`) |
+| `distinct_binaries` | true (subject `df8ffea3…`, base `d17cbf2b…`) |
 
 The last two rows are the point. The `auto` arm is *expected to differ* above the threshold and
 that row is labelled context rather than a check — but the fact that it flips exactly at 63 and
@@ -5240,12 +5240,12 @@ everything else in this file, against the same base build:
 
 | `past` | `seq_len` | outputs | decode module | subject/base kernel time |
 |---|---|---|---|---|
-| 0 | 2 | bitwise identical | never dispatched | 1.000 |
-| 0 | 8 | bitwise identical | never dispatched | 1.019 |
-| 0 | 64 | bitwise identical | never dispatched | 0.995 |
-| 128 | 2 | bitwise identical | never dispatched | 1.000 |
-| 128 | 8 | bitwise identical | never dispatched | 0.999 |
-| 128 | 128 | bitwise identical | never dispatched | 0.966 |
+| 0 | 2 | bitwise identical | never dispatched | 1.002 |
+| 0 | 8 | bitwise identical | never dispatched | 0.987 |
+| 0 | 64 | bitwise identical | never dispatched | 1.001 |
+| 128 | 2 | bitwise identical | never dispatched | 1.001 |
+| 128 | 8 | bitwise identical | never dispatched | 1.002 |
+| 128 | 128 | bitwise identical | never dispatched | 0.993 |
 
 `gqa_f16` is unchanged by a byte on this branch (`git diff <base>..HEAD -- rust/shaders/glsl/gqa_f16.comp`
 is empty), and this table is the runtime form of the same statement: at `seq_len > 1` the selector
@@ -5264,22 +5264,28 @@ witness, the equivalence and the dispersion gate all hold:
 
 | `past` | W=1 | W=2 | W=4 | W=8 | W=16 |
 |---|---|---|---|---|---|
-| 128 | 1.000 | 0.865 | **1.473** ← shipped | 2.300 | 3.453 |
-| 512 | 1.000 | 0.880 | 1.667 | 2.891 | **4.476** ← shipped |
-| 1024 | 1.000 | 0.885 | 1.701 | 3.083 | **4.935** ← shipped |
-| 2048 | 1.000 | 1.011 | 1.739 | 3.262 | **5.536** ← shipped |
+| 128 | 1.000 | 0.872 | **1.476** ← shipped | 2.296 | 3.462 |
+| 512 | 1.000 | 0.879 | 1.665 | 2.884 | **4.466** ← shipped |
+| 1024 | 1.000 | 0.885 | 1.703 | 3.084 | **4.931** ← shipped |
+| 2048 | 1.000 | 0.862 | 1.613 | 3.010 | **5.144** ← shipped |
 
-Every cell is equivalent to its own `W = 1` cell. Two things in this table are worth saying out
+Every cell is equivalent to its own `W = 1` cell. Three things in this table are worth saying out
 loud:
 
-* **`W = 2` buys nothing, and below `past = 2048` it costs.** 0.865–0.885x at `past` 128–1024 and
-  1.011x at 2048: the reduction's fixed cost is not amortised by a single extra lane. This is a
-  real, reproducible regression in a cell the selector never picks — `auto` goes 1 → 4 at the
-  threshold and never selects 2 — but it is reported rather than hidden, and it is the reason a
-  `W`-generic statement would be false in both directions.
+* **`W = 2` never pays — it costs at every `past` measured.** 0.872 / 0.879 / 0.885 / 0.862 at
+  `past` 128 / 512 / 1024 / 2048, with no trend towards break-even as the walk lengthens: splitting
+  the walk two ways does not amortise the reduction's fixed cost at any length this kernel is
+  reachable at. This is a real, reproducible regression in a cell the selector never picks — `auto`
+  goes 1 → 4 at the threshold and never selects 2 — but it is reported rather than hidden, and it is
+  the reason a `W`-generic statement would be false in both directions.
+* **The `past = 2048` row is the least settled in the table.** Its `W = 2` cell carries a 6.6%
+  per-arm relative standard deviation, and its `W = 1` cell 1.1%, against ≤ 0.25% in every other
+  cell of every other row. Those two cells are therefore quoted at lower confidence, and the
+  dispersion is recorded per cell in `forced_w_ladder` rather than smoothed away. `past = 2048` is
+  also outside the node-scope table above, so nothing in §27.3 depends on it.
 * **This ladder does not reproduce #97's `W = 16` column.** The independently corrected values for
   that artifact were 4.1347 / 6.1849 / 7.0732 / 8.0288 at `past` 128/512/1024/2048; this
-  independent rebuild measures **3.453 / 4.476 / 4.935 / 5.536** on the same class of device. No
+  independent rebuild measures **3.462 / 4.466 / 4.931 / 5.144** on the same class of device. No
   attempt is made here to reconcile the two — different kernel, different harness, different
   warm-up and ordering discipline — but **none of #97's ratios are inherited, cited as support, or
   reused**, and the numbers above are the only ones this project stands behind.
@@ -5369,6 +5375,19 @@ the only scope with a number in it.
   early relative-error inflation story are not used as support anywhere in this file. Where this
   rebuild measures the same quantity it publishes its own number, and where the two disagree
   (§27.3.3) the disagreement is stated rather than reconciled.
+* **The recorded DLL sha256 is an identity, not a reproduction recipe.** The `MSVC` release link
+  used here is **not** byte-reproducible: relinking the identical source tree produces a different
+  file hash every time (verified — three relinks of one clean tree gave three distinct sha256s).
+  So `provenance.ep_library_sha256` says *exactly which bytes produced these numbers*, and lets a
+  reviewer bind an artifact to a binary they have been handed; it does **not** let them rebuild the
+  tree and expect a match, and any screen that compares a fresh build's hash to this field will be
+  wrong for a reason that has nothing to do with this change. The reproducible identities are the
+  commit, `provenance.ep_library_bytes`, the toolchain record, and the proof-ledger's
+  `source_digest` / `shader_digest` / `spec_digest` triple — those *are* content-addressed and a
+  rebuild does reproduce them.
+* **The `past = 2048` ladder row is noisier than the rest.** Per-arm dispersion there reaches 6.6%
+  at `W = 2` against ≤ 0.25% elsewhere; it is quoted with that caveat, is outside the node-scope
+  table entirely, and nothing else in this file rests on it.
 * **The early-divergence question is left open, not explained away.** This file does **not** claim
   that any observed synthetic divergence is a harness artefact. §27.4's cross-kernel control came
   back NEGATIVE, which is recorded as measured and gives this change no cover.
@@ -5383,12 +5402,22 @@ git worktree add <scratch> $(git merge-base origin/main HEAD)
 cargo build --release --manifest-path <scratch>/rust/Cargo.toml
 
 python bench/results/probe_gqa_decode_kv_parallel.py \
-    --past 128,512,1024 --repeats 3 --iters 4 --warmups 2 \
+    --past 128,512,1024 --repeats 3 --iters 10 --warmups 2 \
     --base-lib <scratch>/rust/target/release/onnxruntime_vulkan_ep.dll \
     --ladder-past 128,512,1024,2048 --ladder-w 1,2,4,8,16
 python tests/ops/probe_gqa_decode_kv_parallel_mutations.py
 python -m pytest tests/ops/test_gqa_decode_kv_parallel.py
 ```
+
+`--iters 10` (8 timed inferences per point after 2 dropped warm-ups) is what the committed artifact
+was generated with. An earlier run at `--iters 4` left only two timed samples per prefill cell, and
+one of the twelve caught a single scheduling spike (`[1418, 2063]` µs against a base arm of
+`[1413, 1419]`) which pushed that cell outside the ±10% band and made the probe withhold the whole
+prefill pass — outputs still bitwise identical, only the timing gate tripped. The response was to
+raise the **sample count**, which is not a goalpost: every band and gate in §27.2.1 (the tolerance,
+`rsd > 0.10`, ±10% on prefill, the pipeline witness, per-repeat equivalence) is unchanged, and the
+artifact in this repository is the **first** run at the higher count, not a best-of. Refusals are
+reported when they happen; §27.4 is one that was not re-run away.
 
 Artifacts: `bench/results/gqa_decode_kv_parallel.json`,
 `bench/results/gqa_decode_kv_parallel_mutations.json`. The probe exits **1** when it withheld
