@@ -6,8 +6,12 @@
 //!
 //! * MobileNetV2-12, 2026-08-04: with `Conv` and `GlobalAveragePool` claimed, the single `Gemm`
 //!   at the tail is the last node in the model that carries data. It is also an *anchor* in
-//!   `ops::partition::is_anchor`, so a lone `Gemm` island is exempt from the minimum-node gate —
-//!   the row was already written into the partitioner's cost model before any kernel existed.
+//!   `ops::partition::is_anchor` — the `Gemm` at a classifier's tail holds its weight matrix as a
+//!   graph initializer at input 1, which is the designated weight site for the default-domain
+//!   linear families — so a lone `Gemm` island is exempt from the minimum-node gate; the row was
+//!   already written into the partitioner's cost model before any kernel existed. Since issue #73
+//!   that exemption is a property of the node, not of the name: a `MatMul` whose operands are both
+//!   runtime activations, as in an attention block's Q·Kᵀ, does not anchor.
 //! * The registry had no `Gemm` at all, which is why every non-LLM model this project has looked
 //!   at ends on the CPU regardless of how much of its body the EP claims.
 //! * BERT-SQuAD-12, 2026-08-04: `MatMul` ×95 is the largest unregistered op on any censused
@@ -779,12 +783,33 @@ mod tests {
         assert!(spec.blind_axes.contains(&"transB"));
     }
 
-    /// `Gemm` is already an anchor in the partitioner, which is why a lone one at a model's tail
-    /// is claimable at all. If that ever changed, this row would go live and never be used.
+    /// `Gemm` with its weight resident is an anchor in the partitioner, which is why a lone one at
+    /// a model's tail is claimable at all. If that ever changed, this row would go live and never
+    /// be used.
+    ///
+    /// Both polarities, because since issue #73 the op name is only half the predicate: the
+    /// classifier-head `Gemm` anchors because its `B` is a graph initializer, and an attention
+    /// `MatMul` whose operands are both activations does not.
     #[test]
-    fn gemm_is_a_partition_anchor() {
-        assert!(crate::ops::partition::is_anchor("Gemm"));
-        assert!(crate::ops::partition::is_anchor("MatMul"));
+    fn gemm_is_a_partition_anchor_when_its_weight_is_resident() {
+        use crate::ops::partition::{WeightOperand, classify_weight_operand, is_anchor};
+        for op in ["Gemm", "MatMul"] {
+            // `B` at input 1 is a graph initializer — the classifier head, the FFN projection.
+            let resident = classify_weight_operand(op, |i| i == 1);
+            assert_eq!(resident, WeightOperand::Present, "{op}");
+            assert!(
+                is_anchor(op, resident),
+                "{op} with a resident weight must anchor"
+            );
+
+            // Both operands produced by this inference — attention's Q·Kᵀ and P·V.
+            let activations = classify_weight_operand(op, |_| false);
+            assert_eq!(activations, WeightOperand::Absent, "{op}");
+            assert!(
+                !is_anchor(op, activations),
+                "{op} on two activations must not anchor (issue #73)"
+            );
+        }
     }
 
     // ---------------------------------------------------------------------------------------

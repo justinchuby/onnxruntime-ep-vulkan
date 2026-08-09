@@ -1301,7 +1301,11 @@ defaults — is a fact about **3a**, `TOO_SMALL`. It establishes that *stage 3* 
 It does not establish that **3c** has ever decided anything outside a probe, and I can find no
 artifact in which it has.
 
-**(ii) The diagnosis inverts once you read `is_anchor`.** The anchor set is `MatMul`, `Gemm`,
+**(ii) The diagnosis inverts once you read `is_anchor`.** **[SUPERSEDED IN PART by §5.4.2 —
+2026-08-08T17:01:06.5735674-07:00. The list below was the whole of the predicate, which is the
+defect: it tested the op name and not the property its own doc comment claimed. The conclusion that
+every transformer island is anchor-bearing was true by construction of that list rather than by any
+economic fact. See §5.4.2.]** The anchor set is `MatMul`, `Gemm`,
 `Conv`, `ConvTranspose`, `Attention`, `MatMulNBits`, `GroupQueryAttention`, `MultiHeadAttention`,
 `QMoE`, `LinearAttention` (`partition.rs:308`). **Every non-trivial island of any transformer
 contains at least one.** So "the economics model does not decide our partition" is not a Phi-3.5
@@ -1497,6 +1501,148 @@ M0/M1 have a defined behaviour before Niobe's measurements exist. `CoverageRepor
 the same `(kept, dropped)` pair, is what produces `largest_island_flops` for §10.0's milestone
 reporting — the rule and its metric live in one module deliberately, because their drifting apart is
 exactly how a coverage number becomes a lie.
+
+#### 5.4.2 `is_anchor` is a property of the node, not of the op name — RULING (2026-08-08T17:01:06.5735674-07:00)
+
+**SUPERSEDES §5.4.1(ii) IN PART.** §5.4.1(ii) reads the anchor set off `is_anchor` and concludes
+that *"every non-trivial island of any transformer contains at least one"*, and therefore that the
+economics arm's silence on our graph *"is the design, working."* The first half was true of the
+code as written and the second half does not follow from it, because the predicate did not test the
+property its own doc comment claimed for it. Issue #73.
+
+**The defect, stated as narrowly as it is true.** `is_anchor` took a single argument — the
+domain-qualified op name — and answered `true` for any of eleven names. Its doc comment gave the
+warrant: *"a lone `Add` is never worth a round-trip; a single `MatMul` **on LLM-sized weights**
+always is."* The body never asked about weights. An attention block's Q·Kᵀ and P·V are `MatMul`
+nodes whose operands are **both runtime activations**: nothing about them is resident, nothing is
+amortised across inferences, and they were nonetheless exempted from the very economics gate that
+exists to catch traffic that outweighs its arithmetic. §5.4.1(ii)'s "every transformer island
+contains an anchor" was therefore true *by construction of the name list*, not by any economic fact
+about the graph — which is the same shape as everything else in this section: **a reading that does
+not move when its subject is wrong.**
+
+**The rule as it now ships.** Anchor status is a conjunction over the **node**:
+
+> A node anchors when its op is in `HEAVY_OP_FAMILIES` **and** it presents a resident weight at one
+> of that family's schema-designated weight sites.
+
+`HEAVY_OP_FAMILIES` is the old eleven-name list, **bit-identical and in the same order**, renamed
+and re-pointed at the only consumer that was ever asking an arithmetic question: the FLOP estimate
+in `ep.rs`'s island builder. No model's FLOP estimate moves. "Resident" means a graph initializer —
+uploaded once at session build, reused by every inference — which is exactly the class `ep.rs`
+already excludes from `Island::input_bytes` for the same reason. That residency *is* the economic
+warrant; a weight amortises the round trip, an activation does not.
+
+The predicate is total and fails closed. `WeightOperand` has two states, `Present` and `Absent`, and
+no `Unknown`: the production oracle is `NodeView::input_is_constant`, which answers `false` for a
+missing slot, a null slot, and an ORT build that does not export
+`ValueInfo_IsConstantInitializer`. Every one of those is the same economic fact — nothing here is
+amortised — and every one is `Absent`, which does not anchor. **A third state would have been a
+state only tests could reach, and a state whose behaviour is unwitnessed is R10's problem, not a
+safety feature.** Failing closed here is mild: a node that does not anchor is not rejected, it
+merely has to clear the size and economics gates like anything else.
+
+**Gate order is unchanged and the direction of the change is one-way.** `is_anchor(op, w)` implies
+`is_heavy_op_family(op)` for every input, so the anchor set is a **subset** of the retired name-only
+set, and no island that was rejected can become claimed. `Claim → Reject` is the only reachable
+movement. Pinned end to end over constructed islands by
+`new_anchor_semantics_never_newly_claim_over_the_production_chain`, which asserts non-vacuity — the
+sweep must observe at least one verdict actually tighten, so the test cannot pass on a rollback.
+
+##### The site table, and an honest statement of the rule that generates it
+
+**A previous revision of this work stated the admission rule dimensionally — *a tensor whose
+extents carry neither a batch nor a sequence dimension* — and shipped a table that rule does not
+generate.** Against ONNX Runtime v1.28.0 at `da9b5e364c465de65c49d91e696cd6485270757f`, four rows
+disagreed with the sentence above them: `GroupQueryAttention`'s `head_sink` is a 1-D `(num_heads)`
+tensor that the stated rule **admits** and the table omitted; its `k_scale`/`v_scale` (12, 13) are
+declared with **no extents at all**, so the rule cannot evaluate them, yet they were designated; its
+`cos_cache`/`sin_cache` (7, 8) are `(max_sequence_length, head_size / 2)`, which the rule
+**excludes**, yet they were designated; and `QMoE`'s `fc3_experts_weights` (8) is an expert weight
+matrix that was omitted outright. **A rule that does not generate its table is worse than no rule,
+because it invites the reader to check the sentence instead of the rows.**
+
+The rule is therefore stated as what it actually is — an **audited semantic reading of each pinned
+schema**, not a dimensional test:
+
+> A site is designated when the pinned schema shows the input to be **the operator's weight** — the
+> trained parameter block whose bytes the layer's arithmetic is proportional to — or a per-block
+> scale or zero point that reconstructs such a block.
+
+A dimensional test cannot be made exact here and the reason is in the schemas: ONNX's `MatMul`
+declares **no extents for either operand**, and `GroupQueryAttention`'s cache scales declare none
+either. For the four default-domain linear families the criterion is instead **positional** — input
+1, the right-hand operand `B`/`W`, the only slot a linear layer's parameters can occupy — and that
+exception is named in the reason code `W_POSITIONAL` rather than hidden inside a summary sentence.
+
+The derivation is committed, not summarised. `WEIGHT_SITE_AUDIT` in `partition.rs` carries **one row
+per input per heavy family** — every input, in the schema's own declaration order, with the extents
+the schema declares and the reason it was admitted or excluded — and
+`weight_sites_are_exactly_the_designated_audit_rows` asserts that `weight_sites()` is exactly the
+designated rows of that audit, so the function cannot drift from its own derivation. Provenance is
+per family in `SCHEMA_SOURCES`, at file and line range, at the revision
+`third_party/onnxruntime/PROVENANCE.md` pins.
+
+| family | designated sites | note |
+| --- | --- | --- |
+| `MatMul`, `Gemm`, `Conv`, `ConvTranspose` | 1 | positional: the right-hand operand |
+| `Attention` (ONNX) | *none* | consumes pre-projected Q/K/V |
+| `com.microsoft::Attention` | 1 `weights` | the merged QKV projection, rank 2 |
+| `com.microsoft::MultiHeadAttention` | *none* | its only parameter input is a bias |
+| `com.microsoft::GroupQueryAttention` | *none* | see below |
+| `com.microsoft::MatMulNBits` | 1 `B`, 2 `scales`, 3 `zero_points` | schema: *"the weight matrix is a 2D **constant** matrix"* |
+| `com.microsoft::QMoE` | 2, 3, 5, 6, 8, 9, 11, 12, 13 | all three expert matrices with scales and zero points |
+| `com.microsoft::LinearAttention` | *none* | `decay`/`beta` are per-token gates |
+
+Three consequences are worth stating explicitly, because each is a place a reader would otherwise
+expect a different answer:
+
+- **Bias addends are excluded**, though they are genuine parameter data — `Gemm`'s `C`, `Conv`'s
+  `B`, both contrib attentions' `bias`, `MatMulNBits`'s `bias`, `QMoE`'s `fc*_experts_bias`. A bias
+  is O(output width) against a boundary that is O(batch × sequence × hidden). This is why
+  `MultiHeadAttention` designates nothing at all.
+- **`GroupQueryAttention` designates nothing, and this is derived rather than conceded.** It is the
+  clearest case of what issue #73 is about: GQA consumes *pre-projected* Q/K/V, so it owns no weight
+  matrix. Its persistent inputs are RoPE tables sized by the context window (7, 8), scales attached
+  to the KV cache with no declared extents (12, 13), and three rank-1 per-head parameters —
+  `head_sink` (11), `q_norm_weight` (14), `k_norm_weight` (15) — which are real learned parameters
+  and far too small to pay for a boundary crossing. The family remains heavy: its FLOPs are counted
+  exactly as before. It simply no longer anchors on sight. `Attention`, `MultiHeadAttention` and
+  `LinearAttention` land in the same place for the same reason, and
+  `attention_families_cannot_anchor_under_any_oracle` pins it against a maximally permissive oracle
+  that reports *every* input as an initializer.
+- **`QMoE` designates all three expert matrices.** `fc3_experts_weights` is optional but is a weight
+  whenever present; its omission was an error of transcription, not of rule.
+
+Consulting the *designated* sites rather than asking "is any input constant?" is what makes this
+schema-aware rather than coincidental. A constant-folded `attention_mask`, a baked `seqlens_k` or a
+frozen shape tensor is a constant that is not a weight, and a rule that counted it would re-admit
+the name-only exemption by a side door. `a_constant_at_a_non_designated_site_confers_nothing` is the
+falsifier.
+
+##### What this costs, and what it does not
+
+**No shipped verdict moves.** Phi-3.5's single island contains 161 `com.microsoft::MatMulNBits`
+nodes, whose `B` and `scales` are required inputs and whose schema states in its own doc text that
+the weight matrix is constant. The island stays anchor-bearing, `viable_islands_retained` stays 1,
+and every measured number in §7.12 and §10.0 is untouched. What changes is that the exemption now
+**states something checkable about each node it exempts** — which is the standing repair for
+§5.4.1's finding 1, an anchor-bearing island that genuinely should be declined. A small `MatMul`
+surrounded by large boundary traffic, the named falsifier there, is now precisely the case that no
+longer reaches 3b unexamined.
+
+**The anchor count in `Island`'s Phi-3.5 constants moves 193 → 161, and it is labelled MODEL.** No
+artifact in this repository carries an anchor count: `PartitionStats` has no such field, and the
+`anchors` key in `bench/results/island_counterfactual_bert*.json` is a *list of op names*. The 161
+is re-derived on every test run from `bench/results/_claim_log_phi35_r15_after.jsonl` — 161 of its
+355 claimed lines carry `op == "com.microsoft::MatMulNBits"` — by
+`tests/ops/test_anchor_claims_are_witnessed.py`. The withdrawn 32 were `GroupQueryAttention` nodes,
+withdrawn because GQA designates no weight site, not because the evidence for them was weak.
+
+**`rust/tools/probe_island_counterfactual.py` models the family half only.** It ranks candidate
+islands from op names, which is now a **ceiling** on the anchor count rather than the count; it
+parses `HEAVY_OP_FAMILIES` out of `partition.rs` and raises rather than guessing when it cannot, and
+`tests/ops/test_probe_anchor_mirror.py` fails on any divergence between the two.
 
 ### 5.5 `Compile` — plan build and prepacking
 

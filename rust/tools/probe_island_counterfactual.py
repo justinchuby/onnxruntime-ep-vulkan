@@ -46,10 +46,17 @@ The baseline is per-node too: a node counts as claimable only if the log says *t
 claimed. The old baseline treated all 364 `Add` nodes as claimable when 182 were.
 
 Islands are connected components over the graph's data edges, restricted to claimable nodes.
-The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; `--anchors` mirrors its
-anchor exemption. Neither is the partitioner -- this is a *ranking* instrument, and it says so:
+The `--min-nodes` floor mirrors `ops::partition`'s minimum-island rule; the anchor set mirrors the
+*family* half of its anchor exemption and is read out of `partition.rs` rather than transcribed.
+Neither is the partitioner -- this is a *ranking* instrument, and it says so:
 it reports island structure, and the partitioner's cost model is the thing that finally decides.
 The number to read is the **delta**, which is much more robust than either absolute.
+
+**The anchor model here is a ceiling, and always was (restated 2026-08-08, issue #73).** The
+shipped rule anchors a node on its op family **and** a resident weight at a schema-designated
+input. This instrument ranks op *types* and has no per-node residency, so it can only model the
+family half, which over-counts anchors and therefore over-states retained-island size. That is the
+same direction as the `optimistic` column, and it is stated here rather than left to be inferred.
 
 NO CLOCK.
 
@@ -65,10 +72,51 @@ import argparse
 import collections
 import json
 import pathlib
+import re
 
-# Mirrors `ops::partition::is_anchor` closely enough to rank with. Not authoritative; the
-# partitioner in the DLL is. Kept short and named so a reader can check it against that list.
-DEFAULT_ANCHORS = ("Conv", "Gemm", "MatMul", "MatMulNBits", "Attention", "GroupQueryAttention")
+# Parsed out of `ops::partition::HEAVY_OP_FAMILIES` -- see `heavy_op_families()` below. This
+# instrument ranks by *op type*, so it can model the family half of the anchor rule and not the
+# other half: since issue #73 an anchor is a heavy family **and** a resident weight at a
+# schema-designated input, and residency is a per-node fact this instrument does not have. Using
+# the family alone therefore over-counts anchors, which makes every reading here a **ceiling** on
+# the retained-island size, in the direction that inflates a candidate's apparent value. That is
+# the same direction as the `optimistic` column and it is stated for the same reason.
+#
+# The list is read from the Rust source rather than transcribed. The transcription that used to
+# live here had drifted: it named six families where the source has eleven, missing
+# `ConvTranspose`, `MultiHeadAttention`, `QMoE` and `LinearAttention`, and it spelled the contrib
+# ops unqualified. `tests/ops/test_probe_anchor_mirror.py` fails on any divergence.
+PARTITION_RS = pathlib.Path(__file__).resolve().parents[1] / "src" / "ops" / "partition.rs"
+
+
+def heavy_op_families(source: pathlib.Path = PARTITION_RS) -> tuple[str, ...]:
+    """The `HEAVY_OP_FAMILIES` slice, read out of `partition.rs`.
+
+    Raises rather than falling back to a guess. A hard-coded default that silently replaces an
+    unreadable source is how the six-name list above went stale without anyone noticing: the
+    instrument kept answering, and the answer kept being wrong by four families.
+    """
+    text = source.read_text(encoding="utf-8")
+    marker = "pub const HEAVY_OP_FAMILIES: &[&str] = &["
+    start = text.find(marker)
+    if start < 0:
+        raise RuntimeError(
+            f"ERROR(instrument): {marker!r} not found in {source}. The anchor model cannot be "
+            f"built, and guessing it would reproduce the drift this parse exists to prevent."
+        )
+    end = text.find("];", start)
+    if end < 0:
+        raise RuntimeError(f"ERROR(instrument): unterminated HEAVY_OP_FAMILIES in {source}")
+    body = text[start + len(marker) : end]
+    names = tuple(m.group(1) for m in re.finditer(r'"([^"]+)"', body))
+    if not names:
+        raise RuntimeError(f"ERROR(instrument): HEAVY_OP_FAMILIES parsed empty from {source}")
+    return names
+
+
+def anchor_op_types(families: tuple[str, ...]) -> set[str]:
+    """Family names as `op_type` strings, since an ONNX `NodeProto.op_type` is unqualified."""
+    return {f.rsplit("::", 1)[-1] for f in families}
 
 
 def islands(nodes, keepset: set[int], producer) -> list[list[str]]:
@@ -187,7 +235,7 @@ def main() -> int:
         )
         return 2
 
-    anchors = set(DEFAULT_ANCHORS)
+    anchors = anchor_op_types(heavy_op_families())
     base_keep = {i for i, n in enumerate(nodes) if claimed_node.get(n.name)}
     base_comps = islands(nodes, base_keep, producer)
     base_n, base_k = retained(base_comps, args.min_nodes, anchors)
@@ -288,6 +336,11 @@ def main() -> int:
         "claim_log": args.claim_log,
         "min_nodes": args.min_nodes,
         "anchors": sorted(anchors),
+        "anchors_are": (
+            "op types of ops::partition::HEAVY_OP_FAMILIES; a CEILING on the anchor set, since "
+            "the shipped rule also requires a resident weight at a schema-designated input "
+            "(issue #73) and this instrument has no per-node residency"
+        ),
         "graph_nodes": len(nodes),
         "claim_log_name_matches": matched,
         "baseline": {"retained_nodes": base_n, "retained_islands": base_k},

@@ -779,6 +779,13 @@ def _probe_vulkan_device() -> bool:
     Returns False if the EP is registered but advertises zero devices (no Vulkan ICD, or all
     devices fail the capability gate).
 
+    Since issue #73 that requires the probe model to be built a particular way and it already is:
+    an anchor is a heavy op family **and** a resident weight at a schema-designated input, and this
+    model binds `B` (input 1) and `scale` (input 2) as graph initializers. If they were fed as
+    runtime inputs the node would stop anchoring, the 1-node island would be declined `TooSmall`,
+    and this probe would report "no Vulkan device" on a working machine — so the initializers below
+    are load-bearing for the probe and not merely convenient.
+
     A plain Add model is NOT sufficient here: a 1-node Add forms a non-anchor island and is
     correctly declined by the partition TooSmall gate (1 < min_nodes=4, anchors=0).
     """

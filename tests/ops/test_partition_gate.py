@@ -11,17 +11,23 @@ partition::evaluate is called for each component; a non-anchor component below t
 flops-per-transfer margin produces a [partition] decline code in the CLAIM_LOG.
 
 Model design: two independent Sigmoid branches share no edges. ORT sees them as a graph with
-two disconnected claimed clusters, each a 1-node island with no anchors (Sigmoid is not in
-partition::is_anchor). partition::evaluate fires → TooSmall (1 < min_nodes=4, anchors=0) →
+two disconnected claimed clusters, each a 1-node island with no anchors (`Sigmoid` is not in
+`partition::HEAVY_OP_FAMILIES`, so it cannot anchor whatever its inputs hold).
+partition::evaluate fires → TooSmall (1 < min_nodes=4, anchors=0) →
 [partition] decline code. CLAIM_LOG records the decline.
 
 Two guard directions (§7.0.2, as formalised by Morpheus):
-  Over-declination: the anchor exemption in partition::evaluate ensures any island containing
-    MatMulNBits or GQA always passes (anchors > 0 → Claim). Phi-3.5 bench checks this
-    (353 claimed, 1 island after GQA, MATCH). Falsifier: bench/phi35.py → 0 claimed nodes.
+  Over-declination: the anchor exemption in partition::evaluate ensures any island containing a
+    weight-bearing MatMulNBits always passes (anchors > 0 → Claim). Phi-3.5 bench checks this
+    (1 island after GQA, MATCH). Falsifier: bench/phi35.py → 0 claimed nodes.
   Under-declination: THIS TEST. A non-anchor two-cluster model must produce [partition]
     declines. Falsifier: claims["Sigmoid"]["code"] != "partition" when CLAIM_LOG is set,
     i.e. the EP claims both Sigmoid nodes instead of declining them.
+
+Since issue #73 an anchor is a property of the *node* — a heavy op family AND a resident weight
+at a schema-designated input — not of the op name. This test's subject is unaffected either way
+(`Sigmoid` is in no heavy family), which is why it is the right test to leave alone: it fixes the
+under-declination direction without depending on how anchor status is decided.
 
 Run::
 

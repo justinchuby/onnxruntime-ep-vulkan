@@ -1969,9 +1969,25 @@ remains 0.0 until Niobe wires VkQueryPool timestamps for calibration.
 
 **Guards against both failure modes (§7.0.2):**
 - *Over-declination* (gate declines everything): the anchor exemption —
-  `if island.anchors > 0 { return Verdict::Claim }` — ensures any island containing MatMulNBits
-  or GQA is always claimed. On Phi-3.5 (353 claimed, 1 island, 225 anchors), the gate never
-  declines. Falsifier: bench/phi35.py → 0 claimed nodes would indicate a broken anchor exemption.
+  `if island.anchors > 0 { return Verdict::Claim }` — ensures any island containing a
+  weight-bearing `MatMulNBits` is always claimed. Falsifier: bench/phi35.py → 0 claimed nodes would
+  indicate a broken anchor exemption.
+
+  > **Withdrawn 2026-08-08T17:01:06.5735674-07:00 (issue #73), and the withdrawal is two separate
+  > corrections.** This bullet previously read *"On Phi-3.5 (353 claimed, 1 island, 225 anchors),
+  > the gate never declines."* **(a) `225 anchors` has no witness.** `PartitionStats` has no anchor
+  > field, no trace in `bench/results/` carries one, and the `anchors` key in
+  > `island_counterfactual_bert*.json` is a *list of op names*, not a count. The figure is not
+  > merely stale, it is underived, and it is removed rather than corrected in place. **The
+  > `353 claimed` in the same parenthesis is also not witnessed by any committed artifact**: all
+  > six Phi-3.5 claim logs in `bench/results/` report 363 offered / **355** claimed, and none
+  > reports 353. The bullet named no run, so the figure cannot be attached to one; it is dropped
+  > rather than replaced. **(b) `or GQA` is now false.**
+  > Since #73 an anchor requires a resident weight at a schema-designated site, and
+  > `GroupQueryAttention` designates none: it consumes pre-projected Q/K/V and owns no weight
+  > matrix (`DESIGN.md` §5.4.2). Phi-3.5's island remains anchor-bearing through its
+  > `com.microsoft::MatMulNBits` nodes, of which that claim log carries **161**; the modelled count
+  > in `partition.rs` moved 193 → 161 for the same reason and is labelled MODEL there.
 - *Under-declination* (gate declines nothing): `test_partition_gate.py`. A non-anchor two-cluster
   model must produce `[partition]` codes. If it does not, the gate is inert. Falsifier: the test
   asserting `claims["Sigmoid"]["code"] == "partition"` goes red.
@@ -3450,11 +3466,23 @@ lands.
 #### (c) The EP's own estimator cannot answer this question, and the artifact shows why
 
 The last column of (a) is the split computed with `ep.rs`'s model reproduced exactly. **It is
-16.58% at every context and does not move at all.** 16.58% is `32 / 193` — the declined anchors
-over the total anchors. The estimator scores every anchor with the constant `2 * 3072 * 3072` and
-everything else with `out_bytes / 2` under a substituted dim, so **its FLOP number is the anchor
-count wearing a FLOP's clothes**, and it is blind to the one axis on which this model's cost
-actually varies.
+16.58% at every context and does not move at all.** 16.58% is `32 / 193` — the declined
+**heavy-family nodes** over the total heavy-family nodes on the offered graph (161
+`com.microsoft::MatMulNBits` + 32 `com.microsoft::GroupQueryAttention`), the 32 being GQA. The
+estimator scores every heavy-family node with the constant `2 * 3072 * 3072` and everything else
+with `out_bytes / 2` under a substituted dim, so **its FLOP number is the heavy-family node count
+wearing a FLOP's clothes**, and it is blind to the one axis on which this model's cost actually
+varies.
+
+> **Relabelled 2026-08-08T17:01:06.5735674-07:00 (issue #73), ratio unchanged.** These two figures
+> previously read *"declined anchors over total anchors"*. The FLOP branch of `ep.rs` keys off the
+> op **family** — `is_heavy_op_family`, which is the retired name-only anchor list bit-identical and
+> in the same order — and *not* off `is_anchor`, which since #73 additionally requires a resident
+> weight. **No number here moves**: both terms of the ratio, and every FLOP figure in this section,
+> are computed from the family list that did not change. Only the word was wrong, and it was wrong
+> in the direction that matters — under the shipped rule the 32 declined GQA nodes are not anchors
+> at all (`DESIGN.md` §5.4.2), so *"declined anchors"* would now name an empty set and this
+> paragraph would read as nonsense rather than as a stale number.
 
 That is not a call to tighten it. Per R9 amendment 5, a verdict that moves with a constant nobody
 measured is a fabricated input, not an over-broad one. The estimator is adequate for the job it has
@@ -3527,7 +3555,7 @@ Written to `bench/results/roofline_split-prediction.md` before the tool ran.
 | 2 | CPU bytes under 5% at ctx=0 | **held** (0.07%) |
 | 3 | CPU bytes over 40% at ctx=8192 | **held, but I under-predicted** — 73.77% |
 | 4 | the node count (32.8%) predicts neither end | **held** — byte share crosses it between ctx 512 and 2048 |
-| 5 | the EP estimator is flat in ctx | **held** — 16.58% at every ctx, and it is `32/193` exactly |
+| 5 | the EP estimator is flat in ctx | **held** — 16.58% at every ctx, and it is `32/193` exactly (declined over total *heavy-family* nodes; see (c)) |
 | 6 | fabricated extents contribute nothing | **held, after I fixed my own instrument** — see (f) |
 
 #### (h) Disagreement with the 60.5% KV figure, left standing

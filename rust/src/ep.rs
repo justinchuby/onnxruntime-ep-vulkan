@@ -1281,8 +1281,22 @@ unsafe fn get_capability_impl(
             // SAFETY: api live; node is a live graph node.
             let view = unsafe { NodeView::new(api, node) };
             let qual = view.qualified_name();
-            if partition::is_anchor(&qual) {
+
+            // Anchor status and the FLOP estimate are two different questions and are asked
+            // separately (issue #73). The FLOP branch keys off the *op family* — an attention
+            // matmul does matmul-shaped arithmetic whether or not it owns a weight — so this
+            // arm is bit-identical to what the name-only predicate used to produce. Anchor
+            // status additionally requires a resident weight at a schema-designated site, which
+            // is what makes the gate-2 exemption an economic statement rather than a name match.
+            if partition::is_anchor(
+                &qual,
+                partition::classify_weight_operand(&qual, |i| {
+                    view.has_input(i) && view.input_is_constant(i)
+                }),
+            ) {
                 island.anchors += 1;
+            }
+            if partition::is_heavy_op_family(&qual) {
                 // Anchor flop estimate: 2 × K × N for a matmul-family op.
                 // Conservative minimum: 2 × 3072 × 3072 when shapes are unavailable.
                 island.flops = island.flops.saturating_add(2 * 3072 * 3072);
