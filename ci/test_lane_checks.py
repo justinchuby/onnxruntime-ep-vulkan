@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -52,7 +53,7 @@ EXIT_USAGE = 2
 EXIT_ERROR_INSTRUMENT = 4
 
 
-def run_check(script: str, *args: str) -> subprocess.CompletedProcess:
+def run_check(script: str, *args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
     # Complete encoding pair, same reasoning as
     # negative_control_build_precondition.py's run(): pinning only the PARENT-side
     # decode (encoding="utf-8" below) is not enough on its own, because the CHILD
@@ -67,8 +68,17 @@ def run_check(script: str, *args: str) -> subprocess.CompletedProcess:
     # crash. Forcing PYTHONIOENCODING=utf-8 into the child's env makes its own
     # encode side independent of the invoking shell; encoding="utf-8" below makes
     # this process's decode side independent of it too.
+    #
+    # `env_extra` overlays the child's environment. It exists so a test can drive a
+    # screen's PRODUCTION branch -- e.g. put a scripted `gh` on PATH ahead of the real
+    # one and let ci/check_main_is_green.py run its real `gh run list` code path with no
+    # network -- rather than only the `--from-*` seams. A seam nobody's production path
+    # crosses proves nothing about production; that was the load-bearing finding of the
+    # issue #84 review.
     child_env = dict(os.environ)
     child_env["PYTHONIOENCODING"] = "utf-8"
+    if env_extra:
+        child_env.update({k: str(v) for k, v in env_extra.items()})
     return subprocess.run(
         [sys.executable, str(CI_DIR / script), *args],
         capture_output=True,
@@ -6316,16 +6326,25 @@ def test_the_shipped_register_tells_you_to_flip_not_delete():
 # ---------------------------------------------------------------------------
 
 
-def _runs(*rows) -> list:
+def _runs(*rows, event: str = "push", head_branch: str = "main", workflow: str = "CI",
+          first: int = 0) -> list:
+    """Applicable-by-default run records: workflow `CI`, `event: push`, on `main`.
+
+    Applicability is what the screen's window is now defined over, so the shape a test
+    has to spell out on purpose is a NON-applicable one, not an applicable one."""
     out = []
-    for i, (status, conclusion) in enumerate(rows):
+    for n, (status, conclusion) in enumerate(rows):
+        i = first + n
         out.append({
             "status": status,
             "conclusion": conclusion,
             "headSha": f"{i:040x}",
             "displayTitle": f"run {i}",
             "url": f"https://example.invalid/runs/{i}",
-            "workflowName": "CI",
+            "workflowName": workflow,
+            "event": event,
+            "headBranch": head_branch,
+            "databaseId": 900000 + i,
             "createdAt": "2026-08-04T00:00:00Z",
         })
     return out
@@ -6333,7 +6352,14 @@ def _runs(*rows) -> list:
 
 def _main_green(tmp_path, rows, *args: str):
     p = write(tmp_path, "runs.json", rows)
-    r = run_check("check_main_is_green.py", "--from-json", str(p), *args)
+    call = list(args)
+    if "--limit" not in call:
+        # These cases build a small hand-made window; without this the screen's own
+        # default (--limit 10 APPLICABLE runs) would demand more rows than the case
+        # constructed and decline on insufficient history before the behaviour under
+        # test ever ran.
+        call = ["--limit", str(max(len(rows), 1))] + call
+    r = run_check("check_main_is_green.py", "--from-json", str(p), *call)
     return r.returncode, r.stdout + r.stderr
 
 
@@ -6342,7 +6368,7 @@ def test_main_green_all_succeeded_passes(tmp_path):
     rc, out = _main_green(tmp_path, _runs(("completed", "success"), ("completed", "success")))
     assert rc == EXIT_PASS, out
     assert "0 RED" in out
-    assert "PASS: every completed run" in out
+    assert "PASS: every completed applicable run" in out
 
 
 def test_main_green_one_failure_is_a_condition_and_names_the_url(tmp_path):
@@ -6380,10 +6406,17 @@ def test_main_green_an_unreadable_answer_is_an_instrument_error_not_a_green(tmp_
 
 
 def test_main_green_zero_runs_is_unscreened_not_clean(tmp_path):
-    """A branch with no runs has not passed; an empty list is a denominator of zero."""
+    """A branch with no runs has not passed; an empty list is a denominator of zero.
+
+    The reason is now `insufficient_history` rather than the retired `no_runs_listed`:
+    once the window is defined over APPLICABLE runs, "GitHub listed nothing at all" and
+    "GitHub listed only bot noise" are the same declined read for the same reason, and
+    two names for one state is one name too many."""
     rc, out = _main_green(tmp_path, [])
     assert rc == EXIT_ERROR_INSTRUMENT, out
-    assert "no_runs_listed" in out
+    assert "ERROR(instrument=insufficient_history)" in out
+    assert "0 applicable run(s) of 1 needed" in out
+    assert "no_runs_listed" not in out
 
 
 def test_main_green_merge_sentence_carries_the_sha_and_url_in_both_colours(tmp_path):
@@ -6395,6 +6428,734 @@ def test_main_green_merge_sentence_carries_the_sha_and_url_in_both_colours(tmp_p
     rc, out = _main_green(tmp_path, _runs(("completed", "failure")), "--for-merge")
     assert rc == EXIT_FAIL_CONDITION and "is RED" in out
     assert "https://example.invalid/runs/0" in out
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════
+# check_main_is_green.py — the APPLICABLE window, and the ONE loop that fills it (issue #84)
+#
+# THE DEFECT. On 2026-08-08 the naive top-10 `gh run list --branch main` window was found
+# fully occupied by non-CI automation (`Squad Triage`, `Squad Issue Assign`, `Squad
+# Heartbeat (Ralph)` — all `event: issues`, none of which is ever a BAD conclusion). Those
+# ten rows contained no failure, so the screen printed PASS / 0 RED while three unresolved
+# CI reds (runs 31178244578, 31169478658, 31164215291) sat just outside the window it
+# actually read, and `check_open_reds.py` read `main_is_green` as
+# FAIL(condition=stale_acceptance) — a false closure signal for issue #24.
+#
+# THE REVIEW FINDING THAT SHAPES THESE TESTS. The first attempt at this fix filtered
+# correctly but implemented filter/escalate/decide three times — once for `--from-json-map`,
+# once for `--from-json`, once for the live `gh` path — and its tests drove only the two
+# file seams. Three separate live-only mutations (delete the live applicability filter;
+# return a truncated raw top window at the cap instead of ERROR; stop escalating live) each
+# reintroduced the defect while leaving every shipped test green.
+#
+# So these tests do two things the previous ones did not:
+#   1. They drive the PRODUCTION branch. `_gh_shim` puts a scripted `gh` on PATH ahead of
+#      the real one, so `check_main_is_green.py` runs its own `gh run list` code path, its
+#      own escalation and its own decision with no network. Delete the filter, stop the
+#      escalation, or truncate at the cap, and these go red.
+#   2. They pin the SHAPE: there is exactly one filter/escalate/decide loop in that file,
+#      and every source feeds it. A structural arm asserts this, because "the tests happen
+#      to cover all three copies today" is a property that decays on the next edit.
+# ══════════════════════════════════════════════════════════════════════════════════════════
+
+
+def _main_green_module():
+    """Import the screen as a module so the loop can be driven directly with an injected
+    fetcher and an injected clock. The subprocess arms below prove the wiring; this proves
+    the loop's own decisions without a stopwatch race."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_check_main_is_green_under_test", CI_DIR / "check_main_is_green.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _noise(n: int, workflow: str = "Squad Triage", event: str = "issues",
+           first: int = 0) -> list:
+    """`n` non-applicable automation runs: never `CI`, never a push, never BAD — exactly
+    the shape of the runs that displaced real CI history in the live incident."""
+    return [{
+        "status": "completed",
+        "conclusion": "skipped" if i % 3 else "success",
+        "headSha": f"{'0' * 30}{first + i:010x}",
+        "displayTitle": f"noise {first + i}",
+        "url": f"https://example.invalid/noise/{first + i}",
+        "workflowName": workflow,
+        "event": event,
+        "headBranch": "main",
+        "databaseId": 700000 + first + i,
+        "createdAt": "2026-08-08T20:08:00Z",
+    } for i in range(n)]
+
+
+def _gh_shim(tmp_path, pages: dict, default: dict | None = None):
+    """Put a SCRIPTED `gh` on PATH ahead of the real one and return the env overlay that
+    does it, plus the path of the log it appends every invocation to.
+
+    This is the whole point of these arms: `check_main_is_green.py` resolves `gh` from
+    PATH and shells out to it, so a shim here means the screen executes its real
+    production fetcher, its real escalation ladder and its real decision — with a run
+    history the test wrote. `pages` is keyed by the raw `--limit` the screen asks for;
+    each value is `{"mode": "json"|"raw"|"fail"|"sleep", ...}`."""
+    shim_dir = tmp_path / "ghshim"
+    shim_dir.mkdir(exist_ok=True)
+    log = shim_dir / "calls.log"
+    scenario = shim_dir / "scenario.json"
+    scenario.write_text(
+        json.dumps({
+            "log": str(log),
+            "pages": pages,
+            "default": default or {"mode": "json", "rows": []},
+        }),
+        encoding="utf-8",
+    )
+    impl = shim_dir / "gh_shim.py"
+    impl.write_text(
+        "import json, os, sys, time\n"
+        "sc = json.load(open(os.environ['MAIN_GREEN_GH_SHIM'], encoding='utf-8'))\n"
+        "argv = sys.argv[1:]\n"
+        "limit = None\n"
+        "for i, a in enumerate(argv):\n"
+        "    if a == '--limit' and i + 1 < len(argv):\n"
+        "        limit = argv[i + 1]\n"
+        "with open(sc['log'], 'a', encoding='utf-8') as fh:\n"
+        "    fh.write(json.dumps({'limit': limit, 'argv': argv}) + '\\n')\n"
+        "page = sc['pages'].get(str(limit), sc['default'])\n"
+        "mode = page.get('mode', 'json')\n"
+        "if mode == 'sleep':\n"
+        "    time.sleep(page.get('seconds', 3))\n"
+        "    mode = 'json'\n"
+        "if mode == 'fail':\n"
+        "    sys.stderr.write(page.get('stderr', 'gh: HTTP 502 from api.github.com'))\n"
+        "    sys.exit(page.get('returncode', 1))\n"
+        "if mode == 'raw':\n"
+        "    sys.stdout.write(page.get('text', ''))\n"
+        "    sys.exit(0)\n"
+        "sys.stdout.write(json.dumps(page.get('rows', [])))\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    (shim_dir / "gh.bat").write_text(
+        f'@echo off\r\n"{sys.executable}" "{impl}" %*\r\n', encoding="utf-8"
+    )
+    posix = shim_dir / "gh"
+    posix.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{impl}" "$@"\n', encoding="utf-8")
+    os.chmod(posix, 0o755)
+    env = {
+        "PATH": str(shim_dir) + os.pathsep + os.environ.get("PATH", ""),
+        "MAIN_GREEN_GH_SHIM": str(scenario),
+    }
+    return env, log
+
+
+def _ladder(log) -> list:
+    """The raw `--limit` values the screen actually asked GitHub for, in order."""
+    if not log.exists():
+        return []
+    return [
+        int(json.loads(line)["limit"])
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _main_green_live(tmp_path, pages, *args: str, default=None):
+    env, log = _gh_shim(tmp_path, pages, default)
+    r = run_check("check_main_is_green.py", *args, env_extra=env)
+    return r.returncode, r.stdout + r.stderr, _ladder(log)
+
+
+def _page(rows) -> dict:
+    return {"mode": "json", "rows": rows}
+
+
+# --- the production path: filter -------------------------------------------------------
+
+
+def test_main_green_live_gh_path_looks_past_bot_noise_and_finds_the_real_reds(tmp_path):
+    """MUTATION ARM 1 — delete the applicability filter from the live path and this goes
+    red. A scripted `gh` serves 50 rows of pure issue-bot automation (the live 2026-08-08
+    shape) and then, one escalation later, 185 more bot rows in front of 15 real CI push
+    runs, three of which failed. An unfiltered top-10 read finds ten bot rows, no failure
+    among them, and reports PASS; the screen must instead rule on the ten newest
+    APPLICABLE runs and convict."""
+    applicable = _runs(
+        ("completed", "failure"), ("completed", "success"), ("completed", "success"),
+        ("completed", "success"), ("completed", "failure"), ("completed", "success"),
+        ("completed", "success"), ("completed", "success"), ("completed", "success"),
+        ("completed", "failure"), ("completed", "success"), ("completed", "success"),
+        ("completed", "success"), ("completed", "success"), ("completed", "success"),
+    )
+    rc, out, ladder = _main_green_live(
+        tmp_path,
+        {"50": _page(_noise(50)), "200": _page(_noise(185, first=50) + applicable)},
+        "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_FAIL_CONDITION, out
+    assert "3 RED" in out, out
+    assert "FAIL(condition=main_is_red)" in out
+    for i in (0, 4, 9):
+        assert f"https://example.invalid/runs/{i}" in out, out
+    assert "https://example.invalid/noise/" not in out, (
+        "a noise run named in the verdict means the window was never filtered"
+    )
+    assert ladder == [50, 200], ladder
+
+
+def test_main_green_live_gh_path_ten_applicable_green_pushes_pass(tmp_path):
+    """The positive pole ON THE PRODUCTION PATH. Exactly ten applicable green pushes,
+    behind forty bot runs, must PASS — a filter that can only ever fail closed is a
+    screen nobody can satisfy, and the recovery path issue #24 names ("further real
+    merges clear the window") has to be reachable."""
+    rc, out, ladder = _main_green_live(
+        tmp_path,
+        {"50": _page(_noise(40) + _runs(*([("completed", "success")] * 10)))},
+        "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_PASS, out
+    assert "0 RED" in out and "10 run(s) in window" in out
+    assert "PASS: every completed applicable run" in out
+    assert ladder == [50], ladder
+
+
+# --- the production path: escalation ----------------------------------------------------
+
+
+def test_main_green_live_gh_path_escalates_the_raw_limit_until_the_window_is_full(tmp_path):
+    """MUTATION ARM 2 — stop the live escalation and this goes red. Page 50 is FULL and
+    holds only five applicable runs; page 200 holds the other five. A screen that treats
+    the first full page as the final answer has to decline (or worse, rule on five), and
+    the ladder it walked is asserted directly rather than inferred from the verdict."""
+    rc, out, ladder = _main_green_live(
+        tmp_path,
+        {
+            "50": _page(_noise(45) + _runs(*([("completed", "success")] * 5))),
+            "200": _page(_noise(190, first=100)
+                         + _runs(*([("completed", "success")] * 10))),
+        },
+        "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_PASS, out
+    assert ladder == [50, 200], (
+        f"the escalation ladder actually walked was {ladder}; a live path that never "
+        "asks for more than the first page cannot fill a diluted window"
+    )
+    assert "10 run(s) in window" in out
+    assert "2 raw page(s)" in out
+
+
+def test_main_green_live_gh_path_escalation_stops_as_soon_as_the_window_is_full(tmp_path):
+    """Escalation is a means, not a habit: once ten applicable runs are in hand the
+    screen must stop asking. A ladder that always walks to 500 turns a one-call screen
+    into a three-call one for every reader, every time."""
+    rc, out, ladder = _main_green_live(
+        tmp_path,
+        {"50": _page(_runs(*([("completed", "success")] * 12)))},
+        "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_PASS, out
+    assert ladder == [50], ladder
+
+
+# --- the production path: refusal at the cap --------------------------------------------
+
+
+def test_main_green_live_gh_path_at_the_cap_refuses_instead_of_truncating(tmp_path):
+    """MUTATION ARM 3 — the one that reproduces issue #84 exactly. Every page the
+    scripted `gh` serves is pure Squad-Triage-shaped noise, all the way to the 500-run
+    cap. A screen that falls back to "well, here is the raw top ten" at that point finds
+    ten runs, none of them BAD, and prints PASS: a vacuous green built entirely out of
+    bot traffic. The only correct answer is a declined read."""
+    rc, out, ladder = _main_green_live(
+        tmp_path,
+        {
+            "50": _page(_noise(50)),
+            "200": _page(_noise(200, first=50)),
+            "500": _page(_noise(500, first=250)),
+        },
+        "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=search_capped)" in out, out
+    assert "PASS" not in out, "a capped search that prints PASS is the defect itself"
+    assert "0 applicable run(s) of 10 needed" in out
+    assert "https://example.invalid/noise/" not in out, (
+        "naming a noise run at all means a raw window leaked into the verdict"
+    )
+    assert ladder == [50, 200, 500], ladder
+
+
+def test_main_green_live_gh_path_history_exhaustion_is_its_own_reason(tmp_path):
+    """A short page means GitHub has told us that is every run there is; a bigger limit
+    cannot find more. That is `insufficient_history`, and it is a different fact about
+    the world than `search_capped` — a young branch is not a noisy one, and a reader who
+    cannot tell them apart cannot tell "wait for more pushes" from "this repo's
+    automation has out-run its CI"."""
+    rc, out, ladder = _main_green_live(
+        tmp_path,
+        {"50": _page(_noise(3) + _runs(("completed", "success")))},
+        "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=insufficient_history)" in out, out
+    assert "history exhausted" in out
+    assert "1 applicable run(s) of 10 needed" in out
+    assert ladder == [50], ladder
+
+
+# --- the production path: instrument failures -------------------------------------------
+
+
+def test_main_green_live_gh_api_failure_is_unreachable_never_a_colour(tmp_path):
+    """`gh` exiting non-zero is GitHub declining to answer. Exit 4, named, and the
+    stderr it gave carried through — never a green, never a red."""
+    rc, out, ladder = _main_green_live(
+        tmp_path,
+        {"50": {"mode": "fail", "returncode": 1,
+                "stderr": "gh: HTTP 503 (api.github.com/repos/x/y/actions/runs)"}},
+        "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=github_unreachable)" in out, out
+    assert "HTTP 503" in out
+    assert ladder == [50], ladder
+
+
+def test_main_green_live_gh_non_json_output_is_malformed_payload(tmp_path):
+    """A `gh` that prints a login prompt or an HTML error page has not printed a run
+    list. That is a payload fault with its own name, not "the branch is fine"."""
+    rc, out, _ = _main_green_live(
+        tmp_path,
+        {"50": {"mode": "raw", "text": "<html>rate limited</html>"}},
+        "--branch", "main", "--limit", "10",
+    )
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=malformed_payload)" in out, out
+
+
+@pytest.mark.parametrize("bad", [None, "a string", 17, ["nested"]])
+def test_main_green_live_gh_non_object_run_record_is_named_not_crashed(tmp_path, bad):
+    """A non-object element inside the array must be ERROR(instrument=malformed_payload),
+    exit 4. Reading it anyway raises AttributeError, which exits 1 — the SAME exit code a
+    genuine red uses — so a caller reading exit status alone would record an instrument
+    fault as `main is red`, and a caller reading it the other way round would record a
+    crash as a colour. Both are worse than the fault."""
+    rows = _runs(*([("completed", "success")] * 3)) + [bad]
+    rc, out, _ = _main_green_live(
+        tmp_path, {"50": _page(rows)}, "--branch", "main", "--limit", "3",
+    )
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=malformed_payload)" in out, out
+    assert "Traceback" not in out and "AttributeError" not in out, out
+
+
+def test_main_green_live_gh_that_never_answers_is_deadline_exhausted(tmp_path):
+    """The screen carries ONE end-to-end budget shared by every call it makes, so a
+    GitHub that hangs produces this screen's own named deadline_exhausted well inside the
+    register's declared timeout, rather than three independent per-call timeouts adding
+    up past it and surfacing as the register's opaque ERROR(timeout)."""
+    started = time.monotonic()
+    rc, out, _ = _main_green_live(
+        tmp_path,
+        {"50": {"mode": "sleep", "seconds": 3, "rows": []}},
+        "--branch", "main", "--limit", "10", "--deadline-seconds", "1",
+    )
+    elapsed = time.monotonic() - started
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=deadline_exhausted)" in out, out
+    assert elapsed < 30, f"the budget was not enforced at all: {elapsed:.1f}s"
+
+
+def test_main_green_live_gh_absent_from_path_is_unreachable(tmp_path):
+    """The oldest arm of this screen, re-run on the path the fix rewrote: with no `gh` to
+    resolve, `I could not ask` must still not render as `the answer was yes`."""
+    empty = tmp_path / "no-gh-here"
+    empty.mkdir()
+    r = run_check(
+        "check_main_is_green.py", "--branch", "main", "--limit", "10",
+        env_extra={"PATH": str(empty)},
+    )
+    out = r.stdout + r.stderr
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=github_unreachable)" in out, out
+    assert "UNOBSERVABLE, not" in out
+
+
+# --- applicability, spelled out one exclusion at a time ---------------------------------
+
+
+@pytest.mark.parametrize("kwargs,why", [
+    ({"workflow": "conformance (onnx-tests)"}, "a different workflow entirely"),
+    ({"workflow": "ci"}, "a case-different lookalike of the workflow name"),
+    ({"workflow": "CI "}, "a trailing-space lookalike of the workflow name"),
+    ({"workflow": "CI / build"}, "a job-qualified lookalike of the workflow name"),
+    ({"event": "issues"}, "issue automation, which never reads the tree"),
+    ({"event": "schedule"}, "a cron run, which is not a reading of a push"),
+    ({"event": "workflow_dispatch"}, "a manual dispatch"),
+    ({"event": "pull_request"}, "a PR run, whose subject is the merge ref"),
+    ({"event": "push "}, "a trailing-space lookalike of the event name"),
+    ({"head_branch": "main-2"}, "a branch whose name merely starts with the target"),
+    ({"head_branch": "release/main"}, "a branch whose name merely contains the target"),
+    ({"head_branch": "refs/heads/main"}, "a ref spelling, not the branch name gh reports"),
+])
+def test_main_green_a_red_that_is_not_applicable_does_not_fill_the_window(tmp_path, kwargs, why):
+    """Exclusion is exact, not fuzzy, and it is exclusion in BOTH directions: each of
+    these rows is a `failure`, so a screen that let it in would report a red it has no
+    business reporting, and a screen that matched it loosely would let the corresponding
+    green stand in for a real one."""
+    rows = _runs(("completed", "failure"), **kwargs)
+    rc, out = _main_green(tmp_path, rows, "--limit", "1")
+    assert rc == EXIT_ERROR_INSTRUMENT, f"{why}: {out}"
+    assert "0 applicable run(s) of 1 needed" in out, out
+
+
+def test_main_green_a_skipped_ci_push_verified_nothing_and_is_excluded(tmp_path):
+    """`skipped` is `status: completed`, so the old BAD-set arithmetic counted it as a
+    non-red completed run. A workflow that never executed cannot stand in for a reading
+    of the tree — that is the same substitution this whole screen exists to refuse."""
+    rows = [{
+        "status": "completed", "conclusion": "skipped", "headSha": "s" * 40,
+        "displayTitle": "skipped ci", "url": "https://example.invalid/runs/skipped",
+        "workflowName": "CI", "event": "push", "headBranch": "main",
+        "databaseId": 800001, "createdAt": "2026-08-04T00:00:00Z",
+    }]
+    rc, out = _main_green(tmp_path, rows, "--limit", "1")
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "0 applicable run(s) of 1 needed" in out
+
+
+def test_main_green_the_workflow_and_events_are_overridable_not_hardcoded(tmp_path):
+    """`CI`/`push` is this repository's answer, not a law. A fork whose real screen is
+    called something else must be able to say so — and the override must move the window,
+    not merely be accepted."""
+    rows = _runs(("completed", "failure"), workflow="conformance (onnx-tests)",
+                 event="workflow_dispatch")
+    rc, out = _main_green(tmp_path, rows, "--limit", "1")
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    rc, out = _main_green(
+        tmp_path, rows, "--limit", "1",
+        "--workflow", "conformance (onnx-tests)", "--events", "workflow_dispatch",
+    )
+    assert rc == EXIT_FAIL_CONDITION, out
+    assert "FAIL(condition=main_is_red)" in out
+
+
+def test_main_green_more_than_a_windowful_of_bot_events_still_cannot_hide_a_red(tmp_path):
+    """The live incident's exact arithmetic on the file seam: more non-applicable runs
+    than the window is wide, all of them newer than the CI history, none of them BAD."""
+    rows = _noise(12, workflow="Squad Heartbeat (Ralph)") + _runs(
+        *([("completed", "success")] * 9 + [("completed", "failure")])
+    )
+    rc, out = _main_green(tmp_path, rows, "--limit", "10")
+    assert rc == EXIT_FAIL_CONDITION, out
+    assert "1 RED" in out
+    assert "https://example.invalid/runs/9" in out
+
+
+def test_main_green_a_duplicated_run_record_does_not_fill_two_slots(tmp_path):
+    """A window of ten in which one run appears twice is a window of nine, and the run it
+    pushed off the end is the tenth-oldest — here, the only red. Dedupe by run identity,
+    or a repeated record silently dilutes the sample the verdict is drawn from."""
+    ten = _runs(*([("completed", "success")] * 9 + [("completed", "failure")]))
+    rows = [ten[0], dict(ten[0])] + ten[1:]
+    assert len(rows) == 11
+    rc, out = _main_green(tmp_path, rows, "--limit", "10")
+    assert rc == EXIT_FAIL_CONDITION, out
+    assert "1 RED" in out, out
+    assert "1 duplicate record(s) dropped" in out
+    assert "https://example.invalid/runs/9" in out
+
+
+def test_main_green_fewer_than_ten_applicable_runs_is_declined_not_ruled_on(tmp_path):
+    """Nine green pushes is not "the last ten were green". Ruling on a short window is
+    how a tenth run that failed goes unread."""
+    rows = _noise(4) + _runs(*([("completed", "success")] * 9))
+    rc, out = _main_green(tmp_path, rows, "--limit", "10")
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=insufficient_history)" in out
+    assert "9 applicable run(s) of 10 needed" in out
+    assert "PASS" not in out
+
+
+def test_main_green_a_window_with_nothing_completed_carries_no_evidence(tmp_path):
+    """Ten applicable runs, every one of them still in flight. "No completed run failed"
+    is true of a branch nobody has ever built, so the full-but-unfinished window is a
+    denominator of zero and must be declined — the same refusal, one level in, as
+    declining an unreachable GitHub."""
+    rows = _runs(*([("in_progress", None)] * 10))
+    rc, out = _main_green(tmp_path, rows, "--limit", "10")
+    assert rc == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=no_completed_evidence)" in out, out
+    assert "PASS" not in out
+
+
+def test_main_green_exactly_ten_green_applicable_pushes_is_the_green_state(tmp_path):
+    """The state issue #24's closure criterion actually names, stated as a test so it can
+    be recognised when it arrives rather than argued about."""
+    rows = _noise(30) + _runs(*([("completed", "success")] * 10))
+    rc, out = _main_green(tmp_path, rows, "--limit", "10")
+    assert rc == EXIT_PASS, out
+    assert "10 run(s) in window, 10 completed, 0 still running, 0 RED" in out
+
+
+@pytest.mark.parametrize("payload,shape", [
+    ({"runs": []}, "an object instead of an array"),
+    ("not a list", "a bare string"),
+    (None, "null"),
+])
+def test_main_green_a_payload_that_is_not_a_run_array_is_malformed(tmp_path, payload, shape):
+    """`gh --json` prints an array. Anything else is a payload this screen cannot read,
+    and it says so instead of guessing."""
+    p = write(tmp_path, "runs.json", payload)
+    r = run_check("check_main_is_green.py", "--from-json", str(p), "--limit", "1")
+    out = r.stdout + r.stderr
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, f"{shape}: {out}"
+    assert "ERROR(instrument=malformed_payload)" in out, out
+
+
+def test_main_green_a_null_record_inside_the_array_is_malformed_not_a_crash(tmp_path):
+    """The array shape is right and one element is `null`. Exit 4 with a name, not an
+    AttributeError wearing exit 1."""
+    rows = _runs(("completed", "success")) + [None]
+    p = write(tmp_path, "runs.json", rows)
+    r = run_check("check_main_is_green.py", "--from-json", str(p), "--limit", "1")
+    out = r.stdout + r.stderr
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=malformed_payload)" in out
+    assert "element 1 is NoneType" in out
+    assert "Traceback" not in out
+
+
+def test_main_green_from_json_map_escalates_the_same_loop_the_live_path_uses(tmp_path):
+    """The map seam still exists — it scripts a page sequence more cheaply than a shim
+    can — but it is now only a SOURCE. It walks the same ladder, filters with the same
+    predicate and declines with the same reasons, because there is only one of each."""
+    p = write(tmp_path, "pages.json", {
+        "50": _noise(45) + _runs(*([("completed", "success")] * 5)),
+        "200": _noise(185, first=100) + _runs(*(
+            [("completed", "failure")] * 3 + [("completed", "success")] * 12
+        )),
+    })
+    r = run_check("check_main_is_green.py", "--from-json-map", str(p), "--limit", "10")
+    out = r.stdout + r.stderr
+    assert r.returncode == EXIT_FAIL_CONDITION, out
+    assert "3 RED" in out, out
+    assert "2 raw page(s)" in out
+
+
+def test_main_green_from_json_map_cap_exhaustion_matches_the_live_refusal(tmp_path):
+    """Same refusal, cheaper source: pure noise to the cap is `search_capped`, exit 4."""
+    p = write(tmp_path, "pages.json", {
+        "50": _noise(50), "200": _noise(200, first=50), "500": _noise(500, first=250),
+    })
+    r = run_check("check_main_is_green.py", "--from-json-map", str(p), "--limit", "10")
+    out = r.stdout + r.stderr
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, out
+    assert "ERROR(instrument=search_capped)" in out
+    assert "PASS" not in out
+
+
+# --- the loop itself, with an injected fetcher and an injected clock ---------------------
+
+
+def test_main_green_loop_takes_the_newest_needed_and_never_truncates_raw(tmp_path):
+    """Driven directly: the loop returns exactly `need` APPLICABLE runs, newest first,
+    and when it cannot it returns None with a reason. There is no third outcome in which
+    it hands back raw rows to make up the difference."""
+    mod = _main_green_module()
+    rows = _noise(5) + _runs(*([("completed", "success")] * 12))
+    window = mod.collect_applicable_window(
+        lambda limit: mod.Page(rows, "", None),
+        need=10, branch="main", workflow="CI",
+        events=frozenset({"push"}), steps=(50,),
+    )
+    assert window.runs is not None
+    assert len(window.runs) == 10
+    assert [r["url"] for r in window.runs] == [
+        f"https://example.invalid/runs/{i}" for i in range(10)
+    ]
+
+
+def test_main_green_loop_stops_when_the_shared_budget_is_gone(tmp_path):
+    """One budget for the whole screen, not one per call. With a clock the test drives,
+    the loop must abandon the ladder rather than start a page it has no time to finish —
+    which is what keeps the worst case inside the register's declared timeout instead of
+    at three times a per-call limit."""
+    mod = _main_green_module()
+    ticks = iter([0.0, 0.0, 11.0, 12.0, 13.0, 14.0])
+    deadline = mod.Deadline(10.0, clock=lambda: next(ticks))
+    asked: list[int] = []
+
+    def fetch_page(limit: int):
+        asked.append(limit)
+        return mod.Page(_noise(limit), "", None)
+
+    window = mod.collect_applicable_window(
+        fetch_page, need=10, branch="main", workflow="CI",
+        events=frozenset({"push"}), steps=(50, 200, 500), deadline=deadline,
+    )
+    assert window.runs is None
+    assert window.instrument == mod.INSTRUMENT_DEADLINE
+    assert asked == [50], (
+        f"the loop asked for {asked} after its budget was spent; a ladder that ignores "
+        "the deadline is three independent timeouts wearing one flag's name"
+    )
+
+
+def test_main_green_loop_ladder_never_asks_for_less_than_the_window(tmp_path):
+    """A `--limit` larger than the first rung must not produce a first page too small to
+    ever satisfy it. The rungs below the need are skipped, not walked pointlessly."""
+    mod = _main_green_module()
+    asked: list[int] = []
+
+    def fetch_page(limit: int):
+        asked.append(limit)
+        return mod.Page(_runs(*([("completed", "success")] * limit)), "", None)
+
+    window = mod.collect_applicable_window(
+        fetch_page, need=120, branch="main", workflow="CI",
+        events=frozenset({"push"}), steps=(50, 200, 500),
+    )
+    assert window.runs is not None and len(window.runs) == 120
+    assert asked == [200], asked
+
+
+# --- the SHAPE: one loop, three sources, no second opinion -------------------------------
+
+
+def _main_green_ast():
+    src = (CI_DIR / "check_main_is_green.py").read_text(encoding="utf-8")
+    return ast.parse(src), src
+
+
+def _functions_calling(tree, name: str) -> set:
+    """Every top-level function/method whose body names `name` as a called function."""
+    owners = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for inner in ast.walk(node):
+            if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+                    and inner.func.id == name):
+                owners.add(node.name)
+    return owners
+
+
+def test_main_green_applicability_is_decided_in_exactly_one_place():
+    """THE STRUCTURAL ARM, and the direct answer to the review that rejected the first
+    attempt at this fix. `_is_applicable` may be called from the loop and nowhere else:
+    the moment a second caller appears, `--from-json`, `--from-json-map` and the live
+    `gh` path can disagree about what an applicable run is, and the tests that drive the
+    cheap seams stop saying anything about the path production runs."""
+    tree, _ = _main_green_ast()
+    assert _functions_calling(tree, "_is_applicable") == {"collect_applicable_window"}, (
+        "applicability is decided outside the one loop; that is exactly the three-copies "
+        "shape whose live-only mutants all left the shipped suite green"
+    )
+
+
+def test_main_green_the_escalate_and_decide_loop_has_exactly_one_caller():
+    """One loop is only one loop if one call site fills the window. Two call sites is two
+    policies waiting to drift apart."""
+    tree, src = _main_green_ast()
+    assert _functions_calling(tree, "collect_applicable_window") == {"screen"}, (
+        "the window-filling loop must be driven from screen() alone"
+    )
+    assert src.count("collect_applicable_window(") == 2, (
+        "expected exactly one definition and one call of the loop; found "
+        f"{src.count('collect_applicable_window(')} occurrences"
+    )
+
+
+@pytest.mark.parametrize("fetcher", ["LiveRunListFetcher", "FixedJsonFetcher", "JsonMapFetcher"])
+def test_main_green_no_fetcher_carries_filter_escalate_or_decide_logic(fetcher):
+    """A page fetcher fetches a page. If any of them learns the words `applicable`,
+    `RAW_FETCH_STEPS`, `insufficient_history` or `search_capped`, a source has started
+    keeping its own opinion about the window — which is the defect shape, not the fix."""
+    tree, _ = _main_green_ast()
+    body = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.ClassDef) and n.name == fetcher
+    )
+    text = ast.unparse(body)
+    for forbidden in ("_is_applicable", "RAW_FETCH_STEPS", "INSTRUMENT_INSUFFICIENT",
+                      "INSTRUMENT_CAPPED", "INSTRUMENT_NO_EVIDENCE"):
+        assert forbidden not in text, (
+            f"{fetcher} references {forbidden}: a source with a private copy of the "
+            "decision is a source whose tests do not cover production"
+        )
+
+
+def test_main_green_all_three_sources_are_chosen_in_one_place():
+    """`make_fetcher` is the only fork between production and the two file sources, so
+    the code after it is identical for all three. That is what makes a shim-driven test
+    a test of the live path and not of a lookalike."""
+    tree, _ = _main_green_ast()
+    maker = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef,)) and n.name == "make_fetcher"
+    )
+    built = {
+        n.func.id for n in ast.walk(maker)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert built == {"JsonMapFetcher", "FixedJsonFetcher", "LiveRunListFetcher"}, built
+
+
+def test_main_green_the_retired_no_runs_listed_branch_is_gone():
+    """`no_runs_listed` became unreachable the moment the window was defined over
+    applicable runs: an empty list is `0 applicable of N`, which is insufficient_history.
+    Dead error branches are the ones nobody notices have stopped being reachable."""
+    _, src = _main_green_ast()
+    assert "no_runs_listed" not in src
+
+
+def test_main_green_documents_its_real_cost_not_one_round_trip():
+    """The COST section is read by people deciding whether to run this in a loop. It used
+    to promise one round trip under a second; the escalating search can make three, and a
+    screen that misreports its own cost is a screen whose budget nobody can plan."""
+    _, src = _main_green_ast()
+    cost = src.split("COST\n====\n", 1)[1].split("\nWIRING", 1)[0]
+    assert "One network round trip" not in cost
+    assert "three" in cost and "round trip" in cost
+    assert "deadline" in cost
+
+
+def test_main_green_deadline_cannot_outlive_the_timeout_its_register_entry_declares():
+    """THE RECONCILIATION. `ci/open_reds.json` runs this screen with a `timeout`; the
+    screen's own budget must fit inside it, or the worst case is the register killing the
+    check and reporting ERROR(timeout) — an outage of the harness, which tells a reader
+    nothing about `main`, in place of this screen's own named deadline_exhausted, which
+    tells them exactly what happened. Three independent 60s per-call timeouts would have
+    made 180s possible against a declared 120s."""
+    mod = _main_green_module()
+    doc = json.loads((CI_DIR / "open_reds.json").read_text(encoding="utf-8"))
+    entry = next(c for c in doc["checks"] if c["id"] == "main_is_green")
+    declared = float(entry["timeout"])
+    assert mod.DEFAULT_DEADLINE_SECONDS < declared, (
+        f"the screen's own budget ({mod.DEFAULT_DEADLINE_SECONDS}s) must be strictly "
+        f"below the register's declared timeout ({declared}s)"
+    )
+    assert "--deadline-seconds" in (CI_DIR / "check_main_is_green.py").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_main_green_register_entry_for_issue_24_is_untouched_by_this_fix():
+    """Issue #24's acceptance is not this issue's to move. `main_is_green` stays
+    `expect: red` with its declared signature: this fix restores the screen's reading, it
+    does not decide whether the red is still owed."""
+    doc = json.loads((CI_DIR / "open_reds.json").read_text(encoding="utf-8"))
+    entry = next(c for c in doc["checks"] if c["id"] == "main_is_green")
+    assert entry["expect"] == "red"
+    assert entry["signature"] == "FAIL(condition=main_is_red)"
+    assert entry["cmd"] == [
+        "python", "ci/check_main_is_green.py", "--branch", "main", "--limit", "10",
+    ]
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════
