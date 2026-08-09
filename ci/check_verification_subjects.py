@@ -84,6 +84,29 @@ TABLE: dict[str, dict[str, str]] = {
         "note": "two derivations over one tree, not one derivation over itself: the set of "
                 "tests that touch a global is computed separately from the set that locks.",
     },
+    "rust/tools/ort_weight_sites.py --check": {
+        "verdict": "EXTERNAL",
+        "subject": "the anchor weight-site table in rust/src/ops/partition.rs "
+                   "(ANCHOR_OP_SCHEMAS): every declared input of every anchor-eligible op, its "
+                   "index, name, optionality, and which sites are designated weight sites",
+        "oracle": "rust/tools/ort_weight_sites.json — a mechanical extract of the operator "
+                  "schemas from ONNX Runtime v1.28.0 @ da9b5e36 (per-file sha256 recorded) and "
+                  "from the onnx package's own schema objects, neither of which this repository "
+                  "writes",
+        "note": (
+            "The two sides come from different authors for different reasons: the upstream "
+            "schema declarations are Microsoft's, the role assignment is this project's audited "
+            "reading (DESIGN.md §5.4.2). What the check decides is the SKELETON — how many "
+            "inputs, in what order, under what names — which is why a trailing omission is "
+            "catchable: a 21-input QMoE tabulated with 19 rows passed every contiguity check "
+            "this repository had, because contiguity cannot see a missing tail. The audited "
+            "designations are pinned by site NAME in the same extract, so a silent "
+            "re-judgement is a red test rather than an editorial decision; `--verify-onnx` "
+            "additionally re-derives the ai.onnx rows from the installed onnx package and "
+            "declares itself skipped, not passed, when the installed version differs from the "
+            "recorded one."
+        ),
+    },
     # ---- the EP's own CLI --------------------------------------------------------------------
     "epctl --check-counters": {
         "verdict": "ARTIFACT",

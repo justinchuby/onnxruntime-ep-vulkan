@@ -1,0 +1,618 @@
+{
+  "_comment": "Machine-extracted input sites for every anchor-eligible op, checked against rust/src/ops/partition.rs::ANCHOR_OP_SCHEMAS by tests/ops/test_weight_site_schema.py. Regenerate with `python rust/tools/ort_weight_sites.py --extract --source-dir <ort checkout>`. The `designated` lists are the audited judgement, not an extraction: see SiteRole in partition.rs for the criteria.",
+  "provenance": {
+    "onnxruntime_commit": "da9b5e364c465de65c49d91e696cd6485270757f",
+    "onnxruntime_tag": "v1.28.0",
+    "onnx_version": "1.22.0",
+    "files": {
+      "bert_defs.cc": {
+        "sha256": "eb4228a7b25b7eb5be7081abc0c62e45509c59b61e93e5579bdc6032c204b348",
+        "bytes": "124914",
+        "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/da9b5e364c465de65c49d91e696cd6485270757f/onnxruntime/core/graph/contrib_ops/bert_defs.cc"
+      },
+      "contrib_defs.cc": {
+        "sha256": "7605ec73c64aaf6149e792490d468057a582a62694bb150488548d17575969dd",
+        "bytes": "248690",
+        "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/da9b5e364c465de65c49d91e696cd6485270757f/onnxruntime/core/graph/contrib_ops/contrib_defs.cc"
+      }
+    }
+  },
+  "roles": [
+    "ContractedParameter",
+    "Activation",
+    "QuantisationCompanion",
+    "ElementwiseParameter",
+    "PositionTable"
+  ],
+  "designating_role": "ContractedParameter",
+  "ops": {
+    "com.microsoft::Attention": {
+      "source": "bert_defs.cc::Attention-1",
+      "sites": [
+        {
+          "index": 0,
+          "name": "input",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 1,
+          "name": "weights",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 2,
+          "name": "bias",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 3,
+          "name": "mask_index",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 4,
+          "name": "past",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 5,
+          "name": "attention_bias",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 6,
+          "name": "past_sequence_length",
+          "optional": true,
+          "variadic": false
+        }
+      ],
+      "designated": [
+        "weights"
+      ]
+    },
+    "com.microsoft::MultiHeadAttention": {
+      "source": "bert_defs.cc::MultiHeadAttention-1",
+      "sites": [
+        {
+          "index": 0,
+          "name": "query",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 1,
+          "name": "key",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 2,
+          "name": "value",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 3,
+          "name": "bias",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 4,
+          "name": "key_padding_mask",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 5,
+          "name": "attention_bias",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 6,
+          "name": "past_key",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 7,
+          "name": "past_value",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 8,
+          "name": "past_sequence_length",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 9,
+          "name": "cache_indirection",
+          "optional": true,
+          "variadic": false
+        }
+      ],
+      "designated": []
+    },
+    "com.microsoft::GroupQueryAttention": {
+      "source": "bert_defs.cc::GroupQueryAttention-1",
+      "sites": [
+        {
+          "index": 0,
+          "name": "query",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 1,
+          "name": "key",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 2,
+          "name": "value",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 3,
+          "name": "past_key",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 4,
+          "name": "past_value",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 5,
+          "name": "seqlens_k",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 6,
+          "name": "total_sequence_length",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 7,
+          "name": "cos_cache",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 8,
+          "name": "sin_cache",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 9,
+          "name": "position_ids",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 10,
+          "name": "attention_bias",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 11,
+          "name": "head_sink",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 12,
+          "name": "k_scale",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 13,
+          "name": "v_scale",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 14,
+          "name": "q_norm_weight",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 15,
+          "name": "k_norm_weight",
+          "optional": true,
+          "variadic": false
+        }
+      ],
+      "designated": []
+    },
+    "com.microsoft::LinearAttention": {
+      "source": "bert_defs.cc::LinearAttention-1",
+      "sites": [
+        {
+          "index": 0,
+          "name": "query",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 1,
+          "name": "key",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 2,
+          "name": "value",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 3,
+          "name": "past_state",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 4,
+          "name": "decay",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 5,
+          "name": "beta",
+          "optional": true,
+          "variadic": false
+        }
+      ],
+      "designated": []
+    },
+    "com.microsoft::MatMulNBits": {
+      "source": "contrib_defs.cc::MatMulNBits-1",
+      "sites": [
+        {
+          "index": 0,
+          "name": "A",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 1,
+          "name": "B",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 2,
+          "name": "scales",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 3,
+          "name": "zero_points",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 4,
+          "name": "g_idx",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 5,
+          "name": "bias",
+          "optional": true,
+          "variadic": false
+        }
+      ],
+      "designated": [
+        "B"
+      ]
+    },
+    "com.microsoft::QMoE": {
+      "source": "contrib_defs.cc::QMoE-1",
+      "sites": [
+        {
+          "index": 0,
+          "name": "input",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 1,
+          "name": "router_probs",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 2,
+          "name": "fc1_experts_weights",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 3,
+          "name": "fc1_scales",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 4,
+          "name": "fc1_experts_bias",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 5,
+          "name": "fc2_experts_weights",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 6,
+          "name": "fc2_scales",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 7,
+          "name": "fc2_experts_bias",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 8,
+          "name": "fc3_experts_weights",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 9,
+          "name": "fc3_scales",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 10,
+          "name": "fc3_experts_bias",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 11,
+          "name": "fc1_zero_points",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 12,
+          "name": "fc2_zero_points",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 13,
+          "name": "fc3_zero_points",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 14,
+          "name": "router_weights",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 15,
+          "name": "fc1_global_scale",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 16,
+          "name": "fc2_global_scale",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 17,
+          "name": "fc1_act_scale",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 18,
+          "name": "fc2_act_scale",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 19,
+          "name": "fc1_act_block_scale",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 20,
+          "name": "fc2_act_block_scale",
+          "optional": true,
+          "variadic": false
+        }
+      ],
+      "designated": [
+        "fc1_experts_weights",
+        "fc2_experts_weights",
+        "fc3_experts_weights"
+      ]
+    },
+    "MatMul": {
+      "source": "ai.onnx::MatMul-13",
+      "sites": [
+        {
+          "index": 0,
+          "name": "A",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 1,
+          "name": "B",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "designated": [
+        "A",
+        "B"
+      ]
+    },
+    "Gemm": {
+      "source": "ai.onnx::Gemm-13",
+      "sites": [
+        {
+          "index": 0,
+          "name": "A",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 1,
+          "name": "B",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 2,
+          "name": "C",
+          "optional": true,
+          "variadic": false
+        }
+      ],
+      "designated": [
+        "A",
+        "B"
+      ]
+    },
+    "Conv": {
+      "source": "ai.onnx::Conv-22",
+      "sites": [
+        {
+          "index": 0,
+          "name": "X",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 1,
+          "name": "W",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 2,
+          "name": "B",
+          "optional": true,
+          "variadic": false
+        }
+      ],
+      "designated": [
+        "W"
+      ]
+    },
+    "ConvTranspose": {
+      "source": "ai.onnx::ConvTranspose-22",
+      "sites": [
+        {
+          "index": 0,
+          "name": "X",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 1,
+          "name": "W",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 2,
+          "name": "B",
+          "optional": true,
+          "variadic": false
+        }
+      ],
+      "designated": [
+        "W"
+      ]
+    },
+    "Attention": {
+      "source": "ai.onnx::Attention-24",
+      "sites": [
+        {
+          "index": 0,
+          "name": "Q",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 1,
+          "name": "K",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 2,
+          "name": "V",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "index": 3,
+          "name": "attn_mask",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 4,
+          "name": "past_key",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 5,
+          "name": "past_value",
+          "optional": true,
+          "variadic": false
+        },
+        {
+          "index": 6,
+          "name": "nonpad_kv_seqlen",
+          "optional": true,
+          "variadic": false
+        }
+      ],
+      "designated": []
+    }
+  }
+}

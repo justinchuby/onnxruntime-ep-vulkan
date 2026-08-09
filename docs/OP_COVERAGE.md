@@ -1969,9 +1969,20 @@ remains 0.0 until Niobe wires VkQueryPool timestamps for calibration.
 
 **Guards against both failure modes (§7.0.2):**
 - *Over-declination* (gate declines everything): the anchor exemption —
-  `if island.anchors > 0 { return Verdict::Claim }` — ensures any island containing MatMulNBits
-  or GQA is always claimed. On Phi-3.5 (353 claimed, 1 island, 225 anchors), the gate never
-  declines. Falsifier: bench/phi35.py → 0 claimed nodes would indicate a broken anchor exemption.
+  `if island.anchors > 0 { return Verdict::Claim }` — ensures any island containing a node that
+  carries a resident weight at a schema-designated site is always claimed. On Phi-3.5 the island is
+  dense with `MatMulNBits` nodes holding resident packed weights, so the gate never declines.
+  Falsifier: bench/phi35.py → 0 claimed nodes would indicate a broken anchor exemption.
+
+  > **Amendment 2026-08-08T17:01:06-07:00 — Niobe, issue #73.** This bullet used to read "any island
+  > containing MatMulNBits or GQA is always claimed. On Phi-3.5 (353 claimed, 1 island, 225
+  > anchors)". Both halves were readings of the **pre-#73 name-only** `is_anchor` and neither is
+  > re-asserted. `GroupQueryAttention` designates **no** weight site — its operands are activations,
+  > KV cache, position-indexed RoPE tables, cache scales and elementwise learned vectors — so GQA
+  > nodes contribute zero anchors under the shipped predicate, and the anchor total for Phi-3.5 is
+  > **not restated here** because no post-repair census has been run on that model. The claimed-node
+  > count and island count are separate observations and are not affected by the anchor repair. See
+  > `DESIGN.md` §5.4.2 for the designated-site table and its provenance.
 - *Under-declination* (gate declines nothing): `test_partition_gate.py`. A non-anchor two-cluster
   model must produce `[partition]` codes. If it does not, the gate is inert. Falsifier: the test
   asserting `claims["Sigmoid"]["code"] == "partition"` goes red.
@@ -3450,11 +3461,15 @@ lands.
 #### (c) The EP's own estimator cannot answer this question, and the artifact shows why
 
 The last column of (a) is the split computed with `ep.rs`'s model reproduced exactly. **It is
-16.58% at every context and does not move at all.** 16.58% is `32 / 193` — the declined anchors
-over the total anchors. The estimator scores every anchor with the constant `2 * 3072 * 3072` and
-everything else with `out_bytes / 2` under a substituted dim, so **its FLOP number is the anchor
-count wearing a FLOP's clothes**, and it is blind to the one axis on which this model's cost
-actually varies.
+16.58% at every context and does not move at all.** 16.58% is `32 / 193` — the 32 CPU-declined
+`GroupQueryAttention` nodes over **193 heavy-op-family nodes** (161 `MatMulNBits` + 32
+`GroupQueryAttention`), **never an anchor total** (issue #73: `GroupQueryAttention` designates no
+weight site and is not an anchor under the shipped predicate; see §5.4.2). The FLOP estimator keys
+on `is_heavy_op`, a name-only set kept deliberately byte-identical to the pre-#73 list for exactly
+this reason, and it scores every node in that family with the constant `2 * 3072 * 3072` and
+everything else with `out_bytes / 2` under a substituted dim, so **its FLOP number is the
+heavy-op-family count wearing a FLOP's clothes**, and it is blind to the one axis on which this
+model's cost actually varies.
 
 That is not a call to tighten it. Per R9 amendment 5, a verdict that moves with a constant nobody
 measured is a fabricated input, not an over-broad one. The estimator is adequate for the job it has
@@ -3527,7 +3542,7 @@ Written to `bench/results/roofline_split-prediction.md` before the tool ran.
 | 2 | CPU bytes under 5% at ctx=0 | **held** (0.07%) |
 | 3 | CPU bytes over 40% at ctx=8192 | **held, but I under-predicted** — 73.77% |
 | 4 | the node count (32.8%) predicts neither end | **held** — byte share crosses it between ctx 512 and 2048 |
-| 5 | the EP estimator is flat in ctx | **held** — 16.58% at every ctx, and it is `32/193` exactly |
+| 5 | the EP estimator is flat in ctx | **held** — 16.58% at every ctx, and it is `32/193` exactly (32 declined `GroupQueryAttention` over 193 heavy-op-family nodes scored by the FLOP estimator — a family-node ratio, never an anchor total; see (c)) |
 | 6 | fabricated extents contribute nothing | **held, after I fixed my own instrument** — see (f) |
 
 #### (h) Disagreement with the 60.5% KV figure, left standing
