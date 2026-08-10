@@ -260,23 +260,6 @@
       "timeout": 300
     },
     {
-      "id": "ledger_census_is_unobservable_in_a_shallow_clone",
-      "screen": "ci/check_ledger_census.py",
-      "cmd": [
-        "python",
-        "ci/check_ledger_census.py",
-        "--assert-known-limit",
-        "shallow_clone_is_unobservable_not_clean"
-      ],
-      "admits": "shallow_clone_is_unobservable_not_clean",
-      "owner": "link",
-      "opened": "2026-08-04",
-      "review_by": "2026-11-01",
-      "limit": "The census walks every revision that touched evidence/proof_ledger.jsonl. In a shallow clone most of those revisions are not present, so the walk is short and the screen would have reported PASS over history it cannot see — the exact defect it exists to catch, arriving through the checkout rather than through a merge. I declared this in prose in session 18 and did not guard it. It is now GUARDED — history_is_complete() reports ERROR(instrument=truncated_history) and exits 2 — but a guard is not a fix: in a shallow CI checkout the census still rules on nothing, and a lane that only tests for exit 1 would read that as tolerable.",
-      "closes_when": "The workflow that runs ci/check_ledger_census.py declares fetch-depth 0 (or its equivalent) AND a lane test asserts that exit 2 fails the lane. Then the guard becomes unreachable in CI rather than merely loud, and this entry is retired with owner, date and reason like any other.",
-      "timeout": 900
-    },
-    {
       "id": "main_is_green_cannot_be_read_without_a_network",
       "screen": "ci/check_main_is_green.py",
       "cmd": [
@@ -310,7 +293,8 @@
     "ledger_loss_probe",
     "artifact_frame",
     "artifact_frame_negative_control",
-    "main_is_green"
+    "main_is_green",
+    "ledger_census_is_unobservable_in_a_shallow_clone"
   ],
   "retired": {
     "proof_ledger_writer_refuses": {
@@ -327,6 +311,11 @@
       "owner": "trinity",
       "date": "2026-08-05",
       "reason": "check_open_reds.py reports this GREEN against the register's expect=red (FAIL(condition=stale_acceptance)). The three node ids are restored to lane_checks_suite's plain cmd rather than kept as a second, narrower entry over the same subject -- the same reasoning proof_ledger_writer_refuses used above. What actually closed it, on the evidence, is NOT the fix this entry's `reason` named: the 12 surfaces it listed (compile_calls / compute_calls / subgraphs_stub, BACKEND_PROBE, CLAIM_DEBUG, CLAIM_LOG, DEVICE_MEMORY, DUMP_OUTPUT_BYTES, GEMV_PACKED, QUARANTINE_SPANS, VA_RESERVE_MIB, VERBOSE) were already carrying a correctly-recorded `uncensused` disposition with an owner in ci/census_surface_map.json before this session touched it, and `uncensused` has never failed this screen -- confirmed by re-running check_census_completeness.py against the pre-issue-#33 map (`git show <pre-fix>:ci/census_surface_map.json`) with today's rust/src: it still reports those same 12 as GAP and still exits FAIL(condition=unmapped_surface), because the true unmapped set was a DIFFERENT and non-overlapping 13 surfaces this entry's reason never named -- 7 counters.rs fields (device_losses, device_unattributed_claims, outputs_device_bound, outputs_device_resident, outputs_host_resident, proven_elsewhere_claims, subject_changed_declines) and 6 env switches (BIND_OUTPUTS, DEBUG_CONSTANTS, DEVICE_MEMORY_BUDGET_MB, FORCE_STDERR_FAILURE, KV_ARENA, KV_PREFIX_ALIAS), which is what issue #33 asked to have investigated and were, each, given an evidenced owner and disposition (12 uncensused, 1 not_a_mechanism -- ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS exists only in a doc comment, never in a std::env::var call, per `git log --all -S`). This entry's own reason was never the load-bearing fact for its own colour; the screen is green now because the surfaces actually missing a map entry finally have one, not because the 12 it named acquired a census mechanism (none of them did, and none was owed one to close this)."
-    }
-  }
-}
+          },
+          "ledger_census_is_unobservable_in_a_shallow_clone": {
+            "owner": "trinity",
+            "date": "2026-08-09",
+            "reason": "Both halves of this entry's own closes_when are now true. The lane-checks job's checkout has declared fetch-depth: 0 since issue #24/#28 (test_history_reading_op_test_jobs_check_out_full_history_issue_24, test_lane_checks_job_has_no_depth_limited_fetch_before_the_ledger_census_issue_28), and ci/test_lane_checks.py::test_ledger_census_exit_2_on_truncated_history_fails_the_real_lane_step_issue_104 now proves -- against a real `git clone --depth 1` of this repository, run with the EXACT argv ci.yml's own 'Proof-ledger census' step ships, changing only the working directory between the two polarities -- that the guard's exit 2 fails that real step, not merely that the guard prints ERROR(instrument=truncated_history) in isolation. A companion mutation test (test_mutating_the_guard_to_mask_exit_2_would_be_missed_by_the_shared_helper_issue_104) proves that assertion is load-bearing: a scratch copy of check_ledger_census.py with the shallow-clone return value masked from 2 to 0 makes the SAME assertion helper the passing test uses raise, so the guard is confirmed necessary and not merely present. ci/check_ledger_census.py's own KNOWN_LIMITS declaration for this id is retired in the same commit (now empty), so the screen and this register agree that the limit is closed rather than one declaring it open while the other declares it retired -- test_check_ledger_census_declares_no_known_limit_that_open_reds_has_retired_issue_104 asserts that agreement mechanically, for this id and any future one. history_is_complete()/screen() in ci/check_ledger_census.py are byte-for-byte unchanged; nothing about the guard was weakened to close this."
+          }
+        }
+      }
