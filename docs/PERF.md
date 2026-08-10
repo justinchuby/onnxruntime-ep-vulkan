@@ -5456,7 +5456,9 @@ wearing an EP's name. *Practical note for anyone reproducing on this desk:* the
 version is on ORT's own feed, `https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/`.
 The driver records `ort.preload_dlls()`'s outcome in `environment.cuda_preload` rather than
 assuming it, because a CUDA arm that silently fell back to CPU over a missing DLL would produce
-entirely plausible numbers for the wrong thing.
+entirely plausible numbers for the wrong thing. It must be called **before the first session is
+created**, and on 1.28.0 it takes no `verbose` keyword — passing one raises `TypeError` from inside
+the setup path, which reads at a glance like a CUDA problem rather than a signature problem.
 
 **Device.** `NVIDIA RTX A1000`, driver 573.44, discrete, subgroup 32, PCI `0000:9f:00.0`, Vulkan
 UUID `aadf33d4d118155fcc60c22b5c352463`. **Both GPU arms must run on the same physical card or the
