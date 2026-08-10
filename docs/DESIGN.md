@@ -3892,6 +3892,18 @@ one artifact over — the register worked, the reader did not exist. Two things 
   Wiring the overlay would have produced a **green step on the exact defect the step exists for**, and
   `ci/negative_control_landing_simulation.py::overlay_squash_is_blind` keeps that fact printed rather
   than remembered.
+* **the rebase landing had to be forced (PR #129).** `git rebase --onto <base> <merge-base> <branch>`
+  **fast-forwards** when the merge base *is* the base: the branch is already on top, git replays
+  nothing, and the "landing" it reports is the branch head itself. `_land` then refuses it — correctly,
+  because a landing that still has the PR head as an ancestor lets the census's revision walk reach the
+  branch commits and screen the *merge* — and the whole run is `SIM-INVALID`, which `main()` counts as
+  a failure. The consequence was that an **up-to-date branch, the shape almost every pull request
+  has**, could never have its rebase landing screened at all, and the gate reported
+  `landing_dependent_verdict` on branches whose three landings agree. GitHub's *Rebase and merge* does
+  not fast-forward — it rewrites the committer, so the landed commits always get new shas — and
+  `--no-ff` is what makes `git rebase` do the same. Pinned twice, at both levels: on the argv
+  (`test_the_rebase_landing_replays_a_branch_that_is_already_on_the_base`) and end to end on an
+  up-to-date fixture (`test_the_rebase_landing_of_an_up_to_date_branch_is_a_landing`).
 
 **What is still open after the repair, stated rather than left to be found — and stated against the
 API, not against the belief about it.** The step is **enforced**, and the sentence that had to be

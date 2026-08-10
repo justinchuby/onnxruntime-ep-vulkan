@@ -313,9 +313,16 @@ def _land(clone: Path, base: str, pr: str, mode: str, prune_refs: bool = False):
         if r.returncode:
             return "", f"merge failed: {r.stdout}{r.stderr}"
     elif mode == "rebase":
+        # `--no-ff` because GitHub's "Rebase and merge" ALWAYS replays: it rewrites the
+        # committer, so every landed commit gets a new sha even when the branch is already
+        # on top of the base and git alone would fast-forward. Without it a branch with
+        # nothing between it and the base rebases to itself, the landing IS the PR head,
+        # and this simulation refuses its own rebase arm as SIM-INVALID — i.e. the up to
+        # date branch, the commonest shape there is, could never have a rebase landing
+        # screened at all. That is a hole in the instrument, not a property of the branch.
         mb = git(["merge-base", base, pr], clone).stdout.strip()
         git(["checkout", "-q", "-B", "replay", pr], clone)
-        r = git(["rebase", "--onto", base, mb, "replay"], clone)
+        r = git(["rebase", "--no-ff", "--onto", base, mb, "replay"], clone)
         if r.returncode:
             git(["rebase", "--abort"], clone)
             return "", f"rebase failed: {r.stdout}{r.stderr}"

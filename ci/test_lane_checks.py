@@ -8059,6 +8059,107 @@ def test_the_simulated_squash_has_one_parent_and_unancestors_the_branch(tmp_path
     assert _sim_git(["merge-base", "--is-ancestor", pr, landing], repo).returncode != 0
 
 
+def _up_to_date_repo(tmp_path):
+    """A branch with NOTHING between it and the base: `merge-base(base, pr) == base`.
+
+    -> (repo, base_sha, pr_sha). The commonest branch shape there is, and the one plain
+    `git rebase` fast-forwards over.
+    """
+    repo = tmp_path / "uptodate"
+    repo.mkdir()
+    _sim_git(["init", "-q", "-b", "main"], repo)
+    (repo / "cause.txt").write_text("original\n", encoding="utf-8")
+    _sim_git(["add", "-A"], repo)
+    _sim_git(["commit", "-q", "-m", "the base"], repo)
+    base = _sim_git(["rev-parse", "HEAD"], repo).stdout.strip()
+
+    _sim_git(["checkout", "-q", "-B", "pr", base], repo)
+    (repo / "cause.txt").write_text("from the branch\n", encoding="utf-8")
+    _sim_git(["add", "-A"], repo)
+    # a fixed, old committer date so the replay — which stamps `now` — cannot produce a
+    # byte-identical commit object, and therefore the same sha, by landing in the same second
+    env = dict(os.environ)
+    env.update(
+        GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+        GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
+        GIT_AUTHOR_DATE="2001-02-03T04:05:06+00:00",
+        GIT_COMMITTER_DATE="2001-02-03T04:05:06+00:00",
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "the branch's edit"], cwd=str(repo),
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+    )
+    pr = _sim_git(["rev-parse", "HEAD"], repo).stdout.strip()
+    _sim_git(["checkout", "-q", "main"], repo)
+    return repo, base, pr
+
+
+def test_the_rebase_landing_replays_a_branch_that_is_already_on_the_base():
+    """PR #129. `git rebase --onto <base> <merge-base> <branch>` FAST-FORWARDS when the
+    merge base IS the base — the branch is already on top, so git does nothing and the
+    "landing" it reports is the PR head itself. `_land` then correctly refuses it
+    (`the rebase landing still has the PR head as an ancestor`) and the whole run is
+    SIM-INVALID, which `main()` counts as a failure. The consequence was that an up to date
+    branch — the shape almost every PR has — could never have its rebase landing screened
+    at all, and the gate reported `landing_dependent_verdict` on a branch whose three
+    landings are in fact identical in colour.
+
+    GitHub's "Rebase and merge" does not fast-forward: it rewrites the committer, so the
+    landed commits always get new shas. `--no-ff` is what makes `git rebase` do the same
+    thing, so this asserts on the source, not on a run, because the alternative — asserting
+    the landing sha differs — passes for the wrong reason the moment two runs land in
+    different seconds.
+    """
+    sim_src = (CI_DIR / "simulate_squash_rewitness.py").read_text(encoding="utf-8")
+    tree = ast.parse(sim_src)
+    land = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_land"
+    )
+    rebases = [
+        n for n in ast.walk(land)
+        if isinstance(n, ast.List)
+        and n.elts
+        and isinstance(n.elts[0], ast.Constant)
+        and n.elts[0].value == "rebase"
+        and any(isinstance(e, ast.Constant) and e.value == "--onto" for e in n.elts)
+    ]
+    assert len(rebases) == 1, (
+        "expected exactly one `git rebase --onto` argv in `_land`; this pin reads that argv"
+    )
+    argv = [e.value for e in rebases[0].elts if isinstance(e, ast.Constant)]
+    assert "--no-ff" in argv, (
+        "`_land`'s rebase landing no longer passes --no-ff, so a branch that is already on "
+        "top of its base rebases to itself and the rebase arm of the landing simulation "
+        f"becomes SIM-INVALID for every such branch. argv was {argv}"
+    )
+
+
+def test_the_rebase_landing_of_an_up_to_date_branch_is_a_landing(tmp_path):
+    """The behaviour the pin above is a pin for, measured end to end: a branch with nothing
+    between it and the base must still produce a rebase landing that carries the branch's
+    content and does NOT have the branch head as an ancestor — otherwise the census walks
+    back into the branch and screens the merge, not the rebase."""
+    sim = _simulator()
+    repo, base, pr = _up_to_date_repo(tmp_path)
+    assert _sim_git(["merge-base", base, pr], repo).stdout.strip() == base, (
+        "the fixture is not the up-to-date shape this test is about"
+    )
+
+    landed, why = sim._land(repo, base, pr, "rebase")
+    assert landed and not why, why
+    assert landed != pr
+    assert _sim_git(["merge-base", "--is-ancestor", pr, landed], repo).returncode != 0, (
+        "the rebase landing still has the PR head as an ancestor"
+    )
+    assert (
+        _sim_git(["rev-parse", f"{landed}^{{tree}}"], repo).stdout.strip()
+        == _sim_git(["rev-parse", f"{pr}^{{tree}}"], repo).stdout.strip()
+    ), "the rebase landing must carry the branch's content unchanged"
+    parents = _sim_git(["rev-list", "--parents", "-n", "1", landed], repo).stdout.split()
+    assert len(parents) == 2 and parents[1] == base, parents
+
+
 def test_a_landing_that_drops_a_path_the_base_moved_is_refused_not_screened(tmp_path):
     """Non-vacuity, stated as a refusal, and ASSERTED ON THE REFUSAL.
 
