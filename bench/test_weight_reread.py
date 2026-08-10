@@ -589,3 +589,138 @@ def test_resolve_model_negative_control_wrong_cache_key_is_not_found(tmp_path, m
 
     with pytest.raises(fd.FoundryDiscoveryError, match="no cached Foundry variant"):
         wr.resolve_model()
+
+
+# -- path hygiene (issue #81, defect 2) ---------------------------------------------------------
+#
+# Two independent defects lived here, and each of the tests below fails on exactly one of them:
+#
+#   1. `main()` wrote to `bench/results/weight_reread_phi35.json` unconditionally, so merely
+#      RUNNING the probe rewrote a committed witness. An operator reading `git status` after a
+#      re-derivation could not distinguish "I reproduced the recorded numbers" from "I replaced
+#      them", which is the one distinction a witness exists to support.
+#   2. That committed record published `onnx_file` as an absolute Foundry cache path -- one
+#      operator's home directory, in a file the repository serves publicly.
+#
+# The fix is structural on both counts: the destination is an explicit `--out` whose default is
+# gitignored, and every record is walked by `path_screen.screen_public_record` before the file
+# is opened. These tests hold that structure, not the current field list.
+
+
+def _path_screen():
+    _before = list(sys.path)
+    sys.path.insert(0, str(BENCH))
+    try:
+        import path_screen
+
+        return path_screen
+    finally:
+        sys.path[:] = _before
+
+
+def test_the_committed_witness_publishes_no_local_path():
+    """The regression lock on defect 2 as it was actually committed.
+
+    This asserts over the tracked file itself rather than over a record the test builds, because
+    the leak was in the artifact, not in the code path a test would exercise. Deleting the
+    redaction and restoring the absolute path turns this red.
+    """
+    record = json.loads(RECORD.read_text(encoding="utf-8"))
+    kept, why = _path_screen().screen_public_record(record)
+    assert kept is not None, f"committed witness publishes a local path: {why}"
+
+
+def test_the_committed_witness_still_identifies_the_exact_model():
+    """Redaction is not permitted to cost identity.
+
+    Dropping the resolved path is only defensible because the record still pins the *content*
+    of the measured artifact. If a future edit removes the digest too, the record would name a
+    filename anyone can produce, and this goes red.
+    """
+    record = json.loads(RECORD.read_text(encoding="utf-8"))
+    assert record["onnx_sha256"] == (
+        "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f"
+    )
+    assert record["onnx_file"] == wr._PHI35_SPEC.onnx_filename
+    assert record["onnx_file_is_a_name_not_a_path"] is True
+
+
+def test_result_identity_records_a_name_not_a_path(tmp_path, monkeypatch):
+    """The code-path half of defect 2: `_result_identity` must not stamp its argument's path.
+
+    Driven through a planted file under an absolute tmp_path, so the value it would have leaked
+    is genuinely absolute on both Windows and POSIX. Restoring `str(model)` turns this red.
+    """
+    planted = tmp_path / "deeply" / "nested" / wr._PHI35_SPEC.onnx_filename
+    planted.parent.mkdir(parents=True)
+    planted.write_bytes(b"not a real model, only its identity is under test")
+    monkeypatch.setenv("PHI35_MODEL", str(planted))
+
+    identity = wr._result_identity(planted)
+
+    assert identity["onnx_file"] == wr._PHI35_SPEC.onnx_filename
+    assert str(tmp_path) not in json.dumps(identity)
+    kept, why = _path_screen().screen_public_record(identity)
+    assert kept is not None, why
+
+
+def test_publish_refuses_a_planted_absolute_path_and_writes_nothing(tmp_path):
+    """`publish` refuses rather than scrubs, and refuses BEFORE creating the file.
+
+    The plant sits at depth, under a key the probe does not have today, because the screen this
+    delegates to is total over JSON-shaped values -- the guarantee is not a field allowlist.
+    "Writes nothing" is asserted separately from the raise: a writer that raises after opening
+    its output leaves a truncated artifact behind, which is worse than either outcome.
+    """
+    path_screen = _path_screen()
+    out = tmp_path / "sub" / "record.json"
+    leaky = {"by_shape": [{"note": {"where": "C:\\Users\\someone\\models\\x.onnx"}}]}
+
+    with pytest.raises(path_screen.PrivatePathLeak):
+        wr.publish(leaky, out)
+
+    assert not out.exists()
+    assert not out.parent.exists()
+
+
+def test_publish_writes_a_screened_record(tmp_path):
+    """The positive polarity: a clean record round-trips exactly, and parents are created."""
+    out = tmp_path / "made" / "up" / "record.json"
+    report = {"amplification": 64.0, "onnx_file": wr._PHI35_SPEC.onnx_filename}
+
+    wr.publish(report, out)
+
+    assert json.loads(out.read_text(encoding="utf-8")) == report
+
+
+def test_the_default_destination_is_not_the_committed_witness():
+    """Defect 1. A default invocation must be incapable of dirtying tracked evidence."""
+    assert wr._parse_args([]).out == wr.DEFAULT_OUT
+    assert wr.DEFAULT_OUT.resolve() != RECORD.resolve()
+
+
+def test_the_default_destination_is_actually_gitignored():
+    """...and "not the witness" is not enough -- it must also not be a NEW tracked file.
+
+    Asked of git rather than of `.gitignore`'s text, because the text is what someone edits and
+    the answer is what someone gets. `check-ignore` exits 0 when the path is ignored, 1 when it
+    is not; anything else is git failing to answer and is not read as a pass.
+    """
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    assert git, "git is required to answer whether the probe default is ignored"
+    proc = subprocess.run(
+        [git, "check-ignore", "-q", str(wr.DEFAULT_OUT)],
+        cwd=str(ROOT), capture_output=True,
+    )
+    assert proc.returncode == 0, (
+        f"{wr.DEFAULT_OUT} is not gitignored (git check-ignore exit {proc.returncode}); a "
+        f"default probe run would create tracked-looking output"
+    )
+
+
+def test_an_explicit_out_is_still_honoured():
+    """Publishing to the committed witness stays possible -- it just has to be asked for."""
+    assert wr._parse_args(["--out", str(RECORD)]).out == RECORD

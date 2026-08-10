@@ -50,6 +50,7 @@ Run:  python bench/results/probe_weight_reread.py
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -65,6 +66,19 @@ sys.path.insert(0, str(ROOT / "bench"))
 sys.path.insert(0, str(ROOT / "bench" / "results"))
 
 from spirv_simt import Dispatch, InstrumentError, SpirvModule  # noqa: E402
+
+# Path hygiene (issue #81 defect 2). This probe used to write its record to a *tracked* file
+# by default, and that record carried `onnx_file` as an absolute Foundry cache path -- a local
+# path published in a committed artifact. Both halves are fixed here rather than by convention:
+# the destination is now an explicit `--out` (default: an ignored, untracked scratch file), and
+# every record is walked by `path_screen.screen_public_record` before a byte is written. The
+# screen is refuse-only by design -- it does not scrub, because a writer that silently rewrites
+# its own evidence is a writer whose evidence cannot be read back.
+import path_screen as _path_screen  # noqa: E402
+
+#: Untracked default destination. `bench/results/_local/` is gitignored, so the ordinary
+#: `python bench/results/probe_weight_reread.py` cannot dirty a committed witness.
+DEFAULT_OUT = ROOT / "bench" / "results" / "_local" / "weight_reread_phi35.json"
 
 LEDGER = ROOT / "evidence" / "proof_ledger.jsonl"
 SHADER_STEM = "q_gemv_matmul_nbits_f16"
@@ -121,8 +135,18 @@ def resolve_model() -> pathlib.Path:
 
 
 def _result_identity(model: pathlib.Path) -> dict:
+    """The model identity stamped into the record -- public identity only, never a local path.
+
+    `onnx_file` used to be `str(model)`, i.e. the resolved absolute Foundry cache path, and the
+    committed `weight_reread_phi35.json` therefore published one operator's home directory.
+    What identifies the measured artifact is its *content*, and that is `onnx_sha256`; the
+    filename is kept because it is the name the Foundry catalog itself publishes. The resolved
+    location is deliberately not recorded: `path_screen` would refuse the record for it, and it
+    identifies nothing that `onnx_sha256` does not identify better.
+    """
     return {
-        "onnx_file": str(model),
+        "onnx_file": model.name,
+        "onnx_file_is_a_name_not_a_path": True,
         "onnx_sha256": _model_provenance.sha256_of(model),
         "provider": _PHI35_SPEC.execution_provider,
         "resolved_by": "PHI35_MODEL override" if os.environ.get("PHI35_MODEL")
@@ -558,7 +582,37 @@ def positive_controls(mod: SpirvModule) -> dict:
 # -- main --------------------------------------------------------------------------------------
 
 
-def main() -> int:
+def _parse_args(argv: "list[str] | None") -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        prog="probe_weight_reread.py",
+        description="Weight re-read amplification, executed against the compiled q_gemv kernel.",
+    )
+    ap.add_argument(
+        "--out",
+        type=pathlib.Path,
+        default=DEFAULT_OUT,
+        help=("destination for the JSON record (default: an untracked scratch file under "
+              "bench/results/_local/, so a default run cannot dirty a committed witness)"),
+    )
+    return ap.parse_args(argv)
+
+
+def publish(report: dict, out: pathlib.Path) -> None:
+    """Screen, then write. Refuses rather than scrubs, and refuses *before* creating the file.
+
+    `screen_public_record` is total over JSON-shaped values, so this is not a pattern-match on
+    the fields this probe happens to emit today: a local path introduced into any future field,
+    at any depth, is refused by the same call.
+    """
+    kept, why = _path_screen.screen_public_record(report)
+    if kept is None:
+        raise _path_screen.PrivatePathLeak((why,))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(kept, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    args = _parse_args(argv)
     try:
         path, blob, digest = locate_module(SHADER_STEM)
         mod = SpirvModule(blob)
@@ -701,8 +755,13 @@ def main() -> int:
         print(f"ERROR(instrument): {e}", file=sys.stderr)
         return 4
 
-    out = ROOT / "bench" / "results" / "weight_reread_phi35.json"
-    out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    out = args.out
+    try:
+        publish(report, out)
+    except _path_screen.PrivatePathLeak as e:
+        print(f"REFUSED(path-hygiene): {e}", file=sys.stderr)
+        print(f"REFUSED(path-hygiene): nothing was written to {out.name}", file=sys.stderr)
+        return 5
 
     print("WEIGHT RE-READ — executed against the compiled kernel, not asserted")
     print("=" * 78)
