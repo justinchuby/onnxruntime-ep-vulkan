@@ -5372,3 +5372,378 @@ power against 0.859 is anything other than at most 0.6621 at the 0.0748 band —
 ceiling attached to one band, not a point estimate and not band-free. Issue #96 is not answered by
 this artifact, and the artifact says so in its own
 `window.claim` field.
+
+## 28. ResNet-50 against ORT's CUDA EP — the first CUDA comparison in this repository (2026-08-09)
+
+Issue #122 asks three questions in one sentence: *what are the ResNet numbers, how do they compare
+with the CUDA EP, and what are the gaps.* Before this section this repository could answer **none**
+of them, and the reason for the second one is worth stating plainly rather than discovering later:
+
+> **There was no CUDA arm anywhere in this repository.** `CUDAExecutionProvider` appeared in
+> `bench/` exactly once, as a *string inside a Foundry cache path* (`PHI35.execution_provider`,
+> which names which Foundry download variant to fetch, not which EP executes it). Every timed arm
+> in `bench/real_model.py` is `vulkan_tiled`, `vulkan_untiled` or `cpu`. So "how does it compare
+> with CUDA" had never had an answer — not a bad one, not a stale one, none.
+
+ResNet is also not a re-run of §26 with a different filename. The only f32 CNN in the §26 matrix is
+MobileNetV2-12, whose depthwise-separable stacks are a different workload from ResNet-50's 53 dense
+convolutions at 64…2048 channels and its 16-way residual `Add` chain. Nothing about one transfers
+to the other, and this section does not pretend it does.
+
+This section is the **protocol and the census**. What it deliberately does *not* contain yet is a
+timing, and §28.7 says why in the vocabulary this document already uses for that state.
+
+### 28.1 What is under test, exactly
+
+**Model.** One, pinned by immutable revision, digest and byte count — resolved through
+`bench/pinned_bytes.py`, the issue #78 authority, and never by filename:
+
+| field | value |
+|---|---|
+| repo | `onnxmodelzoo/resnet50-v1-12` (the ONNX Model Zoo's own Hugging Face mirror) |
+| file | `resnet50-v1-12.onnx` |
+| revision | `1f95315d8bd3b3ca2ceabe54d274e0cdf5a83bbe` (a commit sha; **not** `main`) |
+| sha256 | `3f03fdef724b22947eed826f1eef1dc5c34151bb4c37d634f1db89dfa2dd1526` |
+| bytes | 102,576,593 |
+| external data | **0 declared EXTERNAL initializers** — the `.onnx` digest covers every weight byte |
+| opset / IR | 12 / 4 |
+| graph | 175 nodes, 299 initializers |
+| input | `data`, f32, `[N, 3, 224, 224]` NCHW |
+| output | `resnetv17_dense0_fwd`, f32, `[N, 1000]` raw logits (no softmax in the graph) |
+
+The external-data row is load-bearing in the opposite direction from §26.1's. Phi-3.5 keeps 2.29 GB
+of weights *outside* its `.onnx`, so hashing the graph alone would certify a file containing almost
+none of the model. ResNet-50 keeps everything inside, and the record says **`declared_files: 0`
+because it was scanned and found none** — which is a different state from "not scanned", and
+`bench/test_real_model.py` already locks that distinction for the shared scanner.
+
+Three alternatives were looked at and declined, recorded because "we used resnet50.onnx" is exactly
+the sentence issue #78 exists to stop:
+
+* `ctuning/mlperf-inference-resnet50-onnx-fp32-imagenet2012-v1.0` — MLPerf's reference ResNet-50
+  v1.5, equally authoritative, but a TensorFlow conversion whose input layout and node naming
+  differ from the zoo model and which nothing in this repository has ever executed.
+* `Xenova/resnet-50` — a transformers.js re-export of `microsoft/resnet-50`: a re-export of a port,
+  two removes from an authority.
+* `Qdrant/resnet50-onnx`, `Kalray/resnet50v1.5` — vendor re-hosts, same objection.
+
+**Arms.** Three, fresh session each, one subprocess each, order alternated per repeat:
+
+| arm | providers | role | why |
+|---|---|---|---|
+| `vulkan` | `VulkanExecutionProvider`, CPU | **candidate** | the subject |
+| `cuda` | `CUDAExecutionProvider`, CPU | **baseline** | the comparison an ORT user on an NVIDIA card actually has |
+| `cpu` | CPU only | **reference** | the only arm whose numerics nothing here is trying to change |
+
+No arm sets an environment variable — `bench/test_resnet.py::test_no_arm_sets_an_environment_variable_behind_the_readers_back`
+locks that, because this lane compares *execution providers*, and an env delta would silently make
+it compare tunings as well. Both GPU arms keep the CPU fallback the shipped EP has: removing it
+would measure a configuration no user runs, and would turn every unsupported op into a
+session-creation failure rather than into the **partition cost this section exists to price**.
+
+**One runtime, three arms.** ORT 1.28.0 for all three, one `onnxruntime.dll`, digest recorded in
+the artifact. A CUDA-versus-Vulkan ratio taken across two ORT builds would be a version comparison
+wearing an EP's name. *Practical note for anyone reproducing on this desk:* the
+`onnxruntime-gpu==1.28.0` wheel on PyPI is a **CUDA 13** build and will not load against driver
+573.44 (it demands `cudart64_13.dll`; the driver caps at CUDA 12.8). The CUDA-12 build of the same
+version is on ORT's own feed, `https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/`.
+The driver records `ort.preload_dlls()`'s outcome in `environment.cuda_preload` rather than
+assuming it, because a CUDA arm that silently fell back to CPU over a missing DLL would produce
+entirely plausible numbers for the wrong thing.
+
+**Device.** `NVIDIA RTX A1000`, driver 573.44, discrete, subgroup 32, PCI `0000:9f:00.0`, Vulkan
+UUID `aadf33d4d118155fcc60c22b5c352463`. **Both GPU arms must run on the same physical card or the
+ratio is a comparison of two pieces of hardware**, so the artifact records the Vulkan device's PCI
+address next to `nvidia-smi`'s under `environment.same_physical_device` for a reader to check
+rather than assume. Unlike §26's artifacts, this one carries stable identity (#54) from the start.
+
+**EP build.** `rust/target/release/onnxruntime_vulkan_ep.dll`, sha256
+`9a1ad7550e7b7dd3f6bf518e423ecd4f277ab59e57778627348b0ddc89723561`, 2,563,072 bytes, crate 0.28.0,
+built against ORT 1.28.0 (API 28) from `b92ec1c`. Per §26.10, what can be claimed across builds of
+this repository on Windows is *source* identity, never binary identity.
+
+**Method.** 5 repeats × 10 timed iterations per arm per batch, 3 warmups discarded per session,
+batches 1 / 4 / 16. Feeds are a fixed-seed (`0x5EED0122`) standard-normal `[N,3,224,224]` f32
+tensor, byte-identical across arms and runs, and the artifact records
+`feeds_digest` per case so a reader can confirm the three arms were fed the same bytes — the driver
+fails the run if two arms disagree.
+
+> **What the synthetic input costs, said out loud.** This lane measures **latency and numerical
+> agreement, not ImageNet accuracy**, and cannot measure accuracy: convolution cost does not depend
+> on pixel values, so a synthetic tensor exercises every kernel at exactly the same shapes and cost
+> as a decoded photograph, but it says nothing about top-1 on a real dataset. No accuracy claim
+> appears anywhere in this section, precisely because this input could not support one.
+
+**Three passes, never one.** `bench/results/probe_resnet_vulkan_cuda.py`:
+
+1. **verify** — CPU reference, then each GPU arm, in one process. A case that does not pass is not
+   timed at all.
+2. **timed** — one subprocess per (repeat, arm, batch). No profiler, no counters file, no tracing.
+   A wall time measured through an instrument is not the wall time without it. Subprocesses rather
+   than a loop because ORT's EP registration is process-global, because the Vulkan counters file is
+   written from a process-exit hook, and because a CUDA context and a Vulkan context co-resident in
+   one process would each be measured against the other's allocations.
+3. **diagnose** — a *separate* pass, per arm, with `enable_profiling` and the counters file set.
+   This is where partition, fallback, transfer nodes and dispatch witnesses come from, and its wall
+   clock is never quoted.
+
+Session build time and first-run time are recorded separately and never folded into the median,
+for §26.1's reason.
+
+### 28.2 Model identity, and how to re-derive it from nothing
+
+`bench/results/pinned-bytes/resnet50-v1-12.json` is the committed witness. It is deliberately
+**not** produced by `bench/pinned_bytes.py`: a witness generated by the module it is meant to
+witness agrees with that module by construction and demonstrates nothing. It was produced by a
+one-shot local procedure — `hashlib.sha256` + `os.stat` over the cached file, `onnx.load` +
+`onnx.checker.check_model`, an EXTERNAL-initializer scan, an op-type histogram off the graph, and a
+single CPU-EP inference — and it records `outcome: PASS` with four named guards.
+
+Fetch and re-derive (this is the whole of it; nothing else is needed):
+
+```
+curl -L -o resnet50-v1-12-onnx-1f95315d.onnx \
+  https://huggingface.co/onnxmodelzoo/resnet50-v1-12/resolve/1f95315d8bd3b3ca2ceabe54d274e0cdf5a83bbe/resnet50-v1-12.onnx
+# place it in ~/.cache/onnxruntime-ep-vulkan/models/ (or set ONNXRUNTIME_EP_VULKAN_MODEL_CACHE)
+
+python -c "import hashlib,pathlib;p=pathlib.Path('resnet50-v1-12-onnx-1f95315d.onnx');print(hashlib.sha256(p.read_bytes()).hexdigest(),p.stat().st_size)"
+# -> 3f03fdef724b22947eed826f1eef1dc5c34151bb4c37d634f1db89dfa2dd1526 102576593
+
+python -c "import onnx,collections;m=onnx.load('resnet50-v1-12-onnx-1f95315d.onnx');onnx.checker.check_model(m);print(collections.Counter(n.op_type for n in m.graph.node))"
+# -> Conv 53, BatchNormalization 53, Relu 49, Add 16, MaxPool 1, GlobalAveragePool 1, Flatten 1, Gemm 1
+```
+
+Then `pytest bench/test_resnet.py` re-derives the histogram from the cached bytes when they are
+present, checks the digest, and fails if the committed witness and the pin in `bench/resnet.py`
+ever disagree — so the table in §28.1 cannot go stale silently. Absent the file, that check
+*skips*; every other guard in the file runs without a model, a GPU, or CUDA.
+
+### 28.3 Correctness before timing — and what a classifier's gate must actually check
+
+Every timed arm's outputs are compared against the CPU EP's, in the same process, on the same
+session object that is then timed. §26.2's two instrument bugs are the reason that ordering is not
+negotiable. ResNet-50 gets a gate suited to what it *is* — a 1000-way classifier emitting raw
+logits — rather than a borrowed one. `resnet.classify_resnet_logits`, **all four clauses required**:
+
+1. **top-1 agrees on every row.** Not row 0 — every row. A batch gate that reads the first row
+   passes a run that is wrong on rows 1…N-1, and `test_top1_is_checked_on_every_row_not_only_the_first`
+   plants exactly that.
+2. **the top-5 *set* agrees on every row.** Ordering *within* the tail may differ — two logits
+   1e-6 apart can swap under a different reduction order and that is not a defect — but membership
+   may not.
+3. **numerical agreement**: `max|Δ| ≤ RESNET_LOGIT_SCALE_FRACTION (1e-3) × max|reference|`
+   **or** `max_rel ≤ RESNET_RTOL (1e-2)`. The absolute budget is a fraction of the reference's own
+   scale rather than a constant, for `PHI35_LOGIT_SCALE_FRACTION`'s reason: a fixed floor silently
+   tightens or loosens as the output scale moves, and a ResNet logit scale moves with the input
+   distribution. `max_rel` is recorded but is deliberately not the sole gate — over a 1000-way
+   vector containing near-zero entries it is a cancellation meter, the same reading §25.3 records
+   for the decoder.
+4. **the induced distribution moved by at most `RESNET_MAX_PROB_DELTA` (1e-3)** post-softmax. Two
+   logit vectors can rank identically and still describe different confidences;
+   `test_a_probability_shift_fails_even_when_the_ranking_survives` plants one.
+
+Plus two refusals that are not tolerances at all: a non-finite element is `DIVERGENT`, and **an
+all-zero candidate is `DIVERGENT` with its own reason token**. The second is this project's
+`argmax 0` defect — 161 dispatches executed, `compute_failures: 0`, and no numbers produced — whose
+top-1 is class 0 by tie-break and which a naive ranking check on a degenerate reference would wave
+through.
+
+Each clause has a **positive and a negative control** in `bench/test_resnet.py`, because a gate
+never observed passing has no demonstrated passing state and a gate never observed failing has no
+demonstrated failing state.
+
+### 28.4 The static support census — what the EP registers, against what ResNet-50 contains
+
+Read off the built binary with `epctl --dump-capabilities --json`, matched against the op-type
+histogram of the pinned graph. `bench/resnet.py::support_census`, crate 0.28.0:
+
+| op type | nodes | registered? | status | kernel | verdict |
+|---|---:|---|---|---|---|
+| `Conv` | 53 | yes | `ready` | F32, opset 1+ | **claimable** |
+| `Relu` | 49 | yes | `live` | F32/F16, opset 6+ | **claimable** |
+| `Add` | 16 | yes | `live` | F32/F16/I64/I32, opset 7+ | **claimable** |
+| `GlobalAveragePool` | 1 | yes | `ready` | F32, opset 1+ | **claimable** |
+| `Gemm` | 1 | yes | `ready` | F32, opset 7+ | **claimable** |
+| `BatchNormalization` | 53 | **no** | — | — | **gap** |
+| `MaxPool` | 1 | **no** | — | — | **gap** |
+| `Flatten` | 1 | **no** | — | — | **gap** |
+
+**120 of 175 nodes have a registered kernel; 55 do not.**
+
+> **A defect this table caught in its own instrument, recorded because the next census will face
+> it.** The first draft of `support_census` tested `status == "live"`. `epctl`'s `status` is
+> **three-valued** — `live` / `ready` / `staged` — and its `live` token is the *deprecated*
+> `OpStatus::Live` alias; the predicate that means "this row carries a kernel" is `has_kernel`,
+> which is true for `Live` **and** `Ready` (§8.9.25 ruling 6; `rust/src/bin/epctl.rs` records that
+> a reader checking "76 rows carry a kernel" against the field once named `live` got 46). Reading
+> the token would have reported `Conv`, `Gemm` and `GlobalAveragePool` — **55 of 175 nodes** — as
+> unsupported, i.e. published the claim that this EP cannot run a convolution. Two tests now lock
+> it: one on a fixture whose `Conv` is `ready`, and one that runs the **really built** `epctl` and
+> asserts `Conv` lands in `op_types_supported`.
+
+### 28.5 What the census predicts — and why it is a MODEL and not a measurement
+
+The census is `provenance_class: MODEL` and is not quotable as a measurement, for three reasons
+that are written into the function itself:
+
+1. **It is not the partition.** ORT decides that per node, after graph optimisation, using each
+   op's claim predicate against that node's actual attributes and dtypes. A registered op can still
+   decline a specific node.
+2. **It is not what runs.** At `ORT_ENABLE_ALL` — which this lane *pins* rather than defaults —
+   ORT's `ConvBNFusion` folds `BatchNormalization` into the preceding `Conv`. If that fires on all
+   53, then 53 of the 175 nodes **do not exist** by the time the EP is asked what it can claim, and
+   the largest row in the gap table above evaporates without a line of shader being written.
+3. **It is not a count of islands.** Two unsupported nodes in the middle of a chain cost far more
+   than two at the end, and a histogram cannot see *where* they are.
+
+Point 3 is the interesting one for ResNet-50, and the structural prediction is worth writing down
+**before** the measurement so that the measurement can contradict it. ResNet-50 v1 is
+
+```
+data → Conv7x7 → BN → Relu → MaxPool → [16 bottleneck blocks] → GlobalAveragePool → Flatten → Gemm
+```
+
+so the two gaps that survive BN folding sit at **exactly the two chokepoints of the graph**, one
+near the input and one near the output, and each of them severs the graph completely. That predicts
+**three Vulkan islands** — `{Conv7x7, Relu}`, then the whole residual trunk through
+`GlobalAveragePool`, then `{Gemm}` — with two round trips through host memory. And the two are not
+equally expensive, because the tensors crossing them differ by four orders of magnitude:
+
+| boundary | tensor crossing | N=1 | N=4 | N=16 |
+|---|---|---:|---:|---:|
+| `MaxPool` in / out | `[N,64,112,112]` → `[N,64,56,56]` f32 | 3.06 + 0.77 MiB | 12.25 + 3.06 MiB | 49.0 + 12.25 MiB |
+| `Flatten` in / out | `[N,2048,1,1]` → `[N,2048]` f32 | 8 + 8 KiB | 32 + 32 KiB | 128 + 128 KiB |
+
+So the concrete engineering prediction is: **`MaxPool` is the expensive gap and `Flatten` is the
+cheap one**, by a factor of roughly 400× in bytes moved, even though the census scores them
+identically at one node each. A single `MaxPool` kernel would remove a ~3.8 MiB round trip per
+inference at batch 1 and a ~61 MiB round trip at batch 16; a `Flatten` kernel — which is a pure
+reshape, and which `Reshape` (`ready`, F32) already demonstrates the machinery for — would remove a
+partition break for almost no bytes.
+
+Every sentence in this subsection is `MODEL`. The `MEASUREMENT` that settles it is ORT's own
+per-node provider attribution from the diagnose pass, which the driver records as
+`diagnostics.runs[].profile.counts` (nodes per provider), `.by_op` (microseconds per
+provider::op), `.cpu_fallback_op_types` (the actual fallback list, by name and count) and
+`.transfer_nodes` (the `Memcpy*` nodes ORT inserts at EP boundaries, timed separately from
+compute), alongside the EP's own `dispatches_executed` counter. **If the measurement disagrees with
+the prediction above, the measurement is right.**
+
+### 28.6 What this lane refuses to publish
+
+`resnet.admissibility` recomputes the verdict from the recorded evidence on every read — the
+`ProvenanceRecord.provenance_ok` discipline, for the reason that discipline exists: a stored
+verdict outlives the facts that justified it. Seven checks, each named, each carrying its own
+detail, **all required**:
+
+| check | withholds the number when |
+|---|---|
+| `model_provenance` | the pinned sha256 / size / external-data scan disagreed with the pin |
+| `outputs_agree_with_cpu` | any timed arm's equivalence gate did not `PASS` |
+| `vulkan_production_dispatch_witness` | `dispatches_executed == 0` — a Vulkan row with no dispatch is a CPU row wearing the EP's name |
+| `cuda_arm_executed` | ORT placed no node on `CUDAExecutionProvider` — i.e. the "CUDA" arm was CPU |
+| `device_identified` | the card is named by enumeration index rather than by stable identity |
+| `quiescence` | `bench/contention.py` says the box was not quiet (§20: this desk is shared indefinitely) |
+| `enough_repeats` | fewer than 3 repeats or 5 iterations — a median with no repeats measured adjacent in time has no error bar |
+
+Any single failure yields **`INDETERMINATE`**, and an `INDETERMINATE` record's ratios must be
+reported as *not quotable* rather than quoted with a caveat. `bench/test_resnet.py` parametrises
+one failure per check, so no check is decorative. The driver's **exit code** is gated on the same
+verdict, so an inadmissible run cannot look successful to a script.
+
+Ratios carry their own polarity. `resnet.ratio_record` emits `baseline`, `candidate` and the
+sentence that fixes the reading — *ratio = median(candidate) / median(baseline), computed per
+repeat then aggregated; > 1 means the candidate takes LONGER* — because this project has already
+published a ratio (`ab_row_tile.py`'s first version) whose direction had to be recovered from the
+source. Pairing is per repeat, never a ratio of pooled medians, because a ratio of medians hides
+the repeat in which one arm was displaced.
+
+### 28.7 Results — `INDETERMINATE`, and exactly why
+
+**No ResNet-50 timing is published in this section, and none may be quoted from it.**
+
+The reason is not a defect in the instrument and not a property of the code under test. It is
+`docs/PERF.md` §20 applied honestly: **this box is shared, and for the whole window in which this
+lane was prepared another agent held exclusive GPU benchmark isolation on the same single RTX
+A1000.** Running the three arms alongside another lane's timed pass would have produced numbers,
+and those numbers would have been a reading of the *contention*, not of either EP. The relevant
+prior is in this very document — §26.10's `M = 1` null control, where two arms that this
+repository's own bitwise check proves emit **identical** bytes were separated by a **median 1.167×**
+purely by machine state. A Vulkan-versus-CUDA ratio taken under a foreign benchmark would be that
+effect with a more interesting label on it.
+
+So the state of this section is the state the vocabulary already has a word for:
+
+| quantity | value | class |
+|---|---|---|
+| model identity | verified, `PASS` | SPECIFICATION |
+| static support census | 120 / 175 nodes have a registered kernel | MODEL |
+| predicted island structure | 3 islands, breaks at `MaxPool` and `Flatten` | MODEL |
+| Vulkan median latency | **INDETERMINATE — GPU isolation not obtained** | — |
+| CUDA median latency | **INDETERMINATE — GPU isolation not obtained** | — |
+| Vulkan ÷ CUDA ratio | **INDETERMINATE — GPU isolation not obtained** | — |
+| measured partition / fallback | **INDETERMINATE — GPU isolation not obtained** | — |
+
+`INDETERMINATE` here is a *result*, not a failure to produce one: the protocol, the pin, the gates
+and the guards are complete and tested, and the one input they are waiting on is an idle GPU. The
+command in §28.9 produces every missing row in roughly fifteen minutes on a quiet desk, and refuses
+to start on a busy one.
+
+### 28.8 The gaps, as far as static evidence can carry them
+
+Answering issue #122's third question with the evidence that *is* admissible — all of it `MODEL`
+class, all of it falsifiable by the run in §28.9:
+
+1. **`MaxPool` is the one that matters.** One node, unregistered, sitting immediately after the
+   stem convolution where the activation tensor is at its largest. It forces the largest
+   host round trip in the graph — ~3.8 MiB per inference at batch 1, ~61 MiB at batch 16 — and it
+   splits a two-node island off the front of the network. Of everything in this list it is the
+   single highest-value kernel for a real CNN.
+2. **`Flatten` is cheap to move and cheap to write.** One node, ~16 KiB of traffic at batch 1, and
+   it is a pure reshape: `Reshape` is already `ready` with an `EwCast` kernel, so the machinery
+   exists. Its cost is the partition break, not the bytes.
+3. **`BatchNormalization` (53 nodes) is probably not a gap at all**, and this is the most likely
+   place for the static census to mislead a reader: ORT's `ConvBNFusion` at `ORT_ENABLE_ALL` should
+   fold every one of them into its `Conv`. If the measurement shows `BatchNormalization` in
+   `cpu_fallback_op_types`, the fusion did **not** fire and this becomes the largest gap in the
+   model by a wide margin. That is precisely why the driver records the fallback list by op type
+   rather than only a count.
+4. **`Conv`, `Gemm` and `GlobalAveragePool` are `ready`, not `live`.** They carry kernels and can
+   take nodes. `ready` versus `live` is a registry-status distinction, not a capability one — but
+   it is the distinction that broke this section's own first census, and a reader of any future
+   coverage table should check which predicate it used.
+5. **No claim about kernel *quality* is available from any of this.** The census says which ops can
+   be claimed. Whether this EP's `Conv` is competitive with cuDNN's at these shapes is a
+   measurement, it is `INDETERMINATE` above, and nothing in §28.4–28.5 hints at it in either
+   direction.
+
+### 28.9 Reproduce
+
+```
+cargo build --release                                   # produces the EP dll and epctl
+pytest bench/test_resnet.py                             # 81 guards; no GPU, no CUDA, no model needed
+
+python bench/results/probe_resnet_vulkan_cuda.py --device 0 \
+  --ep-lib rust/target/release/onnxruntime_vulkan_ep.dll \
+  --batch 1,4,16 --repeats 5 --iters 10 \
+  --require-lock --lock-holder <your-agent-id> \
+  --out bench/results/resnet_vulkan_cuda.json
+```
+
+`--require-lock` refuses to start unless the caller's file is the **only** one in the desk's GPU
+lock directory (`~/.copilot/repos/.gpu-lock/`), so a benchmark cannot be started on top of somebody
+else's benchmark by accident. Exit code is `0` only when the run is `ADMISSIBLE`.
+
+### 28.10 What this section may not be read as saying
+
+* **It is not a parity claim, and no run of it can become one.** One model, one device, one driver,
+  one ORT build, one day. `GENERALISATION_LIMIT` is emitted into the artifact and says so; a
+  single-device ratio is a reading, not parity. A ResNet-50 number on an RTX A1000 says nothing
+  about ResNet on another NVIDIA GPU, nothing about another vendor, and nothing about another model
+  on this GPU.
+* **It is not an accuracy result.** The feeds are synthetic (§28.1). Latency and numerical
+  agreement against the CPU EP are the subjects; ImageNet top-1 is not measured and is not claimed.
+* **It does not compare to §26's MobileNetV2 numbers.** Different model, different EP build,
+  different day, and — for the CUDA arm — a comparison that did not previously exist at all.
+* **The census is not the partition.** §28.5 states this three ways because it is the single
+  easiest sentence in this section to misquote.
