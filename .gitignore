@@ -82,6 +82,13 @@ bench/results/link-gate/
 gate_chain_fp32_profile_*.json
 bench/results/claim_log_attribution.jsonl
 
+# Switch, issue #81: the default destination for probe runs. `probe_weight_reread.py` used to
+# write straight into the tracked bench/results/weight_reread_phi35.json, so merely *running*
+# the probe dirtied a committed witness and an operator could no longer tell a re-derivation
+# from an edit. The default now lands here; publishing to the tracked record is an explicit
+# `--out`, which is a decision someone has to make rather than one they make by accident.
+bench/results/_local/
+
 # Written by ci/check_landing_simulation.py on a runner and uploaded as a build
 # artifact (Tank 2026-08-07, issue #60). Not committed: it names the base and head
 # shas of one particular run, so a committed copy is stale the moment main moves and

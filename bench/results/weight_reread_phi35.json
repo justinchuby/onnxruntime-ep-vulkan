@@ -601,7 +601,8 @@
     "words_named_by_more_than_one_workgroup": 0
   },
   "no_clock": "Every number here is a count of instructions or of bytes.",
-  "onnx_file": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu-2\\v2\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+  "onnx_file": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+  "onnx_file_is_a_name_not_a_path": true,
   "onnx_sha256": "3dbdd4b5f4d487da609fdacb9fd35b113cac706363a72795508524a4704dac3f",
   "positive_controls": {
     "controls": [

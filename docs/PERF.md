@@ -4705,20 +4705,95 @@ Two facts fall out, and both were surprises:
 
 * **`q_gemv` decode time is flat at ~17.5 ms at every cache length.** All of decode's growth is
   GQA. The quantised GEMM is not the decode problem; it is not even a large part of it.
-* **Weight streaming is a minority cost at width.** The tiled and untiled arms differ *only* in how
-  many passes they make over the same 2.291 GB of packed weights — `M` passes untiled against
-  `ceil(M/4)` tiled — so differencing them gives a marginal streaming bandwidth. Eight prefill `M`
-  points yield **seven** differential points: `M = 1` yields none, because both arms make exactly
-  one pass there and Δpasses is zero. Over those seven (`M = 2 … 128`, from
-  `real_model_latency_before_gqa.json`) the readings are **199.7, 244.5, 242.8, 238.8, 226.8,
-  222.5, 217.4 GB/s** — range **200–245**, median **227**, and above the ~192 GB/s spec sheet at
-  every point, which is what L2 reuse looks like. `M = 2` is the low end and the noisiest point
-  (one differenced pass, no averaging); the six points from `M = 4` up sit in 217–245. One full
-  weight pass costs 9.4–11.5 ms (median 10.1). At `M = 128` the tiled arm makes 32 passes, so
-  streaming is ~323 ms of the 3004.55 ms tiled time — **~11%**.
+* **Weight streaming is a minority cost at width — WITHDRAWN, the pass counts were wrong.**
+  (Switch, issue #81, 2026-08-09.) The tiled and untiled arms differ *only* in how many passes
+  they make over the same packed weights, so differencing them gives a marginal streaming
+  bandwidth. That much stands. What did not stand is the pass count: this section read the
+  tiled arm's `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS=4` as "a 4-row tile" and divided by
+  `ceil(M/4)`. **`GEMV_MAX_ROWS` is a ceiling, not a choice.** The selector minimises named
+  weight-read bytes, and for q4 weights with fp16 activations the `(16,2)` and `(8,4)` tiles
+  tie exactly when `M mod 4 ∈ {0,3}` and `(16,2)` is *strictly* smaller otherwise — so `(8,4)`
+  is unreachable at every `M`, and raising the ceiling to 4 changes nothing. The arm labelled
+  "tiled" ran at **`rows = 2`**, i.e. `ceil(M/2)` passes.
 
-So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — would be
-optimising a tenth of the wide-prefill cost. The data said to go elsewhere, so this branch did.
+  This is not an inference. The committed probe witness
+  `bench/results/weight_reread_phi35.json` records `by_shape_prefill[].selected_rows = 2` and
+  `tiled_amplification = ceil(M/2)` for every `M` it sweeps, against a graph denominator of
+  `1,861,189,632 B` of int4 weights over 161 `MatMulNBits` nodes. At `M = 128` the tiled arm
+  therefore makes **64** passes, not 32, and streams **119.1 GB**.
+
+  Everything downstream of the wrong divisor is withdrawn with it:
+
+  * the readings **199.7, 244.5, 242.8, 238.8, 226.8, 222.5, 217.4 GB/s** (range 200–245,
+    median 227),
+  * the claim that they sit **above the ~192 GB/s spec sheet at every point**, and the "that is
+    what L2 reuse looks like" reading of it,
+  * the per-pass cost of **9.4–11.5 ms**, and
+  * the conclusion that streaming is **~323 ms of the 3004.55 ms tiled time, ~11%**.
+
+  Re-differencing the same committed medians in `real_model_latency_before_gqa.json` against
+  `Δpasses = M − ceil(M/2)` and the probe's `1.861 GB` denominator gives **162.2, 132.4, 131.5,
+  129.3, 122.8, 120.5, 117.7 GB/s** at `M = 2 … 128` — *below* the spec sheet everywhere, so
+  the surplus that the L2-reuse reading was explaining does not exist. Those replacement
+  numbers are **class MODEL**, not a measurement: they inherit the original differencing
+  assumption (that the two arms differ in nothing but pass count), and the two candidate
+  denominators in this tree disagree — `1.861 GB` of int4 weight bytes from the graph versus
+  the `2.291 GB` this section previously used. **No corrected time-share figure is asserted
+  here**, and none should be quoted until a `(rows, cols)`-controlled measurement exists.
+
+  What that measurement needs is an arm that actually runs `(8,4)`. The automatic selector
+  cannot produce one, so `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` (§26.4a) now exists to request it.
+  **`(8,4)` remains unmeasured on this device**; no timing for it is claimed anywhere in this
+  document.
+
+So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — was judged to
+be optimising "a tenth of the wide-prefill cost". **That judgement is withdrawn with the ~11%
+figure it rested on.** This branch still went elsewhere, and the GQA `local_size` finding below
+stands on its own timestamp evidence; but "`q_gemv` streaming is only ~11%" is not a reason
+anyone may cite for that, because no admissible share figure has been established.
+
+### 26.4a Measuring the tile: `ONNXRUNTIME_EP_VULKAN_GEMV_TILE`
+
+**Why an override exists at all.** Section 26.4 assumed a `(8,4)` tile was in use because the
+ceiling permitted one. It was not, and it cannot be: `gemv_named_bytes` for a tile `(cols, rows)`
+with `cols | N` is
+
+```
+ceil(M/rows) · N · K · bits/8      (weight)   +   ceil(M/rows) · ceil(N/cols) · rows · K · a_bytes   (activation)
+```
+
+For q4 weights and fp16 activations the per-tile-pass bracket is `3K/4` at `(16,2)` and `3K/2` at
+`(8,4)` — exactly double — so `(8,4)` breaks even only when it halves the pass count, i.e. when
+`ceil(M/2) = 2·ceil(M/4)`, which holds **iff `M mod 4 ∈ {0,3}`**. At `M mod 4 ∈ {1,2}` the `(16,2)`
+tile is strictly cheaper. Selection is by strict improvement, so a tie never displaces the
+incumbent: **the automatic selector reaches `(8,4)` at no `M` whatsoever**, and no setting of
+`GEMV_MAX_ROWS` — a ceiling — changes that. The equal-traffic arm was therefore unmeasurable, and
+"unmeasurable" is not a result.
+
+`ONNXRUNTIME_EP_VULKAN_GEMV_TILE=cols,rows` requests an exact tile from the production selector,
+on the production dispatch path — not through a test seam. It is the same code in a benchmark and
+in a release, which is the only arrangement under which a measurement of it means anything.
+
+**Legality is checked, and refusal is loud.** A request is honoured only if it satisfies every
+constraint the automatic path satisfies: both extents powers of two; `cols ≤ 16`; `rows ≤ 4`;
+`rows` within the live `GEMV_MAX_ROWS` ceiling; `cols·rows ≤ 32`; `wg·cols ≤ 2048` reduction
+words; `N % cols == 0`; at least 64 workgroups unless `cols = 1`; and no row tile at `M = 1`,
+where the decode geometry is ledger-backed and must not move. A request that fails any of these
+**refuses the dispatch with `EpError` before any pipeline is created** — it does not fall back to
+the automatic tile. A silent fallback would let a benchmark report `(8,4)` timings for a `(16,2)`
+run, which is precisely the failure this section is correcting.
+
+**It is observable.** `counters.gemv_tile_decisions` records one entry per dispatch
+(`SELECTED cols×rows` or `REQUESTED cols×rows`), `gemv_tile_requests_honoured` /
+`..._refused` count outcomes, and `gemv_tile_refusal_forms` lists the stable refusal tokens
+(`TILE-COLS-INDIVISIBLE`, `TILE-ROW-TILE-AT-DECODE`, …). `counters.gemv_tile_surface` summarises
+as `SELECTED` / `REQUESTED` / `MIXED` / `ALL-REFUSED` / `UNOBSERVABLE`. A timing run that cannot
+show `REQUESTED 8×4` in its own counters has not measured `(8,4)`, whatever its command line said.
+The surface is registered in `ci/census_surface_map.json`.
+
+**Status: `(8,4)` is INDETERMINATE.** The mechanism is in place and exercised by CPU-side and
+structural tests. No GPU timing has been taken — real-device measurement is queued behind an
+active benchmark isolation — and no number for `(8,4)` appears in this document.
 
 ### 26.5 The finding: one lane per subgroup
 
@@ -4865,10 +4940,13 @@ by this edit, which is the point: the change moved lane occupancy, not graph par
   inputs on the CPU *reference* arm). §25's limitation is unchanged; what this section adds is a
   harness that supplies interdependent inputs itself, which is why it can compare whole-model
   outputs where the runner cannot.
-* **The bandwidth figure is differential, not instrumented.** It comes from Δtime ÷ Δ(weight passes
-  × 2.291 GB) between two arms, so it inherits both arms' noise and assumes the arms differ only in
-  weight passes — which is true by construction of the `QB_ROWS` specialisation, but is an argument
-  about the source, not a counter reading.
+* **The bandwidth figure is differential, not instrumented — and is WITHDRAWN** (Switch, issue
+  #81). It came from Δtime ÷ Δ(weight passes × 2.291 GB) between two arms, so it inherited both
+  arms' noise and assumed the arms differ only in weight passes. That second assumption holds by
+  construction of the `QB_ROWS` specialisation; the **Δ(weight passes) itself was wrong**. The
+  "tiled" arm ran `rows = 2`, not the `rows = 4` its `GEMV_MAX_ROWS=4` ceiling permitted, so
+  Δpasses is `M − ceil(M/2)` and not `M − ceil(M/4)`. See §26.4; no bandwidth or time-share
+  figure from this differencing may be quoted.
 * **The null control is an arm-asymmetry width, not a symmetric noise band.** In §26.10's run the
   two arms' per-repeat spans are disjoint at `M = 1` — where the effect is zero by construction —
   with a **median ratio of 1.167 (mean 1.143)**, tiled ÷ untiled. Any row whose arm ratio sits

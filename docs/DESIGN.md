@@ -5758,7 +5758,83 @@ CPU reference to compare a Vulkan run against**, so nothing here is an end-to-en
 
 ---
 
-### 8.13 The GQA workgroup size — one lane per subgroup was 1/32 of the machine (issue #56)
+### 8.12a Requesting a tile — `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` (issue #81)
+
+§8.12 gave `q_gemv` a `(QB_COLS, QB_ROWS)` tile and a selector that picks one. Issue #81 is about
+a hole in the *selector*, not in the tile: one of the two candidate tiles could never be chosen,
+and therefore had never been run.
+
+#### The tie, and why a ceiling cannot break it
+
+The selector minimises the bytes a tile *names* per inference. For `cols | N`:
+
+```
+gemv_named_bytes(cols, rows) = ceil(M/rows) · ceil(N/cols) · ( cols·K·bits/8  +  rows·K·a_bytes )
+                             = ceil(M/rows) · [ N·K·bits/8  +  ceil(N/cols)·rows·K·a_bytes ]
+```
+
+so the number of **weight passes is `ceil(M/rows)`**, independent of `cols`. For the production
+q4/fp16 case (`bits = 4`, `a_bytes = 2`, `cols | N`) the bracket is `3K/4` at `(16,2)` and `3K/2`
+at `(8,4)` — exactly double. `(8,4)` therefore costs less only if it more than halves the pass
+count, and it ties exactly when
+
+```
+ceil(M/2) = 2 · ceil(M/4)   ⟺   M mod 4 ∈ {0, 3}
+```
+
+At `M mod 4 ∈ {1, 2}` the `(16,2)` tile is *strictly* cheaper. So across all `M` the `(8,4)` tile
+is **never strictly better and sometimes strictly worse**. Selection is by strict improvement — a
+tie leaves the incumbent in place — which makes `(8,4)` unreachable at every `M`. Note what this
+implies about the obvious "fix": relaxing `<` to `<=` would not help either, because the two are
+not tied at `M mod 4 ∈ {1,2}`; it would merely make selection order-dependent.
+
+`GEMV_MAX_ROWS` cannot help. It is a **ceiling** applied to the candidate set, so it can forbid a
+tile but never prefer one. `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS=4` widens the search and the
+search still returns `rows = 2`. `docs/PERF.md` §26.4 had read that setting as evidence a 4-row
+tile was in use and divided its bandwidth arithmetic by `ceil(M/4)`; the committed probe witness
+`bench/results/weight_reread_phi35.json` records `selected_rows = 2` at every prefill `M`. That
+section is corrected and its conclusion withdrawn.
+
+#### The mechanism
+
+`ONNXRUNTIME_EP_VULKAN_GEMV_TILE=cols,rows` requests an exact tile. It is read inside
+`matmul_nbits_gemv`, on the **production** dispatch path, and it feeds the same
+`(QB_COLS, QB_ROWS)` specialisation constants the automatic path feeds — there is no second
+code path, no test-only seam, and no `#[cfg(test)]` arm. A measurement taken through a seam that
+only exists in tests measures the seam.
+
+Parsing and legality are deliberately separate concerns:
+
+* **`parse_tile_request`** is total and syntactic. It accepts exactly `digits,digits` — no
+  whitespace, sign, radix prefix, or trailing text — and returns a `TileRefusal::Syntax*`
+  otherwise. Leading zeros are accepted (`08,04` → `(8,4)`) because they are unambiguous.
+* **`tile_request_legality`** checks the request against the shape actually being dispatched:
+  both extents powers of two (the shader's paired store requires it — a `(3,4)` request clears
+  every numeric bound and is still illegal); `cols ≤ GEMV_MAX_COLS`; `rows ≤ GEMV_MAX_ROWS`;
+  `rows` within the live ceiling; `cols·rows ≤ GEMV_MAX_TILE`; `wg·cols ≤ GEMV_RED_WORDS`;
+  `N % cols == 0`; `cols = 1` or at least `GEMV_MIN_WORKGROUPS` workgroups; and **no row tile at
+  `M = 1`**, because decode geometry is proof-ledger-backed and a request must not move it.
+
+**Refusal is a refusal.** An illegal request returns `EpError` from the handler *before* any
+pipeline is created or dispatched. It does not fall back to the automatic tile. A silent fallback
+is the specific failure mode this whole section exists to correct: it would let a run labelled
+`(8,4)` report `(16,2)` timings, which is how §26.4 went wrong in the first place.
+
+#### Observability
+
+`counters` records, per dispatch, whether the tile was `SELECTED` (automatic) or `REQUESTED`
+(honoured override), plus honoured/refused totals and the set of refusal form tokens
+(`TILE-COLS-INDIVISIBLE`, `TILE-ROW-TILE-AT-DECODE`, `SYNTAX-NOT-A-PAIR`, …). `gemv_tile_surface`
+reduces these to `SELECTED` / `REQUESTED` / `MIXED` / `ALL-REFUSED` / `UNOBSERVABLE`.
+`UNOBSERVABLE` is distinct from a zero count on purpose: a graph with no `MatMulNBits` node
+produces no decisions, and reporting that as "the override was not used" would be a false
+negative. The variable is registered in `ci/census_surface_map.json` and
+`ci/check_census_completeness.py` fails closed without the entry.
+
+**What is not claimed.** The mechanism makes `(8,4)` *reachable*, and nothing more. No timing for
+it exists; §26.4a records it as INDETERMINATE pending device time.
+
+
 
 `gqa_f16.comp` declared `layout(local_size_x = 1, local_size_y = 1, local_size_z = 1)`. That is
 the honest first-pass shape for a kernel written correctness-first — no barriers, no shared memory,
