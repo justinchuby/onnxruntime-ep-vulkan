@@ -446,3 +446,120 @@ def test_new_harness_instrument_without_a_self_test_goes_red(tmp_path: Path) -> 
         "a new unfalsified harness instrument was not reported as drift — the gate that "
         "would have caught Guard D's successor is itself inert"
     )
+
+
+# ---------------------------------------------------------------------------
+# VERDICT-RECORD polarity — the third refusal shape
+#
+# Added 2026-08-09 (Niobe) with `bench/resnet.py`. `refuses` reads `(None, why)`; an
+# admissibility gate returns a RECORD whose refusal is `verdict == "INDETERMINATE"`, and
+# `quotable` returns a bare `False`, and a classifier returns a REACHED negative verdict
+# (`DIVERGENT`) that `withholds` correctly declines to read as an absence. `dissents` joins
+# `VALUE_REJECT_FN` for those, and it gets the same treatment the other two sources got:
+# synthetic trees differing in exactly one thing, and the screen must disagree about them. A
+# name added to the frozenset and then only ever run against the real repository, where it
+# happens to turn six rows green, would be the defect the top of this file exists to prevent.
+# ---------------------------------------------------------------------------
+
+# A VERDICT instrument. It never raises and never returns a 2-tuple; its refusal is a record.
+_VERDICT_OWNER_SRC = '''
+def classify_gate(x):
+    if x > 0:
+        return {"verdict": "ADMISSIBLE", "failed_checks": []}
+    return {"verdict": "INDETERMINATE", "failed_checks": ["not positive"]}
+'''
+
+# Both polarities genuinely exercised, neither declared. `refuses` cannot help here: the
+# result is not a 2-tuple, so the older source would raise rather than credit.
+_VERDICT_NO_POLARITY_TEST = '''
+import _models as m
+
+def test_admits():
+    assert m.classify_gate(1)["verdict"] == "ADMISSIBLE"
+
+def test_refuses():
+    assert m.classify_gate(-1)["verdict"] == "INDETERMINATE"
+'''
+
+# The same two observations, with the refusal declared through the enforcing helper.
+_VERDICT_POLARITY_TEST = '''
+import _models as m
+from _polarity import dissents
+
+def test_admits():
+    assert m.classify_gate(1)["verdict"] == "ADMISSIBLE"
+
+def test_refuses():
+    assert dissents(m.classify_gate(-1))["failed_checks"] == ["not positive"]
+'''
+
+_VERDICT_GATED_POLARITY_TEST = '''
+import _models as m
+from _polarity import dissents
+
+def test_admits(require_vulkan):
+    assert m.classify_gate(1)["verdict"] == "ADMISSIBLE"
+
+def test_refuses(require_vulkan):
+    assert dissents(m.classify_gate(-1))["failed_checks"] == ["not positive"]
+'''
+
+
+def _build_verdict_tree(root: Path, test_src: str) -> Path:
+    ops = root / "ops"
+    ops.mkdir(parents=True, exist_ok=True)
+    (ops / "_models.py").write_text(_VERDICT_OWNER_SRC, encoding="utf-8")
+    (ops / "test_it.py").write_text(test_src, encoding="utf-8")
+    return root
+
+
+def test_a_verdict_instrument_with_no_declared_refusal_is_unfalsified(tmp_path: Path) -> None:
+    """NEGATIVE POLARITY. Two real observations, nothing in the AST that says which is which."""
+    audit = _load_audit()
+    root = _build_verdict_tree(tmp_path / "t_verdict_bare", _VERDICT_NO_POLARITY_TEST)
+    assert _state_of(audit, root, fn="classify_gate") == "unfalsified"
+
+
+def test_a_verdict_instrument_declared_through_dissents_is_screened(tmp_path: Path) -> None:
+    """POSITIVE POLARITY. One difference between the trees, and the verdict changes.
+
+    The credit is legitimate for the same reason ``refuses``'s is: ``dissents`` RAISES when
+    the record inside it agreed, said nothing about why, or was not a verdict at all, and
+    ``bench/test_resnet.py`` puts planted mutants of all three shapes through it.
+    """
+    audit = _load_audit()
+    root = _build_verdict_tree(tmp_path / "t_verdict_declared", _VERDICT_POLARITY_TEST)
+    assert _state_of(audit, root, fn="classify_gate") == "screened"
+
+
+def test_verdict_polarity_behind_a_gpu_gate_earns_nothing(tmp_path: Path) -> None:
+    """The gate rule is not weakened by a third source either."""
+    audit = _load_audit()
+    root = _build_verdict_tree(tmp_path / "t_verdict_gated", _VERDICT_GATED_POLARITY_TEST)
+    assert _state_of(audit, root, fn="classify_gate") == "unfalsified"
+
+
+def test_the_resnet_verdict_instruments_are_screened_in_the_real_repository() -> None:
+    """The fact the discrimination above was built to establish, on the files on disk.
+
+    `bench/resnet.py` landed with six verdict instruments the screen scored ``unfalsified``.
+    They must be ``screened`` here — not baselined, not hand-noted — or the third source
+    bought nothing and the honest answer would have been to hold the module out of the frame.
+    """
+    audit = _load_audit()
+    rows = audit.harness_survey(
+        tests_root=audit.BENCH,
+        files=audit.BENCH_INSTRUMENT_FILES,
+        fn_re=audit.BENCH_FN,
+        prefix="bench",
+    )
+    by_fn = {r["fn"]: r for r in rows if r["id"].startswith("bench/resnet.py::")}
+    for fn in ("admissibility", "quotable", "classify_resnet_logits", "classify_case",
+               "support_census", "ratio_record"):
+        assert fn in by_fn, f"the bench screen no longer sees resnet.py::{fn} at all"
+        assert by_fn[fn]["state"] == "screened", (
+            f"resnet.py::{fn} is {by_fn[fn]['state']}: {by_fn[fn]}. bench/test_resnet.py is "
+            "supposed to supply both polarities in the always-on lane, the reject side "
+            "through bench/_polarity.py::dissents or ::withholds."
+        )
+        assert by_fn[fn]["reject"] >= 1 and by_fn[fn]["accept"] >= 1, by_fn[fn]

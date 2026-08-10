@@ -25,6 +25,8 @@ if str(_BENCH) not in sys.path:
 
 import real_model as rm  # noqa: E402
 import resnet as rn  # noqa: E402
+import _polarity as pl  # noqa: E402
+from _polarity import PolarityError, dissents, withholds  # noqa: E402
 
 _PROBE = _BENCH / "results" / "probe_resnet_vulkan_cuda.py"
 
@@ -285,6 +287,8 @@ def test_the_ratio_is_paired_per_repeat_not_a_ratio_of_pooled_medians():
 
 def test_a_ratio_of_nothing_is_n_zero_not_a_number():
     rec = rn.ratio_record([], [], baseline="cuda", candidate="vulkan")
+    assert withholds(rn.ratio_record([], [], baseline="cuda", candidate="vulkan"), "n",
+                     because="no repeats were paired, so there is no ratio to take") == ""
     assert rec["n"] == 0
     assert "median" not in rec
     assert rec["baseline"] == "cuda"
@@ -316,7 +320,7 @@ def test_a_moved_top1_is_divergent_even_inside_the_numeric_budget():
     top = int(ref[0].argmax())
     runner = int(np.argsort(-ref[0])[1])
     cand[0, top], cand[0, runner] = ref[0, runner], ref[0, top]
-    got = rn.classify_resnet_logits(cand, ref, np)
+    got = dissents(rn.classify_resnet_logits(cand, ref, np))
     assert got["verdict"] == rm.DIVERGENT
     assert got["top1_rows_agreeing"] < got["rows"]
 
@@ -328,7 +332,7 @@ def test_top1_is_checked_on_every_row_not_only_the_first():
     top = int(ref[3].argmax())
     runner = int(np.argsort(-ref[3])[1])
     cand[3, top], cand[3, runner] = ref[3, runner], ref[3, top]
-    got = rn.classify_resnet_logits(cand, ref, np)
+    got = dissents(rn.classify_resnet_logits(cand, ref, np))
     assert got["verdict"] == rm.DIVERGENT
     assert got["top1_rows_agreeing"] == 3
     assert got["rows"] == 4
@@ -341,7 +345,7 @@ def test_a_reordered_topk_set_is_divergent_even_with_the_same_top1():
     order = np.argsort(-ref[0])
     fifth, sixth = int(order[4]), int(order[5])
     cand[0, fifth], cand[0, sixth] = ref[0, sixth], ref[0, fifth]
-    got = rn.classify_resnet_logits(cand, ref, np)
+    got = dissents(rn.classify_resnet_logits(cand, ref, np))
     assert got["verdict"] == rm.DIVERGENT
     assert got["top1_rows_agreeing"] == got["rows"]
     assert got["topk_rows_agreeing"] < got["rows"]
@@ -350,7 +354,7 @@ def test_a_reordered_topk_set_is_divergent_even_with_the_same_top1():
 def test_an_all_zero_candidate_is_divergent_not_an_argmax_0_pass():
     """THE defect: 161 dispatches executed, `compute_failures: 0`, and no numbers produced."""
     ref = _logits()
-    got = rn.classify_resnet_logits(np.zeros_like(ref), ref, np)
+    got = dissents(rn.classify_resnet_logits(np.zeros_like(ref), ref, np))
     assert got["verdict"] == rm.DIVERGENT
     assert "zero" in got["reason"]
 
@@ -359,20 +363,20 @@ def test_a_nan_candidate_is_divergent_rather_than_an_exception():
     ref = _logits()
     cand = ref.copy()
     cand[0, 0] = np.nan
-    got = rn.classify_resnet_logits(cand, ref, np)
+    got = dissents(rn.classify_resnet_logits(cand, ref, np))
     assert got["verdict"] == rm.DIVERGENT
     assert got["nonfinite_candidate"] == 1
 
 
 def test_a_shape_mismatch_is_divergent_rather_than_a_broadcast():
     ref = _logits(rows=2)
-    got = rn.classify_resnet_logits(_logits(rows=1), ref, np)
+    got = dissents(rn.classify_resnet_logits(_logits(rows=1), ref, np))
     assert got["verdict"] == rm.DIVERGENT
     assert "shape" in got["reason"]
 
 
 def test_a_non_classifier_shape_is_refused_rather_than_scored():
-    got = rn.classify_resnet_logits(np.ones((2, 10)), np.ones((2, 10)), np)
+    got = dissents(rn.classify_resnet_logits(np.ones((2, 10)), np.ones((2, 10)), np))
     assert got["verdict"] == rm.DIVERGENT
     assert "1000" in got["reason"]
 
@@ -401,7 +405,7 @@ def test_a_probability_shift_fails_even_when_the_ranking_survives():
     ref[0, 0] = 10.0
     cand = ref.copy()
     cand[0, 0] = 9.0
-    got = rn.classify_resnet_logits(cand, ref, np)
+    got = dissents(rn.classify_resnet_logits(cand, ref, np))
     assert got["top1_rows_agreeing"] == 1
     assert got["max_prob_delta"] > rn.RESNET_MAX_PROB_DELTA
     assert got["verdict"] == rm.DIVERGENT
@@ -411,7 +415,7 @@ def test_classify_case_refuses_an_output_count_that_is_not_this_models():
     case = rn.resnet_cases([1])[0]
     ref = [_logits(rows=1)]
     assert rn.classify_case(case, ref, ref, np)["verdict"] == rm.MATCH
-    two = rn.classify_case(case, ref + ref, ref, np)
+    two = dissents(rn.classify_case(case, ref + ref, ref, np))
     assert two["verdict"] == rm.DIVERGENT
     assert "count" in two["reason"]
 
@@ -472,6 +476,8 @@ def test_the_census_names_the_ops_with_no_registered_kernel():
 def test_a_registered_but_staged_op_does_not_count_as_supported():
     """`registered` is necessary and not sufficient; a staged row has no kernel behind it."""
     census = rn.support_census({"Softmax": 3}, _CAPS)
+    assert withholds(rn.support_census({"Softmax": 3}, _CAPS), "op_types_supported",
+                     because="a staged row carries no kernel, so nothing is certified") == ""
     assert census["op_types_supported"] == []
     assert census["unsupported"]["Softmax"]["registered"] is True
     assert census["unsupported"]["Softmax"]["status"] == "staged"
@@ -488,6 +494,9 @@ def test_the_census_node_counts_add_up_to_the_graph():
 def test_an_absent_capabilities_dump_is_zero_coverage_not_full_coverage():
     """A failed `epctl` invocation must not read as 'the EP supports everything'."""
     census = rn.support_census(rn.RESNET50_OP_HISTOGRAM, {"error": "epctl not found"})
+    assert withholds(rn.support_census(rn.RESNET50_OP_HISTOGRAM, {"error": "epctl not found"}),
+                     "op_types_supported",
+                     because="epctl produced no capability dump, so coverage is unread") == ""
     assert census["nodes_with_a_registered_kernel"] == 0
     assert census["op_types_supported"] == []
 
@@ -563,10 +572,10 @@ def test_the_happy_path_is_admissible():
 ])
 def test_any_single_failure_makes_the_whole_reading_indeterminate(override, expected_failure):
     """No check is decorative; each one alone withholds the number."""
-    got = rn.admissibility(**_admissible_kwargs(**override))
+    got = dissents(rn.admissibility(**_admissible_kwargs(**override)))
     assert got["verdict"] == rn.INDETERMINATE
     assert expected_failure in got["failed_checks"]
-    assert rn.quotable(got) is False
+    assert dissents(rn.quotable(got)) is False
 
 
 def test_every_check_is_named_and_carries_its_own_detail():
@@ -586,14 +595,15 @@ def test_the_verdict_is_recomputed_from_the_evidence_and_never_stored():
 
 
 def test_quotable_of_nothing_is_false_not_true():
-    assert rn.quotable(None) is False
-    assert rn.quotable({}) is False
-    assert rn.quotable({"verdict": rn.INDETERMINATE}) is False
+    assert dissents(rn.quotable(None)) is False
+    assert dissents(rn.quotable({})) is False
+    assert dissents(rn.quotable({"verdict": rn.INDETERMINATE})) is False
 
 
 def test_indeterminate_is_a_result_not_an_exception():
     """The lane must be able to report 'the machine state does not support this number'."""
-    got = rn.admissibility(**_admissible_kwargs(quiescence={"quiet": False, "reason": "busy"}))
+    got = dissents(rn.admissibility(
+        **_admissible_kwargs(quiescence={"quiet": False, "reason": "busy"})))
     assert got["verdict"] == rn.INDETERMINATE
     assert "INDETERMINATE" in got["rule"]
 
@@ -879,3 +889,107 @@ def test_the_verify_pass_applies_arm_env_before_building_the_session():
     build_at = body.index("\n            sess = _session(")
     assert apply_at < build_at, "env must be applied before the session is built"
     assert "finally:" in body, "the arm's env must be restored even when the arm raises"
+
+
+# ---------------------------------------------------------------------------
+# The value-polarity helpers themselves — an enforcing assertion, not a marker
+#
+# `dissents` and `withholds` are what earn this module's verdict instruments their `screened`
+# state in `rust/tools/audit_instruments.py` (VALUE_REJECT_FN). A helper that waved a mutant
+# through would hand out that credit for an observation nobody made, which is the Guard D
+# shape with the sign flipped. So `dissents` — the one this lane added — is put through the
+# same treatment `bench/test_devices_identity.py` gives `refuses` and
+# `bench/test_decode_window_evidence.py` gives `withholds`: a defective result must make it
+# raise.
+# ---------------------------------------------------------------------------
+
+def test_dissents_rejects_a_verdict_that_agreed():
+    """The mutant: an instrument that returns MATCH for everything."""
+    with pytest.raises(PolarityError) as exc:
+        dissents({"verdict": rm.MATCH, "reason": "all good"})
+    assert "NEGATIVE" in str(exc.value)
+
+
+def test_dissents_rejects_a_gate_that_admitted():
+    with pytest.raises(PolarityError):
+        dissents(True)
+
+
+def test_dissents_rejects_a_refusal_that_named_no_failing_condition():
+    """A verdict with no reason is indistinguishable from a crash to every reader we have."""
+    with pytest.raises(PolarityError) as exc:
+        dissents({"verdict": rn.INDETERMINATE})
+    assert "no failing condition" in str(exc.value)
+
+
+def test_dissents_rejects_something_that_is_not_a_verdict_at_all():
+    with pytest.raises(PolarityError) as exc:
+        dissents(["DIVERGENT"])
+    assert "record or a bool" in str(exc.value)
+
+
+def test_dissents_accepts_the_real_instruments_refusals():
+    """The positive control: the shapes actually in use must pass, or the guard is theatre."""
+    assert dissents(rn.quotable(None)) is False
+    indeterminate = rn.admissibility(**_admissible_kwargs(provenance_ok=False))
+    assert dissents(indeterminate)["verdict"] == rn.INDETERMINATE
+    ref = _logits()
+    assert dissents(rn.classify_resnet_logits(np.zeros_like(ref), ref, np))["reason"]
+
+
+def test_dissents_credits_admissibility_from_its_checks_when_no_reason_field_exists():
+    """`admissibility` names its failures in `failed_checks`, not in a `reason` string."""
+    got = rn.admissibility(**_admissible_kwargs(cuda_ran=False))
+    assert "reason" not in got
+    assert dissents(got)["failed_checks"] == ["cuda_arm_executed"]
+
+
+def test_divergent_is_a_reached_verdict_and_withholds_correctly_declines_it():
+    """The reason this lane added a verb instead of widening `WITHHELD_TOKENS`.
+
+    `withholds` is for the verdict that was NOT reached. `DIVERGENT` is an answer — the two
+    arms disagree — and crediting it as an absence would delete the distinction that helper
+    exists to draw. The two helpers must disagree about this record, and here they do.
+    """
+    ref = _logits()
+    divergent = rn.classify_resnet_logits(np.zeros_like(ref), ref, np)
+    assert dissents(divergent)["verdict"] == rm.DIVERGENT
+    with pytest.raises(PolarityError):
+        withholds(divergent, "verdict", because="DIVERGENT is not a withheld verdict")
+    assert rm.DIVERGENT not in pl.WITHHELD_TOKENS
+    assert rm.DIVERGENT in pl.NEGATIVE_VERDICTS
+
+
+def test_indeterminate_is_readable_by_both_helpers_and_that_is_deliberate():
+    """An admissibility record is honestly both: no number was reached, and the gate said no."""
+    got = rn.admissibility(**_admissible_kwargs(cuda_ran=False))
+    assert dissents(got)["verdict"] == rn.INDETERMINATE
+    assert withholds(got, "verdict", because="the CUDA arm never executed")
+    assert rn.INDETERMINATE in pl.WITHHELD_TOKENS & pl.NEGATIVE_VERDICTS
+
+
+def test_the_screen_reads_this_helper_as_reject_polarity():
+    """The credit is worthless if `audit_instruments.py` was never told the name.
+
+    Locked here rather than left to the census run, so a rename fails in the module that owns
+    the helper instead of in a lane check three directories away.
+    """
+    audit = (_BENCH.parent / "rust" / "tools" / "audit_instruments.py").read_text(
+        encoding="utf-8")
+    declared = audit.split("VALUE_REJECT_FN = frozenset(")[1].split(")")[0]
+    for name in ("refuses", "withholds", "dissents"):
+        assert f'"{name}"' in declared
+
+
+def test_every_verdict_instrument_in_this_module_has_a_declared_refusal():
+    """The list this module owes the census, checked against the module rather than a memory."""
+    src = (_BENCH / "resnet.py").read_text(encoding="utf-8")
+    declared = {name for name in (
+        "admissibility", "quotable", "classify_resnet_logits", "classify_case",
+        "support_census", "ratio_record") if f"def {name}(" in src}
+    assert len(declared) == 6
+    tests = Path(__file__).read_text(encoding="utf-8")
+    for name in sorted(declared):
+        assert any(
+            f"{helper}(rn.{name}(" in tests for helper in ("dissents", "withholds")
+        ), f"{name} has no declared reject polarity; the census will score it unfalsified"

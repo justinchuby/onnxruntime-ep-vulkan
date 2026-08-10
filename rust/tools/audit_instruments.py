@@ -469,6 +469,18 @@ BENCH_INSTRUMENT_FILES = [
     # it means the polarity of those decisions is counted rather than assumed. It is listed
     # after #78's entries because it was minted onto that base, not merged alongside it.
     "decode_window_evidence.py",
+    # Arrived with issue #122 (Niobe, the ResNet-50 Vulkan-vs-CUDA lane). Screened rather
+    # than held out, and the criterion is met by the whole module rather than by one
+    # function in it: `admissibility` decides whether a run may be published at all,
+    # `quotable` is the single reader of that verdict, `classify_resnet_logits` /
+    # `classify_case` decide whether an arm agreed with the CPU reference, `support_census`
+    # decides which ops the EP can carry, and `ratio_record` decides the polarity of a
+    # ratio (which of the two arms is the baseline). Every one of those is a verdict about
+    # a measurement, which is this list's criterion. `resnet_cases` / `resnet_feeds` are the
+    # same shape as `real_model.py::minilm_cases` / `minilm_feeds`, already screened above,
+    # and are screened here for the same reason: a case table that silently changed the
+    # shape being measured would be invisible.
+    "resnet.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -564,6 +576,14 @@ BENCH_HELD_OUT: dict[str, str] = {
         "mutation grid that earns decode_window_evidence.py's admissibility, calibration, "
         "verdict and window decisions their polarity."
     ),
+    # Arrived with issue #122 (Niobe). Held out for the same reason every other
+    # `test_*.py` here is: it is a caller, and its job is to supply the polarity that earns
+    # `resnet.py` its screened state, not to render a verdict of its own. Named explicitly
+    # rather than left to drift, because an instrument module landing with its falsifiers
+    # invisible to this census is an instrument with no recorded polarity at all — the
+    # exact pairing the `pinned_bytes.py` / `test_pinned_bytes.py` entries above were
+    # written for.
+    "test_resnet.py": "test module — a caller, screened as polarity, not as an instrument.",
 }
 
 
@@ -660,7 +680,20 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
 # actually varies the thing under test.  That is earned by mutation —
 # `bench/test_devices_identity.py` for this instrument, `tests/ops/test_guard_d.py` for
 # the harness domain — and it is not claimed by this screen.
-VALUE_REJECT_FN = frozenset({"refuses", "withholds"})
+# 2026-08-09 (Niobe): `dissents` joins them, and the distinction it draws is worth stating
+# because the two names sit next to each other and do NOT mean the same thing. Morpheus's
+# `withholds` is for an instrument that reached NO verdict — `INDETERMINATE`, `REFUSED`, an
+# empty list, a `None`. `bench/resnet.py`'s classifiers reach a definite NEGATIVE one:
+# `DIVERGENT` is not a withheld verdict, it is the answer "these two arms disagree", and
+# `withholds` correctly refuses to credit it. Collapsing the two would have meant either
+# widening `WITHHELD_TOKENS` until "no verdict" stopped meaning anything, or restating a
+# real disagreement as an absence. So: `withholds` for the verdict that was not reached,
+# `dissents` for the verdict that was reached and was negative. Both raise `PolarityError`
+# when the thing inside them did not refuse; adding a name here is additive and re-scores no
+# existing row. `dissents`'s own two polarities are screened in `bench/test_resnet.py`, and
+# this screen's ability to tell a declared refusal from an undeclared one is screened on
+# synthetic trees in `tests/ops/test_harness_census.py`.
+VALUE_REJECT_FN = frozenset({"refuses", "withholds", "dissents"})
 VALUE_ACCEPT_FN = frozenset({"selects"})
 
 

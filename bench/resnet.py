@@ -479,8 +479,26 @@ def classify_resnet_logits(candidate, reference, np, *, rtol: float = RESNET_RTO
     rows = c.shape[0]
     ok = (top1_rows == rows) and (topk_rows == rows) and numeric_ok \
         and (max_prob <= max_prob_delta)
+    # Which of the four conditions did not hold, said rather than left to be re-derived from
+    # the numbers below it. A DIVERGENT verdict whose reader has to work out *which* clause
+    # failed is a verdict nobody acts on, and `bench/_polarity.py::dissents` will not credit
+    # one as an observed refusal.
+    failed_conditions = []
+    if top1_rows != rows:
+        failed_conditions.append(f"top-1 disagreed on {rows - top1_rows} of {rows} row(s)")
+    if topk_rows != rows:
+        failed_conditions.append(
+            f"top-{k} set disagreed on {rows - topk_rows} of {rows} row(s)")
+    if not numeric_ok:
+        failed_conditions.append(
+            f"max_abs {max_abs:.6g} > budget {abs_budget:.6g} AND max_rel {max_rel:.6g} > "
+            f"rtol {rtol:.6g}")
+    if max_prob > max_prob_delta:
+        failed_conditions.append(
+            f"max probability delta {max_prob:.6g} > {max_prob_delta:.6g}")
     return {
         "verdict": rm.MATCH if ok else rm.DIVERGENT,
+        "failed_conditions": failed_conditions,
         "rows": rows,
         "top1_rows_agreeing": top1_rows,
         "topk_rows_agreeing": topk_rows,

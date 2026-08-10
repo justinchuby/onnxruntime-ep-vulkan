@@ -52,6 +52,39 @@ This says nothing about whether the *inputs* a test feeds the instrument actuall
 thing under test.  Neither does ``pytest.raises``.  That property is earned by the mutation
 battery, the same way ``tests/ops/test_guard_d.py`` earns it for the harness domain, and it
 is not claimed here.
+
+A FOURTH SHAPE: THE VERDICT THAT WAS REACHED, AND WAS NEGATIVE
+=============================================================
+Added 2026-08-09 (Niobe) with ``bench/resnet.py``.  ``withholds`` above reads the refusal of
+an instrument that reached NO verdict.  ``bench/resnet.py``'s classifiers have the other
+half of that shape: they reach a definite verdict and it is ``DIVERGENT`` — "these two arms
+disagree" — which is an answer, not an absence.  ``admissibility`` sits on the ``withholds``
+side (``INDETERMINATE`` is a withheld verdict and is already in ``WITHHELD_TOKENS``), but
+its sibling ``quotable`` returns a bare ``False`` and its classifiers return ``DIVERGENT``,
+and neither is a withheld verdict under any honest reading.
+
+Two ways to make the screen see them, and only one of them is honest:
+
+1. Widen ``WITHHELD_TOKENS`` until ``DIVERGENT`` counts as "no verdict reached".  That
+   destroys the distinction ``withholds`` exists to make — after it, "the instrument had no
+   evidence" and "the instrument had evidence and it disagreed" print the same word.
+   Refused.
+2. A second verb for the second thing.  ``dissents``.
+
+``dissents(result)`` asserts the instrument returned a NEGATIVE VERDICT **with a reason**,
+and returns the record so the negative control that called it can go on to check *how* the
+instrument disagreed.  A record carrying ``MATCH``/``ADMISSIBLE``, or a bare ``True``,
+raises; so does a negative verdict that named no failing condition, because a refusal that
+does not say which clause it failed cannot be acted on.  It is an assertion, not an
+annotation, on the same footing as everything else in this file, and the planted mutants
+that prove so live in ``bench/test_resnet.py``.
+
+WHICH ONE TO REACH FOR
+======================
+* No verdict was reached — ``INDETERMINATE``, ``REFUSED``, an empty set, a ``None``:
+  ``withholds``.
+* A verdict was reached and it was negative — ``DIVERGENT``, a ``False`` gate: ``dissents``.
+* The refusal is the ``None`` in a ``(value, why)`` pair: ``refuses``.
 """
 
 from __future__ import annotations
@@ -149,9 +182,12 @@ def selects(result: Any, expected: Any, *, because: str = "") -> Any:
 #: Verdict tokens that mean "no verdict was reached".  A withheld verdict is not a soft verdict.
 WITHHELD_TOKENS = frozenset({"REFUSED", "INDETERMINATE", "INCONCLUSIVE", "UNMEASURED"})
 
-#: Where a verdict mapping is allowed to carry its reason.  Checked in order.
-_REASON_KEYS = ("reason", "reasons", "differences", "disagreements", "missing_sides",
-                "contaminated", "incomplete_repeats")
+#: Where a verdict mapping is allowed to carry its reason.  Checked in order.  `failed_checks`
+#: and `failed_conditions` were added 2026-08-09 (Niobe) for `bench/resnet.py`, which names its
+#: failing conditions in a list rather than in a prose `reason`; the addition is additive and
+#: widens no acceptance — a record still has to say SOMETHING or neither helper credits it.
+_REASON_KEYS = ("reason", "reasons", "failed_checks", "failed_conditions", "differences",
+                "disagreements", "missing_sides", "contaminated", "incomplete_repeats")
 
 
 def _resolve(result: Any, key: "str | None") -> "tuple[Any, Any]":
@@ -244,3 +280,76 @@ def withholds(result: Any, key: "str | None" = None, *, because: str) -> str:
             f"indistinguishable to every reader we have."
         )
     return " | ".join(reasons)
+
+
+# --------------------------------------------------------------------------------------------
+# Negative-verdict polarity — see "A FOURTH SHAPE" above.
+# --------------------------------------------------------------------------------------------
+
+#: Tokens that mean "a verdict WAS reached and it was negative". Deliberately overlapping
+#: `WITHHELD_TOKENS` on `INDETERMINATE` and nowhere else: an admissibility record is readable
+#: both ways — no number was reached, and the gate said no — and forcing a caller to pick the
+#: one true verb for it would be a distinction without a difference. `DIVERGENT` is only ever
+#: the second kind, and `REFUSED`/`INCONCLUSIVE`/`UNMEASURED` are only ever the first.
+#:
+#: Kept as literals rather than imported from `real_model`/`resnet` so this module stays
+#: importable by anything in `bench/` without a cycle, and so adding a token is a deliberate
+#: edit here rather than a side effect of renaming a constant somewhere else.
+NEGATIVE_VERDICTS = frozenset({"DIVERGENT", "INDETERMINATE", "FAIL"})
+
+
+def _stated_reason(record: dict) -> "str | None":
+    for key in _REASON_KEYS:
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, (list, tuple)) and len(value) > 0:
+            return ", ".join(str(v) for v in value)
+    checks = record.get("checks")
+    if isinstance(checks, (list, tuple)):
+        failed = [c for c in checks if isinstance(c, dict) and not c.get("held")]
+        if failed:
+            return ", ".join(str(c.get("name")) for c in failed)
+    return None
+
+
+def dissents(result: Any, *, because: str = "") -> Any:
+    """Assert a VERDICT instrument said NO, and return the record it said it in.
+
+    The reject polarity for a total instrument whose refusal is a record rather than a raise.
+    ``result`` is either ``False`` (a boolean gate that declined) or a mapping whose
+    ``verdict`` is in `NEGATIVE_VERDICTS` and which says which condition failed.
+
+    Returns the argument unchanged rather than the reason string ``refuses`` returns, because
+    the reason is one field of a record whose other fields — which rows disagreed, by how
+    much, against what budget — are the substance of the negative control that called this.
+    Handing back the reason alone would push every caller into taking the verdict twice, and
+    the second take is the one the screen cannot see.
+    """
+    ctx = f" ({because})" if because else ""
+    if result is False:
+        return result
+    if result is True:
+        raise PolarityError(
+            f"expected a NEGATIVE verdict{ctx}, but the gate returned True. This is the "
+            f"polarity that catches an instrument which admits everything."
+        )
+    if not isinstance(result, dict):
+        raise PolarityError(
+            f"dissents{ctx}: a verdict instrument must return a record or a bool; got "
+            f"{type(result).__name__} {result!r}."
+        )
+    verdict = result.get("verdict")
+    if verdict not in NEGATIVE_VERDICTS:
+        raise PolarityError(
+            f"expected a NEGATIVE verdict{ctx}, but the record says verdict={verdict!r}. "
+            f"Negative tokens are {sorted(NEGATIVE_VERDICTS)}; a record that agreed cannot "
+            f"stand as the observation that this instrument is able to disagree."
+        )
+    if _stated_reason(result) is None:
+        raise PolarityError(
+            f"the instrument returned {verdict!r}{ctx} but named no failing condition "
+            f"(looked in {list(_REASON_KEYS)} and in `checks`). A refusal that does not say "
+            f"what it refused on is indistinguishable from a crash to every reader we have."
+        )
+    return result
