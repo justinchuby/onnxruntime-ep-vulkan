@@ -30,7 +30,7 @@
             "test ops::quant::tests::the_live_row_honours_a_legal_request_and_refuses_an_illegal_one_before_dispatching ... FAILED",
             "test ops::quant::tests::the_tile_request_parser_is_strict_decimal_and_refuses_everything_else ... FAILED"
           ],
-          "first_failure": "thread 'ops::quant::tests::an_unusable_request_refuses_rather_than_selecting_something_else' (34616) panicked at src\\ops\\quant.rs:2250:9:"
+          "first_failure": "assertion `left == right` failed"
         },
         "live": {
           "returncode": 101,
@@ -38,7 +38,7 @@
           "failing_tests": [
             "test the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it ... FAILED"
           ],
-          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (42120) panicked at tests\\gemv_tile_override.rs:255:39:"
+          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (PID) panicked at tests\\gemv_tile_override.rs:255:39:"
         }
       }
     },
@@ -53,7 +53,7 @@
           "failing_tests": [
             "test ops::quant::tests::the_tile_request_parser_is_strict_decimal_and_refuses_everything_else ... FAILED"
           ],
-          "first_failure": "thread 'ops::quant::tests::the_tile_request_parser_is_strict_decimal_and_refuses_everything_else' (44156) panicked at src\\ops\\quant.rs:2094:13:"
+          "first_failure": "assertion `left == right` failed: \"0,4\" must be refused as Zero { field: Cols }, not read as a tile and not ignored"
         },
         "live": {
           "returncode": 101,
@@ -61,7 +61,7 @@
           "failing_tests": [
             "test the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it ... FAILED"
           ],
-          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (6560) panicked at tests\\gemv_tile_override.rs:262:9:"
+          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (PID) panicked at tests\\gemv_tile_override.rs:262:9:"
         }
       }
     },
@@ -77,7 +77,7 @@
             "test ops::quant::tests::an_unusable_request_refuses_rather_than_selecting_something_else ... FAILED",
             "test ops::quant::tests::the_live_row_honours_a_legal_request_and_refuses_an_illegal_one_before_dispatching ... FAILED"
           ],
-          "first_failure": "thread 'ops::quant::tests::an_unusable_request_refuses_rather_than_selecting_something_else' (45120) panicked at src\\ops\\quant.rs:2253:9:"
+          "first_failure": "assertion `left == right` failed"
         },
         "live": {
           "returncode": 101,
@@ -85,7 +85,7 @@
           "failing_tests": [
             "test the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it ... FAILED"
           ],
-          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (44320) panicked at tests\\gemv_tile_override.rs:255:39:"
+          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (PID) panicked at tests\\gemv_tile_override.rs:255:39:"
         }
       }
     },
@@ -98,12 +98,12 @@
           "returncode": 101,
           "compiled": true,
           "failing_tests": [
-            "test ops::quant::tests::an_unusable_request_refuses_rather_than_selecting_something_else ... FAILED",
             "test ops::quant::tests::a_requested_tile_is_checked_against_every_rule_the_selector_obeys ... FAILED",
-            "test ops::quant::tests::the_live_row_honours_a_legal_request_and_refuses_an_illegal_one_before_dispatching ... FAILED",
-            "test ops::quant::tests::every_honourable_request_survives_the_handler_guard ... FAILED"
+            "test ops::quant::tests::an_unusable_request_refuses_rather_than_selecting_something_else ... FAILED",
+            "test ops::quant::tests::every_honourable_request_survives_the_handler_guard ... FAILED",
+            "test ops::quant::tests::the_live_row_honours_a_legal_request_and_refuses_an_illegal_one_before_dispatching ... FAILED"
           ],
-          "first_failure": "thread 'ops::quant::tests::an_unusable_request_refuses_rather_than_selecting_something_else' (40672) panicked at src\\ops\\quant.rs:2250:9:"
+          "first_failure": "assertion `left == right` failed"
         },
         "live": {
           "returncode": 101,
@@ -111,7 +111,7 @@
           "failing_tests": [
             "test the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it ... FAILED"
           ],
-          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (45768) panicked at tests\\gemv_tile_override.rs:256:9:"
+          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (PID) panicked at tests\\gemv_tile_override.rs:256:9:"
         }
       }
     },
@@ -126,7 +126,7 @@
           "failing_tests": [
             "test ops::quant::tests::a_requested_tile_is_checked_against_every_rule_the_selector_obeys ... FAILED"
           ],
-          "first_failure": "thread 'ops::quant::tests::a_requested_tile_is_checked_against_every_rule_the_selector_obeys' (44324) panicked at src\\ops\\quant.rs:2138:9:"
+          "first_failure": "assertion `left == right` failed: a request above the process ceiling is refused, never quietly clamped to it"
         },
         "live": {
           "returncode": 0,
@@ -153,7 +153,7 @@
           "failing_tests": [
             "test the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it ... FAILED"
           ],
-          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (41232) panicked at tests\\gemv_tile_override.rs:196:5:"
+          "first_failure": "assertion `left == right` failed: the request must reach the specialisation constants the pipeline is built from \u00e2\u20ac\u201d this is the arm the byte model can never select, so if it does not arrive here it cannot be measured at all"
         }
       }
     }

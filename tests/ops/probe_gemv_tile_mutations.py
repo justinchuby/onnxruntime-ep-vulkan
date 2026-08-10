@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -129,6 +130,25 @@ def _run(args: list[str]) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
+def _stable_failure(log: str) -> str:
+    """The lexicographically first panic/assert line, with the OS thread id masked.
+
+    Two sources of churn had to go, or this witness could never be reproduced byte-for-byte and
+    would re-diff on every run: cargo runs tests in parallel, so *which* failure lands first in the
+    log is scheduling, not evidence; and the `(34616)` in `thread '...' (34616) panicked` is a live
+    OS thread id. Taking the sorted-first line and masking the id keeps the load-bearing part — the
+    test name and the source location that caught the mutation — and drops the part that is noise.
+    A witness a reader cannot regenerate is a weak witness.
+    """
+    lines = sorted(
+        ln.strip() for ln in log.splitlines()
+        if "panicked at" in ln or ln.strip().startswith("assert")
+    )
+    if not lines:
+        return ""
+    return re.sub(r"\(\d+\)", "(PID)", lines[0])[:300]
+
+
 def _suite() -> tuple[bool, dict]:
     """Run both suites. Returns `(all_green, per-suite detail)`.
 
@@ -141,16 +161,13 @@ def _suite() -> tuple[bool, dict]:
     for name, args in SUITES:
         rc, log = _run(args)
         compiled = "error[E" not in log and "error: could not compile" not in log
-        failing = [ln.strip() for ln in log.splitlines()
-                   if ln.strip().startswith("test ") and ln.strip().endswith("FAILED")]
+        failing = sorted(ln.strip() for ln in log.splitlines()
+                         if ln.strip().startswith("test ") and ln.strip().endswith("FAILED"))
         detail[name] = {
             "returncode": rc,
             "compiled": compiled,
             "failing_tests": failing,
-            "first_failure": next(
-                (ln.strip() for ln in log.splitlines()
-                 if "panicked at" in ln or ln.strip().startswith("assert")), ""
-            )[:300],
+            "first_failure": _stable_failure(log),
         }
         if rc != 0:
             green = False
