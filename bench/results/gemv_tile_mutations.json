@@ -1,0 +1,179 @@
+{
+  "probe": "gemv tile request locks, both arms",
+  "subject": "rust/src/ops/quant.rs + rust/tests/gemv_tile_override.rs",
+  "no_clock": "Every outcome here is a test verdict, not a duration.",
+  "baseline": {
+    "unit": {
+      "returncode": 0,
+      "compiled": true,
+      "failing_tests": [],
+      "first_failure": ""
+    },
+    "live": {
+      "returncode": 0,
+      "compiled": true,
+      "failing_tests": [],
+      "first_failure": ""
+    }
+  },
+  "mutations": [
+    {
+      "mutation": "M1_parser_trims_whitespace",
+      "broke": "the parser accepts ' 8,4' \u2014 a value whose text is not the text the operator typed",
+      "outcome": "CAUGHT",
+      "suites": {
+        "unit": {
+          "returncode": 101,
+          "compiled": true,
+          "failing_tests": [
+            "test ops::quant::tests::an_unusable_request_refuses_rather_than_selecting_something_else ... FAILED",
+            "test ops::quant::tests::the_live_row_honours_a_legal_request_and_refuses_an_illegal_one_before_dispatching ... FAILED",
+            "test ops::quant::tests::the_tile_request_parser_is_strict_decimal_and_refuses_everything_else ... FAILED"
+          ],
+          "first_failure": "assertion `left == right` failed"
+        },
+        "live": {
+          "returncode": 101,
+          "compiled": true,
+          "failing_tests": [
+            "test the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it ... FAILED"
+          ],
+          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (PID) panicked at tests\\gemv_tile_override.rs:255:39:"
+        }
+      }
+    },
+    {
+      "mutation": "M2_parser_accepts_zero",
+      "broke": "a zero field becomes a tile: cols=0 divides by zero, rows=0 is an infinite row count",
+      "outcome": "CAUGHT",
+      "suites": {
+        "unit": {
+          "returncode": 101,
+          "compiled": true,
+          "failing_tests": [
+            "test ops::quant::tests::the_tile_request_parser_is_strict_decimal_and_refuses_everything_else ... FAILED"
+          ],
+          "first_failure": "assertion `left == right` failed: \"0,4\" must be refused as Zero { field: Cols }, not read as a tile and not ignored"
+        },
+        "live": {
+          "returncode": 101,
+          "compiled": true,
+          "failing_tests": [
+            "test the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it ... FAILED"
+          ],
+          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (PID) panicked at tests\\gemv_tile_override.rs:262:9:"
+        }
+      }
+    },
+    {
+      "mutation": "M3_malformed_falls_back_to_the_selector",
+      "broke": "an unreadable value silently runs the CONTROL arm while the operator labels it as the treatment arm \u2014 every dispatch succeeds and the measurement is wrong",
+      "outcome": "CAUGHT",
+      "suites": {
+        "unit": {
+          "returncode": 101,
+          "compiled": true,
+          "failing_tests": [
+            "test ops::quant::tests::an_unusable_request_refuses_rather_than_selecting_something_else ... FAILED",
+            "test ops::quant::tests::the_live_row_honours_a_legal_request_and_refuses_an_illegal_one_before_dispatching ... FAILED"
+          ],
+          "first_failure": "assertion `left == right` failed"
+        },
+        "live": {
+          "returncode": 101,
+          "compiled": true,
+          "failing_tests": [
+            "test the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it ... FAILED"
+          ],
+          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (PID) panicked at tests\\gemv_tile_override.rs:255:39:"
+        }
+      }
+    },
+    {
+      "mutation": "M4_legality_drops_the_accumulator_budget",
+      "broke": "cols*rows stops being checked, so a request can reach the shader's out-of-bounds arm",
+      "outcome": "CAUGHT",
+      "suites": {
+        "unit": {
+          "returncode": 101,
+          "compiled": true,
+          "failing_tests": [
+            "test ops::quant::tests::a_requested_tile_is_checked_against_every_rule_the_selector_obeys ... FAILED",
+            "test ops::quant::tests::an_unusable_request_refuses_rather_than_selecting_something_else ... FAILED",
+            "test ops::quant::tests::every_honourable_request_survives_the_handler_guard ... FAILED",
+            "test ops::quant::tests::the_live_row_honours_a_legal_request_and_refuses_an_illegal_one_before_dispatching ... FAILED"
+          ],
+          "first_failure": "assertion `left == right` failed"
+        },
+        "live": {
+          "returncode": 101,
+          "compiled": true,
+          "failing_tests": [
+            "test the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it ... FAILED"
+          ],
+          "first_failure": "thread 'the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it' (PID) panicked at tests\\gemv_tile_override.rs:256:9:"
+        }
+      }
+    },
+    {
+      "mutation": "M5_ceiling_clamps_instead_of_refusing",
+      "broke": "a request above the process ceiling runs a DIFFERENT tile than the one it is labelled with \u2014 the exact reading that is correct for a ceiling and wrong for an exact request",
+      "outcome": "CAUGHT",
+      "suites": {
+        "unit": {
+          "returncode": 101,
+          "compiled": true,
+          "failing_tests": [
+            "test ops::quant::tests::a_requested_tile_is_checked_against_every_rule_the_selector_obeys ... FAILED"
+          ],
+          "first_failure": "assertion `left == right` failed: a request above the process ceiling is refused, never quietly clamped to it"
+        },
+        "live": {
+          "returncode": 0,
+          "compiled": true,
+          "failing_tests": [],
+          "first_failure": ""
+        }
+      }
+    },
+    {
+      "mutation": "M6_handler_ignores_the_request",
+      "broke": "the knob is disconnected: the parser and the legality function are perfect and never consulted, so both arms of the A/B build the same pipeline",
+      "outcome": "CAUGHT",
+      "suites": {
+        "unit": {
+          "returncode": 0,
+          "compiled": true,
+          "failing_tests": [],
+          "first_failure": ""
+        },
+        "live": {
+          "returncode": 101,
+          "compiled": true,
+          "failing_tests": [
+            "test the_tile_request_reaches_the_live_dispatch_and_is_readable_back_from_it ... FAILED"
+          ],
+          "first_failure": "assertion `left == right` failed: the request must reach the specialisation constants the pipeline is built from \u00e2\u20ac\u201d this is the arm the byte model can never select, so if it does not arrive here it cannot be measured at all"
+        }
+      }
+    }
+  ],
+  "restored_identical": true,
+  "restored_sha256": "25a1c585963a01552e7222872426ac180353ebd30cc68cfb9acb9e825a1f272d",
+  "green_after_restore": true,
+  "after_restore": {
+    "unit": {
+      "returncode": 0,
+      "compiled": true,
+      "failing_tests": [],
+      "first_failure": ""
+    },
+    "live": {
+      "returncode": 0,
+      "compiled": true,
+      "failing_tests": [],
+      "first_failure": ""
+    }
+  },
+  "note": "A mutation that is MISSED means the suite would certify that broken instrument. REJECTED-BY-COMPILER means rustc noticed and no test did, which is not the same evidence and is not counted as a pass."
+}

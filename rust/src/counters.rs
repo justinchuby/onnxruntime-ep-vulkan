@@ -2305,6 +2305,116 @@ fn gemv_packed_spec_constant() -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
+// gemv_tile_requests — which SURFACE chose the q_gemv tile, and what was refused
+//
+// JSON-only and **no `abi_version` bump**, for exactly the reason `pipeline_variants` above is:
+// the `#[repr(C)]` struct has three hand-maintained ctypes mirrors and `a52024f` is the standing
+// proof that growing it is how `dispatches_executed` came to read `device_losses`. A variable
+// number of typed reason strings has no place in that struct in any case.
+//
+// Why this exists (issue #81): `pipeline_variants` records the specialisation vector a pipeline
+// was built with, so it already answers *which tile ran*. It cannot answer *which surface chose
+// it* — an `(16,2)` the byte model selected and an `(16,2)` an operator requested build the same
+// pipeline and produce the same variant string, and an A/B whose arms are indistinguishable in
+// the artifact is not an A/B. It also cannot record a **refusal**, because a refused request never
+// reaches a pipeline at all: the dispatch does not happen, so the one thing a reader most needs to
+// see — that the arm they believe they measured never ran — is precisely the thing the existing
+// witness is structurally silent about.
+// ---------------------------------------------------------------------------
+
+/// `"{token} cols={c} rows={r}"` for every distinct tile decision this process made.
+static GEMV_TILE_SELECTIONS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Tile requests honoured — `TileChoice::Requested`. Not the number of dispatches: a run that
+/// dispatched one honoured request 355 times and a run that dispatched it once made the same
+/// decision, and the decision is what is being observed.
+static GEMV_TILE_REQUESTS_HONOURED: AtomicU64 = AtomicU64::new(0);
+
+/// Tile requests refused before dispatch, malformed or illegal.
+static GEMV_TILE_REQUESTS_REFUSED: AtomicU64 = AtomicU64::new(0);
+
+/// The typed refusal reasons, deduplicated, first-seen order.
+static GEMV_TILE_REFUSAL_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Record which surface chose a `q_gemv` tile.
+///
+/// `token` is `ops::quant::TileChoice::token` — `"AUTOMATIC"` or `"REQUESTED"` — and it is passed
+/// in rather than re-derived here so the two spellings have exactly one author. Idempotent per
+/// distinct decision, like [`record_pipeline_variant`]: the set of decisions is the observation.
+pub fn record_gemv_tile_selection(token: &str, cols: u32, rows: u32) {
+    if token == "REQUESTED" {
+        GEMV_TILE_REQUESTS_HONOURED.fetch_add(1, ORD);
+    }
+    let row = format!("{token} cols={cols} rows={rows}");
+    if let Ok(mut seen) = GEMV_TILE_SELECTIONS.lock()
+        && !seen.iter().any(|r| r == &row)
+    {
+        seen.push(row);
+    }
+}
+
+/// Record a tile request refused before dispatch, keeping the typed reason beside the count.
+///
+/// The count alone reproduces the defect this instrument exists to repair: an operator who sets
+/// the variable, sees no `(8,4)` in `pipeline_variants`, and cannot tell "my syntax was wrong"
+/// from "that tile is illegal for this shape" from "the variable was never read".
+pub fn record_gemv_tile_refusal(reason: &str) {
+    GEMV_TILE_REQUESTS_REFUSED.fetch_add(1, ORD);
+    if let Ok(mut seen) = GEMV_TILE_REFUSAL_FORMS.lock()
+        && !seen.iter().any(|r| r == reason)
+    {
+        seen.push(reason.to_string());
+    }
+}
+
+/// The tile decisions recorded so far, deduplicated, first-seen order.
+/// `None` = poisoned lock; see [`unproven_decline_forms`].
+pub fn gemv_tile_selections() -> Option<Vec<String>> {
+    GEMV_TILE_SELECTIONS.lock().ok().map(|v| v.clone())
+}
+
+/// The typed refusal rows recorded so far, deduplicated, first-seen order.
+/// `None` = poisoned lock; see [`unproven_decline_forms`].
+pub fn gemv_tile_refusal_forms() -> Option<Vec<String>> {
+    GEMV_TILE_REFUSAL_FORMS.lock().ok().map(|v| v.clone())
+}
+
+/// `(honoured, refused)` request counts.
+pub fn gemv_tile_request_counts() -> (u64, u64) {
+    (
+        GEMV_TILE_REQUESTS_HONOURED.load(ORD),
+        GEMV_TILE_REQUESTS_REFUSED.load(ORD),
+    )
+}
+
+/// Whether any `q_gemv` tile decision has been observed at all, as a **string**.
+///
+/// Three states, and the first is the reason this is not a count. A process whose graph has no
+/// `MatMulNBits` node never reaches the selector, so every count above is `0` — which is not the
+/// same fact as "the selector ran and chose automatically" (R12). The census graph is a six-node
+/// elementwise chain, so `"UNOBSERVABLE"` is the *common* reading and the one a `0` would falsify.
+fn gemv_tile_surface_state() -> &'static str {
+    let Some(rows) = gemv_tile_selections() else {
+        return "INSTRUMENT-ERROR";
+    };
+    if rows.is_empty() {
+        if gemv_tile_request_counts().1 > 0 {
+            // Every request refused and nothing selected: the selector ran, and no tile was
+            // chosen. A reader must not see that as "never reached".
+            return "ALL-REFUSED";
+        }
+        return "UNOBSERVABLE";
+    }
+    if rows.iter().any(|r| r.starts_with("REQUESTED")) {
+        if rows.iter().any(|r| r.starts_with("AUTOMATIC")) {
+            return "MIXED";
+        }
+        return "REQUESTED";
+    }
+    "AUTOMATIC"
+}
+
+// ---------------------------------------------------------------------------
 // kv_cache_convention — which KV convention the dispatch was actually built with
 // JSON-only, no `abi_version` bump, for the same reason as `pipeline_variants` above: the C
 // struct has three hand-maintained ctypes mirrors and a mid-struct insertion has already read
@@ -2489,6 +2599,14 @@ pub fn reset() {
     if let Ok(mut used) = PIPELINE_VARIANTS.lock() {
         used.clear();
     }
+    GEMV_TILE_REQUESTS_HONOURED.store(0, ORD);
+    GEMV_TILE_REQUESTS_REFUSED.store(0, ORD);
+    if let Ok(mut seen) = GEMV_TILE_SELECTIONS.lock() {
+        seen.clear();
+    }
+    if let Ok(mut seen) = GEMV_TILE_REFUSAL_FORMS.lock() {
+        seen.clear();
+    }
     CLAIMED_NODES.store(0, ORD);
     ISLANDS_OFFERED.store(0, ORD);
     // Both sides: Tank's staging tally and Mouse's retained-island counter. Neither excludes the
@@ -2581,6 +2699,10 @@ impl VulkanEpCounters {
         let islands = ISLANDS_OFFERED.load(ORD);
         let viable = viable_islands_retained_json();
         let (shaders_list, shaders_digest, shaders_source_digest) = shaders_dispatched_json();
+        // Read the GEMV tile request pair through the one public accessor rather than loading the
+        // two atomics again here. Two independent readings of the same statics is how a snapshot
+        // and its accessor come to disagree, with only the accessor under test.
+        let (gemv_tile_honoured, gemv_tile_refused) = gemv_tile_request_counts();
         format!(
             "{{\n  \"abi_version\": {},\n  \"compile_calls\": {},\n  \"subgraphs_live\": {},\n  \
              \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \"device_losses\": {},\n  \
@@ -2630,6 +2752,11 @@ impl VulkanEpCounters {
              \"shader_toolchain\": \"{}\",\n  \
              \"pipeline_variants\": {},\n  \
              \"gemv_packed_spec_constant\": \"{}\",\n  \
+             \"gemv_tile_surface\": \"{}\",\n  \
+             \"gemv_tile_selections\": {},\n  \
+             \"gemv_tile_requests_honoured\": {},\n  \
+             \"gemv_tile_requests_refused\": {},\n  \
+             \"gemv_tile_refusal_forms\": {},\n  \
              \"shaders_dispatched_spec_digest\": \"{}\",\n  \
              \"specialisation_delta_forms\": {},\n  \
              \"specialisation_unrecorded_forms\": {},\n  \
@@ -2722,6 +2849,11 @@ impl VulkanEpCounters {
             json_escape(crate::registry::toolchain_identity()),
             pipeline_variants_json(),
             gemv_packed_spec_constant(),
+            gemv_tile_surface_state(),
+            forms_json(gemv_tile_selections()),
+            gemv_tile_honoured,
+            gemv_tile_refused,
+            forms_json(gemv_tile_refusal_forms()),
             specialisation_digest_json(),
             specialisation_delta_forms_json(),
             specialisation_unrecorded_forms_json(),

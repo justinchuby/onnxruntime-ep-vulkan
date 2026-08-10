@@ -45,11 +45,30 @@ that argument is `probe_roofline.py`'s, unchanged and still an argument. What ha
 that the multiplicity is now measured: if two workgroups named the same blob, or one workgroup
 named it twice, this probe now says so.
 
-Run:  python bench/results/probe_weight_reread.py
+Run:  python bench/results/probe_weight_reread.py            # writes the untracked default
+      python bench/results/probe_weight_reread.py --out X   # writes exactly X
+
+WHERE THE RECORD GOES, AND WHY THAT IS PART OF THE INSTRUMENT
+=============================================================
+This probe used to write `bench/results/weight_reread_phi35.json` — a **tracked** file — with
+no argument and no way to say otherwise. Two defects, and they are separate:
+
+* *Implicit tracked writes.* Anyone who ran the probe to look at it dirtied committed evidence,
+  so `git status` could no longer distinguish "someone re-ran a probe" from "the evidence
+  changed". Evidence whose modification is routine is evidence nobody reads a diff of. The
+  default is now an untracked path under `bench/results/local/`; overwriting the tracked record
+  takes `--out` *and* `--allow-tracked-overwrite`, which is a thing a person does on purpose.
+* *Absolute paths in a published artifact.* `_result_identity` stamped the resolved model path,
+  which on any real machine is rooted at somebody's home directory. The record now carries the
+  model's *identity* — its file name and its SHA-256 — and never its location, and the whole
+  record is put through `bench/path_screen.screen_public_record` before it is written. The
+  screen is not advisory: a finding **refuses the write** rather than warning about it, because
+  an artifact writer that ignores a return value publishes it anyway.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -64,7 +83,15 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bench"))
 sys.path.insert(0, str(ROOT / "bench" / "results"))
 
+from path_screen import PrivatePathLeak, screen_public_record  # noqa: E402
 from spirv_simt import Dispatch, InstrumentError, SpirvModule  # noqa: E402
+
+#: The committed record. Named so it can be *refused*, not so it can be written by default.
+TRACKED_RECORD = ROOT / "bench" / "results" / "weight_reread_phi35.json"
+
+#: Where a run with no `--out` writes. `bench/results/local/` is gitignored, so the default
+#: invocation cannot dirty the tree at all.
+DEFAULT_RECORD = ROOT / "bench" / "results" / "local" / "weight_reread_phi35.json"
 
 LEDGER = ROOT / "evidence" / "proof_ledger.jsonl"
 SHADER_STEM = "q_gemv_matmul_nbits_f16"
@@ -121,14 +148,37 @@ def resolve_model() -> pathlib.Path:
 
 
 def _result_identity(model: pathlib.Path) -> dict:
+    """The model's **identity**, never its location.
+
+    `onnx_file` used to be `str(model)` — an absolute path, and therefore the local username of
+    whoever last ran the probe, published into a tracked artifact. The identity of a model is
+    its content hash; the path is the identity of a *machine*. What replaces it is the bare file
+    name, which is provenance the pinned spec already names in public, plus the SHA-256, which
+    is the only field anything downstream actually compares.
+    """
     return {
-        "onnx_file": str(model),
+        "onnx_file": model.name,
+        "onnx_path": "<redacted-local-path>",
         "onnx_sha256": _model_provenance.sha256_of(model),
         "provider": _PHI35_SPEC.execution_provider,
         "resolved_by": "PHI35_MODEL override" if os.environ.get("PHI35_MODEL")
         else "foundry_discovery.resolve_model_path (identity: "
              f"{_PHI35_SPEC.variant_name}, {_PHI35_SPEC.execution_provider})",
     }
+
+
+def repo_relative(path: pathlib.Path) -> str:
+    """A path inside the repo, as a POSIX-relative string, or the public placeholder.
+
+    Total on purpose. `Path.relative_to` raises when the target is outside `ROOT` — which a
+    custom `CARGO_TARGET_DIR` makes routine — and the useful behaviour there is to publish
+    "somewhere else", not to publish an absolute path and not to crash after the measurement
+    has already been taken.
+    """
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return "<redacted-local-path>"
 
 #: Mirrors of `ops::quant`. Checked against the Rust unit tests' own expectations in
 #: `bench/test_weight_reread.py`.
@@ -558,8 +608,76 @@ def positive_controls(mod: SpirvModule) -> dict:
 # -- main --------------------------------------------------------------------------------------
 
 
-def main() -> int:
+def parse_args(argv: "list[str] | None" = None) -> argparse.Namespace:
+    """Where the record goes, stated rather than assumed.
+
+    `--out` is optional but the *tracked* record is not reachable without it: the default is an
+    untracked path, and naming the tracked one additionally requires `--allow-tracked-overwrite`.
+    Fail-closed in the same sense the rest of this tree uses the phrase — the dangerous thing is
+    the thing you have to ask for twice, and the safe thing is what you get by doing nothing.
+    """
+    ap = argparse.ArgumentParser(
+        prog="probe_weight_reread.py",
+        description="Walk the compiled q_gemv module over the whole Phi-3.5 grid and count the "
+                    "bytes its weight loads name. No clock.",
+    )
+    ap.add_argument(
+        "--out", type=pathlib.Path, default=None,
+        help=f"where to write the JSON record (default: {DEFAULT_RECORD.relative_to(ROOT).as_posix()}, "
+             f"which is gitignored)",
+    )
+    ap.add_argument(
+        "--allow-tracked-overwrite", action="store_true",
+        help=f"permit --out to name the committed record "
+             f"({TRACKED_RECORD.relative_to(ROOT).as_posix()}); refused without it",
+    )
+    return ap.parse_args(argv)
+
+
+def resolve_out(args: argparse.Namespace) -> pathlib.Path:
+    """The destination, or `InstrumentError`. Pure given `args`, so it is testable directly."""
+    out = (args.out or DEFAULT_RECORD).expanduser()
+    if not out.is_absolute():
+        out = (pathlib.Path.cwd() / out).resolve()
+    else:
+        out = out.resolve()
     try:
+        tracked = TRACKED_RECORD.resolve()
+    except OSError:  # pragma: no cover - resolve() does not touch the filesystem on 3.6+
+        tracked = TRACKED_RECORD
+    if out == tracked and not args.allow_tracked_overwrite:
+        raise InstrumentError(
+            f"refusing to overwrite the committed record {TRACKED_RECORD.relative_to(ROOT).as_posix()} "
+            f"implicitly. Re-run with --allow-tracked-overwrite if you mean to replace the "
+            f"evidence; otherwise the default {DEFAULT_RECORD.relative_to(ROOT).as_posix()} is "
+            f"untracked and will not dirty the tree."
+        )
+    return out
+
+
+def write_record(report: dict, out: pathlib.Path) -> None:
+    """Screen, then write. Never the other way round, and never write what was refused.
+
+    `bench/path_screen.screen_public_record` is the tree's public-path screen and it is applied
+    to the **whole** record rather than to the two fields known to have carried a path: a field
+    added later by someone who did not read this function is exactly the field that leaks, and a
+    whole-record walk is the only form of this check that a future edit cannot quietly step
+    around.
+    """
+    kept, why = screen_public_record(report)
+    if kept is None:
+        raise PrivatePathLeak((
+            f"refusing to write {out.name}: the record carries a local filesystem path, and an "
+            f"artifact writer that publishes one has published it for good. Findings: {why}",
+        ))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    try:
+        args = parse_args(argv)
+        out = resolve_out(args)
         path, blob, digest = locate_module(SHADER_STEM)
         mod = SpirvModule(blob)
         model = resolve_model()
@@ -671,7 +789,7 @@ def main() -> int:
                 #: the ledger records for a run that dispatched this stem, so reaching here at
                 #: all means the walk is bound to the compiled kernel a run actually used.
                 "digest_matches_ledger": True,
-                "module_path": str(path.relative_to(ROOT)),
+                "module_path": repo_relative(path),
                 "module_bytes": len(blob),
                 "spec_constants": "[local_size_x, bits, block_size, has_zp, cols, packed], "
                                   "resolved per node by the ops::quant mirrors below",
@@ -701,8 +819,11 @@ def main() -> int:
         print(f"ERROR(instrument): {e}", file=sys.stderr)
         return 4
 
-    out = ROOT / "bench" / "results" / "weight_reread_phi35.json"
-    out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        write_record(report, out)
+    except PrivatePathLeak as e:
+        print(f"ERROR(path-screen): {e}", file=sys.stderr)
+        return 5
 
     print("WEIGHT RE-READ — executed against the compiled kernel, not asserted")
     print("=" * 78)
@@ -738,7 +859,7 @@ def main() -> int:
               f"   tiled {r['tiled_amplification']:>9.6f}"
               f"   weight bytes not named {r['weight_bytes_not_named_because_of_the_tile']:>15,}")
     print(f"\n  -> {verdict}")
-    print(f"\n  record: {out}")
+    print(f"\n  record: {repo_relative(out)}")
     return 0
 
 

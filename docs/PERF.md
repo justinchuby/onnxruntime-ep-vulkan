@@ -4705,20 +4705,51 @@ Two facts fall out, and both were surprises:
 
 * **`q_gemv` decode time is flat at ~17.5 ms at every cache length.** All of decode's growth is
   GQA. The quantised GEMM is not the decode problem; it is not even a large part of it.
-* **Weight streaming is a minority cost at width.** The tiled and untiled arms differ *only* in how
-  many passes they make over the same 2.291 GB of packed weights — `M` passes untiled against
-  `ceil(M/4)` tiled — so differencing them gives a marginal streaming bandwidth. Eight prefill `M`
-  points yield **seven** differential points: `M = 1` yields none, because both arms make exactly
-  one pass there and Δpasses is zero. Over those seven (`M = 2 … 128`, from
-  `real_model_latency_before_gqa.json`) the readings are **199.7, 244.5, 242.8, 238.8, 226.8,
-  222.5, 217.4 GB/s** — range **200–245**, median **227**, and above the ~192 GB/s spec sheet at
-  every point, which is what L2 reuse looks like. `M = 2` is the low end and the noisiest point
-  (one differenced pass, no averaging); the six points from `M = 4` up sit in 217–245. One full
-  weight pass costs 9.4–11.5 ms (median 10.1). At `M = 128` the tiled arm makes 32 passes, so
-  streaming is ~323 ms of the 3004.55 ms tiled time — **~11%**.
+* **Weight streaming's share of wide prefill is WITHDRAWN and currently INDETERMINATE.**
+  *Corrected 2026-08-09, Switch, issue #81.* This bullet previously read "Weight streaming is a
+  minority cost at width" and concluded ~323 ms / ~11% at `M = 128`. **The arithmetic under it
+  used the wrong tile.** The tiled and untiled arms differ only in how many passes they make over
+  the same packed weights — `M` passes untiled against `ceil(M / QB_ROWS)` tiled — and the
+  shipping selector picks `(cols = 16, rows = 2)` on every one of Phi-3.5's five distinct
+  `MatMulNBits` shapes, exactly as §25.3's table already records. So the tiled arm makes
+  **`ceil(M/2)`** passes, not `ceil(M/4)`, and at `M = 128` that is **64 passes, not 32**. Against
+  the §25.1 denominator of **1,861,189,632** bytes of int4 initializer, 64 passes name
+  **119.1 GB** of weight traffic.
 
-So PR #53's self-named next lever — widening `q_gemv`'s 32-bit scalar `B` loads — would be
-optimising a tenth of the wide-prefill cost. The data said to go elsewhere, so this branch did.
+  Three consequences, and they are separate:
+
+  * The **seven marginal-bandwidth points** (199.7, 244.5, 242.8, 238.8, 226.8, 222.5,
+    217.4 GB/s; range 200–245, median 227) are **withdrawn**. Each was `Δtime ÷ (Δpasses ×
+    bytes)`, and `Δpasses` was taken as `M − ceil(M/4)` where the arms actually differ by
+    `M − ceil(M/2)`. The denominator was therefore ~1.5× too large at width, so **every one of
+    those figures is overstated** — and the "above the ~192 GB/s spec sheet at every point, which
+    is what L2 reuse looks like" reading was an artefact of that error, not an observation.
+  * The **"one full weight pass costs 9.4–11.5 ms (median 10.1)"** figure and the **"~323 ms of
+    the 3004.55 ms tiled time — ~11%"** conclusion are **withdrawn** with it, and so is the
+    sentence that followed them, that widening `q_gemv`'s scalar `B` loads "would be optimising a
+    tenth of the wide-prefill cost". That may still be true; it is not established here.
+  * **The corrected figures are not published, because they have not been taken.** Re-deriving
+    them from `real_model_latency_before_gqa.json` is arithmetic rather than measurement, but the
+    result would be a timing claim, and the benchmark lock is held (§28.3). The replacement
+    reading is **INDETERMINATE, queued behind the GPU serialisation lock**, and no consequence may
+    be drawn from the withdrawn series in the meantime.
+
+  What survives, and is **structural** rather than timed: the pass counts themselves are counted
+  by `bench/results/probe_weight_reread.py` off the compiled SPIR-V, and pinned in Rust by
+  `ops::quant::tests::the_shipping_tile_makes_ceil_m_over_two_weight_passes_and_the_unreached_one_makes_four`.
+  `119.1 GB` above is **derived (MODEL class)**: passes × the graph's own initializer bytes, with
+  no clock in it.
+
+  The **`(8, 4)` tile that would halve those passes again remains UNMEASURED**, and until
+  issue #81 it was also unreachable. At q4/fp16 a workgroup names `cols·K·bits/8` weight bytes
+  plus `rows·K·a_bytes` activation bytes, which is `12·K` units for *both* `(16,2)` and `(8,4)`;
+  the totals then differ only through the workgroup count, so they tie exactly when
+  `ceil(M/2) = 2·ceil(M/4)` — that is, when `M mod 4 ∈ {0, 3}` — and `(16,2)` is *strictly* cheaper
+  otherwise. `gemv_tile` keeps its incumbent on a tie, so no shape and no value of
+  `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` can select `(8,4)`
+  (`ops::quant::tests::no_automatic_surface_can_reach_the_equal_traffic_arm` enumerates the
+  reachable set). `ONNXRUNTIME_EP_VULKAN_GEMV_TILE="8,4"` is the instrument that makes the A/B
+  possible; its result is queued behind the same lock. See DESIGN.md §8.14.
 
 ### 26.5 The finding: one lane per subgroup
 
@@ -4868,7 +4899,11 @@ by this edit, which is the point: the change moved lane occupancy, not graph par
 * **The bandwidth figure is differential, not instrumented.** It comes from Δtime ÷ Δ(weight passes
   × 2.291 GB) between two arms, so it inherits both arms' noise and assumes the arms differ only in
   weight passes — which is true by construction of the `QB_ROWS` specialisation, but is an argument
-  about the source, not a counter reading.
+  about the source, not a counter reading. **Withdrawn 2026-08-09 (issue #81):** the `Δ(weight
+  passes)` in that quotient was computed as `M − ceil(M/4)`, but the shipping tile is
+  `(cols = 16, rows = 2)`, so the arms differ by `M − ceil(M/2)`. Every figure derived from this
+  quotient is overstated; see §26.4, where the series and its consequences are withdrawn and the
+  replacement is INDETERMINATE pending the benchmark lock.
 * **The null control is an arm-asymmetry width, not a symmetric noise band.** In §26.10's run the
   two arms' per-repeat spans are disjoint at `M = 1` — where the effect is zero by construction —
   with a **median ratio of 1.167 (mean 1.143)**, tiled ÷ untiled. Any row whose arm ratio sits
@@ -5372,3 +5407,115 @@ power against 0.859 is anything other than at most 0.6621 at the 0.0748 band —
 ceiling attached to one band, not a point estimate and not band-free. Issue #96 is not answered by
 this artifact, and the artifact says so in its own
 `window.claim` field.
+
+---
+
+## 28. The equal-traffic GEMV tile is unmeasured, and until now it was unreachable (2026-08-09)
+
+Issue #81. Nothing here is a timing. Every number below is a count of bytes or of passes, derived
+from the byte model in `ops::quant::gemv_named_bytes` and from the graph's own initializer sizes,
+and the one reading that *would* be a timing is stated as INDETERMINATE because the benchmark lock
+is held — see §28.3.
+
+### 28.1 The arithmetic §26.4 had wrong, and what it hides
+
+§26.4 said the tiled arm makes `ceil(M/4)` weight passes. It makes `ceil(M/2)`: the shipping
+selector picks `(cols = 16, rows = 2)` on every one of Phi-3.5's five distinct `MatMulNBits`
+shapes, which §25.3's own table already records. At `M = 128` that is **64 passes, not 32**, and
+against §25.1's denominator of 1,861,189,632 bytes of int4 initializer it is **119.1 GB** of named
+weight traffic rather than 59.6 GB. That correction is applied in place in §26.4, together with the
+withdrawal of everything derived from the wrong quotient.
+
+The interesting part is *why* the selector stops at `rows = 2` when `rows = 4` is inside every
+bound. It is not caution and it is not a missing candidate — it is a tie, and the tie is exact.
+
+With `cols | N`, one workgroup names `cols · K · bits/8` weight bytes and `rows · K · a_bytes`
+activation bytes. At q4 weights and fp16 activations that is
+
+```
+(16, 2):  16 × 0.5 + 2 × 2  =  12  units of K
+( 8, 4):   8 × 0.5 + 4 × 2  =  12  units of K
+```
+
+— identical. The totals therefore differ only through the workgroup count
+`ceil(N/cols) · ceil(M/rows)`, and `(N/16) · ceil(M/2)` equals `(N/8) · ceil(M/4)` exactly when
+
+```
+ceil(M/2) = 2 · ceil(M/4)      ⟺      M mod 4 ∈ {0, 3}
+```
+
+Off that residue class `(16, 2)` is *strictly* cheaper — at `M = 5` it is 3 row tiles against 4 —
+and `gemv_tile`'s search requires a candidate to beat the incumbent **strictly**. So:
+
+* on a tie the incumbent `(16, 2)` is kept, and
+* off a tie `(16, 2)` wins outright.
+
+`(8, 4)` is therefore unreachable for **every** `M`. It is also unreachable through
+`ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS`, which is a *ceiling* and can only make the tile shorter.
+`ops::quant::tests::no_automatic_surface_can_reach_the_equal_traffic_arm` enumerates the whole
+reachable set over four shapes × `M = 0…256` × every legal ceiling and asserts `(8,4)` is not in
+it — and asserts `(16,2)` *is*, so the guard cannot pass by proving the set empty.
+
+That is the finding. **Two tile geometries that a byte-counting model cannot separate are not
+thereby the same on a machine.** Coalescing, the cache residency of the activation row, and
+occupancy are not bytes. `(8, 4)` halves the weight passes (`ceil(M/4)` against `ceil(M/2)`) and
+doubles the activation traffic, and which of those a real memory system prefers is a question the
+byte model is structurally unable to ask.
+
+### 28.2 The instrument, and why it refuses rather than falls back
+
+`ONNXRUNTIME_EP_VULKAN_GEMV_TILE="cols,rows"` requests an exact tile. It is an **instrument**, not
+a tuning knob, and the three properties that make it one are all locked:
+
+* **Unset is byte-for-byte the shipping selector.** Not "usually the same" — the same function.
+  `ops::quant::tests::no_request_reproduces_the_shipping_selector_exactly` compares against
+  `gemv_tile_with` over four shapes × `M = 0…200` × every ceiling.
+* **An unusable value refuses.** Malformed (`" 8,4"`, `"08,4"`, `"0,4"`, `"8,4,2"`) or illegal for
+  this shape (`"16,4"` overruns the accumulator budget; `"3,1"` is not a power of two and would
+  take the shader's scalar store path the selector never reaches) both produce
+  `EpError::Unsupported` **before any dispatch, allocation or pipeline exists**. This is the
+  opposite reading from `GEMV_MAX_ROWS`, which ignores a typo — correctly, because a ceiling can
+  only ever shrink the tile, whereas an exact request is a *claim about what was measured*. A knob
+  that silently substituted a neighbouring tile would make both arms of its own A/B name the same
+  pipeline, which is the defect this instrument exists to remove.
+* **The choice is readable back.** `counters::record_pipeline_variant` already records the
+  specialisation vector, so it answers *which tile ran* — but a requested `(16,2)` and an automatic
+  `(16,2)` build the identical pipeline and produce the identical variant string, and a *refused*
+  request produces no variant string at all. Two JSON-only counter surfaces close that:
+  `gemv_tile_selections` carries `AUTOMATIC`/`REQUESTED` rows and `gemv_tile_refusal_forms` carries
+  typed `MALFORMED`/`ILLEGAL` rows, so an operator can tell an arm that was silently refused from
+  one that ran. `gemv_tile_surface` reports a string, not a count, because a process whose graph
+  has no `MatMulNBits` node never reaches the selector and a `0` there would be a zero for an event
+  that cannot occur (R12).
+
+Both polarities are driven through the **live registry row** in
+`rust/tests/gemv_tile_override.rs` — `registry::spec_for` → the real translate function → the
+specialisation constants a pipeline would be built from — because the failure this instrument is
+most exposed to is being perfectly correct and never consulted. `tests/ops/probe_gemv_tile_mutations.py`
+breaks it six ways (parser trims whitespace; parser accepts zero; malformed falls back to the
+selector; legality drops the accumulator budget; the ceiling clamps instead of refusing; the
+handler ignores the request) and requires a **named test** to go red for each. A mutation rejected
+by the compiler is recorded as `REJECTED-BY-COMPILER` and is *not* counted as caught: rustc
+noticing is not the same evidence as a test noticing. Witness:
+`bench/results/gemv_tile_mutations.json`.
+
+### 28.3 What is not measured, and why not
+
+**The A/B itself.** `(8, 4)` remains **UNMEASURED**. The instrument that makes it measurable ships
+here; the measurement does not, because the GPU serialisation lock is held — niobe-10 owns active
+GPU isolation and niobe-11 has ResNet queued behind it. Every timing consequence in this section is
+therefore **INDETERMINATE, queued**, including:
+
+| queued reading | status |
+|---|---|
+| `(16,2)` vs `(8,4)` wall/GPU time at `M ∈ {4, 8, 32, 128}` | INDETERMINATE — queued behind the benchmark lock |
+| corrected marginal streaming bandwidth (§26.4's withdrawn series) | INDETERMINATE — queued |
+| weight streaming's true share of wide-prefill time | INDETERMINATE — queued; the ~11% figure is withdrawn |
+
+Two things that would be easy to read as results and are not:
+
+* **119.1 GB is derived, MODEL class.** It is `64 × 1,861,189,632` — a pass count times the graph's
+  own initializer bytes. No clock, no device, no counter.
+* **A tie in the byte model is not a prediction of a tie on the clock.** It is the *reason the
+  experiment is worth running*, and stating it as an expected outcome would be exactly the error
+  §26.4 has just been corrected for.
