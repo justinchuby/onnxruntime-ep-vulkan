@@ -1290,7 +1290,7 @@ deciding term.
 **Two corrections to the framing, both in the direction that makes it more precise.**
 
 **(i) In the shipping configuration the economics arithmetic on our graph is not merely
-outvoted — it is not evaluated.** `evaluate` at `rust/src/ops/partition.rs:475` is an early return:
+outvoted — it is not evaluated.** `evaluate` at `rust/src/ops/partition.rs:658` is an early return:
 `if island.anchors > 0 && policy.anchor_exemption { return Verdict::Claim; }`, placed *above*
 `transfer_ns` and `compute_ns`. So it is not that the economics arm decided wrongly and lost; it is
 that on any anchor-bearing island **no property of the island can change stage 3's answer.** The
@@ -1301,13 +1301,21 @@ defaults — is a fact about **3a**, `TOO_SMALL`. It establishes that *stage 3* 
 It does not establish that **3c** has ever decided anything outside a probe, and I can find no
 artifact in which it has.
 
-**(ii) The diagnosis inverts once you read `is_anchor`.** The anchor set is `MatMul`, `Gemm`,
-`Conv`, `ConvTranspose`, `Attention`, `MatMulNBits`, `GroupQueryAttention`, `MultiHeadAttention`,
-`QMoE`, `LinearAttention` (`partition.rs:308`). **Every non-trivial island of any transformer
-contains at least one.** So "the economics model does not decide our partition" is not a Phi-3.5
-accident and is not a discovered defect — **it is the design, working.** 3c was written to kill
-cheap elementwise scatter whose tensors outweigh its arithmetic, and Phi-3.5's fused island is not
-that. The doc comment at `partition.rs:458` says so in as many words.
+**(ii) The diagnosis inverts once you read `is_anchor`.** Anchor eligibility is no longer keyed
+on the op name. The **heavy-family** set — the FLOP-significant ops — is `MatMul`, `Gemm`, `Conv`,
+`ConvTranspose`, `Attention`, `MatMulNBits`, `GroupQueryAttention`, `MultiHeadAttention`, `QMoE`,
+`LinearAttention` (`is_heavy_family`, `partition.rs:414`), but a node **anchors** only when it is
+heavy-family **and** carries a resident constant initializer at a schema-designated weight site
+(`is_anchor`, `partition.rs:492`; the pinned sites are in `weight_site_indices`, `partition.rs:460`).
+So a weight `MatMul`/`Gemm`/`MatMulNBits` anchors, an activation-only `MatMul` (both operands
+runtime) does not, and `GroupQueryAttention` — which designates no weight site — is heavy-family but
+never anchors. **Every non-trivial island of any transformer still contains at least one weight
+anchor** (Phi-3.5's fused island carries **161 `MatMulNBits` anchors**, alongside **32 non-anchor
+`GroupQueryAttention` nodes**; the heavy-family node count is 193, which is not an anchor count). So
+"the economics model does not decide our partition" is not a Phi-3.5 accident and is not a
+discovered defect — **it is the design, working.** 3c was written to kill cheap elementwise scatter
+whose tensors outweigh its arithmetic, and Phi-3.5's fused island is not that. The doc comment on
+`Policy::anchor_exemption` says so in as many words.
 
 **So what is actually wrong is narrower, and I want it stated without inflation.** Three things:
 

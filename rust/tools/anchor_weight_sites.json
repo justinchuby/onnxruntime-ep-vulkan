@@ -1,0 +1,123 @@
+{
+  "_comment": [
+    "Pinned schema provenance for partition anchor eligibility (issue #73).",
+    "An op anchors an island only when a RESIDENT constant initializer sits at one of the",
+    "schema-designated weight sites listed here. This file is the single source of truth the",
+    "Rust `weight_site_indices`/`is_heavy_family` tables and the docs are checked against by",
+    "`ci/check_anchor_weight_sites.py`. It is machine-checked, not hand-trusted: standard-domain",
+    "rows are re-extracted live from the pinned `onnx` schema library, and contrib rows are",
+    "verified against the pinned ORT commit recorded in third_party/onnxruntime/PROVENANCE.md.",
+    "A `weight_sites` of [] means the op is heavy-family (FLOP-significant) but designates NO",
+    "weight site, so it can never anchor on its own (e.g. GroupQueryAttention)."
+  ],
+  "provenance": {
+    "onnx": {
+      "source": "onnx.defs (installed onnx package)",
+      "pinned_opset_domain": "",
+      "note": "Standard-domain input names/order are extracted live from onnx.defs by the checker; the indices below must match the operand position of the named weight input for the schema version resolved by the pinned onnx package."
+    },
+    "onnxruntime": {
+      "repo": "https://github.com/microsoft/onnxruntime",
+      "tag": "v1.28.0",
+      "commit": "da9b5e364c465de65c49d91e696cd6485270757f",
+      "must_match": "third_party/onnxruntime/PROVENANCE.md",
+      "note": "com.microsoft contrib op schemas are not registered in onnx.defs, so their weight-site provenance is pinned to the exact ORT source lines below at the commit above. The checker fails closed if the vendored commit changes without re-pinning."
+    }
+  },
+  "ops": [
+    {
+      "qualified_op": "MatMul",
+      "domain": "",
+      "heavy_family": true,
+      "weight_sites": [1],
+      "weight_input_name": "B",
+      "schema_inputs": ["A", "B"],
+      "provenance": "onnx.defs MatMul (A, B); right-hand matrix B is the weight."
+    },
+    {
+      "qualified_op": "Gemm",
+      "domain": "",
+      "heavy_family": true,
+      "weight_sites": [1],
+      "weight_input_name": "B",
+      "schema_inputs": ["A", "B", "C"],
+      "provenance": "onnx.defs Gemm (A, B, C); B is the weight, C the optional bias."
+    },
+    {
+      "qualified_op": "Conv",
+      "domain": "",
+      "heavy_family": true,
+      "weight_sites": [1],
+      "weight_input_name": "W",
+      "schema_inputs": ["X", "W", "B"],
+      "provenance": "onnx.defs Conv (X, W, B); W is the kernel weight."
+    },
+    {
+      "qualified_op": "ConvTranspose",
+      "domain": "",
+      "heavy_family": true,
+      "weight_sites": [1],
+      "weight_input_name": "W",
+      "schema_inputs": ["X", "W", "B"],
+      "provenance": "onnx.defs ConvTranspose (X, W, B); W is the kernel weight."
+    },
+    {
+      "qualified_op": "Attention",
+      "domain": "",
+      "heavy_family": true,
+      "weight_sites": [],
+      "weight_input_name": null,
+      "provenance": "onnx.defs Attention (Q, K, V, ...): operands are already-projected activations; no resident weight site. Heavy-family, non-anchor."
+    },
+    {
+      "qualified_op": "com.microsoft::MatMulNBits",
+      "domain": "com.microsoft",
+      "heavy_family": true,
+      "weight_sites": [1],
+      "weight_input_name": "B",
+      "schema_inputs": ["A", "B", "scales", "zero_points", "g_idx", "bias"],
+      "provenance": "ORT onnxruntime/core/graph/contrib_ops/contrib_defs.cc:3672-3686 @ da9b5e3; Input(1, \"B\") is the packed int-N weight. Doc: 'the right-hand-side matrix (weights) is quantized to N bits'."
+    },
+    {
+      "qualified_op": "com.microsoft::GroupQueryAttention",
+      "domain": "com.microsoft",
+      "heavy_family": true,
+      "weight_sites": [],
+      "weight_input_name": null,
+      "schema_inputs": ["query", "key", "value", "past_key", "past_value", "seqlens_k", "total_sequence_length", "cos_cache", "sin_cache", "position_ids", "attention_bias", "head_sink", "k_scale", "v_scale", "q_norm_weight", "k_norm_weight"],
+      "provenance": "ORT onnxruntime/core/graph/contrib_ops/bert_defs.cc:1258-1332 @ da9b5e3; all operands are runtime activations, KV cache, or rotary/scale tensors. The q_norm_weight/k_norm_weight inputs (idx 14/15) are per-head RMS-norm scales, NOT a projection weight matrix, and are deliberately excluded — this is why the designation is an explicit index list, not a name-substring heuristic. Heavy-family, non-anchor."
+    },
+    {
+      "qualified_op": "com.microsoft::MultiHeadAttention",
+      "domain": "com.microsoft",
+      "heavy_family": true,
+      "weight_sites": [],
+      "weight_input_name": null,
+      "provenance": "ORT contrib op; operands are projected Q/K/V and biases, no resident projection weight matrix. Heavy-family, non-anchor. Fail-closed default until a weight site is pinned."
+    },
+    {
+      "qualified_op": "com.microsoft::Attention",
+      "domain": "com.microsoft",
+      "heavy_family": true,
+      "weight_sites": [],
+      "weight_input_name": null,
+      "provenance": "ORT contrib op with a weights input in some variants; weight-site provenance not pinned in this revision, so it is left as the fail-closed default (no anchor). Not in any currently censused model. Pin the index with provenance before relying on it to anchor."
+    },
+    {
+      "qualified_op": "com.microsoft::QMoE",
+      "domain": "com.microsoft",
+      "heavy_family": true,
+      "weight_sites": [],
+      "weight_input_name": null,
+      "provenance": "ORT contrib op carrying quantized expert weights; input order not pinned in this revision, so left as the fail-closed default (no anchor). Not in any currently censused model."
+    },
+    {
+      "qualified_op": "com.microsoft::LinearAttention",
+      "domain": "com.microsoft",
+      "heavy_family": true,
+      "weight_sites": [],
+      "weight_input_name": null,
+      "provenance": "ORT contrib op; weight-site provenance not pinned in this revision, fail-closed default (no anchor). Not in any currently censused model."
+    }
+  ]
+}

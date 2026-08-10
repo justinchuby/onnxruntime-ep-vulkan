@@ -610,6 +610,21 @@ jobs:
         # nothing — the exact defect the step above exists to find.
         run: python ci/negative_control_census_completeness.py
 
+      - name: Anchor weight-site schema screen (issue #73, no GPU)
+        # Proves partition anchor eligibility is a weight-site residency fact, not an op
+        # name (issue #73). Cross-checks the pinned provenance table, the shipped Rust
+        # weight_site_indices/is_heavy_family tables, and the LIVE onnx.defs schema, and
+        # asserts GroupQueryAttention designates no weight site despite its *_weight-named
+        # inputs. A finding about source and schema — no GPU, no EP, no model.
+        run: python ci/check_anchor_weight_sites.py --check
+
+      - name: Anchor weight-site screen negative control (inject the defect, demand red)
+        # R10 applied to the screen above: a screen only ever observed passing is one step
+        # from a screen that cannot fail. This injects each way issue #73 could be silently
+        # reintroduced into a scratch COPY of the tree and fails the job if the screen stays
+        # green. It never writes to the checked-out source.
+        run: python ci/negative_control_anchor_weight_sites.py
+
       - name: Device-loss screen (artifacts, no GPU)
         # A run that lost the Vulkan device, fell back to the CPU EP and exited 0. The
         # exit code is deliberately NOT an input: the exit code IS the defect. A lost

@@ -5,9 +5,12 @@
 //! Two censuses, not a taxonomy:
 //!
 //! * MobileNetV2-12, 2026-08-04: with `Conv` and `GlobalAveragePool` claimed, the single `Gemm`
-//!   at the tail is the last node in the model that carries data. It is also an *anchor* in
-//!   `ops::partition::is_anchor`, so a lone `Gemm` island is exempt from the minimum-node gate —
-//!   the row was already written into the partitioner's cost model before any kernel existed.
+//!   at the tail is the last node in the model that carries data. Its `B` operand is a resident
+//!   weight initializer at the schema-designated weight site, so it is an *anchor* in
+//!   `ops::partition::is_anchor` and a lone `Gemm` island is exempt from the minimum-node gate —
+//!   the row was already written into the partitioner's cost model before any kernel existed. An
+//!   activation-only `Gemm` (no resident weight) would not anchor; the classifier head always
+//!   carries one.
 //! * The registry had no `Gemm` at all, which is why every non-LLM model this project has looked
 //!   at ends on the CPU regardless of how much of its body the EP claims.
 //! * BERT-SQuAD-12, 2026-08-04: `MatMul` ×95 is the largest unregistered op on any censused
@@ -779,12 +782,19 @@ mod tests {
         assert!(spec.blind_axes.contains(&"transB"));
     }
 
-    /// `Gemm` is already an anchor in the partitioner, which is why a lone one at a model's tail
-    /// is claimable at all. If that ever changed, this row would go live and never be used.
+    /// `Gemm`/`MatMul` anchor a partition **only when their weight operand `B` (index 1) is a
+    /// resident initializer** — which the classifier head and every transformer projection carry.
+    /// A lone weight `Gemm` at a model's tail is claimable because of that; an activation-only one
+    /// would not anchor. Both polarities asserted so this is a check, not a tautology.
     #[test]
     fn gemm_is_a_partition_anchor() {
-        assert!(crate::ops::partition::is_anchor("Gemm"));
-        assert!(crate::ops::partition::is_anchor("MatMul"));
+        use crate::ops::partition::is_anchor;
+        // Weight at the designated site (index 1) ⇒ anchors.
+        assert!(is_anchor("Gemm", &[false, true]));
+        assert!(is_anchor("MatMul", &[false, true]));
+        // Both operands runtime ⇒ does not anchor.
+        assert!(!is_anchor("Gemm", &[false, false]));
+        assert!(!is_anchor("MatMul", &[false, false]));
     }
 
     // ---------------------------------------------------------------------------------------

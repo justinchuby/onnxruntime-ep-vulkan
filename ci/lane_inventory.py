@@ -287,6 +287,73 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.anchor_weight_sites",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Anchor weight-site schema screen (issue #73, no GPU)",
+        watches=(
+            "That partition anchor eligibility is a weight-site residency fact and not an "
+            "op name (issue #73). It cross-checks three independent sources: the pinned "
+            "provenance table rust/tools/anchor_weight_sites.json, the shipped Rust tables "
+            "weight_site_indices/is_heavy_family in partition.rs, and the LIVE onnx.defs "
+            "schema for standard-domain ops; and it asserts GroupQueryAttention designates "
+            "no weight site despite its q_norm_weight/k_norm_weight inputs (the substring "
+            "trap) and that the pinned ORT commit still matches PROVENANCE.md."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "ci/negative_control_anchor_weight_sites.py injects six ways issue #73 could be "
+            "silently reintroduced (name-only anchoring, table drift, schema lie, the "
+            "substring trap, stale provenance, a name-only is_anchor signature) into a "
+            "scratch COPY and demands the screen go red naming the defect. All six fired "
+            "2026-08-09."
+        ),
+        arm_healthy=(
+            "checked 11 ops against pinned schema provenance; PASS: table matches pinned "
+            "schema provenance and the Rust source"
+        ),
+        arm_broken=(
+            "weight-site mismatch and the GroupQueryAttention substring-trap message when "
+            "GQA is given a bogus weight site in partition.rs — observed 2026-08-09"
+        ),
+        observed="2026-08-09",
+        misses=(
+            "Contrib-op weight sites are pinned to an ORT commit, not extracted live, so a "
+            "schema change WITHIN the same commit hash would not be caught; only default "
+            "onnx-domain rows are re-extracted from a live schema library.",
+        ),
+    ),
+    Check(
+        id="hostfree.anchor_weight_sites_negative_control",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Anchor weight-site screen negative control (inject the defect, demand red)",
+        watches=(
+            "The screen above. It injects each way issue #73 could be reintroduced into a "
+            "scratch COPY of the tree and fails if the screen stays green or fails to name "
+            "the defect it caught."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Its baseline arm is the mutation in reverse: if the unmodified copy is not "
+            "green it reports ERROR(instrument=baseline_not_green) rather than attributing "
+            "a red to an injection that did not cause it. Its inject helpers refuse when "
+            "their anchor text is absent (ERROR(instrument=anchor_not_found))."
+        ),
+        arm_healthy="all six injected defects go red AND name the defect; baseline copy green",
+        arm_broken=(
+            "an inject helper whose anchor text has drifted reports "
+            "ERROR(instrument=anchor_not_found) and refuses to report a pass — observed "
+            "2026-08-09 while pinning the MatMulNBits match arm as the injection site"
+        ),
+        observed="2026-08-09",
+        misses=(
+            "It proves the screen detects the six defect shapes in CASES. A seventh way to "
+            "reintroduce name-only anchoring, absent from CASES, is as invisible to the "
+            "control as it is to the screen.",
+        ),
+    ),
+    Check(
         id="hostfree.census_completeness",
         falsifier=FALSIFIER_PLANTED,
         lane=LANE_HOSTFREE,

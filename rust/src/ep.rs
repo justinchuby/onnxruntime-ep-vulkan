@@ -1281,9 +1281,23 @@ unsafe fn get_capability_impl(
             // SAFETY: api live; node is a live graph node.
             let view = unsafe { NodeView::new(api, node) };
             let qual = view.qualified_name();
-            if partition::is_anchor(&qual) {
-                island.anchors += 1;
-                // Anchor flop estimate: 2 × K × N for a matmul-family op.
+
+            // Per-operand residency, in schema-input order. `input_is_constant` is ORT's own
+            // answer and fails closed (false) on a null slot, an absent
+            // `ValueInfo_IsConstantInitializer`, or a status-error read — so a degenerate slot
+            // can never manufacture an anchor. This is the `has_initializer_operand` fact the
+            // anchor predicate consumes.
+            let resident_inputs: Vec<bool> = (0..view.num_inputs())
+                .map(|i| view.input_is_constant(i))
+                .collect();
+
+            // Heavy-family membership governs the FLOP estimate; anchor eligibility (a resident
+            // weight at a schema-designated site) governs the gate-2 exemption. They are kept
+            // separate on purpose (issue #73): GroupQueryAttention is heavy — it must contribute
+            // its attention FLOPs — but designates no weight site, so it is NOT an anchor.
+            if partition::is_heavy_family(&qual) {
+                island.heavy_family_nodes += 1;
+                // Heavy op flop estimate: 2 × K × N for a matmul/attention-family op.
                 // Conservative minimum: 2 × 3072 × 3072 when shapes are unavailable.
                 island.flops = island.flops.saturating_add(2 * 3072 * 3072);
             } else {
@@ -1292,6 +1306,14 @@ unsafe fn get_capability_impl(
                 let out_slots = unsafe { node_slots(api, node, Slots::Outputs) };
                 let out_bytes: u64 = out_slots.iter().map(|&s| slot_bytes(s)).sum();
                 island.flops = island.flops.saturating_add(out_bytes / 2);
+            }
+
+            // Anchor: a heavy-family op carrying a resident constant initializer at a
+            // schema-designated weight site. Name alone never anchors — an activation-only
+            // MatMul (both operands runtime) is heavy-family but not an anchor, so a lone one is
+            // rejected by the economics gate instead of exempted by op identity.
+            if partition::is_anchor(&qual, &resident_inputs) {
+                island.anchors += 1;
             }
 
             // Boundary activation bytes: only non-constant inputs that cross the island edge.
@@ -1404,11 +1426,12 @@ unsafe fn get_capability_impl(
             counters::record_sole_island_override(overridden);
             log::warn!(
                 "GetCapability: sole-island override — the net-benefit gate REJECTED the graph's \
-                 only island ({} nodes, {} anchors, {} boundary bytes across {} fabricated-extent \
-                 slots, {} est. FLOPs) and the rejection was overridden because there is no \
-                 alternative partition. Gate's own verdict: {:?}",
+                 only island ({} nodes, {} anchors of {} heavy-family, {} boundary bytes across \
+                 {} fabricated-extent slots, {} est. FLOPs) and the rejection was overridden \
+                 because there is no alternative partition. Gate's own verdict: {:?}",
                 island.nodes,
                 island.anchors,
+                island.heavy_family_nodes,
                 island.boundary_bytes(),
                 island.symbolic_boundary_slots,
                 island.flops,

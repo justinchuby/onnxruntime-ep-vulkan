@@ -119,6 +119,20 @@ TABLE: dict[str, dict[str, str]] = {
         "subject": "the wiring census output",
         "oracle": "criterion 12's three further requirements, declared outside the census",
     },
+    "ci/check_anchor_weight_sites.py": {
+        "verdict": "EXTERNAL",
+        "subject": (
+            "the partition anchor weight-site tables — rust/tools/anchor_weight_sites.json "
+            "and the weight_site_indices/is_heavy_family match arms in "
+            "rust/src/ops/partition.rs (issue #73)"
+        ),
+        "oracle": (
+            "independently-produced second things: the LIVE onnx.defs schema library for "
+            "standard-domain op input names/order, and the pinned ORT commit recorded in "
+            "third_party/onnxruntime/PROVENANCE.md for contrib-op provenance. The check "
+            "re-extracts the schema rather than trusting the table's copy of it."
+        ),
+    },
     "ci/check_powershell_exit_status.py": {
         "verdict": "EXTERNAL",
         "subject": (
