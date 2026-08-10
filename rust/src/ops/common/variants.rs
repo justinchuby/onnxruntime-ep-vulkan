@@ -198,6 +198,35 @@ pub struct Kernel {
     /// `Template::None` therefore means *"no generated variant family"*, not *"no module"*. A row
     /// with neither a template nor this field is genuinely metadata-only.
     pub module_stems: Option<&'static [&'static str; DTYPE_COUNT]>,
+    /// Stems of the **additional** hand-written modules this row's `translate` may dispatch
+    /// *instead of* [`Kernel::module_stems`], indexed by [`dtype_index`].
+    ///
+    /// # Why a second field rather than a wider one
+    ///
+    /// [`Kernel::stem`] answers *"which module does this row dispatch"* on the assumption that a
+    /// row dispatches one, and every caller that resolves a proof key's variant component to a
+    /// module depends on that being a function rather than a relation. #90 makes it false for one
+    /// row: a `GroupQueryAttention` node runs `gqa_f16` for prefill and for every refused form,
+    /// and `gqa_decode_f16` when the decode selector admits it. Widening `stem()` to return a set
+    /// would have made 40-odd call sites choose an element.
+    ///
+    /// So the primary module keeps its own field and answers unchanged, and this one carries the
+    /// rest of the **dispatch set**. Three things read it, and they are the three that would
+    /// otherwise be wrong rather than merely incomplete:
+    ///
+    /// * [`variant_is_declared`], so a selector-reached module is *declared* and
+    ///   `registry::form_is_provable` refuses it in a shaderless build instead of taking the
+    ///   unknown-stem branch and answering *provable*;
+    /// * `templates::every_hand_written_shader_is_named_by_a_row`, whose whole point is that a
+    ///   `.comp` no row names is a module no proof key can ever mention — which is the state a
+    ///   second GQA module would otherwise have shipped in;
+    /// * `templates::every_shader_row_translates_to_a_stem_that_is_in_the_manifest`, so a typo in
+    ///   the declaration fails here rather than as a missing pipeline on a user's device.
+    ///
+    /// The key says the same thing in its own vocabulary: `ProofKey::variant_modules` expands the
+    /// `@kvpar` suffix to exactly this pair. The two are checked against each other by
+    /// `registry::the_kv_parallel_suffix_names_a_second_module`.
+    pub selector_module_stems: Option<&'static [&'static str; DTYPE_COUNT]>,
 }
 
 impl Kernel {
@@ -208,6 +237,7 @@ impl Kernel {
         stems: [""; DTYPE_COUNT],
         pair_stems: None,
         module_stems: None,
+        selector_module_stems: None,
     };
 
     /// The SPIR-V module stem for this op at this dtype.
@@ -230,6 +260,26 @@ impl Kernel {
     /// The SPIR-V module stem for a source/destination dtype pair.
     pub fn pair_stem(&self, src: DType, dst: DType) -> Option<&'static str> {
         Some(self.pair_stems?[dtype_index(src)][dtype_index(dst)])
+    }
+    /// Every module this row may dispatch at this dtype: the primary first, then any selector.
+    ///
+    /// Empty for a genuinely metadata-only row and for a pair-keyed template, matching
+    /// [`Kernel::stem`]'s `None` at both — a caller that wants the pair table must ask for it by
+    /// name, here as there.
+    pub fn dispatch_stems(&self, d: DType) -> Vec<&'static str> {
+        let mut out = Vec::with_capacity(2);
+        if let Some(s) = self.stem(d) {
+            if !s.is_empty() {
+                out.push(s);
+            }
+        }
+        if let Some(table) = self.selector_module_stems {
+            let s = table[dtype_index(d)];
+            if !s.is_empty() && !out.contains(&s) {
+                out.push(s);
+            }
+        }
+        out
     }
 
     /// `-D` defines the build must pass to compile this variant.
@@ -342,6 +392,7 @@ macro_rules! module_stems {
 /// ```ignore
 /// kernel!(EwBinary, "add")   // -> ew_binary_add_f32, ew_binary_add_f16, ...
 /// kernel!(Standalone, "conv")// -> hand-written conv_f32.comp, conv_f16.comp, ...
+/// kernel!(Standalone, "gqa", selects: "gqa_decode") // -> gqa_f16.comp OR gqa_decode_f16.comp
 /// kernel!(None)              // metadata-only row: no module at all
 /// ```
 #[macro_export]
@@ -356,6 +407,21 @@ macro_rules! kernel {
             stems: [""; $crate::ops::common::dtype::DTYPE_COUNT],
             pair_stems: None,
             module_stems: ::core::option::Option::Some(&$crate::module_stems!($prefix)),
+            selector_module_stems: None,
+        }
+    };
+    // A row whose `translate` chooses between the primary module and a second, hand-written one
+    // from a runtime property of the node (#90's decode selector). The second stem family is
+    // declared here, not inferred, because everything that resolves a proof key to a module reads
+    // the declaration and nothing reads `translate`.
+    (Standalone, $prefix:literal, selects: $selector:literal) => {
+        $crate::ops::common::variants::Kernel {
+            template: $crate::ops::common::variants::Template::None,
+            op: $prefix,
+            stems: [""; $crate::ops::common::dtype::DTYPE_COUNT],
+            pair_stems: None,
+            module_stems: ::core::option::Option::Some(&$crate::module_stems!($prefix)),
+            selector_module_stems: ::core::option::Option::Some(&$crate::module_stems!($selector)),
         }
     };
     (EwUnary, $op:literal) => {
@@ -365,6 +431,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_unary", $op),
             pair_stems: None,
             module_stems: None,
+            selector_module_stems: None,
         }
     };
     (EwBinary, $op:literal) => {
@@ -374,6 +441,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_binary", $op),
             pair_stems: None,
             module_stems: None,
+            selector_module_stems: None,
         }
     };
     (EwSelect, $op:literal) => {
@@ -383,6 +451,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_select", $op),
             pair_stems: None,
             module_stems: None,
+            selector_module_stems: None,
         }
     };
     (QGemv, $op:literal) => {
@@ -392,6 +461,7 @@ macro_rules! kernel {
             stems: $crate::stems!("q_gemv", $op),
             pair_stems: None,
             module_stems: None,
+            selector_module_stems: None,
         }
     };
     (EwCast, $op:literal) => {
@@ -404,6 +474,7 @@ macro_rules! kernel {
             stems: $crate::stems!("ew_cast", "x"),
             pair_stems: ::core::option::Option::Some(&$crate::pair_stems!("ew_cast")),
             module_stems: None,
+            selector_module_stems: None,
         }
     };
 }
@@ -601,7 +672,12 @@ pub fn variant_is_declared(stem: &str) -> bool {
             let mut set = std::collections::BTreeSet::new();
             for spec in crate::registry::all_specs() {
                 for d in spec.caps.iter() {
-                    if let Some(s) = spec.kernel.stem(d) {
+                    // `dispatch_stems`, not `stem`: a module reached only through a row's own
+                    // selector (#90's `gqa_decode_f16`) is declared by that row just as much as
+                    // its primary is, and reading only the primary would leave the selector's
+                    // module on `form_is_provable`'s unknown-stem branch — which answers
+                    // *provable* in a build that does not contain it.
+                    for s in spec.kernel.dispatch_stems(d) {
                         if !s.is_empty() {
                             set.insert(s);
                         }
@@ -654,8 +730,46 @@ mod tests {
         for d in ALL_DTYPES {
             assert!(k.stem(d).is_none());
             assert!(k.defines(d).is_empty());
+            assert!(k.dispatch_stems(d).is_empty());
         }
         assert!(Template::None.source_file().is_none());
+    }
+
+    /// **#90 — a row may declare a second hand-written module its selector reaches.**
+    ///
+    /// The primary answer must not move: `stem()` is what 40-odd call sites read and what the
+    /// proof key's variant component renders, and widening it was the alternative this field
+    /// exists to avoid. What must move is the *set*, because that is what
+    /// [`variant_is_declared`] and the two build-coherence tests need in order to see the second
+    /// module at all.
+    #[test]
+    fn a_selector_row_declares_both_of_its_modules() {
+        let one = kernel!(Standalone, "conv");
+        let two = kernel!(Standalone, "gqa", selects: "gqa_decode");
+
+        assert_eq!(one.stem(DType::F32), Some("conv_f32"));
+        assert_eq!(one.dispatch_stems(DType::F32), vec!["conv_f32"]);
+        assert!(
+            one.selector_module_stems.is_none(),
+            "a row that declares no selector must not acquire one"
+        );
+
+        assert_eq!(
+            two.stem(DType::F16),
+            Some("gqa_f16"),
+            "the primary module is unchanged, so the key's variant component is unchanged"
+        );
+        assert_eq!(
+            two.dispatch_stems(DType::F16),
+            vec!["gqa_f16", "gqa_decode_f16"],
+            "and the dispatch set is both, primary first"
+        );
+        assert_eq!(
+            two.dispatch_stems(DType::F32),
+            vec!["gqa_f32", "gqa_decode_f32"],
+            "the stem families are parallel at every dtype; only F16 is in the row's caps, which \
+             is what keeps the unbuilt f32 pair unreachable"
+        );
     }
 
     #[test]

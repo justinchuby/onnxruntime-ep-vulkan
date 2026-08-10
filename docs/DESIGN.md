@@ -5937,6 +5937,282 @@ Issue #96 stays open on the strength of this. What would settle it is measuremen
 under the same protocol, with the A/A arm run in the same session as the treatment and at the same
 inference-call count rather than five hours later and two calls short.
 
+§8.14 is that lever, opened — and opened *without* a timing claim, which is exactly what the
+subsection above requires of anything that touches decode on this box.
+
+---
+
+### 8.14 The decode-only KV-parallel GQA module — a second kernel, not a rewrite (issue #90)
+
+§8.13 ended by naming the thing it could not fix and the reason: decode's 32 invocations are a
+property of the *model*, so no repacking of them uses the machine, and the only parallelism left
+is over the KV sequence — which needs shared memory, a barrier and a reduction.
+
+#### The shape
+
+A new module, `rust/shaders/glsl/gqa_decode_f16.comp`:
+
+* **One workgroup per `(batch, query head)`**, so the grid is exactly `B * Nq` — 32 on Phi-3.5,
+  the same count of *workgroups* the old kernel had *invocations*.
+* **`W` lanes inside each workgroup stride the cache**: lane `l` walks `t = l, l+W, l+2W, …`, so
+  the lanes partition `[0, total_len)` exactly and each runs the same online-softmax recurrence
+  `gqa_f16.comp` runs, over its own subset.
+* **A halving-tree merge in shared memory** combines the `W` partials. Merging two online-softmax
+  partials `(m_a, s_a, acc_a)` and `(m_b, s_b, acc_b)` is
+  `m = max(m_a, m_b); s = s_a·e^{m_a-m} + s_b·e^{m_b-m}; acc = acc_a·e^{m_a-m} + acc_b·e^{m_b-m}`
+  — the same rescale-to-the-joint-maximum step the serial recurrence already performs every time
+  it meets a larger score, so the reduction introduces no arithmetic the kernel did not have.
+* **Lane 0 normalises and writes** `attn_output`. Lane 0 also writes the new K/V at `tok_pos`; the
+  lanes partition the growing-cache past-copy between them, fused into the walk exactly as
+  `gqa_f16` fuses it.
+
+#### `gqa_f16.comp` is byte-identical, and that is a requirement
+
+Prefill, the fallback, and every graph the selector refuses run the SPIR-V they ran before.
+A decode-only rewrite of the shipping kernel would have put prefill's correctness — including the
+sibling-key recompute that fixed a real data race — behind a change whose evidence is entirely
+about decode. Two modules, one selector, no shared risk. `git diff origin/main --
+rust/shaders/glsl/gqa_f16.comp` is empty and `test_the_shipping_module_is_byte_identical` fails if
+the file gains any of the new module's vocabulary.
+
+#### Why this is a portability-neutral change
+
+Same test as §8.12 and §8.13: what does it **not** need?
+
+* **No subgroup operation, no wave intrinsic, no extension beyond the 16-bit storage one
+  `gqa_f16` already requires, no optional feature, no device query.** The reduction is `shared`
+  memory plus `barrier()`, which is core Vulkan 1.1 compute. A subgroup reduction would be faster
+  where the subgroup width cooperates and would silently not exist elsewhere.
+* **The shared footprint is a constant, checkable by reading the file: 8,320 B.** `s_max[16]` and
+  `s_sum[16]` are 128 B; `s_acc[16 × 128]` is 8,192 B. Vulkan 1.1 guarantees
+  `maxComputeSharedMemorySize ≥ 16384`, so the module fits the floor with 49.2% to spare — and it
+  fits **as a module**, not as one specialisation of it. Sizing the arrays by the lane-count
+  specialisation constant was considered and declined for exactly that reason: it would make the
+  memory bound a property of each pipeline, so *"does this module fit the floor"* would stop being
+  a question anyone can answer by inspection. `decode_shared_memory_fits_the_guaranteed_floor`
+  and `test_shared_memory_stays_inside_the_guaranteed_floor` are the two halves of that check.
+* **At most 16 invocations per workgroup**, inside the guaranteed `maxComputeWorkGroupInvocations`
+  floor of 128 by a factor of eight.
+* **Every `barrier()` is in uniform control flow.** There is exactly one barrier site, at the top
+  of a loop whose bound (`active_lanes`) is a function of the push block and `seqlens_k[b]` with `b`
+  fixed for the whole workgroup, so every invocation executes the same number of barriers. The two
+  early returns (`b >= batch_size`, `S != 1`) are uniform for the same reason.
+  `test_every_barrier_is_in_uniform_control_flow` pins the structure that argument rests on.
+* **No device-dependent decision.** `GQA_DECODE_MAX_KV_LANES = 16` is derived from the
+  specification floor above, not from a device: 32 lanes at `head_dim = 128` would be 16,384 B of
+  accumulator on its own — the entire guaranteed floor with nothing left over.
+
+#### The selector, and the four boundaries it refuses at
+
+`ops::attention::gqa_decode_kv_lanes_with` returns the lane count, and **`1` means refuse** — the
+module is never dispatched at one lane, because at one lane it is `gqa_f16`'s serial walk carrying
+a workgroup's worth of shared memory and a merge tree it will not use. So there is one fallback
+path rather than a fast one and a slow one, and the fallback is the untouched dispatch.
+
+It refuses when:
+
+1. **`seq_len != 1`.** The module has no branch for `past_len ≤ t < tok_pos` — a key belonging to
+   a sibling query position of the same dispatch — because that range is empty exactly when
+   `seq_len == 1`. Prefill keeps `gqa_f16`, whose recompute-from-`packed_qkv` is what makes that
+   case race-free.
+2. **`head_dim` outside `1 ..= 128`.** The shared row stride and the private arrays are 128 wide.
+3. **An unrecoverable cache extent.** A `None` extent is not an empty cache, and guessing which it
+   is has already cost this file one defect.
+4. **A ladder that lands on one lane.** `W` is the largest power of two `≤ 16` with
+   `total_len / W ≥ GQA_DECODE_MIN_KV_PER_LANE`, and `MIN_KV_PER_LANE = 32`. Below that the
+   halving tree costs more than the split saves. The rungs are past 62 → refuse, 63 → 2, 127 → 4,
+   255 → 8, 511 → 16.
+
+`MIN_KV_PER_LANE` is **not measured**, and the honest thing to do with an underived constant is to
+name it as one: it is a bound argued from the traffic ratio (a lane's walk is `total/W` iterations
+of `2·head_dim` f16 reads, against `log2(W) ≤ 4` barriers moving `head_dim` floats), and the real
+ladder is a candidate for a sweep exactly like §8.13's. Until that sweep exists the number is an
+argument rather than a reading. It is the same constant on both sides of the ABI, and
+`the_shader_pins_the_min_kv_per_lane_constant` reads the `.comp` file and fails if the two drift.
+
+#### The KV arena's capacity ambiguity, answered in the shader
+
+The host picks `W` from the *declared* `past_key.shape[2]`. Under the KV arena
+(`ONNXRUNTIME_EP_VULKAN_KV_ARENA`) that number is a **capacity**, not a length: it is how much room
+the caller reserved, and `seqlens_k` is how much of it is real. A lane count picked from a capacity
+would give a 4,096-slot arena holding 8 tokens the full 16 lanes and a 4-deep merge tree over 8
+positions, which is slower than not parallelising at all.
+
+The ruling is that the host's `W` is an **upper bound** and the *effective* lane count is
+recomputed in the shader, from `seqlens_k[b]`, by the same ladder. `active_lanes` is uniform across the
+workgroup (it depends only on `b`), never exceeds `W`, and at `active_lanes == 1` the module degenerates
+to exactly `gqa_f16`'s serial walk with no barrier executed at all. The same mechanism handles
+**ragged batches**, where one sequence is far shorter than another —
+`test_kv_parallel_matches_cpu_with_a_ragged_batch` runs three rows at effective widths 16, 1 and 2
+in one dispatch.
+
+#### The proof key names a **set** of modules — and does so without reading the environment
+
+This is the part that a previous attempt at this issue got wrong, and it is worth stating as a
+rule rather than as a fix.
+
+A decode-capable `GroupQueryAttention` node can dispatch `gqa_f16` **or** `gqa_decode_f16`. The
+proof key's variant component therefore has to name both, or a ledger entry minted against the
+serial module would be returned for a run that executed the parallel one — a proof of one artifact
+accepted for another, which is the exact integrity failure §8.9 exists to prevent. The key gains an
+`@kvpar` suffix, `ProofKey::variant_modules` expands it into `["gqa_f16", "gqa_decode_f16"]`, and
+`form_is_provable` becomes a **conjunction** over that set. `variant_stem` still strips `@`
+suffixes, so every other key answers with exactly one module and is unaffected.
+
+The registry row says the same thing in its own vocabulary — `kernel!(Standalone, "gqa", selects:
+"gqa_decode")` — and it has to, because `variant_is_declared` is built from the rows, not from the
+keys. A module the rows do not name is an *unknown* stem, and `form_is_provable` reads unknown as
+provable; declaring it is what makes a shaderless build refuse the second module rather than
+shrug at it. Two build-coherence tests already existed for exactly this seam and now read the
+whole dispatch set: `every_hand_written_shader_is_named_by_a_row` (a `.comp` no row names is a
+module no key can mention — the state `conv_f32.comp` once shipped in) and
+`every_shader_row_translates_to_a_stem_that_is_in_the_manifest`. The key's set and the row's set
+are asserted equal in `the_kv_parallel_suffix_names_a_second_module`.
+
+**The predicate that decides the suffix takes no environment, by signature.**
+`gqa_decode_module_is_reachable(form)` has no override parameter and makes no `std::env` call at
+all. The kill switch below can only narrow what actually runs — it is consulted *after* the ladder
+has already returned two or more lanes — so a key derived from the graph alone is a **superset** of
+any run's dispatch set on any machine, in every environment. A key that moved with an environment
+variable would mean the checked-in ledger's identity is not the identity a run computes: the same
+entry would describe one module on one machine and a different set on another, and
+`gen_proof_ledger.py --check` could not tell.
+`decode_reachability_is_independent_of_the_environment` is the falsifier, and it runs under the
+hosted `cargo test --lib` — the suite with no GPU, which is where the omission was found.
+
+Unknown means **reachable**, and the direction is chosen rather than defaulted. Only a *stated*
+fact that provably excludes the module drops the suffix: a declared `seq_len` other than 1, a
+declared `head_dim` outside the module's range, or a declared extent whose whole range lands on one
+lane (the extent is an upper bound on the length, so refusing the bound refuses every length
+beneath it). A symbolic sequence length, a symbolic cache or an underivable head width all keep the
+suffix. The imprecise direction merely over-names a set — `SpecWitness::Partial` already has a word
+for a run that dispatched part of one — while the other direction publishes a claim about a module
+no proof ever touched.
+
+**The ledger consequence, stated because it is a real cost.** `group_query_attention_f16` declares
+a four-token cache, which the ladder refuses at every length beneath it, so its key is unchanged and
+its checked-in entry keeps matching byte for byte. Phi-3.5 declares `past_sequence_length`
+symbolically, so its key becomes `…/gqa_f16@kvpar/runtime-extent/…` — a key **no entry exists
+for** — and Phi-3.5 GQA declines `[unproven]` until one is minted from a real GPU proof run.
+`rust/tools/ledger_case_models.py` gains `group_query_attention_kv_parallel_f16` (a 128-token
+cache, the `W = 4` rung, `max_seq` raised to 256 because `tok_pos = 128` indexes the rotary caches)
+for exactly that purpose. That interval is not a regression to be worked around; it is the gate
+doing its job.
+
+#### Two modules under one key, and the three defects that fell out of proving it
+
+The `@kvpar` key names a **set** of two modules, and the ledger had never been asked to hold a
+key like that. Getting one minted exposed three things, all of which are fixed here and none of
+which is cosmetic.
+
+**(1) A partial entry proved nothing, and said nothing.** The first `@kvpar` entry recorded only
+`gqa_decode_f16`. Nothing rejected it, so a key whose dispatch set is two modules would have
+claimed at run time on the strength of a proof that had touched one of them — a proof of one
+artifact accepted for another, which is the integrity failure the ledger exists to prevent.
+`parse_ledger` now applies **`SUBJECT-PARTIAL-SET`**: an entry whose `shaders` do not cover every
+module in `variant_modules(key)` is demoted and faulted, exactly as `SUBJECT-CHANGED` is. It is
+scoped to multi-module keys, so no single-module entry — which is every other entry in the file —
+changes meaning. `an_entry_that_covers_only_part_of_its_module_set_proves_nothing` is the
+falsifier and it runs under the hosted `cargo test --lib`.
+
+**(2) The case model has to dispatch both modules in one `Compute()`.** §8.9.14 refuses to mint
+an entry from a run with more than one `Compute()` call, so two independent nodes cannot be used:
+that is two calls and the guard fires. `group_query_attention_kv_parallel_f16` therefore chains
+them — a prefill node whose `present_key`/`present_value` are the decode node's `past_key`/
+`past_value` — which ORT fuses into one island and one `Compute`, dispatching `gqa_f16` on the
+prefill node and `gqa_decode_f16` on the decode node. The minted entry records both stems,
+`compute_calls: 1`, `dispatches_executed: 2`.
+
+**(3) The chained model found a live defect in the growing-KV prefix alias, in shared code.**
+The alias lets a `GroupQueryAttention` node write its `present` in place over its `past` by having
+the host stage the past's bytes into the output buffer's prefix and telling the shader
+`past_stride = present_len` — "the copy already happened, do not repeat it". Whether the host
+*can* do that was decided by `alias_source_readable`, which inspects **plan inputs only**. In the
+chained island the aliased tensor is an island *intermediate*: no ORT tensor, no host pointer,
+nothing to stage. The alias was armed, the push constants said the copy had happened, and then the
+pair was silently dropped by the range test in the collection loop, because a token outside the
+plan's ranges cannot be staged. Measured on this machine, the decode node's `present_key` came
+back with rows `0..131` exactly zero and only the newly written row correct; whole-output
+comparison read `worst_rel 30.4`.
+
+The repair is to ask the question where the answer is known — *after* translate has named the
+tensor it wants to alias — and, when the answer is "this island cannot stage it", to re-run
+translate with the capability withdrawn. Translate is a pure shape-only pass over a fresh
+recorder, so re-running it has no effects; the second pass takes the two-buffer path and the
+shader's own `copy_leader` performs the past→present copy on the device. One predicate,
+`prefix_pair_is_stageable`, now answers both the arming question and the collection question, so
+"withdraw" and "drop" cannot drift apart again; `withdrawal_and_dropping_agree_over_the_whole_token_space`
+asserts that over the whole small token space. Phi-3.5's per-layer KV aliasing is untouched — its
+`past_key` is a graph input, so it stages, so nothing is withdrawn for it.
+
+This is a change to production code beyond #90's nominal scope. It is here because #90's case
+model is what exposed it and because shipping the case model without it would mint an entry from
+a run whose output was wrong.
+
+#### Attribution needs a process boundary, not a subtraction
+
+`counters::PIPELINE_VARIANTS` is a process-global `static` and a Vulkan pipeline is created once
+per process and then cached, so the counters file is the cumulative set for the whole pytest
+process. That makes the artifact useless for attribution in **both** directions inside a shared
+process: a negative control (`assert_module_did_not_run`) becomes a tautology after the first
+positive test in the file, and a positive control fails whenever the pipeline it needs was already
+cached by an earlier test. Subtracting a snapshot fixes only the first.
+
+`tests/ops/test_gqa_decode_kv_parallel.py` therefore runs every measured run in a **fresh
+interpreter** (`run_vulkan_in_child`; the child is the same file under a `__main__` guard, so the
+model builder and the runner cannot drift apart). The counters file the child leaves behind is,
+exactly, the set of pipelines that run created. The cost is one process launch per device test.
+What it buys is that the refusal controls are controls: with the selector's `seq_len == 1` gate
+deleted, `test_prefill_never_reaches_the_kv_parallel_module` fails with
+``gqa_decode_f16` was built when the selector should have refused`.
+
+#### Non-finite values, and what equivalence is asserted
+
+Stated rather than implied: the module does **not** clamp, sanitise or scrub. A NaN score fails
+`sc > max_s`, `exp(NaN − max_s)` is NaN, and the NaN reaches the output — term for term as in
+`gqa_f16`. `-inf` scores contribute `exp(-inf − m) == 0` and are dropped, again as in `gqa_f16`.
+The merge is ordinary arithmetic on the partials, so a NaN in any lane propagates to the same
+place.
+
+The one behaviour that is **not** shared is bit-exactness. Summing a fixed set of terms in a
+different order is a different rounding, so equivalence is asserted against the ORT CPU EP within
+the declared f16 tolerance and **never** as bit-equality against `gqa_f16`. The single place a
+byte-for-byte claim is made is the kill-switch arm, where the selector refuses and the *same*
+SPIR-V runs. Cross-run bit-identity within the parallel module *is* asserted
+(`test_repeated_runs_are_bit_identical`) — that is a race detector, not an equivalence claim, and
+it is the only assertion in the suite that can see a barrier which is missing rather than merely
+mis-placed.
+
+#### The kill switch
+
+`ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_LANES` clamps to `[1, 16]` and floors to a power of two,
+never trusted — `=0`, which is what the environment can actually produce and which would be a
+division by zero in the ladder, clamps to the refusal value. `=1` restores the pre-#90 dispatch
+exactly: `gqa_f16`, the same geometry, the same SPIR-V, in the same sense that
+`ONNXRUNTIME_EP_VULKAN_GQA_LOCAL_SIZE=1` is §8.13's kill switch and
+`ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS=1` is §8.12's. Larger values force a width for an A/B ladder.
+It is mapped in `ci/census_surface_map.json` as `uncensused/Mouse`, for the same reachability
+reason §8.13's switch is: the census's six-node elementwise graph carries no
+`GroupQueryAttention` node, so no run of it can build either GQA pipeline.
+
+The resolved value is witnessed in an artifact the **EP** produced. It is specialisation constant 0
+of `gqa_decode_f16`, `vk/pipeline.rs` keys the pipeline cache on `(stem, spec_constants)`, and
+`counters::record_pipeline_variant` writes the whole resolved vector — so the lane count rides the
+unchanged recording into `pipeline_variants` and into the §8.9.20 `spec_digest`. Every device test
+in `tests/ops/test_gqa_decode_kv_parallel.py` reads that artifact back and fails unless a
+`gqa_decode_f16` pipeline **at the expected lane count** was actually created, so a silent fallback
+to CPU or to the serial module fails rather than passing as a vacuous CPU-against-CPU agreement.
+
+#### What this does *not* claim
+
+**Any speedup.** Nothing in this section is a performance result. The kernel is new, no
+device-pinned, contention-free measurement of it has been published, and #90's motivation — that
+`gqa_f16` holds 93.5% of decode GPU time at `past = 1024` — is a measurement of the *old* kernel
+and says nothing about how fast the new one is. `docs/PERF.md` §28 records the measurement this
+change owes and the conditions under which it may be taken. Neither does §27's INCONCLUSIVE
+reading of the *#56* geometry change transfer here: that is a different change, a different
+binary pair and a different question, and this module is not on either of its arms.
+
 ---
 
 ## 9. Testing and benchmarking strategy

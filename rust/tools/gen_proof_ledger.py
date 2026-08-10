@@ -1451,11 +1451,17 @@ def _print_spec_note(spec_unrecorded: list[str], total: int) -> None:
 def _mintability(lib: pathlib.Path, keys: list[str]) -> tuple[dict[str, dict], str]:
     """Ask the built EP whether each key is **mintable**: could any proof run ever produce it?
 
-    Returns `({key: {"mintable": bool, "stem": str, ...}}, error)`. A build with no
-    `OrtEpVulkanGetFormMintability` export is an `error`, never an empty dict — a screen that
+    Returns `({key: {"mintable": bool, "stem": str, "stems": [str], ...}}, error)`. A build with
+    no `OrtEpVulkanGetFormMintability` export is an `error`, never an empty dict — a screen that
     cannot see its subject must say so rather than answer `PASS` about something else. That is
     the same rule `--check` already applies to a missing artifact, and the same defect class as
     a key census that reported `0 VANISHED` while a field inside every surviving entry reverted.
+
+    A key whose variant component names a **dispatch set** rather than one module (`@kvpar`,
+    issue #90) is answered on one line per module. `stems` lists every module the key names, and
+    the flattened `stem`/`declared`/`generated`/`loadable` fields are the first module that
+    REFUSES — so the failure text names the module that caused the verdict rather than whichever
+    line happened to arrive last.
 
     Newline is the wire separator because a key's dtype signature contains commas.
     """
@@ -1478,7 +1484,12 @@ def _mintability(lib: pathlib.Path, keys: list[str]) -> tuple[dict[str, dict], s
     n = fn(arg, None, 0)
     buf = ctypes.create_string_buffer(n + 1)
     fn(arg, buf, n)
-    out: dict[str, dict] = {}
+    # One line per MODULE, not per key (#90): a key whose variant component names a dispatch
+    # SET — `gqa_f16@kvpar` — reports `gqa_f16` and `gqa_decode_f16` on separate lines, each
+    # with its own three booleans, and `mintable` carries the conjunction on both. Collapsing
+    # by last-write-wins would have reported an unmintable key alongside the booleans of a
+    # module that was fine, which reads as a contradiction and hides which module refused.
+    per_module: dict[str, list[dict]] = {}
     for line in buf.raw[:n].decode("utf-8", "replace").splitlines():
         fields = line.split("\t")
         if len(fields) < 2:
@@ -1488,7 +1499,26 @@ def _mintability(lib: pathlib.Path, keys: list[str]) -> tuple[dict[str, dict], s
             k, _, v = f.partition("=")
             rec[k.strip()] = v.strip()
         rec["mintable"] = rec.get("mintable") == "yes"
-        out[fields[0]] = rec
+        per_module.setdefault(fields[0], []).append(rec)
+
+    def _module_refuses(rec: dict) -> bool:
+        """`registry::form_provable_from`, negated — for ONE module's three booleans.
+
+        Duplicated here only to pick which module's line to show for a key that names more
+        than one. The verdict itself is never re-derived: `mintable` is the artifact's own
+        conjunction and is copied through untouched.
+        """
+        declared = rec.get("declared") == "yes"
+        generated = rec.get("generated") == "yes"
+        loadable = rec.get("loadable") == "yes"
+        return not (loadable if declared else (not generated or loadable))
+
+    out: dict[str, dict] = {}
+    for key, recs in per_module.items():
+        chosen = next((r for r in recs if _module_refuses(r)), recs[0])
+        rec = dict(chosen)
+        rec["stems"] = [r.get("stem", "?") for r in recs]
+        out[key] = rec
     unanswered = [k for k in keys if k not in out]
     if unanswered:
         return {}, (
@@ -1543,7 +1573,14 @@ def check_mintability(
         failures.append(
             f"key {k} is in the ledger and is NOT MINTABLE on this build: module "
             f"{rec.get('stem', '?')} declared={rec.get('declared')} "
-            f"generated={rec.get('generated')} loadable={rec.get('loadable')}. No pipeline can "
+            f"generated={rec.get('generated')} loadable={rec.get('loadable')}"
+            + (
+                f" (the key names {len(rec['stems'])} modules — {', '.join(rec['stems'])} — and "
+                f"mintability is the conjunction over all of them)"
+                if len(rec.get("stems", [])) > 1
+                else ""
+            )
+            + ". No pipeline can "
             f"be created from it on any device we run on, so the entry asserts a proof of a form "
             f"this build cannot execute, and --reprove cannot repair it — a proof run over this "
             f"key reports `no unlockable keys`. Either enable the capability "

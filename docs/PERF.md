@@ -4851,6 +4851,7 @@ by this edit, which is the point: the change moved lane occupancy, not graph par
   next lever is parallelism over the **KV sequence** inside a workgroup with a reduction — which is
   a shared-memory and barrier change, i.e. a portability question of exactly the kind §25 declined
   to open without evidence. It should be opened now; it has evidence.
+  **(Opened, and implemented, in §27 — with no timing attached to it yet.)**
 * **The harness feeds KV from host numpy.** At `past = 1024` the wall is 608 ms against 287 ms of
   GPU, so ~320 ms is host-side round trip — roughly 805 MB staged at ~2.3 GB/s. A real generation
   loop would use IO binding and keep the cache device-resident. The decode wall numbers here are
@@ -5372,3 +5373,92 @@ power against 0.859 is anything other than at most 0.6621 at the 0.0748 band —
 ceiling attached to one band, not a point estimate and not band-free. Issue #96 is not answered by
 this artifact, and the artifact says so in its own
 `window.claim` field.
+
+---
+
+## 28. The KV-parallel decode module lands with no timing attached (2026-08-09)
+
+§26.7's first limitation named the lever and said it should be opened. Issue #90 opened it and
+`rust/shaders/glsl/gqa_decode_f16.comp` is the kernel; `docs/DESIGN.md` §8.14 is the design.
+
+**This section publishes no timing, no ratio, no speedup, no band and no verdict for that
+kernel, because none has been taken.** That is the whole of the result so far, and it is written
+down rather than left as an absence, so that nobody reads §26's decode rows as if they described
+the new module.
+
+### 28.1 What is *not* claimed, and why each is unavailable
+
+* **No speedup over `gqa_f16`.** The 93.5%-of-decode-GPU-time figure in §26.4 is a measurement of
+  the **serial** kernel. It motivates the change; it is not a result of the change. Quoting it
+  next to the new module — in either direction — would be attributing an old artifact's reading to
+  a new artifact, which is exactly the substitution §26.9 and §26.10 exist to prevent.
+* **No re-measurement of §26's matrix on this head.** §26's numbers were taken at `024027d`; this
+  branch adds a shader, so `git diff 024027d..HEAD -- rust/shaders` is **no longer empty** and the
+  standing "the kernel readings stand on identical SPIR-V" argument in §26.7's last bullet does not
+  extend to any row that dispatches decode GQA. Prefill rows are still on byte-identical SPIR-V —
+  `gqa_f16.comp` is unchanged, and `git diff origin/main -- rust/shaders/glsl/gqa_f16.comp` is
+  empty — but that is an argument about the *file*, not a fresh reading.
+* **No number taken during a contended window.** The box that produced §26 is a single-GPU
+  workstation shared with other work. A reading taken while another benchmark owns the device is
+  not a reading of this kernel; §24 already established on this box that a contended arm can invert
+  a ratio outright. Any §27 measurement must be taken in an exclusive window and must say so.
+* **No whole-model verdict, and no publication of one if the model diverges.** The fail-closed rule
+  from §26.2 is unchanged and applies here with no exception: if the whole-model comparison
+  **disagrees**, the run publishes **no** timing, no ratio, no speedup, no band and no verdict.
+  Raw per-dispatch observations remain available, but they stay in their own separately-scoped
+  artifact and are never promoted into a performance claim by being adjacent to one. A divergent
+  run is a correctness event, not a slow one.
+
+### 28.2 The measurement this change owes
+
+When the device is free, and only then:
+
+```
+python bench/results/probe_real_model_latency.py --device 0 \
+  --models phi-3.5-mini-instruct-cuda-int4-rtn-block-32 \
+  --prefill-m 1,128 --decode-past 1024 \
+  --out bench/results/real_model_latency_kvpar.json
+```
+
+taken twice — once with `ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_LANES=1`, which restores the pre-#90
+dispatch exactly (`gqa_f16`, same geometry, same SPIR-V, per §8.14's kill switch), and once with
+the switch unset — so the arms differ in the dispatched module and nothing else. The lane ladder
+itself deserves the §26.5-shaped sweep that `probe_gqa_local_size.py` gave the workgroup size,
+forcing widths 2/4/8/16 through the same switch, because `GQA_DECODE_MIN_KV_PER_LANE = 32` is
+currently an argument from the traffic ratio and not a reading.
+
+Before either is published:
+
+* both arms' whole-model outputs must **agree**, per §28.1's last bullet;
+* the `M = 1` null control must be re-taken on this head, because §26.3's 0.791 – 1.224
+  arm-asymmetry band is a property of a *run*, not a constant, and it is the band that governs
+  every decode row;
+* the artifact must record the device identity fields §26.7's penultimate bullet says the §26
+  artifacts could not (#54 landed those on `main`), and must state that the window was exclusive.
+
+Until all three hold, the correct decode number for the new module is the one printed above: none.
+
+### 28.3 The corporate-load window this branch was validated in, and what it therefore says
+
+Everything on this branch was validated for **correctness only**. The box was under ordinary
+corporate load throughout, which §24 already established on this hardware is enough to invert a
+ratio, so no arm was timed and nothing here may be read as a timing statement — including by
+omission. The validation that was run is: `cargo test --lib` (769), `cargo test --tests`, clippy
+and `rustfmt`; `pytest tests/ops` (1157 passed) on the NVIDIA RTX A1000 and the new module's own
+27-test suite a second time on lavapipe; `glslc --target-env=vulkan1.1` plus `spirv-val` on both
+GQA modules; `gen_proof_ledger.py --check` PASS at 134 entries; and the census, ledger-census,
+verification-subject and lane-check gates.
+
+Two mutation controls were taken to show the new suite can go red, both rebuilt and both
+reverted afterwards: dropping the final merge stride in `gqa_decode_f16.comp` turned 21 of the 27
+tests red, and deleting the selector's `seq_len == 1` gate turned the prefill refusal control red
+(and three `cargo test --lib` cases with it). A suite observed only to pass is not known to be a
+suite.
+
+**One pre-existing failure is reproduced and is not this branch's:**
+`tests/ops/test_criterion10.py::test_criterion_10_three_consecutive_attributed_match` reports
+`model_output_equivalence = DIVERGENT` on the whole Phi-3.5 model. It fails identically on a clean
+build of `origin/main` (`54d48ce`) on this machine, which is how it was attributed. Per §28.1's
+last bullet that divergence is a **correctness** event and it independently forbids publishing any
+timing, ratio, band or verdict for this model on this branch — the fail-closed rule does not care
+which change caused the divergence, only that one exists.

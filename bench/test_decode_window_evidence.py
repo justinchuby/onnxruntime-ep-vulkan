@@ -659,16 +659,14 @@ class TestTheCompiledDeltaIsEnumeratedInFull:
         assert 'include_str!("../../evidence/proof_ledger.jsonl")' in registry
 
     def test_the_documents_name_all_three_compiled_inputs(self):
-        perf = PERF_PATH.read_text(encoding="utf-8")
-        section = perf[perf.index("## 27."):]
+        section = _perf_section()
         for compiled_input in ("gqa_f16.comp", "attention.rs", "proof_ledger.jsonl"):
             assert compiled_input in section, f"{compiled_input} is not named in PERF §27"
 
     def test_no_isolated_shader_causality_is_claimed(self):
         """With three compiled inputs differing, no timing difference can be attributed to the
         shader alone. The documents must not say it can."""
-        perf = PERF_PATH.read_text(encoding="utf-8")
-        section = perf[perf.index("## 27."):]
+        section = _perf_section()
         for forbidden in (
             "caused by the shader",
             "the shader is responsible",
@@ -683,8 +681,19 @@ class TestTheCompiledDeltaIsEnumeratedInFull:
 
 
 def _perf_section() -> str:
+    """§27 and only §27.
+
+    The slice is **bounded at the next top-level heading**. It used to run to the end of the
+    file, which was the same text while §27 was last; it stopped being the same text when
+    issue #90 added §28 (the KV-parallel decode module) directly below. An unbounded slice
+    grades a *different* change's prose against *this* artifact — every guard below would have
+    been screening §28's sentences, and the forbidden-phrase checks would have been the first
+    to fire on prose that was never about this measurement.
+    """
     perf = PERF_PATH.read_text(encoding="utf-8")
-    return perf[perf.index("## 27."):]
+    start = perf.index("## 27.")
+    nxt = perf.find("\n## ", start + 1)
+    return perf[start:] if nxt == -1 else perf[start:nxt]
 
 
 #: The subsection this change adds to DESIGN §8.13. Forbidden-phrase checks are scoped to it
@@ -695,10 +704,13 @@ DESIGN_MARKER = "#### Whether that decode geometry costs anything — still open
 
 
 def _design_section() -> str:
+    """The #96 subsection, bounded at the next heading of any level — for the same reason
+    `_perf_section` is bounded: issue #90 added §8.14 immediately below it, and `\\n## 9.` is no
+    longer the first thing that follows."""
     design = DESIGN_PATH.read_text(encoding="utf-8")
     start = design.index(DESIGN_MARKER)
-    end = design.index("\n## 9.", start)
-    return design[start:end]
+    ends = [i for i in (design.find("\n### ", start), design.find("\n## ", start)) if i != -1]
+    return design[start:min(ends)] if ends else design[start:]
 
 
 class TestTheDocumentsMatchTheArtifact:
