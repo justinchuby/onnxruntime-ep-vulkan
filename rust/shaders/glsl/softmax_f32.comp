@@ -1,0 +1,178 @@
+// Softmax over the last axis (f32), one workgroup per row.
+//
+// Scope: this file is the **kernel only**. Shape flattening, the last-axis-only precondition,
+// the power-of-two workgroup assertion and the row-count refusal above the Vulkan 1.1
+// `maxComputeWorkGroupCount[0]` floor of 65535 are host-side and are deliberately *not*
+// attempted here (see the handoff note that ships with this branch).
+//
+// Contract with the host:
+//
+//   push constants   layout(push_constant) { uint row_count; uint axis_size; }   // 8 bytes
+//   set 0, binding 0 readonly  storage buffer, float[], input,  row-major, row stride axis_size
+//   set 0, binding 1 writeonly storage buffer, float[], output, same shape and stride as input
+//   dispatch         vkCmdDispatch(row_count, 1, 1)                              // one row per WG
+//   spec constant 0  local_size_x, default 256; MUST be a power of two in [1, 256]
+//
+// The input is read twice (max pass, then the exp/sum pass and again for the write) rather than
+// cached in shared memory, because a row is `axis_size` elements wide and `axis_size` is not
+// bounded by the workgroup size. Shared memory holds one float per invocation and nothing else:
+// 256 * 4 = 1 KiB, inside the 16 KiB `maxComputeSharedMemorySize` floor of Vulkan 1.1 §Limits
+// with an order of magnitude to spare.
+//
+// Portability floor (deliberate non-use):
+//   - no subgroup operations (`GL_KHR_shader_subgroup*` is not core in Vulkan 1.1 for compute
+//     without querying `subgroupSupportedOperations`; the tree reduction below needs none),
+//   - no 64-bit integers (`shaderInt64` is optional),
+//   - no optional extension of any kind, no `GL_GOOGLE_include_directive`, no `#include` — this
+//     kernel is closed over its own text so that touching a shared include cannot move its
+//     source digest,
+//   - no `float16_t`, no 8/16-bit storage.
+//
+// Algorithm — four passes inside one dispatch, standard max-subtracted (safe) softmax:
+//
+//   Pass 1  each invocation strides over its share of the row, taking a running max.
+//   Pass 2  shared-memory binary tree reduction with `max` -> shmem[0] = row_max.
+//   Pass 3  re-read, exponentiate against row_max, tree-reduce with `+` -> shmem[0] = row_sum.
+//   Pass 4  re-read, exponentiate again, scale by 1/row_sum, write.
+//
+// Synchronization reasoning (the part that is not obvious):
+//
+//   a) **The identity of an inactive lane is per-operator.** With `axis_size = 128` under
+//      `local_size_x = 256`, invocations 128..255 own no element at all. Their `shmem` slot is
+//      still read by the tree reduction, so it must hold the *identity of that reduction*. For
+//      `max` that is -INF, and it is emphatically not 0.0: seeding an idle lane with 0.0 turns
+//      every all-negative row (the ordinary case for attention logits) into `row_max = 0`, which
+//      is silently wrong rather than loudly wrong. The max pass therefore seeds `NEG_INF` and
+//      the sum pass seeds `0.0`, each being the identity of its own operator.
+//
+//   b) **shmem is reused, so the reuse needs a barrier of its own.** Every invocation reads
+//      `shmem[0]` to learn `row_max`. Pass 3 then writes `shmem[tid]` again. Without an
+//      execution barrier between that read and that write, an invocation that has already
+//      finished reading may overwrite `shmem[0]` while a lagging invocation is still reading it
+//      — a genuine intra-workgroup race, and one that a single-subgroup workgroup (a 256-wide
+//      AMD wave, or any 1-lane debug specialization) hides completely. The `barrier();
+//      memoryBarrierShared();` pair between the two reductions is not defensive, it is load
+//      bearing.
+//
+//   c) **No invocation leaves the workgroup between barriers.** `barrier()` in a compute shader
+//      requires uniform control flow across the workgroup (GLSL 4.5 §8.16, Vulkan SPIR-V
+//      `OpControlBarrier` validity rules). The only early exit in this file is the
+//      `row >= row_count` guard, which is a function of `gl_WorkGroupID.x` alone and is therefore
+//      taken by every invocation of the workgroup or by none, and it sits ahead of every
+//      barrier. The degenerate-row handling below is expressed as a *value* (`degenerate`), not
+//      as a return, precisely so that it cannot introduce a non-uniform exit.
+//
+// Degenerate rows — defined, not merely NaN-free:
+//
+//   `row_max` non-finite is the case a masked attention row actually produces. If every logit in
+//   the row has been set to -INF by the mask, `exp(x - row_max)` is `exp(-INF - -INF)` = `exp(NaN)`
+//   = NaN, and the row poisons everything downstream of it. Rather than clamping after the fact,
+//   the exponential is replaced by the indicator of the maximum whenever `row_max` is not finite:
+//
+//       e[i] = isfinite(row_max) ? exp(x[i] - row_max) : (x[i] == row_max ? 1.0 : 0.0)
+//
+//   which is the limit of softmax in both non-finite directions and needs no special-casing:
+//     * all -INF (fully masked row): every `e[i]` is 1, `row_sum` is N, output is uniform `1/N`
+//       — the same value the CPU oracle produces, not just "not NaN";
+//     * a +INF logit present: `e[i]` is 1 on the +INF entries and 0 elsewhere, i.e. the one-hot
+//       (or uniform-over-ties) limit.
+//
+//   `row_sum` is then guarded once more. `row_sum > 0.0` is false for 0, for negative, and for
+//   NaN (an all-NaN input row), and each of those falls back to the uniform `1/axis_size`
+//   distribution, so the kernel has no path that divides by zero and no path that emits NaN
+//   unless the host asked for `axis_size == 0`, which writes nothing at all.
+
+#version 450
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    uint row_count;  // number of last-axis rows = product of all dims except the last
+    uint axis_size;  // elements per row = size of the softmax axis (the last one)
+} pc;
+
+layout(set = 0, binding = 0) readonly  buffer In  { float data[]; } u_in;
+layout(set = 0, binding = 1) writeonly buffer Out { float data[]; } u_out;
+
+// One float per invocation at the 256 default. 1 KiB, and the only shared allocation.
+shared float shmem[256];
+
+void main() {
+    // Bit pattern of -INF. Written this way rather than `-1.0 / 0.0` so that no constant folder
+    // has to be trusted to produce an infinity from a division by zero.
+    const float NEG_INF = uintBitsToFloat(0xFF800000u);
+
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint lsz = gl_WorkGroupSize.x;
+
+    // Workgroup-uniform, and ahead of every barrier in this file. See note (c).
+    if (row >= pc.row_count) return;
+
+    uint base = row * pc.axis_size;
+
+    // ── Pass 1: partial maxima ───────────────────────────────────────────────────────────────
+    // Lanes with no element keep NEG_INF, the identity of `max`. See note (a).
+    float partial_max = NEG_INF;
+    for (uint i = tid; i < pc.axis_size; i += lsz) {
+        partial_max = max(partial_max, u_in.data[base + i]);
+    }
+
+    // ── Pass 2: tree reduction with `max` ────────────────────────────────────────────────────
+    // Requires lsz to be a power of two, which the host asserts.
+    shmem[tid] = partial_max;
+    barrier();
+    memoryBarrierShared();
+
+    for (uint stride = lsz >> 1u; stride > 0u; stride >>= 1u) {
+        if (tid < stride) {
+            shmem[tid] = max(shmem[tid], shmem[tid + stride]);
+        }
+        barrier();
+        memoryBarrierShared();
+    }
+
+    float row_max = shmem[0];
+
+    // Read-before-reuse barrier. Every invocation has now read shmem[0]; only after this pair is
+    // it safe for pass 3 to write shmem[tid] again. See note (b).
+    barrier();
+    memoryBarrierShared();
+
+    // `isinf` covers the masked-row case; `isnan` keeps a NaN row on the defined path too.
+    bool finite_max = !isinf(row_max) && !isnan(row_max);
+
+    // ── Pass 3: partial sums of the exponentials ─────────────────────────────────────────────
+    // Lanes with no element contribute 0.0, the identity of `+`.
+    float partial_sum = 0.0;
+    for (uint i = tid; i < pc.axis_size; i += lsz) {
+        float x = u_in.data[base + i];
+        partial_sum += finite_max ? exp(x - row_max) : (x == row_max ? 1.0 : 0.0);
+    }
+
+    shmem[tid] = partial_sum;
+    barrier();
+    memoryBarrierShared();
+
+    for (uint stride = lsz >> 1u; stride > 0u; stride >>= 1u) {
+        if (tid < stride) {
+            shmem[tid] += shmem[tid + stride];
+        }
+        barrier();
+        memoryBarrierShared();
+    }
+
+    float row_sum = shmem[0];
+
+    // False for 0.0, for a negative sum, and for NaN — all three take the uniform fallback.
+    bool degenerate = !(row_sum > 0.0);
+    float inv_sum = degenerate ? 0.0 : 1.0 / row_sum;
+    float uniform_p = pc.axis_size > 0u ? 1.0 / float(pc.axis_size) : 0.0;
+
+    // ── Pass 4: normalise and write ──────────────────────────────────────────────────────────
+    for (uint i = tid; i < pc.axis_size; i += lsz) {
+        float x = u_in.data[base + i];
+        float e = finite_max ? exp(x - row_max) : (x == row_max ? 1.0 : 0.0);
+        u_out.data[base + i] = degenerate ? uniform_p : e * inv_sum;
+    }
+}
