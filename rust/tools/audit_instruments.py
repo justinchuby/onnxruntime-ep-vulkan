@@ -469,6 +469,13 @@ BENCH_INSTRUMENT_FILES = [
     # it means the polarity of those decisions is counted rather than assumed. It is listed
     # after #78's entries because it was minted onto that base, not merged alongside it.
     "decode_window_evidence.py",
+    # Arrived with issue #69 v5 (Niobe, the Phi-3.5 evidence publication gate). Screened
+    # because every function in it renders a verdict about whether a stored measurement may
+    # be published: `publish` is the single authority, and each condition in `GATE_CONDITIONS`
+    # decides admissibility (immutable binding, per-output integrity, device-state companion,
+    # suppression-on-refusal). A wrong answer is a timing claim published on a box that cannot
+    # certify one, which is the exact failure this gate exists to prevent.
+    "phi69_evidence.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -530,6 +537,9 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_paired_ratio.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_ceiling.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_real_model.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_phi69_evidence.py": (
+        "test module — a caller of phi69_evidence.py, screened as polarity, not as an instrument."
+    ),
     # Arrived with Switch's fa5f514 and was the frame arm's second live catch. Worth naming
     # what it cost before it was declared: the frame arm runs BEFORE the uninvoked census, so
     # `audit_instruments --check` failed on the frame and never printed
@@ -645,6 +655,13 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
 # helpers raise `PolarityError` at run time when the contract they name is not honoured.
 # They are assertions, not annotations.  A mutant instrument cannot pass through either.
 #
+# `refuses` is shaped for the `(None, why)` refusal of `identify_by_uuid`.  Two later value
+# contracts are enforced by the same standard and registered here too: `denies(result)`
+# holds the boolean `(False, why)` refusal of the #69 gate conditions, and
+# `suppresses(published)` holds the publication authority's contract — an inadmissible
+# record must come back with no quotable verdict and a named refusal.  Both raise when the
+# polarity they name is not honoured, so they credit only what they observed.
+#
 # Crediting a bare marker would be the Guard D shape with the sign flipped, and this file
 # says so about itself two hundred lines up; the enforcement is what makes this not that.
 #
@@ -660,7 +677,7 @@ def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
 # actually varies the thing under test.  That is earned by mutation —
 # `bench/test_devices_identity.py` for this instrument, `tests/ops/test_guard_d.py` for
 # the harness domain — and it is not claimed by this screen.
-VALUE_REJECT_FN = frozenset({"refuses", "withholds"})
+VALUE_REJECT_FN = frozenset({"refuses", "denies", "withholds", "suppresses"})
 VALUE_ACCEPT_FN = frozenset({"selects"})
 
 

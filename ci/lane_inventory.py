@@ -473,6 +473,87 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.phi69_evidence",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Phi #69 evidence admissibility (host-free, no GPU, no timing)",
+        watches=(
+            "Issue #69's standing publication posture. On this box the documented "
+            "isolation gate does not pass (docs/PERF.md §20/§27: foreign busy cores far "
+            "above the 0.5 threshold, occupancy VACUOUS), so no wall-clock figure for the "
+            "Phi-3.5 prefill or decode may be published. With no record the check affirms "
+            "INDETERMINATE; with a record it rules RED the instant the record claims "
+            "admissible timing the isolation gate never certified."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Hand it a record whose timing_admissible is asserted true while quiescence "
+            "is CONTENDED — the standing state of this box — and demand the check go red "
+            "rather than echo the fabricated figure. The 17 admissibility conditions and "
+            "their attacks live in ci/negative_control_phi69_evidence.py (the row below)."
+        ),
+        arm_healthy=(
+            "no record: PHI69-EVIDENCE: INDETERMINATE -- no admissible timing artifact "
+            "while the isolation gate is unavailable; no timing, ratio or speedup "
+            "published"
+        ),
+        arm_broken=(
+            "a record claiming admissible timing: PHI69-EVIDENCE: FAIL -- record claims "
+            "timing is admissible, but this box cannot certify a wall-clock figure "
+            "(docs/PERF.md section 20)"
+        ),
+        observed="2026-08-09",
+        misses=(
+            "It certifies NO speedup. A PASS is a refusal to publish a number, not a "
+            "measurement that the candidate is faster or slower; the isolation gate this "
+            "box fails is precisely the thing that would license such a number.",
+            "It is host-free by construction, so it cannot observe the contention it "
+            "names. The quiescence and device-state verdicts it reads come from a record "
+            "produced elsewhere; a record that lies about them in a shape the 17 "
+            "conditions do not inspect would pass.",
+            "It rules a record, not the run that produced it. Immutable-identity binding "
+            "reduces but does not eliminate the gap between the bytes measured and the "
+            "bytes recorded.",
+        ),
+    ),
+    Check(
+        id="hostfree.phi69_evidence_negative_control",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Phi #69 evidence negative control (attack every arm, demand red)",
+        watches=(
+            "The gate above. A publication gate that has only ever been observed refusing "
+            "is one step from a gate that cannot admit; and a gate observed only admitting "
+            "is one that certifies anything. This attacks all 17 admissibility conditions "
+            "and fails if any attack goes uncaught."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "One targeted attack per condition on a synthetic admissible record: a "
+            "fabricated source commit reading HEAD, a wrong device UUID, a truncated "
+            "per-output list, one KV row flipped to DIVERGENT while the aggregate stays "
+            "MATCH, a CRLF-mangled content digest, a prefill IMPROVEMENT verdict, a decode "
+            "subject pooled with prefill, a CI-only provenance claim the base delta "
+            "contradicts, a leaked private path in a refusal, a missing power/boost "
+            "qualification. Plus a baseline arm: the unmutated record must publish "
+            "QUOTABLE, or no red is attributable to its injection. 17 arms in "
+            "ci/negative_control_phi69_evidence.py (2 OBSERVED / 15 PLANTED)."
+        ),
+        arm_healthy="all 17 conditions attacked and caught; NEGATIVE CONTROL PASSED",
+        arm_broken=(
+            "an un-attacked condition is reported "
+            "FAIL(condition=unattacked_arm) naming the arm, never as a pass — a gate arm "
+            "nobody attacked is the state this control exists to end"
+        ),
+        observed="2026-08-09",
+        misses=(
+            "It proves the gate rejects the defect shapes SOMEBODY THOUGHT OF. A "
+            "fabrication that satisfies all 17 conditions while still being false — a "
+            "measurement forged consistently across identity, digest and companion — is "
+            "invisible to the control exactly as it is to the gate.",
+        ),
+    ),
+    Check(
         id="hostfree.readme_usage",
         falsifier=FALSIFIER_OBSERVED,
         lane=LANE_HOSTFREE,
