@@ -1768,6 +1768,97 @@ def test_mutating_the_ledger_census_run_line_to_add_shell_suppression_is_caught_
         _assert_ledger_census_step_has_no_error_suppression(mutated)
 
 
+# ---------------------------------------------------------------------------------------
+# ISSUE #104 (additional acceptance criterion, added after independent review of this PR
+# found the criterion still unmet) -- `continue-on-error` must be absent from the WHOLE
+# workflow, not only from the Proof-ledger census step the helper above already guards.
+#
+# Independent review demonstrated the exact gap: injecting `continue-on-error: true`
+# into the UNRELATED `format` job's `Check formatting` step left every test above (and
+# every other test in this suite) green, because none of them ever read any text outside
+# the `lane-checks` job. `ci.yml`'s own header comment already claims, in prose, that
+# "`continue-on-error` appears NOWHERE in this file" -- that claim was never mechanically
+# checked; only the census step's narrower slice was.
+#
+# The guard below reads the WHOLE file, not one job's slice, and the only text it
+# excludes is a *whole-line* comment (a line whose first non-whitespace character is
+# `#`) -- which is exactly what both existing mentions of the phrase already are (the
+# top-of-file `env:` preamble comment and the build-test job's CRITERION 10 comment).
+# A real `continue-on-error:` YAML key can never itself be the first token on a
+# comment line, so this exclusion cannot hide one; it only lets the file keep
+# describing its own guarantee in prose without that prose falsifying itself.
+# ---------------------------------------------------------------------------------------
+
+
+def _non_comment_workflow_text(ci_text: str) -> str:
+    """`ci_text` with every whole-line comment dropped (a line whose stripped content
+    starts with `#`), so prose describing the no-`continue-on-error` guarantee is not
+    itself mistaken for a violation of it. Only whole-line comments are dropped --
+    deliberately not trailing `# ...` comments after real content -- so this stays
+    honest about what it actually excludes rather than silently forgiving a suppressed
+    token that shares a line with executable YAML.
+    """
+    return "\n".join(
+        line for line in ci_text.splitlines() if not line.strip().startswith("#")
+    )
+
+
+def _assert_workflow_has_no_error_suppression_anywhere(ci_text: str) -> None:
+    """THE workflow-wide guard: `continue-on-error` must appear nowhere in ci.yml's
+    non-comment text, in ANY job and ANY step -- not only the Proof-ledger census step
+    `_assert_ledger_census_step_has_no_error_suppression` above already covers."""
+    executable_text = _non_comment_workflow_text(ci_text)
+    assert "continue-on-error" not in executable_text, (
+        "`continue-on-error` was found in .github/workflows/ci.yml outside of a "
+        "comment line; this key silently turns a failing step into a passing one on "
+        "ANY job, not only the Proof-ledger census step, and issue #104's additional "
+        "acceptance criterion requires it to appear nowhere in the workflow at all"
+    )
+
+
+def test_ci_yml_has_no_continue_on_error_anywhere_in_the_workflow_issue_104():
+    """The real (passing) half of the workflow-wide proof: ci.yml's own text, today,
+    mentions the phrase only inside its two header-comment blocks describing the
+    guarantee -- never as an actual step key, in any job. This deliberately reads the
+    WHOLE file, unlike `test_ledger_census_step_is_a_bare_run_with_no_error_suppression_issue_104`
+    above, which only ever looked at the `lane-checks` job's one step."""
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert ci_text.count("continue-on-error") >= 2, (
+        "expected the two known header-comment mentions of `continue-on-error` to "
+        "still be present in ci.yml's prose; if this count changed, re-check this "
+        "test's premise (and the mutation-target counts below) before trusting them"
+    )
+    _assert_workflow_has_no_error_suppression_anywhere(ci_text)
+
+
+def test_mutating_an_unrelated_step_to_add_continue_on_error_is_caught_by_the_workflow_wide_guard_issue_104():
+    """Falsifiability arm reproducing the EXACT gap independent review demonstrated:
+    `continue-on-error: true` injected into the `format` job's `Check formatting` step
+    -- nowhere near the Proof-ledger census step the older, narrower helper guards --
+    must turn the workflow-wide helper red. This also demonstrates, in the same test,
+    that the pre-existing narrower helper does NOT catch this class of mutation (it
+    cannot see outside `lane-checks`), which is precisely why the broader guard above
+    exists rather than replacing it."""
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    marker = "      - name: Check formatting\n"
+    assert ci_text.count(marker) == 1, f"mutation target {marker!r} is not unique in ci.yml"
+
+    insertion_point = ci_text.index(marker) + len(marker)
+    mutated = (
+        ci_text[:insertion_point]
+        + "        continue-on-error: true\n"
+        + ci_text[insertion_point:]
+    )
+    assert mutated != ci_text
+
+    with pytest.raises(AssertionError):
+        _assert_workflow_has_no_error_suppression_anywhere(mutated)
+
+    # Same mutant, narrower pre-existing helper: it must NOT raise, proving the gap
+    # this broader guard closes is real and was not already covered incidentally.
+    _assert_ledger_census_step_has_no_error_suppression(_ledger_census_step_block(mutated))
+
+
 def _ledger_census_argv(ci_text: str) -> list[str]:
     """The exact argv ci.yml's 'Proof-ledger census' step ships, with `sys.executable`
     substituted for the literal `python` token so it runs under this test process's own
