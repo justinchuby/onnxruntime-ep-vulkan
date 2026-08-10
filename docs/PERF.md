@@ -5372,3 +5372,121 @@ power against 0.859 is anything other than at most 0.6621 at the 0.0748 band —
 ceiling attached to one band, not a point estimate and not band-free. Issue #96 is not answered by
 this artifact, and the artifact says so in its own
 `window.claim` field.
+
+## 28. Issue #69, revision v5: a publication gate that refuses on this box, by construction (2026-08-09)
+
+This section does not report a speedup. It reports the **standing admissibility posture** for the
+Phi-3.5 real-model evidence issue #69 asks for, and the gate that enforces it — `bench/phi69_evidence.py`.
+Revision v4 (PR #117) was rejected by the Fact Checker for publishing prefill *improvement* verdicts
+and their ratios while the conditions that would license a wall-clock number were never met. v5 is a
+clean-room reimplementation that treats the refusal as the result, because on this hardware it is.
+
+> **Authorship and lockout.** v5 is authored by Niobe against `origin/dev`, in a dedicated clean
+> worktree, without reading or copying v4's `bench/phi_evidence.py` or its §-prose. The v4 *commit*
+> was authored by Morpheus, who is locked out of this revision (no advice, edit, test, benchmark,
+> push or co-authorship); the repository owner reassigned the revision to Niobe, superseding the
+> rejection comment's suggestion of Trinity. This is recorded so the clean-room boundary is auditable.
+
+### 28.1 The posture: `INDETERMINATE` timing, and why it is not a blocked task
+
+§20 is the standing policy: this box is contended, `STEADY_UNCERTIFIED` is the *expected* verdict for
+a wall-clock figure, and no plan may contain the step "measure when the box settles." §69's gate is
+that policy made executable for one issue. The isolation gate this project documents — two consecutive
+confirmations of ≤0.5 foreign busy cores and ≤10% loud samples against a non-VACUOUS occupancy
+reference — **does not pass on this machine** (foreign busy cores run well above the threshold,
+occupancy reads VACUOUS). Therefore:
+
+- Every prefill subject is published as `STEADY_UNCERTIFIED`, never `IMPROVEMENT`. It becomes
+  quotable only if `quiescence_quiet` **and** `device_state_companion` both pass, which they do not.
+- The decode `M=1 / past=128` subject is published as `INDETERMINATE`, kept **separate and unpooled**
+  from prefill, and its two prior recorded observations (`0.859x`, `0.9651x`) are preserved as text,
+  not re-derived into a fresh number.
+- On refusal, **every** wall-clock-bearing field — median, delta, ratio, speedup, floor, band,
+  throughput, latency — is replaced by a `SUPPRESSED` sentinel *in place of* the number, per §10.0:
+  a figure printed beside a warning gets quoted without the warning, so the warning must be printed
+  instead of the figure. Suppression is by key name **and** by value, so a wall-clock float copied
+  under an innocuous key cannot survive; the leak detector that verifies this derives its banned set
+  from the record under test rather than from any hard-coded literal.
+
+This is a `PASS` of the gate, not a failure to produce evidence. The structural and correctness
+**requirements** below are unaffected by wall-clock contention; the gate enforces them on any record,
+and asserts an all-output *correctness result* only when a full sixty-five-output record is supplied.
+The standing posture carries no such record, so it claims no correctness result — only the
+requirement a record would have to meet. What survives a refusal, when a record is present, is what
+the record carries in a number's place.
+
+### 28.2 The seventeen admissibility conditions
+
+`GATE_CONDITIONS` is a registry of seventeen named total predicates, each returning `(ok, reason)`.
+**All seventeen** must pass before any wall-clock number may be published (`TIMING_ADMISSIBILITY`
+is the whole registry): an earlier design split out a nine-condition "timing-only" subset, but that
+let an anti-overclaim condition — decode still pooled, the headline widened to close #69, within-arm
+dispersion promoted to a verdict, the harness claiming exclusive GPU ownership — fail while a
+`QUOTABLE` figure was still emitted. A number is licensed only when nothing in the record objects.
+Six of the conditions are additionally *refusal-surviving witnesses*: they are what still publishes
+(counts, identities, the correctness verdict) when timing is withheld. The core gates and the
+integrity gaps they close, mapped to the reviewer's requirements:
+
+- **`immutable_run_binding`** — a run's `source_commit`, `dll_sha256` and `build_recipe_sha256` must be
+  immutable identities, not the mutable checkout `HEAD`; the dirty-worktree flag is bound in. v4's
+  `_measure` recorded the mutable HEAD and hard-coded its baseline, so a fabricated commit passed a
+  non-empty-only check.
+- **`device_identity_immutable`** / **`model_identity_provenance`** — the device UUID, LUID, PCI bus
+  and the model graph/weights SHA-256 and Foundry variant must be present and well-formed, not merely
+  non-empty. The pinned device is `aadf33d4d118155fcc60c22b5c352463`.
+- **`quiescence_quiet`** + **`device_state_companion`** — §20's companion requirement: a quotable
+  figure needs the contention companion `QUIET` **and** a device-state record. Either one absent is a
+  refusal.
+- **`per_output_integrity`** + **`all_output_equivalence`** — all sixty-five Phi-3.5 outputs (one
+  logits + sixty-four KV) must be present per arm and every one `MATCH`; a truncated `per_output` list
+  or a single KV row flipped to `DIVERGENT` while the aggregate stayed `MATCH` is caught, closing v4's
+  raw→aggregate disconnect. This is the *requirement* a record must meet; the sixty-five count is the
+  Phi-3.5-mini KV structure (thirty-two layers × two + one logits), not a result observed here. The
+  published `correctness.established` flag is true only when a record actually carries the sixty-five
+  reconciled rows — with no record it is false, and no output-equivalence result is claimed.
+- **`digests_platform_stable`** — recorded content digests must equal the **LF-normalized**
+  recomputation, so a CRLF checkout cannot change a hash (v4 recorded a CRLF digest that failed on
+  Linux).
+- **`uncertainty_qualified`** — even a refused figure must carry an A/A noise band **and** a
+  power/boost qualification that disclaims quiet/boost/concurrent-GPU state.
+
+The structural / disclosure witnesses include `provenance_claim_accurate` (the base→candidate
+delta is described truthfully: it changed bench tooling, docs and CI — **not** "CI-only, no bench
+source", v4's false claim), `refusal_output_sanitized` (no published field — not only a refusal
+reason, but any device, model, witness or subject string — may echo a private home path),
+`decode_p128_separate` (decode stays unpooled and never inherits a prefill `IMPROVEMENT`),
+`isolation_language_cooperative` (the harness claims process exclusion, never exclusive GPU ownership),
+`headline_scope_not_widened` (one model, one prefill family, one box, no CUDA comparison, does not
+close #69), and `no_dispersion_promotion` (within-arm dispersion must be **present** and diagnostic and
+never promotes a verdict — an absent block no longer passes vacuously).
+
+### 28.3 How the gate is itself falsified
+
+A gate observed only refusing is one step from a gate that cannot admit; a gate observed only admitting
+certifies anything. Both polarities are watched, by value rather than by raise:
+
+- `bench/test_phi69_evidence.py` runs the admissible fixture through every condition (accept) and a
+  single targeted mutation through each (reject), routing the reject side through
+  `bench/_polarity.py::denies` — an assertion that raises unless a condition returns `(False, reason)`
+  —   and the publication authority through `::suppresses`, which raises unless an inadmissible record
+  comes back with no quotable verdict and a named refusal. The seventeen conditions and `publish` are
+  `SCREENED` in `rust/tools/audit_instruments.py`'s bench census as a result.
+- `ci/negative_control_phi69_evidence.py` attacks all seventeen conditions across eighteen arms (a
+  fabricated commit, a wrong UUID, a truncated output list, a CRLF digest, a prefill `IMPROVEMENT`, a
+  leaked path, a pooled decode, a promoted dispersion **and** an absent dispersion block) and fails if
+  any attack goes uncaught. On each refusal it re-derives the banned timing set from the record and
+  asserts nothing leaked — no hard-coded literal. Two arms are OBSERVED (this box's real `CONTENDED`
+  quiescence and absent device state), sixteen PLANTED.
+- `ci/check_phi69_evidence.py --check` is the host-free lane gate: with no record it affirms
+  `INDETERMINATE`; with a record it rules RED the instant the record claims admissible timing the
+  isolation gate never certified. It emits no number of its own.
+
+### 28.4 What the highest-value next optimization work is
+
+Timing is `INDETERMINATE` here, so the prioritized next performance work is named from the structural
+witnesses that contention cannot corrupt, not from a wall-clock delta this box cannot license. The
+standing counters (§26: `gqa_f16` as the largest single consumer of device time; MiniLM's thirty-six
+islands and thirty-six staging uploads) remain the falsifiable levers. The single highest-value next
+issue is a **companion-attached, boost-state device run on an uncontended box** — the only thing that
+converts any of §69's suppressed figures into a quotable one — followed by the `gqa_f16` GLSL fix §26
+identified. Neither is scheduled against this hardware, and this section refuses to pretend otherwise.

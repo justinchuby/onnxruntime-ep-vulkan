@@ -684,7 +684,9 @@ class TestTheCompiledDeltaIsEnumeratedInFull:
 
 def _perf_section() -> str:
     perf = PERF_PATH.read_text(encoding="utf-8")
-    return perf[perf.index("## 27."):]
+    start = perf.index("## 27.")
+    nxt = perf.find("\n## ", start + 1)
+    return perf[start:] if nxt == -1 else perf[start:nxt]
 
 
 #: The subsection this change adds to DESIGN §8.13. Forbidden-phrase checks are scoped to it

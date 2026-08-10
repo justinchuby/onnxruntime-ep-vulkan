@@ -244,3 +244,75 @@ def withholds(result: Any, key: "str | None" = None, *, because: str) -> str:
             f"indistinguishable to every reader we have."
         )
     return " | ".join(reasons)
+
+
+# --------------------------------------------------------------------------- #
+# Boolean refusal-total instruments (the #69 publication conditions).
+#
+# `refuses`/`selects` above are shaped for `identify_by_uuid`, whose refusal is the `None`
+# in the first slot.  The #69 gate conditions are a different total shape: each returns
+# `(ok, why)` where `ok` is a bool — `False` is the refusal (publication declined) and the
+# sentence says which admissibility case failed.  These two helpers hold that contract to
+# the same run-time standard `refuses` holds the `None` contract to: they raise when the
+# polarity they name is not honoured, so a mutant condition cannot pass through either.
+#
+# They are written here independently for the boolean contract; they are NOT the exception
+# path of `refuses`, which asserts `value is None` and would wrongly pass a `(0, why)`.
+# --------------------------------------------------------------------------- #
+def denies(result: Any, *, because: str = "") -> str:
+    """Assert a boolean refusal-total instrument DECLINED, and return the reason.
+
+    The reject polarity for a `(ok, why)` condition.  ``result`` must be ``(False, why)``
+    with a non-empty ``why``: a condition that refuses publication must name which
+    admissibility case it hit, or a refusal and a silent bug are indistinguishable.
+    """
+    value, why = _unpack(result, "denies")
+    ctx = f" ({because})" if because else ""
+    if value is not False:
+        raise PolarityError(
+            f"expected a REFUSAL{ctx}, but the condition returned ok={value!r} and said: "
+            f"{why!r}. A condition that accepts what it was built to reject is the polarity "
+            f"this helper exists to catch."
+        )
+    if not isinstance(why, str) or not why.strip():
+        raise PolarityError(
+            f"the condition refused{ctx} but gave no reason ({why!r}). A silent refusal and "
+            f"a crash read the same to every downstream reader."
+        )
+    return why
+
+
+def suppresses(published: Any, *, because: str = "") -> Any:
+    """Assert the publication authority WITHHELD every timing figure, and return it.
+
+    The reject polarity for ``phi69_evidence.publish``.  ``published`` must be the refusal
+    shape: ``timing_admissible`` is ``False``, at least one refusal reason is carried, and
+    the timing verdict is NOT the quotable token.  This is the assertion that a mutant
+    ``publish`` which quoted a number under an inadmissible record could not survive.
+    """
+    ctx = f" ({because})" if because else ""
+    if not isinstance(published, dict):
+        raise PolarityError(
+            f"suppresses{ctx}: publication must be a dict; got {type(published).__name__} "
+            f"{published!r}."
+        )
+    admissible = published.get("timing_admissible")
+    verdict = published.get("timing_verdict")
+    refusals = published.get("refusals")
+    if admissible is not False:
+        raise PolarityError(
+            f"expected a WITHHELD publication{ctx}, but timing_admissible={admissible!r} "
+            f"(verdict={verdict!r}). This is the polarity that catches a gate which quotes "
+            f"a figure it had no right to publish."
+        )
+    if verdict == "QUOTABLE" or verdict is None:
+        raise PolarityError(
+            f"the publication was inadmissible{ctx} but the timing verdict was {verdict!r}; "
+            f"a withheld figure must not carry a quotable verdict."
+        )
+    if not refusals:
+        raise PolarityError(
+            f"the publication was inadmissible{ctx} but named no refusal reason; a silent "
+            f"withholding cannot be told from a lost one."
+        )
+    return published

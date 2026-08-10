@@ -610,6 +610,23 @@ jobs:
         # nothing — the exact defect the step above exists to find.
         run: python ci/negative_control_census_completeness.py
 
+      - name: Phi #69 evidence admissibility (host-free, no GPU, no timing)
+        # Issue #69's standing publication posture. This box cannot pass the documented
+        # isolation gate (docs/PERF.md §20/§27: foreign busy cores well above the 0.5
+        # threshold, occupancy VACUOUS), so no wall-clock figure for the Phi-3.5 prefill
+        # or decode may be published. With no record this affirms INDETERMINATE; with a
+        # record it rules RED the moment the record claims admissible timing the gate
+        # never certified. It emits no number of its own, so it runs during any outage.
+        run: python ci/check_phi69_evidence.py --check
+
+      - name: Phi #69 evidence negative control (attack every arm, demand red)
+        # R10 applied to the gate: a publication gate observed only refusing is one step
+        # from a gate that cannot admit. This attacks all 17 admissibility conditions —
+        # a fabricated commit, a wrong device UUID, a truncated per-output list, a CRLF
+        # digest, a prefill IMPROVEMENT verdict, a leaked private path — and fails if any
+        # attack goes uncaught. It measures nothing; every arm is synthesised.
+        run: python ci/negative_control_phi69_evidence.py
+
       - name: Device-loss screen (artifacts, no GPU)
         # A run that lost the Vulkan device, fell back to the CPU EP and exited 0. The
         # exit code is deliberately NOT an input: the exit code IS the defect. A lost

@@ -153,6 +153,12 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("README usage screen", "hostfree.readme_usage"),
     ("Census extent negative control", "hostfree.census_completeness_negative_control"),
     ("Census extent and independent whole", "hostfree.census_completeness"),
+    # ORDER IS LOAD-BEARING: "Phi #69 evidence negative control ..." contains the fragment
+    # "Phi #69 evidence", so the control must be matched first or it silently maps to the
+    # gate it controls. The admissibility fragment is disjoint, but the control goes first
+    # anyway, for the same reason the four rows above do.
+    ("Phi #69 evidence negative control", "hostfree.phi69_evidence_negative_control"),
+    ("Phi #69 evidence admissibility", "hostfree.phi69_evidence"),
     ("Verdict vocabulary preflight", "hostfree.verdict_vocabulary"),
     ("cargo test --lib", "build.rust_unit_tests"),
     ("Rust unit tests", "build.rust_unit_tests"),

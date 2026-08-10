@@ -255,6 +255,17 @@ TABLE: dict[str, dict[str, str]] = {
         "subject": "a timing figure",
         "oracle": "the repetitions' disagreement in the run that produced it",
     },
+    "ci/check_phi69_evidence.py": {
+        "verdict": "ARTIFACT",
+        "subject": "a claimed #69 v5 evidence record's timing-admissibility verdict",
+        "oracle": "bench/phi69_evidence.py's publication gate — the 17 named admissibility "
+                  "conditions re-run over the same record by a module this check does not "
+                  "own; with no record it affirms the standing INDETERMINATE posture this "
+                  "box cannot lift, so there is no figure to over-read.",
+        "note": "host-free: it renders no wall-clock number of its own. It rules a record "
+                "RED precisely when the record claims admissible timing the isolation gate "
+                "never certified — the refusal the whole #69 apparatus exists to keep.",
+    },
     "ci/check_suite_productivity.py": {
         "verdict": "ARTIFACT",
         "subject": "a green step",

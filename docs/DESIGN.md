@@ -5798,6 +5798,15 @@ consumer of device time in Phi-3.5 at every width above `M = 1`. PR #53's own na
 (widen the 32-bit scalar `B` loads, raise the accumulator budget) address the *minority* cost;
 `docs/PERF.md` §26 shows the differential bandwidth measurement that establishes that.
 
+> **Real-model timing is not certified on the current bench box (issue #69, v5).** The figures in
+> this subsection are per-kernel *shares* of device time — structural attribution that contention
+> cannot corrupt — not wall-clock speedups. A whole-model wall-clock verdict for #69 is
+> `INDETERMINATE` by construction on this hardware: the documented isolation gate (§20; ≤0.5 foreign
+> busy cores) does not pass, so `bench/phi69_evidence.py` refuses to publish any median, ratio or
+> speedup and every prefill subject is `STEADY_UNCERTIFIED`, decode `INDETERMINATE` and unpooled.
+> `docs/PERF.md` §28 is the standing admissibility posture and the gate that enforces it; the
+> host-free lane check `ci/check_phi69_evidence.py` keeps that posture from silently regressing.
+
 #### The mechanism
 
 The workgroup size becomes specialisation constant 0
