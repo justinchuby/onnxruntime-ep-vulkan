@@ -1046,7 +1046,7 @@ mod tests {
             .join("glsl");
         for spec in crate::registry::all_specs() {
             for d in spec.caps.iter() {
-                if let Some(stem) = spec.kernel.stem(d) {
+                for stem in spec.kernel.dispatch_stems(d) {
                     let generated = manifest.iter().any(|v| v.stem == stem);
                     let handwritten = glsl.join(format!("{stem}.comp")).is_file();
                     assert!(
@@ -1065,6 +1065,11 @@ mod tests {
     /// The converse of the test above, and the one that keeps the `metadata` defect from coming
     /// back one row at a time: a `.comp` nobody's row names is a module the proof key can never
     /// mention, which is precisely the state `conv_f32.comp` shipped in.
+    ///
+    /// `dispatch_stems` rather than `stem` since #90: a row may reach a second hand-written
+    /// module through its own selector, and that module must be *named by the row* for the same
+    /// reason the first one is. Adding `gqa_decode_f16.comp` without declaring it would have
+    /// failed here — which is the whole point of the converse direction.
     #[test]
     fn every_hand_written_shader_is_named_by_a_row() {
         let glsl = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1073,7 +1078,7 @@ mod tests {
         let mut named = std::collections::BTreeSet::new();
         for spec in crate::registry::all_specs() {
             for d in spec.caps.iter() {
-                if let Some(stem) = spec.kernel.stem(d) {
+                for stem in spec.kernel.dispatch_stems(d) {
                     named.insert(stem);
                 }
             }

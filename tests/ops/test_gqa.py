@@ -16,6 +16,18 @@ All tests use the packed-QKV input form that Phi-3.5 GenAI emits:
   input 6: total_sequence_length  scalar int32 (unused by serial kernel, required by schema)
   input 7: cos_cache   [max_seq, D//2]
   input 8: sin_cache   [max_seq, D//2]
+
+WHICH KERNEL THESE TESTS EXERCISE, and why that is deliberate (issue #90).
+Every model built here declares `past_key`/`past_value` with a STATIC past extent — 0, 4 or 16 —
+so `total_len = past + 1` is 1, 5 or 17.  The KV-parallel decode selector
+(`ops::attention::gqa_decode_kv_lanes_with`) needs `total_len / W >= 32` for some W >= 2, which
+none of those extents can reach, so it refuses and every test in this file dispatches the serial
+`gqa_f16` module exactly as it did before #90.  That is what makes this file the REGRESSION
+control for the old path: if a change to the selector ever made one of these forms take the new
+module, these tests would be measuring something other than what they say they measure.
+Coverage for the new module lives in `test_gqa_decode_kv_parallel.py`, which builds forms whose
+extents clear the ladder.  Do not "modernise" the extents here to make them exercise the new
+kernel — add cases there instead.
 """
 
 import numpy as np

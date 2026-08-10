@@ -704,8 +704,43 @@ _GQA_ROTARY_DIM = 16
 _GQA_MAX_SEQ = 64
 _GQA_PAST_SEQ = 4
 
+# ---------------------------------------------------------------------------
+# The second GQA case: the decode step long enough to reach the KV-parallel module (#90).
+#
+# `ops/attention.rs` dispatches `gqa_decode_f16` instead of `gqa_f16` only when the node is a
+# decode step (`S == 1`) AND the declared past extent is long enough that the lane ladder
+# returns two or more lanes — `W` is the largest power of two <= 16 with
+# `(past + 1) / W >= 32`. The case above declares `past = 4`, so `total = 5`, so the ladder
+# returns 1 and REFUSES: `group_query_attention_f16` keys on `gqa_f16` and its checked-in
+# ledger entry is unaffected by #90. That is deliberate and load-bearing — a change that moved
+# an existing entry's key would be a change that retired a proof.
+#
+# So the new module needs a case of its own. The prefill node declares `past = 128` and writes
+# 4 tokens, so the decode node's cache is 132 and its ladder lands on the `W = 4` rung
+# (133 / 4 = 33.25 >= 32; 133 / 8 = 16.6 < 32), which exercises the shared-memory merge tree
+# at a depth greater than one without needing a large model.
+#
+# `_GQA_KVPAR_MAX_SEQ` must exceed the longest cache, because `tok_pos` indexes the rotary
+# caches: a 64-row cache with `tok_pos = 132` is an out-of-bounds read, not a harsher test.
+#
+# THE CASE IS TWO CHAINED NODES, AND THAT IS THE POINT. `@kvpar` names a *set* of two modules —
+# a node whose sequence length is symbolic dispatches `gqa_decode_f16` when it is 1 and
+# `gqa_f16` when it is not, both under this one key — and `registry.rs` refuses an entry whose
+# recorded shaders cover only part of the set it keys on (SUBJECT-PARTIAL-SET). So the model
+# runs a prefill node and then a decode node over the KV cache the prefill produced: one
+# inference, one key, both modules dispatched, and the chain keeps them in a single fused
+# subgraph so the §8.9.14 one-inference rule is not touched.
+# ---------------------------------------------------------------------------
+_GQA_KVPAR_PAST_SEQ = 128
+_GQA_KVPAR_MAX_SEQ = 256
+_GQA_KVPAR_PREFILL_SEQ = 4
 
-def _group_query_attention() -> onnx.ModelProto:
+
+def _group_query_attention(
+    past_seq: int = _GQA_PAST_SEQ,
+    max_seq: int = _GQA_MAX_SEQ,
+    prefill_seq: int | None = None,
+) -> onnx.ModelProto:
     """`GroupQueryAttention` in the one form the kernel implements.
 
     Packed QKV (inputs 1 and 2 empty), `do_rotary=1`, `rotary_interleaved=0`,
@@ -719,10 +754,28 @@ def _group_query_attention() -> onnx.ModelProto:
     The recipe is the one `tests/ops/test_gqa.py` already exercises. It is duplicated rather
     than imported because a case model that changes when a test file changes is a case model
     whose ledger entries silently stop describing what was proven.
+
+    `past_seq` and `max_seq` are parameters rather than constants because #90 made the
+    declared past extent *part of the proof key*: a decode node with a long enough cache
+    reaches `gqa_decode_f16` and keys on `gqa_f16@kvpar`, and one with a short cache does not.
+    Two extents are therefore two forms, and a ledger that models only one of them would
+    publish a proof of the serial module under a key the parallel module can satisfy. The
+    defaults reproduce the pre-#90 model **exactly**, so `group_query_attention_f16`'s bytes,
+    its key and its checked-in entry are unchanged.
+
+    `prefill_seq` prepends a **prefill** node that writes `prefill_seq` tokens into the declared
+    cache and hands its `present_key`/`present_value` to the decode node as *that* node's past.
+    Both nodes leave their sequence length symbolic, so both render the same proof key — the key
+    encodes no extent — and the selector reads the concrete length at `Compute()`: the prefill
+    node dispatches `gqa_f16` and the decode node dispatches `gqa_decode_f16`. One inference, one
+    key, both modules of the set that key names. The chain is what keeps them in a single fused
+    subgraph, so this stays a one-`Compute()` arm.
     """
     packed = (_GQA_NUM_HEADS + 2 * _GQA_KV_HEADS) * _GQA_HEAD_DIM
     f16 = TensorProto.FLOAT16
-    past_kv = ["B", _GQA_KV_HEADS, _GQA_PAST_SEQ, _GQA_HEAD_DIM]
+    # The cache the DECODE node reads: the declared one, grown by whatever the prefill wrote.
+    decode_past = past_seq + (prefill_seq or 0)
+    past_kv = ["B", _GQA_KV_HEADS, past_seq, _GQA_HEAD_DIM]
     ins = [
         helper.make_tensor_value_info("packed_qkv", f16, ["B", "S", packed]),
         helper.make_tensor_value_info("past_key", f16, past_kv),
@@ -730,13 +783,13 @@ def _group_query_attention() -> onnx.ModelProto:
         helper.make_tensor_value_info("seqlens_k", TensorProto.INT32, ["B"]),
         helper.make_tensor_value_info("total_seq", TensorProto.INT32, []),
         helper.make_tensor_value_info(
-            "cos_cache", f16, [_GQA_MAX_SEQ, _GQA_ROTARY_DIM // 2]
+            "cos_cache", f16, [max_seq, _GQA_ROTARY_DIM // 2]
         ),
         helper.make_tensor_value_info(
-            "sin_cache", f16, [_GQA_MAX_SEQ, _GQA_ROTARY_DIM // 2]
+            "sin_cache", f16, [max_seq, _GQA_ROTARY_DIM // 2]
         ),
     ]
-    pres_kv = ["B", _GQA_KV_HEADS, _GQA_PAST_SEQ + 1, _GQA_HEAD_DIM]
+    pres_kv = ["B", _GQA_KV_HEADS, decode_past + 1, _GQA_HEAD_DIM]
     outs = [
         helper.make_tensor_value_info(
             "attn_out", f16, ["B", "S", _GQA_NUM_HEADS * _GQA_HEAD_DIM]
@@ -744,10 +797,52 @@ def _group_query_attention() -> onnx.ModelProto:
         helper.make_tensor_value_info("present_key", f16, pres_kv),
         helper.make_tensor_value_info("present_value", f16, pres_kv),
     ]
+    past_k, past_v = "past_key", "past_value"
+    nodes = []
+    if prefill_seq is not None:
+        past_k, past_v = "present_key_p", "present_value_p"
+        pres_kv_p = ["B", _GQA_KV_HEADS, decode_past, _GQA_HEAD_DIM]
+        ins.extend(
+            [
+                helper.make_tensor_value_info(
+                    "packed_qkv_p", f16, ["B", "Sp", packed]
+                ),
+                helper.make_tensor_value_info("seqlens_k_p", TensorProto.INT32, ["B"]),
+                helper.make_tensor_value_info("total_seq_p", TensorProto.INT32, []),
+            ]
+        )
+        outs.extend(
+            [
+                helper.make_tensor_value_info(
+                    "attn_out_p", f16, ["B", "Sp", _GQA_NUM_HEADS * _GQA_HEAD_DIM]
+                ),
+                helper.make_tensor_value_info("present_key_p", f16, pres_kv_p),
+                helper.make_tensor_value_info("present_value_p", f16, pres_kv_p),
+            ]
+        )
+        nodes.append(
+            helper.make_node(
+                "GroupQueryAttention",
+                inputs=[
+                    "packed_qkv_p", "", "", "past_key", "past_value", "seqlens_k_p",
+                    "total_seq_p", "cos_cache", "sin_cache",
+                ],
+                outputs=["attn_out_p", "present_key_p", "present_value_p"],
+                domain="com.microsoft",
+                name="gqa_prefill",
+                num_heads=_GQA_NUM_HEADS,
+                kv_num_heads=_GQA_KV_HEADS,
+                scale=float(_GQA_HEAD_DIM ** -0.5),
+                local_window_size=-1,
+                do_rotary=1,
+                rotary_interleaved=0,
+                smooth_softmax=0,
+            )
+        )
     node = helper.make_node(
         "GroupQueryAttention",
         inputs=[
-            "packed_qkv", "", "", "past_key", "past_value", "seqlens_k", "total_seq",
+            "packed_qkv", "", "", past_k, past_v, "seqlens_k", "total_seq",
             "cos_cache", "sin_cache",
         ],
         outputs=["attn_out", "present_key", "present_value"],
@@ -761,7 +856,8 @@ def _group_query_attention() -> onnx.ModelProto:
         rotary_interleaved=0,
         smooth_softmax=0,
     )
-    graph = helper.make_graph([node], "gqa_graph", ins, outs)
+    nodes.append(node)
+    graph = helper.make_graph(nodes, "gqa_graph", ins, outs)
     model = helper.make_model(
         graph,
         opset_imports=[helper.make_opsetid("", 17), helper.make_opsetid("com.microsoft", 1)],
@@ -773,6 +869,11 @@ def _group_query_attention() -> onnx.ModelProto:
 BUILDERS = {
     "add_f32": lambda: _binary("Add", TensorProto.FLOAT),
     "group_query_attention_f16": _group_query_attention,
+    "group_query_attention_kv_parallel_f16": lambda: _group_query_attention(
+        past_seq=_GQA_KVPAR_PAST_SEQ,
+        max_seq=_GQA_KVPAR_MAX_SEQ,
+        prefill_seq=_GQA_KVPAR_PREFILL_SEQ,
+    ),
     "matmulnbits_f16_scales": lambda: _matmulnbits(with_zero_points=False),
     "matmulnbits_f16_scales_zp": lambda: _matmulnbits(with_zero_points=True),
     "add_f16": lambda: _binary("Add", TensorProto.FLOAT16),
@@ -1243,10 +1344,17 @@ def _rope_cache(max_seq: int, rot_dim: int) -> tuple[list, list]:
     return cos, sin
 
 
-def _gqa_feed_plan() -> dict:
-    cos, sin = _rope_cache(_GQA_MAX_SEQ, _GQA_ROTARY_DIM)
-    half = [_GQA_MAX_SEQ, _GQA_ROTARY_DIM // 2]
-    return {
+def _gqa_feed_plan(
+    past_seq: int = _GQA_PAST_SEQ,
+    max_seq: int = _GQA_MAX_SEQ,
+    prefill_seq: int | None = None,
+) -> dict:
+    cos, sin = _rope_cache(max_seq, _GQA_ROTARY_DIM)
+    half = [max_seq, _GQA_ROTARY_DIM // 2]
+    # The decode node reads whatever the prefill node wrote, so its cache is longer than the
+    # declared one by exactly the prefill length.
+    decode_past = past_seq + (prefill_seq or 0)
+    plan = {
         # B=1, S=1: the decode step, which is the shape every Phi-3.5 GQA node runs at after
         # prefill. `past` is the concrete cache extent baked into the model.
         "symbolic_dims": {"B": 1, "S": 1},
@@ -1255,16 +1363,41 @@ def _gqa_feed_plan() -> dict:
         # the range the kernel actually sees.
         "float_scale": 0.1,
         "fixed_inputs": {
-            "seqlens_k": {"dtype": "int32", "shape": [1], "values": [_GQA_PAST_SEQ]},
-            "total_seq": {"dtype": "int32", "shape": [], "values": _GQA_PAST_SEQ + 1},
+            "seqlens_k": {"dtype": "int32", "shape": [1], "values": [decode_past]},
+            "total_seq": {"dtype": "int32", "shape": [], "values": decode_past + 1},
             "cos_cache": {"dtype": "float16", "shape": half, "values": cos},
             "sin_cache": {"dtype": "float16", "shape": half, "values": sin},
         },
     }
+    if prefill_seq is not None:
+        # ORT defines `seqlens_k` as total_sequence_length - 1, and total = past + S. The
+        # prefill node therefore reads `past + prefill_seq - 1`, and `total_seq_p` is one more
+        # than that. Both stay inside `max_seq`, which the rotary caches are sized by.
+        plan["symbolic_dims"]["Sp"] = prefill_seq
+        plan["fixed_inputs"]["seqlens_k_p"] = {
+            "dtype": "int32",
+            "shape": [1],
+            "values": [past_seq + prefill_seq - 1],
+        }
+        plan["fixed_inputs"]["total_seq_p"] = {
+            "dtype": "int32",
+            "shape": [],
+            "values": past_seq + prefill_seq,
+        }
+    return plan
 
 
 FEED_PLAN = {
     "group_query_attention_f16": _gqa_feed_plan,
+    # `seqlens_k` is what the module reads to size its live lane count, so the pinned value
+    # here is not decoration: it is what makes the run land on the `W = 4` rung the case model
+    # was built to reach. A plan that left it at 4 would build the long-cache model and then
+    # prove the short-cache path through it.
+    "group_query_attention_kv_parallel_f16": lambda: _gqa_feed_plan(
+        past_seq=_GQA_KVPAR_PAST_SEQ,
+        max_seq=_GQA_KVPAR_MAX_SEQ,
+        prefill_seq=_GQA_KVPAR_PREFILL_SEQ,
+    ),
 }
 
 

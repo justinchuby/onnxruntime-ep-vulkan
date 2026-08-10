@@ -1,0 +1,445 @@
+// GroupQueryAttention (com.microsoft) — f16, PACKED QKV, DECODE ONLY, KV-PARALLEL.
+//
+// This module is a second implementation of the *same* arithmetic `gqa_f16.comp` performs, for
+// the one shape where that kernel's dispatch geometry cannot use the machine: `seq_len == 1`.
+// `gqa_f16` gives one invocation to each `(batch, head, query position)`, so a decode step is
+// `B * Nq` invocations — 32 on Phi-3.5 — and each of them walks the whole KV cache serially.
+// At `past = 1024` that kernel holds 93.5% of GPU time (docs/PERF.md §26.4/§26.7) and there is
+// no packing left to do: the invocation count is a property of the model, not of the geometry.
+//
+// The lever §26.7 names is parallelism over the **KV sequence** inside a workgroup. That is what
+// this module is: one workgroup per `(batch, query head)`, `W` lanes striding the cache, each
+// lane running the same online softmax over its own subset, and a halving-tree merge in shared
+// memory that combines the per-lane partials into the one answer.
+//
+// # `gqa_f16.comp` is not modified, and that is a requirement rather than a convenience
+//
+// Prefill, the fallback, and every graph this module refuses keep running the byte-identical
+// SPIR-V they ran before. A decode-only rewrite of the shipping kernel would have put prefill's
+// correctness — including the sibling-key recompute that fixed a real data race — behind a
+// change whose evidence is entirely about decode. Two modules, one selector, no shared risk.
+//
+// # Portability: Vulkan 1.1 core, and nothing else
+//
+//   * **No subgroup operations, no wave intrinsics, no extensions beyond the 16-bit storage one
+//     `gqa_f16` already requires, no optional features, no device queries.** The reduction is
+//     `shared` memory plus `barrier()`, which is core compute functionality in every Vulkan 1.1
+//     implementation. A subgroup reduction would be faster on the devices that have the right
+//     subgroup size and would silently not exist on the ones that do not.
+//   * **The shared footprint is a constant, checkable by inspection: 8,320 B.**
+//     `s_max[16] + s_sum[16]` is 128 B and `s_acc[16 * 128]` is 8,192 B. Vulkan 1.1 guarantees
+//     `maxComputeSharedMemorySize >= 16384`, so this module fits on every conformant
+//     implementation with 49.2% of the guaranteed floor to spare — and it fits *as a module*,
+//     not as one specialisation of it. Sizing the arrays by the lane-count specialisation
+//     constant was considered and declined for exactly that reason: it would make the memory
+//     bound a property of each pipeline, so "does this module fit the floor" would stop being a
+//     question anyone can answer by reading the file.
+//   * **The workgroup size is at most 16 invocations**, well inside the `>= 128`
+//     `maxComputeWorkGroupInvocations` the specification guarantees.
+//   * **Every `barrier()` is in uniform control flow.** They sit at the top of a loop whose
+//     bound (`active_lanes`) is a function of `pc` and of `seqlens_k[b]` only — `b` is fixed for the
+//     whole workgroup — so every invocation of the workgroup executes the same number of them.
+//
+// # Effective lanes: the KV arena's capacity ambiguity, answered in the shader
+//
+// The host chooses `W` (specialisation constant 0) from the *declared* cache extent. Under the
+// KV arena that extent is a **capacity**, not a length: `past_key.shape[2]` is how much room the
+// caller reserved and `seqlens_k` is how much of it is real. A lane count picked from a capacity
+// would give a 4,096-slot arena holding 8 tokens the full 16 lanes and a 4-deep merge tree over
+// 8 positions, which is slower than not parallelising at all.
+//
+// So `W` is treated as an **upper bound** and the number of lanes that actually participate is
+// recomputed here, from `seqlens_k[b]`, by the same rule the host uses. `active_lanes` is uniform
+// across the workgroup (it depends only on `b`), it never exceeds `W`, and at `active_lanes == 1` this
+// module degenerates to exactly `gqa_f16`'s serial walk with no barrier executed at all. That
+// also covers ragged batches, where one sequence in the batch is far shorter than another.
+//
+// # Non-finite values
+//
+// Stated rather than implied: this module does **not** clamp, sanitise, or scrub. A NaN score
+// fails `sc > max_s`, `exp(NaN - max_s)` is NaN, and the NaN reaches the output — which is what
+// `gqa_f16` does, term for term. The merge is ordinary arithmetic on the lanes' partials, so a
+// NaN in any lane propagates through `s_sum`/`s_acc` to the same place. `-inf` scores contribute
+// `exp(-inf - max) == 0` and are dropped, again as in `gqa_f16`. The one behaviour that is *not*
+// shared is bit-exactness: summing a fixed set of terms in a different order is a different
+// rounding, so equivalence against `gqa_f16` is asserted within a declared tolerance and never
+// as bit-equality. See docs/DESIGN.md §8.14.
+//
+// # Layout — identical to `gqa_f16.comp`, deliberately
+//
+// Same 9 bindings in the same order, same 36-byte push block, same f16 two-per-`uint` packing,
+// same atomic half-word writes, same `kv_write_leader`/`copy_leader` predicates. The host builds
+// one push-constant block and one binding list for both modules, so a divergence here would be a
+// silent mis-binding rather than a compile error.
+//
+//   binding 0: packed_qkv    readonly  [B, S, (Nq + 2*Nkv) * D]      f16 packed as uint
+//   binding 1: past_key      readonly  [B, Nkv, past_stride, D]      f16 packed as uint
+//   binding 2: past_value    readonly  [B, Nkv, past_stride, D]      f16 packed as uint
+//   binding 3: seqlens_k     readonly  [B]                           int32
+//   binding 4: cos_cache     readonly  [max_seq, rotary_dim/2]       f16 packed as uint
+//   binding 5: sin_cache     readonly  [max_seq, rotary_dim/2]       f16 packed as uint
+//   binding 6: attn_output   readwrite [B, S, Nq * D]                f16 packed as uint
+//   binding 7: present_key   readwrite [B, Nkv, present_len, D]      f16 packed as uint
+//   binding 8: present_value readwrite [B, Nkv, present_len, D]      f16 packed as uint
+
+#version 450
+#extension GL_EXT_shader_16bit_storage : require
+
+// Specialisation id 0 — the host's `gqa_decode_kv_lanes`, the number of lanes this pipeline was
+// built for. Defaults to 1, which is the serial walk: a pipeline built without the constant is
+// arithmetically `gqa_f16` and is never dispatched, because a lane count of 1 is the host's
+// refusal value.
+layout(local_size_x_id = 0, local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+// --------------------------------------------------------------------------
+// Portability bounds. Both are plain constants, not specialisation constants:
+// see the shared-footprint note in the header.
+//
+// MIN_KV_PER_LANE is duplicated from `GQA_DECODE_MIN_KV_PER_LANE` in
+// `rust/src/ops/attention.rs` and pinned to it by a `cargo test --lib` test that reads this
+// file, so the host's lane ladder and this one cannot drift apart silently.
+// --------------------------------------------------------------------------
+const uint MAX_KV_LANES     = 16u;
+const uint MAX_HEAD_DIM     = 128u;
+const uint MIN_KV_PER_LANE  = 32u;
+
+// --------------------------------------------------------------------------
+// Push constants — byte-for-byte the block `gqa_f16.comp` declares.
+// --------------------------------------------------------------------------
+layout(push_constant) uniform PC {
+    uint  batch_size;
+    uint  seq_len;
+    uint  num_heads;
+    uint  kv_num_heads;
+    uint  head_dim;
+    uint  rotary_dim;
+    uint  present_len;   // KV *write* stride — the present buffer's S dimension
+    uint  past_stride;   // the past buffer's S dimension
+    float scale;
+} pc;
+
+// --------------------------------------------------------------------------
+// Buffers (f16 elements packed two-per-uint)
+// --------------------------------------------------------------------------
+layout(set = 0, binding = 0, std430) readonly  buffer BufQKV  { uint d[]; } qkv;
+layout(set = 0, binding = 1, std430) readonly  buffer BufPK   { uint d[]; } past_k;
+layout(set = 0, binding = 2, std430) readonly  buffer BufPV   { uint d[]; } past_v;
+layout(set = 0, binding = 3, std430) readonly  buffer BufSeq  { int  d[]; } seqlens;
+layout(set = 0, binding = 4, std430) readonly  buffer BufCos  { uint d[]; } cos_buf;
+layout(set = 0, binding = 5, std430) readonly  buffer BufSin  { uint d[]; } sin_buf;
+layout(set = 0, binding = 6, std430)           buffer BufOut  { uint d[]; } attn_out;
+layout(set = 0, binding = 7, std430)           buffer BufPresK { uint d[]; } pres_k;
+layout(set = 0, binding = 8, std430)           buffer BufPresV { uint d[]; } pres_v;
+
+// --------------------------------------------------------------------------
+// The reduction workspace. 8,320 B, constant for every pipeline built from this module.
+//
+// `s_acc` is flat rather than 2-D so that the stride is stated once, here, and every index is
+// `lane * MAX_HEAD_DIM + d`.
+// --------------------------------------------------------------------------
+shared float s_max[MAX_KV_LANES];
+shared float s_sum[MAX_KV_LANES];
+shared float s_acc[MAX_KV_LANES * MAX_HEAD_DIM];
+
+// --------------------------------------------------------------------------
+// Scalar f16 read helpers (one per readonly buffer — GLSL cannot parameterise
+// buffer blocks, so each buffer gets its own helper)
+// --------------------------------------------------------------------------
+float f16_qkv(uint i) {
+    vec2 p = unpackHalf2x16(qkv.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_pk(uint i) {
+    vec2 p = unpackHalf2x16(past_k.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_pv(uint i) {
+    vec2 p = unpackHalf2x16(past_v.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_cos(uint i) {
+    vec2 p = unpackHalf2x16(cos_buf.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_sin(uint i) {
+    vec2 p = unpackHalf2x16(sin_buf.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+
+// --------------------------------------------------------------------------
+// Scalar f16 write helpers (atomic to protect the neighbour half-word)
+// --------------------------------------------------------------------------
+void wr_out(uint i, float v) {
+    uint bits = packHalf2x16(vec2(v, v));
+    if ((i & 1u) == 0u) {
+        atomicAnd(attn_out.d[i >> 1u], 0xFFFF0000u);
+        atomicOr (attn_out.d[i >> 1u], bits & 0x0000FFFFu);
+    } else {
+        atomicAnd(attn_out.d[i >> 1u], 0x0000FFFFu);
+        atomicOr (attn_out.d[i >> 1u], bits & 0xFFFF0000u);
+    }
+}
+void wr_presk(uint i, float v) {
+    uint bits = packHalf2x16(vec2(v, v));
+    if ((i & 1u) == 0u) {
+        atomicAnd(pres_k.d[i >> 1u], 0xFFFF0000u);
+        atomicOr (pres_k.d[i >> 1u], bits & 0x0000FFFFu);
+    } else {
+        atomicAnd(pres_k.d[i >> 1u], 0x0000FFFFu);
+        atomicOr (pres_k.d[i >> 1u], bits & 0xFFFF0000u);
+    }
+}
+void wr_presv(uint i, float v) {
+    uint bits = packHalf2x16(vec2(v, v));
+    if ((i & 1u) == 0u) {
+        atomicAnd(pres_v.d[i >> 1u], 0xFFFF0000u);
+        atomicOr (pres_v.d[i >> 1u], bits & 0x0000FFFFu);
+    } else {
+        atomicAnd(pres_v.d[i >> 1u], 0x0000FFFFu);
+        atomicOr (pres_v.d[i >> 1u], bits & 0xFFFF0000u);
+    }
+}
+
+// --------------------------------------------------------------------------
+// Main
+// --------------------------------------------------------------------------
+void main() {
+    uint S   = pc.seq_len;
+    uint Nq  = pc.num_heads;
+    uint Nkv = pc.kv_num_heads;
+    uint D   = pc.head_dim;
+    uint rh  = pc.rotary_dim >> 1u;   // cos/sin entries per position = rotary_dim/2
+
+    uint lane = gl_LocalInvocationID.x;
+    // The lane budget this pipeline was built with. `min` is belt and braces: the host clamps to
+    // `GQA_DECODE_MAX_KV_LANES` and a `cargo test --lib` test holds it there, but a workgroup
+    // wider than the shared arrays must degrade to fewer lanes rather than index past them.
+    uint budget = min(gl_WorkGroupSize.x, MAX_KV_LANES);
+
+    // One workgroup per (batch b, query head h). Decode only: S == 1, so there is no query
+    // position to decode out of the workgroup id and `s_local` is 0 everywhere below.
+    uint wg = gl_WorkGroupID.x;
+    uint b  = wg / Nq;
+    uint h  = wg % Nq;
+    // FAIL CLOSED. Uniform for the whole workgroup — `wg` is the same for every invocation — so
+    // returning here cannot leave some invocations waiting at a barrier the others skipped.
+    if (b >= pc.batch_size) return;
+    // Decode only, by construction and by the host selector. Refusing here as well keeps the
+    // module correct on its own terms rather than only in combination with its caller: at
+    // `S > 1` the `past_len <= t < tok_pos` sibling-key case exists and this module has no
+    // branch for it. Also uniform.
+    if (S != 1u) return;
+
+    uint kv_h = h / (Nq / Nkv);        // KV head (group_size = Nq/Nkv; MHA has group_size = 1)
+    // ORT defines `seqlens_k[b]` as total_sequence_length - 1, and total = past + seq_len.
+    // At S == 1 that makes `past_len == seqlens_k[b]`, but the general expression is kept so
+    // this line reads the same as `gqa_f16.comp`'s and cannot drift from it.
+    int  seqlens_b = seqlens.d[int(b)];
+    uint past_len  = uint(max(seqlens_b + 1 - int(S), 0));
+    uint tok_pos   = past_len;         // absolute position of the single query token
+    uint total_len = tok_pos + 1u;     // causal: [0 .. tok_pos] inclusive
+
+    // ------------------------------------------------------------------
+    // Effective lane count — the same ladder `gqa_decode_kv_lanes_with` runs on the host, over
+    // the length this dispatch actually has rather than the extent the buffer was declared
+    // with. Uniform across the workgroup: `total_len` depends only on `b`, and `budget` is a
+    // specialisation constant.
+    // ------------------------------------------------------------------
+    uint active_lanes = 1u;
+    while (active_lanes * 2u <= budget && (total_len / (active_lanes * 2u)) >= MIN_KV_PER_LANE) {
+        active_lanes *= 2u;
+    }
+
+    // ------------------------------------------------------------------
+    // 1. Load Q, K, V from packed_qkv. Every lane loads the same values: they are functions of
+    //    (b, h, kv_h) only, the loop is D <= 128 iterations, and the alternative — one lane
+    //    loading and a barrier to publish — costs a barrier to save a read that is already in
+    //    cache for every lane after the first.
+    // ------------------------------------------------------------------
+    uint qkv_row = b * (Nq + 2u * Nkv) * D;   // S == 1, so s_local == 0
+    uint q_base  = qkv_row + h            * D;
+    uint k_base  = qkv_row + Nq           * D + kv_h * D;
+    uint v_base  = qkv_row + (Nq + Nkv)   * D + kv_h * D;
+
+    float q[128], k_new[128], v_new[128], acc[128];
+    for (uint d = 0u; d < D; d++) {
+        q[d]     = f16_qkv(q_base + d);
+        k_new[d] = f16_qkv(k_base + d);
+        v_new[d] = f16_qkv(v_base + d);
+        acc[d]   = 0.0;
+    }
+
+    // ------------------------------------------------------------------
+    // 2. RoPE on Q and K (neox / half-rotation: first rh dims are "x", next rh are "y").
+    //    Identical arithmetic to `gqa_f16.comp` step 2.
+    // ------------------------------------------------------------------
+    {
+        uint cos_row = tok_pos * rh;
+        for (uint ri = 0u; ri < rh; ri++) {
+            float c = f16_cos(cos_row + ri);
+            float s = f16_sin(cos_row + ri);
+
+            float qx = q[ri];        float qy = q[ri + rh];
+            q[ri]      = qx * c - qy * s;
+            q[ri + rh] = qy * c + qx * s;
+
+            float kx = k_new[ri];    float ky = k_new[ri + rh];
+            k_new[ri]      = kx * c - ky * s;
+            k_new[ri + rh] = ky * c + kx * s;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3. Write the rotated K/V into present at tok_pos.
+    //
+    //    Lane 0 only. In `gqa_f16` the writer is the invocation that owns `(b, h, s_local)`;
+    //    here the workgroup owns `(b, h)` and any single lane of it will do, so the choice is
+    //    lane 0 rather than "whichever lane's stride happens to land on tok_pos". The
+    //    `kv_write_leader` predicate and the capacity guard are `gqa_f16`'s, unchanged: all
+    //    G query heads of a KV group name the same words, so exactly one of them writes.
+    // ------------------------------------------------------------------
+    uint group_size      = Nq / Nkv;
+    bool kv_write_leader = (h % group_size) == 0u;
+    if (lane == 0u && kv_write_leader && tok_pos < pc.present_len) {
+        uint pb = (b * Nkv + kv_h) * pc.present_len * D + tok_pos * D;
+        for (uint d = 0u; d < D; d++) {
+            wr_presk(pb + d, k_new[d]);
+            wr_presv(pb + d, v_new[d]);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3a. Growing cache: the past tokens must appear in `present`, and the copy is fused into
+    //     the walk below exactly as it is in `gqa_f16` — the element is loaded once and used
+    //     twice. What changes is who copies what: the lanes partition `[0, past_len)` between
+    //     them, so each past position is copied by exactly one lane and no position is missed.
+    //     Under the arena convention `present_len == past_stride`, `copy_leader` is false, and
+    //     the copy compiles out of the run.
+    // ------------------------------------------------------------------
+    bool copy_leader = pc.present_len != pc.past_stride && kv_write_leader;
+    uint copy_dst    = (b * Nkv + kv_h) * pc.present_len * D;
+
+    // ------------------------------------------------------------------
+    // 4. Per-lane online softmax over a strided subset of the cache.
+    //
+    //    Lane `l` walks t = l, l + active_lanes, l + 2*active_lanes, ... so the lanes partition
+    //    [0, total_len) exactly. The recurrence is `gqa_f16.comp` step 4's, unchanged; the only
+    //    difference is which values of `t` this invocation sees.
+    //
+    //    Lanes at or above `active_lanes` do not walk. They are not merged either, so walking would
+    //    only duplicate `copy_leader`'s writes.
+    // ------------------------------------------------------------------
+    float max_s = -1.0e30;
+    float sum_e = 0.0;
+
+    if (lane < active_lanes) {
+        for (uint t = lane; t < total_len; t += active_lanes) {
+            float dot = 0.0;
+            uint kv_base;
+            if (t < past_len) {
+                kv_base = (b * Nkv + kv_h) * pc.past_stride * D + t * D;
+                if (copy_leader) {
+                    for (uint d = 0u; d < D; d++) {
+                        float kv = f16_pk(kv_base + d);
+                        dot += q[d] * kv;
+                        wr_presk(copy_dst + t * D + d, kv);
+                    }
+                } else {
+                    for (uint d = 0u; d < D; d++) dot += q[d] * f16_pk(kv_base + d);
+                }
+            } else {
+                // t == tok_pos — the self key. `gqa_f16`'s third case
+                // (`past_len <= t < tok_pos`, a sibling query position) cannot arise here:
+                // it is non-empty only when S > 1, which this module returned on above.
+                for (uint d = 0u; d < D; d++) dot += q[d] * k_new[d];
+            }
+            float sc = dot * pc.scale;
+
+            if (sc > max_s) {
+                float factor = exp(max_s - sc);
+                for (uint d = 0u; d < D; d++) acc[d] *= factor;
+                sum_e *= factor;
+                max_s = sc;
+            }
+            float e = exp(sc - max_s);
+            sum_e += e;
+
+            if (t < past_len) {
+                kv_base = (b * Nkv + kv_h) * pc.past_stride * D + t * D;
+                if (copy_leader) {
+                    for (uint d = 0u; d < D; d++) {
+                        float vv = f16_pv(kv_base + d);
+                        acc[d] += e * vv;
+                        wr_presv(copy_dst + t * D + d, vv);
+                    }
+                } else {
+                    for (uint d = 0u; d < D; d++) acc[d] += e * f16_pv(kv_base + d);
+                }
+            } else {
+                for (uint d = 0u; d < D; d++) acc[d] += e * v_new[d];
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 5. Publish the partials and merge them.
+    //
+    //    A lane that walked nothing publishes the identity element of the merge — max
+    //    -1.0e30, sum 0, acc 0 — which is what `max_s`/`sum_e`/`acc` already hold, so the
+    //    empty case needs no special path.
+    //
+    //    The merge of two online-softmax partials (m_a, s_a, acc_a) and (m_b, s_b, acc_b):
+    //
+    //        m  = max(m_a, m_b)
+    //        s  = s_a * exp(m_a - m) + s_b * exp(m_b - m)
+    //        acc = acc_a * exp(m_a - m) + acc_b * exp(m_b - m)
+    //
+    //    which is the same rescale-to-the-joint-maximum step the serial recurrence performs
+    //    every time it meets a larger score. Both factors are `exp` of a non-positive number,
+    //    so neither can overflow, and an empty partial's factor is `exp(-1.0e30 - m) == 0`
+    //    against any finite `m`.
+    //
+    //    Lanes at or above MAX_KV_LANES publish nothing: `active_lanes <= budget <= MAX_KV_LANES`,
+    //    so no such lane is ever read.
+    // ------------------------------------------------------------------
+    if (lane < MAX_KV_LANES) {
+        s_max[lane] = max_s;
+        s_sum[lane] = sum_e;
+        for (uint d = 0u; d < D; d++) s_acc[lane * MAX_HEAD_DIM + d] = acc[d];
+    }
+
+    // The loop bound is uniform, so every invocation of the workgroup executes the same number
+    // of barriers. At `active_lanes == 1` the loop body never runs and no barrier is executed at all,
+    // which is the degenerate case this module shares with `gqa_f16`.
+    for (uint stride = 1u; stride < active_lanes; stride <<= 1u) {
+        memoryBarrierShared();
+        barrier();
+        uint partner = lane + stride;
+        if ((lane & ((stride << 1u) - 1u)) == 0u && partner < active_lanes) {
+            float ma = s_max[lane];
+            float mb = s_max[partner];
+            float mn = max(ma, mb);
+            float fa = exp(ma - mn);
+            float fb = exp(mb - mn);
+            s_max[lane] = mn;
+            s_sum[lane] = s_sum[lane] * fa + s_sum[partner] * fb;
+            for (uint d = 0u; d < D; d++) {
+                s_acc[lane * MAX_HEAD_DIM + d] =
+                    s_acc[lane * MAX_HEAD_DIM + d] * fa + s_acc[partner * MAX_HEAD_DIM + d] * fb;
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 6. Normalise and write attn_output[b, 0, h*D .. (h+1)*D - 1].
+    //    output layout: [B, S, Nq * D] with S == 1.
+    //
+    //    Lane 0 wrote slot 0 itself on the last merge iteration, so no further barrier is
+    //    needed before reading it back.
+    // ------------------------------------------------------------------
+    if (lane == 0u) {
+        float inv_s = 1.0 / s_sum[0];
+        uint  ob    = b * Nq * D + h * D;
+        for (uint d = 0u; d < D; d++) wr_out(ob + d, s_acc[d] * inv_s);
+    }
+}

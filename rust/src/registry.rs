@@ -1935,6 +1935,35 @@ impl ProofKey {
         Some(v.split('@').next().unwrap_or(v))
     }
 
+    /// Every SPIR-V module this key's variant component names.
+    ///
+    /// [`ProofKey::variant_stem`] answers *which module a form dispatches* on the assumption that
+    /// a form dispatches one. #90 makes that assumption false for one op: a decode-capable
+    /// `GroupQueryAttention` node can run `gqa_f16` **or** `gqa_decode_f16`, chosen from the
+    /// runtime sequence length, and the `@kvpar` suffix is how the key says so. A predicate that
+    /// read only the stem would then report a form provable in a build where the second module is
+    /// missing or declares a capability the engine does not enable — a proof of one artifact
+    /// standing in for a set that includes another.
+    ///
+    /// The stem is always first, so callers that want only it can keep asking for it. Every other
+    /// key answers with exactly one element and is unaffected.
+    pub fn variant_modules(&self) -> Vec<&str> {
+        let Some(stem) = self.variant_stem() else {
+            return Vec::new();
+        };
+        let mut out = vec![stem];
+        if let Some(component) = self.variant_component() {
+            if component
+                .split('@')
+                .skip(1)
+                .any(|s| s.split('#').next().unwrap_or(s) == "kvpar")
+            {
+                out.push(crate::ops::attention::GQA_DECODE_MODULE);
+            }
+        }
+        out
+    }
+
     /// Derive the key for one node against the row that would dispatch it.
     ///
     /// **This function is the whole of §8.7's expression-vs-path distinction.** Two nodes that
@@ -2196,7 +2225,7 @@ fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
         Some(stem) if !stem.is_empty() => stem.to_string(),
         _ => "metadata".to_string(),
     };
-    match crate::ops::common::selector::source_for(spec.op_type) {
+    let variant = match crate::ops::common::selector::source_for(spec.op_type) {
         Some(crate::ops::common::selector::SelectorSource::Attrs(_)) => {
             // An unresolvable selector is a node the predicate declines; the key still has to be a
             // distinct, total string, so the failure renders as its own tag rather than collapsing
@@ -2207,6 +2236,30 @@ fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
             }
         }
         _ => stem,
+    };
+    // -- The dispatch-set suffix (#90) ------------------------------------------------------
+    //
+    // Everything above assumes a form dispatches **one** module, which was true of every row
+    // until `GroupQueryAttention` gained a second one. A decode-capable GQA node runs `gqa_f16`
+    // or `gqa_decode_f16` depending on its runtime sequence length, and the two are different
+    // SPIR-V with different summation orders — so a proof taken with only the first in the run
+    // says nothing about the second, and a key that could not tell them apart would hand it over
+    // anyway.
+    //
+    // `@kvpar` is therefore a claim about the node's *dispatch set*, not about a specialisation
+    // constant, which is why it is not spelled `@sel`. `ProofKey::variant_stem` strips it, so the
+    // stem stays `gqa_f16` and `variant_is_declared` still finds it; `ProofKey::variant_modules`
+    // expands it, so `form_is_provable` requires both modules to be creatable.
+    //
+    // **The predicate reads the graph and nothing else.** `gqa_decode_module_is_reachable` takes
+    // no override and touches no environment: `ONNXRUNTIME_EP_VULKAN_GQA_DECODE_KV_LANES` can
+    // narrow what a run dispatches but can never widen it past what the declared form admits, so
+    // this suffix is the same on every machine in every environment. A proof identity that moved
+    // with a process variable would mean the checked-in ledger's keys are not the keys a run
+    // computes, and `gen_proof_ledger.py --check` could not see the difference.
+    match crate::ops::attention::gqa_dispatch_set_suffix(spec, view) {
+        Some(suffix) => format!("{variant}@{suffix}"),
+        None => variant,
     }
 }
 
@@ -3171,6 +3224,38 @@ pub(crate) fn parse_ledger(source: &str) -> Ledger {
             continue;
         };
         let stems: Vec<&str> = shaders.iter().map(String::as_str).collect();
+        // #90 — A KEY THAT NAMES A SET IS PROVEN BY A RUN THAT DISPATCHED THE SET.
+        //
+        // `@kvpar` is the first variant component that names more than one module: a node whose
+        // declared sequence length is symbolic dispatches `gqa_decode_f16` on a decode step and
+        // `gqa_f16` on a prefill step, both under this one key. An entry whose `shaders` names
+        // only one of them carries a `shader_digest` computed over only that one — so an edit to
+        // the other module would leave this entry *agreeing*, and the claim it licenses would run
+        // bytes no proof in the file has ever seen. That is the §8.9.11 defect one axis over, and
+        // it fails closed here rather than being disclosed: the repair is to re-mint from a run
+        // that dispatches both, which `group_query_attention_kv_parallel_f16` is built to do.
+        //
+        // Single-module keys — every key that does not carry `@kvpar` — never enter this branch.
+        {
+            let declared = key.variant_modules();
+            if declared.len() > 1 {
+                let missing: Vec<&str> = declared
+                    .iter()
+                    .copied()
+                    .filter(|m| !stems.contains(m))
+                    .collect();
+                if !missing.is_empty() {
+                    demoted.push((key.clone(), "SUBJECT-PARTIAL-SET".to_string()));
+                    entry_faults.push(format!(
+                        "ledger entry for {raw_key:?} records shaders {shaders:?}, which does \
+                         not cover the module set its own key names — missing {missing:?}. A \
+                         proof of part of a dispatch set is not a proof of the set; re-mint it \
+                         from a run that dispatches every module."
+                    ));
+                    continue;
+                }
+            }
+        }
         let source_digest = json_field(line, "source_digest").unwrap_or_default();
         // §8.9.19 PART 1 — ENTRY SURVIVAL. A subject-or-frame mismatch **records itself on the
         // entry and leaves the entry findable**. It used to `continue` here, so the entry never
@@ -3843,17 +3928,23 @@ pub fn unproven_decline_detail(outcome: LedgerLookup, key: &ProofKey) -> String 
 /// everything on it has a declared module that cannot be created, and a form may be unreachable
 /// for other reasons without appearing.
 fn form_is_provable(key: &ProofKey) -> bool {
-    let Some(stem) = key.variant_stem() else {
+    let modules = key.variant_modules();
+    if modules.is_empty() {
         return true;
-    };
+    }
     use crate::ops::common::variants::{
         variant_is_declared, variant_is_generated, variant_is_loadable,
     };
-    form_provable_from(
-        variant_is_declared(stem),
-        variant_is_generated(stem),
-        variant_is_loadable(stem),
-    )
+    // A conjunction, because the key names a *set*: a form is provable only if every module the
+    // variant component names could be created. `variant_modules` returns exactly one element for
+    // every key that does not carry `@kvpar`, so this is the previous behaviour on all of them.
+    modules.iter().all(|stem| {
+        form_provable_from(
+            variant_is_declared(stem),
+            variant_is_generated(stem),
+            variant_is_loadable(stem),
+        )
+    })
 }
 
 /// Answer [`form_is_provable`] for a list of keys, as text, for a caller outside this process.
@@ -3892,6 +3983,11 @@ fn form_is_provable(key: &ProofKey) -> bool {
 /// `stem=-` is a key with no parseable variant component. Those answer `mintable=yes`, matching
 /// [`form_is_provable`]'s deliberate under-claim: unknown is not the same as refused, and the
 /// published unmintable list is a lower bound.
+///
+/// A key whose variant component names more than one module (`@kvpar`) reports one line per
+/// module, each with its own `stem=` and its own three booleans, and `mintable` carries the
+/// conjunction on every one of them — so a reader sees which module of the set refused rather
+/// than only that the set did.
 pub fn form_mintability_report(keys: &[&str]) -> String {
     use crate::ops::common::variants::{
         variant_is_declared, variant_is_generated, variant_is_loadable,
@@ -3900,27 +3996,28 @@ pub fn form_mintability_report(keys: &[&str]) -> String {
     let mut out = String::new();
     for raw in keys {
         let key = ProofKey::parse(raw);
-        match key.variant_stem() {
-            None => {
-                out.push_str(&format!(
-                    "{}\tmintable=yes\tstem=-\tdeclared=no\tgenerated=no\tloadable=no\n",
-                    key.0
-                ));
-            }
-            Some(stem) => {
-                let declared = variant_is_declared(stem);
-                let generated = variant_is_generated(stem);
-                let loadable = variant_is_loadable(stem);
-                out.push_str(&format!(
-                    "{}\tmintable={}\tstem={}\tdeclared={}\tgenerated={}\tloadable={}\n",
-                    key.0,
-                    yn(form_provable_from(declared, generated, loadable)),
-                    stem,
-                    yn(declared),
-                    yn(generated),
-                    yn(loadable),
-                ));
-            }
+        let modules = key.variant_modules();
+        if modules.is_empty() {
+            out.push_str(&format!(
+                "{}\tmintable=yes\tstem=-\tdeclared=no\tgenerated=no\tloadable=no\n",
+                key.0
+            ));
+            continue;
+        }
+        let mintable = form_is_provable(&key);
+        for stem in modules {
+            let declared = variant_is_declared(stem);
+            let generated = variant_is_generated(stem);
+            let loadable = variant_is_loadable(stem);
+            out.push_str(&format!(
+                "{}\tmintable={}\tstem={}\tdeclared={}\tgenerated={}\tloadable={}\n",
+                key.0,
+                yn(mintable),
+                stem,
+                yn(declared),
+                yn(generated),
+                yn(loadable),
+            ));
         }
     }
     out
@@ -4983,6 +5080,159 @@ mod tests {
         assert_eq!(k.variant_stem(), Some("conv_f32"));
         let sel = ProofKey::parse("ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel1/static/n1");
         assert_eq!(sel.variant_stem(), Some("ew_unary_isinf_f32"));
+    }
+
+    /// **#90 — a key that names two modules must be read as naming two modules.**
+    ///
+    /// `@kvpar` is the only suffix in the tree that changes *which SPIR-V a form can dispatch*
+    /// rather than which specialisation or which attribute form it runs under. If
+    /// [`ProofKey::variant_modules`] answered with the stem alone, `form_is_provable` would clear
+    /// a form on the strength of `gqa_f16` while `gqa_decode_f16` — the module that actually runs
+    /// the decode step the entry is about — went unconsulted. That is exactly the §8.9.23 shape:
+    /// a proof of one artifact standing in for a set.
+    #[test]
+    fn the_kv_parallel_suffix_names_a_second_module() {
+        const GQA: &str = "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>\
+                           f16,f16,f16/gqa_f16/runtime-extent/past_key+past_value";
+        let plain = ProofKey::parse(GQA);
+        assert_eq!(
+            plain.variant_modules(),
+            vec!["gqa_f16"],
+            "a key without the suffix names exactly what it always named"
+        );
+
+        let par = ProofKey::parse(&GQA.replace("/gqa_f16/", "/gqa_f16@kvpar/"));
+        assert_eq!(
+            par.variant_stem(),
+            Some("gqa_f16"),
+            "the stem is unchanged, so `variant_is_declared` still finds the row"
+        );
+        assert_eq!(
+            par.variant_modules(),
+            vec!["gqa_f16", crate::ops::attention::GQA_DECODE_MODULE],
+            "and the set the form can dispatch is both modules, stem first"
+        );
+
+        // The key and the row must say the same thing. `variant_modules` reads the suffix;
+        // `Kernel::dispatch_stems` reads the registry row. They are two spellings of one fact,
+        // and the failure mode if they drift is silent: the key names a module the row does not
+        // declare, so `variant_is_declared` misses it and `form_is_provable` takes the
+        // unknown-stem branch on exactly the module the suffix exists to cover.
+        let spec = all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .expect("GroupQueryAttention must be registered");
+        assert_eq!(
+            spec.kernel.dispatch_stems(crate::engine::DType::F16),
+            par.variant_modules(),
+            "the row's declared dispatch set and the key's module set must agree"
+        );
+        assert!(
+            crate::ops::common::variants::variant_is_declared(
+                crate::ops::attention::GQA_DECODE_MODULE
+            ),
+            "the selector's module must be DECLARED, or a shaderless build reports it provable"
+        );
+    }
+
+    /// Every other key in the tree answers with exactly one module.
+    ///
+    /// The conjunction in `form_is_provable` is only safe if it is a no-op everywhere else. This
+    /// walks the checked-in ledger's keys and requires that.
+    #[test]
+    fn only_the_kv_parallel_suffix_widens_the_module_set() {
+        for raw in [
+            "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2",
+            "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32#grouped+padded/static/n3",
+            "ai.onnx::IsInf/10+/f32>bool/ew_unary_isinf_f32@sel1/static/n1",
+            "ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2",
+        ] {
+            let k = ProofKey::parse(raw);
+            assert_eq!(
+                k.variant_modules().len(),
+                1,
+                "`{raw}` must keep naming one module, or the conjunction changed its answer"
+            );
+        }
+        assert!(
+            ProofKey::parse("not-a-key").variant_modules().is_empty(),
+            "an unreadable key names no module, and that is not a refusal"
+        );
+    }
+
+    /// **The `@kvpar` conjunction fires on the module the stem cannot speak for.**
+    ///
+    /// `gqa_decode_f16` is declared by the `GroupQueryAttention` row's `selects:` clause, so in a
+    /// shaderless build it reads *declared, not generated, not loadable* and the set refuses —
+    /// which is the positive control `form_is_provable` was given in the first place. The
+    /// undeclared column is pinned too, because that is what the answer would have been had the
+    /// row not been widened, and the difference between the two is the reason it was.
+    ///
+    /// The three combinations are pinned rather than today's build's answer, which would make the
+    /// test a mirror of `SHADER_MODULES`.
+    #[test]
+    fn a_form_is_unprovable_when_either_of_its_modules_is() {
+        assert!(
+            form_provable_from(true, true, true) && form_provable_from(true, true, true),
+            "both modules loadable -> the set is provable"
+        );
+        assert!(
+            !(form_provable_from(true, true, true) && form_provable_from(true, true, false)),
+            "THE FIRING CASE: `gqa_f16` is fine and `gqa_decode_f16` cannot be created. A \
+             predicate reading only the stem answers `true` here and publishes a claim about a \
+             decode step no proof run on this build can measure."
+        );
+        assert!(
+            !(form_provable_from(true, false, false) && form_provable_from(true, false, false)),
+            "A SHADERLESS BUILD refuses on BOTH modules now that the second one is declared; \
+             before the row declared it, the second factor was `form_provable_from(false, \
+             false, false)` == true and only the stem carried the control."
+        );
+        assert!(
+            form_provable_from(false, false, false),
+            "the undeclared column is unchanged: unknown is still not a refusal"
+        );
+    }
+
+    /// The mintability export must say *which* module of the set refused.
+    #[test]
+    fn the_mintability_report_lines_one_module_at_a_time() {
+        const GQA: &str = "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>\
+                           f16,f16,f16/gqa_f16@kvpar/runtime-extent/past_key+past_value";
+        let report = form_mintability_report(&[GQA]);
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "one line per module named, not per key: {report}"
+        );
+        assert!(lines[0].contains("\tstem=gqa_f16\t"), "{report}");
+        assert!(
+            lines[1].contains(&format!(
+                "\tstem={}\t",
+                crate::ops::attention::GQA_DECODE_MODULE
+            )),
+            "{report}"
+        );
+        let verdicts: Vec<&str> = lines
+            .iter()
+            .map(|l| {
+                l.split('\t')
+                    .find(|f| f.starts_with("mintable="))
+                    .expect("a mintable field")
+            })
+            .collect();
+        assert_eq!(
+            verdicts[0], verdicts[1],
+            "`mintable` is the conjunction over the whole set, so it reads the same on every \
+             line; the per-module booleans are what differ: {report}"
+        );
+        assert!(
+            form_mintability_report(&["ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2"])
+                .lines()
+                .count()
+                == 1,
+            "and every other key still reports exactly one line"
+        );
     }
 
     #[test]
@@ -6537,6 +6787,69 @@ mod tests {
             "an entry with no subject granted a claim"
         );
         assert_eq!(l.demotion_for(&key), Some("NO-SUBJECT-WITNESS"));
+    }
+
+    /// **#90 — a proof of half a dispatch set is not a proof of the set.**
+    ///
+    /// `@kvpar` is the first key whose variant component names two modules, and the entry's
+    /// `shader_digest` is computed over exactly the stems the entry lists. So an entry that lists
+    /// only `gqa_decode_f16` keeps agreeing with the build no matter what happens to
+    /// `gqa_f16.comp` — while the claim it licenses covers a node that dispatches `gqa_f16` on
+    /// every prefill step. Fail closed, and name the missing module.
+    ///
+    /// The positive arm is the load-bearing half: an entry that *does* cover both is admitted, so
+    /// this test cannot pass by refusing everything.
+    #[test]
+    fn an_entry_that_covers_only_part_of_its_module_set_proves_nothing() {
+        const KEY: &str = "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>\
+                           f16,f16,f16/gqa_f16@kvpar/runtime-extent/past_key";
+        let key = ProofKey::validate(KEY).expect("valid key");
+        assert_eq!(
+            key.variant_modules(),
+            vec!["gqa_f16", crate::ops::attention::GQA_DECODE_MODULE],
+            "the fixture must be the two-module key this rule is about"
+        );
+        let build = |stems: &[&str]| {
+            let digest = shader_digest_for(stems).expect("a digest for real stems");
+            let source = source_digest_for(stems).expect("a digest for real stems");
+            let list = stems
+                .iter()
+                .map(|s| format!("\"{s}\""))
+                .collect::<Vec<_>>()
+                .join(",");
+            let entry = format!(
+                "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+                 \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\",\
+                 \"shaders\":[{list}],\"shader_digest\":\"{digest}\",\
+                 \"source_digest\":\"{source}\",\"toolchain\":\"shaderc\",\
+                 \"spec_digest\":\"s\",\"claimed_nodes\":1,\"dispatches_executed\":1}}"
+            );
+            let d = format!("{:016x}", fnv1a64(format!("{entry}\n").as_bytes()));
+            parse_ledger(&format!(
+                "{{\"__ledger__\":1,\"content_fnv1a64\":\"{d}\",\"entry_count\":1,\
+                 \"generator\":\"test\"}}\n{entry}\n"
+            ))
+        };
+
+        for partial in [
+            vec![crate::ops::attention::GQA_DECODE_MODULE],
+            vec!["gqa_f16"],
+        ] {
+            let l = build(&partial);
+            assert!(
+                l.get(&key).is_none(),
+                "an entry covering only {partial:?} granted a claim over both modules"
+            );
+            assert_eq!(l.demotion_for(&key), Some("SUBJECT-PARTIAL-SET"));
+        }
+
+        let both = build(&["gqa_f16", crate::ops::attention::GQA_DECODE_MODULE]);
+        assert!(
+            both.get(&key).is_some(),
+            "an entry that covers the whole set must still be admitted, or this rule refuses \
+             everything and proves nothing"
+        );
+        assert_eq!(both.demotion_for(&key), None);
     }
 
     /// The digest moves with its input, and only with the part of the input it claims to cover.

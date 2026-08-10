@@ -813,6 +813,28 @@ fn output_bind_requested() -> bool {
     !off
 }
 
+/// Can the prefix-staging loop actually *execute* the alias pair `(out_tok, in_tok)`?
+///
+/// Staging reads the aliased input's **host bytes** and copies them into the output buffer's
+/// prefix, so the pair is executable only when the output is one of the plan's outputs and the
+/// input is one of the plan's inputs. A token outside those ranges names an island intermediate
+/// or a temp: there is no ORT tensor behind it, no `input_cpu_ptrs` entry, nothing to read.
+///
+/// This is the single definition of that question. It is used twice — once by `dispatch_ort` to
+/// decide whether a declared alias must be **withdrawn**, and once by the loop that collects the
+/// pairs to stage — because the two answers disagreeing is precisely the defect it exists to
+/// prevent: a pair declared, counted as done in the push constants, then quietly dropped.
+fn prefix_pair_is_stageable(
+    out_tok: u64,
+    in_tok: u64,
+    n_plan_inputs: usize,
+    n_plan_outputs: usize,
+) -> bool {
+    out_tok >= n_plan_inputs as u64
+        && out_tok < (n_plan_inputs + n_plan_outputs) as u64
+        && in_tok < n_plan_inputs as u64
+}
+
 /// Materialise ORT's output tensor `i` and return a writable pointer to it, or `None`.
 ///
 /// Called *before* the dispatch so the buffer ORT allocated can be bound as the kernel's output.
@@ -1331,20 +1353,63 @@ impl VulkanSession {
             // Re-run translate through ShapeOnlyRecorder to capture push constants, workgroups,
             // and the full binding list (which may include duplicate slots not in kernel.bindings).
             // For multi-node islands use new_named so bind_output assigns the island-wide token.
-            let mut sor = match name_map.as_ref() {
-                Some(nm) => ShapeOnlyRecorder::new_named(
-                    kernel.n_plan_inputs,
-                    Arc::clone(nm),
-                    first_temp_token,
-                ),
-                None => ShapeOnlyRecorder::new(kernel.n_plan_inputs),
-            };
-            sor.growing_alias_available = growing_alias_armed;
-            // The `Err` is bound rather than discarded by `is_ok()`. R13: a broken commitment
-            // whose message is "translate failed" tells a reader that something failed, which
-            // they already knew from the WARN. The handler's own text is the only thing here
-            // that says *which* precondition the run-time shapes violated.
-            let dyn_translate = (recipe.spec.translate)(recipe.spec, &patched_node, &mut sor);
+            //
+            // **A DECLARED ALIAS THAT THIS LOOP CANNOT EXECUTE MUST NOT BE LEFT DECLARED.**
+            //
+            // The collection below only records a prefix pair whose *source* is a plan input:
+            // the staging step reads that input's host bytes, and an island **intermediate** has
+            // none — no ORT tensor, no `input_cpu_ptrs` entry, nothing to read. A pair that
+            // fails the range test is therefore dropped here. Dropping it silently is the exact
+            // failure `alias_source_readable`'s comment names: the handler has already written
+            // `past_stride = present_len` into the push constants, which tells the shader "the
+            // past is already in `present`, do not copy it", and then nothing copies it. The
+            // past region of `present` reads back as whatever the fresh allocation held.
+            //
+            // MEASURED 2026-08-09 (Mouse, #90): a two-node GQA island — a prefill node whose
+            // `present_key`/`present_value` feed a decode node as *its* past — produced a decode
+            // `present_key` whose first 132 of 133 rows were exactly zero, with the 133rd row
+            // correct, on both GQA modules. `alias_source_readable` did not see it because it
+            // only inspects plan inputs, and the aliased tensor was not one.
+            //
+            // The repair is to ask the question at the only point where the answer is known —
+            // *after* translate has said which tensor it wants to alias — and, if the answer is
+            // "not executable", to re-run translate with the capability withdrawn. Translate is a
+            // pure shape-only pass over a fresh recorder, so re-running it is free of effects;
+            // the second pass takes the two-buffer path and the shader's own `copy_leader` does
+            // the past→present copy on the device. Nothing is disarmed for islands that *can*
+            // execute the alias, so Phi-3.5's per-layer KV aliasing is untouched.
+            let mut sor;
+            let mut dyn_translate;
+            let mut alias_armed = growing_alias_armed;
+            loop {
+                sor = match name_map.as_ref() {
+                    Some(nm) => ShapeOnlyRecorder::new_named(
+                        kernel.n_plan_inputs,
+                        Arc::clone(nm),
+                        first_temp_token,
+                    ),
+                    None => ShapeOnlyRecorder::new(kernel.n_plan_inputs),
+                };
+                sor.growing_alias_available = alias_armed;
+                // The `Err` is bound rather than discarded by `is_ok()`. R13: a broken commitment
+                // whose message is "translate failed" tells a reader that something failed, which
+                // they already knew from the WARN. The handler's own text is the only thing here
+                // that says *which* precondition the run-time shapes violated.
+                dyn_translate = (recipe.spec.translate)(recipe.spec, &patched_node, &mut sor);
+                let unstageable = sor.prefix_pairs.iter().any(|&(out_tok, in_tok, _)| {
+                    !prefix_pair_is_stageable(out_tok, in_tok, n_plan_inputs, n_plan_outputs)
+                });
+                if !(alias_armed && dyn_translate.is_ok() && unstageable) {
+                    break;
+                }
+                log::warn!(
+                    "[VulkanEP] growing-KV prefix alias declared by '{}' names a source this \
+                     island cannot stage (it is not a subgraph input); re-translating with the \
+                     alias withdrawn so the shader performs the past→present copy itself",
+                    recipe.node_desc.op_type,
+                );
+                alias_armed = false;
+            }
             if dyn_translate.is_ok() {
                 // Update actual output byte sizes and shapes, and record intermediate descs.
                 for (token, desc) in &sor.output_desc_by_token {
@@ -1413,10 +1478,7 @@ impl VulkanSession {
                 // above — a token outside the plan's input/output ranges names an intermediate
                 // or a temp, and neither can be a subgraph tensor.
                 for (out_tok, in_tok, layout) in sor.prefix_pairs {
-                    if out_tok >= n_plan_inputs as u64
-                        && out_tok < (n_plan_inputs + n_plan_outputs) as u64
-                        && in_tok < n_plan_inputs as u64
-                    {
+                    if prefix_pair_is_stageable(out_tok, in_tok, n_plan_inputs, n_plan_outputs) {
                         let j = (out_tok - n_plan_inputs as u64) as usize;
                         prefix_output_to_input.insert(j, (in_tok as usize, layout));
                     }
@@ -2258,7 +2320,14 @@ impl VulkanSession {
             // `past_stride` (offset 28) are equal exactly when `present` aliases `past`; the
             // kernel's own `copy_leader` predicate is that same comparison, so this reads the
             // condition the shader reads rather than a parallel restatement of it.
-            if eff_shader == "gqa_f16" && eff_push_constants.len() >= 32 {
+            //
+            // Both GQA modules, because both carry the same 36-byte push block and both make the
+            // same `copy_leader` decision from it (#90). Naming only `gqa_f16` here would have
+            // left this counter silent on exactly the dispatches decode makes, which is where the
+            // arena's whole argument is.
+            if (eff_shader == "gqa_f16" || eff_shader == crate::ops::attention::GQA_DECODE_MODULE)
+                && eff_push_constants.len() >= 32
+            {
                 let present_len = u32::from_le_bytes([
                     eff_push_constants[24],
                     eff_push_constants[25],
@@ -3129,6 +3198,67 @@ mod prefix_alias_capability_tests {
     #[test]
     fn a_fresh_recorder_is_available_by_default() {
         assert!(ShapeOnlyRecorder::new(1).growing_alias_available);
+    }
+
+    /// An alias whose source is an island **intermediate** cannot be staged, and saying so is
+    /// the whole repair.
+    ///
+    /// MEASURED 2026-08-09 (Mouse, #90): a two-node GQA island — a prefill node whose
+    /// `present_key`/`present_value` feed a decode node as *its* past — produced a decode
+    /// `present_key` whose first 132 of 133 rows read back exactly zero. The pair was declared,
+    /// the handler wrote `past_stride = present_len` into the push constants ("the copy already
+    /// happened"), and then the collection loop's range test dropped the pair, so no copy ever
+    /// ran. Both loops now ask this one function, so a pair that will be dropped is a pair that
+    /// gets the alias withdrawn instead.
+    #[test]
+    fn an_alias_sourced_from_an_island_intermediate_is_not_stageable() {
+        // 3 plan inputs (tokens 0..3), 2 plan outputs (tokens 3..5); 5+ are intermediates/temps.
+        assert!(
+            super::prefix_pair_is_stageable(3, 0, 3, 2),
+            "output token 3 is plan output 0 and input token 0 is a plan input: this is the \
+             ordinary growing-KV alias and it must stay executable"
+        );
+        assert!(
+            !super::prefix_pair_is_stageable(3, 7, 3, 2),
+            "input token 7 is an island intermediate — it has no ORT tensor and no host bytes, \
+             so nothing can be staged from it"
+        );
+        assert!(
+            !super::prefix_pair_is_stageable(9, 0, 3, 2),
+            "output token 9 is not a plan output, so there is no ORT buffer to stage into"
+        );
+        assert!(
+            !super::prefix_pair_is_stageable(2, 0, 3, 2),
+            "output token 2 is a plan *input*, not an output"
+        );
+    }
+
+    /// The two call sites must not be able to drift apart.
+    ///
+    /// The defect was never that either test was wrong on its own — it was that `dispatch_ort`
+    /// armed the alias using one predicate (is any plan input bound to device memory?) and the
+    /// staging loop dropped the pair using another (are both tokens in the plan's ranges?).
+    /// Whatever the ranges are, "withdraw" and "drop" have to be the same set.
+    #[test]
+    fn withdrawal_and_dropping_agree_over_the_whole_token_space() {
+        for n_in in 0usize..4 {
+            for n_out in 0usize..4 {
+                for out_tok in 0u64..10 {
+                    for in_tok in 0u64..10 {
+                        let stageable =
+                            super::prefix_pair_is_stageable(out_tok, in_tok, n_in, n_out);
+                        let would_be_collected = out_tok >= n_in as u64
+                            && out_tok < (n_in + n_out) as u64
+                            && in_tok < n_in as u64;
+                        assert_eq!(
+                            stageable, would_be_collected,
+                            "n_in={n_in} n_out={n_out} out_tok={out_tok} in_tok={in_tok}: a pair \
+                             the collector would drop must be a pair the arming step withdraws"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
