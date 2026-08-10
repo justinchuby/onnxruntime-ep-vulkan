@@ -146,6 +146,8 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Tautological-assertion screen", "hostfree.tautological_assertions"),
     ("Tick-conversion screen negative control", "hostfree.tick_screen_negative_control"),
     ("Tick-conversion screen", "hostfree.tick_conversion_screen"),
+    ("Anchor weight-site screen negative control", "hostfree.anchor_weight_sites_negative_control"),
+    ("Anchor weight-site schema screen", "hostfree.anchor_weight_sites"),
     ("Device-loss screen negative control", "hostfree.device_loss_negative_control"),
     ("Device-loss screen", "hostfree.device_loss_screen"),
     # Order matters: the negative control's name contains the screen's name.

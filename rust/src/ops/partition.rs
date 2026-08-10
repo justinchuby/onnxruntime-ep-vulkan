@@ -234,9 +234,27 @@ impl TransferModel {
 pub struct Island {
     /// How many nodes it contains.
     pub nodes: usize,
-    /// How many of those are *anchors* — ops heavy enough to justify a boundary on their own
-    /// (see [`is_anchor`]).
+    /// How many of those are *anchors* — heavy-family ops that carry a resident constant
+    /// initializer at a **schema-designated weight site** (see [`is_anchor`]). This is the count
+    /// gate 2's exemption reads: an anchor is heavy *and* has a weight worth amortising a boundary
+    /// round-trip against.
+    ///
+    /// This is **not** the heavy-family node count. On Phi-3.5 the two differ: 161 `MatMulNBits`
+    /// anchor, 32 `GroupQueryAttention` are heavy-family but designate no weight site and so are
+    /// **not** anchors — they are supported non-anchor members of an island anchored by the
+    /// `MatMulNBits` nodes around them. See [`Island::heavy_family_nodes`].
     pub anchors: usize,
+    /// How many of the island's nodes are in the compute-heavy op family (see
+    /// [`is_heavy_family`]) — the FLOP-significant rows of the §4 inventory.
+    ///
+    /// **Deliberately separate from [`Island::anchors`].** Heavy-family membership governs the
+    /// FLOP estimate; anchor eligibility governs the gate-2 exemption. They are different
+    /// questions: `GroupQueryAttention` is heavy (it does real attention arithmetic) but anchors
+    /// nothing (its operands are runtime activations and KV cache, not a resident weight), so it
+    /// must contribute to `heavy_family_nodes` and **not** to `anchors`. On Phi-3.5 this count is
+    /// 193 (161 `MatMulNBits` + 32 `GroupQueryAttention`); 193 is a heavy-family-node count and is
+    /// never an anchor count or an anchor ratio.
+    pub heavy_family_nodes: usize,
     /// Estimated floating-point operations inside the island.
     pub flops: u64,
     /// Bytes entering the island from outside the EP.
@@ -263,9 +281,14 @@ impl Island {
     /// 2026-08-01, read out of `PartitionStats` in a trace this session (`bench/results/
     /// net_benefit_gate-trace-dev0.json`), not assumed.
     ///
-    /// `nodes` and `anchors` are counts from the CLAIM_LOG of the same run (355 claimed, of which
-    /// 161 `MatMulNBits` + 32 `GroupQueryAttention` are anchors). `flops` and the boundary total
-    /// are the estimator's own numbers.
+    /// `nodes`, `anchors` and `heavy_family_nodes` are counts from the CLAIM_LOG of the same run
+    /// (355 claimed). Of those, **161 `MatMulNBits` are anchors** — they carry a resident int4
+    /// weight at their schema-designated weight site (input `B`). The **32 `GroupQueryAttention`
+    /// nodes are heavy-family but not anchors**: GQA designates no weight site, so it is a
+    /// supported non-anchor member of this island, which is anchored by the `MatMulNBits` nodes
+    /// around it. The heavy-family node count is therefore **193** (161 + 32); 193 is a
+    /// heavy-family-node count, never an anchor count or anchor ratio. `flops` and the boundary
+    /// total are the estimator's own numbers.
     ///
     /// The 2026-07-31 estimate of Phi-3.5's island boundary, **which counted internal edges**.
     ///
@@ -309,7 +332,8 @@ impl Island {
     /// harder to reach, not easier.
     pub const ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED: Island = Island {
         nodes: 355,
-        anchors: 193,
+        anchors: 161,
+        heavy_family_nodes: 193,
         flops: 23_020_437_504,
         input_bytes: 0,
         output_bytes: 89_199_100_032,
@@ -320,11 +344,12 @@ impl Island {
     ///
     /// Read out of the verbose `PartitionStats` summary on dev0 with the same model and the same
     /// binary that produced the 355 → 0 claim census. The number that changed is the boundary;
-    /// nodes, anchors and FLOPs are unaffected because the fix touches only which outputs are
-    /// charged to the boundary.
+    /// nodes, anchors, heavy-family count and FLOPs are unaffected because the fix touches only
+    /// which outputs are charged to the boundary.
     pub const ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_FIXED: Island = Island {
         nodes: 355,
-        anchors: 193,
+        anchors: 161,
+        heavy_family_nodes: 193,
         flops: 23_020_437_504,
         input_bytes: 0,
         output_bytes: 13_936_509_056,
@@ -339,7 +364,8 @@ impl Island {
     /// Upload 399,376 B + readback 457,344 B = 856,720 B, asymmetric with readback larger.
     pub const MEASURED_PHI35_DEV0_REAL_BYTES: Island = Island {
         nodes: 355,
-        anchors: 193,
+        anchors: 161,
+        heavy_family_nodes: 193,
         flops: 23_020_437_504,
         input_bytes: TransferModel::MEASURED_PHI35_UPLOAD_BYTES,
         output_bytes: TransferModel::MEASURED_PHI35_READBACK_BYTES,
@@ -374,11 +400,18 @@ impl Island {
     }
 }
 
-/// Ops heavy enough that a single one of them justifies an island.
+/// Ops in the compute-heavy family — the FLOP-significant rows of the §4 inventory.
 ///
-/// A lone `Add` is never worth a round-trip; a single `MatMul` on LLM-sized weights always is.
-/// The list is the §4 inventory's "L/XL, compute-bound" rows.
-pub fn is_anchor(qualified_op: &str) -> bool {
+/// A lone `Add` is never worth a round-trip; a matmul-family or attention-family op does real
+/// arithmetic. **This is a FLOP classification only.** Being heavy is necessary but not
+/// sufficient to *anchor* an island: an op anchors only when it also carries a resident weight at
+/// a schema-designated weight site (see [`is_anchor`]). `GroupQueryAttention` is heavy — it
+/// computes attention — but designates no weight site, so it is heavy-family and non-anchor.
+///
+/// Keeping this separate from anchor eligibility is the whole point of issue #73: the two used to
+/// be one predicate keyed on the op *name*, which anchored an activation-only `MatMul` (both
+/// operands runtime) purely because it was called `MatMul`. Name is not weight.
+pub fn is_heavy_family(qualified_op: &str) -> bool {
     matches!(
         qualified_op,
         "MatMul"
@@ -395,6 +428,77 @@ pub fn is_anchor(qualified_op: &str) -> bool {
     )
 }
 
+/// The input indices a heavy-family op's **schema** designates as trained-weight sites.
+///
+/// An op anchors an island only when one of *these* sites holds a resident constant initializer —
+/// not when *any* operand happens to be constant, and never on the op name alone. The indices are
+/// the operand positions the pinned ONNX / ORT v1.28.0 (`da9b5e364c465de65c49d91e696cd6485270757f`)
+/// schemas give to the weight tensor, cross-checked by `ci/check_anchor_weight_sites.py` against
+/// `rust/tools/anchor_weight_sites.json`. A machine-checkable table, not a hand-maintained belief.
+///
+/// Provenance for each row:
+/// * `MatMul` — ONNX `MatMul` `(A, B)`; the right-hand matrix `B` at index **1** is the weight.
+/// * `Gemm` — ONNX `Gemm` `(A, B, C)`; `B` at index **1**.
+/// * `Conv` / `ConvTranspose` — ONNX `(X, W, B)`; the kernel `W` at index **1**.
+/// * `com.microsoft::MatMulNBits` — ORT `(A, B, scales, zero_points, g_idx, bias)`
+///   (`onnxruntime/core/graph/contrib_ops/contrib_defs.cc:3672`); the packed int-N weight `B`
+///   at index **1**. Its doc string is explicit: *"the right-hand-side matrix (weights) is
+///   quantized to N bits"*.
+///
+/// **Empty slice = no schema-designated weight site → cannot anchor on its own.** The
+/// attention-family and MoE-family ops fall here deliberately:
+/// * `com.microsoft::GroupQueryAttention` — inputs are `query`/`key`/`value`, the KV cache, and
+///   rotary caches (`onnxruntime/core/graph/contrib_ops/bert_defs.cc:1258`+): runtime activations,
+///   not a resident weight. Its optional `q_norm_weight`/`k_norm_weight` inputs are *per-head RMS
+///   norm scales*, not the projection weight matrix — which is exactly why a name-substring
+///   heuristic would be wrong here and this table is an explicit index list instead.
+/// * `Attention` / `com.microsoft::{Attention,MultiHeadAttention,LinearAttention}` / `QMoE` —
+///   left empty as the fail-closed default: their weight-site provenance is not pinned in this
+///   revision, and an unpinned op must fall towards the CPU (no anchor) rather than anchor on an
+///   unverified index. None is in any currently censused model; add a row here, with provenance,
+///   before relying on one to anchor.
+pub fn weight_site_indices(qualified_op: &str) -> &'static [usize] {
+    match qualified_op {
+        "MatMul" => &[1],
+        "Gemm" => &[1],
+        "Conv" => &[1],
+        "ConvTranspose" => &[1],
+        "com.microsoft::MatMulNBits" => &[1],
+        _ => &[],
+    }
+}
+
+/// Whether a node anchors its island: a **heavy-family op carrying a resident constant
+/// initializer at a schema-designated weight site**.
+///
+/// `resident_inputs[i]` is `true` iff operand `i` is a graph constant initializer resident on the
+/// device (uploaded once at load, not a per-inference transfer). The predicate takes the node's
+/// residency facts, never the op name alone — a name-only call does not typecheck, which is the
+/// structural guarantee issue #73 asks for.
+///
+/// **Fails closed in every degenerate case.** A missing operand (index past the end of
+/// `resident_inputs`), a null slot, a runtime (non-constant) operand, an unavailable
+/// `ValueInfo_IsConstantInitializer` function, or a status-error read all surface as `false` in
+/// the corresponding `resident_inputs` entry (or as an out-of-range index here), so the node does
+/// not anchor. An op with no designated weight site returns `false` unconditionally.
+///
+/// Worked cases from issue #73's MiniLM analysis:
+/// * A weight `MatMul` — `B` (index 1) is an initializer ⇒ `resident_inputs[1] == true` ⇒ anchors.
+/// * An attention batched `MatMul` (QK^T or AV) — both operands are runtime activations ⇒
+///   `resident_inputs[1] == false` ⇒ does **not** anchor, and a lone one is rejected by the
+///   economics gate instead of exempted by op identity.
+/// * `GroupQueryAttention` — no designated weight site ⇒ never anchors, even though it is
+///   heavy-family and may carry constant rotary caches at non-weight sites.
+pub fn is_anchor(qualified_op: &str, resident_inputs: &[bool]) -> bool {
+    let sites = weight_site_indices(qualified_op);
+    if sites.is_empty() {
+        return false;
+    }
+    sites
+        .iter()
+        .any(|&i| resident_inputs.get(i).copied().unwrap_or(false))
+}
+
 /// The thresholds the rule is expressed in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Policy {
@@ -408,7 +512,8 @@ pub struct Policy {
     pub margin: f64,
     /// Assumed device throughput in FLOPs per nanosecond (i.e. GFLOP/s).
     pub flops_per_ns: f64,
-    /// Whether an island containing at least one [`is_anchor`] op skips the economics check.
+    /// Whether an island containing at least one anchor (an [`is_anchor`] node — heavy-family
+    /// *and* weight-bearing at a schema-designated site) skips the economics check.
     ///
     /// `true` in production. Settable to `false` (via [`ENV_ANCHOR_EXEMPTION`]) purely so the
     /// economics arithmetic can be *observed deciding* on a real model: Phi-3.5's single island
@@ -528,12 +633,17 @@ impl Verdict {
 ///    case: a graph of unsupported ops sprinkled with lone `Add`s.
 /// 2. **Economics.** `compute_ns` must exceed `margin × transfer_ns`. This kills the subtler case:
 ///    a large island of cheap elementwise work whose tensors are bigger than its arithmetic.
-///    **Anchor-containing islands are exempt from gate 2**: an op in `is_anchor` is by definition
-///    heavy enough to justify a boundary on its own — that is the design invariant of `is_anchor`.
+///    **Anchor-containing islands are exempt from gate 2**: an anchor ([`is_anchor`]) is a
+///    heavy-family op *carrying a resident weight at a schema-designated site*, so a boundary
+///    round-trip is amortised against a weight the island reuses every inference — that is the
+///    design invariant. Note the exemption keys on `island.anchors`, **not** on heavy-family
+///    membership: an activation-only `MatMul` (both operands runtime, issue #73's MiniLM AV
+///    batched matmul) is heavy-family but not an anchor, so it is *not* exempt and a lone one is
+///    rejected here as `TransferDominated` — the outcome gate 2 exists to produce.
 ///    The provisional `TransferModel` constants are calibrated against real model execution and
-///    may not reflect isolated unit-test input sizes; applying the economic check to anchors
-///    would reject them when tested in isolation, which contradicts the stated design intent
-///    ("a single MatMul on LLM-sized weights always is worth it").
+///    may not reflect isolated unit-test input sizes; applying the economic check to a genuine
+///    weight anchor would reject it when tested in isolation, which contradicts the stated design
+///    intent ("a single MatMul on LLM-sized weights always is worth it").
 pub fn evaluate(island: &Island, model: &TransferModel, policy: &Policy) -> Verdict {
     if island.nodes < policy.min_nodes && island.anchors == 0 {
         return Verdict::Reject(RejectReason::TooSmall {
@@ -838,6 +948,7 @@ mod tests {
         Island {
             nodes: 1,
             anchors: 1,
+            heavy_family_nodes: 1,
             flops: 2 * 4096 * 4096 * 4096,
             input_bytes: 2 * 4096 * 4096 * 2,
             output_bytes: 4096 * 4096 * 2,
@@ -849,6 +960,7 @@ mod tests {
         Island {
             nodes: 1,
             anchors: 0,
+            heavy_family_nodes: 0,
             flops: 4096,
             input_bytes: 4096 * 4 * 2,
             output_bytes: 4096 * 4,
@@ -893,6 +1005,7 @@ mod tests {
         let island = Island {
             nodes: 20,
             anchors: 0,
+            heavy_family_nodes: 0,
             flops: 20 * 1024 * 1024,
             input_bytes: 64 * 1024 * 1024,
             output_bytes: 64 * 1024 * 1024,
@@ -911,6 +1024,7 @@ mod tests {
         let island = Island {
             nodes: 1,
             anchors: 0,
+            heavy_family_nodes: 0,
             flops: 0,
             input_bytes: 0,
             output_bytes: 0,
@@ -1044,14 +1158,132 @@ mod tests {
         assert!(TransferModel::fit(&[(1024, 5.0), (1024, 6.0)]).is_none());
     }
 
+    /// Anchoring is a property of the **node**, not the op name. The same op is or is not an
+    /// anchor depending on whether its schema-designated weight site holds a resident initializer.
+    /// Both polarities are asserted here — an assertion that can only ever return one answer is
+    /// not a check (issue #73).
     #[test]
-    fn anchors_are_the_heavy_ops_only() {
-        assert!(is_anchor("MatMul"));
-        assert!(is_anchor("Conv"));
-        assert!(is_anchor("com.microsoft::MatMulNBits"));
-        assert!(is_anchor("com.microsoft::GroupQueryAttention"));
-        assert!(!is_anchor("Add"));
-        assert!(!is_anchor("Reshape"));
+    fn anchoring_is_weight_site_residency_not_op_name() {
+        // Weight polarity: an initializer at the designated site (index 1) anchors.
+        let weight = [false, true]; // A runtime, B resident weight
+        assert!(is_anchor("MatMul", &weight));
+        assert!(is_anchor("Gemm", &weight));
+        assert!(is_anchor("Conv", &weight));
+        assert!(is_anchor("com.microsoft::MatMulNBits", &weight));
+
+        // Activation polarity: the SAME ops, both operands runtime, do NOT anchor. This is the
+        // MiniLM attention batched-matmul case the economics gate exists to reject.
+        let activation_only = [false, false];
+        assert!(!is_anchor("MatMul", &activation_only));
+        assert!(!is_anchor("Gemm", &activation_only));
+
+        // GroupQueryAttention designates no weight site: it never anchors, even when it carries
+        // resident constants (rotary caches, per-head norm scales) at non-weight inputs.
+        let gqa_with_constants = [false, false, false, true, true, false, false, true, true];
+        assert!(!is_anchor(
+            "com.microsoft::GroupQueryAttention",
+            &gqa_with_constants
+        ));
+        assert!(is_heavy_family("com.microsoft::GroupQueryAttention"));
+
+        // Non-heavy ops never anchor regardless of residency.
+        assert!(!is_anchor("Add", &weight));
+        assert!(!is_anchor("Reshape", &weight));
+        assert!(!is_heavy_family("Add"));
+    }
+
+    /// Fail-closed: every degenerate residency input yields "not an anchor", never a panic.
+    #[test]
+    fn anchor_predicate_fails_closed_on_degenerate_inputs() {
+        // Missing operand: designated site 1 is past the end of the residency vector.
+        assert!(!is_anchor("MatMul", &[]));
+        assert!(!is_anchor("MatMul", &[true])); // only index 0 present; site 1 absent
+        // Runtime operand at the weight site.
+        assert!(!is_anchor("MatMul", &[true, false]));
+        // A constant at a non-weight site (index 0) must not anchor MatMul (site is 1).
+        assert!(!is_anchor("MatMul", &[true, false]));
+        // Empty designated-site op with everything resident still cannot anchor.
+        assert!(!is_anchor(
+            "com.microsoft::GroupQueryAttention",
+            &[true, true, true, true]
+        ));
+    }
+
+    /// The weight-site table matches the pinned schema provenance. This mirrors
+    /// `ci/check_anchor_weight_sites.py` at the Rust level so a table edit that drops a row or
+    /// invents a site is caught by `cargo test`, not only by the Python checker.
+    #[test]
+    fn weight_sites_match_pinned_schema() {
+        assert_eq!(weight_site_indices("MatMul"), &[1]);
+        assert_eq!(weight_site_indices("Gemm"), &[1]);
+        assert_eq!(weight_site_indices("Conv"), &[1]);
+        assert_eq!(weight_site_indices("ConvTranspose"), &[1]);
+        assert_eq!(weight_site_indices("com.microsoft::MatMulNBits"), &[1]);
+        // No designated weight site → empty.
+        assert!(weight_site_indices("com.microsoft::GroupQueryAttention").is_empty());
+        assert!(weight_site_indices("Add").is_empty());
+        // Every op with a designated weight site must be in the heavy family.
+        for op in [
+            "MatMul",
+            "Gemm",
+            "Conv",
+            "ConvTranspose",
+            "com.microsoft::MatMulNBits",
+        ] {
+            assert!(
+                is_heavy_family(op),
+                "{op} has a weight site but is not heavy-family"
+            );
+        }
+    }
+
+    /// **End-to-end anchor polarity, decided by residency alone.** Two islands of *identical*
+    /// shape — same node count, same bytes, same FLOPs — differ only in whether their single
+    /// matmul-family node carries a resident weight. The one with a weight anchors and is claimed;
+    /// the activation-only one anchors nothing and is rejected as `TransferDominated`. This is the
+    /// MiniLM AV batched-matmul case from issue #73, isolated to the anchor distinction: the byte
+    /// and FLOP terms are held constant so the only thing that can flip the verdict is the weight
+    /// site's residency.
+    #[test]
+    fn a_weight_matmul_island_claims_where_an_activation_only_one_is_rejected() {
+        // Transfer-dominated shape (big tensors, little arithmetic), sized past gate 1 so the
+        // non-anchor arm reaches gate 2 and the reason is TransferDominated, not TooSmall.
+        let shape = |anchors: usize| Island {
+            nodes: 8,
+            anchors,
+            heavy_family_nodes: 1,
+            flops: 2 * 128 * 128,
+            input_bytes: 64 * 1024 * 1024,
+            output_bytes: 64 * 1024 * 1024,
+            symbolic_boundary_slots: 0,
+        };
+
+        // Weight MatMul: B (index 1) is a resident initializer ⇒ anchors ⇒ claimed.
+        let weight_anchors = is_anchor("MatMul", &[false, true]) as usize;
+        assert_eq!(weight_anchors, 1);
+        let weight_island = shape(weight_anchors);
+        assert_eq!(
+            evaluate(&weight_island, &TransferModel::DISCRETE, &Policy::default()),
+            Verdict::Claim
+        );
+
+        // Activation-only MatMul: both operands runtime ⇒ anchors nothing ⇒ rejected on economics.
+        let act_anchors = is_anchor("MatMul", &[false, false]) as usize;
+        assert_eq!(act_anchors, 0);
+        let act_island = shape(act_anchors);
+        let v = evaluate(&act_island, &TransferModel::DISCRETE, &Policy::default());
+        assert!(
+            matches!(v, Verdict::Reject(RejectReason::TransferDominated { .. })),
+            "activation-only matmul must be rejected by the economics gate, got {v:?}"
+        );
+        // Both rejections — TooSmall and TransferDominated — surface as DeclineCode::Partition, so
+        // the six MiniLM rejections appear in the decline histogram rather than vanishing.
+        if let Verdict::Reject(reason) = v {
+            assert_eq!(
+                DeclineCode::of_reason(&decline_for(&reason)),
+                Some(DeclineCode::Partition)
+            );
+        }
     }
 
     #[test]
@@ -1063,6 +1295,7 @@ mod tests {
                 .map(|_| Island {
                     nodes: 2,
                     anchors: 0,
+                    heavy_family_nodes: 0,
                     flops: 1_000,
                     input_bytes: 1 << 20,
                     output_bytes: 1 << 20,
@@ -1075,6 +1308,7 @@ mod tests {
             islands: vec![Island {
                 nodes: 80,
                 anchors: 8,
+                heavy_family_nodes: 8,
                 flops: 40_000,
                 input_bytes: 1 << 20,
                 output_bytes: 1 << 20,
@@ -1108,6 +1342,7 @@ mod tests {
                 .map(|_| Island {
                     nodes: 2,
                     anchors: 0,
+                    heavy_family_nodes: 0,
                     flops: 1_000,
                     input_bytes: 1 << 20,
                     output_bytes: 1 << 20,
@@ -1415,7 +1650,8 @@ mod tests {
         ] {
             let island = Island {
                 nodes: 355,
-                anchors: 193,
+                anchors: 161,
+                heavy_family_nodes: 193,
                 flops: 23_020_437_504,
                 input_bytes: 0,
                 output_bytes: bytes,
@@ -1493,7 +1729,8 @@ mod tests {
             (
                 Island {
                     nodes: 355,
-                    anchors: 193,
+                    anchors: 161,
+                    heavy_family_nodes: 193,
                     flops: 23_020_437_504,
                     input_bytes: 0,
                     output_bytes: SUBSTITUTED * per_slot_bytes,
@@ -1501,7 +1738,8 @@ mod tests {
                 },
                 Island {
                     nodes: 355,
-                    anchors: 193,
+                    anchors: 161,
+                    heavy_family_nodes: 193,
                     flops: 23_020_437_504,
                     input_bytes: 0,
                     output_bytes: real_extent * per_slot_bytes,
