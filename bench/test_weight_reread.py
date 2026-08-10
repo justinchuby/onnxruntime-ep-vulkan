@@ -589,3 +589,162 @@ def test_resolve_model_negative_control_wrong_cache_key_is_not_found(tmp_path, m
 
     with pytest.raises(fd.FoundryDiscoveryError, match="no cached Foundry variant"):
         wr.resolve_model()
+
+
+# -- probe path hygiene (issue #81) ------------------------------------------------------------
+#
+# Two defects, fixed together because they are the same defect seen from two sides: a probe that
+# writes without being told where writes into tracked evidence, and a record that carries a
+# resolved model path publishes the local username of whoever last ran it. Both are about a
+# probe deciding on its own what leaves the machine.
+#
+# These locks are deliberately about the *destination and the shape of the record*, not about
+# the measurement: they run with no model, no GPU and no build tree, so they hold in CI.
+
+
+def test_the_default_destination_is_untracked_and_is_not_the_committed_record():
+    """A default run cannot dirty tracked evidence.
+
+    Asserted against `git ls-files` rather than against the gitignore text, because what matters
+    is whether git tracks the path, and a `.gitignore` line has no effect on a file that is
+    already tracked.
+    """
+    import subprocess
+
+    out = wr.resolve_out(wr.parse_args([]))
+    assert out == wr.DEFAULT_RECORD.resolve()
+    assert out != wr.TRACKED_RECORD.resolve()
+
+    listed = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", str(out.relative_to(wr.ROOT).as_posix())],
+        cwd=wr.ROOT, capture_output=True, text=True,
+    )
+    assert listed.returncode != 0, (
+        f"the default record destination {out} is tracked by git; a probe anyone might run to "
+        f"look at must not be able to modify committed evidence without being asked to"
+    )
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", str(out.relative_to(wr.ROOT).as_posix())],
+        cwd=wr.ROOT, capture_output=True, text=True,
+    )
+    assert ignored.returncode == 0, (
+        f"{out} is neither tracked nor ignored, so a default run would leave an untracked file "
+        f"in `git status` — which is the same reporting defect one step removed"
+    )
+
+
+def test_the_committed_record_is_reachable_only_by_asking_twice():
+    """Naming the tracked record with `--out` is not enough; the overwrite must be explicit.
+
+    The negative control matters as much as the positive one: if `--allow-tracked-overwrite` did
+    nothing, the first assertion alone would still pass with the flag ignored.
+    """
+    tracked = str(wr.TRACKED_RECORD)
+    with pytest.raises(InstrumentError, match="refusing to overwrite the committed record"):
+        wr.resolve_out(wr.parse_args(["--out", tracked]))
+
+    allowed = wr.resolve_out(wr.parse_args(["--out", tracked, "--allow-tracked-overwrite"]))
+    assert allowed == wr.TRACKED_RECORD.resolve()
+
+
+def test_an_explicit_out_is_honoured_exactly(tmp_path):
+    """`--out` means exactly what it says, including for a relative path."""
+    target = tmp_path / "nested" / "record.json"
+    assert wr.resolve_out(wr.parse_args(["--out", str(target)])) == target.resolve()
+
+
+def test_a_record_carrying_an_absolute_path_is_refused_not_scrubbed(tmp_path):
+    """The planted positive control: a leak must **refuse the write**, not warn about it.
+
+    Asserted by the file's absence as well as by the exception. A screen whose finding still
+    ends with the bytes on disk is a screen that documents leaks rather than preventing them.
+    """
+    out = tmp_path / "leaky.json"
+    leaky = {"probe": "planted", "onnx_file": "C:\\Users\\someone\\models\\phi.onnx"}
+    with pytest.raises(wr.PrivatePathLeak):
+        wr.write_record(leaky, out)
+    assert not out.exists(), "a refused record must not have been written first"
+
+    posix_leaky = {"probe": "planted", "module_path": "/home/someone/repo/x.spv"}
+    with pytest.raises(wr.PrivatePathLeak):
+        wr.write_record(posix_leaky, tmp_path / "leaky2.json")
+
+
+def test_a_clean_record_is_written_unchanged(tmp_path):
+    """The negative control on the test above: the screen must not refuse everything.
+
+    Without this, deleting the probe's measurement entirely would make the leak test pass.
+    """
+    out = tmp_path / "sub" / "clean.json"
+    clean = {
+        "probe": "weight_reread_amplification_phi35_executed",
+        "onnx_file": "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+        "onnx_path": "<redacted-local-path>",
+        "onnx_sha256": "0" * 64,
+        "subject": {"module_path": "rust/target/release/build/out/spv/q_gemv.spv"},
+        "measured": {"amplification": 1.0},
+    }
+    wr.write_record(clean, out)
+    assert json.loads(out.read_text(encoding="utf-8")) == clean
+
+
+def test_the_result_identity_publishes_identity_and_never_location(tmp_path, monkeypatch):
+    """`_result_identity` must name *what* the model is, never *where* it is.
+
+    The SHA-256 is the identity; the path is the identity of a machine. This is asserted through
+    the same screen the writer uses, so the two cannot drift apart.
+    """
+    model = tmp_path / "deep" / "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"not a real onnx file, just a presence marker")
+    monkeypatch.setenv("PHI35_MODEL", str(model))
+
+    ident = wr._result_identity(model)
+    assert ident["onnx_file"] == model.name
+    assert str(tmp_path) not in json.dumps(ident)
+    assert len(ident["onnx_sha256"]) == 64
+
+    kept, why = wr.screen_public_record(ident)
+    assert kept is not None, f"the identity block must survive the public-path screen: {why}"
+
+
+def test_repo_relative_is_total_and_cannot_emit_an_absolute_path(tmp_path):
+    """Paths outside the repo become the placeholder rather than an absolute path or a crash.
+
+    A custom `CARGO_TARGET_DIR` makes the outside-the-repo case routine, and the useful answer
+    there is "somewhere else" — not a traceback thrown away after the measurement was taken, and
+    certainly not the absolute path itself.
+    """
+    inside = wr.ROOT / "bench" / "results" / "probe_weight_reread.py"
+    assert wr.repo_relative(inside) == "bench/results/probe_weight_reread.py"
+    assert "\\" not in wr.repo_relative(inside), "the published form is POSIX, not per-OS"
+
+    outside = wr.repo_relative(tmp_path / "elsewhere" / "q_gemv.spv")
+    assert outside == "<redacted-local-path>"
+    kept, _ = wr.screen_public_record({"module_path": outside})
+    assert kept is not None
+
+
+def test_the_probe_writes_through_the_screen_and_not_around_it():
+    """Structural: the record has exactly one writer, and it screens before it writes.
+
+    A second writer added later would bypass the screen entirely while every test above stayed
+    green, because they all drive `write_record` directly. This is the lock that notices.
+
+    The probe's *other* `write_text` — the patched `.comp` the re-reading positive control
+    compiles — is deliberately not counted: it writes GLSL into a `tempfile.TemporaryDirectory`,
+    not a record, so the thing being counted is serialisation of the report rather than contact
+    with the filesystem.
+    """
+    text = (RESULTS / "probe_weight_reread.py").read_text(encoding="utf-8")
+    assert text.count("json.dumps(") == 1, (
+        "probe_weight_reread.py serialises a record in more than one place; every path from the "
+        "report to disk must go through write_record(), which screens before it writes"
+    )
+    body = text.split("def write_record(", 1)[1].split("\ndef ", 1)[0]
+    assert "json.dumps(" in body, "the one serialiser must be the one inside write_record()"
+    assert "screen_public_record(" in body.split("write_text(", 1)[0], (
+        "write_record() must screen BEFORE it writes"
+    )
+    assert "PrivatePathLeak" in body, "a finding must raise, not warn"
+

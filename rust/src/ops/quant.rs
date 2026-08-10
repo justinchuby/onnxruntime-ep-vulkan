@@ -448,6 +448,404 @@ fn gemv_max_rows() -> u32 {
     )
 }
 
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+// The exact tile request — `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` (issue #81)
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The environment variable carrying an exact `(cols, rows)` request.
+pub const ENV_GEMV_TILE: &str = "ONNXRUNTIME_EP_VULKAN_GEMV_TILE";
+
+/// Which half of a `"cols,rows"` request a syntax finding is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileField {
+    Cols,
+    Rows,
+}
+
+impl std::fmt::Display for TileField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            TileField::Cols => "cols",
+            TileField::Rows => "rows",
+        })
+    }
+}
+
+/// Why a tile request is not a `"cols,rows"` pair. **Syntax only** — nothing here has looked at a
+/// shape, so a value that parses may still be refused as illegal, and the two are different
+/// findings on purpose: "you typed it wrong" and "that tile cannot be executed" are different
+/// instructions to the operator.
+///
+/// Every variant is a *refusal*, never a fallback. A knob that silently ignores what it could not
+/// read is a knob whose A/B arms are indistinguishable from its control, which is the exact defect
+/// this instrument exists to remove: `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` reads an unparseable
+/// value as "the default" (correct for a *ceiling*, which can only ever make the tile smaller) and
+/// that reading is wrong for an *exact request*, which is a claim about what was measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileSyntaxError {
+    /// The variable is set to the empty string. Not the same fact as unset (R12): unset is the
+    /// control arm and must reproduce the shipping selector; set-to-empty is an operator who
+    /// believes they armed something.
+    Empty,
+    /// Not exactly two comma-separated fields.
+    NotAPair { fields: usize },
+    /// One field is empty — `",4"`, `"8,"`, `"8,,4"`'s middle.
+    EmptyField { field: TileField },
+    /// A byte that is not an ASCII digit. Covers whitespace (`" 8,4"`), signs (`"-8,4"`, `"+8,4"`),
+    /// radix prefixes (`"0x8,4"`) and trailing junk (`"8,4 "`, `"8,4;"`) in one rule, because
+    /// "strict decimal" is exactly "every byte is `0..=9`".
+    NonDigit { field: TileField },
+    /// A leading zero on a multi-digit field — `"08,4"`. Refused rather than accepted as 8: an
+    /// operator who writes an octal-looking literal is not certainly asking for decimal, and an
+    /// A/B arm whose label is ambiguous is an A/B arm that cannot be reported.
+    LeadingZero { field: TileField },
+    /// More digits than a `u32` can hold, refused before the multiply that would wrap.
+    Overflows { field: TileField },
+    /// A field of zero. `cols = 0` is a division by zero in the dispatch geometry and `rows = 0`
+    /// is an infinite row-tile count; neither is a tile.
+    Zero { field: TileField },
+}
+
+impl std::fmt::Display for TileSyntaxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TileSyntaxError::Empty => write!(f, "set to the empty string, which names no tile"),
+            TileSyntaxError::NotAPair { fields } => write!(
+                f,
+                "expected exactly two comma-separated fields `cols,rows`, found {fields}"
+            ),
+            TileSyntaxError::EmptyField { field } => write!(f, "the `{field}` field is empty"),
+            TileSyntaxError::NonDigit { field } => write!(
+                f,
+                "the `{field}` field is not strict decimal (every byte must be 0-9: no sign, no \
+                 whitespace, no radix prefix, no trailing text)"
+            ),
+            TileSyntaxError::LeadingZero { field } => {
+                write!(f, "the `{field}` field has a leading zero")
+            }
+            TileSyntaxError::Overflows { field } => {
+                write!(f, "the `{field}` field does not fit in a u32")
+            }
+            TileSyntaxError::Zero { field } => write!(f, "the `{field}` field is zero"),
+        }
+    }
+}
+
+/// Why a syntactically valid `(cols, rows)` pair may not be dispatched.
+///
+/// One variant per rule the shipping selector already enforces. The request is validated against
+/// **every** one of them, so an honoured request can only ever name a tile
+/// [`matmul_nbits_gemv`] could already have executed for this node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileIllegality {
+    /// `cols` outside `1..=GEMV_MAX_COLS` — the shader's column register budget.
+    ColsOutOfRange { cols: u32, max: u32 },
+    /// `rows` outside `1..=GEMV_MAX_ROWS` — the activation window held per row.
+    RowsOutOfRange { rows: u32, max: u32 },
+    /// `cols` is not a power of two. The selector only ever produces powers of two — it seeds with
+    /// [`gemv_cols`] and halves — and an odd `cols` takes the shader's *scalar* store path instead
+    /// of the paired one (`q_gemv.comp`'s `paired` predicate requires `QB_COLS >= 2 && even`).
+    /// Legal in the shader, unreachable in production, and therefore refused: an instrument that
+    /// can reach geometries the EP never ships measures something that does not ship.
+    ColsNotAPowerOfTwo { cols: u32 },
+    /// `rows` is not a power of two, for the same reason: the search doubles from 1.
+    RowsNotAPowerOfTwo { rows: u32 },
+    /// `rows` above the ceiling `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` pins for this process.
+    /// **Refused, never clamped**: clamping would silently run a different arm than the one the
+    /// operator labelled their measurement with.
+    RowsAboveCeiling { rows: u32, ceiling: u32 },
+    /// `cols * rows` above the accumulator budget the shader sizes `acc`/`bacc` by.
+    TileTooLarge { cols: u32, rows: u32, max: u32 },
+    /// `wg * cols` above the shared reduction array.
+    ReductionArrayOverrun { wg: u32, cols: u32, words: u32 },
+    /// `cols` does not divide `N`, so the dispatch would take the tail-tile path. Legal in the
+    /// shader and deliberately out of reach here: the selector never chooses it, so admitting it
+    /// through the override would make the instrument able to reach a geometry production cannot.
+    ColsDoesNotDivideN { cols: u32, n: u64 },
+    /// Fewer than [`GEMV_MIN_WORKGROUPS`] workgroups survive the column tile.
+    TooFewWorkgroups { cols: u32, n: u64, floor: u64 },
+    /// A row tile on a dispatch with at most one row. `rows = 1` is what every `m <= 1` dispatch
+    /// gets and is the arm §8.12 proves bit-identical; a taller tile there names activation rows
+    /// that do not exist.
+    RowTileOnASingleRow { rows: u32, m: u64 },
+    /// A bit width this row does not claim. The override is validated against the dtype/variant
+    /// restrictions too, so it cannot smuggle a tile into a form the claim predicate declined.
+    UnsupportedBits { bits: u32 },
+    /// An activation element of zero bytes — no dtype this EP compiles has one, so reaching this
+    /// means the caller lost the descriptor rather than that the request was wrong.
+    ZeroActivationWidth,
+}
+
+impl std::fmt::Display for TileIllegality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TileIllegality::ColsOutOfRange { cols, max } => {
+                write!(f, "cols={cols} is outside 1..={max}")
+            }
+            TileIllegality::RowsOutOfRange { rows, max } => {
+                write!(f, "rows={rows} is outside 1..={max}")
+            }
+            TileIllegality::ColsNotAPowerOfTwo { cols } => write!(
+                f,
+                "cols={cols} is not a power of two, so it takes the shader's scalar store path \
+                 rather than the paired one the selector always reaches"
+            ),
+            TileIllegality::RowsNotAPowerOfTwo { rows } => {
+                write!(f, "rows={rows} is not a power of two")
+            }
+            TileIllegality::RowsAboveCeiling { rows, ceiling } => write!(
+                f,
+                "rows={rows} is above the ceiling {ceiling} this process pins with \
+                 ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS"
+            ),
+            TileIllegality::TileTooLarge { cols, rows, max } => write!(
+                f,
+                "cols*rows={} is above the {max}-element accumulator budget",
+                *cols as u64 * *rows as u64
+            ),
+            TileIllegality::ReductionArrayOverrun { wg, cols, words } => write!(
+                f,
+                "wg*cols={} is above the {words}-float shared reduction array",
+                *wg as u64 * *cols as u64
+            ),
+            TileIllegality::ColsDoesNotDivideN { cols, n } => {
+                write!(f, "cols={cols} does not divide N={n}, which is a tail tile")
+            }
+            TileIllegality::TooFewWorkgroups { cols, n, floor } => write!(
+                f,
+                "cols={cols} leaves {} workgroups for N={n}, below the floor of {floor}",
+                n / u64::from(*cols)
+            ),
+            TileIllegality::RowTileOnASingleRow { rows, m } => {
+                write!(f, "rows={rows} on a dispatch of M={m} rows")
+            }
+            TileIllegality::UnsupportedBits { bits } => {
+                write!(f, "bits={bits} is not a claimable width")
+            }
+            TileIllegality::ZeroActivationWidth => {
+                write!(f, "the activation element is zero bytes wide")
+            }
+        }
+    }
+}
+
+/// A refused tile request, carrying the reason in a *type* rather than in prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TileRefusal {
+    /// The value could not be read as a pair.
+    Malformed(TileSyntaxError),
+    /// The pair was read and names a tile that cannot be dispatched for this node.
+    Illegal {
+        cols: u32,
+        rows: u32,
+        why: TileIllegality,
+    },
+}
+
+impl TileRefusal {
+    /// A short, stable token for the counter row — the thing a reader greps for.
+    pub fn token(&self) -> &'static str {
+        match self {
+            TileRefusal::Malformed(_) => "MALFORMED",
+            TileRefusal::Illegal { .. } => "ILLEGAL",
+        }
+    }
+}
+
+impl std::fmt::Display for TileRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TileRefusal::Malformed(why) => write!(f, "MALFORMED: {why}"),
+            TileRefusal::Illegal { cols, rows, why } => {
+                write!(f, "ILLEGAL: ({cols},{rows}) — {why}")
+            }
+        }
+    }
+}
+
+/// Which surface chose the tile a dispatch was built with.
+///
+/// Two states and not a `(cols, rows)` pair with a boolean beside it, because the pair alone
+/// cannot answer the only question the A/B asks: *did the operator's request take effect, or did
+/// the automatic selector happen to name the same tile?* An `(16,2)` that came from the byte model
+/// and an `(16,2)` that was requested are the same pipeline and different measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileChoice {
+    /// No request was made; the byte model chose. Byte-for-byte the shipping selector.
+    Automatic { cols: u32, rows: u32 },
+    /// A legal request was honoured exactly.
+    Requested { cols: u32, rows: u32 },
+}
+
+impl TileChoice {
+    pub fn tile(self) -> (u32, u32) {
+        match self {
+            TileChoice::Automatic { cols, rows } | TileChoice::Requested { cols, rows } => {
+                (cols, rows)
+            }
+        }
+    }
+
+    /// A short, stable token for the counter row.
+    pub fn token(self) -> &'static str {
+        match self {
+            TileChoice::Automatic { .. } => "AUTOMATIC",
+            TileChoice::Requested { .. } => "REQUESTED",
+        }
+    }
+}
+
+/// Read `"cols,rows"`. **A pure parser: no shape, no environment, no clamping, no fallback.**
+///
+/// Strict decimal by the narrowest possible definition — every byte of every field is `0..=9` —
+/// so whitespace, signs, radix prefixes and trailing junk are all one rule rather than seven
+/// special cases that each have to be remembered. The one extra rule is the leading zero, refused
+/// rather than accepted, because `"08,4"` is a value whose author's intent is not decidable.
+pub fn parse_gemv_tile(raw: &str) -> Result<(u32, u32), TileSyntaxError> {
+    if raw.is_empty() {
+        return Err(TileSyntaxError::Empty);
+    }
+    let fields: Vec<&str> = raw.split(',').collect();
+    if fields.len() != 2 {
+        return Err(TileSyntaxError::NotAPair {
+            fields: fields.len(),
+        });
+    }
+    let read = |s: &str, field: TileField| -> Result<u32, TileSyntaxError> {
+        if s.is_empty() {
+            return Err(TileSyntaxError::EmptyField { field });
+        }
+        if !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(TileSyntaxError::NonDigit { field });
+        }
+        if s.len() > 1 && s.starts_with('0') {
+            return Err(TileSyntaxError::LeadingZero { field });
+        }
+        let v: u32 = s
+            .parse()
+            .map_err(|_| TileSyntaxError::Overflows { field })?;
+        if v == 0 {
+            return Err(TileSyntaxError::Zero { field });
+        }
+        Ok(v)
+    };
+    Ok((
+        read(fields[0], TileField::Cols)?,
+        read(fields[1], TileField::Rows)?,
+    ))
+}
+
+/// Is `(cols, rows)` a tile this node could already have been dispatched with?
+///
+/// **A pure legality function**: every rule the shipping selector applies, applied in one place,
+/// against the shape and workgroup this dispatch actually resolved. It is deliberately *not*
+/// "would the byte model have chosen this" — the whole point of the instrument is to reach a tile
+/// the byte model refuses on a tie — but it is exactly "could the shader have executed this
+/// safely", which is the property the fail-closed guard in [`matmul_nbits_gemv`] enforces and the
+/// property `q_gemv.comp`'s own specialisation-constant guard enforces a second time.
+#[allow(clippy::too_many_arguments)]
+pub fn gemv_tile_legality(
+    cols: u32,
+    rows: u32,
+    m: u64,
+    n: u64,
+    bits: u32,
+    a_bytes: u64,
+    wg: u32,
+    max_rows: u32,
+) -> Result<(), TileIllegality> {
+    if !(1..=GEMV_MAX_COLS).contains(&cols) {
+        return Err(TileIllegality::ColsOutOfRange {
+            cols,
+            max: GEMV_MAX_COLS,
+        });
+    }
+    if !(1..=GEMV_MAX_ROWS).contains(&rows) {
+        return Err(TileIllegality::RowsOutOfRange {
+            rows,
+            max: GEMV_MAX_ROWS,
+        });
+    }
+    if !cols.is_power_of_two() {
+        return Err(TileIllegality::ColsNotAPowerOfTwo { cols });
+    }
+    if !rows.is_power_of_two() {
+        return Err(TileIllegality::RowsNotAPowerOfTwo { rows });
+    }
+    if rows > max_rows {
+        return Err(TileIllegality::RowsAboveCeiling {
+            rows,
+            ceiling: max_rows,
+        });
+    }
+    if cols * rows > GEMV_MAX_TILE {
+        return Err(TileIllegality::TileTooLarge {
+            cols,
+            rows,
+            max: GEMV_MAX_TILE,
+        });
+    }
+    if wg * cols > GEMV_RED_WORDS {
+        return Err(TileIllegality::ReductionArrayOverrun {
+            wg,
+            cols,
+            words: GEMV_RED_WORDS,
+        });
+    }
+    if n % u64::from(cols) != 0 {
+        return Err(TileIllegality::ColsDoesNotDivideN { cols, n });
+    }
+    if cols > 1 && n / u64::from(cols) < GEMV_MIN_WORKGROUPS {
+        return Err(TileIllegality::TooFewWorkgroups {
+            cols,
+            n,
+            floor: GEMV_MIN_WORKGROUPS,
+        });
+    }
+    if rows > 1 && m <= 1 {
+        return Err(TileIllegality::RowTileOnASingleRow { rows, m });
+    }
+    if !supports_bits(i64::from(bits)) {
+        return Err(TileIllegality::UnsupportedBits { bits });
+    }
+    if a_bytes == 0 {
+        return Err(TileIllegality::ZeroActivationWidth);
+    }
+    Ok(())
+}
+
+/// Resolve the tile for one dispatch: the request when there is a legal one, the byte model when
+/// there is not, and a **refusal** when there is one that cannot be honoured.
+///
+/// `request` is the raw environment value, passed in rather than read, so every branch of this
+/// function is reachable from a unit test in a layer the lint forbids `unsafe` in. The env read
+/// lives in [`matmul_nbits_gemv`] and its plumbing is locked from `rust/tests/`.
+///
+/// **`None` is byte-for-byte the shipping selector.** That is the control arm of the whole
+/// experiment and it is a property of this function's shape rather than of a comparison: with no
+/// request there is no code path here that can reach a different `(cols, rows)` than
+/// [`gemv_tile_with`] returns.
+#[allow(clippy::too_many_arguments)]
+pub fn gemv_tile_choice_with(
+    request: Option<&str>,
+    m: u64,
+    n: u64,
+    k: u64,
+    bits: u32,
+    a_bytes: u64,
+    wg: u32,
+    max_rows: u32,
+) -> Result<TileChoice, TileRefusal> {
+    let Some(raw) = request else {
+        let (cols, rows) = gemv_tile_with(m, n, k, bits, a_bytes, wg, max_rows);
+        return Ok(TileChoice::Automatic { cols, rows });
+    };
+    let (cols, rows) = parse_gemv_tile(raw).map_err(TileRefusal::Malformed)?;
+    gemv_tile_legality(cols, rows, m, n, bits, a_bytes, wg, max_rows)
+        .map_err(|why| TileRefusal::Illegal { cols, rows, why })?;
+    Ok(TileChoice::Requested { cols, rows })
+}
+
 /// The `(cols, rows)` tile one workgroup takes: the pair that names the fewest bytes.
 ///
 /// `rows == 1` is the decode geometry and is *always* what a one-row dispatch gets — the search
@@ -523,6 +921,24 @@ fn matmul_nbits_gemv(
     node: &crate::engine::NodeDesc,
     ctx: &mut dyn crate::engine::DispatchContext,
 ) -> crate::engine::EpResult<()> {
+    let request = std::env::var(ENV_GEMV_TILE).ok();
+    matmul_nbits_gemv_with_request(spec, node, ctx, request.as_deref())
+}
+
+/// [`matmul_nbits_gemv`] with the tile request passed in rather than read from the environment.
+///
+/// The split is the same one [`gemv_tile_with`] makes and it is made for the same reason: the
+/// `tests/layering.rs` lint forbids `unsafe` under `src/ops/`, mutating process environment
+/// requires it, and a refusal that can only be reached by setting a process-global is a refusal
+/// most of whose branches never get exercised. The env read is one line above; the plumbing that
+/// proves it is *connected* is `rust/tests/gemv_tile_override.rs`, which drives the **live
+/// registry row** through a real environment variable, outside this layer.
+fn matmul_nbits_gemv_with_request(
+    spec: &OpSpec,
+    node: &crate::engine::NodeDesc,
+    ctx: &mut dyn crate::engine::DispatchContext,
+    request: Option<&str>,
+) -> crate::engine::EpResult<()> {
     use crate::engine::{AttrValue, EpError, KernelRequest, TensorDesc};
 
     let attr = |name: &str| -> crate::engine::EpResult<i64> {
@@ -597,14 +1013,34 @@ fn matmul_nbits_gemv(
 
     let wg = gemv_workgroup(blocks_per_col as u64);
     let a_bytes = dtype.byte_size() as u64;
-    let (cols, rows) = gemv_tile(
+    // The tile, and **which surface chose it**. Unset is the control arm and reaches
+    // `gemv_tile_with` unchanged; a legal request is honoured exactly; an illegal or malformed one
+    // refuses here — before the pipeline exists, before a descriptor is written, before anything
+    // is submitted — rather than clamping to something the operator did not ask for. A knob that
+    // quietly substitutes a neighbouring tile makes its own A/B unreportable, because both arms
+    // then name the same pipeline and nothing in the artifact says which one ran (issue #81).
+    let choice = match gemv_tile_choice_with(
+        request,
         m_total.max(0) as u64,
         n as u64,
         k as u64,
         bits as u32,
         a_bytes,
         wg,
-    );
+        gemv_max_rows(),
+    ) {
+        Ok(choice) => choice,
+        Err(refusal) => {
+            crate::counters::record_gemv_tile_refusal(&refusal.to_string());
+            return Err(EpError::Unsupported(format!(
+                "`{}` refused the {ENV_GEMV_TILE} request — {refusal}; this is a refusal, not a \
+                 fallback: the tile an A/B arm is labelled with must be the tile it ran",
+                node.op_type
+            )));
+        }
+    };
+    let (cols, rows) = choice.tile();
+    crate::counters::record_gemv_tile_selection(choice.token(), cols, rows);
     let mut push = Vec::with_capacity(16);
     for v in [m_total, k, n, blocks_per_col] {
         push.extend_from_slice(&(v as u32).to_le_bytes());
@@ -612,11 +1048,15 @@ fn matmul_nbits_gemv(
 
     // FAIL CLOSED, at the last point that can still refuse. `q_gemv.comp` addresses its
     // accumulators `r * QB_COLS + c` into arrays of `QB_MAX_TILE`, so a pair whose product
-    // overruns that would write out of bounds. `gemv_tile` cannot return one — the bound is a
-    // condition of its own search — but a pipeline is built from these two numbers and nothing
-    // downstream re-derives them. An edit that broke the invariant would otherwise be found by a
-    // GPU fault or, worse, by silently wrong logits. The shader carries the same guard as a
-    // folded specialisation-constant branch; this one names the values in the error.
+    // overruns that would write out of bounds. Neither `gemv_tile` nor an honoured
+    // `ONNXRUNTIME_EP_VULKAN_GEMV_TILE` request can return one — the bound is a condition of the
+    // search and of `gemv_tile_legality` respectively — but a pipeline is built from these two
+    // numbers and nothing downstream re-derives them. An edit that broke the invariant would
+    // otherwise be found by a GPU fault or, worse, by silently wrong logits. The shader carries
+    // the same guard as a folded specialisation-constant branch; this one names the values in the
+    // error. It is deliberately kept *after* the request path rather than replaced by it: the
+    // request is validated against these bounds, and a guard that trusts the validator it is
+    // guarding is not a guard.
     if cols * rows > GEMV_MAX_TILE || rows > GEMV_MAX_ROWS || wg * cols > GEMV_RED_WORDS {
         return Err(EpError::Internal(format!(
             "`{}` selected an illegal GEMV tile: cols={cols} rows={rows} wg={wg} \
@@ -1352,6 +1792,628 @@ mod tests {
                 clamp_max_rows(Some(junk)),
                 GEMV_MAX_ROWS,
                 "junk {junk:?} means default"
+            );
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────────
+    // The exact tile request — issue #81
+    //
+    // Everything below is about one narrow fact and its consequences: the byte model
+    // `gemv_named_bytes` scores `(16,2)` and `(8,4)` *identically* on the shapes this EP ships,
+    // and the search keeps its incumbent on a tie, so `(8,4)` is not reachable from any automatic
+    // surface — not by shape, not by the row-tile ceiling. It is therefore UNMEASURED, and it
+    // cannot be measured by a knob that clamps, ignores, or falls back, because such a knob makes
+    // both arms of the A/B name the same pipeline.
+    // ──────────────────────────────────────────────────────────────────────────────────────────
+
+    /// The Phi-3.5 attention shape: `N = K = 3072`, q4 weights, f16 activations, `block_size = 32`.
+    const PHI_N: u64 = 3072;
+    const PHI_K: u64 = 3072;
+    const PHI_BITS: u32 = 4;
+    const PHI_A: u64 = 2;
+
+    /// The shapes all 161 `MatMulNBits` nodes of Phi-3.5-mini-instruct take, as `(N, K)`.
+    const PHI_SHAPES: [(u64, u64); 4] = [(3072, 3072), (8192, 3072), (3072, 8192), (9216, 3072)];
+
+    fn phi_wg() -> u32 {
+        gemv_workgroup(PHI_K / 32)
+    }
+
+    fn phi_bytes(m: u64, cols: u32, rows: u32) -> u128 {
+        gemv_named_bytes(m, PHI_N, PHI_K, PHI_BITS, PHI_A, cols, rows)
+    }
+
+    /// The bytes the weight loads alone name, obtained by zeroing the activation element rather
+    /// than by re-deriving the formula — a test that re-implements the thing it is testing proves
+    /// only that it was copied correctly.
+    fn weight_bytes(m: u64, n: u64, k: u64, cols: u32, rows: u32) -> u128 {
+        gemv_named_bytes(m, n, k, PHI_BITS, 0, cols, rows)
+    }
+
+    /// **The tile identity.** `(16,2)` and `(8,4)` name the *same* number of bytes exactly when
+    /// `M mod 4` is 0 or 3, and `(16,2)` names strictly fewer otherwise.
+    ///
+    /// Both halves matter and they say different things:
+    ///
+    /// * the tie half is why `(8,4)` is worth an experiment at all — two geometries that a
+    ///   byte-counting model cannot separate can still be separated by a machine, because
+    ///   coalescing, cache residency of the activation row, and occupancy are not bytes;
+    /// * the strict half is why the experiment cannot be run by nudging the model — off a tie the
+    ///   model has a real preference, and a "tuning" change that reversed it would be a change to
+    ///   production behaviour on every shape, not an instrument.
+    ///
+    /// The arithmetic behind it: with `cols | N` a workgroup names `cols·K·bits/8` weight bytes
+    /// and `rows·K·a_bytes` activation bytes, which is `12·K` units for both tiles at q4/f16
+    /// (`16·½ + 2·2 = 8·½ + 4·2`). The totals therefore differ only through the workgroup count,
+    /// `ceil(N/cols)·ceil(M/rows)`, and `(N/16)·ceil(M/2)` equals `(N/8)·ceil(M/4)` exactly when
+    /// `ceil(M/2) = 2·ceil(M/4)`.
+    #[test]
+    fn the_two_equal_traffic_tiles_tie_exactly_when_m_mod_four_is_zero_or_three() {
+        for m in 1..=400u64 {
+            let wide = phi_bytes(m, 16, 2);
+            let tall = phi_bytes(m, 8, 4);
+            let expected_tie = matches!(m % 4, 0 | 3);
+            assert_eq!(
+                wide == tall,
+                expected_tie,
+                "M={m} (M mod 4 = {}): (16,2) names {wide} bytes and (8,4) names {tall}; the tie \
+                 must hold exactly on M mod 4 in {{0,3}}",
+                m % 4
+            );
+            if !expected_tie {
+                assert!(
+                    wide < tall,
+                    "M={m}: off the tie the shipping tile must be strictly cheaper, but (16,2) \
+                     names {wide} and (8,4) names {tall}"
+                );
+            }
+        }
+    }
+
+    /// The tie is a property of the q4/f16 *pairing*, not an accident of one shape.
+    ///
+    /// Stated separately from the identity above because it is the load-bearing half of the
+    /// generalisation: if the tie only held at `N = K = 3072` then `(8,4)` would be a curiosity
+    /// rather than an unmeasured production arm.
+    #[test]
+    fn the_tie_holds_on_every_shipping_shape_and_breaks_when_the_dtypes_change() {
+        for (n, k) in PHI_SHAPES {
+            for m in [4u64, 8, 32, 128, 512] {
+                assert_eq!(
+                    gemv_named_bytes(m, n, k, 4, 2, 16, 2),
+                    gemv_named_bytes(m, n, k, 4, 2, 8, 4),
+                    "N={n} K={k} M={m}: the q4/f16 tie must hold on every shipping shape"
+                );
+            }
+        }
+        // f32 activations quadruple the activation term relative to q4 weights, and the tall tile
+        // — which holds twice as many rows per workgroup — is then strictly worse. The tie is not
+        // a coincidence of the formula; it is a coincidence of 4-bit weights and 2-byte
+        // activations, and it is worth knowing which.
+        assert!(
+            gemv_named_bytes(128, PHI_N, PHI_K, 4, 4, 16, 2)
+                < gemv_named_bytes(128, PHI_N, PHI_K, 4, 4, 8, 4),
+            "with f32 activations the wide tile must win outright"
+        );
+        // At 8 bits the weight term doubles and the wide tile wins for the mirror-image reason.
+        assert!(
+            gemv_named_bytes(128, PHI_N, PHI_K, 8, 2, 8, 4)
+                < gemv_named_bytes(128, PHI_N, PHI_K, 8, 2, 16, 2),
+            "at 8 bits the tall tile must win outright"
+        );
+    }
+
+    /// **The weight-pass count**, which is the number `docs/PERF.md` §26.4 reports and had wrong.
+    ///
+    /// A `(cols, rows)` tile reads the *whole* packed weight once per row tile, because the column
+    /// tiles partition `N` and each names its own columns. So the amplification over a single
+    /// streaming pass is `ceil(M / rows)` — `ceil(M/2)` for the tile that ships and `ceil(M/4)`
+    /// for the one that does not. At the 128-token prefill §26.4 is written about that is 64
+    /// passes, not 32.
+    #[test]
+    fn the_shipping_tile_makes_ceil_m_over_two_weight_passes_and_the_unreached_one_makes_four() {
+        let whole_weight = u128::from(PHI_N) * u128::from(PHI_K) * u128::from(PHI_BITS) / 8;
+        for m in 1..=200u64 {
+            assert_eq!(
+                weight_bytes(m, PHI_N, PHI_K, 16, 2),
+                u128::from(m.div_ceil(2)) * whole_weight,
+                "M={m}: the shipping tile reads the whole weight ceil(M/2) times"
+            );
+            assert_eq!(
+                weight_bytes(m, PHI_N, PHI_K, 8, 4),
+                u128::from(m.div_ceil(4)) * whole_weight,
+                "M={m}: the equal-traffic tile reads the whole weight ceil(M/4) times"
+            );
+        }
+        assert_eq!(128u64.div_ceil(2), 64, "the §26.4 prefill is 64 passes");
+        assert_eq!(128u64.div_ceil(4), 32);
+    }
+
+    /// **The structural claim guard.** No automatic surface reaches `(8,4)`.
+    ///
+    /// This is the fact that makes the instrument necessary rather than convenient, so it is
+    /// asserted as a closed enumeration over *both* automatic inputs — the shape and the
+    /// `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` ceiling — rather than spot-checked. The ceiling can
+    /// only ever make the tile shorter, so it cannot introduce a taller one; the sweep proves it
+    /// instead of asserting it.
+    ///
+    /// It fails loudly if a future edit makes `(8,4)` reachable, which would be a **production
+    /// behaviour change** wearing an instrument's clothes: the paired positive half below is the
+    /// only sanctioned way to reach that tile.
+    #[test]
+    fn no_automatic_surface_can_reach_the_equal_traffic_arm() {
+        let mut reachable = std::collections::BTreeSet::new();
+        for (n, k) in PHI_SHAPES {
+            let wg = gemv_workgroup(k / 32);
+            for m in 0..=256u64 {
+                for ceiling in 1..=GEMV_MAX_ROWS {
+                    reachable.insert(gemv_tile_with(m, n, k, PHI_BITS, PHI_A, wg, ceiling));
+                }
+            }
+        }
+        assert!(
+            reachable.contains(&(16, 2)),
+            "the shipping tile must be in the reachable set, else this guard proves nothing: {reachable:?}"
+        );
+        assert!(
+            !reachable.contains(&(8, 4)),
+            "(8,4) became reachable from an automatic surface — that is a production change, not \
+             an instrument. Reachable set: {reachable:?}"
+        );
+
+        // The positive half. Without it this test would pass just as happily if the request
+        // surface were deleted, and a guard that survives the removal of the thing it guards is
+        // not a guard.
+        let wg = phi_wg();
+        assert_eq!(
+            gemv_tile_choice_with(
+                Some("8,4"),
+                128,
+                PHI_N,
+                PHI_K,
+                PHI_BITS,
+                PHI_A,
+                wg,
+                GEMV_MAX_ROWS
+            ),
+            Ok(TileChoice::Requested { cols: 8, rows: 4 }),
+            "the request surface is the one and only way to reach the equal-traffic arm"
+        );
+    }
+
+    /// The parser is strict decimal and refuses everything else — by *refusing*, not by falling
+    /// back to the default the way the `GEMV_MAX_ROWS` ceiling does.
+    ///
+    /// The difference is not pedantry. A ceiling that ignores a typo runs a tile no worse than the
+    /// one it would have run anyway. An exact request that ignores a typo runs the *control* arm
+    /// while the operator labels the result with the *treatment* arm, which is a wrong number in a
+    /// document rather than a slow kernel.
+    #[test]
+    fn the_tile_request_parser_is_strict_decimal_and_refuses_everything_else() {
+        assert_eq!(parse_gemv_tile("16,2"), Ok((16, 2)));
+        assert_eq!(parse_gemv_tile("8,4"), Ok((8, 4)));
+        assert_eq!(parse_gemv_tile("1,1"), Ok((1, 1)));
+
+        for (raw, want) in [
+            ("", TileSyntaxError::Empty),
+            ("8", TileSyntaxError::NotAPair { fields: 1 }),
+            ("8,4,2", TileSyntaxError::NotAPair { fields: 3 }),
+            (
+                ",4",
+                TileSyntaxError::EmptyField {
+                    field: TileField::Cols,
+                },
+            ),
+            (
+                "8,",
+                TileSyntaxError::EmptyField {
+                    field: TileField::Rows,
+                },
+            ),
+            // Whitespace is *not* trimmed. `" 8,4"` is what a shell here-doc or a stray copy-paste
+            // produces, and accepting it would mean the value in the artifact is not the value the
+            // operator typed.
+            (
+                " 8,4",
+                TileSyntaxError::NonDigit {
+                    field: TileField::Cols,
+                },
+            ),
+            (
+                "8, 4",
+                TileSyntaxError::NonDigit {
+                    field: TileField::Rows,
+                },
+            ),
+            (
+                "8,4 ",
+                TileSyntaxError::NonDigit {
+                    field: TileField::Rows,
+                },
+            ),
+            (
+                "-8,4",
+                TileSyntaxError::NonDigit {
+                    field: TileField::Cols,
+                },
+            ),
+            (
+                "+8,4",
+                TileSyntaxError::NonDigit {
+                    field: TileField::Cols,
+                },
+            ),
+            (
+                "0x8,4",
+                TileSyntaxError::NonDigit {
+                    field: TileField::Cols,
+                },
+            ),
+            (
+                "8,4x",
+                TileSyntaxError::NonDigit {
+                    field: TileField::Rows,
+                },
+            ),
+            (
+                "eight,4",
+                TileSyntaxError::NonDigit {
+                    field: TileField::Cols,
+                },
+            ),
+            (
+                "08,4",
+                TileSyntaxError::LeadingZero {
+                    field: TileField::Cols,
+                },
+            ),
+            (
+                "8,04",
+                TileSyntaxError::LeadingZero {
+                    field: TileField::Rows,
+                },
+            ),
+            (
+                "0,4",
+                TileSyntaxError::Zero {
+                    field: TileField::Cols,
+                },
+            ),
+            (
+                "8,0",
+                TileSyntaxError::Zero {
+                    field: TileField::Rows,
+                },
+            ),
+            (
+                "99999999999,4",
+                TileSyntaxError::Overflows {
+                    field: TileField::Cols,
+                },
+            ),
+        ] {
+            assert_eq!(
+                parse_gemv_tile(raw),
+                Err(want),
+                "{raw:?} must be refused as {want:?}, not read as a tile and not ignored"
+            );
+        }
+    }
+
+    /// A request is checked against **every** rule the shipping selector obeys, one case per rule.
+    ///
+    /// The list is the point: an override validated against a subset of the invariants is a way to
+    /// reach geometries production cannot, which would make any measurement taken through it a
+    /// measurement of something that does not ship.
+    #[test]
+    fn a_requested_tile_is_checked_against_every_rule_the_selector_obeys() {
+        let wg = phi_wg();
+        let legal = |cols, rows| {
+            gemv_tile_legality(cols, rows, 128, PHI_N, PHI_BITS, PHI_A, wg, GEMV_MAX_ROWS)
+        };
+        assert_eq!(legal(16, 2), Ok(()));
+        assert_eq!(legal(8, 4), Ok(()));
+        assert_eq!(legal(16, 1), Ok(()));
+
+        assert_eq!(
+            legal(32, 1),
+            Err(TileIllegality::ColsOutOfRange {
+                cols: 32,
+                max: GEMV_MAX_COLS
+            })
+        );
+        assert_eq!(
+            legal(8, 8),
+            Err(TileIllegality::RowsOutOfRange {
+                rows: 8,
+                max: GEMV_MAX_ROWS
+            })
+        );
+        assert_eq!(
+            legal(3, 1),
+            Err(TileIllegality::ColsNotAPowerOfTwo { cols: 3 }),
+            "3 divides N=3072 and is inside every bound, yet the selector can never produce it — \
+             the override must not be a way to reach the shader's scalar store path"
+        );
+        assert_eq!(
+            legal(8, 3),
+            Err(TileIllegality::RowsNotAPowerOfTwo { rows: 3 })
+        );
+        assert_eq!(
+            gemv_tile_legality(8, 4, 128, PHI_N, PHI_BITS, PHI_A, wg, 2),
+            Err(TileIllegality::RowsAboveCeiling {
+                rows: 4,
+                ceiling: 2
+            }),
+            "a request above the process ceiling is refused, never quietly clamped to it"
+        );
+        assert_eq!(
+            legal(16, 4),
+            Err(TileIllegality::TileTooLarge {
+                cols: 16,
+                rows: 4,
+                max: GEMV_MAX_TILE
+            }),
+            "cols*rows is the accumulator budget the shader sizes its arrays by"
+        );
+        assert_eq!(
+            gemv_tile_legality(2, 1, 128, PHI_N, PHI_BITS, PHI_A, 2048, GEMV_MAX_ROWS),
+            Err(TileIllegality::ReductionArrayOverrun {
+                wg: 2048,
+                cols: 2,
+                words: GEMV_RED_WORDS
+            })
+        );
+        assert_eq!(
+            gemv_tile_legality(16, 2, 128, 3000, PHI_BITS, PHI_A, wg, GEMV_MAX_ROWS),
+            Err(TileIllegality::ColsDoesNotDivideN { cols: 16, n: 3000 }),
+            "a tail tile is a second shader path the selector never takes; the override must not \
+             be able to take it either"
+        );
+        assert_eq!(
+            gemv_tile_legality(16, 2, 128, 512, PHI_BITS, PHI_A, wg, GEMV_MAX_ROWS),
+            Err(TileIllegality::TooFewWorkgroups {
+                cols: 16,
+                n: 512,
+                floor: GEMV_MIN_WORKGROUPS
+            })
+        );
+        assert_eq!(
+            gemv_tile_legality(16, 2, 1, PHI_N, PHI_BITS, PHI_A, wg, GEMV_MAX_ROWS),
+            Err(TileIllegality::RowTileOnASingleRow { rows: 2, m: 1 }),
+            "a decode step has one row; a two-row tile there names activations that do not exist"
+        );
+        assert_eq!(
+            gemv_tile_legality(16, 2, 128, PHI_N, 3, PHI_A, wg, GEMV_MAX_ROWS),
+            Err(TileIllegality::UnsupportedBits { bits: 3 })
+        );
+        assert_eq!(
+            gemv_tile_legality(16, 2, 128, PHI_N, PHI_BITS, 0, wg, GEMV_MAX_ROWS),
+            Err(TileIllegality::ZeroActivationWidth)
+        );
+
+        // `rows > m` is *not* a rule. At M=3 the equal-traffic arm is `(8,4)` — a four-row tile on
+        // three rows, whose fourth row the shader masks — and refusing it would make the tie case
+        // the identity is about unreachable through the very surface built to reach it.
+        assert_eq!(
+            gemv_tile_legality(8, 4, 3, PHI_N, PHI_BITS, PHI_A, wg, GEMV_MAX_ROWS),
+            Ok(())
+        );
+    }
+
+    /// **The control arm.** No request reproduces the shipping selector on every input, exactly.
+    ///
+    /// Asserted against `gemv_tile_with` over a sweep rather than against a table of expected
+    /// pairs: the claim is *identity with the incumbent*, and a table would let both drift
+    /// together.
+    #[test]
+    fn no_request_reproduces_the_shipping_selector_exactly() {
+        for (n, k) in PHI_SHAPES {
+            let wg = gemv_workgroup(k / 32);
+            for m in 0..=200u64 {
+                for ceiling in 1..=GEMV_MAX_ROWS {
+                    let want = gemv_tile_with(m, n, k, PHI_BITS, PHI_A, wg, ceiling);
+                    assert_eq!(
+                        gemv_tile_choice_with(None, m, n, k, PHI_BITS, PHI_A, wg, ceiling),
+                        Ok(TileChoice::Automatic {
+                            cols: want.0,
+                            rows: want.1
+                        }),
+                        "N={n} K={k} M={m} ceiling={ceiling}: unset must be the shipping selector"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An unusable request refuses; it does not select something else.
+    ///
+    /// Both polarities of the refusal — unreadable and unrunnable — and in both cases the assert
+    /// is that the result is *not* a tile, not merely that it is not the requested one. A knob
+    /// that answered `Automatic` here would be indistinguishable from its own control.
+    #[test]
+    fn an_unusable_request_refuses_rather_than_selecting_something_else() {
+        let wg = phi_wg();
+        let ask = |raw: &str| {
+            gemv_tile_choice_with(
+                Some(raw),
+                128,
+                PHI_N,
+                PHI_K,
+                PHI_BITS,
+                PHI_A,
+                wg,
+                GEMV_MAX_ROWS,
+            )
+        };
+        assert_eq!(
+            ask(" 8,4"),
+            Err(TileRefusal::Malformed(TileSyntaxError::NonDigit {
+                field: TileField::Cols
+            }))
+        );
+        assert_eq!(
+            ask("16,4"),
+            Err(TileRefusal::Illegal {
+                cols: 16,
+                rows: 4,
+                why: TileIllegality::TileTooLarge {
+                    cols: 16,
+                    rows: 4,
+                    max: GEMV_MAX_TILE
+                }
+            })
+        );
+        for raw in ["", "junk", "0,0", "16,4", "32,1", "3,1", "1,9"] {
+            let got = ask(raw);
+            assert!(
+                got.is_err(),
+                "{raw:?} produced {got:?}; an unusable request must refuse, because a knob that \
+                 falls back to the default makes its treatment arm and its control arm the same \
+                 pipeline"
+            );
+        }
+
+        // The refusal is *typed*, and its two kinds are spelled differently in the counter row so
+        // an operator reading an artifact can tell "you typed it wrong" from "that cannot run".
+        assert_eq!(ask("junk").unwrap_err().token(), "MALFORMED");
+        assert_eq!(ask("16,4").unwrap_err().token(), "ILLEGAL");
+    }
+
+    /// Every honourable request survives the handler's fail-closed guard.
+    ///
+    /// The guard in `matmul_nbits_gemv` is deliberately kept after the request path, so this is
+    /// the assertion that the two agree: anything `gemv_tile_legality` admits must pass the guard,
+    /// or the override would be a way to reach an `EpError::Internal` from an operator typo.
+    #[test]
+    fn every_honourable_request_survives_the_handler_guard() {
+        let wg = phi_wg();
+        let mut honoured = 0usize;
+        for cols in 1..=64u32 {
+            for rows in 1..=64u32 {
+                let raw = format!("{cols},{rows}");
+                let Ok(choice) = gemv_tile_choice_with(
+                    Some(&raw),
+                    128,
+                    PHI_N,
+                    PHI_K,
+                    PHI_BITS,
+                    PHI_A,
+                    wg,
+                    GEMV_MAX_ROWS,
+                ) else {
+                    continue;
+                };
+                let (c, r) = choice.tile();
+                assert_eq!(
+                    (c, r),
+                    (cols, rows),
+                    "an honoured request is honoured exactly"
+                );
+                assert!(
+                    c * r <= GEMV_MAX_TILE && r <= GEMV_MAX_ROWS && wg * c <= GEMV_RED_WORDS,
+                    "({cols},{rows}) was admitted but would trip the handler's fail-closed guard"
+                );
+                honoured += 1;
+            }
+        }
+        assert!(
+            honoured >= 2,
+            "the sweep admitted {honoured} tiles; if the legality rules ever admit nothing this \
+             test would pass vacuously"
+        );
+    }
+
+    /// A requested tile is distinguishable from the same tile chosen automatically.
+    ///
+    /// This is the whole readback contract in one assertion. `(16,2)` requested and `(16,2)`
+    /// selected build the *same pipeline* and record the same specialisation constants, so the
+    /// variant string cannot separate them; the `TileChoice` token can, and it is what
+    /// `counters::record_gemv_tile_selection` writes. Without it an A/B whose treatment arm was
+    /// silently refused would be indistinguishable from one that ran.
+    #[test]
+    fn a_requested_tile_is_distinguishable_from_the_same_tile_chosen_automatically() {
+        let wg = phi_wg();
+        let auto =
+            gemv_tile_choice_with(None, 128, PHI_N, PHI_K, PHI_BITS, PHI_A, wg, GEMV_MAX_ROWS)
+                .expect("the control arm never refuses");
+        let asked = gemv_tile_choice_with(
+            Some("16,2"),
+            128,
+            PHI_N,
+            PHI_K,
+            PHI_BITS,
+            PHI_A,
+            wg,
+            GEMV_MAX_ROWS,
+        )
+        .expect("(16,2) is legal here");
+        assert_eq!(auto.tile(), (16, 2));
+        assert_eq!(
+            auto.tile(),
+            asked.tile(),
+            "the same pipeline, by construction"
+        );
+        assert_ne!(auto, asked, "and yet a different measurement");
+        assert_eq!(auto.token(), "AUTOMATIC");
+        assert_eq!(asked.token(), "REQUESTED");
+    }
+
+    /// The live row honours a legal request and refuses an illegal one **before it dispatches**.
+    ///
+    /// Driven through `registry::OPS` and the real translate function rather than through the
+    /// selector alone, because the defect this guards against is a disconnected knob: a parser and
+    /// a legality function that are perfect and never consulted. The refusal arm asserts *zero*
+    /// dispatches and *zero* allocations, which is the operational meaning of "refuses before
+    /// dispatch".
+    #[test]
+    fn the_live_row_honours_a_legal_request_and_refuses_an_illegal_one_before_dispatching() {
+        let spec = row("MatMulNBits");
+        let node = phi35_shaped_node(3072, 3072, 128);
+
+        // Control: no request, the shipping tile, one dispatch.
+        let mut rec = AllocRecorder::default();
+        matmul_nbits_gemv_with_request(spec, &node, &mut rec, None).expect("the control arm runs");
+        assert_eq!(rec.dispatches.len(), 1);
+        let control_spec = rec.dispatches[0].spec_constants.clone();
+        assert_eq!(
+            (control_spec[4], control_spec[6]),
+            (16, 2),
+            "the control arm builds the shipping tile; spec constants were {control_spec:?}"
+        );
+
+        // Treatment: the equal-traffic arm, reached only through the request surface.
+        let mut rec = AllocRecorder::default();
+        matmul_nbits_gemv_with_request(spec, &node, &mut rec, Some("8,4"))
+            .expect("(8,4) is legal on this shape");
+        assert_eq!(rec.dispatches.len(), 1);
+        let treated = rec.dispatches[0].spec_constants.clone();
+        assert_eq!(
+            (treated[4], treated[6]),
+            (8, 4),
+            "the request must reach the pipeline; spec constants were {treated:?}"
+        );
+        assert_ne!(
+            control_spec, treated,
+            "the two arms must build different pipelines, or the A/B measures nothing"
+        );
+
+        // Refusal: unrunnable, and nothing is submitted.
+        for raw in ["16,4", " 8,4", "0,0", ""] {
+            let mut rec = AllocRecorder::default();
+            let err = matmul_nbits_gemv_with_request(spec, &node, &mut rec, Some(raw))
+                .expect_err("an unusable request must refuse");
+            assert!(
+                matches!(err, crate::engine::EpError::Unsupported(_)),
+                "{raw:?} refused with {err:?}; a refusal is Unsupported, not Internal — the \
+                 operator typed something, the EP did not lose an invariant"
+            );
+            assert!(
+                rec.dispatches.is_empty() && rec.temp_bytes.is_empty(),
+                "{raw:?}: refused after touching the queue ({} dispatch(es), {} temp buffer(s))",
+                rec.dispatches.len(),
+                rec.temp_bytes.len()
             );
         }
     }

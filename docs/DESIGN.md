@@ -5939,6 +5939,127 @@ inference-call count rather than five hours later and two calls short.
 
 ---
 
+### 8.14 The exact GEMV tile request — making the equal-traffic arm reachable (issue #81)
+
+`ONNXRUNTIME_EP_VULKAN_GEMV_TILE="cols,rows"` requests an exact `q_gemv` tile. It exists for one
+reason, and the reason is a structural gap in §8.12's selector rather than a preference about
+performance.
+
+#### The gap: a tie the search can never break
+
+`gemv_tile` scores candidates with `gemv_named_bytes` and requires a candidate to beat the
+incumbent **strictly**. With `cols | N` one workgroup names `cols · K · bits/8` weight bytes plus
+`rows · K · a_bytes` activation bytes, and at q4 weights with fp16 activations that is `12 · K`
+units for **both** `(16, 2)` and `(8, 4)`. The totals then differ only through the workgroup count
+`ceil(N/cols) · ceil(M/rows)`, so they tie exactly when
+
+```
+ceil(M/2) = 2 · ceil(M/4)      ⟺      M mod 4 ∈ {0, 3}
+```
+
+and off that residue class `(16, 2)` is *strictly* cheaper. Both branches keep `(16, 2)`: on a tie
+because ties keep the incumbent, off a tie because it wins. **`(8, 4)` is unreachable for every
+`M`** — and unreachable through `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS` too, which is a ceiling and
+can only make the tile shorter.
+
+That is a *claim about the shape of the code*, so it is guarded as one.
+`ops::quant::tests::no_automatic_surface_can_reach_the_equal_traffic_arm` enumerates the reachable
+set over four shipping shapes × `M = 0…256` × every legal ceiling and asserts `(8, 4)` is absent —
+and asserts `(16, 2)` is present, so it cannot pass by proving the set empty. If a later edit makes
+`(8, 4)` automatically selectable, that is a **production behaviour change on every shape**, not a
+tuning adjustment, and this test is where it announces itself.
+
+The gap matters because the byte model is not a machine. `(8, 4)` halves the weight passes
+(`ceil(M/4)` against `ceil(M/2)`) and doubles the activation traffic; coalescing, activation-row
+cache residency and occupancy are not bytes, and a model that scores the two identically is
+structurally unable to say which a real memory system prefers. `docs/PERF.md` §28 carries the
+arithmetic and the queued measurement.
+
+#### Shape: a pure parser, a pure legality function, and a refusal
+
+Three pieces, split so that each is testable without process state — `tests/layering.rs` forbids
+`unsafe` under `src/ops/` and mutating environment requires it, the same constraint §8.12 met with
+`gemv_tile_with`:
+
+* `parse_gemv_tile(&str) -> Result<(u32,u32), TileSyntaxError>` — **strict decimal** by the
+  narrowest definition: every byte of every field is `0..=9`. Whitespace, signs, radix prefixes and
+  trailing junk are then one rule rather than seven remembered special cases. Leading zeros are
+  refused (`"08,4"` has no decidable intent) and so are zero fields (`cols = 0` divides by zero in
+  the dispatch geometry; `rows = 0` is an infinite row-tile count).
+* `gemv_tile_legality(...) -> Result<(), TileIllegality>` — **every rule the selector obeys**, in
+  one place: the column and row ranges, the accumulator budget `cols · rows <= GEMV_MAX_TILE`, the
+  shared reduction array `wg · cols <= GEMV_RED_WORDS`, `cols | N`, the workgroup floor, the
+  `m <= 1` row-tile exclusion, the claimable bit widths — and, less obviously, that both are powers
+  of two, because `gemv_cols` only ever produces powers of two and an odd `cols` takes
+  `q_gemv.comp`'s *scalar* store path rather than the paired one. An override validated against a
+  subset of the invariants is a way to reach geometries production cannot, and a measurement taken
+  through it would be a measurement of something that does not ship.
+* `gemv_tile_choice_with(request, ...) -> Result<TileChoice, TileRefusal>` — `None` delegates to
+  `gemv_tile_with` unchanged.
+
+#### Refusal, not fallback — and why that is the opposite of §8.12's reading
+
+An unreadable or unrunnable value produces `EpError::Unsupported` **before any dispatch, allocation
+or pipeline exists**. It does not clamp, ignore, or fall back.
+
+This is deliberately the *opposite* of `ONNXRUNTIME_EP_VULKAN_GEMV_MAX_ROWS`, three paragraphs of
+§8.12 up, which reads a typo as "the default". Both readings are correct for their own surface, and
+the difference is what the surface *is*:
+
+* a **ceiling** can only ever make the tile smaller, so ignoring a typo runs a tile no worse than
+  the one that would have run anyway;
+* an **exact request** is a claim about what was measured. A knob that quietly substitutes a
+  neighbouring tile makes both arms of its own A/B name the same pipeline, and the operator writes
+  a number down against an arm that never ran. That is a wrong number in a document rather than a
+  slow kernel, and it is the harder of the two to ever notice.
+
+The fail-closed guard in `matmul_nbits_gemv` is kept *after* the request path rather than replaced
+by it. The request is validated against the same bounds the guard checks, and a guard that trusts
+the validator it is guarding is not a guard.
+
+#### Readback: what `pipeline_variants` structurally cannot say
+
+`counters::record_pipeline_variant` records the specialisation vector each pipeline is built with,
+so it answers *which tile ran*. It cannot answer two other things, and both are load-bearing:
+
+1. **Which surface chose it.** A requested `(16, 2)` and an automatic `(16, 2)` are the same
+   pipeline and produce the same variant string.
+2. **That a request was refused at all.** A refused request never reaches a pipeline, so the one
+   fact an operator most needs — that the arm they believe they measured never ran — is precisely
+   what the existing witness is silent about.
+
+Two JSON-only counter surfaces close that: `gemv_tile_selections` (`AUTOMATIC`/`REQUESTED` rows) and
+`gemv_tile_refusal_forms` (typed `MALFORMED`/`ILLEGAL` rows), with `gemv_tile_requests_honoured` /
+`_refused` beside them. **JSON-only and no `abi_version` bump**, for the reason §8.9.20 gives: the
+`#[repr(C)]` counters struct has three hand-maintained ctypes mirrors, and `a52024f` is the standing
+proof that growing it is how `dispatches_executed` came to read `device_losses`. `gemv_tile_surface`
+is a *string* with five states rather than a count, because a process whose graph has no
+`MatMulNBits` node never reaches the selector, and a `0` there would be a zero for an event that
+cannot occur (R12).
+
+#### What is locked
+
+* Unit: the tie identity over `M = 1…400`, the `ceil(M/2)` vs `ceil(M/4)` pass counts, the parser
+  against eighteen refused spellings, one case per legality rule, the unset control against
+  `gemv_tile_with` over four shapes × `M = 0…200` × every ceiling, and that every request the
+  legality function admits survives the handler's fail-closed guard.
+* Live: `rust/tests/gemv_tile_override.rs` drives the **registry row** — `registry::spec_for` → the
+  real translate function → the specialisation constants — through a real environment variable
+  across three polarities. The defect it exists to catch is an instrument that is perfectly correct
+  and never consulted; every unit test above would stay green if the env read were deleted.
+* Held out: `tests/ops/probe_gemv_tile_mutations.py` breaks the instrument six ways and requires a
+  **named test** to go red for each. A mutation rejected by the compiler is recorded as
+  `REJECTED-BY-COMPILER` and not counted as caught — rustc noticing is not a test noticing. Witness:
+  `bench/results/gemv_tile_mutations.json`.
+
+#### What is not established
+
+The measurement. `(8, 4)` is **UNMEASURED**: this change ships the instrument that makes the A/B
+possible, not its result. Under the GPU serialisation lock in force at the time of writing every
+timing consequence is INDETERMINATE and queued; `docs/PERF.md` §28.3 tabulates what is owed.
+
+---
+
 ## 9. Testing and benchmarking strategy
 
 ### 9.1 Differential testing against the ORT CPU EP — Trinity
