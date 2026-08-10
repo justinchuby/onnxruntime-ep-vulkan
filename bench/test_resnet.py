@@ -505,7 +505,7 @@ def test_the_census_against_the_really_built_ep_when_it_is_here():
     """The test that would have caught the `status == "live"` reading, on the real binary.
 
     A fixture agrees with whatever the fixture's author believed. This one asks the built
-    `epctl` and asserts the shape of the answer §27 publishes: convolution is claimable, and
+    `epctl` and asserts the shape of the answer §28 publishes: convolution is claimable, and
     the three gaps are `MaxPool`, `Flatten` and `BatchNormalization`.
     """
     epctl = _BENCH.parent / "rust" / "target" / "release" / "epctl.exe"
@@ -750,7 +750,7 @@ def test_every_published_quantity_declares_a_provenance_class():
 
 
 # ------------------------------------------------------------------------------------------
-# The CUDA arm's TF32 pin (§27.11)
+# The CUDA arm's TF32 pin (§28.11)
 # ------------------------------------------------------------------------------------------
 
 
@@ -775,7 +775,7 @@ def test_the_tf32_pin_is_recorded_as_a_specification_not_left_implicit():
 
 
 # ------------------------------------------------------------------------------------------
-# The counterfactual arm (§27.5.2)
+# The counterfactual arm (§28.5.2)
 # ------------------------------------------------------------------------------------------
 
 
@@ -833,7 +833,7 @@ def test_the_partition_delta_compares_shipping_against_counterfactual_in_that_or
 
 
 # ------------------------------------------------------------------------------------------
-# The measured fallback causes (§27.5.1)
+# The measured fallback causes (§28.5.1)
 # ------------------------------------------------------------------------------------------
 
 
@@ -867,7 +867,7 @@ def test_global_average_pool_is_recorded_as_a_dependent_gap_not_an_independent_o
 
 
 def test_relu_dominates_the_fallback_by_node_count():
-    """If this ever stops being true the gap ordering in PERF.md 27.8 must be re-derived."""
+    """If this ever stops being true the gap ordering in PERF.md 28.8 must be re-derived."""
     counts = {k: v["count"] for k, v in rn.RESNET50_FALLBACK_CAUSES.items()}
     assert counts["Relu"] > sum(v for k, v in counts.items() if k != "Relu")
 
