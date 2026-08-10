@@ -65,7 +65,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// [`COUNTERS_LAYOUT_HASH`], which the compiler computes from the actual field offsets: a layout
 /// change that does not appear in [`COUNTERS_LAYOUT_REGISTRY`] under this version fails the build.
 /// See [`counters_layout_hash`].
-pub const COUNTERS_ABI_VERSION: u32 = 8;
+pub const COUNTERS_ABI_VERSION: u32 = 9;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -572,6 +572,110 @@ pub mod transient_inputs {
     }
 }
 
+/// Vulkan objects this EP creates per dispatch, counted **only when the driver said yes**.
+///
+/// # Why success-only is the whole point (issue #88)
+///
+/// The question these answer is "how many descriptor pools / sets / command buffers / submits
+/// does one inference cost?". Every plausible way to get that wrong increments on the *attempt*:
+/// a counter bumped before `vkCreateDescriptorPool` reports the same number whether the driver
+/// returned a pool or `VK_ERROR_OUT_OF_POOL_MEMORY`, so a build that has started failing every
+/// allocation reports an unchanged, healthy-looking churn figure. The failure mode is not
+/// hypothetical for this EP: `DispatchDescriptorPool::new` requests `max_sets(1)` and a driver is
+/// entitled to refuse.
+///
+/// So the seam takes an explicit [`ObjectOutcome`] and increments on [`ObjectOutcome::Succeeded`]
+/// alone. Both polarities are drivable **without a Vulkan device**, which is what makes the rule
+/// testable: a mutation that deletes the match arm — or inverts it — changes a host-free test's
+/// arithmetic immediately, rather than waiting for a machine that happens to fail an allocation.
+///
+/// Nothing here is a timing claim. These are object counts; `docs/PERF.md` attaches no cost to
+/// them and no cost may be attached without new measurement.
+pub mod device_objects {
+    use super::ORD;
+    use std::sync::atomic::AtomicU64;
+
+    /// What the driver actually did. Not a `bool`, because `record_x(true)` at a call site reads
+    /// as "record x" and is exactly as easy to write when the call failed.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum ObjectOutcome {
+        /// The Vulkan call returned `VK_SUCCESS` and the object exists.
+        Succeeded,
+        /// The Vulkan call failed. **Increments nothing.**
+        Failed,
+    }
+
+    impl ObjectOutcome {
+        /// Classify from the boolean a Vulkan wrapper already has (`result.is_ok()`,
+        /// `option.is_some()`). Keeps the polarity decision in one place instead of at each of
+        /// the four call sites.
+        pub fn from_success(ok: bool) -> ObjectOutcome {
+            if ok {
+                ObjectOutcome::Succeeded
+            } else {
+                ObjectOutcome::Failed
+            }
+        }
+    }
+
+    static DESCRIPTOR_POOLS_CREATED: AtomicU64 = AtomicU64::new(0);
+    static DESCRIPTOR_SETS_ALLOCATED: AtomicU64 = AtomicU64::new(0);
+    static COMMAND_BUFFERS_RECORDED: AtomicU64 = AtomicU64::new(0);
+    static QUEUE_SUBMITS: AtomicU64 = AtomicU64::new(0);
+
+    /// `vkCreateDescriptorPool` returned. Counts the pool only if it exists.
+    pub fn on_descriptor_pool_create(outcome: ObjectOutcome) {
+        if outcome == ObjectOutcome::Succeeded {
+            DESCRIPTOR_POOLS_CREATED.fetch_add(1, ORD);
+        }
+    }
+
+    /// `vkAllocateDescriptorSets` returned. `sets` is how many sets the call was asked for; it is
+    /// added only on success, so a refused batch adds nothing rather than adding zero-of-`sets`.
+    pub fn on_descriptor_set_allocate(outcome: ObjectOutcome, sets: u64) {
+        if outcome == ObjectOutcome::Succeeded {
+            let _ =
+                DESCRIPTOR_SETS_ALLOCATED.fetch_update(ORD, ORD, |c| Some(c.saturating_add(sets)));
+        }
+    }
+
+    /// `vkEndCommandBuffer` returned. Counted at `end` and not at `begin`: a command buffer whose
+    /// recording failed is not a recorded command buffer and is never submitted.
+    pub fn on_command_buffer_end(outcome: ObjectOutcome) {
+        if outcome == ObjectOutcome::Succeeded {
+            COMMAND_BUFFERS_RECORDED.fetch_add(1, ORD);
+        }
+    }
+
+    /// `vkQueueSubmit` returned.
+    pub fn on_queue_submit(outcome: ObjectOutcome) {
+        if outcome == ObjectOutcome::Succeeded {
+            QUEUE_SUBMITS.fetch_add(1, ORD);
+        }
+    }
+
+    /// `(pools_created, sets_allocated, command_buffers_recorded, queue_submits)`.
+    pub fn snapshot() -> (u64, u64, u64, u64) {
+        (
+            DESCRIPTOR_POOLS_CREATED.load(ORD),
+            DESCRIPTOR_SETS_ALLOCATED.load(ORD),
+            COMMAND_BUFFERS_RECORDED.load(ORD),
+            QUEUE_SUBMITS.load(ORD),
+        )
+    }
+
+    pub fn reset() {
+        for c in [
+            &DESCRIPTOR_POOLS_CREATED,
+            &DESCRIPTOR_SETS_ALLOCATED,
+            &COMMAND_BUFFERS_RECORDED,
+            &QUEUE_SUBMITS,
+        ] {
+            c.store(0, ORD);
+        }
+    }
+}
+
 /// One field of [`VulkanEpCounters`], as the **compiler** sees it.
 ///
 /// `offset` is `std::mem::offset_of!`, not a number anyone typed. This is the manifest my
@@ -745,6 +849,37 @@ pub struct VulkanEpCounters {
     /// parse time, so the form read as `KEY-ABSENT` and was indistinguishable from a form nobody
     /// had ever proven.
     pub subject_changed_declines: u64,
+    /// `VkDescriptorPool` objects **successfully created**. **ABI version 9** (issue #88).
+    ///
+    /// SUCCESS-ONLY, and that is the whole design. A counter incremented before the Vulkan call
+    /// counts attempts, and an attempt that returned `VK_ERROR_OUT_OF_POOL_MEMORY` created no
+    /// object — so "descriptor churn" measured that way is a number that cannot fall when the
+    /// driver starts refusing. Every increment here is behind an observed success, and
+    /// `counters::device_objects::ObjectOutcome::Failed` increments nothing, which is what makes
+    /// a mutation that drops the success check turn a test red instead of a benchmark green.
+    ///
+    /// This EP allocates one pool per dispatch (`DispatchDescriptorPool::new`, `max_sets(1)`), so
+    /// on a healthy run this tracks dispatches. It is NOT a claim that that is cheap or dear —
+    /// see `docs/PERF.md`; no timing claim is attached to it.
+    pub descriptor_pools_created: u64,
+    /// `VkDescriptorSet` objects **successfully allocated**. **ABI version 9** (issue #88).
+    ///
+    /// Counted as the number of sets the allocation returned, not as one per call, because
+    /// `vkAllocateDescriptorSets` allocates a batch and a per-call count would silently rescale
+    /// if the batch size ever changed. Success-only; see `descriptor_pools_created`.
+    pub descriptor_sets_allocated: u64,
+    /// Command buffers **successfully ended** (`vkEndCommandBuffer` returned `VK_SUCCESS`).
+    /// **ABI version 9** (issue #88).
+    ///
+    /// The honest name is "recorded", and it is counted at `end`, not at `begin`: a command
+    /// buffer whose recording failed is not a recorded command buffer, and nothing submits it.
+    pub command_buffers_recorded: u64,
+    /// `vkQueueSubmit` calls that returned `VK_SUCCESS`. **ABI version 9** (issue #88).
+    ///
+    /// Distinct from `dispatches_executed`, which is counted after the fence signals: a submit
+    /// that succeeded and then lost the device increments this and not that, and the difference
+    /// between the two is exactly the population that entered the queue and never came back.
+    pub queue_submits: u64,
 }
 }
 
@@ -856,6 +991,14 @@ pub const COUNTERS_LAYOUT_REGISTRY: &[(u32, u64)] = &[
     // that can no longer happen — and `subject_changed_declines` appends the population that used
     // to be invisible because a stale entry was deleted at parse time and read as `KEY-ABSENT`.
     (8, 0xdf71_f4e6_a592_71b3),
+    // v9 = issue #88. Four **appended** success-only device-object counters —
+    // `descriptor_pools_created`, `descriptor_sets_allocated`, `command_buffers_recorded`,
+    // `queue_submits`. Appended, not inserted: every v8 offset is unchanged, so a stale v8 reader
+    // reads every field it knows correctly and simply cannot see the new four. That is the only
+    // property "append-only" buys, and it is bought here on purpose — but the bump is still
+    // mandatory, because from the stale reader's side an append and an insertion are told apart
+    // only by luck, and `struct_size` is how it finds out which it got.
+    (9, 0xf121_2de0_3d7d_674e),
 ];
 
 /// The build fails here when the struct changed and the version did not.
@@ -2444,6 +2587,13 @@ pub fn snapshot() -> VulkanEpCounters {
     // is two readers of one fact, which is how the pair could have been swapped in one of them
     // and stayed plausible in both.
     let (outputs_device_resident, outputs_host_resident) = output_residency();
+    // One reader for the four device-object counters, for the same reason.
+    let (
+        descriptor_pools_created,
+        descriptor_sets_allocated,
+        command_buffers_recorded,
+        queue_submits,
+    ) = device_objects::snapshot();
     VulkanEpCounters {
         struct_size: std::mem::size_of::<VulkanEpCounters>() as u32,
         abi_version: COUNTERS_ABI_VERSION,
@@ -2466,6 +2616,10 @@ pub fn snapshot() -> VulkanEpCounters {
         device_unattributed_claims: DEVICE_UNATTRIBUTED_CLAIMS.load(ORD),
         proven_elsewhere_claims: PROVEN_ELSEWHERE_CLAIMS.load(ORD),
         subject_changed_declines: SUBJECT_CHANGED_DECLINES.load(ORD),
+        descriptor_pools_created,
+        descriptor_sets_allocated,
+        command_buffers_recorded,
+        queue_submits,
     }
 }
 
@@ -2496,6 +2650,7 @@ pub fn reset() {
     staging::reset();
     weights::reset();
     transient_inputs::reset();
+    device_objects::reset();
     VIABLE_ISLANDS_RETAINED.store(0, ORD);
     NET_BENEFIT_CLUSTERS_SEEN.store(0, ORD);
     NET_BENEFIT_GATE_EVALUATIONS.store(0, ORD);
@@ -2599,6 +2754,10 @@ impl VulkanEpCounters {
              \"broken_commitment_warn_channel\": \"{}\",\n  \
              \"compute_failures_injected\": {},\n  \
              \"queue_submit_contentions\": {},\n  \
+             \"descriptor_pools_created\": {},\n  \
+             \"descriptor_sets_allocated\": {},\n  \
+             \"command_buffers_recorded\": {},\n  \
+             \"queue_submits\": {},\n  \
              \"fault_injection\": \"{}\",\n  \
              \"proven_key_lookups\": {},\n  \
              \"ledger_hits\": {},\n  \
@@ -2683,6 +2842,10 @@ impl VulkanEpCounters {
             broken_commitment_channel(),
             COMPUTE_FAILURES_INJECTED.load(ORD),
             QUEUE_SUBMIT_CONTENTIONS.load(ORD),
+            self.descriptor_pools_created,
+            self.descriptor_sets_allocated,
+            self.command_buffers_recorded,
+            self.queue_submits,
             if crate::ep::fault_injection_active() {
                 "ACTIVE"
             } else {
@@ -3061,6 +3224,455 @@ pub unsafe fn fill(out: *mut c_void, out_bytes: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use device_objects::ObjectOutcome;
+
+    // ── Success-only device-object counters (issue #88) ─────────────────────────────────────
+    //
+    // Host-free and authoritative. No Vulkan device is involved and none is needed: the rule
+    // under test is "a failed Vulkan call increments nothing", which is a statement about the
+    // seam, not about a driver. `max_sets(1)` exhaustion is not spec-guaranteed on any device, so
+    // a live corroboration cannot be the primary evidence for this — see
+    // `rust/tests/device_object_counter_corroboration.rs`.
+
+    #[test]
+    fn a_failed_vulkan_call_increments_no_device_object_counter() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        device_objects::reset();
+        assert_eq!(device_objects::snapshot(), (0, 0, 0, 0));
+
+        // NEGATIVE POLARITY. Every seam, every failure. If any of these increments, a build that
+        // has started refusing every allocation reports unchanged, healthy-looking churn.
+        device_objects::on_descriptor_pool_create(ObjectOutcome::Failed);
+        device_objects::on_descriptor_set_allocate(ObjectOutcome::Failed, 1);
+        device_objects::on_descriptor_set_allocate(ObjectOutcome::Failed, 128);
+        device_objects::on_command_buffer_end(ObjectOutcome::Failed);
+        device_objects::on_queue_submit(ObjectOutcome::Failed);
+        assert_eq!(
+            device_objects::snapshot(),
+            (0, 0, 0, 0),
+            "a refused Vulkan call created no object, so it must count as no object"
+        );
+
+        // POSITIVE POLARITY, through the same four functions.
+        device_objects::on_descriptor_pool_create(ObjectOutcome::Succeeded);
+        device_objects::on_descriptor_set_allocate(ObjectOutcome::Succeeded, 3);
+        device_objects::on_command_buffer_end(ObjectOutcome::Succeeded);
+        device_objects::on_queue_submit(ObjectOutcome::Succeeded);
+        assert_eq!(
+            device_objects::snapshot(),
+            (1, 3, 1, 1),
+            "sets are counted as SETS, not as calls — a batch of three is three"
+        );
+
+        // Mixed traffic: the failures must still contribute nothing.
+        device_objects::on_descriptor_pool_create(ObjectOutcome::Failed);
+        device_objects::on_descriptor_set_allocate(ObjectOutcome::Failed, 9);
+        device_objects::on_descriptor_pool_create(ObjectOutcome::Succeeded);
+        assert_eq!(device_objects::snapshot(), (2, 3, 1, 1));
+        device_objects::reset();
+        assert_eq!(
+            device_objects::snapshot(),
+            (0, 0, 0, 0),
+            "reset must clear all four, or one test reads another's traffic"
+        );
+    }
+
+    /// The polarity decision lives in ONE place, so the four call sites cannot disagree about it.
+    #[test]
+    fn object_outcome_is_derived_from_success_and_not_from_the_call_site_mood() {
+        assert_eq!(ObjectOutcome::from_success(true), ObjectOutcome::Succeeded);
+        assert_eq!(ObjectOutcome::from_success(false), ObjectOutcome::Failed);
+        assert_ne!(ObjectOutcome::Succeeded, ObjectOutcome::Failed);
+    }
+
+    /// The four counters must reach the C ABI **and** the JSON, present at zero.
+    ///
+    /// Present-at-zero is the load-bearing half: a probe cannot refuse on a key that only appears
+    /// once the event has happened, and a reader cannot tell "absent" from "zero" (R12).
+    #[test]
+    fn device_object_counts_reach_the_abi_and_the_json_artifact() {
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        let zero = snapshot();
+        assert_eq!(zero.descriptor_pools_created, 0);
+        assert_eq!(zero.descriptor_sets_allocated, 0);
+        assert_eq!(zero.command_buffers_recorded, 0);
+        assert_eq!(zero.queue_submits, 0);
+        for key in [
+            "\"descriptor_pools_created\"",
+            "\"descriptor_sets_allocated\"",
+            "\"command_buffers_recorded\"",
+            "\"queue_submits\"",
+        ] {
+            assert!(
+                zero.to_json().contains(key),
+                "{key} must be in the JSON at zero; got: {}",
+                zero.to_json()
+            );
+        }
+
+        device_objects::on_descriptor_pool_create(ObjectOutcome::Succeeded);
+        device_objects::on_descriptor_set_allocate(ObjectOutcome::Succeeded, 2);
+        device_objects::on_command_buffer_end(ObjectOutcome::Succeeded);
+        device_objects::on_queue_submit(ObjectOutcome::Succeeded);
+        device_objects::on_queue_submit(ObjectOutcome::Succeeded);
+        let s = snapshot();
+        assert_eq!(
+            (
+                s.descriptor_pools_created,
+                s.descriptor_sets_allocated,
+                s.command_buffers_recorded,
+                s.queue_submits
+            ),
+            (1, 2, 1, 2)
+        );
+        let json = s.to_json();
+        for expect in [
+            "\"descriptor_pools_created\": 1",
+            "\"descriptor_sets_allocated\": 2",
+            "\"command_buffers_recorded\": 1",
+            "\"queue_submits\": 2",
+        ] {
+            assert!(json.contains(expect), "missing {expect} in: {json}");
+        }
+        reset();
+    }
+
+    /// `queue_submits` and `dispatches_executed` must stay two different questions.
+    ///
+    /// A submit that succeeded and then lost the device increments the former and not the latter,
+    /// and the difference between them is exactly the population that entered the queue and never
+    /// came back. Collapsing them would erase that population.
+    #[test]
+    fn a_successful_submit_is_not_a_completed_dispatch() {
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        device_objects::on_queue_submit(ObjectOutcome::Succeeded);
+        record_device_lost();
+        let s = snapshot();
+        assert_eq!(s.queue_submits, 1);
+        assert_eq!(
+            s.dispatches_executed, 0,
+            "nothing signalled a fence, so nothing executed"
+        );
+        assert_eq!(s.device_losses, 1);
+        reset();
+    }
+
+    /// The append was an APPEND: every v8 field kept its offset.
+    ///
+    /// This is the only property "append-only" buys — a stale v8 reader reads every field it
+    /// knows correctly and simply cannot see the new four. It is asserted against the offsets the
+    /// compiler assigned, not against a remembered table.
+    #[test]
+    fn the_v9_device_object_fields_were_appended_and_moved_nothing() {
+        let off = |name: &str| {
+            COUNTERS_LAYOUT
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("{name} is not in the layout"))
+                .offset
+        };
+        // The v8 tail, at the offsets v8 published.
+        assert_eq!(off("struct_size"), 0);
+        assert_eq!(off("abi_version"), 4);
+        assert_eq!(off("compile_calls"), 8);
+        assert_eq!(off("device_losses"), 48);
+        assert_eq!(off("dispatches_executed"), 80);
+        assert_eq!(off("subject_changed_declines"), 152);
+        // The four new fields sit strictly after every field that shipped in v8.
+        let last_v8 = off("subject_changed_declines");
+        for name in [
+            "descriptor_pools_created",
+            "descriptor_sets_allocated",
+            "command_buffers_recorded",
+            "queue_submits",
+        ] {
+            assert!(
+                off(name) > last_v8,
+                "{name} was INSERTED, not appended — every field after it moved and every stale \
+                 reader is now silently misreading one"
+            );
+        }
+        assert_eq!(COUNTERS_ABI_VERSION, 9);
+        assert!(
+            COUNTERS_LAYOUT_REGISTRY
+                .iter()
+                .any(|(v, _)| *v == COUNTERS_ABI_VERSION),
+            "the current version must have a registry row"
+        );
+        assert!(
+            COUNTERS_LAYOUT_REGISTRY.iter().any(|(v, _)| *v == 8),
+            "historic rows are kept so an artifact from an older build stays identifiable"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // HELD-OUT MUTATION BATTERY for the success-only device-object rule.
+    //
+    // The tests above are green. Green says the world is currently the way the assertions
+    // expect; it does not say the assertions would notice if it were not. So the protocol
+    // those tests apply is applied here to deliberately defective seam implementations,
+    // held out of the module under test, and every one must be caught.
+    //
+    // A mutant that survives names an assertion above that is decoration.
+    // ---------------------------------------------------------------------------
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+    struct ObjectCounts {
+        pools: u64,
+        sets: u64,
+        cmd_bufs: u64,
+        submits: u64,
+    }
+
+    /// One step of the protocol. The protocol is *data*, so the real seams and every mutant
+    /// are driven through byte-identical traffic and no branch can differ between them.
+    ///
+    /// It is data rather than a `trait` deliberately: a trait would need a real-seam impl,
+    /// whose methods would touch the process-global counters from outside a `#[test]` body
+    /// and therefore outside the `test_lock()` that `rust/tools/audit_counter_test_lock.py`
+    /// requires. Keeping the driver a closure supplied by the test keeps every global touch
+    /// inside the guarded body.
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        Clear,
+        Pool(ObjectOutcome),
+        Sets(ObjectOutcome, u64),
+        Cmd(ObjectOutcome),
+        Submit(ObjectOutcome),
+        /// Read the seam and require exactly these counts, or fail with this reason.
+        Expect(ObjectCounts, &'static str),
+    }
+
+    /// Which rule a mutant breaks. Exactly one each, so a catch names a property.
+    #[derive(Clone, Copy, Debug)]
+    enum Defect {
+        /// Increments regardless of outcome: measures ATTEMPTS and gets quoted as objects.
+        CountsAttempts,
+        /// Counts allocate CALLS instead of the SETS the call produced.
+        CountsCallsNotSets,
+        /// Polarity inverted — the shape a copy-paste of the `Err` arm produces.
+        CountsOnlyFailures,
+        /// `reset` misses one field, so one test reads another test's traffic.
+        ResetMissesSubmits,
+        /// Infers a set from a pool creation instead of counting the allocation.
+        PoolImpliesASet,
+    }
+
+    struct MutantSeam {
+        defect: Defect,
+        counts: ObjectCounts,
+    }
+
+    impl MutantSeam {
+        fn new(defect: Defect) -> Self {
+            Self {
+                defect,
+                counts: ObjectCounts::default(),
+            }
+        }
+        fn takes(&self, outcome: ObjectOutcome) -> bool {
+            match self.defect {
+                Defect::CountsAttempts => true,
+                Defect::CountsOnlyFailures => outcome == ObjectOutcome::Failed,
+                _ => outcome == ObjectOutcome::Succeeded,
+            }
+        }
+
+        /// The mutant's driver: the same signature the real one gets, over private state.
+        fn apply(&mut self, step: &Step) -> Option<ObjectCounts> {
+            match *step {
+                Step::Clear => {
+                    let keep = self.counts.submits;
+                    self.counts = ObjectCounts::default();
+                    if matches!(self.defect, Defect::ResetMissesSubmits) {
+                        self.counts.submits = keep;
+                    }
+                    None
+                }
+                Step::Pool(outcome) => {
+                    if self.takes(outcome) {
+                        self.counts.pools += 1;
+                        if matches!(self.defect, Defect::PoolImpliesASet) {
+                            self.counts.sets += 1;
+                        }
+                    }
+                    None
+                }
+                Step::Sets(outcome, n) => {
+                    if self.takes(outcome) {
+                        self.counts.sets += match self.defect {
+                            Defect::CountsCallsNotSets | Defect::PoolImpliesASet => 1,
+                            _ => n,
+                        };
+                    }
+                    None
+                }
+                Step::Cmd(outcome) => {
+                    if self.takes(outcome) {
+                        self.counts.cmd_bufs += 1;
+                    }
+                    None
+                }
+                Step::Submit(outcome) => {
+                    if self.takes(outcome) {
+                        self.counts.submits += 1;
+                    }
+                    None
+                }
+                Step::Expect(..) => Some(self.counts),
+            }
+        }
+    }
+
+    /// The properties issue #88 requires of the four device-object seams, as a script.
+    const SUCCESS_ONLY_PROTOCOL: &[Step] = &[
+        Step::Clear,
+        Step::Expect(
+            ObjectCounts {
+                pools: 0,
+                sets: 0,
+                cmd_bufs: 0,
+                submits: 0,
+            },
+            "a cleared seam reads zero",
+        ),
+        // 1. The rule. Every seam, every failure, nothing counted.
+        Step::Pool(ObjectOutcome::Failed),
+        Step::Sets(ObjectOutcome::Failed, 1),
+        Step::Sets(ObjectOutcome::Failed, 128),
+        Step::Cmd(ObjectOutcome::Failed),
+        Step::Submit(ObjectOutcome::Failed),
+        Step::Expect(
+            ObjectCounts {
+                pools: 0,
+                sets: 0,
+                cmd_bufs: 0,
+                submits: 0,
+            },
+            "a refused Vulkan call created no object, so it must count as no object",
+        ),
+        // 2. The positive polarity, through the same four seams.
+        Step::Pool(ObjectOutcome::Succeeded),
+        Step::Sets(ObjectOutcome::Succeeded, 3),
+        Step::Cmd(ObjectOutcome::Succeeded),
+        Step::Submit(ObjectOutcome::Succeeded),
+        Step::Expect(
+            ObjectCounts {
+                pools: 1,
+                sets: 3,
+                cmd_bufs: 1,
+                submits: 1,
+            },
+            "sets are counted as SETS, not as calls, and a pool is not a set",
+        ),
+        // 3. Mixed traffic: the failures still contribute nothing.
+        Step::Pool(ObjectOutcome::Failed),
+        Step::Sets(ObjectOutcome::Failed, 9),
+        Step::Pool(ObjectOutcome::Succeeded),
+        Step::Expect(
+            ObjectCounts {
+                pools: 2,
+                sets: 3,
+                cmd_bufs: 1,
+                submits: 1,
+            },
+            "a failure interleaved with successes must still count nothing",
+        ),
+        // 4. The clear covers all four fields, or one reader inherits another's traffic.
+        Step::Clear,
+        Step::Expect(
+            ObjectCounts {
+                pools: 0,
+                sets: 0,
+                cmd_bufs: 0,
+                submits: 0,
+            },
+            "reset must clear every field it owns",
+        ),
+    ];
+
+    /// Drive `SUCCESS_ONLY_PROTOCOL` through `apply` and return the first violated property.
+    ///
+    /// Deliberately not written with `assert!`: a mutant must be *caught*, and a caught
+    /// mutant that panics inside a `#[test]` cannot be told apart from a broken battery.
+    fn run_success_only_protocol(
+        mut apply: impl FnMut(&Step) -> Option<ObjectCounts>,
+    ) -> Result<(), String> {
+        for step in SUCCESS_ONLY_PROTOCOL {
+            let got = apply(step);
+            if let Step::Expect(want, why) = step {
+                let got = got.ok_or_else(|| format!("{why}: the driver returned no counts"))?;
+                if got != *want {
+                    return Err(format!("{why}: got {got:?}, want {want:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_real_device_object_seams_pass_the_success_only_protocol() {
+        let _g = crate::allocator::ledger::test_lock();
+        let outcome = run_success_only_protocol(|step| match *step {
+            Step::Clear => {
+                device_objects::reset();
+                None
+            }
+            Step::Pool(o) => {
+                device_objects::on_descriptor_pool_create(o);
+                None
+            }
+            Step::Sets(o, n) => {
+                device_objects::on_descriptor_set_allocate(o, n);
+                None
+            }
+            Step::Cmd(o) => {
+                device_objects::on_command_buffer_end(o);
+                None
+            }
+            Step::Submit(o) => {
+                device_objects::on_queue_submit(o);
+                None
+            }
+            Step::Expect(..) => {
+                let (pools, sets, cmd_bufs, submits) = device_objects::snapshot();
+                Some(ObjectCounts {
+                    pools,
+                    sets,
+                    cmd_bufs,
+                    submits,
+                })
+            }
+        });
+        device_objects::reset();
+        assert_eq!(
+            outcome,
+            Ok(()),
+            "the production seams must pass the protocol their mutants are judged by"
+        );
+    }
+
+    #[test]
+    fn every_defective_device_object_seam_is_caught_by_that_protocol() {
+        for defect in [
+            Defect::CountsAttempts,
+            Defect::CountsCallsNotSets,
+            Defect::CountsOnlyFailures,
+            Defect::ResetMissesSubmits,
+            Defect::PoolImpliesASet,
+        ] {
+            let mut mutant = MutantSeam::new(defect);
+            let caught = run_success_only_protocol(|step| mutant.apply(step));
+            assert!(
+                caught.is_err(),
+                "the {defect:?} mutant SURVIVED the protocol — the assertions it should have \
+                 tripped are decoration, not instruments"
+            );
+        }
+    }
 
     /// The layout table is the struct's, field for field, and the offsets are the compiler's.
     ///
@@ -3234,8 +3846,7 @@ mod tests {
     }
 
     /// **A counter must not be able to abort the thing it observes (2026-08-04, Mouse).**
-    ///
-    /// This is the regression test for a real failure, not a hypothetical: partway through a full
+    ///    /// This is the regression test for a real failure, not a hypothetical: partway through a full
     /// `tests/ops` run the EP panicked with `attempt to add with overflow` at
     /// `weights::on_device_alloc`, inside `CreateEp`. The panic was caught at the C ABI boundary,
     /// `CreateEp` returned `ORT_EP_FAIL`, and ORT silently fell back to the CPU EP — so the

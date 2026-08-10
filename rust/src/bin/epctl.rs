@@ -1508,6 +1508,12 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            // ABI v9 (issue #88). Success-only device-object counts; a synthetic snapshot
+            // records none, and zero is the right value for a document no run produced.
+            descriptor_pools_created: 0,
+            descriptor_sets_allocated: 0,
+            command_buffers_recorded: 0,
+            queue_submits: 0,
         }
         .to_json()
     }
@@ -1558,6 +1564,12 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            // ABI v9 (issue #88). Success-only device-object counts; a synthetic snapshot
+            // records none, and zero is the right value for a document no run produced.
+            descriptor_pools_created: 0,
+            descriptor_sets_allocated: 0,
+            command_buffers_recorded: 0,
+            queue_submits: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_MATCH)
     }
@@ -1587,6 +1599,12 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            // ABI v9 (issue #88). Success-only device-object counts; a synthetic snapshot
+            // records none, and zero is the right value for a document no run produced.
+            descriptor_pools_created: 0,
+            descriptor_sets_allocated: 0,
+            command_buffers_recorded: 0,
+            queue_submits: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_DIVERGENT)
     }
@@ -2002,6 +2020,12 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            // ABI v9 (issue #88). Success-only device-object counts; a synthetic snapshot
+            // records none, and zero is the right value for a document no run produced.
+            descriptor_pools_created: 0,
+            descriptor_sets_allocated: 0,
+            command_buffers_recorded: 0,
+            queue_submits: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_UNATTRIBUTED);
         std::fs::write(&f, doc).expect("write");
@@ -2086,6 +2110,12 @@ mod tests {
             device_unattributed_claims: 0,
             proven_elsewhere_claims: 0,
             subject_changed_declines: 0,
+            // ABI v9 (issue #88). Success-only device-object counts; a synthetic snapshot
+            // records none, and zero is the right value for a document no run produced.
+            descriptor_pools_created: 0,
+            descriptor_sets_allocated: 0,
+            command_buffers_recorded: 0,
+            queue_submits: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_SPLIT_FRAME);
         std::fs::write(&f, doc).expect("write");

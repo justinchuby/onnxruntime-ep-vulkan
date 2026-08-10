@@ -698,6 +698,17 @@ pub(crate) struct VulkanSession {
     /// the outer dimension is 0 — it is only present to satisfy the descriptor-write constraint.
     /// Freed explicitly in `Drop` before `alloc` drops.
     zero_elem_placeholder: Option<GpuBuffer>,
+    /// Subgraph IDs that have already been through `dispatch_ort` at least once **while tracing
+    /// was active**, used to classify the recording path (issue #88).
+    ///
+    /// This engine has no command-buffer replay: `dispatch_ort` calls `cmd_pool.begin()` on every
+    /// call, so the only two paths that can be honestly reported are `FirstRecord` (the subgraph
+    /// has not been seen) and `Rerecord` (it has). `Replay` is never reported, and that absence is
+    /// the finding — see `docs/PERF.md`.
+    ///
+    /// Only touched when the tracer is active, so a production run with tracing off neither
+    /// allocates nor hashes here.
+    traced_subgraphs: std::collections::HashSet<u64>,
 }
 
 /// Is the output-side device bind active for this process?
@@ -958,6 +969,7 @@ impl VulkanSession {
             instance,
             weight_caches: HashMap::new(),
             zero_elem_placeholder,
+            traced_subgraphs: std::collections::HashSet::new(),
         })
     }
 
@@ -1055,6 +1067,12 @@ impl VulkanSession {
         // and an early return — there is no allocation and no clock read.
         let t = trace::tracer();
         let _sg = t.subgraph_region(kernels.len());
+        // ── ISSUE #88: the ENGINE's share of the callback ──────────────────────
+        // `ep.rs::compute` opens `Phase::ComputeCall` around the whole ORT entry point; this
+        // guard brackets only the engine dispatch. The difference between the two is the OUTER
+        // RESIDUAL — the ORT-side screens, tensor reads and status construction that no phase
+        // named before this. The two are never summed; see `trace::RESIDUAL_INVARIANT`.
+        let _dispatch = t.phase(trace::Phase::SubgraphDispatch);
 
         let n_plan_inputs = input_byte_sizes.len();
         let n_plan_outputs = output_byte_sizes.len();
@@ -2056,6 +2074,35 @@ impl VulkanSession {
         // Phase::Record wraps everything from vkBeginCommandBuffer through vkEndCommandBuffer.
         // The upload CPU-memcopy time is reported separately via record_transfer so Niobe's
         // harness can attribute it without mixing recording and copy costs.
+        //
+        // ── ISSUE #88: the production caller for `Tracer::record_path` ─────────
+        //
+        // This engine has NO command-buffer replay. `cmd_pool.begin()` two lines below runs on
+        // every single Compute call, so the only two paths that exist here are FirstRecord (this
+        // subgraph has not been recorded before in this traced session) and Rerecord (it has).
+        // `RecordPath::Replay` is deliberately never reported: reporting it would be a claim
+        // about a cache this engine does not have. The reported breakdown being
+        // "first-record=1 replay=0 rerecord=N-1" IS the finding.
+        //
+        // Gated on `t.active()` so a production run with tracing off does not hash, allocate, or
+        // format anything — the shape key below is the only allocation on this path.
+        if t.active() {
+            let path = if self.traced_subgraphs.insert(subgraph_id) {
+                trace::RecordPath::FirstRecord
+            } else {
+                trace::RecordPath::Rerecord
+            };
+            // The shape key is the RESOLVED input sizes (post Step 1.5), so a dynamic subgraph
+            // that changes extents between calls presents a different key. It is the honest key
+            // for "would a cached command buffer have been valid for this call?".
+            let shape_key = actual_input_byte_sizes
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let subgraph_tag = format!("subgraph_{subgraph_id}");
+            t.record_path(&subgraph_tag, path, &shape_key, kernels.len());
+        }
         let _record_guard = t.phase(Phase::Record);
 
         // SAFETY: cmd_pool is live; no previous recording is in flight.

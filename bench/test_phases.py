@@ -949,3 +949,426 @@ def test_the_marginal_verdict_is_not_a_steady_one_to_any_consumer():
                                  12.18, 12.19, 12.18, 12.17, 12.18]])
     assert t["verdict"] != "STEADY"
     assert t["verdict"] in ("MARGINAL_TAIL", "NO_STEADY_TAIL")
+
+
+# ---------------------------------------------------------------------------
+# Issue #88 — host cost attribution for the whole ORT `Compute` callback.
+#
+# Two brackets were added outside everything this file already knew about:
+# `compute_call` (the whole ORT callback, opened in ep.rs) and `subgraph_dispatch` (the
+# engine's dispatch inside it). They produce TWO residuals over TWO denominators, and the
+# one rule that governs them is that they are never summed.
+#
+# The other correction in the same change: `readback` is a child of `subgraph_dispatch`,
+# not of `record`. The EP drops the Record guard, submits, waits on the fence and only
+# then copies outputs back. Both this module and `trace.rs` had declared otherwise.
+# ---------------------------------------------------------------------------
+
+def _decl(name, ts, dur, parent=None, caveat="x"):
+    """A phase span that declares its own parent the way `trace.rs` emits it."""
+    e = _phase(name, ts, dur)
+    e["args"]["caveat"] = caveat
+    e["args"]["nested_in"] = parent or "none"
+    return e
+
+
+def _call88(ts=1000, call=1000, dispatch=800, record=400, submit=50, fence=200, readback=100,
+            cmd_upload=None):
+    """One #88-shaped Compute callback: compute_call > subgraph_dispatch > {record, ...}.
+
+    The subgraph span is co-terminous with `subgraph_dispatch`, as the EP emits it: the
+    dispatch guard opens immediately inside `subgraph_region`.
+    """
+    d0 = ts + (call - dispatch) // 2
+    ev = [_sub(d0, dispatch, 3),
+          _decl("compute_call", ts, call),
+          _decl("subgraph_dispatch", d0, dispatch, parent="compute_call"),
+          _decl("record", d0 + 1, record, parent="subgraph_dispatch"),
+          _decl("submit", d0 + 1 + record, submit, parent="subgraph_dispatch"),
+          _decl("fence_wait", d0 + 1 + record + submit, fence, parent="subgraph_dispatch"),
+          _decl("readback", d0 + 1 + record + submit + fence, readback,
+                parent="subgraph_dispatch")]
+    if cmd_upload:
+        ev.append(_decl("cmd_upload", d0 + 2, cmd_upload, parent="record",
+                        caveat=f"{phases.SUB_PHASE_CAVEAT_PREFIX} synthetic"))
+    return ev
+
+
+def test_the_two_residuals_are_two_subtractions_over_two_denominators():
+    r = phases.host_residuals(phases.phase_spans(_call88()))
+    assert r["verdict"] == "OK"
+    # outer = compute_call - subgraph_dispatch, over compute_call
+    assert r["outer"]["residual_us"] == 1000 - 800
+    assert r["outer"]["denominator_us"] == 1000
+    # inner = subgraph_dispatch - its own children, over subgraph_dispatch
+    assert r["inner"]["residual_us"] == 800 - (400 + 50 + 200 + 100)
+    assert r["inner"]["denominator_us"] == 800
+    assert r["inner"]["subtracted"] == ["fence_wait", "readback", "record", "submit"]
+
+
+def test_the_two_residuals_are_never_summed_and_no_field_offers_their_sum():
+    """The invariant, enforced on the artifact and not only stated in prose.
+
+    A consumer cannot add two numbers this module never emits together. The check is that
+    no key anywhere in the record holds `outer + inner`, and that the invariant string
+    reaches the artifact so a reader of the JSON is told why.
+    """
+    r = phases.host_residuals(phases.phase_spans(_call88()))
+    forbidden = r["outer"]["residual_us"] + r["inner"]["residual_us"]
+
+    def walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                yield from walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                yield from walk(v)
+        else:
+            yield node
+
+    assert forbidden not in [v for v in walk(r) if isinstance(v, int)]
+    assert "NEVER SUMMED" in r["invariant"]
+    assert r["outer"]["denominator_us"] != r["inner"]["denominator_us"]
+
+
+def test_each_residual_moves_with_its_own_input_and_not_with_the_others():
+    base = phases.host_residuals(phases.phase_spans(_call88()))
+    wider_call = phases.host_residuals(phases.phase_spans(_call88(call=1400)))
+    smaller_record = phases.host_residuals(phases.phase_spans(_call88(record=300)))
+
+    assert wider_call["outer"]["residual_us"] == base["outer"]["residual_us"] + 400
+    assert wider_call["inner"] == base["inner"], "the inner residual is not a function of the " \
+                                                 "callback's own width"
+    assert smaller_record["inner"]["residual_us"] == base["inner"]["residual_us"] + 100
+    assert smaller_record["outer"] == base["outer"], "the outer residual is not a function of " \
+                                                     "what the dispatch spent its time on"
+
+
+def test_a_share_of_a_zero_denominator_is_undefined_and_not_zero():
+    """0.0 reads as 'fully accounted for' — the single most misleading value here."""
+    ev = _call88(call=0, dispatch=0, record=0, submit=0, fence=0, readback=0)
+    r = phases.host_residuals(phases.phase_spans(ev))
+    assert r["outer"]["share"] is None
+    assert r["inner"]["share"] is None
+
+
+def test_a_dispatch_that_outlasts_its_callback_is_refused_and_never_clamped():
+    ev = phases.phase_spans(_call88(call=500, dispatch=800))
+    with pytest.raises(phases.TraceRefused):
+        phases.host_residuals(ev)
+
+
+def test_children_that_outlast_their_dispatch_are_refused_and_never_clamped():
+    ev = phases.phase_spans(_call88(dispatch=200, record=400))
+    with pytest.raises(phases.TraceRefused):
+        phases.host_residuals(ev)
+
+
+def test_two_spans_of_one_phase_that_overlap_are_refused():
+    """Concatenated traces and double-opened guards both land here.
+
+    `sum(dur)` over overlapping spans over-counts the wall interval, so the residual taken
+    against it is always SMALLER than the truth — the attribution looks better than it is.
+    """
+    ev = _call88()
+    ev.append(_decl("record", ev[3]["ts"] + 10, 100, parent="subgraph_dispatch"))
+    with pytest.raises(phases.TraceRefused):
+        phases.host_residuals(phases.phase_spans(ev))
+
+
+def test_a_trace_from_a_build_with_no_brackets_is_unavailable_not_zero():
+    r = phases.host_residuals(phases.phase_spans(_run(1, [1])))
+    assert r["verdict"] == "UNAVAILABLE"
+    assert r["outer"] is None and r["inner"] is None
+    assert "Absent, not zero" in r["detail"]
+
+
+def test_a_parent_this_build_does_not_know_is_refused_rather_than_absorbed():
+    ev = [_decl("record", 1000, 100, parent="a_phase_from_the_future")]
+    with pytest.raises(phases.TraceRefused):
+        phases.declared_parents(phases.phase_spans(ev))
+
+
+def test_one_phase_declaring_two_parents_in_one_trace_is_refused():
+    ev = [_decl("readback", 1000, 10, parent="record"),
+          _decl("readback", 1100, 10, parent="subgraph_dispatch")]
+    with pytest.raises(phases.TraceRefused):
+        phases.declared_parents(phases.phase_spans(ev))
+
+
+def test_a_cycle_in_the_declared_nesting_is_refused():
+    ev = [_decl("record", 1000, 100, parent="submit"),
+          _decl("submit", 1000, 100, parent="record")]
+    with pytest.raises(phases.TraceRefused):
+        phases.declared_parents(phases.phase_spans(ev))
+
+
+def test_the_trace_outranks_this_modules_table_and_the_disagreement_is_reported():
+    """Accept polarity for `declared_parents`, and the reason the table is not enforced.
+
+    `PHASE_CHILDREN` said `readback` was a child of `record` for the whole life of that
+    model and it was wrong. A checker that believed its own table could not have reported
+    the table as the thing at fault.
+    """
+    spans = phases.phase_spans([_phase("record", 1000, 500),
+                                _decl("readback", 1100, 50, parent="record")])
+    assert phases.declared_parents(spans)["readback"] == "record"
+    assert phases.PARENT_OF["readback"] == "subgraph_dispatch"
+    v = phases.phase_nesting(spans)
+    assert any("readback" in d for d in v["table_disagrees_with_trace"])
+
+
+def test_readback_is_declared_inside_the_dispatch_and_not_inside_record():
+    """Regression lock, matching `Phase::nested_in()` in rust/src/trace.rs.
+
+    Production drops the Record guard, submits, waits on the fence, and only then reads
+    back. Every 'recording residual' computed from the old declaration was too small by
+    exactly the readback.
+    """
+    assert phases.PARENT_OF["readback"] == "subgraph_dispatch"
+    assert "readback" not in phases.PHASE_CHILDREN["record"]
+    assert set(phases.PHASE_CHILDREN["subgraph_dispatch"]) == {
+        "record", "submit", "fence_wait", "readback"}
+
+
+def test_a_readback_that_really_did_sit_inside_record_would_be_caught():
+    """The evidence arm: containment disagreeing with the declaration goes red."""
+    ev = _call88()
+    # Move the readback inside the record span while it still declares the dispatch.
+    ev[6]["ts"] = ev[3]["ts"] + 10
+    v = phases.phase_nesting(phases.phase_spans(ev))
+    assert v["ok"] is True, "containment by a grandparent's child is not itself a violation"
+    # ...but declaring `record` while sitting outside it is:
+    ev[6]["args"]["nested_in"] = "record"
+    ev[6]["ts"] = 10_000_000
+    v = phases.phase_nesting(phases.phase_spans(ev))
+    assert v["ok"] is False and v["verdict"] == "MISMATCH"
+    assert "readback" in v["detail"]
+
+
+def test_the_brackets_are_not_summed_with_the_phases_they_contain():
+    ev = _call88(cmd_upload=200)
+    allp = phases.phase_spans(ev)
+    sib = {p["phase"] for p in phases.sibling_phases(allp)}
+    assert sib == {"record", "submit", "fence_wait", "readback"}
+    assert phases.outer_bracket_names(allp) == {"compute_call", "subgraph_dispatch"}
+    r = phases.analyse(ev)
+    assert "compute_call" not in r["host_phases_ms"]
+    assert "subgraph_dispatch" not in r["host_phases_ms"]
+    assert set(r["outer_brackets_ms"]) == {"compute_call", "subgraph_dispatch"}
+    assert r["falsifiers"]["phase_containment"]["state"] == "PASS"
+
+
+def test_no_share_of_time_in_compute_is_ever_taken_over_a_bracket():
+    """A span that CONTAINS the denominator cannot be a share of it."""
+    r = phases.analyse(_call88())
+    for key in r["shares_of_time_in_compute"]:
+        assert not key.startswith("compute_call"), key
+        assert not key.startswith("subgraph_dispatch"), key
+    assert all(v <= 1.0 for v in r["shares_of_time_in_compute"].values())
+
+
+def test_the_residuals_reach_the_report_and_the_rendered_description():
+    r = phases.analyse(_call88())
+    assert r["host_residuals"]["verdict"] == "OK"
+    text = "\n".join(phases.describe(r))
+    assert "TWO subtractions, TWO denominators" in text
+    assert "NEVER SUMMED" in text
+
+
+def test_a_build_without_the_brackets_reads_exactly_as_it_did_before():
+    """No pre-#88 trace changes its numbers because this module learned two new phases."""
+    ev = _run(2, [1, 4])
+    r = phases.analyse(ev)
+    assert r["host_phases_ms"]["record"]["n"] == 4
+    assert r["outer_brackets_ms"] == {}
+    assert r["host_residuals"]["verdict"] == "UNAVAILABLE"
+    assert r["falsifiers"]["phase_containment"]["red"] is False
+
+
+# ---------------------------------------------------------------------------
+# HELD-OUT MUTATION BATTERY for the residual arithmetic (issue #88).
+#
+# The tests above are green. Green is evidence that the world is currently the way the
+# checks expect, not that the checks would notice if it were not. So the protocol those
+# tests apply is applied here to deliberately defective reimplementations of
+# `host_residuals`, held out of the module under test, and every one must be caught.
+#
+# A mutant that survives names an assertion above that is decoration.
+# ---------------------------------------------------------------------------
+
+def _spans_of(ev):
+    return phases.phase_spans(ev)
+
+
+def _total(spans, name):
+    return sum(p["dur"] for p in spans if p["phase"] == name)
+
+
+def _mutant_sums_the_two_residuals(spans):
+    """The exact error the invariant forbids: a single 'unaccounted' number over one
+    denominator, counting the dispatch interval twice."""
+    call = _total(spans, "compute_call")
+    disp = _total(spans, "subgraph_dispatch")
+    kids = sum(_total(spans, k) for k in phases.PHASE_CHILDREN["subgraph_dispatch"])
+    combined = (call - disp) + (disp - kids)
+    return {"verdict": "OK",
+            "outer": {"residual_us": combined, "denominator_us": call,
+                      "share": combined / call if call else 0.0,
+                      "whole": "compute_call", "subtracted": ["subgraph_dispatch"]},
+            "inner": {"residual_us": combined, "denominator_us": call,
+                      "share": combined / call if call else 0.0,
+                      "whole": "subgraph_dispatch", "subtracted": []},
+            "invariant": "", "levels": list(phases.RESIDUAL_LEVELS)}
+
+
+def _mutant_one_denominator(spans):
+    """Both shares taken against the callback — the inner share is then not a share of the
+    thing it was subtracted from."""
+    r = phases.host_residuals(spans)
+    call = r["outer"]["denominator_us"]
+    r["inner"] = {**r["inner"], "denominator_us": call,
+                  "share": (r["inner"]["residual_us"] / call) if call else None}
+    return r
+
+
+def _mutant_saturates(spans):
+    """`max(x, 0)` instead of refusing: reports a fully accounted dispatch precisely when
+    the instrument is most wrong."""
+    call = _total(spans, "compute_call")
+    disp = _total(spans, "subgraph_dispatch")
+    kids = sum(_total(spans, k) for k in phases.PHASE_CHILDREN["subgraph_dispatch"])
+    return {"verdict": "OK",
+            "outer": {"residual_us": max(call - disp, 0), "denominator_us": call,
+                      "share": (max(call - disp, 0) / call) if call else 0.0,
+                      "whole": "compute_call", "subtracted": ["subgraph_dispatch"]},
+            "inner": {"residual_us": max(disp - kids, 0), "denominator_us": disp,
+                      "share": (max(disp - kids, 0) / disp) if disp else 0.0,
+                      "whole": "subgraph_dispatch",
+                      "subtracted": list(phases.PHASE_CHILDREN["subgraph_dispatch"])},
+            "invariant": "NEVER SUMMED", "levels": list(phases.RESIDUAL_LEVELS)}
+
+
+def _mutant_zero_share_for_zero_denominator(spans):
+    r = phases.host_residuals(spans)
+    for level in ("outer", "inner"):
+        if r.get(level) and r[level]["share"] is None:
+            r[level] = {**r[level], "share": 0.0}
+    return r
+
+
+def _mutant_readback_under_record(spans):
+    """The pre-#88 declaration: readback subtracted from `record` instead of from the
+    dispatch, so the inner residual absorbs the whole readback."""
+    kids = [k for k in phases.PHASE_CHILDREN["subgraph_dispatch"] if k != "readback"]
+    call = _total(spans, "compute_call")
+    disp = _total(spans, "subgraph_dispatch")
+    used = sum(_total(spans, k) for k in kids)
+    return {"verdict": "OK",
+            "outer": {"residual_us": call - disp, "denominator_us": call,
+                      "share": ((call - disp) / call) if call else None,
+                      "whole": "compute_call", "subtracted": ["subgraph_dispatch"]},
+            "inner": {"residual_us": disp - used, "denominator_us": disp,
+                      "share": ((disp - used) / disp) if disp else None,
+                      "whole": "subgraph_dispatch", "subtracted": kids},
+            "invariant": "NEVER SUMMED", "levels": list(phases.RESIDUAL_LEVELS)}
+
+
+def _mutant_absent_brackets_read_as_zero(spans):
+    call = _total(spans, "compute_call")
+    disp = _total(spans, "subgraph_dispatch")
+    kids = sum(_total(spans, k) for k in phases.PHASE_CHILDREN["subgraph_dispatch"])
+    return {"verdict": "OK",
+            "outer": {"residual_us": call - disp, "denominator_us": call, "share": 0.0,
+                      "whole": "compute_call", "subtracted": ["subgraph_dispatch"]},
+            "inner": {"residual_us": disp - kids, "denominator_us": disp, "share": 0.0,
+                      "whole": "subgraph_dispatch",
+                      "subtracted": list(phases.PHASE_CHILDREN["subgraph_dispatch"])},
+            "invariant": "NEVER SUMMED", "levels": list(phases.RESIDUAL_LEVELS)}
+
+
+_RESIDUAL_MUTANTS = {
+    "sums_the_two_residuals": _mutant_sums_the_two_residuals,
+    "one_denominator_for_both": _mutant_one_denominator,
+    "saturates_instead_of_refusing": _mutant_saturates,
+    "zero_share_for_zero_denominator": _mutant_zero_share_for_zero_denominator,
+    "readback_subtracted_under_record": _mutant_readback_under_record,
+    "absent_brackets_read_as_zero": _mutant_absent_brackets_read_as_zero,
+}
+
+
+def _residual_protocol(impl):
+    """The properties issue #88 requires, applied to any implementation.
+
+    Raises AssertionError on the first one violated. The real `host_residuals` must pass;
+    every mutant must fail.
+    """
+    base = impl(_spans_of(_call88()))
+    assert base["verdict"] == "OK", "a well-formed #88 trace must produce both residuals"
+
+    # 1. Two subtractions over two denominators.
+    assert base["outer"]["denominator_us"] == 1000
+    assert base["inner"]["denominator_us"] == 800
+    assert base["outer"]["residual_us"] == 200
+    assert base["inner"]["residual_us"] == 50
+
+    # 2. The invariant reaches the artifact.
+    assert "NEVER SUMMED" in (base.get("invariant") or "")
+
+    # 3. Each residual is a function of its own level only.
+    wider = impl(_spans_of(_call88(call=1400)))
+    assert wider["inner"]["residual_us"] == base["inner"]["residual_us"]
+    assert wider["outer"]["residual_us"] == base["outer"]["residual_us"] + 400
+    thinner = impl(_spans_of(_call88(record=300)))
+    assert thinner["outer"]["residual_us"] == base["outer"]["residual_us"]
+    assert thinner["inner"]["residual_us"] == base["inner"]["residual_us"] + 100
+
+    # 4. `readback` is subtracted at the dispatch level, not under `record`.
+    assert "readback" in base["inner"]["subtracted"]
+    no_rb = impl(_spans_of(_call88(readback=0)))
+    assert no_rb["inner"]["residual_us"] == base["inner"]["residual_us"] + 100
+
+    # 5. A share of a zero denominator is undefined, never zero.
+    empty = impl(_spans_of(_call88(call=0, dispatch=0, record=0, submit=0, fence=0,
+                                   readback=0)))
+    assert empty["outer"]["share"] is None
+    assert empty["inner"]["share"] is None
+
+    # 6. An impossible trace is refused, not clamped.
+    for bad in (_call88(call=500, dispatch=800), _call88(dispatch=200, record=400)):
+        try:
+            impl(_spans_of(bad))
+        except phases.TraceRefused:
+            continue
+        raise AssertionError("a child outlasting its parent must be refused, not clamped")
+
+    # 7. A build with no brackets is UNAVAILABLE, not a residual of zero.
+    absent = impl(_spans_of(_run(1, [1])))
+    assert absent["verdict"] == "UNAVAILABLE"
+
+
+def test_the_real_residual_instrument_passes_the_protocol():
+    _residual_protocol(phases.host_residuals)
+
+
+@pytest.mark.parametrize("mutant", sorted(_RESIDUAL_MUTANTS))
+def test_a_defective_residual_implementation_is_caught_by_this_protocol(mutant):
+    with pytest.raises((AssertionError, KeyError, TypeError, ZeroDivisionError)):
+        _residual_protocol(_RESIDUAL_MUTANTS[mutant])
+
+
+def test_the_bracket_set_propagates_a_refusal_rather_than_swallowing_it():
+    """`outer_bracket_names` decides which spans are excluded from every sum. On a trace
+    whose nesting is unrecoverable it must refuse with the rest of the module, not return
+    an empty set — an empty bracket set silently re-promotes the brackets to siblings and
+    double-counts the whole dispatch."""
+    ev = [_decl("subgraph_dispatch", 1000, 100, parent="not_a_phase_this_build_knows")]
+    with pytest.raises(phases.TraceRefused):
+        phases.outer_bracket_names(phases.phase_spans(ev))
+
+
+def test_the_bracket_set_is_empty_for_a_build_that_emits_no_brackets():
+    """Accept polarity. Absence of the instrument is not a refusal."""
+    assert phases.outer_bracket_names(phases.phase_spans(_run(1, [1]))) == set()
+    assert phases.outer_bracket_names(phases.phase_spans(_call88())) == {
+        "compute_call", "subgraph_dispatch"}

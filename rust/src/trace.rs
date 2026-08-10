@@ -160,6 +160,23 @@ pub enum Phase {
     Compile,
     /// Weight prepack (CPU repack) plus the upload of the packed bytes. Once per `PackKey`.
     Prepack,
+    /// The **whole ORT `Compute` callback**, opened in `ep.rs` at the C-ABI entry point and
+    /// closed after the status is decided — panics included (issue #88).
+    ///
+    /// This is the wall a caller pays. It is deliberately a *different* phase from
+    /// [`Phase::SubgraphDispatch`]: everything ORT-side of the engine — the null/liveness checks,
+    /// the bound-count, bound-size and addressability screens, the tensor-pointer reads, the
+    /// fault-injection control — happens inside this phase and outside every other one. Before
+    /// this phase existed, that cost was outside the phase table entirely and the difference
+    /// between "the wall we measured" and "the sum of the phases" had no row.
+    ComputeCall,
+    /// The **engine's subgraph dispatch** (`VulkanSession::dispatch_ort`), nested inside
+    /// [`Phase::ComputeCall`].
+    ///
+    /// The same interval the `vulkan.subgraph` span covers, folded into the phase table so the
+    /// two-residual decomposition can be computed from counters alone by a run that emitted no
+    /// trace JSON.
+    SubgraphDispatch,
     /// Host→device staging copy of this inference's inputs.
     Upload,
     /// The `Compute` recording bracket. The name is historical: this span's host wall time is
@@ -193,6 +210,8 @@ impl Phase {
         match self {
             Phase::Compile => "compile",
             Phase::Prepack => "prepack",
+            Phase::ComputeCall => "compute_call",
+            Phase::SubgraphDispatch => "subgraph_dispatch",
             Phase::Upload => "upload",
             Phase::Record => "record",
             Phase::DescAlloc => "desc_alloc",
@@ -214,15 +233,31 @@ impl Phase {
                 "host: pipeline/descriptor creation; may hit the driver's shader compiler"
             }
             Phase::Prepack => "host: CPU repack + staging upload of weights; once per PackKey",
+            Phase::ComputeCall => {
+                "host: the WHOLE ORT Compute callback, from the C-ABI entry to the status ORT \
+                 receives. It CONTAINS `subgraph_dispatch` and therefore everything nested under \
+                 it, plus the ORT-side work that belongs to no other phase (bound-count, \
+                 bound-size and addressability screens, tensor-pointer reads, status \
+                 construction). This is the only phase whose wall is the latency the caller pays"
+            }
+            Phase::SubgraphDispatch => {
+                "host: VulkanSession::dispatch_ort — the engine's half of one Compute call. \
+                 NESTED INSIDE `compute_call` — already counted there, do not add to the sibling \
+                 total. It CONTAINS `record`, `submit`, `fence_wait` and `readback`"
+            }
             Phase::Upload => {
                 "host: staging copy; on a discrete GPU this is PCIe time and users pay it. \
                  NESTED INSIDE `record` — already counted there, do not add to the sibling total"
             }
             Phase::Record => {
                 "host: the whole vkBeginCommandBuffer..vkEndCommandBuffer bracket. It CONTAINS \
-                 `upload`/`cmd_upload` (the staging memcpy), `readback`, `desc_alloc` and \
-                 `pipeline_lookup`, so it is an INCLUSIVE interval and its name describes its \
-                 bracket, not its content (R11). The split is regime-dependent and must be read \
+                 `upload`/`cmd_upload` (the staging memcpy), `desc_alloc` and `pipeline_lookup`, \
+                 so it is an INCLUSIVE interval and its name describes its bracket, not its \
+                 content (R11). It does NOT contain `readback`: production reads outputs back \
+                 after vkEndCommandBuffer, after vkQueueSubmit and after the fence wait (see \
+                 vk/session.rs), so readback is a sibling of this phase under \
+                 `subgraph_dispatch`. NESTED INSIDE `subgraph_dispatch` — already counted there, \
+                 do not add to the sibling total. The split is regime-dependent and must be read \
                  from the child rows of THIS run, never from a remembered ratio: with a cold \
                  weight cache `cmd_upload` dominates it (measured 1148 of 1185 ms on Phi-3.5's \
                  first Compute), and with a warm cache the children collapse to ~1-2 ms and the \
@@ -248,14 +283,20 @@ impl Phase {
                  the same memcpy: never add the two nested rows together"
             }
             Phase::Submit => {
-                "HOST-ONLY: vkQueueSubmit returns before any shader runs — this is NOT GPU time"
+                "HOST-ONLY: vkQueueSubmit returns before any shader runs — this is NOT GPU time. \
+                 NESTED INSIDE `subgraph_dispatch` — already counted there, do not add to the \
+                 sibling total"
             }
             Phase::FenceWait => {
-                "host: queue latency + GPU execution — an UPPER BOUND on kernel time, not kernel time"
+                "host: queue latency + GPU execution — an UPPER BOUND on kernel time, not kernel \
+                 time. NESTED INSIDE `subgraph_dispatch` — already counted there, do not add to \
+                 the sibling total"
             }
             Phase::Readback => {
-                "host: device->host copy; counts toward end-to-end latency. NESTED INSIDE \
-                 `record` — already counted there, do not add to the sibling total"
+                "host: device->host copy; counts toward end-to-end latency. It runs AFTER \
+                 recording, AFTER the queue submit and AFTER the fence wait, so it is NOT inside \
+                 `record`. NESTED INSIDE `subgraph_dispatch` — already counted there, do not add \
+                 to the sibling total"
             }
         }
     }
@@ -274,13 +315,33 @@ impl Phase {
     ///
     /// Emitted as the `nested_in` span arg. A phase with `nested_in == Some(p)` must never be
     /// added to a total that also contains `p`.
+    ///
+    /// # The chain is three deep, and it mirrors the call graph exactly (issue #88)
+    ///
+    /// `compute_call` ⊃ `subgraph_dispatch` ⊃ {`record`, `submit`, `fence_wait`, `readback`},
+    /// and `record` ⊃ {`upload`, `cmd_upload`, `desc_alloc`, `pipeline_lookup`}.
+    ///
+    /// `readback` used to be modelled as a child of `record` and **it never was one**:
+    /// `vk/session.rs` drops the `Record` guard before `vkQueueSubmit`, waits on the fence, and
+    /// only then copies outputs back. A decomposition that subtracted readback from `record`
+    /// removed time `record` never contained, so the "recording residual" it printed was too
+    /// small by exactly the readback. Nesting is read off the call graph here; if the guards in
+    /// `vk/session.rs` move, this function is wrong and [`Phase::ALL`]'s tests are the falsifier.
     pub fn nested_in(self) -> Option<Phase> {
         match self {
+            // The engine's dispatch is one interval inside the ORT callback. Everything ORT-side
+            // of it — the screens in `ep.rs`, the status construction — is the OUTER RESIDUAL.
+            Phase::SubgraphDispatch => Some(Phase::ComputeCall),
+            // Opened and closed inside `dispatch_ort`, in this order: record, submit, fence wait,
+            // readback. All four are siblings of each other and children of the dispatch.
+            Phase::Record | Phase::Submit | Phase::FenceWait | Phase::Readback => {
+                Some(Phase::SubgraphDispatch)
+            }
             // `vk::session` opens Phase::Record before vkBeginCommandBuffer and drops it after
-            // vkEndCommandBuffer; the input staging loop and the output readback both run inside
-            // that bracket. See session.rs (Record guard) — this is a fact about the call graph,
-            // not a policy, and it must be re-checked if that guard moves.
-            Phase::Upload | Phase::Readback => Some(Phase::Record),
+            // vkEndCommandBuffer; the input staging loop runs inside that bracket. See session.rs
+            // (Record guard) — this is a fact about the call graph, not a policy, and it must be
+            // re-checked if that guard moves.
+            Phase::Upload => Some(Phase::Record),
             // Switch's per-dispatch sub-phases, added in `692e7d0`. They are documented in their
             // own caveats as "sub-record" and they are opened inside the Record guard.
             Phase::DescAlloc | Phase::PipelineLookup | Phase::CmdUpload => Some(Phase::Record),
@@ -289,10 +350,18 @@ impl Phase {
             // silently added into SIBLING TOTAL and double-counts its parent. That is how three
             // phases arrived this session: they merged cleanly and would have been summed.
             // Make the compiler ask.
-            Phase::Compile | Phase::Prepack | Phase::Record | Phase::Submit | Phase::FenceWait => {
-                None
-            }
+            Phase::Compile | Phase::Prepack | Phase::ComputeCall => None,
         }
+    }
+
+    /// The phases that partition [`Phase::SubgraphDispatch`] — its declared children.
+    ///
+    /// Derived from [`Phase::nested_in`] rather than restated, so a phase that changes parent
+    /// changes this set with it. Used for the **inner residual**.
+    pub fn children_of(parent: Phase) -> impl Iterator<Item = Phase> {
+        Phase::ALL
+            .into_iter()
+            .filter(move |p| p.nested_in() == Some(parent))
     }
 
     /// Phases that are top-level: their wall times may be summed.
@@ -311,11 +380,13 @@ impl Phase {
     }
 
     /// Every phase, in reporting order.
-    pub const ALL: [Phase; 10] = [
+    pub const ALL: [Phase; 12] = [
         Phase::Compile,
         Phase::Prepack,
-        Phase::Upload,
+        Phase::ComputeCall,
+        Phase::SubgraphDispatch,
         Phase::Record,
+        Phase::Upload,
         Phase::DescAlloc,
         Phase::PipelineLookup,
         Phase::CmdUpload,
@@ -323,6 +394,24 @@ impl Phase {
         Phase::FenceWait,
         Phase::Readback,
     ];
+
+    /// How many parents this phase has above it, `0` for a top-level sibling.
+    ///
+    /// Printed as the row indent, and asserted against the modelled depth so a fourth level
+    /// cannot arrive unnoticed and be rendered as if it were a third.
+    pub fn depth(self) -> usize {
+        let mut d = 0;
+        let mut cur = self;
+        // Bounded by ALL.len(): a cycle in `nested_in` would otherwise hang the summary.
+        while let Some(p) = cur.nested_in() {
+            d += 1;
+            cur = p;
+            if d > Phase::ALL.len() {
+                break;
+            }
+        }
+        d
+    }
 }
 
 /// Which recording path one `Compute` call took — the Vulkan analogue of MLX's compile-cache
@@ -554,11 +643,239 @@ pub struct GpuTimestampReport {
 /// honest statement about "command-buffer recording cost" is the residual. It is a subtraction and
 /// not a measurement, and it is printed as such.
 ///
-/// `xfer_us` must be the LARGER of the two transfer accountings (`upload`+`readback` from
-/// `record_transfer`, and the `cmd_upload` sub-span), never their sum: the two can bracket the
-/// same memcpy, and adding them would under-report the residual by inventing child time.
+/// `xfer_us` must be the LARGER of the two transfer accountings (`upload` from `record_transfer`,
+/// and the `cmd_upload` sub-span), never their sum: the two can bracket the same memcpy, and
+/// adding them would under-report the residual by inventing child time. `readback` is NOT a child
+/// of `record` — production reads outputs back after the fence wait — so it must not be passed
+/// here; subtracting it would remove time `record` never contained.
 fn record_residual_us(record_us: u64, xfer_us: u64, desc_alloc_us: u64, pipeline_us: u64) -> u64 {
     record_us.saturating_sub(xfer_us + desc_alloc_us + pipeline_us)
+}
+
+// -------------------------------------------------------------------------------------------
+// The two residuals — issue #88
+// -------------------------------------------------------------------------------------------
+
+/// The rule that keeps the two residuals apart, carried into every artifact that prints them.
+///
+/// It is a `const` and not a comment because it is emitted: a reader who sees only the numbers
+/// must see the rule beside them.
+pub const RESIDUAL_INVARIANT: &str = "THE TWO RESIDUALS ARE NEVER SUMMED. `outer` is \
+    sum(compute_call) - sum(subgraph_dispatch) over its own denominator sum(compute_call); \
+    `inner` is sum(subgraph_dispatch) - sum(the declared children of subgraph_dispatch) over its \
+    own denominator sum(subgraph_dispatch). The inner residual is already inside the outer \
+    residual's parent, so adding them counts the dispatch interval twice and produces a share of \
+    a denominator that does not exist. Quote each with its own denominator or not at all.";
+
+/// One residual row: the subtraction, the denominator it is a share of, and nothing else.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ResidualRow {
+    /// The unattributed microseconds.
+    pub residual_us: u64,
+    /// The total this residual is a share **of**. Never another row's denominator.
+    pub denominator_us: u64,
+}
+
+impl ResidualRow {
+    /// `residual_us / denominator_us` in percent, or `None` when the denominator is zero.
+    ///
+    /// `None` rather than `0.0`: a share of nothing is not a share of zero (R12).
+    pub fn share_pct(&self) -> Option<f64> {
+        if self.denominator_us == 0 {
+            None
+        } else {
+            Some(100.0 * self.residual_us as f64 / self.denominator_us as f64)
+        }
+    }
+}
+
+/// Why a residual pair could not be computed. Every variant is a **refusal**, not a zero.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ResidualFault {
+    /// `subgraph_dispatch` exceeded the `compute_call` that must contain it.
+    OuterOversubscribed,
+    /// The declared children of `subgraph_dispatch` exceeded it.
+    InnerOversubscribed,
+    /// A phase total was reported for a phase that is not in [`Phase::ALL`], or a child was
+    /// reported whose parent has no total. Either way the tree is not the tree this build models.
+    UnknownPhase,
+    /// The same phase was presented twice in one decomposition. Two totals for one phase means
+    /// the producer merged two traces, or double-counted one — either way no subtraction over
+    /// them is meaningful.
+    DuplicatePhase,
+    /// The child totals do not fit in a `u64`. Not reachable from a real clock, and refused
+    /// anyway: a wrapping sum produces a *small* number, and a small child sum produces a large,
+    /// plausible, entirely fictitious residual.
+    Overflow,
+}
+
+impl ResidualFault {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResidualFault::OuterOversubscribed => {
+                "MALFORMED: subgraph_dispatch exceeds compute_call — a child cannot outlast its \
+                 parent, so one of the two guards is not where this build says it is"
+            }
+            ResidualFault::InnerOversubscribed => {
+                "MALFORMED: the children of subgraph_dispatch exceed it — the child spans \
+                 overlap, or a child is being counted under two parents"
+            }
+            ResidualFault::UnknownPhase => {
+                "MALFORMED: a phase total was presented that this build does not model"
+            }
+            ResidualFault::DuplicatePhase => {
+                "MALFORMED: the same phase was presented twice — two totals for one phase cannot \
+                 both be the total"
+            }
+            ResidualFault::Overflow => {
+                "MALFORMED: the child totals do not fit in a u64 — a wrapped sum would produce a \
+                 large and entirely fictitious residual"
+            }
+        }
+    }
+}
+
+/// The result of the two-residual decomposition. **Fails closed**: any inconsistency yields
+/// [`Residuals::Malformed`], never a plausible pair of numbers.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Residuals {
+    Ok {
+        outer: ResidualRow,
+        inner: ResidualRow,
+    },
+    Malformed(ResidualFault),
+}
+
+/// Compute the outer and inner residuals from three totals, refusing rather than saturating.
+///
+/// * `compute_call_us` — Σ of [`Phase::ComputeCall`], the whole ORT callback.
+/// * `subgraph_us` — Σ of [`Phase::SubgraphDispatch`], the engine's dispatch.
+/// * `inner_children_us` — Σ of the declared children of `SubgraphDispatch` (`record`, `submit`,
+///   `fence_wait`, `readback`). These four are disjoint by construction in `vk/session.rs`; if
+///   they ever stop being disjoint their sum exceeds the parent and this refuses.
+///
+/// `saturating_sub` is deliberately **not** used at either level. Saturation turns "these numbers
+/// contradict each other" into "the residual is zero", which is a complete-looking attribution
+/// produced by an impossible measurement — the exact failure mode this decomposition exists to
+/// prevent.
+pub fn residuals(compute_call_us: u64, subgraph_us: u64, inner_children_us: u64) -> Residuals {
+    if subgraph_us > compute_call_us {
+        return Residuals::Malformed(ResidualFault::OuterOversubscribed);
+    }
+    if inner_children_us > subgraph_us {
+        return Residuals::Malformed(ResidualFault::InnerOversubscribed);
+    }
+    Residuals::Ok {
+        outer: ResidualRow {
+            residual_us: compute_call_us - subgraph_us,
+            denominator_us: compute_call_us,
+        },
+        inner: ResidualRow {
+            residual_us: subgraph_us - inner_children_us,
+            denominator_us: subgraph_us,
+        },
+    }
+}
+
+/// The two residuals computed from **tagged** phase totals, as a trace consumer sees them.
+///
+/// This is the entry point that can actually observe a malformed trace. [`residuals`] takes three
+/// `u64`s and can only detect contradictions of magnitude; a consumer reading `ph` tags out of a
+/// trace JSON can also be handed a tag this build does not model, or the same tag twice because
+/// two runs were concatenated. Both are refusals here.
+///
+/// Unknown tags are **not** ignored and unknown tags are **not** bucketed into a residual. Either
+/// would turn "I do not know what this span is" into "it is unattributed host cost", which is the
+/// one sentence a residual must never be allowed to say by accident.
+///
+/// Totals for phases that are not part of either residual (`compile`, `prepack`, and the children
+/// of `record`) are accepted and ignored: they are legitimately in a trace and belong to neither
+/// subtraction.
+pub fn residuals_from_tagged(totals: &[(&str, u64)]) -> Residuals {
+    let mut per = [None::<u64>; Phase::ALL.len()];
+    for (tag, us) in totals {
+        let Some(idx) = Phase::ALL.iter().position(|p| p.as_str() == *tag) else {
+            return Residuals::Malformed(ResidualFault::UnknownPhase);
+        };
+        if per[idx].is_some() {
+            return Residuals::Malformed(ResidualFault::DuplicatePhase);
+        }
+        per[idx] = Some(*us);
+    }
+    let get = |phase: Phase| -> u64 {
+        Phase::ALL
+            .iter()
+            .position(|p| *p == phase)
+            .and_then(|i| per[i])
+            .unwrap_or(0)
+    };
+    // CHECKED, not saturating. A saturated sum is `u64::MAX`, which is `>=` any parent and would
+    // trip `InnerOversubscribed` — a refusal, but under the wrong name. The honest refusal says
+    // the totals do not fit, because "the children overlap" would send a reader to look for an
+    // overlap that is not there.
+    let mut children = 0u64;
+    for p in Phase::children_of(Phase::SubgraphDispatch) {
+        match children.checked_add(get(p)) {
+            Some(n) => children = n,
+            None => return Residuals::Malformed(ResidualFault::Overflow),
+        }
+    }
+    residuals(
+        get(Phase::ComputeCall),
+        get(Phase::SubgraphDispatch),
+        children,
+    )
+}
+
+/// How one `Compute` callback ended. **Absence of a resolution is its own outcome.**
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CallOutcome {
+    /// ORT received a null status: the dispatch ran to fence completion and outputs were written.
+    Completed,
+    /// ORT received an `OrtStatus`: the callback failed, at whatever point it failed.
+    Failed,
+    /// The guard was dropped without anyone saying how the call ended — a panic unwinding through
+    /// the callback, or a future edit that adds a return path and forgets to resolve it.
+    ///
+    /// This is the fail-closed state. A timing sample whose outcome is unknown is **not**
+    /// promoted to `Completed`, because a decomposition computed over silently-included failed
+    /// calls is a decomposition of a population nobody named.
+    Unresolved,
+}
+
+impl CallOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CallOutcome::Completed => "completed",
+            CallOutcome::Failed => "failed",
+            CallOutcome::Unresolved => "unresolved",
+        }
+    }
+
+    fn idx(self) -> usize {
+        match self {
+            CallOutcome::Completed => 0,
+            CallOutcome::Failed => 1,
+            CallOutcome::Unresolved => 2,
+        }
+    }
+
+    /// Every outcome, in reporting order.
+    pub const ALL: [CallOutcome; 3] = [
+        CallOutcome::Completed,
+        CallOutcome::Failed,
+        CallOutcome::Unresolved,
+    ];
+}
+
+/// Whether a residual decomposition may be described as covering a clean population.
+///
+/// `false` as soon as one call failed or went unresolved: those calls are still **counted** (they
+/// are wall the caller paid) but they did not necessarily reach the engine, so the outer residual
+/// over a population containing them mixes "host work before the dispatch" with "calls that never
+/// dispatched". The summary says so instead of quietly reporting a bigger residual.
+pub fn population_is_clean(outcomes: [u64; 3]) -> bool {
+    outcomes[CallOutcome::Failed.idx()] == 0 && outcomes[CallOutcome::Unresolved.idx()] == 0
 }
 
 /// Cumulative, human-readable digest emitted on teardown. Cheap to update; only touched when
@@ -579,6 +896,11 @@ struct Summary {
 
     /// `[first_record, replay, rerecord]`.
     record_paths: [u64; 3],
+    /// `[completed, failed, unresolved]` — how the `Compute` callbacks ended. Indexed by
+    /// [`CallOutcome`], never by a literal.
+    call_outcomes: [u64; 3],
+    /// `[completed, failed, unresolved]` — microseconds of whole-`Compute` wall, per outcome.
+    call_outcome_us: [u64; 3],
     /// Shape keys already seen, per subgraph tag, so a REPLAY on a new key is called what it is.
     seen_shape_keys: HashMap<String, HashSet<String>>,
 
@@ -790,6 +1112,58 @@ impl VulkanTracer {
     }
 
     // --- Execution view ----------------------------------------------------------------
+
+    /// Time the **whole ORT `Compute` callback** and record how it ended.
+    ///
+    /// `None` (zero cost — one relaxed atomic load, no clock read, no allocation) when nothing is
+    /// listening. When something is listening, the returned guard must be resolved with
+    /// [`ComputeCallGuard::resolve`]; a guard that is dropped unresolved records
+    /// [`CallOutcome::Unresolved`], which is the fail-closed state and is never promoted.
+    ///
+    /// This is the outer bracket of the two-level decomposition (issue #88). The engine's
+    /// [`Phase::SubgraphDispatch`] sits inside it, and the difference between the two is the
+    /// **outer residual** — the ORT-side work that belongs to no other phase.
+    #[inline]
+    pub fn compute_call(&self, node_count: usize) -> Option<ComputeCallGuard> {
+        if !self.active() {
+            return None;
+        }
+        let span = self
+            .ctx
+            .span(
+                format!("vulkan.{}", Phase::ComputeCall.as_str()),
+                "ep.phase",
+            )
+            .with_args(
+                Args::new()
+                    .with(ARG_DEVICE, DEVICE_HOST)
+                    .with("nodes", node_count as u64)
+                    .with("caveat", Phase::ComputeCall.caveat())
+                    .with("nested_in", "none"),
+            );
+        Some(ComputeCallGuard {
+            start: Instant::now(),
+            outcome: CallOutcome::Unresolved,
+            _span: span,
+        })
+    }
+
+    /// Fold one whole-`Compute` sample into the summary, tagged with how the call ended.
+    ///
+    /// Called from [`ComputeCallGuard`]'s drop. Public so a host-free test can drive the seam in
+    /// both polarities without a Vulkan device.
+    pub fn record_compute_call(&self, outcome: CallOutcome, dur: Duration) {
+        if !self.active() {
+            return;
+        }
+        let us = dur.as_micros() as u64;
+        let mut s = self.summary();
+        s.call_outcomes[outcome.idx()] += 1;
+        s.call_outcome_us[outcome.idx()] += us;
+        let e = s.phase_us.entry(Phase::ComputeCall).or_insert((0, 0));
+        e.0 += us;
+        e.1 += 1;
+    }
 
     /// Span around one fused subgraph's whole `Compute` call.
     ///
@@ -1142,7 +1516,10 @@ impl VulkanTracer {
             return;
         }
         let s = self.summary();
-        if s.getcap_calls == 0 && s.record_paths.iter().all(|&n| n == 0) {
+        if s.getcap_calls == 0
+            && s.record_paths.iter().all(|&n| n == 0)
+            && s.call_outcomes.iter().all(|&n| n == 0)
+        {
             return;
         }
 
@@ -1180,23 +1557,46 @@ impl VulkanTracer {
                 out.push_str(&format!("              - {op} x{n}: {reason}\n"));
             }
         }
-        // `Tracer::record_path` has no production caller (audited 2026-07-30: zero call sites
-        // outside this file; the classifier is unit-tested, which is why review never caught it).
-        // Printing "first-record=0 replay=0 rerecord=0" reads as "this run recorded nothing",
-        // which is a measurement. It is not one. It is the absence of a measurement, and the
-        // difference matters here more than most: `Phase::Record`'s caveat asserted that recording
-        // is "amortised across replays", and this is the only instrument that could falsify that.
+        // `Tracer::record_path` HAS a production caller as of issue #88 (`vk/session.rs`, on the
+        // recording path). Printing "first-record=0 replay=0 rerecord=0" still has to be
+        // distinguishable from "this run recorded nothing", so the NOT-WIRED line is kept for the
+        // case where no Compute call happened at all — absence of a measurement is not a zero.
         if s.record_paths.iter().all(|&n| n == 0) {
             out.push_str(
-                "  compute:  record-path breakdown NOT WIRED — Tracer::record_path() has no \
-                 production caller, so first-record/replay/rerecord are unmeasured, NOT zero. \
-                 Nothing in this build can tell you whether command buffers are re-recorded per \
-                 inference or replayed.\n",
+                "  compute:  record-path breakdown EMPTY — no Compute call reached the recording \
+                 path in this run, so first-record/replay/rerecord are unmeasured, NOT zero.\n",
             );
         } else {
             out.push_str(&format!(
                 "  compute:  first-record={} replay={} rerecord={}\n",
                 s.record_paths[0], s.record_paths[1], s.record_paths[2]
+            ));
+        }
+        // Outcomes of the whole callback. Printed before any residual, because the residual's
+        // population is exactly this and a reader must see the population before the share.
+        if s.call_outcomes.iter().all(|&n| n == 0) {
+            out.push_str(
+                "  outcome:  whole-Compute timing NOT OBSERVED this run — no `compute_call` \
+                 sample was taken, so the outer residual below is unavailable rather than zero.\n",
+            );
+        } else {
+            out.push_str(&format!(
+                "  outcome:  compute calls completed={} failed={} unresolved={} ({}){}\n",
+                s.call_outcomes[0],
+                s.call_outcomes[1],
+                s.call_outcomes[2],
+                if population_is_clean(s.call_outcomes) {
+                    "clean population"
+                } else {
+                    "MIXED POPULATION"
+                },
+                if population_is_clean(s.call_outcomes) {
+                    ""
+                } else {
+                    " — failed/unresolved calls may never have reached the engine, so the outer \
+                     residual below covers host work AND calls that never dispatched. It is not \
+                     a decomposition of successful inference."
+                },
             ));
         }
         out.push_str(&format!(
@@ -1227,7 +1627,13 @@ impl VulkanTracer {
             // TRANSFER IS NAMED, NOT INFERRED FROM "IS A CHILD". `desc_alloc` and
             // `pipeline_lookup` are also children of `record` and are not transfer; summing every
             // child under the label "xfer" would be the same misnaming one level down.
-            let child_us: u64 = get(Phase::Upload).0 + get(Phase::Readback).0;
+            //
+            // The two transfer rows live at DIFFERENT LEVELS and this is not a detail: `upload`
+            // is inside `record`, `readback` is a sibling of `record` under `subgraph_dispatch`
+            // (production reads outputs back after the fence wait). Their sum is still the
+            // boundary traffic of one Compute call — which is what this row is about — but it is
+            // NOT a subtotal of `record`, and the label says so.
+            let xfer_us: u64 = get(Phase::Upload).0 + get(Phase::Readback).0;
             let sibling_us: u64 = Phase::ALL
                 .iter()
                 .filter(|p| p.is_sibling())
@@ -1239,20 +1645,23 @@ impl VulkanTracer {
             let overlap = get(Phase::CmdUpload).1 > 0 && get(Phase::Upload).1 > 0;
 
             out.push_str(
-                "  host time (wall clock on the CPU thread). `upload`/`readback` are NESTED \
-                 INSIDE `record` — do NOT add this column:\n",
+                "  host time (wall clock on the CPU thread). Rows are indented under the phase \
+                 that CONTAINS them — do NOT add this column:\n",
             );
             for phase in Phase::ALL {
                 let Some((us, calls)) = s.phase_us.get(&phase) else {
                     continue;
                 };
+                // Indent is DERIVED from the nesting model, not chosen per row: a phase that
+                // changes parent changes its indent with it, so the picture cannot drift from the
+                // arithmetic underneath it.
+                let indent = match phase.depth() {
+                    0 => "    ".to_string(),
+                    d => format!("{}└─ ", "  ".repeat(d)),
+                };
                 out.push_str(&format!(
-                    "              {}{:<11} {:>10} us (x{}) — {}\n",
-                    if phase.is_sibling() {
-                        "    "
-                    } else {
-                        "  └─ "
-                    },
+                    "              {}{:<17} {:>10} us (x{}) — {}\n",
+                    indent,
                     phase.as_str(),
                     us,
                     calls,
@@ -1271,11 +1680,13 @@ impl VulkanTracer {
                     .join("+")
             ));
             out.push_str(&format!(
-                "              {:<15} {:>10} us  ({:.1}% of sibling total) — upload+readback only, \
-                 already counted inside `record`\n",
+                "              {:<17} {:>10} us  ({:.1}% of sibling total) — upload+readback \
+                 only, and they sit at two different levels: `upload` inside `record`, \
+                 `readback` beside it under `subgraph_dispatch`. This is boundary traffic, NOT a \
+                 subtotal of `record`\n",
                 "of which xfer",
-                child_us,
-                100.0 * child_us as f64 / (sibling_us.max(1)) as f64,
+                xfer_us,
+                100.0 * xfer_us as f64 / (sibling_us.max(1)) as f64,
             ));
             if overlap {
                 out.push_str(
@@ -1293,19 +1704,20 @@ impl VulkanTracer {
             // it was invisible precisely because nothing printed it. A residual that is not
             // printed is a residual nobody computes.
             //
-            // `upload`/`readback` (record_transfer totals) and `cmd_upload` (the per-Compute
-            // sub-span) can bracket the same memcpy, so the child set summed here takes the
-            // larger of the two transfer accountings rather than their sum.
+            // `upload` (record_transfer totals) and `cmd_upload` (the per-Compute sub-span) can
+            // bracket the same memcpy, so the child set summed here takes the larger of the two
+            // transfer accountings rather than their sum. `readback` is NOT subtracted: it is not
+            // inside `record`, and subtracting it removed time this phase never contained.
             let record_us = get(Phase::Record).0;
             if record_us > 0 {
                 let residual = record_residual_us(
                     record_us,
-                    child_us.max(get(Phase::CmdUpload).0),
+                    get(Phase::Upload).0.max(get(Phase::CmdUpload).0),
                     get(Phase::DescAlloc).0,
                     get(Phase::PipelineLookup).0,
                 );
                 out.push_str(&format!(
-                    "              {:<15} {:>10} us  ({:.1}% of `record`) — `record` minus every \
+                    "              {:<17} {:>10} us  ({:.1}% of `record`) — `record` minus every \
                      named child: the vkCmd* calls themselves, the ONLY part of `record` that is \
                      command-buffer recording. CUMULATIVE over every Compute call, so a session \
                      with one cold call and many warm ones reports a MIXTURE of the two regimes \
@@ -1315,6 +1727,83 @@ impl VulkanTracer {
                     residual,
                     100.0 * residual as f64 / record_us as f64,
                 ));
+            }
+
+            // ── THE TWO RESIDUALS (issue #88) ──────────────────────────────────────────────
+            //
+            // Two subtractions at two levels, with two denominators, and an invariant that they
+            // are never added. The outer one is the whole reason this section exists: before it,
+            // everything ORT-side of `dispatch_ort` — the bound-count/size/addressability
+            // screens, the tensor-pointer reads, the status construction — was outside every
+            // phase, so a reader who summed the table got a number that was not the wall anyone
+            // measured and no row explained the gap.
+            let compute_call_us = get(Phase::ComputeCall).0;
+            let subgraph_us = get(Phase::SubgraphDispatch).0;
+            // Routed through the TAGGED entry point on purpose: this is the same fail-closed
+            // reader a trace consumer uses (`residuals_from_tagged`), so the summary cannot print
+            // a decomposition that the consumer would have refused.
+            let tagged: Vec<(&str, u64)> = s
+                .phase_us
+                .iter()
+                .map(|(p, (us, _))| (p.as_str(), *us))
+                .collect();
+            let inner_children_us: u64 = Phase::children_of(Phase::SubgraphDispatch)
+                .map(|p| get(p).0)
+                .sum();
+            if compute_call_us == 0 && subgraph_us == 0 {
+                out.push_str(
+                    "              TWO RESIDUALS: UNAVAILABLE — neither `compute_call` nor \
+                     `subgraph_dispatch` reported a sample this run. Unmeasured, not zero.\n",
+                );
+            } else {
+                match residuals_from_tagged(&tagged) {
+                    Residuals::Ok { outer, inner } => {
+                        let pct = |r: &ResidualRow| match r.share_pct() {
+                            Some(p) => format!("{p:.1}% of {} us", r.denominator_us),
+                            None => "share UNDEFINED (denominator is zero)".to_string(),
+                        };
+                        out.push_str(&format!(
+                            "              {:<17} {:>10} us  ({}) — sum(compute_call) minus \
+                             sum(subgraph_dispatch): the ORT-side host cost of the callback that \
+                             belongs to no other phase\n",
+                            "OUTER RESIDUAL",
+                            outer.residual_us,
+                            pct(&outer),
+                        ));
+                        out.push_str(&format!(
+                            "              {:<17} {:>10} us  ({}) — sum(subgraph_dispatch) minus \
+                             its declared children ({}): engine host cost inside the dispatch \
+                             that no child phase names\n",
+                            "INNER RESIDUAL",
+                            inner.residual_us,
+                            pct(&inner),
+                            Phase::children_of(Phase::SubgraphDispatch)
+                                .map(|p| p.as_str())
+                                .collect::<Vec<_>>()
+                                .join("+"),
+                        ));
+                        out.push_str(&format!("              {RESIDUAL_INVARIANT}\n"));
+                        if !population_is_clean(s.call_outcomes) {
+                            out.push_str(
+                                "              POPULATION IS MIXED — see the `outcome:` row. \
+                                 These residuals are NOT a decomposition of successful \
+                                 inference.\n",
+                            );
+                        }
+                    }
+                    Residuals::Malformed(fault) => {
+                        // FAIL CLOSED. A contradiction between the levels is reported as a
+                        // refusal; it is never saturated into a plausible zero, and no share is
+                        // printed beside it.
+                        out.push_str(&format!(
+                            "              TWO RESIDUALS: REFUSED — {}\n              \
+                             (compute_call={compute_call_us} us, \
+                             subgraph_dispatch={subgraph_us} us, \
+                             declared children={inner_children_us} us)\n",
+                            fault.as_str(),
+                        ));
+                    }
+                }
             }
         }
 
@@ -1552,6 +2041,32 @@ pub struct PhaseGuard {
 impl Drop for PhaseGuard {
     fn drop(&mut self) {
         tracer().record_phase(self.phase, self.start.elapsed());
+    }
+}
+
+/// RAII guard for the whole ORT `Compute` callback ([`Phase::ComputeCall`]).
+///
+/// Separate from [`PhaseGuard`] because this phase carries an **outcome**, and because the
+/// outcome must survive the paths that do not reach a `resolve` call: a panic unwinding through
+/// the C-ABI entry point, or a `return` added later by someone who did not know this existed.
+/// Both land in [`CallOutcome::Unresolved`], which the summary reports as its own population.
+#[must_use = "a ComputeCallGuard times the callback only while alive, and must be resolved"]
+pub struct ComputeCallGuard {
+    start: Instant,
+    outcome: CallOutcome,
+    _span: SpanGuard,
+}
+
+impl ComputeCallGuard {
+    /// Declare how the callback ended. Anything but this leaves the sample `Unresolved`.
+    pub fn resolve(&mut self, outcome: CallOutcome) {
+        self.outcome = outcome;
+    }
+}
+
+impl Drop for ComputeCallGuard {
+    fn drop(&mut self) {
+        tracer().record_compute_call(self.outcome, self.start.elapsed());
     }
 }
 
@@ -1793,7 +2308,30 @@ mod tests {
     #[test]
     fn nested_phases_are_declared_both_structurally_and_in_their_caveat() {
         assert_eq!(Phase::Upload.nested_in(), Some(Phase::Record));
-        assert_eq!(Phase::Readback.nested_in(), Some(Phase::Record));
+        // READBACK IS NOT A CHILD OF RECORD, AND THIS ASSERTION IS THE LOCK.
+        //
+        // It was declared as one, and it never was: `vk/session.rs` drops the `Record` guard,
+        // submits, waits on the fence, and only then copies outputs back. The old declaration
+        // made the "recording residual" too small by exactly the readback, and nothing could see
+        // it because the model and the artifact agreed with each other and not with the code.
+        assert_eq!(
+            Phase::Readback.nested_in(),
+            Some(Phase::SubgraphDispatch),
+            "readback happens after record, after the queue submit and after the fence wait"
+        );
+        assert_ne!(
+            Phase::Readback.nested_in(),
+            Some(Phase::Record),
+            "regression lock: readback was mis-declared as a child of `record` for the whole \
+             life of this model"
+        );
+        assert_eq!(Phase::Record.nested_in(), Some(Phase::SubgraphDispatch));
+        assert_eq!(
+            Phase::SubgraphDispatch.nested_in(),
+            Some(Phase::ComputeCall)
+        );
+        assert_eq!(Phase::ComputeCall.nested_in(), None);
+
         for p in Phase::ALL {
             match p.nested_in() {
                 Some(parent) => {
@@ -1802,11 +2340,21 @@ mod tests {
                         "{p:?} is nested in {parent:?} but its caveat does not say so — an \
                          aggregator that reads prose will double-count it"
                     );
-                    assert!(
-                        parent.nested_in().is_none(),
-                        "only one level of nesting is modelled; {parent:?} gained a parent"
-                    );
                     assert!(!p.is_sibling());
+                    // The chain must TERMINATE. A cycle here would make `depth()` and the
+                    // indentation it drives loop forever, and would make "sibling total" a set
+                    // that contains nothing.
+                    let mut hops = 0usize;
+                    let mut cur = p;
+                    while let Some(next) = cur.nested_in() {
+                        cur = next;
+                        hops += 1;
+                        assert!(
+                            hops <= Phase::ALL.len(),
+                            "nesting chain from {p:?} does not terminate"
+                        );
+                    }
+                    assert!(cur.is_sibling());
                 }
                 None => assert!(p.is_sibling()),
             }
@@ -1818,9 +2366,371 @@ mod tests {
             "the phase that swallowed a memcpy must say what it swallowed"
         );
         assert!(
+            Phase::SubgraphDispatch.caveat().contains("CONTAINS"),
+            "the dispatch must name the phases it brackets, or the inner residual is unreadable"
+        );
+        assert!(
+            Phase::ComputeCall.caveat().contains("CONTAINS"),
+            "the whole-callback phase must name what it brackets"
+        );
+        assert!(
             !Phase::Record.caveat().contains("amortised across replays"),
             "this claim was falsified by measurement and by an unwired record-path counter"
         );
+        assert!(
+            Phase::Record
+                .caveat()
+                .contains("does NOT contain `readback`"),
+            "`record` must state the correction explicitly: it was declared readback's parent \
+             and never was one, and a silent fix teaches nobody"
+        );
+    }
+
+    #[test]
+    fn depth_and_children_agree_with_the_declared_nesting() {
+        assert_eq!(Phase::ComputeCall.depth(), 0);
+        assert_eq!(Phase::SubgraphDispatch.depth(), 1);
+        assert_eq!(Phase::Record.depth(), 2);
+        assert_eq!(Phase::Upload.depth(), 3);
+        for p in Phase::ALL {
+            let expected = match p.nested_in() {
+                Some(parent) => parent.depth() + 1,
+                None => 0,
+            };
+            assert_eq!(p.depth(), expected, "{p:?} depth disagrees with its parent");
+        }
+        let inner: Vec<Phase> = Phase::children_of(Phase::SubgraphDispatch).collect();
+        assert_eq!(
+            inner,
+            vec![
+                Phase::Record,
+                Phase::Submit,
+                Phase::FenceWait,
+                Phase::Readback
+            ],
+            "the inner residual's child set is derived from nested_in and must stay in \
+             reporting order"
+        );
+        assert_eq!(
+            Phase::children_of(Phase::ComputeCall).collect::<Vec<_>>(),
+            vec![Phase::SubgraphDispatch],
+            "exactly one phase may be a child of the whole callback, or the outer residual is \
+             not a single subtraction"
+        );
+        assert!(
+            !Phase::children_of(Phase::Record).any(|p| p == Phase::Readback),
+            "readback must never re-enter record's child set"
+        );
+    }
+
+    // ── The two residuals (issue #88) ───────────────────────────────────────────────────────
+    //
+    // Every test below runs with no Vulkan device and no ORT. That is deliberate and it is the
+    // authoritative lane: these are statements about arithmetic and about refusal, and a device
+    // cannot make a wrong subtraction right.
+
+    #[test]
+    fn the_two_residuals_are_two_subtractions_over_two_denominators() {
+        // 1000 us in the callback; 700 of it inside the engine dispatch; 500 of THAT named by
+        // record/submit/fence_wait/readback.
+        let r = residuals(1_000, 700, 500);
+        let Residuals::Ok { outer, inner } = r else {
+            panic!("well-formed totals must not be refused: {r:?}");
+        };
+        assert_eq!(outer.residual_us, 300, "outer = compute_call - subgraph");
+        assert_eq!(
+            outer.denominator_us, 1_000,
+            "the outer residual is a share of the WHOLE callback"
+        );
+        assert_eq!(inner.residual_us, 200, "inner = subgraph - its children");
+        assert_eq!(
+            inner.denominator_us, 700,
+            "the inner residual is a share of the DISPATCH, never of the callback"
+        );
+        assert_ne!(
+            outer.denominator_us, inner.denominator_us,
+            "two residuals over one denominator is the defect this model exists to prevent"
+        );
+        // The invariant is not decoration: it must be quotable beside the numbers.
+        assert!(RESIDUAL_INVARIANT.contains("NEVER SUMMED"));
+        assert!(
+            RESIDUAL_INVARIANT.contains("counts the dispatch interval twice"),
+            "the invariant must say WHAT goes wrong, not merely forbid it"
+        );
+    }
+
+    #[test]
+    fn each_residual_varies_with_its_own_input_and_not_with_the_others() {
+        // POLARITY: change only the outer level; the inner row must not move.
+        let a = residuals(1_000, 700, 500);
+        let b = residuals(2_000, 700, 500);
+        let (
+            Residuals::Ok {
+                outer: oa,
+                inner: ia,
+            },
+            Residuals::Ok {
+                outer: ob,
+                inner: ib,
+            },
+        ) = (a, b)
+        else {
+            panic!("both inputs are well-formed");
+        };
+        assert_eq!(oa.residual_us, 300);
+        assert_eq!(
+            ob.residual_us, 1_300,
+            "the outer residual must read its input"
+        );
+        assert_eq!(
+            ia, ib,
+            "growing the callback must not move the inner residual — it is a different \
+             subtraction over a different denominator"
+        );
+
+        // POLARITY: change only the inner level; the outer row must not move.
+        let c = residuals(1_000, 700, 100);
+        let Residuals::Ok {
+            outer: oc,
+            inner: ic,
+        } = c
+        else {
+            panic!("well-formed");
+        };
+        assert_eq!(ic.residual_us, 600);
+        assert_eq!(
+            oc, oa,
+            "naming more child time inside the dispatch must not change the ORT-side residual"
+        );
+    }
+
+    #[test]
+    fn a_share_of_a_zero_denominator_is_undefined_and_not_zero() {
+        let row = ResidualRow {
+            residual_us: 0,
+            denominator_us: 0,
+        };
+        assert_eq!(
+            row.share_pct(),
+            None,
+            "R12: a share of nothing is not a share of zero — a printed 0.0% would read as \
+             'fully attributed'"
+        );
+        let real = ResidualRow {
+            residual_us: 1,
+            denominator_us: 4,
+        };
+        assert_eq!(real.share_pct(), Some(25.0));
+    }
+
+    #[test]
+    fn a_child_that_outlasts_its_parent_is_refused_and_never_saturated() {
+        // Outer contradiction: the engine dispatch cannot exceed the callback that contains it.
+        assert_eq!(
+            residuals(500, 700, 0),
+            Residuals::Malformed(ResidualFault::OuterOversubscribed)
+        );
+        // Inner contradiction: overlapping or double-parented children.
+        assert_eq!(
+            residuals(1_000, 700, 900),
+            Residuals::Malformed(ResidualFault::InnerOversubscribed)
+        );
+        // The whole point of refusing: `saturating_sub` would have produced this instead, and a
+        // zero residual reads as a COMPLETE attribution.
+        assert_ne!(
+            residuals(500, 700, 0),
+            Residuals::Ok {
+                outer: ResidualRow {
+                    residual_us: 0,
+                    denominator_us: 500
+                },
+                inner: ResidualRow {
+                    residual_us: 700,
+                    denominator_us: 700
+                },
+            },
+            "a saturated contradiction is a complete-looking attribution built from an \
+             impossible measurement"
+        );
+        for fault in [
+            ResidualFault::OuterOversubscribed,
+            ResidualFault::InnerOversubscribed,
+            ResidualFault::UnknownPhase,
+            ResidualFault::DuplicatePhase,
+            ResidualFault::Overflow,
+        ] {
+            assert!(
+                fault.as_str().starts_with("MALFORMED:"),
+                "every refusal must be legible as a refusal in the artifact"
+            );
+        }
+        // Equality at the boundary is legal: a dispatch that IS the whole callback leaves a zero
+        // outer residual, and that zero is a measurement rather than a saturation.
+        assert_eq!(
+            residuals(700, 700, 700),
+            Residuals::Ok {
+                outer: ResidualRow {
+                    residual_us: 0,
+                    denominator_us: 700
+                },
+                inner: ResidualRow {
+                    residual_us: 0,
+                    denominator_us: 700
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn a_trace_this_build_does_not_model_is_refused_rather_than_absorbed() {
+        let good = [
+            (Phase::ComputeCall.as_str(), 1_000u64),
+            (Phase::SubgraphDispatch.as_str(), 700),
+            (Phase::Record.as_str(), 400),
+            (Phase::Submit.as_str(), 20),
+            (Phase::FenceWait.as_str(), 60),
+            (Phase::Readback.as_str(), 20),
+            // Legitimately present and part of neither subtraction.
+            (Phase::Compile.as_str(), 9_999),
+            (Phase::Upload.as_str(), 300),
+        ];
+        assert_eq!(
+            residuals_from_tagged(&good),
+            Residuals::Ok {
+                outer: ResidualRow {
+                    residual_us: 300,
+                    denominator_us: 1_000
+                },
+                inner: ResidualRow {
+                    residual_us: 200,
+                    denominator_us: 700
+                },
+            },
+            "phases outside the two subtractions must be ignored, not absorbed into a residual"
+        );
+
+        // An unknown tag is NOT bucketed into the residual. Absorbing it would turn "I do not
+        // know what this span is" into "it is unattributed host cost".
+        let unknown = [
+            (Phase::ComputeCall.as_str(), 1_000u64),
+            (Phase::SubgraphDispatch.as_str(), 700),
+            ("gpu_kernel", 400),
+        ];
+        assert_eq!(
+            residuals_from_tagged(&unknown),
+            Residuals::Malformed(ResidualFault::UnknownPhase)
+        );
+
+        // Two traces concatenated: the same phase twice. Neither total is THE total.
+        let dup = [
+            (Phase::ComputeCall.as_str(), 1_000u64),
+            (Phase::ComputeCall.as_str(), 1_000),
+            (Phase::SubgraphDispatch.as_str(), 700),
+        ];
+        assert_eq!(
+            residuals_from_tagged(&dup),
+            Residuals::Malformed(ResidualFault::DuplicatePhase)
+        );
+
+        // Overlapping children, reached through the tag path rather than the arithmetic path.
+        let overlap = [
+            (Phase::ComputeCall.as_str(), 1_000u64),
+            (Phase::SubgraphDispatch.as_str(), 700),
+            (Phase::Record.as_str(), 690),
+            (Phase::Readback.as_str(), 690),
+        ];
+        assert_eq!(
+            residuals_from_tagged(&overlap),
+            Residuals::Malformed(ResidualFault::InnerOversubscribed)
+        );
+
+        // An empty trace is not a contradiction — it is zeros, and the summary renders it as
+        // UNAVAILABLE rather than as a complete attribution.
+        assert_eq!(
+            residuals_from_tagged(&[]),
+            Residuals::Ok {
+                outer: ResidualRow {
+                    residual_us: 0,
+                    denominator_us: 0
+                },
+                inner: ResidualRow {
+                    residual_us: 0,
+                    denominator_us: 0
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn a_child_sum_that_would_overflow_refuses_instead_of_wrapping() {
+        let huge = [
+            (Phase::ComputeCall.as_str(), u64::MAX),
+            (Phase::SubgraphDispatch.as_str(), u64::MAX),
+            (Phase::Record.as_str(), u64::MAX),
+            (Phase::Submit.as_str(), u64::MAX),
+        ];
+        assert_eq!(
+            residuals_from_tagged(&huge),
+            Residuals::Malformed(ResidualFault::Overflow),
+            "a child sum that does not fit must be refused BY NAME — reporting it as an overlap \
+             would send a reader looking for an overlap that is not there"
+        );
+        assert!(
+            ResidualFault::Overflow.as_str().contains("do not fit"),
+            "the refusal must name the arithmetic, not the symptom"
+        );
+    }
+
+    #[test]
+    fn a_population_containing_a_failed_or_unresolved_call_is_not_clean() {
+        assert!(population_is_clean([7, 0, 0]));
+        assert!(
+            population_is_clean([0, 0, 0]),
+            "no calls is not a dirty population"
+        );
+        assert!(
+            !population_is_clean([7, 1, 0]),
+            "a failed call may never have reached the engine; the residual over it mixes two \
+             populations and the artifact must say so"
+        );
+        assert!(!population_is_clean([7, 0, 1]));
+        assert!(!population_is_clean([0, 1, 1]));
+        for o in CallOutcome::ALL {
+            assert!(!o.as_str().is_empty());
+        }
+        assert_eq!(CallOutcome::Completed.idx(), 0);
+        assert_eq!(CallOutcome::Failed.idx(), 1);
+        assert_eq!(CallOutcome::Unresolved.idx(), 2);
+        assert_eq!(
+            CallOutcome::ALL.map(CallOutcome::idx),
+            [0, 1, 2],
+            "the outcome array indices are an ABI between the guard and the summary"
+        );
+    }
+
+    #[test]
+    fn an_unresolved_compute_call_stays_unresolved_and_is_never_promoted() {
+        // The tracer singleton may be inert in this process, so drive the guard's own state
+        // machine rather than the global summary — that is the part that must fail closed.
+        let mut outcome = CallOutcome::Unresolved;
+        assert_eq!(
+            outcome,
+            CallOutcome::Unresolved,
+            "a guard that nobody resolved must not default to Completed"
+        );
+        outcome = CallOutcome::Completed;
+        assert_eq!(outcome, CallOutcome::Completed);
+
+        // And the same through the real type: `ComputeCallGuard::resolve` is the only writer.
+        if let Some(mut g) = tracer().compute_call(1) {
+            assert_eq!(
+                g.outcome,
+                CallOutcome::Unresolved,
+                "a fresh guard starts unresolved"
+            );
+            g.resolve(CallOutcome::Failed);
+            assert_eq!(g.outcome, CallOutcome::Failed);
+        }
     }
 
     #[test]

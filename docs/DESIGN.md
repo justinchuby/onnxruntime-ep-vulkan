@@ -1557,6 +1557,89 @@ ORT calls Compute(state, OrtKernelContext)
    `Compute`: a partially-executed command buffer with half-written outputs is not a state we can
    reason about, and silently producing CPU results after a GPU fault hides real bugs.
 
+#### 5.6.1 Host cost attribution for `Compute` — the two brackets and the two residuals (issue #88)
+
+Until issue #88 the outermost host span the EP opened was `vulkan.subgraph`, inside
+`dispatch_ort`. Everything ORT charges to the EP *before* that guard opens — the fallback screens,
+the input-pointer reads, the plan lookup — and everything after it closes — the status object, the
+return path — was inside **no span at all**. A reader summing the phase table therefore got a total
+smaller than the wall clock ORT paid, with nothing in the artifact naming the gap. That is the R11
+shape: a decomposition that closes against a whole taken from the same instrument as the parts.
+
+Two brackets now exist, and they are declared in `Phase::nested_in()` in `rust/src/trace.rs`,
+which is an exhaustive `match` with no `_` arm — a phase added later cannot default to top level:
+
+```
+compute_call            the WHOLE ORT Compute callback; opened in ep.rs::compute, outside
+ │                      guard_ffi_status, so a panic or an early screen still records it
+ └─ subgraph_dispatch   the engine's dispatch_ort, i.e. what vulkan.subgraph already bracketed
+     ├─ record          vkBeginCommandBuffer .. vkEndCommandBuffer
+     │   ├─ upload            host staging memcpy (reported as a counter, not a span)
+     │   ├─ desc_alloc        vkCreateDescriptorPool + vkAllocateDescriptorSets
+     │   ├─ pipeline_lookup   PipelineCache::get_or_create
+     │   └─ cmd_upload        CPU memcpy into staging + vkCmdCopyBuffer
+     ├─ submit          vkQueueSubmit
+     ├─ fence_wait      vkWaitForFences
+     └─ readback        device → staging → ORT's output tensors
+```
+
+**`readback` is a child of `subgraph_dispatch`, not of `record`.** The declaration said otherwise
+for the whole life of that model and it was factually wrong: production drops the `Record` guard,
+*then* submits, *then* waits on the fence, and only then copies outputs back. Every "recording
+residual" computed from the old declaration was too small by exactly the readback. The nesting is
+now checked against timestamp containment on both sides — see `bench/phases.py::phase_nesting`,
+which believes the trace and reports its own table as the thing at fault when they disagree.
+
+**Two residuals, two denominators, never summed.**
+
+| | subtraction | denominator |
+|---|---|---|
+| **outer** | `sum(compute_call) − sum(subgraph_dispatch)` | `sum(compute_call)` |
+| **inner** | `sum(subgraph_dispatch) − sum(record, submit, fence_wait, readback)` | `sum(subgraph_dispatch)` |
+
+The invariant, stated in `trace.rs::RESIDUAL_INVARIANT` and re-stated in
+`bench/phases.py::RESIDUAL_LEVELS` because a rule that lives only in the producer is a rule the
+consumer can violate: **the two are never added, and no third number is derived from both.** The
+inner residual is measured *inside* the outer residual's own denominator, so their sum counts the
+dispatch interval twice and lands on a denominator that does not exist. Neither the Rust summary
+nor the JSON artifact emits a combined field for a consumer to pick up by accident, and
+`bench/test_phases.py` holds a held-out mutant (`sums_the_two_residuals`) that must be caught.
+
+**Fail closed.** Both `trace.rs::residuals_from_tagged` and `bench/phases.py::host_residuals`
+*refuse* rather than clamp when a child sum exceeds its parent, when a phase tag is unknown or
+duplicated, when two spans of one phase overlap, or when the child sum would overflow. There is no
+`saturating_sub` and no `max(x, 0)` on either path. A clamp reports a *fully accounted* dispatch
+precisely when the instrument is most wrong, and a share of a zero denominator is reported as
+undefined (`None`), never as `0.0`, for the same reason.
+
+**Outcomes are preserved, not promoted.** `ComputeCallGuard` records `Failed` when `Compute`
+returns a non-null status and `Unresolved` when the guard is dropped without a verdict — a panic,
+or an early return added later that forgets to resolve. `Unresolved` is never promoted to
+`Completed`. A summary whose population contains either prints `MIXED POPULATION`, because a mean
+taken over completed and failed calls together is a mean of two populations under the name of one.
+
+**A production caller for `record_path`.** `dispatch_ort` step 4 classifies `FirstRecord` on the
+first sighting of a subgraph id and `Rerecord` on every later one. `Replay` stays zero and that is
+the finding rather than a gap: this engine re-records on every `Compute` call, so `Phase::Record`'s
+former caveat that recording is "amortised across replays" was false.
+
+**Success-only device-object counters.** `descriptor_pools_created`, `descriptor_sets_allocated`,
+`command_buffers_recorded` and `queue_submits` are incremented from `counters::device_objects`
+seams placed on **both** the `Ok` and the `Err` arm of each Vulkan call, with the failure arm
+counting nothing. A counter incremented before the result is known measures attempts and is quoted
+as if it measured objects. The four fields were **appended** to the C ABI struct — nothing moved —
+and the ABI version went 8 → 9 with a new `COUNTERS_LAYOUT_REGISTRY` row; a mismatch is a
+compile-time `const` assertion, not a runtime surprise.
+
+**Portability and the corroboration's standing.** All of the above is Vulkan 1.1 and uses no
+optional feature. The `device_object_counter_corroboration` target is a live-device probe and is
+**not authoritative**: `VkDescriptorPool` exhaustion at `maxSets(1)` is *not* spec-guaranteed —
+an implementation may over-allocate — so the probe reports `CORROBORATED`, `INCONCLUSIVE`, or
+`SKIP(precondition not met)`, and only a genuine `CONTRADICTED` is a non-zero exit. The
+authoritative tests are the host-free seam tests in `rust/src/counters.rs`, which do not need a
+device at all. **No performance claim is made anywhere in this change**: the instruments say where
+time went, not that anything became faster.
+
 ---
 
 ## 6. Tensor and memory model
@@ -8828,7 +8911,7 @@ unfalsifiable, and unfalsifiable rows are the class this project keeps discoveri
 | 9 | **NOT MET** *(and the criterion needs restating, not the evidence)* | any inconsistency between `DESIGN.md`, `ENGINE.md`, `OP_COVERAGE.md`, `PERF.md`, `PLATFORMS.md`, or a §12 omission | **Yes — and always** | `PLATFORMS.md` LVP2 is retracted, which was the named blocker. But the sibling documents changed again today and so did this one, twice, in this very session. **A continuously-assessed consistency criterion has a failing run that is always reachable and never absent, which makes it unmeetable by construction rather than by fault.** RULING: restate it as *"consistent at a named commit"* — the sweep runs against a fixed SHA, the result is recorded with that SHA, and a later edit does not retroactively unmeet it. That is a **strengthening**: it turns an unfalsifiable row into a checkable one. Until it is restated and run once, NOT MET |
 | 10 | **NOT MET** *(unchanged; reopened, and now worse-evidenced than at its withdrawn closure)* | a run whose all-65-output oracle disagrees, or whose ULP series steps | **Yes — it is firing now** | `bench/results/criterion10-dev{0,1}.json`: `verdict = DIVERGENT` on both devices, `oracle_outputs_within_tolerance = 62/65`, `oracle_outputs_degenerate = 0`, `oracle_outputs_vacuous = 0`. **My ULP prediction is scored and REFUTED:** on record before measuring as *flat at 1–3 ULP across all 32 layers*; measured median over outputs is **1**, but three outputs exceed the ceiling — output 0 (logits head) at **12**, outputs 63 and 64 (last layer's key and value) at **4**. Refuted in the useful direction: **a step, not a curve, and it is located.** `logits_max_abs_diff = 0.0625` on `vk_max_abs_logit = 13.14`; `argmax` and `top10_overlap` agree and are one token, which is not a stated N. **Second, and it is mine to record:** the artifact behind my 2026-08-02T02:02 closure cited *both* attribution witnesses present and agreeing; the file **at that same path today** reads `witnesses_present: ["ort_profile"]` and `witness_agreement: "UNOBSERVABLE"`, the counters witness having been unarmed. **A stable filename now holds a different frame** — R12 arriving in the artifact path rather than in a counter. Owed: a verdict artifact names its own frame in its filename, or refuses to overwrite one |
 | 11 | **NOT MET** — **but (c) is DELIVERED, and the row is now open on a defect that did not exist when its condition was written** | a build claiming a form with no entry under its key; **or** a build claiming a form on a device nothing proved it on | **(c): yes, demonstrated. The device half: it is happening now** | **(c) closes and I say so without qualification.** `bench/results/census/criterion11c-ledger-arms-dev{0,1}.json` reads four arms in two pairs differing in exactly one proof-key component each, with opposite outcomes (`ALL-PROVEN`/`HIT` vs `ALL-DECLINED`/`KEY-ABSENT`); `criterion11c_mutations-dev{0,1}.json` records three mutations all `CAUGHT`, including the identical-file control arm that makes the other two **detections rather than a check that fails on everything**. Whole-model reading: `phi35_claim_reading_summary.json` — 355 claimed, 355 hits, 3 `unproven_declines`, **0 `unproven_forms_claimed`**. **Why the row nonetheless stays open, and the ground is my own ruling of today, not a new condition:** the criterion's second clause is *no build silently claiming unproven forms*, and §8.9.17 establishes on measured evidence that no predicate reads an entry's device. The specimen is in this repository: `wiring_census-dev1.json` reads `ALL-PROVEN ... ledger_hits=6` on the Iris Xe, against a ledger whose every one of 97 entries records `device0` — which `wiring_census-dev0.json` shows is the RTX 4060. **Six forms read as proven on a device on which nothing has ever been proven.** That is the clause failing, measured, not a condition added because the row was about to pass. It closes when the device predicate lands (§8.9.17 (3)) — and on nothing else |
-| 12 | **NOT MET** *(unchanged — three of four conjuncts open)* | a mechanism this table relies on with no observation, or an extent claim that does not match the independent whole | **Yes** | The census reports its own row open: `wiring_census-dev0.json::criterion_12.closes_row = false`. **Re-measured 2026-08-05 (issue #33):** the independent whole grew, in production Rust, to `ci/check_census_completeness.py`'s **63 surfaces** — 13 of them (7 `counters.rs` fields plus 6 env switches across `session.rs`, `ep.rs`, `host_device_memory.rs`, `logging.rs`, `factory.rs`) had **no entry at all** in `ci/census_surface_map.json` and failed the screen with `FAIL(condition=unmapped_surface)`, not merely uncensused (the issue's own prose undercounted this at 12; the screen's own enumeration was 13, and that is the number that is now checked in, not asserted). Each of the 13 now carries a named owner and a reasoned entry — one (`ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS`) turned out to be `not_a_mechanism`: a name that exists only inside a doc comment and is never read by any `std::env::var` call in the tree. The screen now reads **PASS** on unmapped-surface (33 censused, 24 uncensused, 3 out of frame, 3 not mechanisms) — this closes zero of criterion 12's four conjuncts (Trinity owns row 12's tally; supplying the map entry and closing the row must not be the same act, Morpheus's criterion-11 ruling applies here unchanged) and the row stays **NOT MET** on the other three. **New, and it weakens the pair rather than a conjunct:** `wiring_census-dev0.json` reads `ledger_entries=97` and `wiring_census-dev1.json` reads `ledger_entries=95`. **The two-device census is not a pair — it is two censuses of two different binaries**, and the later one was never re-run. R12's fourth generalisation, arriving in the criterion built to catch exactly this |
+| 12 | **NOT MET** *(unchanged — three of four conjuncts open)* | a mechanism this table relies on with no observation, or an extent claim that does not match the independent whole | **Yes** | The census reports its own row open: `wiring_census-dev0.json::criterion_12.closes_row = false`. **Re-measured 2026-08-05 (issue #33):** the independent whole grew, in production Rust, to `ci/check_census_completeness.py`'s **63 surfaces** — 13 of them (7 `counters.rs` fields plus 6 env switches across `session.rs`, `ep.rs`, `host_device_memory.rs`, `logging.rs`, `factory.rs`) had **no entry at all** in `ci/census_surface_map.json` and failed the screen with `FAIL(condition=unmapped_surface)`, not merely uncensused (the issue's own prose undercounted this at 12; the screen's own enumeration was 13, and that is the number that is now checked in, not asserted). Each of the 13 now carries a named owner and a reasoned entry — one (`ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS`) turned out to be `not_a_mechanism`: a name that exists only inside a doc comment and is never read by any `std::env::var` call in the tree. The screen now reads **PASS** on unmapped-surface (33 censused, 24 uncensused, 3 out of frame, 3 not mechanisms) — this closes zero of criterion 12's four conjuncts (Trinity owns row 12's tally; supplying the map entry and closing the row must not be the same act, Morpheus's criterion-11 ruling applies here unchanged) and the row stays **NOT MET** on the other three. **New, and it weakens the pair rather than a conjunct:** `wiring_census-dev0.json` reads `ledger_entries=97` and `wiring_census-dev1.json` reads `ledger_entries=95`. **The two-device census is not a pair — it is two censuses of two different binaries**, and the later one was never re-run. R12's fourth generalisation, arriving in the criterion built to catch exactly this. **Re-measured 2026-08-09 (issue #88):** the independent whole grew again, to **73 surfaces** — four new `counters.rs` fields (`descriptor_pools_created`, `descriptor_sets_allocated`, `command_buffers_recorded`, `queue_submits`) and two new `trace.rs` phases (`ComputeCall`, `SubgraphDispatch`). All six now carry a named owner and a reasoned entry in `ci/census_surface_map.json`; the screen reads **PASS** on unmapped-surface at 35 censused, 32 uncensused, 3 out of frame, 3 not mechanisms. **This closes zero conjuncts and the four new counters are entered as `uncensused` — they are new standing gaps, not new coverage**, and by Morpheus's criterion-11 ruling supplying the map entry and closing the row remain separate acts |
 
 **Re-derived count: five met (3, 4, 5, 6, 7), seven not met (1, 2, 8, 9, 10, 11, 12).** The previous
 tally read seven met. **Two rows moved down and one moved up, and the two that moved down had both been

@@ -82,8 +82,17 @@ import statistics
 from pathlib import Path
 
 #: Host-side phase spans, in the order `rust/src/trace.rs` documents them.
-HOST_PHASES = ("compile", "prepack", "record", "upload", "desc_alloc", "pipeline_lookup",
-               "cmd_upload", "submit", "fence_wait", "readback")
+#:
+#: ``compute_call`` and ``subgraph_dispatch`` were added for issue #88 and they are the two
+#: OUTERMOST brackets: ``compute_call`` is the whole ORT ``Compute`` callback (opened in
+#: ``ep.rs``), ``subgraph_dispatch`` is the engine's ``dispatch_ort`` inside it. Everything this
+#: module already knew about — ``record``, ``submit``, ``fence_wait``, ``readback`` — now lives
+#: inside ``subgraph_dispatch``, so they are no longer top-level siblings. That is not a
+#: renumbering: before it, the ORT-side screens and status construction were inside no span at
+#: all, and a reader who summed this list got a total smaller than the wall ORT paid with nothing
+#: naming the gap.
+HOST_PHASES = ("compile", "prepack", "compute_call", "subgraph_dispatch", "record", "upload",
+               "desc_alloc", "pipeline_lookup", "cmd_upload", "submit", "fence_wait", "readback")
 
 #: Phases the EP emits *nested inside* another phase's span.
 #:
@@ -116,9 +125,59 @@ SUB_PHASE_CAVEAT_PREFIX = "host/sub-record:"
 #: this project drew that conclusion.
 #:
 #: Maps parent phase -> the accounted children that live inside its span.
+#:
+#: Three levels since issue #88, mirroring ``Phase::nested_in()`` exactly:
+#: ``compute_call`` ⊃ ``subgraph_dispatch`` ⊃ {``record``, ``submit``, ``fence_wait``,
+#: ``readback``}, and ``record`` ⊃ {``upload``, ``desc_alloc``, ``pipeline_lookup``,
+#: ``cmd_upload``}.
+#:
+#: ``readback`` is a child of ``subgraph_dispatch`` and **not** of ``record``, which is a
+#: correction rather than an addition: the EP drops its ``Record`` guard before
+#: ``vkQueueSubmit``, waits on the fence, and only then copies outputs back. ``trace.rs`` declared
+#: it a child of ``record`` for the whole life of that model, and every "recording residual"
+#: computed from that declaration was too small by exactly the readback.
 PHASE_CHILDREN = {
+    "compute_call": ("subgraph_dispatch",),
+    "subgraph_dispatch": ("record", "submit", "fence_wait", "readback"),
     "record": ("upload",) + SUB_RECORD_PHASES,
 }
+
+#: The two residuals of issue #88, as ``rust/src/trace.rs`` defines them, and the rule that keeps
+#: them apart. Restated here because this module prints them and a rule that only exists in the
+#: producer is a rule the consumer can violate.
+#:
+#: * OUTER = ``sum(compute_call) - sum(subgraph_dispatch)``, over denominator ``sum(compute_call)``
+#: * INNER = ``sum(subgraph_dispatch) - sum(its declared children)``, over denominator
+#:   ``sum(subgraph_dispatch)``
+#:
+#: **They are never summed.** The inner residual is already inside the outer residual's parent, so
+#: adding them counts the dispatch interval twice and produces a share of a denominator that does
+#: not exist.
+RESIDUAL_LEVELS = ("compute_call", "subgraph_dispatch")
+
+#: The bracket the summable phase set is defined *relative to*: the span that corresponds to one
+#: ``vulkan.subgraph``. Phases whose declared parent is this one are siblings of each other and
+#: may be summed against the subgraph; the bracket itself and anything outside it may not be, and
+#: neither may anything deeper.
+SUBGRAPH_LEVEL_PHASE = "subgraph_dispatch"
+
+#: Static parent map, derived from :data:`PHASE_CHILDREN` so the two cannot drift apart. It is
+#: only ever a **fallback** for a span that declares nothing: a span's own ``nested_in`` arg comes
+#: from the build that produced the trace and wins, and :func:`phase_nesting` is where the two
+#: are compared out loud.
+PARENT_OF = {child: parent for parent, kids in PHASE_CHILDREN.items() for child in kids}
+
+
+class TraceRefused(ValueError):
+    """A trace this module cannot account for, refused instead of approximated.
+
+    Raised — not returned — because every caller of the residual arithmetic is computing a
+    published share. A malformed, unknown or self-overlapping trace has no share, and the failure
+    modes here (a child that outlasts its parent, two spans of one phase overlapping, a parent
+    named by a span that no build of this module knows) are all cases where *some* number can
+    always be produced by clamping. Clamping is what turns a broken instrument into a plausible
+    row, so this refuses at the point of arithmetic rather than at the point of reading.
+    """
 
 
 def is_leaf_phase(phase: str) -> bool:
@@ -227,100 +286,224 @@ def phase_nesting(phases: "list[dict]") -> dict:
 
     * **Evidence** — a span whose ``[ts, end)`` lies inside another phase span on the same thread
       is nested. Timestamps come from the EP's clock and do not know what the phase is called.
-    * **Declaration** — ``trace.rs`` prefixes a nested phase's caveat with ``host/sub-record:``.
-      That is a *name*, and R11 says a name is not a definition.
+    * **Declaration** — the span's own ``nested_in`` arg, and the ``host/sub-record:`` caveat
+      prefix. Those are *names*, and R11 says a name is not a definition.
 
     Goes red when they disagree in either direction: a phase declared nested that is not contained
-    (the caveat is wrong, or the span escaped its parent) or a phase contained that is not declared
-    (a new sub-phase landed and every sibling sum since then has been double-counting).
+    by the parent it names (the declaration is wrong, or the span escaped its parent) or a phase
+    declared top level that is nonetheless contained by another phase (a new level landed and
+    every sibling sum since then has been double-counting).
 
     The second direction is the one that matters operationally. ``desc_alloc``,
     ``pipeline_lookup`` and ``cmd_upload`` were added to ``trace.rs`` after this module was
     written; without this check they would have been summed as siblings of ``record``, inflating
     the host total by ~2× and every share derived from it, with nothing raising.
+
+    # Why the parent is read from the span and not from a table (issue #88)
+
+    Until #88 this checked one relationship — "is it inside ``record``" — because ``record`` was
+    the only parent that existed. That table also said ``readback`` was a child of ``record``, and
+    it was **wrong**: the EP drops the ``Record`` guard, submits, waits on the fence and only then
+    copies outputs back. A checker that compares the trace against a wrong table cannot report the
+    table as the thing at fault. So the parent now comes from the artifact, per phase, and the
+    table is reported beside it as ``table_disagrees_with_trace`` rather than enforced over it.
     """
     by_name: "dict[str, list[dict]]" = {}
     for p in phases:
         by_name.setdefault(p["phase"], []).append(p)
+    parents = declared_parents(phases, use_table=False)
 
-    parents = [p for p in phases if p["phase"] == "record"]
-    parents.sort(key=lambda p: p["ts"])
+    def contained_by(sp: dict, candidates: "list[dict]") -> bool:
+        return any(c is not sp and c.get("tid") == sp.get("tid")
+                   and c["ts"] <= sp["ts"] and sp["end"] <= c["end"]
+                   for c in candidates)
 
-    def contained_in_record(sp: dict) -> bool:
-        for par in parents:
-            if par["ts"] <= sp["ts"] and sp["end"] <= par["end"] and par is not sp:
-                return True
-        return False
-
-    observed, declared, mismatches = {}, {}, []
+    observed, mismatches = {}, []
     for name, spans in sorted(by_name.items()):
-        if name == "record":
-            continue
-        inside = sum(1 for s in spans if contained_in_record(s))
-        observed[name] = {"n": len(spans), "inside_record": inside}
-        says_sub = any(str(s.get("caveat") or "").startswith(SUB_PHASE_CAVEAT_PREFIX)
-                       for s in spans)
-        declared[name] = says_sub
-        all_inside = inside == len(spans) and spans
-        if says_sub and not all_inside:
-            mismatches.append(
-                f"{name}: caveat declares '{SUB_PHASE_CAVEAT_PREFIX}' but only {inside}/"
-                f"{len(spans)} spans are contained by a vulkan.record span")
-        elif all_inside and not says_sub:
-            mismatches.append(
-                f"{name}: every one of its {len(spans)} spans is contained by vulkan.record but "
-                f"its caveat does not declare it nested — if it is summed as a sibling of "
-                f"'record' the host total double-counts it")
+        parent = parents.get(name)
+        rec = {"n": len(spans), "declared_parent": parent}
+        if parent is not None:
+            candidates = by_name.get(parent, [])
+            inside = sum(1 for s in spans if contained_by(s, candidates))
+            rec["inside_declared_parent"] = inside
+            rec["parent_spans"] = len(candidates)
+            if not candidates:
+                rec["note"] = (f"this trace carries no vulkan.{parent} span, so the declaration "
+                               f"cannot be checked against evidence here.")
+            elif inside != len(spans):
+                mismatches.append(
+                    f"{name}: declares parent '{parent}' but only {inside}/{len(spans)} of its "
+                    f"spans are contained by a vulkan.{parent} span")
+        else:
+            enclosing = sorted(
+                other for other, cand in by_name.items()
+                if other != name and all(contained_by(s, cand) for s in spans))
+            rec["inside_undeclared"] = enclosing
+            if enclosing:
+                mismatches.append(
+                    f"{name}: every one of its {len(spans)} spans is contained by "
+                    f"{', '.join('vulkan.' + e for e in enclosing)} but it declares no parent — "
+                    f"if it is summed as a sibling of {enclosing[0]} the host total "
+                    f"double-counts it")
+        observed[name] = rec
 
-    unexpected = sorted(n for n, d in declared.items()
-                        if d and n not in PHASE_CHILDREN.get("record", ()))
+    table_disagrees = sorted(
+        f"{n}: trace says {parents[n]!r}, PHASE_CHILDREN says {PARENT_OF.get(n)!r}"
+        for n in parents
+        if parents[n] is not None and n in PARENT_OF and parents[n] != PARENT_OF.get(n))
     out = {
         "check": "phase_nesting",
         "asserts": "the phases summed as siblings do not overlap, so the host total counts each "
                    "microsecond once",
         "observed": observed,
-        "declared_nested": sorted(n for n, d in declared.items() if d),
-        "expected_nested": sorted(SUB_RECORD_PHASES),
-        "unexpected_nested": unexpected,
+        "declared_nested": sorted(n for n, par in parents.items() if par is not None),
+        "expected_nested": sorted(PARENT_OF),
+        "outer_brackets": sorted(outer_bracket_names(phases)),
+        "table_disagrees_with_trace": table_disagrees,
     }
     if mismatches:
         out.update(ok=False, verdict="MISMATCH", detail="; ".join(mismatches))
-    elif not parents:
+    elif not any(par is not None for par in parents.values()):
         out.update(ok=True, verdict="VACUOUS",
-                   detail="no vulkan.record span in this trace; nothing can nest inside it.")
+                   detail="no phase in this trace declares a parent; nothing nests.")
     else:
         out.update(ok=True, verdict="CONSISTENT",
-                   detail=(f"containment and caveats agree; nested = "
+                   detail=(f"containment and declarations agree; nested = "
                            f"{', '.join(out['declared_nested']) or 'none'}"))
-    if unexpected:
-        out["detail"] += (f". NOTE: {', '.join(unexpected)} declare themselves nested but are not "
-                          f"in PHASE_CHILDREN — they are being treated as children from the "
-                          f"trace's own declaration, not from this module's table.")
+    if table_disagrees:
+        out["detail"] += (f". NOTE: this module's PHASE_CHILDREN table disagrees with the trace "
+                          f"for {len(table_disagrees)} phase(s) ({'; '.join(table_disagrees)}). "
+                          f"The trace was believed; the table is reported, not enforced.")
     return out
+
+
+def declared_parents(phases: "list[dict]", use_table: bool = True) -> "dict[str, str | None]":
+    """Each phase name -> the parent this trace says it has, or ``None`` for a top-level span.
+
+    Three sources, in strict precedence order rather than unioned, because a *parent map* has to
+    answer "which one" and not merely "is it a child":
+
+    1. the ``nested_in`` span arg — emitted from ``Phase::nested_in()``, whose ``match`` is
+       exhaustive with no ``_`` arm, so a phase added to the EP cannot default to top level;
+    2. the ``host/sub-record:`` caveat prefix — prose, but prose the EP author writes
+       deliberately; it names ``record`` as the parent by construction;
+    3. :data:`PARENT_OF` — this module's table, used only where the span declares nothing, and
+       only when *use_table* is set.
+
+    The trace outranks the table on purpose. The table is what this module *expects*; the span is
+    what the build under measurement actually emitted, and a module that overrode the artifact
+    with its own expectation would report the structure it assumed rather than the one it
+    measured. :func:`phase_nesting` is where a disagreement between the two is made loud.
+
+    ``use_table=False`` returns **only** what the trace itself declared. :func:`phase_nesting`
+    needs that: its whole second arm is "this span is contained by another phase but declares no
+    parent", and a table that silently supplies the missing declaration disables exactly the check
+    that caught ``desc_alloc``/``pipeline_lookup``/``cmd_upload`` when they landed. The sum-side
+    callers keep the table, because there being wrongly excluded costs a line in a report and
+    being wrongly included double-counts the largest cost in the run.
+
+    Refuses (raises :class:`TraceRefused`) when one phase declares two different parents in the
+    same trace, and when a declared parent is not a phase name this build knows. Both are traces
+    whose structure is not recoverable, and a residual computed over an unrecoverable structure is
+    a number with no denominator.
+    """
+    known = set(HOST_PHASES)
+    out: "dict[str, str | None]" = {}
+    for p in phases:
+        name = p["phase"]
+        arg = p.get("nested_in")
+        parent = arg if arg and arg != "none" else None
+        if parent is None and str(p.get("caveat") or "").startswith(SUB_PHASE_CAVEAT_PREFIX):
+            parent = "record"
+        if parent is not None and parent not in known:
+            raise TraceRefused(
+                f"phase '{name}' declares its parent as '{parent}', which is not a phase this "
+                f"build of bench/phases.py knows ({', '.join(HOST_PHASES)}). The trace models a "
+                f"structure this module cannot account for; it is refused rather than flattened "
+                f"into a sibling sum.")
+        if parent == name:
+            raise TraceRefused(
+                f"phase '{name}' declares itself as its own parent. No residual is defined over a "
+                f"cycle.")
+        if name in out and out[name] != parent:
+            raise TraceRefused(
+                f"phase '{name}' declares two different parents in one trace: {out[name]!r} and "
+                f"{parent!r}. Which spans may be summed together is then undecidable, so no total "
+                f"and no share is issued.")
+        out[name] = parent
+
+    for name in {p["phase"] for p in phases}:
+        if use_table and out.get(name) is None:
+            out[name] = PARENT_OF.get(name)
+
+    # A cycle anywhere makes every ancestor walk below non-terminating. Bounded by the phase
+    # count, which is the longest a chain can legitimately be.
+    for name in out:
+        seen, cur = {name}, out.get(name)
+        for _ in range(len(HOST_PHASES) + 1):
+            if cur is None:
+                break
+            if cur in seen:
+                raise TraceRefused(
+                    f"the declared nesting contains a cycle through '{cur}'. A phase cannot be "
+                    f"inside itself and no containment sum is defined over such a trace.")
+            seen.add(cur)
+            cur = out.get(cur)
+        else:
+            raise TraceRefused(
+                f"the parent chain from '{name}' is longer than the {len(HOST_PHASES)} phases "
+                f"this build knows; the trace's nesting is not recoverable.")
+    return out
+
+
+def outer_bracket_names(phases: "list[dict]") -> "set[str]":
+    """The phases that CONTAIN a whole ``vulkan.subgraph``, so are outside the summable level.
+
+    :data:`SUBGRAPH_LEVEL_PHASE` and every ancestor of it. These are brackets, not costs: their
+    totals are denominators for the residuals in :func:`host_residuals` and must never be added to
+    the phases inside them, nor expressed as a share of ``time_in_compute_ms`` — a span that
+    contains the denominator cannot be a share of it.
+
+    Empty for a trace from a build that emits neither bracket, which keeps every pre-#88 trace
+    reading exactly as it did.
+    """
+    parents = declared_parents(phases)
+    present = {p["phase"] for p in phases}
+
+    def parent_of(name):
+        return parents[name] if name in parents else PARENT_OF.get(name)
+
+    chain, cur = {SUBGRAPH_LEVEL_PHASE}, parent_of(SUBGRAPH_LEVEL_PHASE)
+    while cur is not None and cur not in chain:
+        chain.add(cur)
+        cur = parent_of(cur)
+    return chain & present
 
 
 def nested_phase_names(phases: "list[dict]") -> "set[str]":
     """Every phase name that must NOT be summed as a top-level sibling.
 
-    Three sources, unioned, because each catches a failure the others cannot:
+    Two exclusions, and they are different failures:
 
-    * :data:`SUB_RECORD_PHASES` — this module's table. Catches a child whose trace-side
-      declaration was dropped.
-    * the ``host/sub-record:`` caveat prefix — prose, but prose the EP author writes deliberately.
-    * the ``nested_in`` span arg — machine-readable parentage, emitted from ``Phase::nested_in()``
-      whose ``match`` is exhaustive with no ``_`` arm, so a new phase cannot default to sibling.
+    * **Deeper than the summable level** — a phase whose declared parent is some phase other than
+      :data:`SUBGRAPH_LEVEL_PHASE`. Its parent is already in the sum, so adding it counts the same
+      microseconds twice. ``cmd_upload`` alone is ~98% of ``record``, so this is not a rounding
+      error: a naive sum inflates the host total by nearly 2× and every share taken from it.
+    * **Outside the summable level** — the brackets from :func:`outer_bracket_names`. Adding
+      ``compute_call`` to the phases inside it does the same double count one level further out,
+      and additionally produces a share of ``time_in_compute_ms`` greater than 1.
 
-    A union and not a vote: any one of them saying "child" is sufficient. Being wrongly excluded
-    from a sum costs a line in ``nested_phases_ms``; being wrongly *included* double-counts the
-    largest cost in the run, which is the error this project actually made.
+    Phases with no declared parent (``compile``, ``prepack``, and every phase in a pre-#88 trace)
+    stay siblings. Being wrongly excluded from a sum costs a line in ``nested_phases_ms``; being
+    wrongly *included* double-counts the largest cost in the run, which is the error this project
+    actually made.
     """
-    nested = set(SUB_RECORD_PHASES)
-    for p in phases:
-        if str(p.get("caveat") or "").startswith(SUB_PHASE_CAVEAT_PREFIX):
-            nested.add(p["phase"])
-        parent = p.get("nested_in")
-        if parent and parent != "none":
-            nested.add(p["phase"])
+    parents = declared_parents(phases)
+    outer = outer_bracket_names(phases)
+    nested = set()
+    for name, parent in parents.items():
+        if name in outer or (parent is not None and parent != SUBGRAPH_LEVEL_PHASE):
+            nested.add(name)
     return nested
 
 
@@ -332,6 +515,148 @@ def sibling_phases(phases: "list[dict]") -> "list[dict]":
     """
     nested = nested_phase_names(phases)
     return [p for p in phases if p["phase"] not in nested]
+
+
+def _phase_total_us(phases: "list[dict]", name: str) -> "int | None":
+    """Total microseconds of one phase, or ``None`` when the trace carries no such span.
+
+    ``None`` and ``0`` are different answers and are kept different: absent means this build did
+    not emit the span, zero means it did and the interval was empty. Collapsing the two is how a
+    missing instrument becomes a free pass.
+    """
+    spans = [p for p in phases if p["phase"] == name]
+    if not spans:
+        return None
+    return sum(p["dur"] for p in spans)
+
+
+def _refuse_overlaps(phases: "list[dict]", name: str) -> None:
+    """Refuse a phase whose own spans overlap each other on one thread.
+
+    Two spans of one phase overlapping means either the EP opened a guard twice or the trace was
+    concatenated from two runs. Either way ``sum(dur)`` over-counts the wall interval, so a
+    residual taken against it is a difference of two things measured over different amounts of
+    time — and it is always *smaller* than the truth, which makes the attribution look better than
+    it is.
+    """
+    spans = sorted((p for p in phases if p["phase"] == name),
+                   key=lambda p: (p.get("tid"), p["ts"]))
+    for a, b in zip(spans, spans[1:]):
+        if a.get("tid") == b.get("tid") and b["ts"] < a["end"]:
+            raise TraceRefused(
+                f"two '{name}' spans overlap on thread {a.get('tid')!r}: "
+                f"[{a['ts']}, {a['end']}) and [{b['ts']}, {b['end']}). Their durations cannot be "
+                f"summed into a wall interval, so no residual is defined over them.")
+
+
+def host_residuals(phases: "list[dict]") -> dict:
+    """The two residuals of issue #88 — **two subtractions over two denominators, never summed**.
+
+    * ``outer`` = ``sum(compute_call) - sum(subgraph_dispatch)``, over ``sum(compute_call)``.
+      This is the part of the ORT ``Compute`` callback the engine's dispatch does not account for:
+      the fallback screens, the input-pointer reads ORT charges to the EP, the status object
+      construction, and the return path. Before #88 it was inside no span at all, so it was not
+      "small" — it was *unmeasured*, and a reader summing the phase table got a total smaller than
+      the wall ORT paid with nothing naming the gap.
+    * ``inner`` = ``sum(subgraph_dispatch) - sum(record, submit, fence_wait, readback)``, over
+      ``sum(subgraph_dispatch)``. This is the dispatch work outside the four bracketed phases:
+      buffer allocation, tensor reads, the readback memcpy into ORT's output tensors.
+
+    # The invariant
+
+    They are **never added**, and no third number is derived from both. The inner residual is
+    measured inside the outer residual's own denominator, so their sum counts the dispatch
+    interval twice and lands on a denominator that does not exist. This function returns them in
+    separate records, each carrying its own ``denominator_us``, and emits no combined field for
+    any consumer to pick up by accident. :data:`RESIDUAL_LEVELS` states the same rule for a reader
+    of the artifact.
+
+    # Fail-closed
+
+    Raises :class:`TraceRefused` rather than clamping when a child sum exceeds its parent, when a
+    phase's own spans overlap, or when the trace's nesting is unrecoverable. A residual is a
+    subtraction, and the one thing a broken subtraction must not do is come out non-negative
+    anyway. ``max(x, 0)`` here would report a *fully accounted* dispatch precisely when the
+    instrument was most wrong.
+
+    Returns ``{"verdict": "UNAVAILABLE"}`` for a trace from a build that emits no bracket. That is
+    absence of an instrument, not a violation, and is reported as such.
+    """
+    parents = declared_parents(phases)
+    outer_name = None
+    for name in RESIDUAL_LEVELS:
+        if name != SUBGRAPH_LEVEL_PHASE:
+            outer_name = name
+            break
+    out = {
+        "check": "host_residuals",
+        "asserts": "the whole Compute callback and the engine's dispatch are each accounted "
+                   "against their own denominator, and the two are never added",
+        "invariant": (
+            "NEVER SUMMED: the inner residual lies inside the outer residual's denominator. "
+            "Adding them counts the dispatch interval twice and produces a share of a "
+            "denominator that does not exist."),
+        "levels": list(RESIDUAL_LEVELS),
+    }
+    call_us = _phase_total_us(phases, outer_name)
+    dispatch_us = _phase_total_us(phases, SUBGRAPH_LEVEL_PHASE)
+    if call_us is None or dispatch_us is None:
+        missing = [n for n, v in ((outer_name, call_us), (SUBGRAPH_LEVEL_PHASE, dispatch_us))
+                   if v is None]
+        out.update(
+            verdict="UNAVAILABLE", ok=True, outer=None, inner=None,
+            detail=(f"this trace carries no {' and no '.join('vulkan.' + m for m in missing)} "
+                    f"span, so the residual(s) that would be taken against it are not measured "
+                    f"here. Absent, not zero."))
+        return out
+
+    for name in (outer_name, SUBGRAPH_LEVEL_PHASE):
+        _refuse_overlaps(phases, name)
+
+    inner_children = sorted(n for n, par in parents.items()
+                            if par == SUBGRAPH_LEVEL_PHASE)
+    child_us = 0
+    child_totals = {}
+    for name in inner_children:
+        _refuse_overlaps(phases, name)
+        total = _phase_total_us(phases, name) or 0
+        child_totals[name] = total
+        child_us += total
+
+    if dispatch_us > call_us:
+        raise TraceRefused(
+            f"vulkan.{SUBGRAPH_LEVEL_PHASE} totals {dispatch_us} us inside a "
+            f"vulkan.{outer_name} of {call_us} us. A child cannot outlast the callback that "
+            f"opened it; the outer residual is refused rather than clamped to zero.")
+    if child_us > dispatch_us:
+        raise TraceRefused(
+            f"the declared children of vulkan.{SUBGRAPH_LEVEL_PHASE} "
+            f"({', '.join(inner_children) or 'none'}) total {child_us} us inside a dispatch of "
+            f"{dispatch_us} us. The inner residual is refused rather than clamped to zero — a "
+            f"clamp would report a fully accounted dispatch exactly when the spans overlap.")
+
+    def row(residual_us, denominator_us):
+        return {
+            "residual_us": residual_us,
+            "denominator_us": denominator_us,
+            # A share of nothing is undefined, not zero. `None` travels; 0.0 reads as "all
+            # accounted for" and is the single most misleading value this field could take.
+            "share": (round(residual_us / denominator_us, 5) if denominator_us > 0 else None),
+        }
+
+    out.update(
+        verdict="OK", ok=True,
+        outer={**row(call_us - dispatch_us, call_us),
+               "whole": outer_name, "subtracted": [SUBGRAPH_LEVEL_PHASE]},
+        inner={**row(dispatch_us - child_us, dispatch_us),
+               "whole": SUBGRAPH_LEVEL_PHASE, "subtracted": inner_children,
+               "subtracted_us": child_totals},
+        detail=(f"outer: {call_us - dispatch_us} us of {call_us} us in vulkan.{outer_name} is "
+                f"not inside vulkan.{SUBGRAPH_LEVEL_PHASE}; inner: {dispatch_us - child_us} us "
+                f"of {dispatch_us} us in vulkan.{SUBGRAPH_LEVEL_PHASE} is not inside "
+                f"{', '.join(inner_children) or 'any declared child'}. Two subtractions, two "
+                f"denominators, never added."))
+    return out
 
 
 
@@ -801,9 +1126,18 @@ def phase_containment(subgraphs: "list[dict]", siblings: "list[dict]",
     adding a term to it. The remedy is the same — say which set the identity is over, in the
     artifact, next to the number.
     """
-    misfiled = sorted({p["phase"] for p in siblings
-                       if str(p.get("caveat") or "").startswith(SUB_PHASE_CAVEAT_PREFIX)
-                       or (p.get("nested_in") not in (None, "none"))})
+    # A sibling set is mis-formed when it contains BOTH a parent and one of its own children —
+    # that is the sum that counts the same microseconds twice. A span declaring a parent that is
+    # NOT in this set is fine and is the normal case since issue #88: `record`, `submit`,
+    # `fence_wait` and `readback` all declare `subgraph_dispatch`, which is a bracket around the
+    # whole set and is deliberately excluded from it.
+    _sib_names = {p["phase"] for p in siblings}
+    misfiled = sorted({
+        p["phase"] for p in siblings
+        if (p.get("nested_in") not in (None, "none") and p.get("nested_in") in _sib_names)
+        or (str(p.get("caveat") or "").startswith(SUB_PHASE_CAVEAT_PREFIX)
+            and "record" in _sib_names and p["phase"] != "record")
+    })
     if misfiled:
         return {
             "red": False,
@@ -2059,10 +2393,18 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
     # Only true siblings may be summed. Nested sub-record spans (desc_alloc, pipeline_lookup,
     # cmd_upload) are real X spans inside vulkan.record; adding them to the host total counts the
     # same microseconds twice. They are reported separately, as a breakdown of `record`.
+    #
+    # Since issue #88 there is a second exclusion in the other direction: `compute_call` and
+    # `subgraph_dispatch` BRACKET the whole subgraph. They are not costs beside the phases, they
+    # are the denominators the two residuals are taken against, and summing them with the phases
+    # inside them double-counts one level further out.
     sib_spans = sibling_phases(all_phases)
-    nested_names = sorted({p["phase"] for p in all_phases} - {p["phase"] for p in sib_spans})
+    outer_names = sorted(outer_bracket_names(all_phases))
+    nested_names = sorted({p["phase"] for p in all_phases}
+                          - {p["phase"] for p in sib_spans} - set(outer_names))
     siblings = attribute(subs, sib_spans)
     nested_attr = attribute(subs, [p for p in all_phases if p["phase"] in nested_names])
+    residuals = host_residuals(all_phases)
     gpus = gpu_spans(events)
     transfers = transfer_events(events)
     scaling = record_scaling(attributed, subs, transfers)
@@ -2093,6 +2435,15 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
                                    and counter_upload_ms is not None))
     host = host_phase_totals(siblings, child_ms, {"record": accounted_children})
     nested_totals = host_phase_totals([p for p in attributed if p["phase"] in nested_names])
+    outer_child_ms, outer_child_names = {}, {}
+    if residuals.get("verdict") == "OK":
+        for level in ("outer", "inner"):
+            row = residuals[level]
+            outer_child_names[row["whole"]] = tuple(row["subtracted"])
+            outer_child_ms[row["whole"]] = round(
+                (row["denominator_us"] - row["residual_us"]) / 1000.0, 3)
+    outer_totals = host_phase_totals([p for p in attributed if p["phase"] in outer_names],
+                                     outer_child_ms, outer_child_names)
     gpu = gpu_totals(gpus)
 
     # The denominator for "share of what". The subgraph spans are the EP's own view of the time
@@ -2133,6 +2484,15 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
             "sub-record spans, reported separately because they are INSIDE vulkan.record. They "
             "are excluded from host_phases_ms and from every share, since adding them to their "
             "own parent counts the same microseconds twice."),
+        "outer_brackets_ms": outer_totals,
+        "outer_brackets_note": (
+            "vulkan.compute_call (the whole ORT Compute callback) and vulkan.subgraph_dispatch "
+            "(the engine's dispatch inside it). These CONTAIN the phases above and contain the "
+            "vulkan.subgraph span that every share here is taken against, so they are neither "
+            "summed with those phases nor expressed as a share of time_in_compute_ms — a span "
+            "that contains the denominator cannot be a share of it. They are the denominators of "
+            "host_residuals, and nothing else."),
+        "host_residuals": residuals,
         "phase_nesting": nesting,
         "decomposition_identity": decomposition_identity(
             host, gpu, in_compute_ms, independent_whole_ms, whole_source),
@@ -2219,6 +2579,9 @@ def red_flags(report: dict) -> "list[str]":
     pn = report.get("phase_nesting") or {}
     if pn and not pn.get("ok"):
         out.append(f"phase_nesting: {pn.get('verdict')} — {pn.get('detail')}")
+    hr = report.get("host_residuals") or {}
+    if hr and hr.get("verdict") == "UNAVAILABLE":
+        out.append(f"host_residuals: UNAVAILABLE — {hr.get('detail')}")
     di = report.get("decomposition_identity") or {}
     if di and not di.get("ok"):
         out.append(f"decomposition_identity: {di.get('verdict')} — {di.get('detail')}")
@@ -2262,6 +2625,20 @@ def describe(report: dict) -> "list[str]":
         lines.append(f"    unattributed        {un:>10.2f} ms  "
                      f"{(un / report['time_in_compute_ms'] * 100 if report['time_in_compute_ms'] else 0):5.1f}%"
                      f"   (input pointers, allocation, readback, output writes)")
+    hr = report.get("host_residuals") or {}
+    if hr.get("verdict") == "OK":
+        lines.append("  host attribution residuals (issue #88) — TWO subtractions, TWO "
+                     "denominators:")
+        for level, row in (("outer", hr["outer"]), ("inner", hr["inner"])):
+            share = row.get("share")
+            pct = "undefined (zero denominator)" if share is None else f"{share * 100:5.1f}%"
+            lines.append(
+                f"    {level:<5} {row['residual_us'] / 1000.0:>10.2f} ms  {pct}  of "
+                f"vulkan.{row['whole']} ({row['denominator_us'] / 1000.0:.2f} ms), "
+                f"after subtracting {', '.join(row['subtracted']) or 'nothing'}")
+        lines.append(f"    ! {hr['invariant']}")
+    elif hr.get("verdict") == "UNAVAILABLE":
+        lines.append(f"  host attribution residuals: UNAVAILABLE — {hr.get('detail')}")
     g = (report.get("gpu") or {}).get("all") or {}
     if g.get("n"):
         lines.append(f"    GPU kernels (sum)   {g['total_ms']:>10.2f} ms  "

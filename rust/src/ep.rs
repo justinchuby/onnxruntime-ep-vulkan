@@ -33,6 +33,7 @@ use crate::logging;
 use crate::ops::partition;
 use crate::registry::{self, NodeView};
 use crate::sys::{self, ort};
+use crate::trace;
 
 /// Session options this EP understands, all prefixed `ep.` (`DESIGN.md` §2.4).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2550,10 +2551,31 @@ unsafe extern "C" fn compute(
     // SAFETY: `p` is a compute-info this crate produced; see `this_info`.
     let info = unsafe { this_info(p) };
     let api = info.ort_api;
+    // ── ISSUE #88: the WHOLE callback is timed here, not the engine dispatch ────────────────
+    //
+    // `VulkanSession::dispatch_ort` opens `Phase::SubgraphDispatch`, and everything between this
+    // line and the `status` returned below that is NOT inside that dispatch — the bound-count,
+    // input-size and addressability screens, the kernel-context reads, status construction, and
+    // the broken-commitment disclosure — used to be inside no phase at all. A reader who summed
+    // the phase table got a number smaller than the wall ORT paid, with no row naming the gap.
+    //
+    // This guard is deliberately OUTSIDE `guard_ffi_status`: a panic converted into a status by
+    // that guard is still wall time the caller paid, and unwinding through this frame drops this
+    // guard and records the sample as `Unresolved` rather than losing it.
+    let mut call = trace::tracer().compute_call(info.plan.nodes.len());
     // SAFETY: `api` is the process-wide table, live for the process's lifetime.
     let status = unsafe {
         crate::guard_ffi_status(api, "Compute", || compute_impl(info, state, kernel_context))
     };
+    // The outcome is read off the same status ORT receives, so the population the residuals are
+    // computed over is exactly the population ORT observed.
+    if let Some(g) = call.as_mut() {
+        g.resolve(if status.is_null() {
+            trace::CallOutcome::Completed
+        } else {
+            trace::CallOutcome::Failed
+        });
+    }
 
     // RAI Ruling 2: the guard that already converts a panic into `ORT_EP_FAIL` is also where a
     // broken commitment becomes knowable. It is deliberately *outside* `compute_impl`, so that a

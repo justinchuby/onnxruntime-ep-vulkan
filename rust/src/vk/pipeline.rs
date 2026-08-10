@@ -357,8 +357,18 @@ impl DispatchDescriptorPool {
         // SAFETY: ash_device is live; pool_info is valid.
         let pool = unsafe {
             match ash_device.create_descriptor_pool(&pool_info, None) {
-                Ok(p) => p,
+                Ok(p) => {
+                    // Success-only, and counted from the branch the driver chose rather than
+                    // before the call: a refused pool must make this number fall (issue #88).
+                    crate::counters::device_objects::on_descriptor_pool_create(
+                        crate::counters::device_objects::ObjectOutcome::Succeeded,
+                    );
+                    p
+                }
                 Err(e) => {
+                    crate::counters::device_objects::on_descriptor_pool_create(
+                        crate::counters::device_objects::ObjectOutcome::Failed,
+                    );
                     log::error!("vkCreateDescriptorPool failed: {e}");
                     return None;
                 }
@@ -390,8 +400,21 @@ impl DispatchDescriptorPool {
         // SAFETY: pool and layout are valid; ash_device is live.
         let sets = unsafe {
             match self.ash_device.allocate_descriptor_sets(&alloc_info) {
-                Ok(s) => s,
+                Ok(s) => {
+                    // The count is what the driver returned, not what was asked for.
+                    crate::counters::device_objects::on_descriptor_set_allocate(
+                        crate::counters::device_objects::ObjectOutcome::Succeeded,
+                        s.len() as u64,
+                    );
+                    s
+                }
                 Err(e) => {
+                    // `max_sets(1)` means this is refusable, and a refusal must not look like
+                    // an allocation. `sets` is the count asked for; on failure none exist.
+                    crate::counters::device_objects::on_descriptor_set_allocate(
+                        crate::counters::device_objects::ObjectOutcome::Failed,
+                        layouts.len() as u64,
+                    );
                     log::error!("vkAllocateDescriptorSets failed: {e}");
                     return None;
                 }
