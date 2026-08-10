@@ -174,10 +174,18 @@ impl<'pool> CommandRecorder<'pool> {
         // SAFETY: cmd is in the recording state (invariant of CommandRecorder construction).
         unsafe {
             if let Err(e) = self.ash_device.end_command_buffer(self.cmd) {
+                // Counted at `end`, not at `begin`, and only on success: a command buffer whose
+                // recording failed is never submitted and is not a recorded command buffer.
+                crate::counters::device_objects::on_command_buffer_end(
+                    crate::counters::device_objects::ObjectOutcome::Failed,
+                );
                 log::error!("vkEndCommandBuffer failed: {e}");
                 return None;
             }
         }
+        crate::counters::device_objects::on_command_buffer_end(
+            crate::counters::device_objects::ObjectOutcome::Succeeded,
+        );
         let cmd = self.cmd;
         std::mem::forget(self); // don't run Drop (which would panic — cmd is handed to caller)
         Some(cmd)
@@ -301,7 +309,11 @@ pub(crate) unsafe fn create_and_submit(
     };
     // SAFETY: queue is valid; cmd is executable; host access to `queue` is externally
     // synchronized by `_submit_guard`, which is live for the duration of this call.
-    if let Err(e) = unsafe { ash_device.queue_submit(queue, &submit_info, fence) } {
+    let submit_result = unsafe { ash_device.queue_submit(queue, &submit_info, fence) };
+    crate::counters::device_objects::on_queue_submit(
+        crate::counters::device_objects::ObjectOutcome::from_success(submit_result.is_ok()),
+    );
+    if let Err(e) = submit_result {
         log::error!("vkQueueSubmit failed: {e}");
         // SAFETY: fence was created by us; nothing was submitted to it.
         unsafe { ash_device.destroy_fence(fence, None) };

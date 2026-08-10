@@ -1271,6 +1271,100 @@ machine drift rather than negative overhead (it must be — but nothing in the h
 alternative out); and the Intel steady-state record median, which is provisional because the tail
 has not flattened.
 
+### 9.11 Host cost attribution for the whole `Compute` callback (issue #88)
+
+**Every number in §9.3 was taken before this change and none of them is restated here.** No
+measurement in this document is amended, replaced or improved by issue #88, and **no performance
+claim is made**: the change adds instruments that say where host time went, not evidence that
+anything became faster. A new figure requires a new run on a machine certified by §10, and none
+was taken.
+
+**What was structurally missing.** The outermost span the EP opened was `vulkan.subgraph`, inside
+`dispatch_ort`. Everything ORT charges to the EP before that guard opens and after it closes was
+inside **no span at all**, so the §9.3 tables' `unattributed inside Compute` row is a residual of
+the *dispatch*, not of the callback, and there was no row at all for the difference between them.
+A reader could not tell the two apart because only one of them existed.
+
+Two brackets now do, declared in `Phase::nested_in()` (`rust/src/trace.rs`, exhaustive `match`,
+no `_` arm) and mirrored in `bench/phases.py::PHASE_CHILDREN`:
+
+```
+compute_call  ⊃  subgraph_dispatch  ⊃  { record, submit, fence_wait, readback }
+                                 record  ⊃  { upload, desc_alloc, pipeline_lookup, cmd_upload }
+```
+
+`readback` is a child of **`subgraph_dispatch`**, not of `record`. The old declaration was wrong —
+the EP drops the `Record` guard, submits, waits on the fence and only then copies outputs back — so
+every "recording residual" taken from it was too small by exactly the readback. That is a
+correction to the *model*, not to any published figure: no number in §9.3 was computed from a
+`record`-level residual.
+
+**Two residuals, and the rule that keeps them apart:**
+
+| | subtraction | denominator |
+|---|---|---|
+| **outer** | `sum(compute_call) − sum(subgraph_dispatch)` | `sum(compute_call)` |
+| **inner** | `sum(subgraph_dispatch) − sum(record, submit, fence_wait, readback)` | `sum(subgraph_dispatch)` |
+
+**They are never summed.** The inner residual lies inside the outer residual's own denominator, so
+adding them counts the dispatch interval twice and produces a share of a denominator that does not
+exist. Neither the Rust trace summary nor `bench/phases.py`'s JSON emits a combined field, and
+`bench/test_phases.py` carries a held-out mutant (`sums_the_two_residuals`) that must be caught by
+the same protocol the real implementation passes.
+
+**Admissibility of the new rows.** Under §10, a residual is a share and inherits every gate a share
+inherits: it is a share of *time inside the callback*, not of wall time, and it may not be quoted
+from a run on an uncertified machine. Additionally:
+
+* a share of a **zero denominator** is reported as undefined, never as `0.0` — `0.0` reads as
+  "fully accounted for", which is the most misleading value the field could take;
+* an **absent** bracket is `UNAVAILABLE`, never zero — a build that emits no `compute_call` has not
+  measured a zero residual, it has measured nothing;
+* a child sum exceeding its parent, an unknown or duplicated phase tag, two spans of one phase
+  overlapping, and an overflowing child sum are all **refused**. There is no `saturating_sub` and
+  no `max(x, 0)` on either the Rust or the Python path, because a clamp reports a fully accounted
+  dispatch precisely when the instrument is most wrong;
+* a population containing a **failed** or **unresolved** `Compute` call is marked
+  `MIXED POPULATION`. A mean over completed and failed calls is a mean of two populations under the
+  name of one — the §9.1 mistake in a new place.
+
+**Success-only device-object counters.** `descriptor_pools_created`, `descriptor_sets_allocated`,
+`command_buffers_recorded`, `queue_submits`. Each is incremented from a seam placed on **both**
+arms of the Vulkan call, with the failure arm counting nothing; a counter incremented before the
+result is known measures *attempts* and gets quoted as if it measured objects. The four fields were
+**appended** to the C ABI struct (nothing moved), ABI version 8 → 9, and the layout hash is a
+compile-time `const` assertion against `COUNTERS_LAYOUT_REGISTRY`.
+
+**Instruments — what goes red if each of the above is false:**
+
+| claim | instrument that goes red |
+|---|---|
+| the two residuals are two subtractions over two denominators | `bench/test_phases.py::test_the_two_residuals_are_two_subtractions_over_two_denominators`, and `trace.rs::the_two_residuals_are_two_subtractions_over_two_denominators` |
+| they are never summed | the held-out mutant `sums_the_two_residuals`, plus `test_..._no_field_offers_their_sum`, which walks the whole artifact for the forbidden value |
+| each residual moves only with its own level | `bench/test_phases.py::test_each_residual_moves_with_its_own_input_and_not_with_the_others` and `trace.rs::each_residual_varies_with_its_own_input_and_not_with_the_others` |
+| a broken trace is refused, not clamped | `TraceRefused` / `ResidualFault` — the mutants `saturates_instead_of_refusing` and `absent_brackets_read_as_zero` must both be caught |
+| `readback` is not inside `record` | `nested_phases_are_declared_both_structurally_and_in_their_caveat` (Rust) and `phase_nesting`, which re-derives parenthood from timestamp containment and believes the **trace** over this module's table |
+| a failed call is not counted as a completed one | `a_population_containing_a_failed_or_unresolved_call_is_not_clean`, `an_unresolved_compute_call_stays_unresolved_and_is_never_promoted` |
+| a failed Vulkan call increments no counter | `a_failed_vulkan_call_increments_no_device_object_counter` — host-free, no device required |
+| the ABI append moved nothing | `the_v9_device_object_fields_were_appended_and_moved_nothing`, plus the `const` layout-hash assertion and `rust/tools/counters_abi.py` |
+
+**The live-device probe is corroboration and is not authoritative.**
+`cargo test --test device_object_counter_corroboration` is a `harness = false` target whose output
+therefore reaches the terminal rather than libtest's capture buffer. `VkDescriptorPool` exhaustion
+past `maxSets(1)` is **not spec-guaranteed** — a conformant implementation may over-allocate — so
+the probe reports `CORROBORATED`, `INCONCLUSIVE` (a lenient driver), or
+`SKIP(precondition not met)` (no loader, no 1.1 device, no compute queue, or the opt-out env var),
+and it exits non-zero **only** on `CONTRADICTED`: a refusal that nevertheless produced a handle.
+Observed on this machine: `CORROBORATED` on `NVIDIA RTX A1000`, and `SKIP` under the opt-out. The
+settled evidence for the success-only rule is the host-free seam test above; the probe can only
+show that a refusable path exists here, never that a refusal counts nothing. It is deliberately
+**not** wired into any CI lane — `ci/check_suite_productivity.py` parses libtest `test result:`
+blocks, which a `harness = false` target does not emit.
+
+**Portability.** Vulkan 1.1, no optional feature, no extension. The probe requires
+`apiVersion ≥ 1.1` and a queue family with `COMPUTE`, and reports `SKIP` rather than failing when
+either is absent.
+
 ---
 
 ## 10. Every number in this document was taken on an unmeasured machine (2026-07-30 evening)

@@ -77,6 +77,27 @@ onnx-runtime-tracer = { version = "0.1.0-dev.5", default-features = false }
 # the one doing the loading, so this never ships.
 libloading = "0.8"
 
+# The live-device corroboration for the success-only device-object counters (issue #88) is a
+# PLAIN BINARY, not a libtest target, and that is load-bearing rather than stylistic.
+#
+# A libtest `#[test]` that passes has its stdout and stderr captured and thrown away. This target
+# has three non-failing outcomes — CORROBORATED, INCONCLUSIVE (a conformant but lenient driver)
+# and SKIP (no Vulkan 1.1 compute device) — and on any machine in the second or third case a
+# libtest version would print a green `ok` and disclose nothing without `--nocapture`. A
+# corroboration whose verdict is invisible by default is not a corroboration.
+#
+# `harness = false` makes it a `fn main()` whose output reaches the terminal under the default
+# hosted command, `cargo test --manifest-path rust/Cargo.toml`. It exits non-zero only on
+# CONTRADICTED. `tests/corroboration_report.rs` — an ordinary harness target — asserts this
+# declaration still exists, and exercises every rendering branch with no device.
+#
+# It is deliberately NOT added to any CI lane in `.github/workflows/ci.yml`: those lanes are gated
+# by `ci/check_suite_productivity.py`, which parses libtest `test result:` blocks that a
+# harness-free target does not emit.
+[[test]]
+name = "device_object_counter_corroboration"
+harness = false
+
 [build-dependencies]# Generates the ORT plugin-EP C ABI bindings from the vendored headers in
 # `third_party/onnxruntime/include`. See `rust/README.md` for the bindgen-vs-handwritten rationale.
 bindgen = "0.72"

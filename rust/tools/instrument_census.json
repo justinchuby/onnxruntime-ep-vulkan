@@ -34,7 +34,6 @@
     "trace.rs::op_span",
     "trace.rs::op_timer_start",
     "trace.rs::record_op_meta",
-    "trace.rs::record_path",
     "trace.rs::transfer_totals"
   ],
   "ambiguous": [
@@ -159,10 +158,10 @@
     "uninvoked_notes": [
       {
         "instrument": "trace.rs::Tracer::record_path",
-        "artifact": "trace summary line `compute: first-record=N replay=N rerecord=N`; now prints `record-path breakdown NOT WIRED` when all three are zero",
-        "excludes": "everything. Zero production callers. It is the ONLY instrument that could falsify Phase::Record's former caveat that recording is 'amortised across replays'; that caveat shipped in every ph:\"X\" span for weeks and was false.",
-        "disposition": "FLAGGED \u2014 wiring it requires a vk/session.rs edit (Switch's file). Artifact now says NOT WIRED instead of printing zeros.",
-        "owner": "switch"
+        "artifact": "trace summary line `compute: first-record=N replay=N rerecord=N`; prints `record-path breakdown EMPTY` when all three are zero",
+        "excludes": "nothing any more. Wired for issue #88 from `vk/session.rs::dispatch_ort` step 4, which classifies FIRST-RECORD on the first sighting of a subgraph id and RERECORD on every later one. `Replay` stays zero and that is the finding, not a gap: this engine re-records the command buffer on every Compute call, so `Phase::Record`'s former caveat that recording is 'amortised across replays' was false and has been removed rather than left to be falsified later.",
+        "disposition": "RESOLVED (issue #88, trinity) \u2014 a production caller exists and the counts distinguish the two paths the engine actually has.",
+        "owner": "trinity"
       },
       {
         "instrument": "trace.rs::record_op_meta / op_span / op_timer_start / note_thread",
@@ -321,7 +320,6 @@
     "bench/phases.py::phase_containment",
     "bench/phases.py::phase_leaf_accounting",
     "bench/phases.py::phase_nesting",
-    "bench/phases.py::phase_spans",
     "bench/phases.py::record_scaling",
     "bench/phases.py::red_flags",
     "bench/phases.py::sibling_phases",

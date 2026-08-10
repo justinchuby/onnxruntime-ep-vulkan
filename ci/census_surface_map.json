@@ -190,6 +190,22 @@
       "mechanism": "gpu_tracer"
     },
     {
+      "kind": "trace_phase",
+      "id": "ComputeCall",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does.",
+      "owner": "Trinity",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "SubgraphDispatch",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does.",
+      "owner": "Trinity",
+      "mechanism": "gpu_tracer"
+    },
+    {
       "kind": "env_switch",
       "id": "ONNXRUNTIME_EP_VULKAN_TRACE",
       "disposition": "censused",
@@ -454,6 +470,34 @@
       "disposition": "uncensused",
       "reason": "Nodes declined because the \u00a78.9 ledger entry's subject moved (kernel replaced, or SPIR-V differs with no source_digest to attribute it), incremented at rust/src/registry.rs:3771 (record_subject_changed_decline). Not read by ledger_lookup's observation string, and not the same thing as rust/tools/probe_ledger_subject_check.py, which is a real and rigorous falsifier (7 arms, MEASURED incident 2026-08-03 where a GQA shader edit without a ledger regen declined all 32 GroupQueryAttention nodes and only this field saw it) \u2014 but that tool asserts on gen_proof_ledger.py --check's own text output (a build-time ledger validator), never on this runtime counter. rust/src/disclosure.rs's Disclosure::subject_changed aggregates the per-session count (disclosure.rs:230, 412) and warrants a WARN, and rust/tools/probe_session_disclosure.py archives the raw count, but nothing asserts on this exact counter moving. Owed by Mouse: name it in ledger_lookup's observation, or add a runtime-counter assertion alongside the existing --check text assertion in probe_ledger_subject_check.py.",
       "owner": "Mouse"
+    },
+    {
+      "kind": "counter",
+      "id": "descriptor_pools_created",
+      "disposition": "uncensused",
+      "reason": "Counts descriptor pools whose vkCreateDescriptorPool RETURNED SUCCESS. No census mechanism reads it, so 'this run created a pool per dispatch' is not a state the census can report; the host-free seam tests in rust/src/counters.rs are what hold the success-only rule.",
+      "owner": "Trinity"
+    },
+    {
+      "kind": "counter",
+      "id": "descriptor_sets_allocated",
+      "disposition": "uncensused",
+      "reason": "Counts descriptor SETS produced by successful vkAllocateDescriptorSets calls (sets, not calls). No census mechanism reads it, so descriptor churn is invisible to the census even though the counter is exact.",
+      "owner": "Trinity"
+    },
+    {
+      "kind": "counter",
+      "id": "command_buffers_recorded",
+      "disposition": "uncensused",
+      "reason": "Counts command buffers whose vkEndCommandBuffer RETURNED SUCCESS. No census mechanism reads it, so 'every Compute re-recorded' is not a state the census can report.",
+      "owner": "Trinity"
+    },
+    {
+      "kind": "counter",
+      "id": "queue_submits",
+      "disposition": "uncensused",
+      "reason": "Counts vkQueueSubmit calls that RETURNED SUCCESS. No census mechanism reads it, and a successful submit is not a completed dispatch, so it must never be read as one.",
+      "owner": "Trinity"
     },
     {
       "kind": "env_switch",
