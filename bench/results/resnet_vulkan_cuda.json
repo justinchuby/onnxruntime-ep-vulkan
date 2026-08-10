@@ -1,0 +1,4361 @@
+{
+  "schema": "resnet_vulkan_cuda/1",
+  "issue": 122,
+  "taken_at": "2026-08-09T19:15:36-0700",
+  "model": {
+    "key": "resnet50-v1-12",
+    "family": "cnn",
+    "path": "C:\\Users\\justinchu\\.cache\\onnxruntime-ep-vulkan\\models\\resnet50-v1-12-onnx-1f95315d.onnx",
+    "sha256": "3f03fdef724b22947eed826f1eef1dc5c34151bb4c37d634f1db89dfa2dd1526",
+    "bytes": 102576593,
+    "provenance": "pinned-immutable",
+    "resolver": "pinned",
+    "recorded_sha256": "3f03fdef724b22947eed826f1eef1dc5c34151bb4c37d634f1db89dfa2dd1526",
+    "agrees_with_recorded_provenance": true,
+    "external_data": {
+      "scanned": true,
+      "files": [],
+      "combined_sha256": null,
+      "extents": 0
+    },
+    "weights_bytes": 0,
+    "provenance_ok": true,
+    "public_provenance": {
+      "schema": "pinned_bytes/1",
+      "pin": {
+        "repo": "onnxmodelzoo/resnet50-v1-12",
+        "file": "resnet50-v1-12.onnx",
+        "revision": "1f95315d8bd3b3ca2ceabe54d274e0cdf5a83bbe",
+        "sha256": "3f03fdef724b22947eed826f1eef1dc5c34151bb4c37d634f1db89dfa2dd1526",
+        "pinned_bytes": 102576593,
+        "source": "pinned-cache",
+        "declared_external_files": 0,
+        "url": "https://huggingface.co/onnxmodelzoo/resnet50-v1-12/resolve/1f95315d8bd3b3ca2ceabe54d274e0cdf5a83bbe/resnet50-v1-12.onnx"
+      },
+      "observed_sha256": "3f03fdef724b22947eed826f1eef1dc5c34151bb4c37d634f1db89dfa2dd1526",
+      "observed_bytes": 102576593,
+      "source_state": "pinned-cache",
+      "sidecar_sha256": "3f03fdef724b22947eed826f1eef1dc5c34151bb4c37d634f1db89dfa2dd1526",
+      "external_data": {
+        "scanned": true,
+        "files": [],
+        "combined_sha256": null,
+        "extents": 0
+      },
+      "provenance_ok": true,
+      "disagreements": [],
+      "key": "resnet50-v1-12",
+      "family": "cnn"
+    },
+    "note": "ONNX Model Zoo ResNet-50 v1 (`resnet50-v1-12.onnx`) at immutable revision 1f95315d8bd3b3ca2ceabe54d274e0cdf5a83bbe. 175 nodes, opset 12, f32, no external data, input `data` [N,3,224,224] NCHW, output `resnetv17_dense0_fwd` [N,1000] raw logits."
+  },
+  "model_pin": {
+    "repo": "onnxmodelzoo/resnet50-v1-12",
+    "file": "resnet50-v1-12.onnx",
+    "revision": "1f95315d8bd3b3ca2ceabe54d274e0cdf5a83bbe",
+    "sha256": "3f03fdef724b22947eed826f1eef1dc5c34151bb4c37d634f1db89dfa2dd1526",
+    "pinned_bytes": 102576593,
+    "source": "pinned-cache",
+    "declared_external_files": 0
+  },
+  "model_url": "https://huggingface.co/onnxmodelzoo/resnet50-v1-12/resolve/1f95315d8bd3b3ca2ceabe54d274e0cdf5a83bbe/resnet50-v1-12.onnx",
+  "environment": {
+    "onnxruntime": {
+      "version": "1.28.0",
+      "available_providers": [
+        "TensorrtExecutionProvider",
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider",
+        "VulkanExecutionProvider"
+      ],
+      "library": {
+        "path": "C:\\Users\\justinchu\\.copilot\\repos\\wt-122-niobe\\.venv\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime.dll",
+        "sha256": "ecd6a180e6f589741523b8476e015b4813d959ebd728f657647f15abf56f91de",
+        "bytes": 17386296
+      },
+      "note": "ONE onnxruntime build serves all three arms; a CUDA-vs-Vulkan ratio taken across two ORT versions would be a version comparison wearing an EP's name"
+    },
+    "ep_library": {
+      "registered": true,
+      "path": "C:\\Users\\justinchu\\.copilot\\repos\\wt-122-niobe\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "sha256": "9a1ad7550e7b7dd3f6bf518e423ecd4f277ab59e57778627348b0ddc89723561",
+      "bytes": 2563072
+    },
+    "cuda_preload": {
+      "called": true,
+      "ok": true
+    },
+    "python": "3.12.10",
+    "os": "Windows 11 10.0.26200",
+    "machine": "AMD64",
+    "device": {
+      "index": 0,
+      "name": "NVIDIA RTX A1000",
+      "uuid": "aadf33d4d118155fcc60c22b5c352463",
+      "luid": "7adf070000000000",
+      "pci": "0000:9f:00.0",
+      "driver": "573.44",
+      "transfer_class": "discrete",
+      "timestamp_period_ns": null,
+      "max_compute_shared_memory": 49152,
+      "subgroup_size": 32
+    },
+    "cuda_device": {
+      "available": true,
+      "gpus": [
+        {
+          "name": "NVIDIA RTX A1000",
+          "uuid": "GPU-aadf33d4-d118-155f-cc60-c22b5c352463",
+          "pci_bus_id": "00000000:9F:00.0",
+          "driver_version": "573.44",
+          "memory_total_mib": 8188,
+          "utilization_gpu_pct": 68,
+          "memory_used_mib": 703,
+          "sm_clock_mhz": 1860,
+          "sm_max_clock_mhz": 2100
+        }
+      ]
+    },
+    "same_physical_device": {
+      "claim": "the Vulkan arm and the CUDA arm must run on the SAME card or the ratio is a comparison of two pieces of hardware",
+      "vulkan_pci": "0000:9f:00.0",
+      "cuda_pci": "00000000:9F:00.0"
+    },
+    "power_and_affinity": {
+      "assumption": "stock Windows power plan, no CPU affinity mask, no GPU clock lock",
+      "thread_affinity_set": false,
+      "gpu_clocks_locked": false,
+      "note": "this box is shared indefinitely (docs/PERF.md \u00a720), so wall clock is STEADY_UNCERTIFIED by default; arms are interleaved precisely because the machine state cannot be assumed quiet"
+    },
+    "methodology": {
+      "repeats": 5,
+      "iters_per_repeat": 10,
+      "warmup_per_session": 3,
+      "warmups_discarded": true,
+      "arm_order": "alternated per repeat (real_model.arm_order)",
+      "process_per_arm_per_repeat": true,
+      "tracing_during_timed_pass": false,
+      "diagnostics_are_a_separate_pass": true
+    },
+    "build": {
+      "lib": "C:\\Users\\justinchu\\.copilot\\repos\\wt-122-niobe\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "present": true,
+      "bytes": 2563072,
+      "mtime": "2026-08-09T15:58:25",
+      "profile": "release",
+      "sha256": "9a1ad7550e7b7dd3f6bf518e423ecd4f277ab59e57778627348b0ddc89723561"
+    }
+  },
+  "gpu_lock": {
+    "lock_dir": "C:\\Users\\justinchu\\.copilot\\repos\\.gpu-lock",
+    "holder": "niobe-11",
+    "held": true,
+    "other_holders": [],
+    "exclusive": true
+  },
+  "quiescence": {
+    "verdict": "CONTENDED",
+    "reasons": [
+      "other processes kept 3.72 cores busy on average (threshold 0.5); 15 foreign CPU-seconds over 4s wall",
+      "100% of samples exceeded 1.0 foreign busy cores (threshold 10%)"
+    ],
+    "survey": {
+      "available": true,
+      "reason": "",
+      "cores": 24,
+      "wall_s": 4.02,
+      "busy_cpu_s": 16.63,
+      "own_cpu_s": 1.66,
+      "foreign_cpu_s": 14.97,
+      "mean_foreign_busy_cores": 3.725,
+      "median_foreign_busy_cores": 3.285,
+      "peak_foreign_busy_cores": 6.103,
+      "loud_sample_fraction": 1.0,
+      "n_samples": 9,
+      "top_foreign": [
+        {
+          "name": "copilot.exe",
+          "cpu_s": 13.67
+        },
+        {
+          "name": "MsMpEng.exe",
+          "cpu_s": 3.56
+        },
+        {
+          "name": "System",
+          "cpu_s": 0.8
+        },
+        {
+          "name": "MsSense.exe",
+          "cpu_s": 0.5
+        },
+        {
+          "name": "services.exe",
+          "cpu_s": 0.36
+        }
+      ],
+      "falsifiers": {
+        "idle_accounting": {
+          "red_if": "median (busy+idle)/(cores*wall) departs from 1.0 by more than 5%",
+          "value": 1.0,
+          "red": false
+        },
+        "own_cpu_not_exceeding_busy": {
+          "red_if": "our own process tree used more CPU than the machine reports as busy",
+          "own_cpu_s": 1.66,
+          "busy_cpu_s": 16.63,
+          "red": false
+        },
+        "monitor_not_perturbing": {
+          "red_if": "the sampler's own CPU cost exceeds 0.05 cores, at which point the instrument is part of the load it is measuring",
+          "monitor_cores": 0.0,
+          "red": false
+        }
+      }
+    },
+    "occupancy": {
+      "verdict": "VACUOUS",
+      "spin_s": 0.044364,
+      "reference_s": null,
+      "ratio": null,
+      "red": false,
+      "reason": "no quiet-machine reference recorded for this host+python; the tachometer cannot falsify the survey here. Untested is not passed."
+    },
+    "thresholds": {
+      "quiet_busy_cores": 0.5,
+      "loud_sample_cores": 1.0,
+      "quiet_loud_fraction": 0.1,
+      "occupancy_tolerance": 1.15
+    }
+  },
+  "foreign_gpu_load": {
+    "provenance_class": "MEASUREMENT",
+    "memory_used_mib_before": 703,
+    "memory_used_mib_after": 703,
+    "utilization_pct_before": 68,
+    "utilization_pct_after": 0,
+    "note": "nvidia-smi samples taken immediately before and after the timed pass. Non-zero memory before the run is another process's residency; this lane does not have the desk to itself and says so."
+  },
+  "equivalence": {
+    "resnet50-v1-12/batch/N1": {
+      "gate": "PASS",
+      "arms": {
+        "cpu": {
+          "verdict": "MATCH",
+          "self": true,
+          "note": "the reference arm is compared against itself by construction; recorded so the table has no hole"
+        },
+        "vulkan": {
+          "verdict": "MATCH",
+          "primary": {
+            "verdict": "MATCH",
+            "rows": 1,
+            "top1_rows_agreeing": 1,
+            "topk_rows_agreeing": 1,
+            "top_k": 5,
+            "max_abs": 9.5367431640625e-06,
+            "max_rel": 0.00021395651909603488,
+            "reference_scale": 8.19328784942627,
+            "abs_budget": 0.00819328784942627,
+            "max_prob_delta": 5.709082114557784e-07,
+            "prob_budget": 0.001,
+            "numeric_ok": true,
+            "gate": "top-1 on every row AND top-5 set on every row AND (max_abs <= 0.001 x |reference|_max OR max_rel <= 0.01) AND max prob delta <= 0.001",
+            "provenance_class": "MEASUREMENT"
+          },
+          "case": "resnet50-v1-12/batch/N1"
+        },
+        "cuda": {
+          "verdict": "MATCH",
+          "primary": {
+            "verdict": "MATCH",
+            "rows": 1,
+            "top1_rows_agreeing": 1,
+            "topk_rows_agreeing": 1,
+            "top_k": 5,
+            "max_abs": 0.0017690658569335938,
+            "max_rel": 0.15218773509095884,
+            "reference_scale": 8.19328784942627,
+            "abs_budget": 0.00819328784942627,
+            "max_prob_delta": 6.099820919580612e-05,
+            "prob_budget": 0.001,
+            "numeric_ok": true,
+            "gate": "top-1 on every row AND top-5 set on every row AND (max_abs <= 0.001 x |reference|_max OR max_rel <= 0.01) AND max prob delta <= 0.001",
+            "provenance_class": "MEASUREMENT"
+          },
+          "case": "resnet50-v1-12/batch/N1"
+        }
+      },
+      "feeds_sha256": "1a0883785f45ecb556cce3f8c8f8054f1fe8b0d72b41dd4cff91da041e5b4393"
+    },
+    "resnet50-v1-12/batch/N4": {
+      "gate": "PASS",
+      "arms": {
+        "cpu": {
+          "verdict": "MATCH",
+          "self": true,
+          "note": "the reference arm is compared against itself by construction; recorded so the table has no hole"
+        },
+        "vulkan": {
+          "verdict": "MATCH",
+          "primary": {
+            "verdict": "MATCH",
+            "rows": 4,
+            "top1_rows_agreeing": 4,
+            "topk_rows_agreeing": 4,
+            "top_k": 5,
+            "max_abs": 1.0013580322265625e-05,
+            "max_rel": 0.002868699273814609,
+            "reference_scale": 8.278209686279297,
+            "abs_budget": 0.008278209686279297,
+            "max_prob_delta": 1.2766698484212302e-06,
+            "prob_budget": 0.001,
+            "numeric_ok": true,
+            "gate": "top-1 on every row AND top-5 set on every row AND (max_abs <= 0.001 x |reference|_max OR max_rel <= 0.01) AND max prob delta <= 0.001",
+            "provenance_class": "MEASUREMENT"
+          },
+          "case": "resnet50-v1-12/batch/N4"
+        },
+        "cuda": {
+          "verdict": "MATCH",
+          "primary": {
+            "verdict": "MATCH",
+            "rows": 4,
+            "top1_rows_agreeing": 4,
+            "topk_rows_agreeing": 4,
+            "top_k": 5,
+            "max_abs": 5.0067901611328125e-06,
+            "max_rel": 0.0013419909129028936,
+            "reference_scale": 8.278209686279297,
+            "abs_budget": 0.008278209686279297,
+            "max_prob_delta": 3.5865038969240537e-07,
+            "prob_budget": 0.001,
+            "numeric_ok": true,
+            "gate": "top-1 on every row AND top-5 set on every row AND (max_abs <= 0.001 x |reference|_max OR max_rel <= 0.01) AND max prob delta <= 0.001",
+            "provenance_class": "MEASUREMENT"
+          },
+          "case": "resnet50-v1-12/batch/N4"
+        }
+      },
+      "feeds_sha256": "6072c568efef5d2c7d8bbce6a378c990f69dc0da42037047801eecf20fa0068a"
+    },
+    "resnet50-v1-12/batch/N16": {
+      "gate": "PASS",
+      "arms": {
+        "cpu": {
+          "verdict": "MATCH",
+          "self": true,
+          "note": "the reference arm is compared against itself by construction; recorded so the table has no hole"
+        },
+        "vulkan": {
+          "verdict": "MATCH",
+          "primary": {
+            "verdict": "MATCH",
+            "rows": 16,
+            "top1_rows_agreeing": 16,
+            "topk_rows_agreeing": 16,
+            "top_k": 5,
+            "max_abs": 1.621246337890625e-05,
+            "max_rel": 0.004787501735388033,
+            "reference_scale": 9.211075782775879,
+            "abs_budget": 0.00921107578277588,
+            "max_prob_delta": 2.437149149159268e-06,
+            "prob_budget": 0.001,
+            "numeric_ok": true,
+            "gate": "top-1 on every row AND top-5 set on every row AND (max_abs <= 0.001 x |reference|_max OR max_rel <= 0.01) AND max prob delta <= 0.001",
+            "provenance_class": "MEASUREMENT"
+          },
+          "case": "resnet50-v1-12/batch/N16"
+        },
+        "cuda": {
+          "verdict": "MATCH",
+          "primary": {
+            "verdict": "MATCH",
+            "rows": 16,
+            "top1_rows_agreeing": 16,
+            "topk_rows_agreeing": 16,
+            "top_k": 5,
+            "max_abs": 6.4373016357421875e-06,
+            "max_rel": 0.004429162752465947,
+            "reference_scale": 9.211075782775879,
+            "abs_budget": 0.00921107578277588,
+            "max_prob_delta": 8.549981383720873e-07,
+            "prob_budget": 0.001,
+            "numeric_ok": true,
+            "gate": "top-1 on every row AND top-5 set on every row AND (max_abs <= 0.001 x |reference|_max OR max_rel <= 0.01) AND max prob delta <= 0.001",
+            "provenance_class": "MEASUREMENT"
+          },
+          "case": "resnet50-v1-12/batch/N16"
+        }
+      },
+      "feeds_sha256": "d993d44fec052b8c3547f557c6f69112d18ba769bfdd9e6fe381b48c531830af"
+    }
+  },
+  "rows": [
+    {
+      "case": "resnet50-v1-12/batch/N1",
+      "batch": 1,
+      "feeds_sha256": "1a0883785f45ecb556cce3f8c8f8054f1fe8b0d72b41dd4cff91da041e5b4393",
+      "arms": {
+        "vulkan": {
+          "role": "candidate",
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ],
+          "latency": {
+            "n": 50,
+            "median_ms": 85.54300002288073,
+            "mean_ms": 98.40492600458674,
+            "min_ms": 77.66480004647747,
+            "max_ms": 236.26799997873604,
+            "p05_ms": 81.2165849871235,
+            "p95_ms": 140.19696499453855,
+            "mad_ms": 3.5877499904017895,
+            "stdev_ms": 29.13126367549165,
+            "rsd": 0.34054526574587896,
+            "provenance_class": "MEASUREMENT"
+          },
+          "throughput": {
+            "unit": "images/s",
+            "value": 11.690027234636657,
+            "divisor": 1,
+            "divisor_meaning": "images in one batch"
+          },
+          "session_build_ms": {
+            "n": 5,
+            "median_ms": 392.4867000314407,
+            "mean_ms": 389.13727999897674,
+            "min_ms": 358.92880003666505,
+            "max_ms": 442.29859998449683,
+            "p05_ms": 358.97174002602696,
+            "p95_ms": 432.40463997935876,
+            "mad_ms": 33.34320004796609,
+            "stdev_ms": 34.14363402606067,
+            "rsd": 0.08699309816950623
+          },
+          "first_run_ms": {
+            "n": 5,
+            "median_ms": 151.46419999655336,
+            "mean_ms": 170.54950000019744,
+            "min_ms": 131.7515000118874,
+            "max_ms": 281.80260001681745,
+            "p05_ms": 131.98624000651762,
+            "p95_ms": 256.40288001159206,
+            "mad_ms": 18.539000011514872,
+            "stdev_ms": 63.068007866132355,
+            "rsd": 0.41638887517688994
+          },
+          "per_repeat_median_ms": [
+            89.02029995806515,
+            82.99969998188317,
+            83.77909997943789,
+            133.28199996612966,
+            84.68189998529851
+          ],
+          "samples_ms": [
+            84.6542,
+            91.0517,
+            87.994,
+            89.0203,
+            91.1673,
+            92.647,
+            85.305,
+            85.5627,
+            85.8346,
+            92.2405,
+            236.268,
+            77.6648,
+            85.5233,
+            106.2266,
+            82.9997,
+            82.5201,
+            85.6822,
+            82.8775,
+            82.7386,
+            81.8334,
+            83.7983,
+            81.1575,
+            83.271,
+            82.9859,
+            83.7791,
+            82.067,
+            81.8448,
+            85.3308,
+            86.0611,
+            85.0001,
+            133.282,
+            143.0879,
+            112.4215,
+            121.2199,
+            132.3072,
+            128.4359,
+            179.9504,
+            136.3356,
+            136.6636,
+            92.9657,
+            97.2195,
+            99.2308,
+            99.9972,
+            80.9875,
+            82.9953,
+            84.6819,
+            82.5663,
+            84.8348,
+            84.6674,
+            81.2888
+          ]
+        },
+        "cuda": {
+          "role": "baseline",
+          "providers": [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider"
+          ],
+          "latency": {
+            "n": 50,
+            "median_ms": 6.131350033683702,
+            "mean_ms": 6.27515000407584,
+            "min_ms": 5.738900043070316,
+            "max_ms": 7.140600006096065,
+            "p05_ms": 6.038670029374771,
+            "p95_ms": 6.877504990552551,
+            "mad_ms": 0.06505002966150641,
+            "stdev_ms": 0.2842290662739549,
+            "rsd": 0.04635668567484976,
+            "provenance_class": "MEASUREMENT"
+          },
+          "throughput": {
+            "unit": "images/s",
+            "value": 163.09621771817228,
+            "divisor": 1,
+            "divisor_meaning": "images in one batch"
+          },
+          "session_build_ms": {
+            "n": 5,
+            "median_ms": 446.2877999758348,
+            "mean_ms": 459.09508001059294,
+            "min_ms": 421.5766999986954,
+            "max_ms": 505.3448000107892,
+            "p05_ms": 426.12114000367,
+            "p95_ms": 499.8692800174467,
+            "mad_ms": 24.711099977139384,
+            "stdev_ms": 32.73291813094683,
+            "rsd": 0.07334486430666315
+          },
+          "first_run_ms": {
+            "n": 5,
+            "median_ms": 275.7096999557689,
+            "mean_ms": 279.55979999387637,
+            "min_ms": 256.7303000250831,
+            "max_ms": 311.72649998916313,
+            "p05_ms": 259.0420800144784,
+            "p95_ms": 306.44985999679193,
+            "mad_ms": 9.63360007153824,
+            "stdev_ms": 20.803732989561137,
+            "rsd": 0.07545520884067047
+          },
+          "per_repeat_median_ms": [
+            6.097399978898466,
+            6.568400014657527,
+            6.127099972218275,
+            6.331700016744435,
+            6.3464000122621655
+          ],
+          "samples_ms": [
+            6.0923,
+            6.0791,
+            6.1139,
+            6.1321,
+            6.1271,
+            6.0866,
+            6.0682,
+            6.0774,
+            6.1173,
+            6.0974,
+            6.3109,
+            6.6013,
+            7.0409,
+            7.1406,
+            6.6778,
+            6.5684,
+            6.1464,
+            6.1684,
+            6.1361,
+            6.0803,
+            6.1271,
+            6.1252,
+            6.1305,
+            6.1306,
+            6.0456,
+            6.033,
+            6.0136,
+            6.1221,
+            6.5343,
+            6.5117,
+            6.5345,
+            6.3114,
+            7.0983,
+            6.3317,
+            6.3618,
+            6.1254,
+            6.0644,
+            6.2415,
+            6.5043,
+            5.7389,
+            6.1331,
+            6.3464,
+            6.118,
+            6.1068,
+            6.1086,
+            6.122,
+            6.381,
+            6.4822,
+            6.525,
+            6.486
+          ]
+        },
+        "cpu": {
+          "role": "reference",
+          "providers": [
+            "CPUExecutionProvider"
+          ],
+          "latency": {
+            "n": 50,
+            "median_ms": 10.770699998829514,
+            "mean_ms": 11.062745996750891,
+            "min_ms": 9.948499966412783,
+            "max_ms": 15.515999984927475,
+            "p05_ms": 10.162220013444312,
+            "p95_ms": 13.322804990457367,
+            "mad_ms": 0.3509999660309404,
+            "stdev_ms": 1.0753360361590891,
+            "rsd": 0.0998390110462597,
+            "provenance_class": "MEASUREMENT"
+          },
+          "throughput": {
+            "unit": "images/s",
+            "value": 92.84447622797713,
+            "divisor": 1,
+            "divisor_meaning": "images in one batch"
+          },
+          "session_build_ms": {
+            "n": 5,
+            "median_ms": 465.90890001971275,
+            "mean_ms": 465.25538000278175,
+            "min_ms": 424.81080000288785,
+            "max_ms": 525.3217999706976,
+            "p05_ms": 425.14606000622734,
+            "p95_ms": 517.0070999767631,
+            "mad_ms": 39.421800000127405,
+            "stdev_ms": 42.09849632249152,
+            "rsd": 0.09035778522520244
+          },
+          "first_run_ms": {
+            "n": 5,
+            "median_ms": 21.011599979829043,
+            "mean_ms": 20.717779989354312,
+            "min_ms": 19.51119996374473,
+            "max_ms": 21.49370004190132,
+            "p05_ms": 19.6264999685809,
+            "p95_ms": 21.491900028195232,
+            "mad_ms": 0.48210006207227707,
+            "stdev_ms": 0.8845033271604374,
+            "rsd": 0.042095953093032094
+          },
+          "per_repeat_median_ms": [
+            12.370800017379224,
+            10.734599956776947,
+            10.312699945643544,
+            10.942700027953833,
+            10.805899975821376
+          ],
+          "samples_ms": [
+            14.01,
+            15.516,
+            14.3417,
+            11.6712,
+            12.3708,
+            11.3627,
+            10.5791,
+            10.4467,
+            12.322,
+            12.4829,
+            11.102,
+            10.7554,
+            11.2743,
+            11.2969,
+            10.3522,
+            10.6598,
+            10.2864,
+            10.0542,
+            10.1408,
+            10.7346,
+            10.1884,
+            10.2057,
+            9.9485,
+            10.706,
+            10.6813,
+            10.6118,
+            10.4236,
+            10.3127,
+            10.2119,
+            10.218,
+            11.07,
+            10.7003,
+            10.9239,
+            11.4353,
+            10.6679,
+            10.9427,
+            10.855,
+            10.9698,
+            10.7308,
+            11.1367,
+            10.5884,
+            10.4158,
+            10.7943,
+            10.621,
+            10.786,
+            10.8059,
+            10.9115,
+            10.8294,
+            11.2319,
+            11.4531
+          ]
+        }
+      },
+      "vulkan_vs_cuda": {
+        "n": 5,
+        "median": 13.673532398575542,
+        "min": 12.636212745366837,
+        "max": 21.049954927374966,
+        "ratios": [
+          14.599715,
+          12.636213,
+          13.673532,
+          21.049955,
+          13.343297
+        ],
+        "baseline": "cuda",
+        "candidate": "vulkan",
+        "polarity": "ratio = median(vulkan ms) / median(cuda ms), computed per repeat and then aggregated. ratio > 1 means vulkan takes LONGER than cuda (is slower); ratio < 1 means vulkan is faster.",
+        "provenance_class": "MEASUREMENT"
+      },
+      "vulkan_vs_cpu": {
+        "n": 5,
+        "median": 7.836635557869088,
+        "min": 7.1960018618847785,
+        "max": 12.179992106669486,
+        "ratios": [
+          7.196002,
+          7.731979,
+          8.123876,
+          12.179992,
+          7.836636
+        ],
+        "baseline": "cpu",
+        "candidate": "vulkan",
+        "polarity": "ratio = median(vulkan ms) / median(cpu ms), computed per repeat and then aggregated. ratio > 1 means vulkan takes LONGER than cpu (is slower); ratio < 1 means vulkan is faster.",
+        "provenance_class": "MEASUREMENT"
+      },
+      "cuda_vs_cpu": {
+        "n": 5,
+        "median": 0.5873087874644856,
+        "min": 0.49288647220329174,
+        "max": 0.611890526065741,
+        "ratios": [
+          0.492886,
+          0.611891,
+          0.594132,
+          0.578623,
+          0.587309
+        ],
+        "baseline": "cpu",
+        "candidate": "cuda",
+        "polarity": "ratio = median(cuda ms) / median(cpu ms), computed per repeat and then aggregated. ratio > 1 means cuda takes LONGER than cpu (is slower); ratio < 1 means cuda is faster.",
+        "provenance_class": "MEASUREMENT"
+      }
+    },
+    {
+      "case": "resnet50-v1-12/batch/N4",
+      "batch": 4,
+      "feeds_sha256": "6072c568efef5d2c7d8bbce6a378c990f69dc0da42037047801eecf20fa0068a",
+      "arms": {
+        "vulkan": {
+          "role": "candidate",
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ],
+          "latency": {
+            "n": 50,
+            "median_ms": 315.1046500133816,
+            "mean_ms": 327.5193320028484,
+            "min_ms": 299.0645000245422,
+            "max_ms": 447.65860005281866,
+            "p05_ms": 299.6837500249967,
+            "p95_ms": 402.60634999722237,
+            "mad_ms": 12.652100034756586,
+            "stdev_ms": 34.90961502785343,
+            "rsd": 0.11078736866108105,
+            "provenance_class": "MEASUREMENT"
+          },
+          "throughput": {
+            "unit": "images/s",
+            "value": 12.69419540406697,
+            "divisor": 4,
+            "divisor_meaning": "images in one batch"
+          },
+          "session_build_ms": {
+            "n": 5,
+            "median_ms": 407.03990001929924,
+            "mean_ms": 400.2427600091323,
+            "min_ms": 384.1062000137754,
+            "max_ms": 413.5684000211768,
+            "p05_ms": 385.0732200080529,
+            "p95_ms": 412.3663200181909,
+            "mad_ms": 6.528500001877546,
+            "stdev_ms": 12.897655769760409,
+            "rsd": 0.031686465550794615
+          },
+          "first_run_ms": {
+            "n": 5,
+            "median_ms": 425.312599982135,
+            "mean_ms": 409.3230600003153,
+            "min_ms": 367.0898000127636,
+            "max_ms": 439.31440002052113,
+            "p05_ms": 371.3976200087927,
+            "p95_ms": 436.7054400150664,
+            "mad_ms": 14.001800038386136,
+            "stdev_ms": 30.22510376474381,
+            "rsd": 0.07106562036020893
+          },
+          "per_repeat_median_ms": [
+            317.7925999625586,
+            307.38860002020374,
+            305.58310000924394,
+            346.738499996718,
+            310.7849999796599
+          ],
+          "samples_ms": [
+            324.8011,
+            328.2406,
+            312.1236,
+            306.1274,
+            299.5501,
+            314.1061,
+            324.2714,
+            317.7926,
+            316.1032,
+            320.0818,
+            299.8471,
+            436.3975,
+            317.2695,
+            301.5604,
+            307.3886,
+            302.6663,
+            300.1951,
+            354.6464,
+            310.1168,
+            301.6171,
+            312.6036,
+            303.7722,
+            303.7368,
+            299.9303,
+            336.4633,
+            389.2536,
+            311.3087,
+            302.2388,
+            305.5831,
+            299.1665,
+            408.1364,
+            352.1349,
+            346.7385,
+            363.2694,
+            340.8031,
+            323.7688,
+            323.0919,
+            352.252,
+            340.9686,
+            329.4211,
+            302.8773,
+            299.0645,
+            447.6586,
+            395.8474,
+            320.2815,
+            347.94,
+            310.785,
+            304.138,
+            304.8965,
+            302.9335
+          ]
+        },
+        "cuda": {
+          "role": "baseline",
+          "providers": [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider"
+          ],
+          "latency": {
+            "n": 50,
+            "median_ms": 19.107600004645064,
+            "mean_ms": 19.0967759990599,
+            "min_ms": 18.25319998897612,
+            "max_ms": 20.015400019474328,
+            "p05_ms": 18.346490000840276,
+            "p95_ms": 19.919860005029477,
+            "mad_ms": 0.2161499869544059,
+            "stdev_ms": 0.41208702530121993,
+            "rsd": 0.02156665542512097,
+            "provenance_class": "MEASUREMENT"
+          },
+          "throughput": {
+            "unit": "images/s",
+            "value": 209.34078581441932,
+            "divisor": 4,
+            "divisor_meaning": "images in one batch"
+          },
+          "session_build_ms": {
+            "n": 5,
+            "median_ms": 448.28890002099797,
+            "mean_ms": 469.6939200046472,
+            "min_ms": 401.87160001369193,
+            "max_ms": 544.0278999740258,
+            "p05_ms": 404.9657600116916,
+            "p95_ms": 542.6100799813867,
+            "mad_ms": 46.41730000730604,
+            "stdev_ms": 66.79471925422037,
+            "rsd": 0.1489992708967179
+          },
+          "first_run_ms": {
+            "n": 5,
+            "median_ms": 278.34119996987283,
+            "mean_ms": 281.0352999949828,
+            "min_ms": 249.25729999085888,
+            "max_ms": 307.74750001728535,
+            "p05_ms": 252.34939998481423,
+            "p95_ms": 307.2205400210805,
+            "mad_ms": 26.7715000663884,
+            "stdev_ms": 25.380224040370354,
+            "rsd": 0.09118385651537561
+          },
+          "per_repeat_median_ms": [
+            19.07720003509894,
+            19.33939999435097,
+            19.06249998137355,
+            19.350200018379837,
+            19.270599994342774
+          ],
+          "samples_ms": [
+            18.3357,
+            18.7008,
+            18.8596,
+            18.9749,
+            19.0472,
+            19.1388,
+            19.1041,
+            19.1147,
+            19.1111,
+            19.0772,
+            18.8984,
+            18.6498,
+            18.7748,
+            19.2548,
+            19.6318,
+            19.4886,
+            19.5024,
+            20.0154,
+            19.3394,
+            18.8513,
+            18.3466,
+            18.2532,
+            18.9156,
+            19.0083,
+            19.0698,
+            19.2147,
+            19.1642,
+            19.0781,
+            19.0625,
+            19.0459,
+            19.5239,
+            18.7205,
+            18.5966,
+            19.1863,
+            19.9955,
+            19.3502,
+            19.9384,
+            19.331,
+            19.1201,
+            19.8972,
+            18.3464,
+            18.3866,
+            18.7939,
+            18.9784,
+            19.2706,
+            19.1737,
+            19.2755,
+            19.2768,
+            19.3243,
+            19.3232
+          ]
+        },
+        "cpu": {
+          "role": "reference",
+          "providers": [
+            "CPUExecutionProvider"
+          ],
+          "latency": {
+            "n": 50,
+            "median_ms": 33.80544998799451,
+            "mean_ms": 38.834798000752926,
+            "min_ms": 28.964799945242703,
+            "max_ms": 99.37209996860474,
+            "p05_ms": 29.720704987994395,
+            "p95_ms": 59.900184976868324,
+            "mad_ms": 3.5025000106543303,
+            "stdev_ms": 12.428742216302712,
+            "rsd": 0.3676549852380782,
+            "provenance_class": "MEASUREMENT"
+          },
+          "throughput": {
+            "unit": "images/s",
+            "value": 118.32411641970567,
+            "divisor": 4,
+            "divisor_meaning": "images in one batch"
+          },
+          "session_build_ms": {
+            "n": 5,
+            "median_ms": 508.3863000036217,
+            "mean_ms": 491.4577800082043,
+            "min_ms": 424.2115000379272,
+            "max_ms": 543.1423999834806,
+            "p05_ms": 429.0926400339231,
+            "p95_ms": 541.1002199864015,
+            "mad_ms": 34.756099979858845,
+            "stdev_ms": 52.524569595497404,
+            "rsd": 0.10331625693910954
+          },
+          "first_run_ms": {
+            "n": 5,
+            "median_ms": 43.60500001348555,
+            "mean_ms": 44.47744000935927,
+            "min_ms": 41.183300025295466,
+            "max_ms": 50.41610001353547,
+            "p05_ms": 41.626480023842305,
+            "p95_ms": 49.08960000611842,
+            "mad_ms": 0.2057999954558909,
+            "stdev_ms": 3.482965973720523,
+            "rsd": 0.07987538063624262
+          },
+          "per_repeat_median_ms": [
+            47.48079995624721,
+            30.455200001597404,
+            44.453200011048466,
+            34.30960001423955,
+            31.216600036714226
+          ],
+          "samples_ms": [
+            47.4808,
+            38.2161,
+            37.6346,
+            58.7833,
+            66.5003,
+            54.0876,
+            46.7886,
+            45.4541,
+            48.6322,
+            39.3289,
+            30.7814,
+            28.9648,
+            31.8298,
+            29.6339,
+            30.9366,
+            31.3213,
+            29.7487,
+            29.6978,
+            30.3384,
+            30.4552,
+            45.1278,
+            33.7537,
+            45.5511,
+            43.818,
+            37.7282,
+            38.8511,
+            99.3721,
+            44.4532,
+            60.814,
+            43.1096,
+            42.3839,
+            33.2815,
+            30.8164,
+            37.2898,
+            32.4705,
+            34.3096,
+            31.3951,
+            37.3261,
+            33.8572,
+            36.8873,
+            32.4072,
+            32.2643,
+            31.2166,
+            30.6511,
+            31.3346,
+            30.9132,
+            30.937,
+            31.4472,
+            30.7593,
+            30.5988
+          ]
+        }
+      },
+      "vulkan_vs_cuda": {
+        "n": 5,
+        "median": 16.12741689780787,
+        "min": 15.894422790261943,
+        "max": 17.91911709787845,
+        "ratios": [
+          16.658241,
+          15.894423,
+          16.030589,
+          17.919117,
+          16.127417
+        ],
+        "baseline": "cuda",
+        "candidate": "vulkan",
+        "polarity": "ratio = median(vulkan ms) / median(cuda ms), computed per repeat and then aggregated. ratio > 1 means vulkan takes LONGER than cuda (is slower); ratio < 1 means vulkan is faster.",
+        "provenance_class": "MEASUREMENT"
+      },
+      "vulkan_vs_cpu": {
+        "n": 5,
+        "median": 9.955760704693716,
+        "min": 6.693075943442388,
+        "max": 10.106165616993808,
+        "ratios": [
+          6.693076,
+          10.09314,
+          6.874266,
+          10.106166,
+          9.955761
+        ],
+        "baseline": "cpu",
+        "candidate": "vulkan",
+        "polarity": "ratio = median(vulkan ms) / median(cpu ms), computed per repeat and then aggregated. ratio > 1 means vulkan takes LONGER than cpu (is slower); ratio < 1 means vulkan is faster.",
+        "provenance_class": "MEASUREMENT"
+      },
+      "cuda_vs_cpu": {
+        "n": 5,
+        "median": 0.5639879220494819,
+        "min": 0.40178767107290253,
+        "max": 0.635011426401291,
+        "ratios": [
+          0.401788,
+          0.635011,
+          0.428822,
+          0.563988,
+          0.617319
+        ],
+        "baseline": "cpu",
+        "candidate": "cuda",
+        "polarity": "ratio = median(cuda ms) / median(cpu ms), computed per repeat and then aggregated. ratio > 1 means cuda takes LONGER than cpu (is slower); ratio < 1 means cuda is faster.",
+        "provenance_class": "MEASUREMENT"
+      }
+    },
+    {
+      "case": "resnet50-v1-12/batch/N16",
+      "batch": 16,
+      "feeds_sha256": "d993d44fec052b8c3547f557c6f69112d18ba769bfdd9e6fe381b48c531830af",
+      "arms": {
+        "vulkan": {
+          "role": "candidate",
+          "providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ],
+          "latency": {
+            "n": 50,
+            "median_ms": 1251.464999979362,
+            "mean_ms": 1288.1385679997038,
+            "min_ms": 1212.579699989874,
+            "max_ms": 1530.559099977836,
+            "p05_ms": 1216.3566399918636,
+            "p95_ms": 1480.6023049895884,
+            "mad_ms": 29.974999983096495,
+            "stdev_ms": 87.84890081133487,
+            "rsd": 0.07019684994209474,
+            "provenance_class": "MEASUREMENT"
+          },
+          "throughput": {
+            "unit": "images/s",
+            "value": 12.785015961504204,
+            "divisor": 16,
+            "divisor_meaning": "images in one batch"
+          },
+          "session_build_ms": {
+            "n": 5,
+            "median_ms": 414.0408000093885,
+            "mean_ms": 435.3314199950546,
+            "min_ms": 367.38640000112355,
+            "max_ms": 545.520999992732,
+            "p05_ms": 373.5659800004214,
+            "p95_ms": 526.7017199890688,
+            "mad_ms": 37.38379996502772,
+            "stdev_ms": 68.63497527384862,
+            "rsd": 0.1657686278074342
+          },
+          "first_run_ms": {
+            "n": 5,
+            "median_ms": 1288.3046999922954,
+            "mean_ms": 1341.807840007823,
+            "min_ms": 1276.5789999975823,
+            "max_ms": 1537.0705000241287,
+            "p05_ms": 1277.409840002656,
+            "p95_ms": 1494.9267600197345,
+            "mad_ms": 11.725699994713068,
+            "stdev_ms": 110.92102458414344,
+            "rsd": 0.08609843974395716
+          },
+          "per_repeat_median_ms": [
+            1224.8622000333853,
+            1261.9416000088677,
+            1224.5053999940865,
+            1421.3086999952793,
+            1275.8928000112064
+          ],
+          "samples_ms": [
+            1212.5797,
+            1217.9001,
+            1251.7903,
+            1224.8622,
+            1221.8321,
+            1213.2488,
+            1237.4607,
+            1221.1479,
+            1371.6705,
+            1378.3308,
+            1218.705,
+            1270.3198,
+            1264.386,
+            1236.7943,
+            1258.892,
+            1223.6857,
+            1261.9416,
+            1272.3932,
+            1241.6111,
+            1303.6891,
+            1251.1397,
+            1219.3399,
+            1275.2662,
+            1400.321,
+            1216.9821,
+            1221.0087,
+            1222.2296,
+            1239.4362,
+            1224.5054,
+            1219.8294,
+            1485.4979,
+            1439.7994,
+            1421.3087,
+            1414.9559,
+            1530.5591,
+            1250.2382,
+            1232.8559,
+            1229.776,
+            1331.9788,
+            1493.4777,
+            1259.3941,
+            1396.1612,
+            1474.6188,
+            1341.2406,
+            1273.1241,
+            1232.1408,
+            1275.8928,
+            1290.7709,
+            1215.8449,
+            1223.9935
+          ]
+        },
+        "cuda": {
+          "role": "baseline",
+          "providers": [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider"
+          ],
+          "latency": {
+            "n": 50,
+            "median_ms": 67.50079998164438,
+            "mean_ms": 67.7450159995351,
+            "min_ms": 65.24160003755242,
+            "max_ms": 73.29960004426539,
+            "p05_ms": 65.92339500202797,
+            "p95_ms": 71.52154997456819,
+            "mad_ms": 0.7753999962005764,
+            "stdev_ms": 1.62138171953704,
+            "rsd": 0.02402018524192225,
+            "provenance_class": "MEASUREMENT"
+          },
+          "throughput": {
+            "unit": "images/s",
+            "value": 237.0342278069432,
+            "divisor": 16,
+            "divisor_meaning": "images in one batch"
+          },
+          "session_build_ms": {
+            "n": 5,
+            "median_ms": 442.37569998949766,
+            "mean_ms": 442.2920000157319,
+            "min_ms": 409.5738000469282,
+            "max_ms": 484.0773000032641,
+            "p05_ms": 410.9549000393599,
+            "p95_ms": 479.05262000858784,
+            "mad_ms": 25.896399980410933,
+            "stdev_ms": 30.661104447030738,
+            "rsd": 0.06931010100183771
+          },
+          "first_run_ms": {
+            "n": 5,
+            "median_ms": 287.8292999812402,
+            "mean_ms": 282.8443000209518,
+            "min_ms": 256.3205999904312,
+            "max_ms": 303.8232000544667,
+            "p05_ms": 259.580220002681,
+            "p95_ms": 301.7845000489615,
+            "mad_ms": 15.210599929559976,
+            "stdev_ms": 18.637052359145173,
+            "rsd": 0.06475036544354545
+          },
+          "per_repeat_median_ms": [
+            67.50409997766837,
+            67.49970000237226,
+            66.80289999349043,
+            68.38720000814646,
+            67.15720001375303
+          ],
+          "samples_ms": [
+            72.3887,
+            67.9918,
+            65.9405,
+            66.5128,
+            67.5041,
+            68.8702,
+            67.2249,
+            65.9094,
+            67.5019,
+            68.9512,
+            73.2996,
+            68.2878,
+            65.2416,
+            65.4333,
+            67.4997,
+            67.6851,
+            67.4215,
+            66.5861,
+            66.7388,
+            68.4714,
+            68.4656,
+            66.3348,
+            66.5695,
+            66.6469,
+            66.8029,
+            66.3081,
+            67.3855,
+            67.8321,
+            67.7671,
+            66.737,
+            72.4016,
+            67.8443,
+            67.2945,
+            67.646,
+            68.5062,
+            69.9323,
+            67.5509,
+            68.2069,
+            68.3872,
+            70.4617,
+            66.7091,
+            68.6206,
+            66.9079,
+            67.754,
+            67.099,
+            67.1572,
+            67.6565,
+            67.013,
+            67.2978,
+            66.4942
+          ]
+        },
+        "cpu": {
+          "role": "reference",
+          "providers": [
+            "CPUExecutionProvider"
+          ],
+          "latency": {
+            "n": 50,
+            "median_ms": 139.08434996847063,
+            "mean_ms": 143.1293779972475,
+            "min_ms": 127.36340000992641,
+            "max_ms": 179.7808000119403,
+            "p05_ms": 129.36620001564734,
+            "p95_ms": 167.97651998640504,
+            "mad_ms": 8.805349963949993,
+            "stdev_ms": 13.95328022268294,
+            "rsd": 0.10032243186128449,
+            "provenance_class": "MEASUREMENT"
+          },
+          "throughput": {
+            "unit": "images/s",
+            "value": 115.03810460074824,
+            "divisor": 16,
+            "divisor_meaning": "images in one batch"
+          },
+          "session_build_ms": {
+            "n": 5,
+            "median_ms": 484.03829999733716,
+            "mean_ms": 487.05880001652986,
+            "min_ms": 444.51699999626726,
+            "max_ms": 526.680100010708,
+            "p05_ms": 452.3017800063826,
+            "p95_ms": 520.667620014865,
+            "mad_ms": 12.579400034155697,
+            "stdev_ms": 29.551807695322672,
+            "rsd": 0.06105262268602556
+          },
+          "first_run_ms": {
+            "n": 5,
+            "median_ms": 155.276799981948,
+            "mean_ms": 162.13563998462632,
+            "min_ms": 149.5114999706857,
+            "max_ms": 187.09989998023957,
+            "p05_ms": 150.00249998411164,
+            "p95_ms": 183.04461997468024,
+            "mad_ms": 5.765300011262298,
+            "stdev_ms": 15.451652927261344,
+            "rsd": 0.09951037713977688
+          },
+          "per_repeat_median_ms": [
+            146.35370002361014,
+            130.41800004430115,
+            140.56170004187152,
+            161.49990004487336,
+            131.7457999684848
+          ],
+          "samples_ms": [
+            150.0181,
+            150.1762,
+            141.8048,
+            139.0035,
+            164.4192,
+            150.1254,
+            139.632,
+            137.8893,
+            146.3537,
+            135.0797,
+            132.6909,
+            139.1652,
+            132.061,
+            129.5414,
+            130.14,
+            129.2906,
+            130.0646,
+            127.3634,
+            130.6331,
+            130.418,
+            166.2083,
+            156.5782,
+            166.3142,
+            152.293,
+            140.5617,
+            136.6525,
+            136.3302,
+            137.963,
+            133.7307,
+            133.9496,
+            140.1792,
+            161.4999,
+            179.7808,
+            177.1954,
+            151.4102,
+            145.0457,
+            157.3449,
+            162.972,
+            157.8356,
+            169.3366,
+            128.5584,
+            129.6109,
+            131.9628,
+            129.4586,
+            129.9135,
+            131.7458,
+            131.4497,
+            135.8406,
+            139.64,
+            139.2368
+          ]
+        }
+      },
+      "vulkan_vs_cuda": {
+        "n": 5,
+        "median": 18.695514201759668,
+        "min": 18.14500453214831,
+        "max": 20.78325622084205,
+        "ratios": [
+          18.145005,
+          18.695514,
+          18.330123,
+          20.783256,
+          18.9986
+        ],
+        "baseline": "cuda",
+        "candidate": "vulkan",
+        "polarity": "ratio = median(vulkan ms) / median(cuda ms), computed per repeat and then aggregated. ratio > 1 means vulkan takes LONGER than cuda (is slower); ratio < 1 means vulkan is faster.",
+        "provenance_class": "MEASUREMENT"
+      },
+      "vulkan_vs_cpu": {
+        "n": 5,
+        "median": 8.80067851187749,
+        "min": 8.369191894948932,
+        "max": 9.684504555867553,
+        "ratios": [
+          8.369192,
+          9.676131,
+          8.711515,
+          8.800679,
+          9.684505
+        ],
+        "baseline": "cpu",
+        "candidate": "vulkan",
+        "polarity": "ratio = median(vulkan ms) / median(cpu ms), computed per repeat and then aggregated. ratio > 1 means vulkan takes LONGER than cpu (is slower); ratio < 1 means vulkan is faster.",
+        "provenance_class": "MEASUREMENT"
+      },
+      "cuda_vs_cpu": {
+        "n": 5,
+        "median": 0.4752567731721422,
+        "min": 0.42345041692994745,
+        "max": 0.5175642931147815,
+        "ratios": [
+          0.461239,
+          0.517564,
+          0.475257,
+          0.42345,
+          0.509748
+        ],
+        "baseline": "cpu",
+        "candidate": "cuda",
+        "polarity": "ratio = median(cuda ms) / median(cpu ms), computed per repeat and then aggregated. ratio > 1 means cuda takes LONGER than cpu (is slower); ratio < 1 means cuda is faster.",
+        "provenance_class": "MEASUREMENT"
+      }
+    }
+  ],
+  "diagnostics": {
+    "runs": [
+      {
+        "arm": "vulkan",
+        "batch": 1,
+        "case": "resnet50-v1-12/batch/N1",
+        "ep_registration": {
+          "registered": true,
+          "path": "C:\\Users\\justinchu\\.copilot\\repos\\wt-122-niobe\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+          "sha256": "9a1ad7550e7b7dd3f6bf518e423ecd4f277ab59e57778627348b0ddc89723561",
+          "bytes": 2563072
+        },
+        "cuda_preload": {
+          "called": false
+        },
+        "inferences": 3,
+        "profile": {
+          "provenance_class": "MEASUREMENT",
+          "counts": {
+            "VulkanExecutionProvider": 150,
+            "CPUExecutionProvider": 162
+          },
+          "microseconds": {
+            "VulkanExecutionProvider": 2659433,
+            "CPUExecutionProvider": 12728
+          },
+          "by_op": [
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_20",
+              "microseconds": 86377,
+              "nodes": 3,
+              "share_of_node_time": 0.03232477384409098
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_11",
+              "microseconds": 66035,
+              "nodes": 3,
+              "share_of_node_time": 0.024712208583240306
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_23",
+              "microseconds": 63826,
+              "nodes": 3,
+              "share_of_node_time": 0.023885536837039385
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_44",
+              "microseconds": 58975,
+              "nodes": 3,
+              "share_of_node_time": 0.022070152210140033
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_0",
+              "microseconds": 57939,
+              "nodes": 3,
+              "share_of_node_time": 0.02168245101997971
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_26",
+              "microseconds": 56245,
+              "nodes": 3,
+              "share_of_node_time": 0.021048507182014856
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_18",
+              "microseconds": 56240,
+              "nodes": 3,
+              "share_of_node_time": 0.0210466360372747
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_6",
+              "microseconds": 55975,
+              "nodes": 3,
+              "share_of_node_time": 0.02094746536604643
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_4",
+              "microseconds": 55597,
+              "nodes": 3,
+              "share_of_node_time": 0.02080600682369064
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_28",
+              "microseconds": 55528,
+              "nodes": 3,
+              "share_of_node_time": 0.020780185026276484
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_41",
+              "microseconds": 55197,
+              "nodes": 3,
+              "share_of_node_time": 0.020656315244478158
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_1",
+              "microseconds": 54584,
+              "nodes": 3,
+              "share_of_node_time": 0.020426912899335032
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_36",
+              "microseconds": 54479,
+              "nodes": 3,
+              "share_of_node_time": 0.020387618859791755
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_29",
+              "microseconds": 53994,
+              "nodes": 3,
+              "share_of_node_time": 0.020206117819996625
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_39",
+              "microseconds": 53770,
+              "nodes": 3,
+              "share_of_node_time": 0.020122290535637636
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_33",
+              "microseconds": 53490,
+              "nodes": 3,
+              "share_of_node_time": 0.0200175064301889
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_24",
+              "microseconds": 53315,
+              "nodes": 3,
+              "share_of_node_time": 0.01995201636428344
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_31",
+              "microseconds": 53266,
+              "nodes": 3,
+              "share_of_node_time": 0.01993367914582991
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_47",
+              "microseconds": 52957,
+              "nodes": 3,
+              "share_of_node_time": 0.01981804240088827
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_32",
+              "microseconds": 52560,
+              "nodes": 3,
+              "share_of_node_time": 0.019669473508519882
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_22",
+              "microseconds": 52419,
+              "nodes": 3,
+              "share_of_node_time": 0.019616707226847486
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_12",
+              "microseconds": 52338,
+              "nodes": 3,
+              "share_of_node_time": 0.019586394682056956
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_35",
+              "microseconds": 52256,
+              "nodes": 3,
+              "share_of_node_time": 0.019555707908318398
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_7",
+              "microseconds": 52221,
+              "nodes": 3,
+              "share_of_node_time": 0.019542609895137307
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_8",
+              "microseconds": 52178,
+              "nodes": 3,
+              "share_of_node_time": 0.019526518050371963
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_43",
+              "microseconds": 51846,
+              "nodes": 3,
+              "share_of_node_time": 0.019402274039625605
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_21",
+              "microseconds": 51719,
+              "nodes": 3,
+              "share_of_node_time": 0.019354746963225644
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_40",
+              "microseconds": 51667,
+              "nodes": 3,
+              "share_of_node_time": 0.019335287057928023
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_48",
+              "microseconds": 51636,
+              "nodes": 3,
+              "share_of_node_time": 0.019323685960539055
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_46",
+              "microseconds": 51584,
+              "nodes": 3,
+              "share_of_node_time": 0.01930422605524143
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_17",
+              "microseconds": 51500,
+              "nodes": 3,
+              "share_of_node_time": 0.019272790823606813
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_2",
+              "microseconds": 51006,
+              "nodes": 3,
+              "share_of_node_time": 0.0190879217232794
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_5",
+              "microseconds": 50977,
+              "nodes": 3,
+              "share_of_node_time": 0.019077069083786494
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_34",
+              "microseconds": 50680,
+              "nodes": 3,
+              "share_of_node_time": 0.018965923086221227
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_15",
+              "microseconds": 50512,
+              "nodes": 3,
+              "share_of_node_time": 0.018903052622951985
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_10",
+              "microseconds": 50405,
+              "nodes": 3,
+              "share_of_node_time": 0.01886301012551265
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_14",
+              "microseconds": 50109,
+              "nodes": 3,
+              "share_of_node_time": 0.01875223835689541
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_30",
+              "microseconds": 49906,
+              "nodes": 3,
+              "share_of_node_time": 0.018676269880445077
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_42",
+              "microseconds": 49682,
+              "nodes": 3,
+              "share_of_node_time": 0.018592442596086087
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_9",
+              "microseconds": 49662,
+              "nodes": 3,
+              "share_of_node_time": 0.018584958017125466
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_13",
+              "microseconds": 49247,
+              "nodes": 3,
+              "share_of_node_time": 0.018429653003692516
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_25",
+              "microseconds": 49116,
+              "nodes": 3,
+              "share_of_node_time": 0.018380629011500428
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_49",
+              "microseconds": 48909,
+              "nodes": 3,
+              "share_of_node_time": 0.018303163619257972
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_27",
+              "microseconds": 48881,
+              "nodes": 3,
+              "share_of_node_time": 0.0182926852087131
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_16",
+              "microseconds": 48742,
+              "nodes": 3,
+              "share_of_node_time": 0.01824066738493676
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_45",
+              "microseconds": 48737,
+              "nodes": 3,
+              "share_of_node_time": 0.018238796240196604
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_19",
+              "microseconds": 48616,
+              "nodes": 3,
+              "share_of_node_time": 0.01819351453748483
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_37",
+              "microseconds": 47763,
+              "nodes": 3,
+              "share_of_node_time": 0.017874297244814215
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_3",
+              "microseconds": 47602,
+              "nodes": 3,
+              "share_of_node_time": 0.017814046384181194
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_38",
+              "microseconds": 47168,
+              "nodes": 3,
+              "share_of_node_time": 0.01765163102073565
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Relu",
+              "microseconds": 10934,
+              "nodes": 147,
+              "share_of_node_time": 0.004091819317773143
+            },
+            {
+              "provider_op": "CPUExecutionProvider::ReorderInput",
+              "microseconds": 1129,
+              "nodes": 3,
+              "share_of_node_time": 0.00042250448232722507
+            },
+            {
+              "provider_op": "CPUExecutionProvider::MaxPool",
+              "microseconds": 331,
+              "nodes": 3,
+              "share_of_node_time": 0.00012386978179832728
+            },
+            {
+              "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+              "microseconds": 138,
+              "nodes": 3,
+              "share_of_node_time": 5.164359482830563e-05
+            },
+            {
+              "provider_op": "CPUExecutionProvider::ReorderOutput",
+              "microseconds": 136,
+              "nodes": 3,
+              "share_of_node_time": 5.089513693224323e-05
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Flatten",
+              "microseconds": 60,
+              "nodes": 3,
+              "share_of_node_time": 2.2453736881872012e-05
+            }
+          ],
+          "node_microseconds_total": 2672161,
+          "cpu_fallback_op_types": {
+            "Relu": 147,
+            "ReorderInput": 3,
+            "MaxPool": 3,
+            "ReorderOutput": 3,
+            "GlobalAveragePool": 3,
+            "Flatten": 3
+          },
+          "transfer_nodes": {
+            "nodes": 0,
+            "microseconds": 0,
+            "share_of_node_time": 0.0,
+            "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+          }
+        },
+        "session_providers": [
+          "VulkanExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "counters": {
+          "abi_version": 8,
+          "compile_calls": 1,
+          "subgraphs_live": 50,
+          "subgraphs_stub": 0,
+          "compute_calls": 150,
+          "compute_failures": 0,
+          "device_losses": 0,
+          "outputs_device_resident": 0,
+          "outputs_host_resident": 150,
+          "outputs_device_bound": 0,
+          "outputs_bind_attempted": 150,
+          "outputs_bind_declined": 150,
+          "dispatches_executed": 210,
+          "claimed_nodes": 71,
+          "islands_offered": 50,
+          "viable_islands_retained": 50,
+          "net_benefit_gate": "EVALUATED",
+          "net_benefit_gate_clusters_seen": 51,
+          "net_benefit_gate_evaluations": 51,
+          "net_benefit_gate_bypasses": 0,
+          "net_benefit_sole_island_overrides": 0,
+          "net_benefit_override_reason": "UNOBSERVABLE",
+          "broken_commitments": 0,
+          "broken_commitment_warns_to_ort_sink": 0,
+          "broken_commitment_warn_channel": "UNOBSERVABLE",
+          "compute_failures_injected": 0,
+          "queue_submit_contentions": 0,
+          "fault_injection": "NONE",
+          "proven_key_lookups": 120,
+          "ledger_hits": 71,
+          "ledger_gate": "MIXED",
+          "ledger_miss": "KEY-ABSENT",
+          "ledger_entries": 133,
+          "ledger_faults": 0,
+          "ledger_entry_faults": 0,
+          "unproven_declines": 49,
+          "unproven_forms_claimed": 0,
+          "unproven_forms_enabled": [],
+          "device_unattributed_claims": 71,
+          "device_unattributed_forms": [
+            "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32/runtime-extent/n3 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+            "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/runtime-extent/n2 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+            "ai.onnx::GlobalAveragePool/1+/f32>f32/global_average_pool_f32/runtime-extent/n1 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+            "ai.onnx::Gemm/7+/f32,f32,f32>f32/gemm_f32/runtime-extent/n3 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity."
+          ],
+          "proven_elsewhere_claims": 0,
+          "subject_changed_declines": 0,
+          "proven_elsewhere_forms": [],
+          "source_cosmetic_forms": [],
+          "subject_changed_forms": [],
+          "unproven_decline_forms": [
+            "ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/runtime-extent/n1"
+          ],
+          "unprovable_decline_forms": [],
+          "ledger_subject_changed_entries": 0,
+          "ledger_toolchain_delta_entries": 0,
+          "running_device_names": "NVIDIA RTX A1000",
+          "running_device_uuids": "uuid:aadf33d4d118155fcc60c22b5c352463",
+          "reproof_forms_admitted": [],
+          "shaders_dispatched": [
+            "conv_f32",
+            "ew_binary_add_f32",
+            "gemm_f32"
+          ],
+          "shaders_dispatched_digest": "d05bf2400c6b9f32",
+          "shaders_dispatched_source_digest": "f2af7e1b76430732",
+          "shader_toolchain": "shaderc v2026.2 v2026.2",
+          "pipeline_variants": [
+            "conv_f32:256",
+            "ew_binary_add_f32:256,1",
+            "gemm_f32:256"
+          ],
+          "gemv_packed_spec_constant": "UNOBSERVABLE",
+          "shaders_dispatched_spec_digest": "e2085fc0091ecf29",
+          "specialisation_delta_forms": [],
+          "specialisation_unrecorded_forms": [],
+          "ledger_specialisation_unrecorded_entries": 0,
+          "kv_cache_convention": "UNOBSERVABLE",
+          "session_disclosures": 1,
+          "claimed_forms_proven": 0,
+          "claimed_forms_device_unattributed": 4,
+          "claimed_forms_unmeasured": 0,
+          "claimed_forms_divergent": 0,
+          "claimed_forms_ledger_faulted": 0,
+          "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+          "session_disclosure_warns": 0,
+          "session_disclosure_warns_to_ort_sink": 0,
+          "session_disclosure_channel": "UNOBSERVABLE",
+          "session_disclosure_infos": 1,
+          "session_disclosure_infos_to_ort_sink": 0,
+          "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+          "session_disclosure_infos_to_stderr": 1,
+          "session_disclosure_infos_reached_user": 1,
+          "session_disclosure_info_escalations": 0,
+          "session_disclosure_stderr_failures": 0,
+          "session_disclosure_info_reach": "REACHED_USER",
+          "stderr_fault_injection": "NONE",
+          "ort_sink_severity_threshold": "WARNING",
+          "model_output_equivalence": "UNMEASURED",
+          "pointers_observed": 0,
+          "pointers_host": 0,
+          "pointers_at_base": 0,
+          "pointers_interior": 0,
+          "pointers_in_guard_band": 0,
+          "pointers_use_after_free": 0,
+          "pointer_max_offset": 0,
+          "alloc_allocations": 0,
+          "alloc_frees": 0,
+          "alloc_bytes": 0,
+          "alloc_high_water_bytes": 0,
+          "alloc_device_backed_spans": 0,
+          "alloc_staged_spans": 0,
+          "alloc_staged_bytes": 0,
+          "alloc_allocators_released": 0,
+          "alloc_allocators_live": 0,
+          "alloc_frees_after_release": 0,
+          "alloc_live_at_release_spans": 0,
+          "alloc_live_at_release_bytes": 0,
+          "alloc_device_uploads": 0,
+          "alloc_device_upload_bytes": 0,
+          "alloc_device_downloads": 0,
+          "alloc_device_download_bytes": 0,
+          "alloc_unified_memory": 0,
+          "alloc_quarantine_peak_spans": 0,
+          "alloc_quarantine_retired": 0,
+          "alloc_device_buffer_binds": 0,
+          "alloc_failed_lookups": 0,
+          "alloc_device_authoritative_ceiling": 0,
+          "alloc_device_residency_evaluations": 0,
+          "alloc_device_authoritative_spans": "UNOBSERVABLE",
+          "alloc_device_authority_grants": 0,
+          "alloc_device_attach_attempts": 0,
+          "alloc_device_attach_failures": 0,
+          "alloc_device_attach_unavailable": 0,
+          "alloc_device_memory_budget_bytes": 0,
+          "alloc_device_frame": "OFF",
+          "alloc_device_frame_device": "",
+          "alloc_device_frames_declared": 0,
+          "alloc_device_frame_allocator_index": "unset",
+          "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+          "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+          "session_staging_uploads": 150,
+          "session_staging_upload_bytes": 272195296,
+          "session_staging_upload_us": 30379,
+          "session_staging_readbacks": 150,
+          "session_staging_readback_bytes": 108994272,
+          "session_staging_readback_us": 11158,
+          "session_device_allocs": 627,
+          "session_device_frees": 627,
+          "session_device_bytes_in_use": 0,
+          "session_device_high_water_bytes": 113236752,
+          "weight_cache_release_calls": 50,
+          "weight_cache_release_buffers": 53,
+          "weight_cache_release_bytes": 101995264,
+          "weight_cache_bytes_resident": 0,
+          "transient_input_device_allocs": 416,
+          "transient_input_device_bytes": 272195296,
+          "transient_input_device_peak_bytes": 13502464,
+          "transient_input_reuses": 0,
+          "transient_input_reused_bytes": 0,
+          "transient_input_arena_resident_bytes": 0,
+          "transient_input_arena_buffers": 0,
+          "transient_input_arena_releases": 0,
+          "counters_snapshot_writes": 151,
+          "counters_snapshot_write_failures": 0
+        },
+        "dispatch": {
+          "islands": 50,
+          "compute_calls": 150,
+          "dispatches_executed": 210,
+          "compute_failures": 0,
+          "inferences": 3,
+          "dispatches_per_inference": 70.0,
+          "island_crossings_per_inference": 50,
+          "outputs_host_resident": 150,
+          "outputs_device_resident": 0,
+          "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+        }
+      },
+      {
+        "arm": "cuda",
+        "batch": 1,
+        "case": "resnet50-v1-12/batch/N1",
+        "ep_registration": {
+          "registered": false,
+          "reason": "arm does not use the Vulkan EP"
+        },
+        "cuda_preload": {
+          "called": true,
+          "ok": true
+        },
+        "inferences": 3,
+        "profile": {
+          "provenance_class": "MEASUREMENT",
+          "counts": {
+            "CUDAExecutionProvider": 366
+          },
+          "microseconds": {
+            "CUDAExecutionProvider": 258458
+          },
+          "by_op": [
+            {
+              "provider_op": "CUDAExecutionProvider::Conv",
+              "microseconds": 234673,
+              "nodes": 159,
+              "share_of_node_time": 0.9079734424935579
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::MaxPool",
+              "microseconds": 9603,
+              "nodes": 3,
+              "share_of_node_time": 0.03715497295498688
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Gemm",
+              "microseconds": 5911,
+              "nodes": 3,
+              "share_of_node_time": 0.022870253580852595
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Relu",
+              "microseconds": 4502,
+              "nodes": 147,
+              "share_of_node_time": 0.017418690851124748
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Add",
+              "microseconds": 3553,
+              "nodes": 48,
+              "share_of_node_time": 0.01374691439228037
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::GlobalAveragePool",
+              "microseconds": 170,
+              "nodes": 3,
+              "share_of_node_time": 0.0006577471001091086
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Flatten",
+              "microseconds": 46,
+              "nodes": 3,
+              "share_of_node_time": 0.00017797862708834704
+            }
+          ],
+          "node_microseconds_total": 258458,
+          "cpu_fallback_op_types": {},
+          "transfer_nodes": {
+            "nodes": 0,
+            "microseconds": 0,
+            "share_of_node_time": 0.0,
+            "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+          }
+        },
+        "session_providers": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "dispatch": {
+          "islands": null,
+          "compute_calls": null,
+          "dispatches_executed": null,
+          "compute_failures": null,
+          "inferences": 3,
+          "dispatches_per_inference": null,
+          "island_crossings_per_inference": null,
+          "outputs_host_resident": null,
+          "outputs_device_resident": null,
+          "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+        }
+      },
+      {
+        "arm": "cpu",
+        "batch": 1,
+        "case": "resnet50-v1-12/batch/N1",
+        "ep_registration": {
+          "registered": false,
+          "reason": "arm does not use the Vulkan EP"
+        },
+        "cuda_preload": {
+          "called": false
+        },
+        "inferences": 3,
+        "profile": {
+          "provenance_class": "MEASUREMENT",
+          "counts": {
+            "CPUExecutionProvider": 174
+          },
+          "microseconds": {
+            "CPUExecutionProvider": 36511
+          },
+          "by_op": [
+            {
+              "provider_op": "CPUExecutionProvider::Conv",
+              "microseconds": 34616,
+              "nodes": 159,
+              "share_of_node_time": 0.9480978335296212
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Gemm",
+              "microseconds": 950,
+              "nodes": 3,
+              "share_of_node_time": 0.026019555750321822
+            },
+            {
+              "provider_op": "CPUExecutionProvider::MaxPool",
+              "microseconds": 683,
+              "nodes": 3,
+              "share_of_node_time": 0.018706691134178742
+            },
+            {
+              "provider_op": "CPUExecutionProvider::ReorderOutput",
+              "microseconds": 105,
+              "nodes": 3,
+              "share_of_node_time": 0.0028758456355618854
+            },
+            {
+              "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+              "microseconds": 96,
+              "nodes": 3,
+              "share_of_node_time": 0.0026293445810851523
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Flatten",
+              "microseconds": 61,
+              "nodes": 3,
+              "share_of_node_time": 0.0016707293692311907
+            }
+          ],
+          "node_microseconds_total": 36511,
+          "cpu_fallback_op_types": {
+            "Conv": 159,
+            "MaxPool": 3,
+            "GlobalAveragePool": 3,
+            "ReorderOutput": 3,
+            "Flatten": 3,
+            "Gemm": 3
+          },
+          "transfer_nodes": {
+            "nodes": 0,
+            "microseconds": 0,
+            "share_of_node_time": 0.0,
+            "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+          }
+        },
+        "session_providers": [
+          "CPUExecutionProvider"
+        ],
+        "dispatch": {
+          "islands": null,
+          "compute_calls": null,
+          "dispatches_executed": null,
+          "compute_failures": null,
+          "inferences": 3,
+          "dispatches_per_inference": null,
+          "island_crossings_per_inference": null,
+          "outputs_host_resident": null,
+          "outputs_device_resident": null,
+          "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+        }
+      },
+      {
+        "arm": "vulkan",
+        "batch": 4,
+        "case": "resnet50-v1-12/batch/N4",
+        "ep_registration": {
+          "registered": true,
+          "path": "C:\\Users\\justinchu\\.copilot\\repos\\wt-122-niobe\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+          "sha256": "9a1ad7550e7b7dd3f6bf518e423ecd4f277ab59e57778627348b0ddc89723561",
+          "bytes": 2563072
+        },
+        "cuda_preload": {
+          "called": false
+        },
+        "inferences": 3,
+        "profile": {
+          "provenance_class": "MEASUREMENT",
+          "counts": {
+            "VulkanExecutionProvider": 150,
+            "CPUExecutionProvider": 162
+          },
+          "microseconds": {
+            "VulkanExecutionProvider": 3427260,
+            "CPUExecutionProvider": 31041
+          },
+          "by_op": [
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_15",
+              "microseconds": 112724,
+              "nodes": 3,
+              "share_of_node_time": 0.03259519631171492
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_22",
+              "microseconds": 104128,
+              "nodes": 3,
+              "share_of_node_time": 0.030109582711279326
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_49",
+              "microseconds": 92642,
+              "nodes": 3,
+              "share_of_node_time": 0.026788298647225907
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_48",
+              "microseconds": 85689,
+              "nodes": 3,
+              "share_of_node_time": 0.024777773825933602
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_0",
+              "microseconds": 80163,
+              "nodes": 3,
+              "share_of_node_time": 0.023179879368510722
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_35",
+              "microseconds": 78218,
+              "nodes": 3,
+              "share_of_node_time": 0.022617464471716024
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_38",
+              "microseconds": 73894,
+              "nodes": 3,
+              "share_of_node_time": 0.021367139528918968
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_12",
+              "microseconds": 73697,
+              "nodes": 3,
+              "share_of_node_time": 0.02131017514091457
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_5",
+              "microseconds": 73159,
+              "nodes": 3,
+              "share_of_node_time": 0.021154607421389866
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_4",
+              "microseconds": 72767,
+              "nodes": 3,
+              "share_of_node_time": 0.021041256964041015
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_46",
+              "microseconds": 72310,
+              "nodes": 3,
+              "share_of_node_time": 0.020909111150244006
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_10",
+              "microseconds": 72000,
+              "nodes": 3,
+              "share_of_node_time": 0.02081947175795282
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_17",
+              "microseconds": 71336,
+              "nodes": 3,
+              "share_of_node_time": 0.0206274699628517
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_43",
+              "microseconds": 71304,
+              "nodes": 3,
+              "share_of_node_time": 0.02061821686429261
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_45",
+              "microseconds": 69776,
+              "nodes": 3,
+              "share_of_node_time": 0.020176381408096057
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_28",
+              "microseconds": 68767,
+              "nodes": 3,
+              "share_of_node_time": 0.019884619644154746
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_2",
+              "microseconds": 68584,
+              "nodes": 3,
+              "share_of_node_time": 0.01983170348676995
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_31",
+              "microseconds": 67692,
+              "nodes": 3,
+              "share_of_node_time": 0.01957377336443531
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_32",
+              "microseconds": 67247,
+              "nodes": 3,
+              "share_of_node_time": 0.019445097462597965
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_11",
+              "microseconds": 67234,
+              "nodes": 3,
+              "share_of_node_time": 0.019441338391308332
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_8",
+              "microseconds": 66930,
+              "nodes": 3,
+              "share_of_node_time": 0.019353433954996977
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_7",
+              "microseconds": 66820,
+              "nodes": 3,
+              "share_of_node_time": 0.019321626428700105
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_13",
+              "microseconds": 66598,
+              "nodes": 3,
+              "share_of_node_time": 0.019257433057446417
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_27",
+              "microseconds": 66388,
+              "nodes": 3,
+              "share_of_node_time": 0.019196709598152388
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_6",
+              "microseconds": 66085,
+              "nodes": 3,
+              "share_of_node_time": 0.019109094321171003
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_18",
+              "microseconds": 65677,
+              "nodes": 3,
+              "share_of_node_time": 0.018991117314542602
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_9",
+              "microseconds": 65656,
+              "nodes": 3,
+              "share_of_node_time": 0.0189850449686132
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_40",
+              "microseconds": 65600,
+              "nodes": 3,
+              "share_of_node_time": 0.018968852046134792
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_44",
+              "microseconds": 65494,
+              "nodes": 3,
+              "share_of_node_time": 0.018938201157157806
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_37",
+              "microseconds": 65412,
+              "nodes": 3,
+              "share_of_node_time": 0.01891449009210014
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_36",
+              "microseconds": 65339,
+              "nodes": 3,
+              "share_of_node_time": 0.018893381461012215
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_42",
+              "microseconds": 64989,
+              "nodes": 3,
+              "share_of_node_time": 0.018792175695522165
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_23",
+              "microseconds": 64710,
+              "nodes": 3,
+              "share_of_node_time": 0.0187115002424601
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_24",
+              "microseconds": 64377,
+              "nodes": 3,
+              "share_of_node_time": 0.018615210185579566
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_26",
+              "microseconds": 63997,
+              "nodes": 3,
+              "share_of_node_time": 0.01850532964019037
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_20",
+              "microseconds": 63674,
+              "nodes": 3,
+              "share_of_node_time": 0.018411931176609556
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_30",
+              "microseconds": 63150,
+              "nodes": 3,
+              "share_of_node_time": 0.018260411687704453
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_21",
+              "microseconds": 62692,
+              "nodes": 3,
+              "share_of_node_time": 0.018127976714577478
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_41",
+              "microseconds": 62590,
+              "nodes": 3,
+              "share_of_node_time": 0.018098482462920375
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_33",
+              "microseconds": 62117,
+              "nodes": 3,
+              "share_of_node_time": 0.017961710099843826
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_3",
+              "microseconds": 62069,
+              "nodes": 3,
+              "share_of_node_time": 0.017947830452005188
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_39",
+              "microseconds": 61906,
+              "nodes": 3,
+              "share_of_node_time": 0.017900697481219825
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_1",
+              "microseconds": 61637,
+              "nodes": 3,
+              "share_of_node_time": 0.01782291362145747
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_16",
+              "microseconds": 61172,
+              "nodes": 3,
+              "share_of_node_time": 0.017688454533020693
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_34",
+              "microseconds": 60695,
+              "nodes": 3,
+              "share_of_node_time": 0.017550525532624258
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_25",
+              "microseconds": 58936,
+              "nodes": 3,
+              "share_of_node_time": 0.01704189427120427
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_14",
+              "microseconds": 58866,
+              "nodes": 3,
+              "share_of_node_time": 0.017021653118106262
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_29",
+              "microseconds": 56464,
+              "nodes": 3,
+              "share_of_node_time": 0.016327092407514558
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_19",
+              "microseconds": 52728,
+              "nodes": 3,
+              "share_of_node_time": 0.015246793150740783
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_47",
+              "microseconds": 51161,
+              "nodes": 3,
+              "share_of_node_time": 0.014793680480675338
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Relu",
+              "microseconds": 24559,
+              "nodes": 147,
+              "share_of_node_time": 0.007101463984771713
+            },
+            {
+              "provider_op": "CPUExecutionProvider::ReorderInput",
+              "microseconds": 4167,
+              "nodes": 3,
+              "share_of_node_time": 0.0012049269279915196
+            },
+            {
+              "provider_op": "CPUExecutionProvider::MaxPool",
+              "microseconds": 1588,
+              "nodes": 3,
+              "share_of_node_time": 0.0004591850159948483
+            },
+            {
+              "provider_op": "CPUExecutionProvider::ReorderOutput",
+              "microseconds": 499,
+              "nodes": 3,
+              "share_of_node_time": 0.00014429050565581192
+            },
+            {
+              "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+              "microseconds": 161,
+              "nodes": 3,
+              "share_of_node_time": 4.655465212542228e-05
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Flatten",
+              "microseconds": 67,
+              "nodes": 3,
+              "share_of_node_time": 1.9373675108094986e-05
+            }
+          ],
+          "node_microseconds_total": 3458301,
+          "cpu_fallback_op_types": {
+            "Relu": 147,
+            "ReorderInput": 3,
+            "MaxPool": 3,
+            "ReorderOutput": 3,
+            "GlobalAveragePool": 3,
+            "Flatten": 3
+          },
+          "transfer_nodes": {
+            "nodes": 0,
+            "microseconds": 0,
+            "share_of_node_time": 0.0,
+            "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+          }
+        },
+        "session_providers": [
+          "VulkanExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "counters": {
+          "abi_version": 8,
+          "compile_calls": 1,
+          "subgraphs_live": 50,
+          "subgraphs_stub": 0,
+          "compute_calls": 150,
+          "compute_failures": 0,
+          "device_losses": 0,
+          "outputs_device_resident": 0,
+          "outputs_host_resident": 150,
+          "outputs_device_bound": 0,
+          "outputs_bind_attempted": 150,
+          "outputs_bind_declined": 150,
+          "dispatches_executed": 210,
+          "claimed_nodes": 71,
+          "islands_offered": 50,
+          "viable_islands_retained": 50,
+          "net_benefit_gate": "EVALUATED",
+          "net_benefit_gate_clusters_seen": 51,
+          "net_benefit_gate_evaluations": 51,
+          "net_benefit_gate_bypasses": 0,
+          "net_benefit_sole_island_overrides": 0,
+          "net_benefit_override_reason": "UNOBSERVABLE",
+          "broken_commitments": 0,
+          "broken_commitment_warns_to_ort_sink": 0,
+          "broken_commitment_warn_channel": "UNOBSERVABLE",
+          "compute_failures_injected": 0,
+          "queue_submit_contentions": 0,
+          "fault_injection": "NONE",
+          "proven_key_lookups": 120,
+          "ledger_hits": 71,
+          "ledger_gate": "MIXED",
+          "ledger_miss": "KEY-ABSENT",
+          "ledger_entries": 133,
+          "ledger_faults": 0,
+          "ledger_entry_faults": 0,
+          "unproven_declines": 49,
+          "unproven_forms_claimed": 0,
+          "unproven_forms_enabled": [],
+          "device_unattributed_claims": 71,
+          "device_unattributed_forms": [
+            "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32/runtime-extent/n3 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+            "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/runtime-extent/n2 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+            "ai.onnx::GlobalAveragePool/1+/f32>f32/global_average_pool_f32/runtime-extent/n1 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+            "ai.onnx::Gemm/7+/f32,f32,f32>f32/gemm_f32/runtime-extent/n3 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity."
+          ],
+          "proven_elsewhere_claims": 0,
+          "subject_changed_declines": 0,
+          "proven_elsewhere_forms": [],
+          "source_cosmetic_forms": [],
+          "subject_changed_forms": [],
+          "unproven_decline_forms": [
+            "ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/runtime-extent/n1"
+          ],
+          "unprovable_decline_forms": [],
+          "ledger_subject_changed_entries": 0,
+          "ledger_toolchain_delta_entries": 0,
+          "running_device_names": "NVIDIA RTX A1000",
+          "running_device_uuids": "uuid:aadf33d4d118155fcc60c22b5c352463",
+          "reproof_forms_admitted": [],
+          "shaders_dispatched": [
+            "conv_f32",
+            "ew_binary_add_f32",
+            "gemm_f32"
+          ],
+          "shaders_dispatched_digest": "d05bf2400c6b9f32",
+          "shaders_dispatched_source_digest": "f2af7e1b76430732",
+          "shader_toolchain": "shaderc v2026.2 v2026.2",
+          "pipeline_variants": [
+            "conv_f32:256",
+            "ew_binary_add_f32:256,1",
+            "gemm_f32:256"
+          ],
+          "gemv_packed_spec_constant": "UNOBSERVABLE",
+          "shaders_dispatched_spec_digest": "e2085fc0091ecf29",
+          "specialisation_delta_forms": [],
+          "specialisation_unrecorded_forms": [],
+          "ledger_specialisation_unrecorded_entries": 0,
+          "kv_cache_convention": "UNOBSERVABLE",
+          "session_disclosures": 1,
+          "claimed_forms_proven": 0,
+          "claimed_forms_device_unattributed": 4,
+          "claimed_forms_unmeasured": 0,
+          "claimed_forms_divergent": 0,
+          "claimed_forms_ledger_faulted": 0,
+          "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+          "session_disclosure_warns": 0,
+          "session_disclosure_warns_to_ort_sink": 0,
+          "session_disclosure_channel": "UNOBSERVABLE",
+          "session_disclosure_infos": 1,
+          "session_disclosure_infos_to_ort_sink": 0,
+          "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+          "session_disclosure_infos_to_stderr": 1,
+          "session_disclosure_infos_reached_user": 1,
+          "session_disclosure_info_escalations": 0,
+          "session_disclosure_stderr_failures": 0,
+          "session_disclosure_info_reach": "REACHED_USER",
+          "stderr_fault_injection": "NONE",
+          "ort_sink_severity_threshold": "WARNING",
+          "model_output_equivalence": "UNMEASURED",
+          "pointers_observed": 0,
+          "pointers_host": 0,
+          "pointers_at_base": 0,
+          "pointers_interior": 0,
+          "pointers_in_guard_band": 0,
+          "pointers_use_after_free": 0,
+          "pointer_max_offset": 0,
+          "alloc_allocations": 0,
+          "alloc_frees": 0,
+          "alloc_bytes": 0,
+          "alloc_high_water_bytes": 0,
+          "alloc_device_backed_spans": 0,
+          "alloc_staged_spans": 0,
+          "alloc_staged_bytes": 0,
+          "alloc_allocators_released": 0,
+          "alloc_allocators_live": 0,
+          "alloc_frees_after_release": 0,
+          "alloc_live_at_release_spans": 0,
+          "alloc_live_at_release_bytes": 0,
+          "alloc_device_uploads": 0,
+          "alloc_device_upload_bytes": 0,
+          "alloc_device_downloads": 0,
+          "alloc_device_download_bytes": 0,
+          "alloc_unified_memory": 0,
+          "alloc_quarantine_peak_spans": 0,
+          "alloc_quarantine_retired": 0,
+          "alloc_device_buffer_binds": 0,
+          "alloc_failed_lookups": 0,
+          "alloc_device_authoritative_ceiling": 0,
+          "alloc_device_residency_evaluations": 0,
+          "alloc_device_authoritative_spans": "UNOBSERVABLE",
+          "alloc_device_authority_grants": 0,
+          "alloc_device_attach_attempts": 0,
+          "alloc_device_attach_failures": 0,
+          "alloc_device_attach_unavailable": 0,
+          "alloc_device_memory_budget_bytes": 0,
+          "alloc_device_frame": "OFF",
+          "alloc_device_frame_device": "",
+          "alloc_device_frames_declared": 0,
+          "alloc_device_frame_allocator_index": "unset",
+          "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+          "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+          "session_staging_uploads": 150,
+          "session_staging_upload_bytes": 781655776,
+          "session_staging_upload_us": 89709,
+          "session_staging_readbacks": 150,
+          "session_staging_readback_bytes": 435977088,
+          "session_staging_readback_us": 44229,
+          "session_device_allocs": 627,
+          "session_device_frees": 627,
+          "session_device_bytes_in_use": 0,
+          "session_device_high_water_bytes": 146955024,
+          "weight_cache_release_calls": 50,
+          "weight_cache_release_buffers": 53,
+          "weight_cache_release_bytes": 101995264,
+          "weight_cache_bytes_resident": 0,
+          "transient_input_device_allocs": 416,
+          "transient_input_device_bytes": 781655776,
+          "transient_input_device_peak_bytes": 16211968,
+          "transient_input_reuses": 0,
+          "transient_input_reused_bytes": 0,
+          "transient_input_arena_resident_bytes": 0,
+          "transient_input_arena_buffers": 0,
+          "transient_input_arena_releases": 0,
+          "counters_snapshot_writes": 151,
+          "counters_snapshot_write_failures": 0
+        },
+        "dispatch": {
+          "islands": 50,
+          "compute_calls": 150,
+          "dispatches_executed": 210,
+          "compute_failures": 0,
+          "inferences": 3,
+          "dispatches_per_inference": 70.0,
+          "island_crossings_per_inference": 50,
+          "outputs_host_resident": 150,
+          "outputs_device_resident": 0,
+          "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+        }
+      },
+      {
+        "arm": "cuda",
+        "batch": 4,
+        "case": "resnet50-v1-12/batch/N4",
+        "ep_registration": {
+          "registered": false,
+          "reason": "arm does not use the Vulkan EP"
+        },
+        "cuda_preload": {
+          "called": true,
+          "ok": true
+        },
+        "inferences": 3,
+        "profile": {
+          "provenance_class": "MEASUREMENT",
+          "counts": {
+            "CUDAExecutionProvider": 366
+          },
+          "microseconds": {
+            "CUDAExecutionProvider": 307675
+          },
+          "by_op": [
+            {
+              "provider_op": "CUDAExecutionProvider::Conv",
+              "microseconds": 236568,
+              "nodes": 159,
+              "share_of_node_time": 0.7688892500203136
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Add",
+              "microseconds": 50711,
+              "nodes": 48,
+              "share_of_node_time": 0.16482002112618835
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::MaxPool",
+              "microseconds": 9412,
+              "nodes": 3,
+              "share_of_node_time": 0.030590720728040952
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Gemm",
+              "microseconds": 6020,
+              "nodes": 3,
+              "share_of_node_time": 0.019566100593158366
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Relu",
+              "microseconds": 4703,
+              "nodes": 147,
+              "share_of_node_time": 0.015285609815552124
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::GlobalAveragePool",
+              "microseconds": 213,
+              "nodes": 3,
+              "share_of_node_time": 0.0006922889412529455
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Flatten",
+              "microseconds": 48,
+              "nodes": 3,
+              "share_of_node_time": 0.0001560087754936215
+            }
+          ],
+          "node_microseconds_total": 307675,
+          "cpu_fallback_op_types": {},
+          "transfer_nodes": {
+            "nodes": 0,
+            "microseconds": 0,
+            "share_of_node_time": 0.0,
+            "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+          }
+        },
+        "session_providers": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "dispatch": {
+          "islands": null,
+          "compute_calls": null,
+          "dispatches_executed": null,
+          "compute_failures": null,
+          "inferences": 3,
+          "dispatches_per_inference": null,
+          "island_crossings_per_inference": null,
+          "outputs_host_resident": null,
+          "outputs_device_resident": null,
+          "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+        }
+      },
+      {
+        "arm": "cpu",
+        "batch": 4,
+        "case": "resnet50-v1-12/batch/N4",
+        "ep_registration": {
+          "registered": false,
+          "reason": "arm does not use the Vulkan EP"
+        },
+        "cuda_preload": {
+          "called": false
+        },
+        "inferences": 3,
+        "profile": {
+          "provenance_class": "MEASUREMENT",
+          "counts": {
+            "CPUExecutionProvider": 174
+          },
+          "microseconds": {
+            "CPUExecutionProvider": 103743
+          },
+          "by_op": [
+            {
+              "provider_op": "CPUExecutionProvider::Conv",
+              "microseconds": 100031,
+              "nodes": 159,
+              "share_of_node_time": 0.9642192726256229
+            },
+            {
+              "provider_op": "CPUExecutionProvider::MaxPool",
+              "microseconds": 2251,
+              "nodes": 3,
+              "share_of_node_time": 0.0216978494934598
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Gemm",
+              "microseconds": 1123,
+              "nodes": 3,
+              "share_of_node_time": 0.010824826735297803
+            },
+            {
+              "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+              "microseconds": 143,
+              "nodes": 3,
+              "share_of_node_time": 0.001378406253915927
+            },
+            {
+              "provider_op": "CPUExecutionProvider::ReorderOutput",
+              "microseconds": 121,
+              "nodes": 3,
+              "share_of_node_time": 0.0011663437533134765
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Flatten",
+              "microseconds": 74,
+              "nodes": 3,
+              "share_of_node_time": 0.0007133011383900601
+            }
+          ],
+          "node_microseconds_total": 103743,
+          "cpu_fallback_op_types": {
+            "Conv": 159,
+            "MaxPool": 3,
+            "GlobalAveragePool": 3,
+            "ReorderOutput": 3,
+            "Flatten": 3,
+            "Gemm": 3
+          },
+          "transfer_nodes": {
+            "nodes": 0,
+            "microseconds": 0,
+            "share_of_node_time": 0.0,
+            "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+          }
+        },
+        "session_providers": [
+          "CPUExecutionProvider"
+        ],
+        "dispatch": {
+          "islands": null,
+          "compute_calls": null,
+          "dispatches_executed": null,
+          "compute_failures": null,
+          "inferences": 3,
+          "dispatches_per_inference": null,
+          "island_crossings_per_inference": null,
+          "outputs_host_resident": null,
+          "outputs_device_resident": null,
+          "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+        }
+      },
+      {
+        "arm": "vulkan",
+        "batch": 16,
+        "case": "resnet50-v1-12/batch/N16",
+        "ep_registration": {
+          "registered": true,
+          "path": "C:\\Users\\justinchu\\.copilot\\repos\\wt-122-niobe\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+          "sha256": "9a1ad7550e7b7dd3f6bf518e423ecd4f277ab59e57778627348b0ddc89723561",
+          "bytes": 2563072
+        },
+        "cuda_preload": {
+          "called": false
+        },
+        "inferences": 3,
+        "profile": {
+          "provenance_class": "MEASUREMENT",
+          "counts": {
+            "VulkanExecutionProvider": 150,
+            "CPUExecutionProvider": 162
+          },
+          "microseconds": {
+            "VulkanExecutionProvider": 5734654,
+            "CPUExecutionProvider": 128448
+          },
+          "by_op": [
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_20",
+              "microseconds": 223251,
+              "nodes": 3,
+              "share_of_node_time": 0.038077284004269414
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_1",
+              "microseconds": 209477,
+              "nodes": 3,
+              "share_of_node_time": 0.03572801564768957
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_25",
+              "microseconds": 197541,
+              "nodes": 3,
+              "share_of_node_time": 0.0336922332239828
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_26",
+              "microseconds": 195523,
+              "nodes": 3,
+              "share_of_node_time": 0.03334804681890235
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_42",
+              "microseconds": 178658,
+              "nodes": 3,
+              "share_of_node_time": 0.030471583131250316
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_43",
+              "microseconds": 155326,
+              "nodes": 3,
+              "share_of_node_time": 0.026492119700458904
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_41",
+              "microseconds": 149880,
+              "nodes": 3,
+              "share_of_node_time": 0.025563259858006906
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_23",
+              "microseconds": 125730,
+              "nodes": 3,
+              "share_of_node_time": 0.02144427983685087
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_32",
+              "microseconds": 123884,
+              "nodes": 3,
+              "share_of_node_time": 0.021129429438546354
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_36",
+              "microseconds": 120719,
+              "nodes": 3,
+              "share_of_node_time": 0.020589612802233356
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_35",
+              "microseconds": 120465,
+              "nodes": 3,
+              "share_of_node_time": 0.020546291024785175
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_37",
+              "microseconds": 117581,
+              "nodes": 3,
+              "share_of_node_time": 0.02005440123675147
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_9",
+              "microseconds": 114911,
+              "nodes": 3,
+              "share_of_node_time": 0.01959901089900875
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_24",
+              "microseconds": 114194,
+              "nodes": 3,
+              "share_of_node_time": 0.019476720684716044
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_39",
+              "microseconds": 112317,
+              "nodes": 3,
+              "share_of_node_time": 0.0191565829828647
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_45",
+              "microseconds": 110699,
+              "nodes": 3,
+              "share_of_node_time": 0.018880619849356194
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_34",
+              "microseconds": 108842,
+              "nodes": 3,
+              "share_of_node_time": 0.01856389331108345
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_5",
+              "microseconds": 107132,
+              "nodes": 3,
+              "share_of_node_time": 0.018272238825113394
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_6",
+              "microseconds": 106830,
+              "nodes": 3,
+              "share_of_node_time": 0.01822073025507658
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_49",
+              "microseconds": 106812,
+              "nodes": 3,
+              "share_of_node_time": 0.01821766020785584
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_28",
+              "microseconds": 106745,
+              "nodes": 3,
+              "share_of_node_time": 0.01820623280986754
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_3",
+              "microseconds": 106331,
+              "nodes": 3,
+              "share_of_node_time": 0.01813562172379058
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_33",
+              "microseconds": 106158,
+              "nodes": 3,
+              "share_of_node_time": 0.018106115158835714
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_21",
+              "microseconds": 106149,
+              "nodes": 3,
+              "share_of_node_time": 0.018104580135225347
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_13",
+              "microseconds": 105995,
+              "nodes": 3,
+              "share_of_node_time": 0.01807831417567015
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_4",
+              "microseconds": 105658,
+              "nodes": 3,
+              "share_of_node_time": 0.018020836069370785
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_30",
+              "microseconds": 105194,
+              "nodes": 3,
+              "share_of_node_time": 0.017941697074347333
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_44",
+              "microseconds": 105044,
+              "nodes": 3,
+              "share_of_node_time": 0.017916113347507857
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_11",
+              "microseconds": 104633,
+              "nodes": 3,
+              "share_of_node_time": 0.017846013935967683
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_47",
+              "microseconds": 104349,
+              "nodes": 3,
+              "share_of_node_time": 0.017797575413151606
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_29",
+              "microseconds": 104345,
+              "nodes": 3,
+              "share_of_node_time": 0.017796893180435886
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_7",
+              "microseconds": 103660,
+              "nodes": 3,
+              "share_of_node_time": 0.017680060827868934
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_12",
+              "microseconds": 103537,
+              "nodes": 3,
+              "share_of_node_time": 0.01765908217186056
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_48",
+              "microseconds": 102403,
+              "nodes": 3,
+              "share_of_node_time": 0.017465669196954105
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_31",
+              "microseconds": 101780,
+              "nodes": 3,
+              "share_of_node_time": 0.017359411451480802
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_8",
+              "microseconds": 101629,
+              "nodes": 3,
+              "share_of_node_time": 0.017333657166462395
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_40",
+              "microseconds": 100673,
+              "nodes": 3,
+              "share_of_node_time": 0.01717060354740545
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_46",
+              "microseconds": 99433,
+              "nodes": 3,
+              "share_of_node_time": 0.01695911140553243
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_10",
+              "microseconds": 98691,
+              "nodes": 3,
+              "share_of_node_time": 0.016832557236766476
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Relu",
+              "microseconds": 98313,
+              "nodes": 147,
+              "share_of_node_time": 0.01676808624513099
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_0",
+              "microseconds": 97573,
+              "nodes": 3,
+              "share_of_node_time": 0.016641873192722898
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_38",
+              "microseconds": 97431,
+              "nodes": 3,
+              "share_of_node_time": 0.016617653931314858
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_14",
+              "microseconds": 95198,
+              "nodes": 3,
+              "share_of_node_time": 0.016236797517764488
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_17",
+              "microseconds": 95013,
+              "nodes": 3,
+              "share_of_node_time": 0.016205244254662465
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_15",
+              "microseconds": 94924,
+              "nodes": 3,
+              "share_of_node_time": 0.016190064576737707
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_27",
+              "microseconds": 94186,
+              "nodes": 3,
+              "share_of_node_time": 0.016064192640687473
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_19",
+              "microseconds": 89811,
+              "nodes": 3,
+              "share_of_node_time": 0.01531800060786935
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_16",
+              "microseconds": 79999,
+              "nodes": 3,
+              "share_of_node_time": 0.013644483756209597
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_2",
+              "microseconds": 78158,
+              "nodes": 3,
+              "share_of_node_time": 0.01333048614879973
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_22",
+              "microseconds": 72986,
+              "nodes": 3,
+              "share_of_node_time": 0.012448359247374512
+            },
+            {
+              "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_18",
+              "microseconds": 67196,
+              "nodes": 3,
+              "share_of_node_time": 0.011460827391370642
+            },
+            {
+              "provider_op": "CPUExecutionProvider::ReorderInput",
+              "microseconds": 18831,
+              "nodes": 3,
+              "share_of_node_time": 0.0032117810674281294
+            },
+            {
+              "provider_op": "CPUExecutionProvider::MaxPool",
+              "microseconds": 7830,
+              "nodes": 3,
+              "share_of_node_time": 0.001335470541020777
+            },
+            {
+              "provider_op": "CPUExecutionProvider::ReorderOutput",
+              "microseconds": 2922,
+              "nodes": 3,
+              "share_of_node_time": 0.000498370998833041
+            },
+            {
+              "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+              "microseconds": 484,
+              "nodes": 3,
+              "share_of_node_time": 8.255015860205059e-05
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Flatten",
+              "microseconds": 68,
+              "nodes": 3,
+              "share_of_node_time": 1.1597956167230248e-05
+            }
+          ],
+          "node_microseconds_total": 5863102,
+          "cpu_fallback_op_types": {
+            "Relu": 147,
+            "ReorderInput": 3,
+            "MaxPool": 3,
+            "ReorderOutput": 3,
+            "GlobalAveragePool": 3,
+            "Flatten": 3
+          },
+          "transfer_nodes": {
+            "nodes": 0,
+            "microseconds": 0,
+            "share_of_node_time": 0.0,
+            "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+          }
+        },
+        "session_providers": [
+          "VulkanExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "counters": {
+          "abi_version": 8,
+          "compile_calls": 1,
+          "subgraphs_live": 50,
+          "subgraphs_stub": 0,
+          "compute_calls": 150,
+          "compute_failures": 0,
+          "device_losses": 0,
+          "outputs_device_resident": 0,
+          "outputs_host_resident": 150,
+          "outputs_device_bound": 0,
+          "outputs_bind_attempted": 150,
+          "outputs_bind_declined": 150,
+          "dispatches_executed": 210,
+          "claimed_nodes": 71,
+          "islands_offered": 50,
+          "viable_islands_retained": 50,
+          "net_benefit_gate": "EVALUATED",
+          "net_benefit_gate_clusters_seen": 51,
+          "net_benefit_gate_evaluations": 51,
+          "net_benefit_gate_bypasses": 0,
+          "net_benefit_sole_island_overrides": 0,
+          "net_benefit_override_reason": "UNOBSERVABLE",
+          "broken_commitments": 0,
+          "broken_commitment_warns_to_ort_sink": 0,
+          "broken_commitment_warn_channel": "UNOBSERVABLE",
+          "compute_failures_injected": 0,
+          "queue_submit_contentions": 0,
+          "fault_injection": "NONE",
+          "proven_key_lookups": 120,
+          "ledger_hits": 71,
+          "ledger_gate": "MIXED",
+          "ledger_miss": "KEY-ABSENT",
+          "ledger_entries": 133,
+          "ledger_faults": 0,
+          "ledger_entry_faults": 0,
+          "unproven_declines": 49,
+          "unproven_forms_claimed": 0,
+          "unproven_forms_enabled": [],
+          "device_unattributed_claims": 71,
+          "device_unattributed_forms": [
+            "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32/runtime-extent/n3 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+            "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/runtime-extent/n2 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+            "ai.onnx::GlobalAveragePool/1+/f32>f32/global_average_pool_f32/runtime-extent/n1 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+            "ai.onnx::Gemm/7+/f32,f32,f32>f32/gemm_f32/runtime-extent/n3 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity."
+          ],
+          "proven_elsewhere_claims": 0,
+          "subject_changed_declines": 0,
+          "proven_elsewhere_forms": [],
+          "source_cosmetic_forms": [],
+          "subject_changed_forms": [],
+          "unproven_decline_forms": [
+            "ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/runtime-extent/n1"
+          ],
+          "unprovable_decline_forms": [],
+          "ledger_subject_changed_entries": 0,
+          "ledger_toolchain_delta_entries": 0,
+          "running_device_names": "NVIDIA RTX A1000",
+          "running_device_uuids": "uuid:aadf33d4d118155fcc60c22b5c352463",
+          "reproof_forms_admitted": [],
+          "shaders_dispatched": [
+            "conv_f32",
+            "ew_binary_add_f32",
+            "gemm_f32"
+          ],
+          "shaders_dispatched_digest": "d05bf2400c6b9f32",
+          "shaders_dispatched_source_digest": "f2af7e1b76430732",
+          "shader_toolchain": "shaderc v2026.2 v2026.2",
+          "pipeline_variants": [
+            "conv_f32:256",
+            "ew_binary_add_f32:256,1",
+            "gemm_f32:256"
+          ],
+          "gemv_packed_spec_constant": "UNOBSERVABLE",
+          "shaders_dispatched_spec_digest": "e2085fc0091ecf29",
+          "specialisation_delta_forms": [],
+          "specialisation_unrecorded_forms": [],
+          "ledger_specialisation_unrecorded_entries": 0,
+          "kv_cache_convention": "UNOBSERVABLE",
+          "session_disclosures": 1,
+          "claimed_forms_proven": 0,
+          "claimed_forms_device_unattributed": 4,
+          "claimed_forms_unmeasured": 0,
+          "claimed_forms_divergent": 0,
+          "claimed_forms_ledger_faulted": 0,
+          "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+          "session_disclosure_warns": 0,
+          "session_disclosure_warns_to_ort_sink": 0,
+          "session_disclosure_channel": "UNOBSERVABLE",
+          "session_disclosure_infos": 1,
+          "session_disclosure_infos_to_ort_sink": 0,
+          "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+          "session_disclosure_infos_to_stderr": 1,
+          "session_disclosure_infos_reached_user": 1,
+          "session_disclosure_info_escalations": 0,
+          "session_disclosure_stderr_failures": 0,
+          "session_disclosure_info_reach": "REACHED_USER",
+          "stderr_fault_injection": "NONE",
+          "ort_sink_severity_threshold": "WARNING",
+          "model_output_equivalence": "UNMEASURED",
+          "pointers_observed": 0,
+          "pointers_host": 0,
+          "pointers_at_base": 0,
+          "pointers_interior": 0,
+          "pointers_in_guard_band": 0,
+          "pointers_use_after_free": 0,
+          "pointer_max_offset": 0,
+          "alloc_allocations": 0,
+          "alloc_frees": 0,
+          "alloc_bytes": 0,
+          "alloc_high_water_bytes": 0,
+          "alloc_device_backed_spans": 0,
+          "alloc_staged_spans": 0,
+          "alloc_staged_bytes": 0,
+          "alloc_allocators_released": 0,
+          "alloc_allocators_live": 0,
+          "alloc_frees_after_release": 0,
+          "alloc_live_at_release_spans": 0,
+          "alloc_live_at_release_bytes": 0,
+          "alloc_device_uploads": 0,
+          "alloc_device_upload_bytes": 0,
+          "alloc_device_downloads": 0,
+          "alloc_device_download_bytes": 0,
+          "alloc_unified_memory": 0,
+          "alloc_quarantine_peak_spans": 0,
+          "alloc_quarantine_retired": 0,
+          "alloc_device_buffer_binds": 0,
+          "alloc_failed_lookups": 0,
+          "alloc_device_authoritative_ceiling": 0,
+          "alloc_device_residency_evaluations": 0,
+          "alloc_device_authoritative_spans": "UNOBSERVABLE",
+          "alloc_device_authority_grants": 0,
+          "alloc_device_attach_attempts": 0,
+          "alloc_device_attach_failures": 0,
+          "alloc_device_attach_unavailable": 0,
+          "alloc_device_memory_budget_bytes": 0,
+          "alloc_device_frame": "OFF",
+          "alloc_device_frame_device": "",
+          "alloc_device_frames_declared": 0,
+          "alloc_device_frame_allocator_index": "unset",
+          "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+          "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+          "session_staging_uploads": 150,
+          "session_staging_upload_bytes": 2819497696,
+          "session_staging_upload_us": 279389,
+          "session_staging_readbacks": 150,
+          "session_staging_readback_bytes": 1743908352,
+          "session_staging_readback_us": 206889,
+          "session_device_allocs": 627,
+          "session_device_frees": 627,
+          "session_device_bytes_in_use": 0,
+          "session_device_high_water_bytes": 281828112,
+          "weight_cache_release_calls": 50,
+          "weight_cache_release_buffers": 53,
+          "weight_cache_release_bytes": 101995264,
+          "weight_cache_bytes_resident": 0,
+          "transient_input_device_allocs": 416,
+          "transient_input_device_bytes": 2819497696,
+          "transient_input_device_peak_bytes": 64291840,
+          "transient_input_reuses": 0,
+          "transient_input_reused_bytes": 0,
+          "transient_input_arena_resident_bytes": 0,
+          "transient_input_arena_buffers": 0,
+          "transient_input_arena_releases": 0,
+          "counters_snapshot_writes": 151,
+          "counters_snapshot_write_failures": 0
+        },
+        "dispatch": {
+          "islands": 50,
+          "compute_calls": 150,
+          "dispatches_executed": 210,
+          "compute_failures": 0,
+          "inferences": 3,
+          "dispatches_per_inference": 70.0,
+          "island_crossings_per_inference": 50,
+          "outputs_host_resident": 150,
+          "outputs_device_resident": 0,
+          "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+        }
+      },
+      {
+        "arm": "cuda",
+        "batch": 16,
+        "case": "resnet50-v1-12/batch/N16",
+        "ep_registration": {
+          "registered": false,
+          "reason": "arm does not use the Vulkan EP"
+        },
+        "cuda_preload": {
+          "called": true,
+          "ok": true
+        },
+        "inferences": 3,
+        "profile": {
+          "provenance_class": "MEASUREMENT",
+          "counts": {
+            "CUDAExecutionProvider": 366
+          },
+          "microseconds": {
+            "CUDAExecutionProvider": 311886
+          },
+          "by_op": [
+            {
+              "provider_op": "CUDAExecutionProvider::Conv",
+              "microseconds": 238470,
+              "nodes": 159,
+              "share_of_node_time": 0.7646062984552048
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Add",
+              "microseconds": 53143,
+              "nodes": 48,
+              "share_of_node_time": 0.17039238696190276
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::MaxPool",
+              "microseconds": 9211,
+              "nodes": 3,
+              "share_of_node_time": 0.02953322688418204
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Gemm",
+              "microseconds": 6258,
+              "nodes": 3,
+              "share_of_node_time": 0.020065023758681057
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Relu",
+              "microseconds": 4567,
+              "nodes": 147,
+              "share_of_node_time": 0.01464317090218862
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::GlobalAveragePool",
+              "microseconds": 188,
+              "nodes": 3,
+              "share_of_node_time": 0.0006027843506922401
+            },
+            {
+              "provider_op": "CUDAExecutionProvider::Flatten",
+              "microseconds": 49,
+              "nodes": 3,
+              "share_of_node_time": 0.00015710868714850939
+            }
+          ],
+          "node_microseconds_total": 311886,
+          "cpu_fallback_op_types": {},
+          "transfer_nodes": {
+            "nodes": 0,
+            "microseconds": 0,
+            "share_of_node_time": 0.0,
+            "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+          }
+        },
+        "session_providers": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "dispatch": {
+          "islands": null,
+          "compute_calls": null,
+          "dispatches_executed": null,
+          "compute_failures": null,
+          "inferences": 3,
+          "dispatches_per_inference": null,
+          "island_crossings_per_inference": null,
+          "outputs_host_resident": null,
+          "outputs_device_resident": null,
+          "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+        }
+      },
+      {
+        "arm": "cpu",
+        "batch": 16,
+        "case": "resnet50-v1-12/batch/N16",
+        "ep_registration": {
+          "registered": false,
+          "reason": "arm does not use the Vulkan EP"
+        },
+        "cuda_preload": {
+          "called": false
+        },
+        "inferences": 3,
+        "profile": {
+          "provenance_class": "MEASUREMENT",
+          "counts": {
+            "CPUExecutionProvider": 174
+          },
+          "microseconds": {
+            "CPUExecutionProvider": 421549
+          },
+          "by_op": [
+            {
+              "provider_op": "CPUExecutionProvider::Conv",
+              "microseconds": 410031,
+              "nodes": 159,
+              "share_of_node_time": 0.9726769604482516
+            },
+            {
+              "provider_op": "CPUExecutionProvider::MaxPool",
+              "microseconds": 9271,
+              "nodes": 3,
+              "share_of_node_time": 0.02199269835772354
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Gemm",
+              "microseconds": 1497,
+              "nodes": 3,
+              "share_of_node_time": 0.00355118859254796
+            },
+            {
+              "provider_op": "CPUExecutionProvider::GlobalAveragePool",
+              "microseconds": 533,
+              "nodes": 3,
+              "share_of_node_time": 0.001264384448782941
+            },
+            {
+              "provider_op": "CPUExecutionProvider::ReorderOutput",
+              "microseconds": 127,
+              "nodes": 3,
+              "share_of_node_time": 0.0003012698405167608
+            },
+            {
+              "provider_op": "CPUExecutionProvider::Flatten",
+              "microseconds": 90,
+              "nodes": 3,
+              "share_of_node_time": 0.00021349831217723207
+            }
+          ],
+          "node_microseconds_total": 421549,
+          "cpu_fallback_op_types": {
+            "Conv": 159,
+            "MaxPool": 3,
+            "GlobalAveragePool": 3,
+            "ReorderOutput": 3,
+            "Flatten": 3,
+            "Gemm": 3
+          },
+          "transfer_nodes": {
+            "nodes": 0,
+            "microseconds": 0,
+            "share_of_node_time": 0.0,
+            "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+          }
+        },
+        "session_providers": [
+          "CPUExecutionProvider"
+        ],
+        "dispatch": {
+          "islands": null,
+          "compute_calls": null,
+          "dispatches_executed": null,
+          "compute_failures": null,
+          "inferences": 3,
+          "dispatches_per_inference": null,
+          "island_crossings_per_inference": null,
+          "outputs_host_resident": null,
+          "outputs_device_resident": null,
+          "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+        }
+      }
+    ]
+  },
+  "counterfactual": {
+    "question": "If the one thing stopping 49 `Relu` nodes were removed \u2014 the missing proof-ledger entry, not a missing kernel \u2014 what happens to the partition?",
+    "arm": "vulkan_relu_proven",
+    "env": {
+      "ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN": "ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/runtime-extent/n1"
+    },
+    "case": "resnet50-v1-12/batch/N1",
+    "equivalence": {
+      "gate": "PASS",
+      "arms": {
+        "cpu": {
+          "verdict": "MATCH",
+          "self": true,
+          "note": "the reference arm is compared against itself by construction; recorded so the table has no hole"
+        },
+        "vulkan_relu_proven": {
+          "verdict": "MATCH",
+          "primary": {
+            "verdict": "MATCH",
+            "rows": 1,
+            "top1_rows_agreeing": 1,
+            "topk_rows_agreeing": 1,
+            "top_k": 5,
+            "max_abs": 9.5367431640625e-06,
+            "max_rel": 0.00021395651909603488,
+            "reference_scale": 8.19328784942627,
+            "abs_budget": 0.00819328784942627,
+            "max_prob_delta": 5.709082114557784e-07,
+            "prob_budget": 0.001,
+            "numeric_ok": true,
+            "gate": "top-1 on every row AND top-5 set on every row AND (max_abs <= 0.001 x |reference|_max OR max_rel <= 0.01) AND max prob delta <= 0.001",
+            "provenance_class": "MEASUREMENT"
+          },
+          "case": "resnet50-v1-12/batch/N1"
+        }
+      }
+    },
+    "diagnostics": {
+      "runs": [
+        {
+          "arm": "vulkan_relu_proven",
+          "batch": 1,
+          "case": "resnet50-v1-12/batch/N1",
+          "ep_registration": {
+            "registered": true,
+            "path": "C:\\Users\\justinchu\\.copilot\\repos\\wt-122-niobe\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+            "sha256": "9a1ad7550e7b7dd3f6bf518e423ecd4f277ab59e57778627348b0ddc89723561",
+            "bytes": 2563072
+          },
+          "cuda_preload": {
+            "called": false
+          },
+          "inferences": 3,
+          "profile": {
+            "provenance_class": "MEASUREMENT",
+            "counts": {
+              "VulkanExecutionProvider": 9,
+              "CPUExecutionProvider": 12
+            },
+            "microseconds": {
+              "VulkanExecutionProvider": 413723,
+              "CPUExecutionProvider": 1986
+            },
+            "by_op": [
+              {
+                "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_1",
+                "microseconds": 263477,
+                "nodes": 3,
+                "share_of_node_time": 0.633801529435254
+              },
+              {
+                "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_2",
+                "microseconds": 92773,
+                "nodes": 3,
+                "share_of_node_time": 0.22316812962913962
+              },
+              {
+                "provider_op": "VulkanExecutionProvider::VulkanExecutionProvider_3638974550566124481_0",
+                "microseconds": 57473,
+                "nodes": 3,
+                "share_of_node_time": 0.13825296060465372
+              },
+              {
+                "provider_op": "CPUExecutionProvider::ReorderInput",
+                "microseconds": 1399,
+                "nodes": 3,
+                "share_of_node_time": 0.003365334885701296
+              },
+              {
+                "provider_op": "CPUExecutionProvider::MaxPool",
+                "microseconds": 339,
+                "nodes": 3,
+                "share_of_node_time": 0.0008154742860991703
+              },
+              {
+                "provider_op": "CPUExecutionProvider::ReorderOutput",
+                "microseconds": 149,
+                "nodes": 3,
+                "share_of_node_time": 0.0003584238012648271
+              },
+              {
+                "provider_op": "CPUExecutionProvider::Flatten",
+                "microseconds": 99,
+                "nodes": 3,
+                "share_of_node_time": 0.00023814735788736834
+              }
+            ],
+            "node_microseconds_total": 415709,
+            "cpu_fallback_op_types": {
+              "ReorderInput": 3,
+              "MaxPool": 3,
+              "ReorderOutput": 3,
+              "Flatten": 3
+            },
+            "transfer_nodes": {
+              "nodes": 0,
+              "microseconds": 0,
+              "share_of_node_time": 0.0,
+              "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+            }
+          },
+          "session_providers": [
+            "VulkanExecutionProvider",
+            "CPUExecutionProvider"
+          ],
+          "counters": {
+            "abi_version": 8,
+            "compile_calls": 1,
+            "subgraphs_live": 3,
+            "subgraphs_stub": 0,
+            "compute_calls": 9,
+            "compute_failures": 0,
+            "device_losses": 0,
+            "outputs_device_resident": 0,
+            "outputs_host_resident": 9,
+            "outputs_device_bound": 0,
+            "outputs_bind_attempted": 9,
+            "outputs_bind_declined": 9,
+            "dispatches_executed": 360,
+            "claimed_nodes": 120,
+            "islands_offered": 3,
+            "viable_islands_retained": 3,
+            "net_benefit_gate": "EVALUATED",
+            "net_benefit_gate_clusters_seen": 3,
+            "net_benefit_gate_evaluations": 3,
+            "net_benefit_gate_bypasses": 0,
+            "net_benefit_sole_island_overrides": 0,
+            "net_benefit_override_reason": "UNOBSERVABLE",
+            "broken_commitments": 0,
+            "broken_commitment_warns_to_ort_sink": 0,
+            "broken_commitment_warn_channel": "UNOBSERVABLE",
+            "compute_failures_injected": 0,
+            "queue_submit_contentions": 0,
+            "fault_injection": "NONE",
+            "proven_key_lookups": 120,
+            "ledger_hits": 71,
+            "ledger_gate": "ALL-PROVEN",
+            "ledger_miss": "KEY-ABSENT",
+            "ledger_entries": 133,
+            "ledger_faults": 0,
+            "ledger_entry_faults": 0,
+            "unproven_declines": 0,
+            "unproven_forms_claimed": 49,
+            "unproven_forms_enabled": [
+              "ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/runtime-extent/n1"
+            ],
+            "device_unattributed_claims": 71,
+            "device_unattributed_forms": [
+              "ai.onnx::Conv/1+/f32,f32,f32>f32/conv_f32/runtime-extent/n3 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+              "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/runtime-extent/n2 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+              "ai.onnx::GlobalAveragePool/1+/f32>f32/global_average_pool_f32/runtime-extent/n1 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity.",
+              "ai.onnx::Gemm/7+/f32,f32,f32>f32/gemm_f32/runtime-extent/n3 entry-device=NVIDIA GeForce RTX 4060 Laptop GPU running-device=0=NVIDIA RTX A1000 reason=the entry records a device NAME but no device_uuid \u2014 a name is shared by every card of a model, so it cannot attribute this proof to the hardware this run opened. Regenerate the entry to record an identity."
+            ],
+            "proven_elsewhere_claims": 0,
+            "subject_changed_declines": 0,
+            "proven_elsewhere_forms": [],
+            "source_cosmetic_forms": [],
+            "subject_changed_forms": [],
+            "unproven_decline_forms": [],
+            "unprovable_decline_forms": [],
+            "ledger_subject_changed_entries": 0,
+            "ledger_toolchain_delta_entries": 0,
+            "running_device_names": "NVIDIA RTX A1000",
+            "running_device_uuids": "uuid:aadf33d4d118155fcc60c22b5c352463",
+            "reproof_forms_admitted": [],
+            "shaders_dispatched": [
+              "conv_f32",
+              "ew_binary_add_f32",
+              "ew_unary_relu_f32",
+              "gemm_f32",
+              "global_average_pool_f32"
+            ],
+            "shaders_dispatched_digest": "8079214e8246cdea",
+            "shaders_dispatched_source_digest": "37a4969ae8e6f8cf",
+            "shader_toolchain": "shaderc v2026.2 v2026.2",
+            "pipeline_variants": [
+              "conv_f32:256",
+              "ew_binary_add_f32:256,1",
+              "ew_unary_relu_f32:256,1",
+              "gemm_f32:256",
+              "global_average_pool_f32:256"
+            ],
+            "gemv_packed_spec_constant": "UNOBSERVABLE",
+            "shaders_dispatched_spec_digest": "caefc1bb6779f6c8",
+            "specialisation_delta_forms": [],
+            "specialisation_unrecorded_forms": [],
+            "ledger_specialisation_unrecorded_entries": 0,
+            "kv_cache_convention": "UNOBSERVABLE",
+            "session_disclosures": 1,
+            "claimed_forms_proven": 0,
+            "claimed_forms_device_unattributed": 4,
+            "claimed_forms_unmeasured": 1,
+            "claimed_forms_divergent": 0,
+            "claimed_forms_ledger_faulted": 0,
+            "claimed_form_evidence": "UNMEASURED-PRESENT",
+            "session_disclosure_warns": 1,
+            "session_disclosure_warns_to_ort_sink": 1,
+            "session_disclosure_channel": "ORT_SINK",
+            "session_disclosure_infos": 1,
+            "session_disclosure_infos_to_ort_sink": 0,
+            "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+            "session_disclosure_infos_to_stderr": 1,
+            "session_disclosure_infos_reached_user": 1,
+            "session_disclosure_info_escalations": 0,
+            "session_disclosure_stderr_failures": 0,
+            "session_disclosure_info_reach": "REACHED_USER",
+            "stderr_fault_injection": "NONE",
+            "ort_sink_severity_threshold": "WARNING",
+            "model_output_equivalence": "UNMEASURED",
+            "pointers_observed": 0,
+            "pointers_host": 0,
+            "pointers_at_base": 0,
+            "pointers_interior": 0,
+            "pointers_in_guard_band": 0,
+            "pointers_use_after_free": 0,
+            "pointer_max_offset": 0,
+            "alloc_allocations": 0,
+            "alloc_frees": 0,
+            "alloc_bytes": 0,
+            "alloc_high_water_bytes": 0,
+            "alloc_device_backed_spans": 0,
+            "alloc_staged_spans": 0,
+            "alloc_staged_bytes": 0,
+            "alloc_allocators_released": 0,
+            "alloc_allocators_live": 0,
+            "alloc_frees_after_release": 0,
+            "alloc_live_at_release_spans": 0,
+            "alloc_live_at_release_bytes": 0,
+            "alloc_device_uploads": 0,
+            "alloc_device_upload_bytes": 0,
+            "alloc_device_downloads": 0,
+            "alloc_device_download_bytes": 0,
+            "alloc_unified_memory": 0,
+            "alloc_quarantine_peak_spans": 0,
+            "alloc_quarantine_retired": 0,
+            "alloc_device_buffer_binds": 0,
+            "alloc_failed_lookups": 0,
+            "alloc_device_authoritative_ceiling": 0,
+            "alloc_device_residency_evaluations": 0,
+            "alloc_device_authoritative_spans": "UNOBSERVABLE",
+            "alloc_device_authority_grants": 0,
+            "alloc_device_attach_attempts": 0,
+            "alloc_device_attach_failures": 0,
+            "alloc_device_attach_unavailable": 0,
+            "alloc_device_memory_budget_bytes": 0,
+            "alloc_device_frame": "OFF",
+            "alloc_device_frame_device": "",
+            "alloc_device_frames_declared": 0,
+            "alloc_device_frame_allocator_index": "unset",
+            "alloc_device_frame_session_devices": "0=NVIDIA RTX A1000",
+            "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=NVIDIA RTX A1000.",
+            "session_staging_uploads": 9,
+            "session_staging_upload_bytes": 106614496,
+            "session_staging_upload_us": 25701,
+            "session_staging_readbacks": 9,
+            "session_staging_readback_bytes": 9670368,
+            "session_staging_readback_us": 1561,
+            "session_device_allocs": 588,
+            "session_device_frees": 588,
+            "session_device_bytes_in_use": 0,
+            "session_device_high_water_bytes": 197259536,
+            "weight_cache_release_calls": 3,
+            "weight_cache_release_buffers": 53,
+            "weight_cache_release_bytes": 101995264,
+            "weight_cache_bytes_resident": 0,
+            "transient_input_device_allocs": 227,
+            "transient_input_device_bytes": 106614496,
+            "transient_input_device_peak_bytes": 94690816,
+            "transient_input_reuses": 0,
+            "transient_input_reused_bytes": 0,
+            "transient_input_arena_resident_bytes": 0,
+            "transient_input_arena_buffers": 0,
+            "transient_input_arena_releases": 0,
+            "counters_snapshot_writes": 10,
+            "counters_snapshot_write_failures": 0
+          },
+          "dispatch": {
+            "islands": 3,
+            "compute_calls": 9,
+            "dispatches_executed": 360,
+            "compute_failures": 0,
+            "inferences": 3,
+            "dispatches_per_inference": 120.0,
+            "island_crossings_per_inference": 3,
+            "outputs_host_resident": 9,
+            "outputs_device_resident": 0,
+            "note": "counters are process-cumulative; per-inference figures divide by the number of inferences this process ran, never by a repeat count"
+          }
+        }
+      ]
+    },
+    "admissible_for": "partition structure only \u2014 island count, claimed nodes and dispatch count are decided before a shader runs, so the unproven flag cannot bias them",
+    "not_admissible_for": "any correctness or performance claim about Relu on Vulkan: \u00a78.9 forbids quoting a form from a run that needed ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN, and epctl --check-counters would require --allow-unproven to pass it",
+    "structure": {
+      "shipping": {
+        "provider_node_counts": {
+          "VulkanExecutionProvider": 150,
+          "CPUExecutionProvider": 162
+        },
+        "nodes_per_inference": {
+          "VulkanExecutionProvider": 50.0,
+          "CPUExecutionProvider": 54.0
+        },
+        "islands": 50,
+        "dispatches_executed": 210,
+        "dispatches_per_inference": 70.0,
+        "island_crossings_per_inference": 50,
+        "cpu_fallback_op_types": {
+          "Relu": 147,
+          "ReorderInput": 3,
+          "MaxPool": 3,
+          "ReorderOutput": 3,
+          "GlobalAveragePool": 3,
+          "Flatten": 3
+        },
+        "transfer_nodes": {
+          "nodes": 0,
+          "microseconds": 0,
+          "share_of_node_time": 0.0,
+          "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+        },
+        "inferences": 3
+      },
+      "counterfactual": {
+        "provider_node_counts": {
+          "VulkanExecutionProvider": 9,
+          "CPUExecutionProvider": 12
+        },
+        "nodes_per_inference": {
+          "VulkanExecutionProvider": 3.0,
+          "CPUExecutionProvider": 4.0
+        },
+        "islands": 3,
+        "dispatches_executed": 360,
+        "dispatches_per_inference": 120.0,
+        "island_crossings_per_inference": 3,
+        "cpu_fallback_op_types": {
+          "ReorderInput": 3,
+          "MaxPool": 3,
+          "ReorderOutput": 3,
+          "Flatten": 3
+        },
+        "transfer_nodes": {
+          "nodes": 0,
+          "microseconds": 0,
+          "share_of_node_time": 0.0,
+          "note": "ORT inserts MemcpyToHost/MemcpyFromHost at EP boundaries; their cost is the price of partition fragmentation and is attributed separately here"
+        },
+        "inferences": 3
+      },
+      "islands": {
+        "shipping": 50,
+        "counterfactual": 3,
+        "change": -47
+      },
+      "island_crossings_per_inference": {
+        "shipping": 50,
+        "counterfactual": 3,
+        "change": -47
+      },
+      "dispatches_per_inference": {
+        "shipping": 70.0,
+        "counterfactual": 120.0,
+        "change": 50.0
+      },
+      "provenance_class": "MEASUREMENT"
+    }
+  },
+  "fallback_causes": {
+    "Relu": {
+      "count": 49,
+      "code": "unproven",
+      "registered": true,
+      "kernel_exists": true,
+      "cause": "no proof-ledger entry for `ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/runtime-extent/n1`. The shader exists and loads; \u00a78.9's gate declines it because nothing has proven it correct on this form, so ORT places it on the CPU EP.",
+      "closes_by": "rust/tools/gen_proof_ledger.py on this device"
+    },
+    "GlobalAveragePool": {
+      "count": 1,
+      "code": "partition",
+      "registered": true,
+      "kernel_exists": true,
+      "cause": "claimed by the predicate, then dropped by the partition heuristic: once the 49 `Relu` declines had shattered the trunk, this node was left in a 1-node subgraph with no compute-heavy anchor (minimum 4). It is a *consequence* of the `Relu` gap, not an independent one.",
+      "closes_by": "closing the Relu gap (the anchor rule then has a subgraph to hold on to)"
+    },
+    "MaxPool": {
+      "count": 1,
+      "code": "not-registered",
+      "registered": false,
+      "kernel_exists": false,
+      "cause": "no Vulkan handler is registered for `MaxPool` (opset 12).",
+      "closes_by": "implementing a MaxPool kernel"
+    },
+    "Flatten": {
+      "count": 1,
+      "code": "not-registered",
+      "registered": false,
+      "kernel_exists": false,
+      "cause": "no Vulkan handler is registered for `Flatten` (opset 11).",
+      "closes_by": "implementing a Flatten kernel (a reshape; it moves no data)"
+    }
+  },
+  "static_support_census": {
+    "provenance_class": "MODEL",
+    "derivation": "op-type histogram of the UNOPTIMISED pinned graph, matched against `epctl --dump-capabilities --json` from the built EP, on the `has_kernel` predicate (NOT the deprecated `status == \"live\"` token, which is false for the `ready` rows that carry ResNet-50's Conv)",
+    "crate_version": "0.28.0",
+    "ort_built_against": "1.28.0",
+    "graph_nodes": 175,
+    "op_types_supported": [
+      "Add",
+      "Conv",
+      "Gemm",
+      "GlobalAveragePool",
+      "Relu"
+    ],
+    "op_types_unsupported": [
+      "BatchNormalization",
+      "Flatten",
+      "MaxPool"
+    ],
+    "supported": {
+      "Add": {
+        "nodes": 16,
+        "registered": true,
+        "status": "live",
+        "has_kernel": true,
+        "dtypes": "F32,F16,I64,I32",
+        "opsets": "7+",
+        "staged_reason": null
+      },
+      "Conv": {
+        "nodes": 53,
+        "registered": true,
+        "status": "ready",
+        "has_kernel": true,
+        "dtypes": "F32",
+        "opsets": "1+",
+        "staged_reason": null
+      },
+      "Gemm": {
+        "nodes": 1,
+        "registered": true,
+        "status": "ready",
+        "has_kernel": true,
+        "dtypes": "F32",
+        "opsets": "7+",
+        "staged_reason": null
+      },
+      "GlobalAveragePool": {
+        "nodes": 1,
+        "registered": true,
+        "status": "ready",
+        "has_kernel": true,
+        "dtypes": "F32",
+        "opsets": "1+",
+        "staged_reason": null
+      },
+      "Relu": {
+        "nodes": 49,
+        "registered": true,
+        "status": "live",
+        "has_kernel": true,
+        "dtypes": "F32,F16",
+        "opsets": "6+",
+        "staged_reason": null
+      }
+    },
+    "unsupported": {
+      "BatchNormalization": {
+        "nodes": 53,
+        "registered": false,
+        "status": null,
+        "has_kernel": null,
+        "dtypes": null,
+        "opsets": null,
+        "staged_reason": null
+      },
+      "Flatten": {
+        "nodes": 1,
+        "registered": false,
+        "status": null,
+        "has_kernel": null,
+        "dtypes": null,
+        "opsets": null,
+        "staged_reason": null
+      },
+      "MaxPool": {
+        "nodes": 1,
+        "registered": false,
+        "status": null,
+        "has_kernel": null,
+        "dtypes": null,
+        "opsets": null,
+        "staged_reason": null
+      }
+    },
+    "nodes_with_a_registered_kernel": 120,
+    "nodes_without_a_registered_kernel": 55,
+    "upper_bound_note": "an upper bound on Vulkan coverage and nothing else: registration is necessary, not sufficient \u2014 the per-node claim predicate may still decline, and ORT's optimiser rewrites the graph first"
+  },
+  "admissibility": {
+    "verdict": "INDETERMINATE",
+    "failed_checks": [
+      "quiescence"
+    ],
+    "checks": [
+      {
+        "name": "model_provenance",
+        "held": true,
+        "detail": "the pinned sha256/size/external-data scan agreed with the recorded pin"
+      },
+      {
+        "name": "outputs_agree_with_cpu",
+        "held": true,
+        "detail": "equivalence gate = PASS; every timed arm was classified against the CPU EP reference before it was timed"
+      },
+      {
+        "name": "vulkan_production_dispatch_witness",
+        "held": true,
+        "detail": "dispatches_executed = 210 from the EP's own counters; a Vulkan row with no dispatch is a CPU row wearing the EP's name"
+      },
+      {
+        "name": "cuda_arm_executed",
+        "held": true,
+        "detail": "ORT's per-node provider attribution placed at least one node on CUDAExecutionProvider"
+      },
+      {
+        "name": "device_identified",
+        "held": true,
+        "detail": "the running device is named by stable identity, not by enumeration index"
+      },
+      {
+        "name": "quiescence",
+        "held": false,
+        "detail": "no quiescence verdict was taken"
+      },
+      {
+        "name": "enough_repeats",
+        "held": true,
+        "detail": "repeats=5, iters_per_repeat=10; a median without repeats measured adjacent in time has no error bar"
+      }
+    ],
+    "rule": "ADMISSIBLE requires every check to hold. Any failure yields INDETERMINATE, and an INDETERMINATE record's ratios must be reported as not-quotable rather than quoted with a caveat."
+  },
+  "quotable": false,
+  "generalisation_limit": "These readings are one model (ResNet-50 v1 opset 12, f32) on one device (see `environment.device`), one driver, one ORT build, one day. They do not support any claim about ResNet on another GPU or vendor, about another model on this GPU, or about the Vulkan EP versus the CUDA EP in general. A single-device ratio is a reading, not parity.",
+  "worker_errors": [],
+  "PROVENANCE": {
+    "latency_medians": "MEASUREMENT",
+    "ratios": "MEASUREMENT",
+    "provider_node_counts": "MEASUREMENT",
+    "dispatches_executed": "MEASUREMENT",
+    "fallback_causes": "MEASUREMENT",
+    "counterfactual_structure": "MEASUREMENT",
+    "counterfactual_timings": "DIAGNOSTIC (unproven form; never quotable)",
+    "cuda_provider_options": "SPECIFICATION",
+    "static_support_census": "MODEL",
+    "device_and_driver_identity": "SPECIFICATION",
+    "model_pin": "SPECIFICATION"
+  }
+}

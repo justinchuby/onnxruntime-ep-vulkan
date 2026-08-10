@@ -683,8 +683,19 @@ class TestTheCompiledDeltaIsEnumeratedInFull:
 
 
 def _perf_section() -> str:
+    """§27 only, bounded at the next top-level heading.
+
+    This used to slice to end-of-file, which was correct exactly as long as §27 was the last
+    section in the document. It stopped being correct the moment a later section landed: the
+    forbidden-phrase guards below then read a neighbour's prose as if it were §27's, and reddened
+    on wording that neighbour is entitled to use. Scoping is the whole point of these guards --
+    `_design_section` already bounds itself at `\\n## 9.` for the same reason -- so the bound is
+    made explicit here rather than left to depend on where the document happens to end.
+    """
     perf = PERF_PATH.read_text(encoding="utf-8")
-    return perf[perf.index("## 27."):]
+    start = perf.index("## 27.")
+    nxt = perf.find("\n## ", start)
+    return perf[start:] if nxt < 0 else perf[start:nxt]
 
 
 #: The subsection this change adds to DESIGN §8.13. Forbidden-phrase checks are scoped to it
@@ -703,6 +714,18 @@ def _design_section() -> str:
 
 class TestTheDocumentsMatchTheArtifact:
     """Every figure in prose is a figure in the artifact, and the prose preserves the uncertainty."""
+
+    def test_the_perf_slice_stops_at_the_next_section(self):
+        """The forbidden-phrase guards in this file are only as trustworthy as their scope. If the
+        slice ran to end-of-file it would read every later section as §27's, and a neighbour would
+        redden this lane for wording it is entitled to use -- which is exactly what happened when
+        §28 landed. Assert the bound, so the scope cannot silently widen again."""
+        section = _perf_section()
+        assert section.startswith("## 27.")
+        assert "\n## " not in section, "the §27 slice ran past its own section"
+        whole = PERF_PATH.read_text(encoding="utf-8")
+        if "\n## 28." in whole:
+            assert "## 28." not in section, "the §27 slice swallowed §28"
 
     def test_perf_reports_p128_as_inconclusive(self):
         section = _perf_section()
