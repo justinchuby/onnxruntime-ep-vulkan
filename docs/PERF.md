@@ -5438,9 +5438,13 @@ the sentence issue #78 exists to stop:
 | `cuda` | `CUDAExecutionProvider`, CPU | **baseline** | the comparison an ORT user on an NVIDIA card actually has |
 | `cpu` | CPU only | **reference** | the only arm whose numerics nothing here is trying to change |
 
-No arm sets an environment variable — `bench/test_resnet.py::test_no_arm_sets_an_environment_variable_behind_the_readers_back`
-locks that, because this lane compares *execution providers*, and an env delta would silently make
-it compare tunings as well. Both GPU arms keep the CPU fallback the shipped EP has: removing it
+No **timed** arm sets an environment variable — `bench/test_resnet.py::test_no_arm_sets_an_environment_variable_behind_the_readers_back`
+locks that over `ARMS`, because this lane compares *execution providers*, and an env delta would
+silently make it compare tunings as well. The one arm that does set one, `vulkan_relu_proven`, is
+kept out of `ARMS` entirely and lives in `DIAGNOSTIC_ARMS` (§27.5.2), where a separate guard asserts
+its exclusion. The CUDA arm carries one non-default *provider option*, `use_tf32=0`, which is a
+precision pin rather than a tuning and is argued in full in §27.11. Both GPU arms keep the CPU
+fallback the shipped EP has: removing it
 would measure a configuration no user runs, and would turn every unsupported op into a
 session-creation failure rather than into the **partition cost this section exists to price**.
 
@@ -5763,7 +5767,17 @@ Verdict: **`INDETERMINATE`**. Driver exit code `1`.
 The largest foreign consumer was `copilot.exe` at 13.67 CPU-s, followed by `MsMpEng.exe` at 3.56.
 That is worth naming precisely: **the loudest process on the desk was the agent framework running
 this lane.** It cannot be quiesced by the lane it is running, which is a structural property of how
-work is done in this repository and not a transient. Foreign *GPU* state is disclosed separately
+work is done in this repository and not a transient. §20 already made this desk's contention the
+standing baseline rather than an excuse; this run adds the sharper form of it — the gate is not
+merely *usually* failing here, it is **unpassable while an agent drives the run**, because the agent
+is the load. A plan of the shape "measure once the box settles" therefore has no terminating step,
+and this lane was built on that assumption from the start: the admissibility gate publishes
+`INDETERMINATE` and moves the weight onto the load-independent witnesses (§27.5.1, §27.5.2, §27.8),
+rather than blocking on a quiet window that does not arrive. This was independently confirmed by a
+second agent's lane on the same desk (issue #69 v5, PR #124), which reached the same posture on the
+same gate without exchanging measurements.
+
+Foreign *GPU* state is disclosed separately
 and is milder but not clean: 703 MiB resident before the timed pass and 703 MiB after (another
 process's residency throughout), utilisation 68 % immediately before the pass and 0 % immediately
 after.
