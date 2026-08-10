@@ -127,8 +127,9 @@ def _session(ort, path: Path, arm: rm.Arm, device_index: int, *, profiling: bool
         if name == rn.CUDA_EP:
             # The CUDA device is pinned for the same reason the Vulkan device is: a machine can
             # have more than one, and a result that does not name which card it ran on is not a
-            # result.
-            provider_options.append({"device_id": str(device_index)})
+            # result. `use_tf32` is pinned for the reason recorded at rn.CUDA_PROVIDER_OPTIONS:
+            # an fp32 arm measured against a TF32 arm compares precisions, not EPs.
+            provider_options.append({"device_id": str(device_index), **rn.CUDA_PROVIDER_OPTIONS})
         else:
             provider_options.append({})
     return ort.InferenceSession(str(path), opts, providers=providers,
@@ -238,6 +239,10 @@ def verify_case(ort, np, path: Path, case: rm.Case, feeds: dict, device_index: i
     for arm in arms:
         if arm.name == rn.CPU_ARM.name:
             continue
+        # The arm's env must be in place before the session is built, not after: a claim
+        # decision is taken during GetCapability, and a session built without the variable
+        # keeps the partition it was built with (real_model.Arm's docstring, the hard way).
+        prev = arm.apply_env(os.environ)
         try:
             sess = _session(ort, path, arm, device_index)
             out = sess.run(None, feeds)
@@ -245,6 +250,12 @@ def verify_case(ort, np, path: Path, case: rm.Case, feeds: dict, device_index: i
             del sess
         except Exception as exc:
             v = {"verdict": rm.DIVERGENT, "reason": f"arm failed to run: {exc}"}
+        finally:
+            for k, old in prev.items():
+                if old is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = old
         per_arm[arm.name] = v
         ok = ok and v["verdict"] == rm.MATCH
     del ref_sess
@@ -272,7 +283,7 @@ def timed_worker(argv) -> int:
     import numpy as np
     import onnxruntime as ort
 
-    arm = {x.name: x for x in rn.ARMS}[a.arm]
+    arm = {x.name: x for x in rn.ALL_ARMS}[a.arm]
     preload = _preload_cuda(ort) if rn.CUDA_EP in arm.providers else {"called": False}
     reg = _register_vulkan(ort, a.ep_lib) if rn.EP_NAME in arm.providers else {
         "registered": False, "reason": "arm does not use the Vulkan EP"}
@@ -380,7 +391,7 @@ def diagnose_worker(argv) -> int:
     import numpy as np
     import onnxruntime as ort
 
-    arm = {x.name: x for x in rn.ARMS}[a.arm]
+    arm = {x.name: x for x in rn.ALL_ARMS}[a.arm]
     preload = _preload_cuda(ort) if rn.CUDA_EP in arm.providers else {"called": False}
     reg = _register_vulkan(ort, a.ep_lib) if rn.EP_NAME in arm.providers else {
         "registered": False, "reason": "arm does not use the Vulkan EP"}
@@ -453,10 +464,10 @@ def run_timed(args, cases, scratch: Path, ep_lib) -> dict:
             "errors": errors}
 
 
-def run_diagnostics(args, cases, scratch: Path, ep_lib) -> dict:
+def run_diagnostics(args, cases, scratch: Path, ep_lib, arms=None) -> dict:
     runs = []
     for case in cases:
-        for arm in rn.ARMS:
+        for arm in (rn.ARMS if arms is None else arms):
             tag = f"{arm.name}_b{case.m}"
             rec_path = scratch / f"diag_{tag}.json"
             counters = scratch / f"counters_{tag}.json"
@@ -489,6 +500,59 @@ def run_diagnostics(args, cases, scratch: Path, ep_lib) -> dict:
                   f"dispatches={(rec.get('counters') or {}).get('dispatches_executed')}",
                   flush=True)
     return {"runs": runs}
+
+
+def _find_run(diag: dict, arm_name: str, batch: int):
+    for r in (diag or {}).get("runs") or []:
+        if r.get("arm") == arm_name and r.get("batch") == batch:
+            return r
+    return None
+
+
+def _structure_of(run) -> dict:
+    """The load-independent half of a diagnose run: what ORT placed where, and how many islands.
+
+    Deliberately excludes every microsecond. These fields come out of `GetCapability` and the
+    dispatch counters, so they are reproducible under contention — which is exactly why they
+    survive an INDETERMINATE timing verdict.
+    """
+    if not run:
+        return {}
+    prof = run.get("profile") or {}
+    disp = run.get("dispatch") or {}
+    inf = run.get("inferences") or 0
+    counts = prof.get("counts") or {}
+    per_inf = (lambda n: round(n / inf, 3) if inf else None)
+    return {
+        "provider_node_counts": counts,
+        "nodes_per_inference": {k: per_inf(v) for k, v in counts.items()},
+        "islands": disp.get("islands"),
+        "dispatches_executed": (run.get("counters") or {}).get("dispatches_executed"),
+        "dispatches_per_inference": disp.get("dispatches_per_inference"),
+        "island_crossings_per_inference": disp.get("island_crossings_per_inference"),
+        "cpu_fallback_op_types": prof.get("cpu_fallback_op_types"),
+        "transfer_nodes": prof.get("transfer_nodes"),
+        "inferences": inf,
+    }
+
+
+def _partition_delta(shipping: dict, cf: dict, case) -> dict:
+    """Shipping Vulkan partition against the counterfactual one, structure only."""
+    a = _structure_of(_find_run(shipping, rn.VULKAN_ARM.name, case.m))
+    b = _structure_of(_find_run(cf, rn.VULKAN_RELU_PROVEN_ARM.name, case.m))
+    def delta(key):
+        x, y = a.get(key), b.get(key)
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            return {"shipping": x, "counterfactual": y, "change": round(y - x, 3)}
+        return {"shipping": x, "counterfactual": y}
+    return {
+        "shipping": a,
+        "counterfactual": b,
+        "islands": delta("islands"),
+        "island_crossings_per_inference": delta("island_crossings_per_inference"),
+        "dispatches_per_inference": delta("dispatches_per_inference"),
+        "provenance_class": "MEASUREMENT",
+    }
 
 
 def environment_record(args, ep_reg: dict, device, nvidia: dict, cuda_preload: dict) -> dict:
@@ -602,6 +666,9 @@ def main(argv=None) -> int:
     ap.add_argument("--lock-holder", default="niobe-11")
     ap.add_argument("--require-lock", action="store_true",
                     help="refuse to run unless this holder's lock file is the only one present")
+    ap.add_argument("--counterfactual", action="store_true",
+                    help="also diagnose the partition with the Relu proof-ledger decline "
+                         "lifted; structure only, never a claim about Relu")
     a = ap.parse_args(argv)
 
     # The lock is checked BEFORE anything is imported, let alone before a device is opened, so
@@ -659,6 +726,36 @@ def main(argv=None) -> int:
 
     # --- diagnose (separate pass) ---------------------------------------------------------
     diag = run_diagnostics(a, cases, scratch, a.ep_lib)
+
+    # --- counterfactual (structure only; see rn.VULKAN_RELU_PROVEN_ARM) -------------------
+    counterfactual = None
+    if a.counterfactual:
+        cf_case = cases[0]
+        cf_feeds = rn.resnet_feeds(cf_case, np)
+        cf_verify = verify_case(ort, np, Path(model_rec["path"]), cf_case, cf_feeds,
+                                a.device, rn.DIAGNOSTIC_ARMS)
+        cf_diag = run_diagnostics(a, [cf_case], scratch, a.ep_lib, arms=rn.DIAGNOSTIC_ARMS)
+        counterfactual = {
+            "question": (
+                "If the one thing stopping 49 `Relu` nodes were removed — the missing proof-"
+                "ledger entry, not a missing kernel — what happens to the partition?"
+            ),
+            "arm": rn.VULKAN_RELU_PROVEN_ARM.name,
+            "env": dict(rn.VULKAN_RELU_PROVEN_ARM.env),
+            "case": cf_case.label,
+            "equivalence": cf_verify,
+            "diagnostics": cf_diag,
+            "admissible_for": (
+                "partition structure only — island count, claimed nodes and dispatch count are "
+                "decided before a shader runs, so the unproven flag cannot bias them"
+            ),
+            "not_admissible_for": (
+                "any correctness or performance claim about Relu on Vulkan: §8.9 forbids "
+                "quoting a form from a run that needed ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN, "
+                "and epctl --check-counters would require --allow-unproven to pass it"
+            ),
+            "structure": _partition_delta(diag, cf_diag, cf_case),
+        }
 
     def _per_repeat(label, arm_name):
         xs = timed["raw"].get(label, {}).get(arm_name, [])
@@ -735,6 +832,8 @@ def main(argv=None) -> int:
         "equivalence": equivalence,
         "rows": rows,
         "diagnostics": diag,
+        "counterfactual": counterfactual,
+        "fallback_causes": rn.RESNET50_FALLBACK_CAUSES,
         "static_support_census": rn.support_census(rn.RESNET50_OP_HISTOGRAM, caps),
         "admissibility": admis,
         "quotable": rn.quotable(admis),
@@ -745,6 +844,10 @@ def main(argv=None) -> int:
             "ratios": "MEASUREMENT",
             "provider_node_counts": "MEASUREMENT",
             "dispatches_executed": "MEASUREMENT",
+            "fallback_causes": "MEASUREMENT",
+            "counterfactual_structure": "MEASUREMENT",
+            "counterfactual_timings": "DIAGNOSTIC (unproven form; never quotable)",
+            "cuda_provider_options": "SPECIFICATION",
             "static_support_census": "MODEL",
             "device_and_driver_identity": "SPECIFICATION",
             "model_pin": "SPECIFICATION",

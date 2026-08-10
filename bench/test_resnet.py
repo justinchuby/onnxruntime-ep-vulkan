@@ -737,3 +737,145 @@ def test_every_published_quantity_declares_a_provenance_class():
         assert key in block
     for cls in ("MEASUREMENT", "MODEL", "SPECIFICATION"):
         assert cls in block
+
+
+# ------------------------------------------------------------------------------------------
+# The CUDA arm's TF32 pin (§27.11)
+# ------------------------------------------------------------------------------------------
+
+
+def test_the_cuda_arm_pins_tf32_off():
+    """An fp32 arm measured against a TF32 arm compares precisions, not implementations."""
+    assert rn.CUDA_PROVIDER_OPTIONS["use_tf32"] == "0"
+
+
+def test_the_tf32_pin_reaches_the_session_and_only_the_cuda_provider():
+    src = _PROBE.read_text(encoding="utf-8")
+    assert "**rn.CUDA_PROVIDER_OPTIONS" in src
+    # The pin must be attached inside the `name == rn.CUDA_EP` branch: applying it to every
+    # provider would hand an unknown key to the CPU EP and to the Vulkan EP.
+    branch = src.split("if name == rn.CUDA_EP:")[1].split("else:")[0]
+    assert "rn.CUDA_PROVIDER_OPTIONS" in branch
+
+
+def test_the_tf32_pin_is_recorded_as_a_specification_not_left_implicit():
+    src = _PROBE.read_text(encoding="utf-8")
+    block = src.split('"PROVENANCE": {')[1].split("},")[0]
+    assert "cuda_provider_options" in block
+
+
+# ------------------------------------------------------------------------------------------
+# The counterfactual arm (§27.5.2)
+# ------------------------------------------------------------------------------------------
+
+
+def test_the_counterfactual_arm_is_not_a_member_of_the_headline_arms():
+    """8.9 forbids quoting a form from a run that needed CLAIM_UNPROVEN, so it cannot be an arm."""
+    assert rn.VULKAN_RELU_PROVEN_ARM not in rn.ARMS
+    assert rn.VULKAN_RELU_PROVEN_ARM.name not in {a.name for a in rn.ARMS}
+    assert rn.VULKAN_RELU_PROVEN_ARM in rn.DIAGNOSTIC_ARMS
+    assert rn.VULKAN_RELU_PROVEN_ARM in rn.ALL_ARMS
+
+
+def test_the_counterfactual_arm_lifts_exactly_one_decline_and_names_it():
+    env = dict(rn.VULKAN_RELU_PROVEN_ARM.env)
+    assert list(env) == [rn.CLAIM_UNPROVEN_ENV]
+    assert env[rn.CLAIM_UNPROVEN_ENV] == rn.RELU_PROOF_KEY
+    # One form, not a blanket override: a comma or a wildcard here would silently lift others.
+    assert "," not in rn.RELU_PROOF_KEY and "*" not in rn.RELU_PROOF_KEY
+    assert rn.RELU_PROOF_KEY.startswith("ai.onnx::Relu/")
+
+
+def test_the_counterfactual_arm_carries_the_counterfactual_role():
+    assert rn.VULKAN_RELU_PROVEN_ARM.role == "counterfactual"
+    assert rn.VULKAN_RELU_PROVEN_ARM.providers == (rn.EP_NAME, rn.CPU_EP)
+
+
+def test_the_headline_arms_lift_no_declines_at_all():
+    """The shipping configuration is the one being measured; an env-tweaked arm is not it."""
+    for arm in rn.ARMS:
+        assert rn.CLAIM_UNPROVEN_ENV not in dict(arm.env)
+
+
+def test_the_driver_states_what_the_counterfactual_is_not_admissible_for():
+    src = _PROBE.read_text(encoding="utf-8")
+    assert "not_admissible_for" in src
+    assert "admissible_for" in src
+    assert "allow-unproven" in src
+
+
+def test_the_counterfactual_delta_carries_only_load_independent_quantities():
+    """Structure survives contention; microseconds do not. _structure_of must emit no timings."""
+    src = _PROBE.read_text(encoding="utf-8")
+    body = src.split("def _structure_of(")[1].split("\ndef ")[0]
+    for banned in ("microseconds", "median_ms", "latency", "wall_ms"):
+        assert banned not in body, f"_structure_of leaked a timing: {banned}"
+    for required in ("islands", "dispatches_executed", "provider_node_counts",
+                     "cpu_fallback_op_types"):
+        assert required in body
+
+
+def test_the_partition_delta_compares_shipping_against_counterfactual_in_that_order():
+    src = _PROBE.read_text(encoding="utf-8")
+    body = src.split("def _partition_delta(")[1].split("\ndef ")[0]
+    assert 'rn.VULKAN_ARM.name' in body and 'rn.VULKAN_RELU_PROVEN_ARM.name' in body
+    assert '"change": round(y - x, 3)' in body
+
+
+# ------------------------------------------------------------------------------------------
+# The measured fallback causes (§27.5.1)
+# ------------------------------------------------------------------------------------------
+
+
+def test_every_resnet_fallback_op_has_a_measured_cause():
+    """A gap list with no causes ranks work by node count, which is how Relu was missed."""
+    assert set(rn.RESNET50_FALLBACK_CAUSES) == {"Relu", "GlobalAveragePool", "MaxPool", "Flatten"}
+    for op, rec in rn.RESNET50_FALLBACK_CAUSES.items():
+        assert rec["count"] >= 1
+        assert rec["code"] in {"unproven", "partition", "not-registered"}
+        assert len(rec["cause"]) > 40, op
+        assert rec["closes_by"]
+
+
+def test_the_causes_distinguish_a_missing_kernel_from_a_missing_proof():
+    """The two need different work: one is a shader, the other is a proof run."""
+    relu = rn.RESNET50_FALLBACK_CAUSES["Relu"]
+    assert relu["code"] == "unproven"
+    assert relu["registered"] is True and relu["kernel_exists"] is True
+    assert "gen_proof_ledger" in relu["closes_by"]
+    for op in ("MaxPool", "Flatten"):
+        rec = rn.RESNET50_FALLBACK_CAUSES[op]
+        assert rec["code"] == "not-registered"
+        assert rec["registered"] is False and rec["kernel_exists"] is False
+
+
+def test_global_average_pool_is_recorded_as_a_dependent_gap_not_an_independent_one():
+    rec = rn.RESNET50_FALLBACK_CAUSES["GlobalAveragePool"]
+    assert rec["code"] == "partition"
+    assert rec["kernel_exists"] is True
+    assert "Relu" in rec["closes_by"] or "Relu" in rec["cause"]
+
+
+def test_relu_dominates_the_fallback_by_node_count():
+    """If this ever stops being true the gap ordering in PERF.md 27.8 must be re-derived."""
+    counts = {k: v["count"] for k, v in rn.RESNET50_FALLBACK_CAUSES.items()}
+    assert counts["Relu"] > sum(v for k, v in counts.items() if k != "Relu")
+
+
+def test_the_fallback_causes_reach_the_artifact():
+    src = _PROBE.read_text(encoding="utf-8")
+    assert '"fallback_causes": rn.RESNET50_FALLBACK_CAUSES' in src
+    block = src.split('"PROVENANCE": {')[1].split("},")[0]
+    assert "fallback_causes" in block
+
+
+def test_the_verify_pass_applies_arm_env_before_building_the_session():
+    """A claim decision is taken at GetCapability; env set after the session is env set too late."""
+    src = _PROBE.read_text(encoding="utf-8")
+    body = src.split("def verify_case(")[1].split("\ndef ")[0]
+    assert "arm.apply_env(os.environ)" in body
+    apply_at = body.index("arm.apply_env(os.environ)")
+    # The indented form, so this does not match the reference session's `ref_sess = _session(`.
+    build_at = body.index("\n            sess = _session(")
+    assert apply_at < build_at, "env must be applied before the session is built"
+    assert "finally:" in body, "the arm's env must be restored even when the arm raises"

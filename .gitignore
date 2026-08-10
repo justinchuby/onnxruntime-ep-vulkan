@@ -97,3 +97,11 @@ bench/results/landing-simulation.json
 bench/results/**/*.npy
 bench/results/**/*.npz
 
+
+# Niobe (issue #122): the ResNet lane's per-worker scratch and ORT's own profile dumps.
+# `probe_resnet_vulkan_cuda.py` writes one JSON per worker process into resnet-scratch/ and ORT
+# drops a prof_*.json in the cwd whenever the diagnose pass enables profiling. Both are inputs
+# to bench/results/resnet_vulkan_cuda.json, which IS committed. The record is the evidence; the
+# raw dumps are regenerable by re-running the probe.
+bench/results/resnet-scratch/
+prof_resnet_*.json

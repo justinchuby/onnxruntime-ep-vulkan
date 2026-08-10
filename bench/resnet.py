@@ -219,6 +219,137 @@ CUDA_ARM = rm.Arm("cuda", (CUDA_EP, CPU_EP), (), role="baseline")
 
 ARMS = (VULKAN_ARM, CUDA_ARM, CPU_ARM)
 
+
+# --------------------------------------------------------------------------------------------
+# The CUDA arm's provider options — why TF32 is pinned OFF
+# --------------------------------------------------------------------------------------------
+
+#: Provider options for `CUDA_ARM`, minus `device_id`, which the driver fills in.
+#:
+#: `use_tf32: "0"` is a **methodological pin, not a tolerance loosening**, and the distinction
+#: matters enough to record here rather than in a commit message.
+#:
+#: cuDNN on an Ampere card defaults to TF32 for fp32 convolutions: a 19-bit format with a
+#: 10-bit mantissa, run on the tensor cores. The first run of this lane (TF32 at its default,
+#: i.e. ON) failed the batch-1 equivalence gate on the *CUDA* arm — `max_abs` 8.196353e-3
+#: against a budget of 8.193288e-3, over by 3e-6 — while the Vulkan arm on the identical input
+#: came in at `max_abs` 9.54e-6, some 860x inside the same budget. A budget argued from fp32
+#: numerics is the wrong budget for a TF32 computation, and the honest fix is not to widen it.
+#:
+#: Two reasons to pin it off rather than widen the budget:
+#:
+#:   1. This lane's subject is *EP against EP on the same computation*. An fp32 Vulkan arm
+#:      measured against a TF32 CUDA arm compares precisions, not implementations.
+#:   2. TF32 is a latency advantage as well as a precision loss, so leaving it on flatters the
+#:      baseline on the very axis being reported.
+#:
+#: The corollary is worth stating wherever the ratio is quoted: with TF32 *on*, CUDA is faster
+#: than it is here. A number measured against the TF32 baseline is therefore conservative
+#: against Vulkan, and the pin moves the baseline towards Vulkan, not away from it.
+#:
+#: `use_tf32` is a CUDA-EP provider option from ORT 1.17 onward. An ORT that does not know the
+#: key raises at session creation rather than ignoring it, which is the behaviour this pin
+#: needs: silently getting TF32 anyway would be worse than failing.
+CUDA_PROVIDER_OPTIONS = {"use_tf32": "0"}
+
+
+# --------------------------------------------------------------------------------------------
+# The counterfactual arm — what the Relu ledger gap costs
+# --------------------------------------------------------------------------------------------
+
+#: The environment variable the EP itself documents for running an unproven form.
+CLAIM_UNPROVEN_ENV = "ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN"
+
+#: The exact proof key the EP names when it declines ResNet-50's 49 `Relu` nodes.
+#:
+#: Not reconstructed from parts: this string is copied from the EP's own claim-log decline, so
+#: that if the key format ever changes the counterfactual stops working loudly instead of
+#: quietly measuring the un-counterfactual.
+RELU_PROOF_KEY = "ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/runtime-extent/n1"
+
+#: A **diagnostic-only** arm: Vulkan with the `Relu` decline lifted.
+#:
+#: Deliberately not a member of `ARMS`. §8.9 is explicit that a claim about a form must not be
+#: quoted from a run that needed this flag, and the EP's own `--check-counters` refuses such a
+#: run without `--allow-unproven`. What this arm is admissible for is the thing the flag cannot
+#: falsify: **partition structure**. Island count, claimed-node count and dispatch count are
+#: decided by `GetCapability` before a single shader runs, so they are exactly as trustworthy
+#: here as in the shipping configuration. Its *timings* are diagnostic context and are labelled
+#: as such wherever they appear.
+VULKAN_RELU_PROVEN_ARM = rm.Arm(
+    "vulkan_relu_proven",
+    (EP_NAME, CPU_EP),
+    ((CLAIM_UNPROVEN_ENV, RELU_PROOF_KEY),),
+    role="counterfactual",
+)
+
+#: Arms that exist for diagnosis and are never part of the headline comparison.
+DIAGNOSTIC_ARMS = (VULKAN_RELU_PROVEN_ARM,)
+
+#: Every arm a worker can be asked for by name.
+ALL_ARMS = ARMS + DIAGNOSTIC_ARMS
+
+
+# --------------------------------------------------------------------------------------------
+# The measured fallback causes — MEASUREMENT, not inference
+# --------------------------------------------------------------------------------------------
+
+#: Why each ResNet-50 op that does not run on Vulkan does not run on Vulkan.
+#:
+#: Provenance class MEASUREMENT: every entry is the EP's own decline, read out of the claim log
+#: (`ONNXRUNTIME_EP_VULKAN_CLAIM_LOG`) on this desk for this pinned model, not inferred from the
+#: registry dump. The distinction is the whole point — a static census can only say "not
+#: registered", and it would have said nothing at all about `Relu`, whose kernel is registered,
+#: `Live`, f32 and opset-6+, and which falls back anyway.
+#:
+#: `count` is nodes per inference at batch 1 after `ORT_ENABLE_ALL` (so: after BN folding).
+RESNET50_FALLBACK_CAUSES = {
+    "Relu": {
+        "count": 49,
+        "code": "unproven",
+        "registered": True,
+        "kernel_exists": True,
+        "cause": (
+            "no proof-ledger entry for "
+            "`ai.onnx::Relu/6+/f32>f32/ew_unary_relu_f32/runtime-extent/n1`. The shader exists "
+            "and loads; §8.9's gate declines it because nothing has proven it correct on this "
+            "form, so ORT places it on the CPU EP."
+        ),
+        "closes_by": "rust/tools/gen_proof_ledger.py on this device",
+    },
+    "GlobalAveragePool": {
+        "count": 1,
+        "code": "partition",
+        "registered": True,
+        "kernel_exists": True,
+        "cause": (
+            "claimed by the predicate, then dropped by the partition heuristic: once the 49 "
+            "`Relu` declines had shattered the trunk, this node was left in a 1-node subgraph "
+            "with no compute-heavy anchor (minimum 4). It is a *consequence* of the `Relu` "
+            "gap, not an independent one."
+        ),
+        "closes_by": "closing the Relu gap (the anchor rule then has a subgraph to hold on to)",
+    },
+    "MaxPool": {
+        "count": 1,
+        "code": "not-registered",
+        "registered": False,
+        "kernel_exists": False,
+        "cause": "no Vulkan handler is registered for `MaxPool` (opset 12).",
+        "closes_by": "implementing a MaxPool kernel",
+    },
+    "Flatten": {
+        "count": 1,
+        "code": "not-registered",
+        "registered": False,
+        "kernel_exists": False,
+        "cause": "no Vulkan handler is registered for `Flatten` (opset 11).",
+        "closes_by": "implementing a Flatten kernel (a reshape; it moves no data)",
+    },
+}
+
+
+
 #: Arms that are compared for *correctness* against `CPU_ARM`. The reference is not compared
 #: against itself as though that were evidence; it is recorded as `self` so the table has no
 #: hole, exactly as `probe_real_model_latency.verify_case` does.
